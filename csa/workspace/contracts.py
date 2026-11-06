@@ -75,7 +75,11 @@ TabKey = Literal[
 
 
 class RecordRef(_Contract):
-    kind: Literal["conversation", "approval", "training_request", "draft", "order", "employee"]
+    """An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID)."""
+
+    kind: Literal[
+        "conversation", "approval", "training_request", "draft", "order", "employee", "product"
+    ]
     id: str = Field(min_length=1, max_length=100)
     version: int | None = None
 
@@ -243,6 +247,19 @@ class ClarificationProposal(_Contract):
     options: list[ClarificationOption] = Field(default_factory=list, max_length=5)
 
 
+class ProductStockReadProposal(_Contract):
+    """How many of a TikTok Shop product are in stock, read live (spec 6.8). Read-only.
+
+    ``listing_id`` is the open product record or an option the user picked; ``query`` is the
+    product words the user wrote. With neither, the open product record is read. There is no
+    field for a count, a price or a status: the workspace assistant never changes TikTok Shop.
+    """
+
+    action: Literal["product_stock_read"]
+    query: str | None = Field(default=None, min_length=1, max_length=100)
+    listing_id: UUID | None = None
+
+
 # People actions (csa/workspace/hr_people.py resolves every name against People as the caller).
 # Names, titles and departments are the words the user wrote; the server finds the people.
 class HrPersonAddProposal(_Contract):
@@ -350,6 +367,7 @@ WorkspaceProposal = Annotated[
         BookingActionProposal,
         GuidanceProposal,
         OrderReadProposal,
+        ProductStockReadProposal,
     ],
     Field(discriminator="action"),
 ]
@@ -630,8 +648,38 @@ class OrderReadResult(_Contract):
     action: Literal["local_order_read"] = "local_order_read"
     order: LocalOrderSummary
     source: Literal["local_records"] = "local_records"
-    marketplace_sync: Literal["unavailable"] = "unavailable"
+    # Whether the tenant has a connected TikTok Shop now (csa/console/business.py
+    # marketplace_sync_state). "unavailable" only replays turns stored before 4 Nov 2026; the
+    # turn service never writes it.
+    marketplace_sync: Literal["connected", "not_connected", "unavailable"]
     as_of: AwareDatetime
+
+
+class StockVariant(_Contract):
+    """One variant's count; ``stock`` is None when TikTok gave no count."""
+
+    variant: str = Field(max_length=255)
+    seller_sku: str | None = Field(default=None, max_length=100)
+    stock: int | None
+
+
+class ProductStockResult(_Contract):
+    """A TikTok Shop product's stock per variant, live or from our copy; no ids.
+
+    ``note`` is the server's line in the turn's language: "checked live just now", or how old
+    our copy is when the live read failed. Every SKU of the product is listed with its count,
+    on sale or not; ``on_sale`` is false when TikTok does not list the product as selling.
+    """
+
+    action: Literal["product_stock_read"]
+    source: Literal["tiktok_shop"] = "tiktok_shop"
+    product: str = Field(min_length=1, max_length=255)
+    variants: list[StockVariant] = Field(max_length=300)
+    total: int = Field(ge=0)
+    checked_live: bool
+    on_sale: bool
+    as_of: AwareDatetime
+    note: str = Field(min_length=1, max_length=200)
 
 
 class WorkspaceUnavailableResult(_Contract):
@@ -683,6 +731,7 @@ WorkspaceActionResult = (
     | NavigateResult
     | DirectoryResult
     | ClarificationResult
+    | ProductStockResult
 )
 
 

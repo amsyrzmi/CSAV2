@@ -297,6 +297,53 @@ const guidance: Record<string, PanelKey> = {
 };
 
 type OrderRead = Extract<WorkspaceResult, { action: "local_order_read" }>;
+type StockRead = Extract<WorkspaceResult, { action: "product_stock_read" }>;
+
+/** The stock card: one row per variant with its exact count, the total and the server's line. */
+export interface StockView {
+  kind: "stock";
+  title: string;
+  rows: { label: string; count: string }[];
+  /** Null when no variant is listed: the note says so, never "Total in stock: 0". */
+  total: string | null;
+  note: string;
+  asOf: string;
+  /** Said when TikTok does not list the product as selling; null otherwise. */
+  offSale: string | null;
+}
+
+function stockView(result: StockRead, language: Language): StockView {
+  const say = (key: PanelKey, vars?: Record<string, string | number>) => panelText(language, key, vars);
+  return {
+    kind: "stock",
+    title: say("stock_title", { product: result.product }),
+    rows: result.variants.map((variant) => ({
+      label: [variant.variant.trim() || say("stock_one_variant"),
+        ...(variant.seller_sku ? [say("stock_sku", { sku: variant.seller_sku })] : [])].join(" · "),
+      count: variant.stock === null ? say("stock_not_given") : String(variant.stock),
+    })),
+    total: result.variants.length ? say("stock_total", { total: result.total }) : null,
+    note: result.note,
+    asOf: result.as_of,
+    offSale: result.on_sale ? null : say("stock_off_sale"),
+  };
+}
+
+/**
+ * The order card's title and its TikTok Shop line. A TikTok order is one with its TikTok order
+ * number (the Orders page's rule); a turn stored before the sync line was truthful says so.
+ */
+export function orderCardText(result: OrderRead, language: Language = "en"): { title: string; sync: string } {
+  const { order } = result;
+  const tiktok = order.channel === "tiktok_shop" && Boolean(order.external_order_id);
+  const sync: PanelKey = result.marketplace_sync === "connected"
+    ? "order_sync_connected"
+    : result.marketplace_sync === "not_connected" ? "order_sync_not_connected" : "order_sync_unavailable";
+  return {
+    title: panelText(language, tiktok ? "order_tiktok" : "order_local", { id: order.resource.order_id }),
+    sync: panelText(language, sync),
+  };
+}
 
 export type ResultView =
   | { kind: "notice"; error: boolean; text: string }
@@ -306,7 +353,8 @@ export type ResultView =
   | { kind: "answer"; text: string }
   | { kind: "navigate"; tab: TabKey; resume: boolean }
   | { kind: "directory"; candidates: PersonOut[] }
-  | { kind: "clarification"; question: string; options: ClarificationOption[] };
+  | { kind: "clarification"; question: string; options: ClarificationOption[] }
+  | StockView;
 
 export function resultView(result: WorkspaceResult, language: Language = "en"): ResultView {
   if ("status" in result && result.status === "denied")
@@ -339,6 +387,8 @@ export function resultView(result: WorkspaceResult, language: Language = "en"): 
         : { kind: "notice", error: false, text: panelText(language, "no_colleague") };
     case "clarification":
       return { kind: "clarification", question: result.question, options: result.options };
+    case "product_stock_read":
+      return stockView(result, language);
   }
 }
 

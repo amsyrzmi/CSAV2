@@ -791,9 +791,14 @@ payload or employee/contact identity mapping is stored.
 
 `page_context` is `{tab, section?, record?}` where `tab` is one of `overview`,
 `services`, `inbox`, `knowledge_base`, `business`, `hr`, `email`, `subscriptions`, `activity`, `chat` and
-`record` is `{kind, id, version?}`. The legacy `page_hint` path (fixed page guidance and a
-single local order read with `source:"local_records"`, `marketplace_sync:"unavailable"`
-and an `as_of` timestamp) is unchanged; reusing a request key with different input, or
+`record` is `{kind, id, version?}`; `kind` is one of `conversation`, `approval`,
+`training_request`, `draft`, `order`, `employee` or `product` (a TikTok Shop listing of ours,
+its local UUID, published by the Products & stock page while a TikTok listing card is open;
+the Orders page publishes an open order as `order`). The legacy `page_hint` path (fixed page
+guidance and a single local order read with `source:"local_records"`, `marketplace_sync`
+`"connected"` or `"not_connected"` (whether the tenant has a connected TikTok Shop now; turns
+stored before 4 Nov 2026 replay `"unavailable"`) and an `as_of` timestamp) is otherwise
+unchanged; reusing a request key with different input, or
 replaying an order result after its resource version changes, returns 409. A
 missing or foreign order returns only `resource_unavailable`.
 
@@ -818,7 +823,8 @@ assistant chat and tab-origin cards stay English.
 
 A turn with `page_context` is planned by one model call that returns exactly one typed
 proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
-`email_team`, `inbox_summary`, `training_submit`, `inbox_decision` or `clarification`. The planner only proposes; role, package, switch and
+`email_team`, `inbox_summary`, `training_submit`, `inbox_decision`, `clarification`, the
+people actions or `product_stock_read`. The planner only proposes; role, package, switch and
 record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
@@ -861,6 +867,28 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   correction per turn, shared with the content correction) and, if refused again, answered
   with a no-option question for the address on an email turn, otherwise a plain answer (see
   `docs/EMAIL_ASSISTANT.md`).
+- TikTok Shop is read-only for the assistant (spec 6.8): no planned action or confirm card can
+  change anything on TikTok Shop. An open order's summary adds, for a synced TikTok order,
+  `TikTok · synced <age>` and TikTok's status code (states only: never the ship-to, buyer,
+  phone or items). An open product's summary (from our copy) names the product, its variant
+  count, the stock in our copy and the sync age. Both need the Business tab's package
+  (`orders_products` or `marketplaces`); otherwise the summary says the service is not active.
+- `product_stock_read` (`{query?, listing_id?}`) answers "how many do we have" with a
+  `ProductStockResult`: `{action:"product_stock_read", source:"tiktok_shop", product, variants:
+  [{variant, seller_sku, stock}], total, checked_live, on_sale, as_of, note}`. The server finds
+  the listing in our copy (the picked listing, the words, or the open product record), then
+  reads its product live through the fenced TikTok reader (the customer assistant's
+  `csa.marketplace.reads.live_stock`), which refreshes our copy of the listing; it never
+  writes to TikTok or to the tenant's own products. `note` is in the turn's language: "Checked
+  live just now."; "Synced from TikTok just now." when our copy is under 60 seconds old, so no
+  live call is made (`checked_live:false` is the normal answer inside that window); or "As of
+  2 hours ago (live check failed)." from an older copy. Staff get every SKU of the product with
+  its exact count whatever its TikTok status, from the copy as well as live; `on_sale:false`
+  marks a product TikTok does not sell (the card says "Not on sale"). Several matching
+  products give a `clarification` with up to 5 products (option value: a listing id); no
+  connected TikTok Shop, no match, or no package gives a plain `answer`. The turn row stores
+  the action as `answer` (the action column's check list is set by migration 0521); the stored
+  result keeps `product_stock_read`.
 - A failure of the email-drafting model (invalid output, provider error or timeout) on an
   `email_compose`, `email_reply` or `email_team` turn returns 503
   `email_model_unavailable`; nothing is drafted or stored.
@@ -1224,23 +1252,28 @@ plus the `workspace.proposal.*` rows the registry writes for every card.
 Only verified human platform administrators (explicit selected tenant), tenant
 administrators and tenant staff may read `/console/v1/business`. Readers, machines
 and anonymous principals are denied. No marketplace client is called. Store metadata
-queries select only local identity/expiry/update columns, never token columns or `meta`;
+queries select only local identity, expiry, update and sync-progress columns, never token columns or `meta`;
 no credential content is read, decrypted or inspected.
-No write routes are added; normal session/tenant controls remain authoritative.
+The only write routes are the TikTok Shop connect and disconnect routes below (Admin
+only); normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
-| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, optional `from`, `to`, `status`, `payment_status`, tenant query | `{source:"local_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders` | `before=<order id>`, `limit=1..50` (20 default), optional `channel` and `shop_id`, optional `from`, `to`, `status`, `payment_status`, tenant query | `{source:"local_records",marketplace_sync:"connected"\|"not_connected",items,next_cursor}`; each row also carries `provider_status`, `synced_at` and `buyer_cleared` (null, null, false for local orders), never ship-to or lines |
 | `GET /business/orders/counts` | optional `from`, `to`, `payment_status`, `channel`, `shop_id`, tenant query (a `status` parameter is ignored) | `{total,by_status:{<status>:int}}` with every order status present, zero included |
-| `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Local order summary including persisted tracking/carrier, channel/store/order IDs and local timestamps |
-| `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Order summary (tracking/carrier, channel/store/order IDs, timestamps, `provider_status`, `synced_at`, `buyer_cleared`) plus `lines:[{sku,name,qty,unit_price}]`, `subtotal`, `shipping_fee`, `discount` and `ship_to:{recipient_name,phone,address_text,region}` **only for a synced TikTok order** (channel `tiktok_shop` with a provider order ID). For any other order those five fields are `null` and its stored ship-to is never returned. Once the buyer details were cleared (90 days after delivery or cancellation) `ship_to` is `null` and `buyer_cleared` is `true` |
+| `GET /business/listings` | optional `store_id`, `q` (1..100 characters, substring of product name, variant or SKU, wildcards literal), `before=<listing UUID>`, `limit=1..50` (20 default), tenant query | `{items,next_cursor}`; each item has `id`, `product_name`, `variant_name`, `seller_sku`, `price`, `currency`, `stock_qty`, `product_status`, `image_url` (only an `https://` URL, else `null`), `synced_at` and `same_sku_product` (name of the tenant's local product with an equal SKU, looked up at read time, `null` without a SKU). Sorted by name then ID; a foreign or missing cursor is 404. Admin or staff, same package gate as the other business routes |
+| `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"connected"\|"not_connected",items,next_cursor}` |
 | `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
-| `GET /business/stores` | optional `platform=tiktok_shop\|shopee\|lazada`, `before=<record UUID>`, `limit=1..50` (20 default), tenant query | `{source:"local_credential_records",marketplace_sync:"unavailable",items,next_cursor}` |
+| `GET /business/stores` | optional `platform=tiktok_shop\|shopee\|lazada`, `before=<record UUID>`, `limit=1..50` (20 default), tenant query | `{source:"local_credential_records",marketplace_sync:"connected"\|"not_connected",items,next_cursor}` |
 | `GET /business/stores/{record_id}` | optional `platform`, optional `shop_id` (requires platform), tenant query | Local store identity/expiry and stored lifecycle status; exact tenant/record/platform/store match when bound |
+| `POST /business/stores/tiktok/connect` | body `{store_id: UUID\|null}`, tenant query; Admin or platform admin, `marketplaces` package | `{authorization_url}` (no-store). No `store_id`: first connect on the tenant's pending store (reused, or created). With it: reconnect of that store. 503 `tiktok_unavailable` while TikTok is off; 404 `store_not_found` |
+| `GET /business/stores/tiktok/callback` | `code`, `state`, optional `error` (sent by TikTok); session required | Always 303 (no-store) to `/portal/business/stores` or `/business/stores?client_id=…` with `tiktok=connected`, or `tiktok=failed&reason=` one of `tiktok_unavailable`, `provider_denied`, `state_invalid`, `multiple_shops`, `no_authorized_shop`, `shop_in_use`, `insufficient_scope`, `connect_failed`. Staff get 403 |
+| `POST /business/stores/{store_id}/disconnect` | tenant query; Admin or platform admin, `marketplaces` package | 204 (a repeat is also 204); 404 `store_not_found` for another tenant's, a missing or a pending store |
 
 Order/product keysets sort `(created_at,id)` descending; foreign/missing resource or cursor404, bad
 UUID/limit422. Monetary values serialize as decimal strings. Neither customer addresses/
-contacts nor arbitrary items/attributes/credentials/provider payloads are projected.
+contacts (except the TikTok order detail above) nor arbitrary items/attributes/credentials/provider payloads are projected.
 Local update timestamps are not marketplace-sync evidence. Product local active status
 is not a published listing; stock is not synchronized and is not cross-store authority.
 These pages do not claim live tracking, connection health or import completeness.
@@ -1269,8 +1302,8 @@ next window. `status` is one of `draft`, `pending_confirmation`, `confirmed`, `p
 `invalid_status` or `invalid_payment_status`, `from` at or after `to` with 422 `invalid_range`,
 and a timestamp without an offset with the standard 422 validation error. With none of them the
 response and the `(created_at, id)` descending order are unchanged. Orders with no `placed_at`
-are listed and counted like any other (the window is on `created_at`). The order objects do not
-gain customer or line-item fields.
+are listed and counted like any other (the window is on `created_at`). The order list objects
+carry no customer or line-item fields; only the single-order read does, and only for TikTok orders.
 
 `GET /business/orders/counts` returns `{total, by_status}` for the same `from`, `to`,
 `payment_status`, `channel` and `shop_id` filters (same validation, same tenant, package and
@@ -1294,9 +1327,17 @@ numbers from the chips and never shows them as zero. "Older orders" adds the nex
 rows on screen.
 
 Store records contain `id`, `platform`, `shop_id`, recorded `expires_at`/`updated_at`,
-derived `expiry` (`unknown`, `expired`, `not_expired`), and constant
-`authorization:"unverified"`, `permissions:"unknown"`, `provider_reads:"unavailable"`.
-They also contain `connection:{status,live_integration:"unavailable"}`. This is a
+derived `expiry` (`unknown`, `expired`, `not_expired`), and three summary fields that follow
+`connection.status`: `authorization` is `verified` for `authorization_recorded`, else
+`unverified`; `permissions` is `granted` for `authorization_recorded`, `missing` for
+`permissions_missing`, else `unknown`; `provider_reads` is `available` for
+`authorization_recorded`, else `unavailable`. They also contain
+`connection:{status,live_integration}` (`live_integration` follows `provider_reads`),
+`sync` (`null` except for TikTok stores: `{orders_synced_at,products_synced_at,problem}`, where
+`problem` is `"sync_failing"` while a failure notice is open) and `can_manage` (true for
+platform admins and the tenant's Admin, false for staff). `marketplace_sync` on the order,
+product and store pages is `connected` when the tenant has a TikTok store that can sync now
+(active grant, bound shop, not disconnected, live tokens), else `not_connected`. This is a
 metadata-only stored lifecycle observation, not a lease, a provider request or proof
 of current external authorization. List and detail use the same tenant-scoped
 projection; one bounded batch query enriches each page, not one lookup per store.
@@ -1687,7 +1728,7 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
 | `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
 | `bookings` | standalone | `booking_agent` | bookings | yes |
-| `marketplaces` | addon | `ecommerce_agent` | ecommerce | no |
+| `marketplaces` | addon | `ecommerce_agent` | ecommerce | yes |
 | `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
 | `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |
 | `staff_email` | standalone | none; covers `email_settings` | email | yes |

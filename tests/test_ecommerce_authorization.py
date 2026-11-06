@@ -6,14 +6,18 @@ from uuid import uuid4
 
 import pytest
 from csa.agents.ecommerce.authorization import (
+    PRODUCT_SCOPES,
     TikTokAuthorizationContext,
     TikTokAuthorizationError,
+    TikTokFirstConnectContext,
     TikTokGrantState,
     TikTokOperationEvidence,
     TikTokReadOperation,
     require_tiktok_order_read,
+    require_tiktok_product_scope,
+    require_tiktok_scopes,
 )
-from csa.agents.ecommerce.stores import StoreBinding
+from csa.agents.ecommerce.stores import PendingStoreBinding, StoreBinding
 from pydantic import ValidationError
 
 NOW = datetime(2026, 10, 17, 20, tzinfo=UTC)
@@ -242,3 +246,55 @@ def test_rejection_messages_do_not_include_binding_or_evidence_contents() -> Non
         require_tiktok_order_read(operation, grant=grant, evidence=evidence, now=NOW)
     assert str(caught.value) == "TikTok authorization evidence rejected: insufficient_scope"
     assert caught.value.code == "insufficient_scope"
+
+
+def test_product_scope_required_for_product_reads_only() -> None:
+    order_and_shop = frozenset({"seller.order.info", "seller.authorization.info"})
+    require_tiktok_scopes(order_and_shop)
+    with pytest.raises(TikTokAuthorizationError, match="insufficient_scope"):
+        require_tiktok_product_scope(order_and_shop)
+    require_tiktok_product_scope(order_and_shop | PRODUCT_SCOPES)
+    # A near miss is not the product permission.
+    with pytest.raises(TikTokAuthorizationError, match="insufficient_scope"):
+        require_tiktok_product_scope(frozenset({f"{next(iter(PRODUCT_SCOPES))}.extra"}))
+
+
+def test_refresh_source_is_a_valid_grant_state() -> None:
+    _, grant, _ = contracts()
+    refreshed = TikTokGrantState.model_validate(
+        {**grant.model_dump(), "source": "verified_token_refresh"}
+    )
+    assert refreshed.source == "verified_token_refresh"
+    with pytest.raises(ValidationError):
+        TikTokGrantState.model_validate({**grant.model_dump(), "source": "client_supplied"})
+
+
+def test_first_connect_context_is_narrow_and_cannot_stand_in_for_a_read_context() -> None:
+    context = TikTokFirstConnectContext(
+        binding=PendingStoreBinding(client_id=uuid4(), record_id=uuid4(), platform="tiktok_shop"),
+        app_id="SYNTH-APP",
+        app_revision=2,
+        credential_generation=1,
+    )
+    with pytest.raises(ValidationError):
+        context.credential_generation = 2
+    dumped = context.model_dump()
+    for update in (
+        {"app_id": ""},
+        {"app_revision": 0},
+        {"app_revision": "2"},
+        {"credential_generation": 0},
+        {"credential_generation": True},
+        {"scopes": ["seller.order.info"]},
+        {"binding": {**dumped["binding"], "shop_id": "SYNTH-SHOP"}},
+    ):
+        with pytest.raises(ValidationError):
+            TikTokFirstConnectContext.model_validate({**dumped, **update})
+    without_revision = {k: v for k, v in dumped.items() if k != "app_revision"}
+    with pytest.raises(ValidationError):
+        TikTokFirstConnectContext.model_validate(without_revision)
+    # Grants and read operations take only the bound-shop context.
+    with pytest.raises(ValidationError):
+        TikTokAuthorizationContext.model_validate(dumped)
+    with pytest.raises(ValidationError):
+        TikTokReadOperation.model_validate({"id": uuid4(), "context": dumped, "started_at": NOW})

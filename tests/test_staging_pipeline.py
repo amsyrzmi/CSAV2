@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -35,6 +36,8 @@ def render(tmp_path: Path, *profiles: str, env_overrides: dict[str, str] | None 
     (secret_dir / "pipeline/staging_telegram_bot_token").write_text("SYNTHETIC-ONLY")
     for name in staging_secrets.WHATSAPP_FILES:
         (secret_dir / name).write_text(staging_secrets.WHATSAPP_DISABLED)
+    for name in staging_secrets.TIKTOK_FILES:
+        (secret_dir / name).write_text(staging_secrets.TIKTOK_DISABLED)
     command = ["docker", "compose", "--env-file", "/dev/null"]
     for name in (
         "compose.staging-local-proposal.yml",
@@ -268,7 +271,7 @@ def test_token_prefers_mounted_secret(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.skipif(shutil.which("caddy") is None, reason="Caddy CLI is unavailable")
-def test_hooks_caddy_site_forwards_only_webhook_and_whatsapp_routes_from_connector() -> None:
+def test_hooks_caddy_site_forwards_only_webhook_whatsapp_and_tiktok_routes_from_connector() -> None:
     result = subprocess.run(
         [
             "caddy",
@@ -294,6 +297,7 @@ def test_hooks_caddy_site_forwards_only_webhook_and_whatsapp_routes_from_connect
         [{"not": [{"remote_ip": {"ranges": ["127.0.0.1", "::1", "172.22.0.2"]}}]}],
         [{"method": ["POST"], "path": ["/hooks/*"]}],
         [{"method": ["GET", "POST"], "path": ["/channels/whatsapp"]}],
+        [{"method": ["POST"], "path": ["/api/v1/channels/tiktok_shop/webhook"]}],
         None,
     ]
     assert routes[0]["handle"] == [{"handler": "static_response", "status_code": 403}]
@@ -301,8 +305,9 @@ def test_hooks_caddy_site_forwards_only_webhook_and_whatsapp_routes_from_connect
         {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:18031"}]}
     ]
     assert routes[2]["handle"] == routes[1]["handle"]
-    assert routes[3]["handle"][0]["handler"] == "static_response"
-    assert routes[3]["handle"][0]["status_code"] == 404
+    assert routes[3]["handle"] == routes[1]["handle"]
+    assert routes[4]["handle"][0]["handler"] == "static_response"
+    assert routes[4]["handle"][0]["status_code"] == 404
 
 
 async def test_telegram_errors_do_not_expose_token() -> None:
@@ -475,3 +480,135 @@ def test_whatsapp_defaults_are_disabled_private_and_pass_check(tmp_path: Path) -
 def test_gateway_advertises_the_hooks_origin_as_the_whatsapp_callback(tmp_path: Path) -> None:
     gateway = render(tmp_path, "staging-approved", "pipeline-approved")["services"]["gateway"]
     assert gateway["environment"]["WHATSAPP_CALLBACK_BASE_URL"] == "https://hooks.invalid"
+
+
+def test_gateway_and_worker_carry_the_three_tiktok_secrets(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    for name in ("gateway", "worker"):
+        targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
+        assert targets["TIKTOK_APP_KEY"] == "staging_tiktok_app_key"
+        assert targets["TIKTOK_APP_SECRET"] == "staging_tiktok_app_secret"
+        assert targets["TIKTOK_SERVICE_ID"] == "staging_tiktok_service_id"
+    delivery = {s["target"] for s in services["delivery"]["secrets"]}
+    assert not delivery & {"TIKTOK_APP_KEY", "TIKTOK_APP_SECRET", "TIKTOK_SERVICE_ID"}
+    # The connect callback is on the console origin (PUBLIC_BASE_URL); no separate variable.
+    for name in ("gateway", "worker"):
+        env = services[name]["environment"]
+        assert env["PUBLIC_BASE_URL"] == "https://staging.invalid"
+        assert not [key for key in env if key.startswith("TIKTOK")]
+
+
+def test_tiktok_app_one_shot_is_gated_owner_only_and_not_restarted(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved", "tiktok-app-approved")[
+        "services"
+    ]
+    one_shot = services["tiktok-app"]
+    assert "restart" not in one_shot
+    assert one_shot["environment"]["CSA_MIGRATION_APPROVAL"] == "disabled"
+    assert {s["target"]: s["source"] for s in one_shot["secrets"]} == {
+        "MIGRATE_DATABASE_URL": "staging_owner_dsn"
+    }
+    assert set(one_shot["networks"]) == {"data"}
+    assert one_shot["entrypoint"][:2] == ["python", "-c"]
+    script = one_shot["entrypoint"][2]
+    assert "approved_target" in script
+    assert "scripts.tiktok_app" in script
+    # The inline gate refuses before any connection: no approval, or a foreign database.
+    dsn_file = tmp_path / "owner_dsn"
+    for approval, dsn in (
+        ("disabled", "postgresql://csa:x@staging-db:5432/csa_staging"),
+        ("approved-isolated-staging", "postgresql://csa:x@prod-db:5432/csa"),
+    ):
+        dsn_file.write_text(dsn)
+        result = subprocess.run(
+            [sys.executable, "-c", script, "register"],
+            cwd=ROOT,
+            env={
+                "PATH": os.defpath,
+                "PYTHONPATH": str(ROOT),
+                "NO_LOCAL_ENV": "1",
+                "CSA_MIGRATION_APPROVAL": approval,
+                "CSA_OWNER_DSN_FILE": str(dsn_file),
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "approval and the isolated staging database required" in result.stderr
+        assert "prod-db" not in result.stderr + result.stdout
+    # Not part of the long-running pipeline.
+    (tmp_path / "again").mkdir()
+    pipeline = render(tmp_path / "again", "staging-approved", "pipeline-approved")["services"]
+    assert "tiktok-app" not in pipeline
+
+
+def test_tiktok_defaults_writes_disabled_and_never_overwrites(tmp_path: Path) -> None:
+    target = tmp_path / "secrets"
+    staging_secrets.create(target, os.getuid())
+    (target / "pipeline").mkdir(mode=0o700)
+    created = staging_secrets.provision_tiktok_defaults(target, os.getuid())
+    assert created == sorted(staging_secrets.TIKTOK_FILES)
+    assert created == [
+        "pipeline/staging_tiktok_app_key",
+        "pipeline/staging_tiktok_app_secret",
+        "pipeline/staging_tiktok_service_id",
+    ]
+    for name in staging_secrets.TIKTOK_FILES:
+        assert (target / name).read_text() == "disabled"
+    assert staging_secrets.check(target, os.getuid()) == []
+    # A real value written by the owner survives a second run; only missing files are made.
+    real = target / staging_secrets.TIKTOK_FILES[1]
+    real.chmod(0o600)
+    real.write_text("made-up-value-for-this-test")
+    real.chmod(0o400)
+    (target / staging_secrets.TIKTOK_FILES[2]).unlink()
+    assert staging_secrets.provision_tiktok_defaults(target, os.getuid()) == [
+        staging_secrets.TIKTOK_FILES[2]
+    ]
+    assert real.read_text() == "made-up-value-for-this-test"
+    assert staging_secrets.provision_tiktok_defaults(target, os.getuid()) == []
+    # Refuses without the pipeline directory and for the wrong UID, writing nothing.
+    bare = tmp_path / "bare"
+    staging_secrets.create(bare, os.getuid())
+    with pytest.raises(staging_secrets.ProvisionError, match="pipeline secret directory"):
+        staging_secrets.provision_tiktok_defaults(bare, os.getuid())
+    with pytest.raises(staging_secrets.ProvisionError, match="runtime UID"):
+        staging_secrets.provision_tiktok_defaults(target, os.getuid() + 1)
+
+
+def test_tiktok_defaults_modes_and_ownership_match_whatsapp(tmp_path: Path) -> None:
+    target = tmp_path / "secrets"
+    staging_secrets.create(target, os.getuid())
+    (target / "pipeline").mkdir(mode=0o700)
+    staging_secrets.provision_whatsapp_defaults(target, os.getuid())
+    staging_secrets.provision_tiktok_defaults(target, os.getuid())
+    reference = (target / staging_secrets.WHATSAPP_FILES[0]).lstat()
+    for name in staging_secrets.TIKTOK_FILES:
+        info = (target / name).lstat()
+        assert stat.S_ISREG(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == stat.S_IMODE(reference.st_mode) == 0o400
+        assert (info.st_uid, info.st_gid) == (reference.st_uid, reference.st_gid)
+        assert not (target / name).read_text().endswith("\n")
+    # `check` looks at the three files without printing their contents.
+    (target / staging_secrets.TIKTOK_FILES[0]).chmod(0o644)
+    (target / staging_secrets.TIKTOK_FILES[1]).chmod(0o600)
+    (target / staging_secrets.TIKTOK_FILES[1]).write_text("")
+    (target / staging_secrets.TIKTOK_FILES[1]).chmod(0o400)
+    failures = staging_secrets.check(target, os.getuid())
+    assert failures == [
+        "pipeline/staging_tiktok_app_key: mode is not 0400",
+        "pipeline/staging_tiktok_app_secret: empty",
+    ]
+
+
+def test_tiktok_defaults_cli_prints_only_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "secrets"
+    staging_secrets.create(target, os.getuid())
+    (target / "pipeline").mkdir(mode=0o700)
+    args = ["--secret-dir", str(target), "--runtime-uid", str(os.getuid())]
+    assert staging_secrets.main(["tiktok-defaults", *args]) == 0
+    out = capsys.readouterr().out
+    assert out.count("created pipeline/staging_tiktok_") == 3
+    assert "disabled" not in out

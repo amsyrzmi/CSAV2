@@ -1,11 +1,13 @@
 """M6 local read models on disposable synthetic tenants; never call marketplaces."""
 
+import json
 from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
 import pytest
+from csa.agents.ecommerce.authorization import PRODUCT_SCOPES
 
 from tests.conftest import requires_docker
 from tests.test_console_services import activate
@@ -57,7 +59,7 @@ async def test_business_staff_reads_and_isolation(sessions: SessionWorld, role: 
         response = await member.get(base)
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["marketplace_sync"] == "unavailable"
+        assert body["marketplace_sync"] == "not_connected"
         assert [item["id"] for item in body["items"]] == [record_id]
         assert "not-for-console" not in response.text
         detail = await member.get(f"{base}/{record_id}")
@@ -187,7 +189,7 @@ async def test_business_order_source_store_filters_and_cursors(
         page_response = await member.get(path(**params))
         assert page_response.status_code == 200, page_response.text
         page = page_response.json()
-        assert page["source"] == "local_records" and page["marketplace_sync"] == "unavailable"
+        assert page["source"] == "local_records" and page["marketplace_sync"] == "not_connected"
         assert len(page["items"]) == 1
         assert page["items"][0]["channel"] == "tiktok_shop"
         assert page["items"][0]["external_shop_id"] == shop
@@ -246,7 +248,8 @@ async def test_business_order_filter_validation(sessions: SessionWorld) -> None:
 @pytest.mark.parametrize("role", ["platform_admin", "tenant_admin", "tenant_staff"])
 async def test_business_store_records_and_exact_binding(sessions: SessionWorld, role: str) -> None:
     w = sessions
-    shop = "SYNTH/shop+?&=%"
+    # Migration 0491: an active TikTok shop belongs to one tenant, so ids are unique per run.
+    shop = f"SYNTH/shop+?&=%-{uuid4()}"
     records = []
     for tenant, platform, shop_id, expiry in (
         (w.tenants[0], "tiktok_shop", shop, "2100-01-01T00:00:00Z"),
@@ -254,7 +257,7 @@ async def test_business_store_records_and_exact_binding(sessions: SessionWorld, 
         (w.tenants[0], "lazada", None, None),
         (w.tenants[0], "tiktok_shop", None, None),
         (w.tenants[0], "telegram", shop, None),
-        (w.tenants[1], "tiktok_shop", shop, None),
+        (w.tenants[1], "tiktok_shop", f"{shop}-other-tenant", None),
     ):
         record_id = str(uuid4())
         await w.q(
@@ -285,7 +288,7 @@ async def test_business_store_records_and_exact_binding(sessions: SessionWorld, 
     assert "synthetic-private" not in response.text
     body = response.json()
     assert body["source"] == "local_credential_records"
-    assert body["marketplace_sync"] == "unavailable"
+    assert body["marketplace_sync"] == "not_connected"
     assert {row["id"] for row in body["items"]} == set(records[:4])
     assert {row["id"]: row["expiry"] for row in body["items"]} == {
         records[0]: "not_expired",
@@ -305,10 +308,14 @@ async def test_business_store_records_and_exact_binding(sessions: SessionWorld, 
             "permissions",
             "provider_reads",
             "connection",
+            "sync",
+            "can_manage",
         }
         assert row["authorization"] == "unverified"
         assert row["permissions"] == "unknown"
         assert row["provider_reads"] == "unavailable"
+        assert row["can_manage"] is (role != "tenant_staff")
+        assert (row["sync"] is None) == (row["platform"] != "tiktok_shop")
     seen = []
     cursor = None
     for _ in range(4):
@@ -331,7 +338,8 @@ async def test_business_store_records_and_exact_binding(sessions: SessionWorld, 
         (f"/{records[0]}", {"platform": "shopee", "shop_id": shop}),
         (f"/{records[0]}", {"platform": "tiktok_shop", "shop_id": "wrong"}),
         (f"/{records[3]}", {"platform": "tiktok_shop", "shop_id": shop}),
-        (f"/{records[5]}", {"platform": "tiktok_shop", "shop_id": shop}),
+        # Same tenant-1 record with its own shop id: only the tenant differs.
+        (f"/{records[5]}", {"platform": "tiktok_shop", "shop_id": f"{shop}-other-tenant"}),
         (f"/{records[4]}", {}),
         ("", {"before": records[5]}),
         ("", {"before": records[1], "platform": "tiktok_shop"}),
@@ -361,7 +369,7 @@ async def seed_connection_status(w: SessionWorld, tenant: str, scenario: str) ->
     app_id = f"SYNTHETIC-{uuid4()}"
     now = datetime.now(UTC)
     platform = "shopee" if scenario == "unsupported" else "tiktok_shop"
-    shop = None if scenario == "missing_shop_id" else f"SYNTHETIC-{scenario}"
+    shop = None if scenario == "missing_shop_id" else f"SYNTHETIC-{scenario}-{uuid4()}"
     expiry = (
         None
         if scenario == "unknown_expiry"
@@ -386,8 +394,10 @@ async def seed_connection_status(w: SessionWorld, tenant: str, scenario: str) ->
     scopes = (
         ["synthetic-private-scope"]
         if scenario == "permissions_missing"
-        else ["seller.fs.order&fufillment.management"]
+        else ["seller.fs.order&fufillment.management", *PRODUCT_SCOPES]
         if scenario == "fs_scope"
+        else ["seller.order.info", "seller.authorization.info", *PRODUCT_SCOPES]
+        if scenario != "product_scope_missing"
         else ["seller.order.info", "seller.authorization.info"]
     )
     await w.q(
@@ -418,6 +428,15 @@ async def seed_connection_status(w: SessionWorld, tenant: str, scenario: str) ->
             tenant,
             grant_id,
         )
+    if scenario in {"refresh_refused", "disconnected_after_expiry"}:
+        # mark_store_expired.sql: tokens cleared and expires_at set to now, so the 0320 fence
+        # bumps the generation and disconnects the grant. Disconnecting on purpose wins.
+        await w.q(
+            "UPDATE channel_credentials SET access_token=NULL,refresh_token=NULL,"
+            "expires_at=now(),disconnected_at=%s WHERE id=%s",
+            now if scenario == "disconnected_after_expiry" else None,
+            record_id,
+        )
     if scenario == "authorization_recorded":
         await w.q(
             "INSERT INTO ecommerce_grants "
@@ -437,7 +456,6 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
     sessions: SessionWorld, role: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from csa.agents.ecommerce import connections, reader
-    from csa.channels.marketplace import oauth
     from csa.core import crypto, db
 
     w = sessions
@@ -450,6 +468,8 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
         ("revoked", "revoked"),
         ("disconnected", "disconnected"),
         ("generation_changed", "disconnected"),
+        ("refresh_refused", "expired"),
+        ("disconnected_after_expiry", "disconnected"),
         ("app_disabled", "app_unavailable"),
         ("app_missing", "app_unavailable"),
         ("app_revision", "app_unavailable"),
@@ -458,6 +478,7 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
         ("future_verification", "unverified"),
         ("binding_missing", "binding_missing"),
         ("permissions_missing", "permissions_missing"),
+        ("product_scope_missing", "permissions_missing"),
         ("authorization_recorded", "authorization_recorded"),
         ("fs_scope", "authorization_recorded"),
         ("wrong_shop", "unverified"),
@@ -475,8 +496,6 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
         (connections, "complete_authorization"),
         (connections, "begin_authorization"),
         (reader, "read_verified_order"),
-        (oauth, "exchange_tiktok_shop_token"),
-        (oauth, "save_tiktok_shop_credentials"),
     ):
         monkeypatch.setattr(module, name, forbidden)
     original = db.q.fetch_all
@@ -502,9 +521,16 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
     items = response.json()["items"]
     assert {item["id"]: item["connection"]["status"] for item in items} == expected
     for item in items:
-        assert item["connection"]["live_integration"] == "unavailable"
-        assert item["authorization"] == "unverified"
-        assert item["permissions"] == "unknown" and item["provider_reads"] == "unavailable"
+        status = item["connection"]["status"]
+        recorded = status == "authorization_recorded"
+        assert item["connection"]["live_integration"] == (
+            "available" if recorded else "unavailable"
+        )
+        assert item["authorization"] == ("verified" if recorded else "unverified")
+        assert item["permissions"] == (
+            "granted" if recorded else "missing" if status == "permissions_missing" else "unknown"
+        )
+        assert item["provider_reads"] == ("available" if recorded else "unavailable")
         detail = await member.get(f"{base}/{item['id']}", params=query)
         assert detail.json() == item
     sample = next(
@@ -519,6 +545,20 @@ async def test_staff_connection_lifecycle_is_metadata_only_and_never_live(
     for action in ("connect", "reconnect"):
         assert (await w.mutate(member, f"{base}/{sample['id']}/{action}", {})).status_code == 404
     assert (await w.mutate(member, f"{base}/{sample['id']}", {})).status_code == 405
+
+
+async def test_store_status_permissions_missing_without_product_scope(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    missing = await seed_connection_status(w, w.tenants[0], "product_scope_missing")
+    granted = await seed_connection_status(w, w.tenants[0], "authorization_recorded")
+    response = await w.admin.get(
+        "/console/v1/business/stores", params={"client_id": w.tenants[0], "limit": 50}
+    )
+    assert response.status_code == 200, response.text
+    statuses = {item["id"]: item["connection"]["status"] for item in response.json()["items"]}
+    assert statuses == {missing: "permissions_missing", granted: "authorization_recorded"}
 
 
 ORDER_STATUSES = (
@@ -548,6 +588,9 @@ ORDER_KEYS = {
     "shipped_at",
     "created_at",
     "updated_at",
+    "provider_status",
+    "synced_at",
+    "buyer_cleared",
 }
 
 
@@ -872,3 +915,451 @@ async def test_order_with_null_placed_at_is_listed(sessions: SessionWorld) -> No
     assert items[draft]["placed_at"] is None
     counts = await w.admin.get(counts_path(tenant, **window))
     assert counts.json()["by_status"]["draft"] == 2
+
+
+# ---- TikTok order detail, listings and real store sync state (Task 16) ----
+
+PRIVATE = "synthetic-private"
+SHIP_TO = {
+    "recipient_name": "Synthetic Buyer",
+    "phone": "+60000000000",
+    "address_text": "1 Synthetic Lane",
+    "region": "MY",
+}
+DETAIL_KEYS = ORDER_KEYS | {"lines", "subtotal", "shipping_fee", "discount", "ship_to"}
+
+
+async def put_tiktok_order(
+    w: SessionWorld,
+    tenant: str,
+    *,
+    cleared: bool = False,
+    external: str | None = "SYNTH-EXT-1",
+    channel: str = "tiktok_shop",
+    lines: bool = True,
+) -> str:
+    order_id = f"tt-synthetic-{uuid4()}"
+    await w.q(
+        "INSERT INTO orders (id,client_id,status,payment_status,channel,external_order_id,"
+        "external_shop_id,total,currency,provider_status,synced_at,provider_updated_at,"
+        "ship_to,shipping_fee,discount,buyer_cleared_at,tracking_no,carrier) "
+        "VALUES (%s,%s,'processing','paid',%s,%s,'SYNTH-SHOP',20.00,'MYR','AWAITING_SHIPMENT',"
+        "'2026-11-01T01:00:00Z','2026-11-01T00:30:00Z',%s::jsonb,4.50,1.00,%s,"
+        "'SYNTH-TRACK','Synthetic Carrier')",
+        order_id,
+        tenant,
+        channel,
+        external,
+        json.dumps(SHIP_TO),
+        datetime(2026, 11, 2, tzinfo=UTC) if cleared else None,
+    )
+    if lines:
+        for sku, name, qty, price in (
+            ("SKU-B", "Blue Mug", 1, "5.50"),
+            ("SKU-A", "Amber Plate", 2, "3.25"),
+        ):
+            await w.q(
+                "INSERT INTO order_items (client_id,order_id,product_id,sku,name_snapshot,"
+                "unit_price,qty) VALUES (%s,%s,NULL,%s,%s,%s,%s)",
+                tenant,
+                order_id,
+                sku,
+                name,
+                price,
+                qty,
+            )
+        # The items trigger rewrites the subtotal from the lines; set TikTok's own figure.
+        await w.q("UPDATE orders SET subtotal=12.00 WHERE id=%s", order_id)
+    return order_id
+
+
+async def put_listing(
+    w: SessionWorld,
+    tenant: str,
+    store: str,
+    *,
+    name: str = "Synthetic Listing",
+    variant: str | None = "Red",
+    sku: str | None = None,
+    image: str | None = "https://img.example.test/a.png",
+    status: str = "ACTIVATE",
+) -> str:
+    row = await w.q(
+        "INSERT INTO marketplace_listings (client_id,store_id,channel,external_product_id,"
+        "external_sku_id,product_name,variant_name,seller_sku,price,currency,stock_qty,"
+        "product_status,image_url,synced_at) VALUES (%s,%s,'tiktok_shop',%s,%s,%s,%s,%s,9.90,"
+        "'MYR',7,%s,%s,'2026-11-01T02:00:00Z') RETURNING id",
+        tenant,
+        store,
+        f"P-{uuid4()}",
+        f"S-{uuid4()}",
+        name,
+        variant,
+        sku,
+        status,
+        image,
+    )
+    return str(row[0]["id"])
+
+
+async def put_local_product(w: SessionWorld, tenant: str, sku: str, name: str) -> str:
+    product_id = str(uuid4())
+    await w.q(
+        "INSERT INTO products (id,client_id,sku,name,price,stock_qty,reserved_qty,attributes) "
+        "VALUES (%s,%s,%s,%s,1.00,1,0,'{}')",
+        product_id,
+        tenant,
+        sku,
+        name,
+    )
+    return product_id
+
+
+def view_for(w: SessionWorld, role: str) -> dict[str, str]:
+    """Platform admin picks the tenant in the query; members use their own."""
+    return {"client_id": w.tenants[0]} if role == "platform_admin" else {}
+
+
+async def acting_as(w: SessionWorld, role: str) -> httpx.AsyncClient:
+    return w.admin if role == "platform_admin" else (await w.member(role=role))[0]
+
+
+@pytest.mark.parametrize("role", ["platform_admin", "tenant_admin", "tenant_staff"])
+async def test_tiktok_order_detail_has_lines_and_ship_to_for_staff(
+    sessions: SessionWorld, role: str
+) -> None:
+    w = sessions
+    await seed_connection_status(w, w.tenants[0], "authorization_recorded")
+    order_id = await put_tiktok_order(w, w.tenants[0])
+    foreign = await put_tiktok_order(w, w.tenants[1])
+    member, query = await acting_as(w, role), view_for(w, role)
+    detail = await member.get(f"/console/v1/business/orders/{order_id}", params=query)
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert set(body) == DETAIL_KEYS
+    assert body["lines"] == [
+        {"sku": "SKU-A", "name": "Amber Plate", "qty": 2, "unit_price": "3.25"},
+        {"sku": "SKU-B", "name": "Blue Mug", "qty": 1, "unit_price": "5.50"},
+    ]
+    assert (body["subtotal"], body["shipping_fee"], body["discount"]) == ("12.00", "4.50", "1.00")
+    assert body["ship_to"] == SHIP_TO
+    assert body["buyer_cleared"] is False
+    assert body["provider_status"] == "AWAITING_SHIPMENT"
+    assert body["synced_at"].startswith("2026-11-01T01:00:00")
+    assert body["tracking_no"] == "SYNTH-TRACK" and body["total"] == "20.00"
+    listing = await member.get("/console/v1/business/orders", params=query)
+    row = next(item for item in listing.json()["items"] if item["id"] == order_id)
+    assert set(row) == ORDER_KEYS, "the list never carries ship-to or lines"
+    assert row["provider_status"] == "AWAITING_SHIPMENT" and row["buyer_cleared"] is False
+    assert (
+        await member.get(f"/console/v1/business/orders/{foreign}", params=query)
+    ).status_code == 404
+    # The channel/shop filters of the detail still bind it to the right order.
+    wrong = await member.get(
+        f"/console/v1/business/orders/{order_id}", params={**query, "channel": "shopee"}
+    )
+    assert wrong.status_code == 404
+    for response in (detail, listing):
+        assert PRIVATE not in response.text and "synthetic-private-cipher" not in response.text
+    assert (
+        await w.mutate(member, f"/console/v1/business/orders/{order_id}", {})
+    ).status_code == 405
+
+
+async def test_local_order_detail_still_hides_ship_to(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    local_id, _ = await seed(w, tenant)
+    # A TikTok-channel order the assistant took in a chat has no provider id: still local.
+    chat_id = await put_tiktok_order(w, tenant, external=None)
+    member, _ = await w.member(role="tenant_staff")
+    for order_id in (local_id, chat_id):
+        response = await member.get(f"/console/v1/business/orders/{order_id}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "not-for-console" not in response.text and SHIP_TO["phone"] not in response.text
+        assert body["ship_to"] is None and body["lines"] is None
+        assert body["subtotal"] is None and body["shipping_fee"] is None
+        assert body["discount"] is None
+        assert body["buyer_cleared"] is False
+        assert body["provider_status"] is None and body["synced_at"] is None
+    page = await member.get("/console/v1/business/orders")
+    assert all(set(item) == ORDER_KEYS for item in page.json()["items"])
+    assert all(item["provider_status"] is None for item in page.json()["items"])
+
+
+async def test_cleared_order_shows_cleared_flag_and_no_ship_to(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    # Worst case: the clearing stamp is set while ship_to still holds data; it must not leak.
+    order_id = await put_tiktok_order(w, tenant, cleared=True)
+    member, _ = await w.member(role="tenant_staff")
+    detail = await member.get(f"/console/v1/business/orders/{order_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["buyer_cleared"] is True and body["ship_to"] is None
+    assert SHIP_TO["phone"] not in detail.text and SHIP_TO["address_text"] not in detail.text
+    assert len(body["lines"]) == 2 and body["total"] == "20.00"
+    page = await member.get("/console/v1/business/orders")
+    assert [i["buyer_cleared"] for i in page.json()["items"] if i["id"] == order_id] == [True]
+
+
+def listing_path(**params: str | int) -> str:
+    return "/console/v1/business/listings?" + urlencode(params)
+
+
+async def test_listings_page_isolates_tenants_and_matches_same_sku_at_read_time(
+    sessions: SessionWorld,
+) -> None:
+    w, tenant, other = sessions, sessions.tenants[0], sessions.tenants[1]
+    store = await seed_connection_status(w, tenant, "authorization_recorded")
+    store_two = await seed_connection_status(w, tenant, "authorization_recorded")
+    foreign_store = await seed_connection_status(w, other, "authorization_recorded")
+    sku = f"SKU-{uuid4()}"
+    matched = await put_listing(
+        w, tenant, store, name="Alpha", sku=sku, image="https://i.example/a"
+    )
+    no_sku = await put_listing(w, tenant, store, name="Bravo", variant=None, sku=None, image=None)
+    empty_sku = await put_listing(
+        w, tenant, store, name="Charlie", sku="", image="http://i.example/c"
+    )
+    script = await put_listing(w, tenant, store_two, name="Delta", image="javascript:alert(1)")
+    foreign_listing = await put_listing(w, other, foreign_store, name="Echo", sku=sku)
+    await put_local_product(w, tenant, sku, "Local Alpha")
+    foreign_product = await put_local_product(w, other, f"SKU-{uuid4()}", "Foreign product")
+    member, _ = await w.member(role="tenant_staff")
+    response = await member.get(listing_path(limit=50))
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert set(page) == {"items", "next_cursor"} and page["next_cursor"] is None
+    items = {item["id"]: item for item in page["items"]}
+    assert set(items) == {matched, no_sku, empty_sku, script}, "tenant isolation"
+    assert set(items[matched]) == {
+        "id",
+        "product_name",
+        "variant_name",
+        "seller_sku",
+        "price",
+        "currency",
+        "stock_qty",
+        "product_status",
+        "image_url",
+        "synced_at",
+        "same_sku_product",
+    }
+    assert items[matched]["same_sku_product"] == "Local Alpha"
+    assert items[matched]["price"] == "9.90" and items[matched]["stock_qty"] == 7
+    assert items[matched]["product_status"] == "ACTIVATE"
+    assert items[matched]["image_url"] == "https://i.example/a"
+    assert items[no_sku]["same_sku_product"] is None and items[no_sku]["variant_name"] is None
+    assert items[empty_sku]["same_sku_product"] is None
+    # Untrusted image URLs are only returned when they are https.
+    assert items[empty_sku]["image_url"] is None and items[script]["image_url"] is None
+    assert items[no_sku]["image_url"] is None
+    assert "Foreign product" not in response.text and foreign_product not in response.text
+    # Read time, never stored: rename the product, then delete it.
+    await w.q("UPDATE products SET name='Renamed Alpha' WHERE client_id=%s AND sku=%s", tenant, sku)
+    renamed = (await member.get(listing_path(limit=50))).json()["items"]
+    assert [i["same_sku_product"] for i in renamed if i["id"] == matched] == ["Renamed Alpha"]
+    await w.q("DELETE FROM products WHERE client_id=%s AND sku=%s", tenant, sku)
+    gone = (await member.get(listing_path(limit=50))).json()["items"]
+    assert [i["same_sku_product"] for i in gone if i["id"] == matched] == [None]
+    columns = await w.q(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='marketplace_listings'"
+    )
+    assert "same_sku_product" not in {c["column_name"] for c in columns}
+    # Filters.
+    by_store = await member.get(listing_path(store_id=store_two))
+    assert [i["id"] for i in by_store.json()["items"]] == [script]
+    foreign_filter = await member.get(listing_path(store_id=foreign_store))
+    assert foreign_filter.status_code == 200 and foreign_filter.json()["items"] == []
+    by_name = await member.get(listing_path(q="alph"))
+    assert [i["id"] for i in by_name.json()["items"]] == [matched]
+    by_variant = await member.get(listing_path(q="RED", store_id=store_two))
+    assert [i["id"] for i in by_variant.json()["items"]] == [script]
+    by_sku = await member.get(listing_path(q=sku[:12].lower()))
+    assert [i["id"] for i in by_sku.json()["items"]] == [matched]
+    # LIKE wildcards in q are literal.
+    literal = await put_listing(w, tenant, store, name="100% cotton_tee", variant="x")
+    for needle, expected in (
+        ("100%", {literal}),
+        ("n_t", {literal}),
+        ("%", {literal}),
+        ("_", {literal}),
+    ):
+        got = await member.get(listing_path(q=needle))
+        assert {i["id"] for i in got.json()["items"]} == expected, needle
+    assert (await member.get(listing_path(q="x" * 101))).status_code == 422
+    assert (await member.get(listing_path(q=""))).status_code == 422
+    # Stable cursor paging over every row, no repeats.
+    everything = {matched, no_sku, empty_sku, script, literal}
+    seen: list[str] = []
+    cursor = None
+    for _ in range(5):
+        params: dict[str, str | int] = {"limit": 1}
+        if cursor:
+            params["before"] = cursor
+        got = await member.get(listing_path(**params))
+        assert got.status_code == 200, got.text
+        seen.append(got.json()["items"][0]["id"])
+        cursor = got.json()["next_cursor"]
+    assert set(seen) == everything and len(seen) == 5 and cursor is None
+    assert (await member.get(listing_path(before=foreign_listing))).status_code == 404
+    assert (await member.get(listing_path(before="bad"))).status_code == 422
+    assert (await member.get(listing_path(limit=0))).status_code == 422
+    assert (await member.get(listing_path(limit=51))).status_code == 422
+    assert (await member.get(listing_path(client_id=other))).status_code == 403
+    # Platform admin must name a tenant and then sees only that tenant.
+    assert (await w.admin.get(listing_path())).status_code == 400
+    admin_view = await w.admin.get(listing_path(client_id=other))
+    assert [i["id"] for i in admin_view.json()["items"]] == [foreign_listing]
+    for checked in (response, by_name, admin_view):
+        assert PRIVATE not in checked.text and "cipher" not in checked.text
+
+
+async def test_listings_need_the_package_and_a_staff_or_admin_role(
+    sessions: SessionWorld,
+) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    store = await seed_connection_status(w, tenant, "authorization_recorded")
+    await put_listing(w, tenant, store)
+    for role in ("tenant_admin", "tenant_staff"):
+        member, _ = await w.member(role=role)
+        assert (await member.get(listing_path())).status_code == 200
+        assert (await w.mutate(member, "/console/v1/business/listings", {})).status_code == 405
+    reader, _ = await w.member(role="read_only")
+    assert (await reader.get(listing_path())).status_code == 403
+    assert (await (await w.browser()).get(listing_path())).status_code == 401
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=w.app), base_url="https://console.example.test"
+    ) as machine:
+        machine_headers = {"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": tenant}
+        refused = await machine.get("/console/v1/business/listings", headers=machine_headers)
+        assert refused.status_code == 403
+    await w.q("DELETE FROM console_service_packages WHERE client_id=%s", tenant)
+    staff, _ = await w.member(role="tenant_staff")
+    blocked = await staff.get(listing_path())
+    assert blocked.status_code == 403 and blocked.json()["detail"] == "package_inactive"
+
+
+async def test_read_only_member_denied(sessions: SessionWorld) -> None:
+    w, tenant = sessions, sessions.tenants[0]
+    store = await seed_connection_status(w, tenant, "authorization_recorded")
+    listing = await put_listing(w, tenant, store)
+    order_id = await put_tiktok_order(w, tenant)
+    reader, _ = await w.member(role="read_only")
+    for path in (
+        f"/console/v1/business/orders/{order_id}",
+        "/console/v1/business/orders",
+        "/console/v1/business/listings",
+        f"/console/v1/business/listings?store_id={store}",
+        f"/console/v1/business/listings?before={listing}",
+        "/console/v1/business/stores",
+    ):
+        response = await reader.get(path)
+        assert response.status_code == 403, path
+        assert SHIP_TO["phone"] not in response.text and "Synthetic Listing" not in response.text
+
+
+async def test_store_page_reports_sync_times_and_failing_problem(sessions: SessionWorld) -> None:
+    w, tenant, other = sessions, sessions.tenants[0], sessions.tenants[1]
+    healthy = await seed_connection_status(w, tenant, "authorization_recorded")
+    failing = await seed_connection_status(w, tenant, "authorization_recorded")
+    never = await seed_connection_status(w, tenant, "authorization_recorded")
+    pending = await seed_connection_status(w, tenant, "missing_shop_id")
+    foreign = await seed_connection_status(w, other, "authorization_recorded")
+    shopee = await seed_connection_status(w, tenant, "unsupported")
+    for store, orders_at, products_at, notified, error in (
+        (healthy, "2026-11-03T10:00:00Z", "2026-11-03T11:00:00Z", None, None),
+        (failing, "2026-11-02T10:00:00Z", None, "2026-11-03T12:00:00Z", "synthetic-private-error"),
+        (foreign, "2026-11-03T10:00:00Z", "2026-11-03T11:00:00Z", "2026-11-03T12:00:00Z", None),
+    ):
+        await w.q(
+            "INSERT INTO marketplace_store_state (store_id,client_id,orders_synced_at,"
+            "products_synced_at,last_error_code,problem_notified_at) "
+            "SELECT id,client_id,%s,%s,%s,%s FROM channel_credentials WHERE id=%s",
+            orders_at,
+            products_at,
+            error,
+            notified,
+            store,
+        )
+    # A row with last_error_code but no notice is not yet "sync failing".
+    await w.q(
+        "INSERT INTO marketplace_store_state (store_id,client_id,last_error_code) "
+        "SELECT id,client_id,'sync_failed' FROM channel_credentials WHERE id=%s",
+        never,
+    )
+    results = {}
+    for role in ("tenant_admin", "tenant_staff"):
+        member, _ = await w.member(role=role)
+        response = await member.get("/console/v1/business/stores", params={"limit": 50})
+        assert response.status_code == 200, response.text
+        assert "synthetic-private" not in response.text and "sync_failed" not in response.text
+        items = {item["id"]: item for item in response.json()["items"]}
+        assert foreign not in items
+        assert all(item["can_manage"] is (role == "tenant_admin") for item in items.values())
+        results[role] = items
+        detail = await member.get(f"/console/v1/business/stores/{failing}")
+        assert detail.json() == items[failing]
+        bound = await member.get(
+            f"/console/v1/business/stores/{healthy}",
+            params={"platform": "tiktok_shop", "shop_id": items[healthy]["shop_id"]},
+        )
+        assert bound.json() == items[healthy]
+    items = results["tenant_admin"]
+
+    def times(item: dict) -> tuple[datetime | None, datetime | None, str | None]:
+        sync = item["sync"]
+        parse = lambda v: datetime.fromisoformat(v) if v else None  # noqa: E731
+        return parse(sync["orders_synced_at"]), parse(sync["products_synced_at"]), sync["problem"]
+
+    t = lambda s: datetime.fromisoformat(s)  # noqa: E731
+    assert times(items[healthy]) == (
+        t("2026-11-03T10:00:00+00:00"),
+        t("2026-11-03T11:00:00+00:00"),
+        None,
+    )
+    assert times(items[failing]) == (t("2026-11-02T10:00:00+00:00"), None, "sync_failing")
+    assert times(items[never]) == (None, None, None)
+    assert times(items[pending]) == (None, None, None)
+    assert items[shopee]["sync"] is None
+    assert set(items[healthy]["sync"]) == {"orders_synced_at", "products_synced_at", "problem"}
+    # Platform admin can manage any tenant's stores.
+    admin = await w.admin.get(
+        "/console/v1/business/stores", params={"client_id": tenant, "limit": 50}
+    )
+    assert all(item["can_manage"] is True for item in admin.json()["items"])
+    recorded = items[healthy]
+    assert recorded["connection"] == {
+        "status": "authorization_recorded",
+        "live_integration": "available",
+    }
+    assert (recorded["authorization"], recorded["permissions"], recorded["provider_reads"]) == (
+        "verified",
+        "granted",
+        "available",
+    )
+
+
+async def test_marketplace_sync_reflects_a_connected_tiktok_store(sessions: SessionWorld) -> None:
+    w, tenant, other = sessions, sessions.tenants[0], sessions.tenants[1]
+    for scenario in ("missing_shop_id", "expired", "disconnected", "revoked", "refresh_refused"):
+        await seed_connection_status(w, tenant, scenario)
+    await seed_connection_status(w, other, "authorization_recorded")
+
+    async def states(client_id: str) -> set[str]:
+        found = set()
+        for resource in ("orders", "products", "stores"):
+            response = await w.admin.get(
+                f"/console/v1/business/{resource}", params={"client_id": client_id}
+            )
+            assert response.status_code == 200, response.text
+            found.add(response.json()["marketplace_sync"])
+        return found
+
+    assert await states(tenant) == {"not_connected"}
+    assert await states(other) == {"connected"}
+    await seed_connection_status(w, tenant, "authorization_recorded")
+    assert await states(tenant) == {"connected"}
+    # A disconnect (the grant is revoked through the fence) ends it again.
+    await w.q("UPDATE channel_credentials SET disconnected_at=now() WHERE client_id=%s", tenant)
+    assert await states(tenant) == {"not_connected"}

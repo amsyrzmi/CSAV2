@@ -33,7 +33,9 @@ export interface RecordRef {
     | "training_request"
     | "draft"
     | "order"
-    | "employee";
+    | "employee"
+    /** A TikTok Shop listing of ours (its local id), open on Products & stock. */
+    | "product";
   id: string;
   version?: number | null;
 }
@@ -145,7 +147,32 @@ export type WorkspaceActionResult =
       action: "clarification";
       question: string;
       options: ClarificationOption[];
-    };
+    }
+  | ProductStockResult;
+
+/** One variant's count; `stock` is null when TikTok gave none. */
+export interface StockVariant {
+  variant: string;
+  seller_sku: string | null;
+  stock: number | null;
+}
+
+/**
+ * A TikTok Shop product's stock per variant (csa/workspace/contracts.py ProductStockResult),
+ * read live or, when that failed, from our copy. Read-only: nothing is changed on TikTok Shop.
+ * `note` is the server's line in the turn's language ("Checked live just now.").
+ */
+export interface ProductStockResult {
+  action: "product_stock_read";
+  source: "tiktok_shop";
+  product: string;
+  variants: StockVariant[];
+  total: number;
+  checked_live: boolean;
+  on_sale: boolean;
+  as_of: string;
+  note: string;
+}
 
 export type WorkspaceResult =
   | WorkspaceActionResult
@@ -180,7 +207,8 @@ export type WorkspaceResult =
         updated_at: string;
       };
       source: "local_records";
-      marketplace_sync: "unavailable";
+      /** Whether a TikTok Shop is connected; "unavailable" only on turns stored before 4 Nov 2026. */
+      marketplace_sync: "connected" | "not_connected" | "unavailable";
       as_of: string;
     }
   | { status: "denied"; code: string }

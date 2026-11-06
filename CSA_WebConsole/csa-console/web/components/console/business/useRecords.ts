@@ -6,8 +6,9 @@ import { withCursor } from "@/lib/business";
 import { mergeRows, parseOrderCounts, type OrderCounts } from "@/lib/business-view";
 
 export type Records<T> = {
-  source: string;
-  marketplace_sync: string;
+  source?: string;
+  /** "connected" or "not_connected" on the order, product and store reads; the listings read has none. */
+  marketplace_sync?: string;
   items: T[];
   next_cursor: string | null;
 };
@@ -22,6 +23,7 @@ export function useRecords<T extends { id: string }>(path: string) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [items, setItems] = useState<T[] | null>(null);
   const [next, setNext] = useState<string | null>(null);
+  const [sync, setSync] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
@@ -43,6 +45,7 @@ export function useRecords<T extends { id: string }>(path: string) {
       if (controller.signal.aborted) return;
       setItems((current) => (cursor && current ? mergeRows(current, result.items) : result.items));
       setNext(result.next_cursor);
+      setSync(result.marketplace_sync ?? null);
     }).catch((cause: Error) => {
       if (!controller.signal.aborted) setError(cause.message);
     }).finally(() => {
@@ -52,6 +55,8 @@ export function useRecords<T extends { id: string }>(path: string) {
   }, [path, cursor, revision]);
   return {
     items, next, error, loading,
+    /** What the last read said about TikTok Shop being connected; null before it or when the read has no such field. */
+    marketplaceSync: sync,
     /** True while an "Older" page is loading (not the first page or a refresh). */
     loadingMore: loading && cursor !== null,
     older: () => {

@@ -1,15 +1,22 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { Order } from "@/lib/business";
 import {
+  detailRequested,
+  isSyncedOrder,
+  orderBadge,
   orderDetailGroups,
   orderStatusLabel,
   orderStatusTone,
   orderSummary,
+  orderSyncText,
+  orderUpdateLine,
   paymentLabel,
   paymentTone,
   productDetailGroups,
   productSummary,
+  providerStatusLabel,
   storeDetailGroups,
   storeStatusTone,
   storeSummary,
@@ -19,13 +26,9 @@ import {
 } from "@/lib/business-view";
 import StatusLabel from "../fs/StatusLabel";
 import { DetailsRow, TechnicalDetails, useTechOpen } from "../kit";
+import OrderDetailPanel from "./OrderDetail";
 
-export type Order = {
-  id: string; status: string; payment_status: string; total: string; currency: string;
-  channel: string; external_order_id: string | null; external_shop_id: string | null;
-  tracking_no: string | null; carrier: string | null; placed_at: string | null;
-  shipped_at: string | null; created_at: string; updated_at: string;
-};
+export type { Order };
 export type Product = {
   id: string; sku: string; name: string; price: string; currency: string;
   stock_qty: number; reserved_qty: number; available_qty: number;
@@ -86,49 +89,89 @@ function DetailGroups({ groups }: { groups: DetailGroup[] }) {
  * plain labelled groups and then a second arrow, Technical details, holding the exact lines
  * (`children`). Both arrows follow the page's "Show technical details" switch.
  */
-function RecordCard({
-  testId, toggleLabel, title, subtitle, labels, groups, children,
+export function RecordCard({
+  testId, toggleLabel, title, subtitle, labels, groups, extra, detail, onOpen, children,
 }: {
   testId: string;
   toggleLabel: string;
   title: string;
   subtitle: string;
-  labels: { testId: string; tone: Tone; text: string }[];
+  /** `fullTestId` replaces the generated `${testId}-${testId of the label}`. */
+  labels: { testId: string; tone: Tone; text: string; fullTestId?: string }[];
   groups: DetailGroup[];
+  /** Plain lines and buttons under the labels; they stay usable while the details are closed. */
+  extra?: ReactNode;
+  /** Extra detail between the plain groups and Technical details; told whether a person opened the card
+   * (not whether the page's technical switch did). */
+  detail?: (open: boolean) => ReactNode;
+  /** Told when a person opens the card (true) and when it closes or goes away (false). */
+  onOpen?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const [open, setOpen] = useTechOpen();
+  // Whether a person opened this card. The page's "Show technical details" switch opens every
+  // card but is not that: it must not read an order's ship-to or publish a record to the assistant.
+  const [userOpen, setUserOpen] = useState(false);
+  if (userOpen && !open) setUserOpen(false);
+  const asked = detailRequested(open, userOpen);
+  // The callback is kept in a ref so a new function each render does not re-run the effect.
+  const told = useRef(onOpen);
+  useEffect(() => { told.current = onOpen; });
+  useEffect(() => {
+    if (!asked) return;
+    told.current?.(true);
+    return () => told.current?.(false);
+  }, [asked]);
   return (
     <li className={card}>
       <DetailsRow
         testId={testId}
         toggleLabel={toggleLabel}
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => { setOpen(next); setUserOpen(next); }}
         summary={
           <div className="min-w-0">
             <p data-testid={`${testId}-title`} className="font-medium">{title}</p>
             <p className="text-sm text-[color:var(--fs-text-secondary)]">{subtitle}</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {labels.map((label) => (
-                <span key={label.testId} data-testid={`${testId}-${label.testId}`}>
+                <span key={label.testId} data-testid={label.fullTestId ?? `${testId}-${label.testId}`}>
                   <StatusLabel tone={label.tone}>{label.text}</StatusLabel>
                 </span>
               ))}
             </div>
+            {extra}
           </div>
         }
       >
         <DetailGroups groups={groups} />
+        {detail?.(asked)}
         <TechnicalDetails testId={`${testId}-tech`}>{children}</TechnicalDetails>
       </DetailsRow>
     </li>
   );
 }
 
-/** An order from the fields the order read returns; the original lines are kept in the details. */
-export function OrderCard({ order }: { order: Order }) {
+/**
+ * An order from the fields the order read returns; the original lines are kept in the details.
+ * A TikTok order carries the TikTok badge, and one copied by sync also TikTok's own status, when it
+ * was synced, and a detail that reads the order's lines, totals and ship-to when it is opened.
+ */
+export function OrderCard({
+  order, query, now, onOpen,
+}: {
+  order: Order;
+  /** The platform admin's tenant query (`client_id=...`), empty otherwise. */
+  query: string;
+  now: Date;
+  /** Told when this card's details open and close, so the page can publish the open order. */
+  onOpen?: (id: string, open: boolean) => void;
+}) {
   const summary = orderSummary(order);
+  const badge = orderBadge(order);
+  const synced = isSyncedOrder(order);
+  const syncText = orderSyncText(order, now);
+  const toldPage = onOpen ? (open: boolean) => onOpen(order.id, open) : undefined;
   return (
     <RecordCard
       testId={`business-order-${order.id}`}
@@ -136,10 +179,18 @@ export function OrderCard({ order }: { order: Order }) {
       title={summary.title}
       subtitle={summary.subtitle}
       labels={[
+        ...(badge ? [{ testId: "badge", fullTestId: `business-order-badge-${order.id}`, tone: "info" as Tone, text: badge }] : []),
         { testId: "status", tone: orderStatusTone(order.status), text: orderStatusLabel(order.status) },
+        ...(synced && order.provider_status
+          ? [{ testId: "provider-status", tone: "neutral" as Tone, text: `TikTok: ${providerStatusLabel(order.provider_status)}` }]
+          : []),
         { testId: "payment", tone: paymentTone(order.payment_status), text: paymentLabel(order.payment_status) },
       ]}
       groups={orderDetailGroups(order)}
+      extra={syncText && <p data-testid={`business-order-${order.id}-sync`}
+        className="mt-1.5 text-sm text-[color:var(--fs-text-secondary)]">{syncText}</p>}
+      detail={synced ? (open) => <OrderDetailPanel order={order} query={query} open={open} /> : undefined}
+      onOpen={toldPage}
     >
       <p className="break-all font-semibold">{order.id}</p>
       <p>{order.status} · Payment: {order.payment_status} · {order.currency} {order.total}</p>
@@ -147,7 +198,7 @@ export function OrderCard({ order }: { order: Order }) {
       <p>Platform order: {order.external_order_id ?? "Not recorded"}</p>
       <p>Tracking: {order.tracking_no ?? "Not recorded"} · Carrier: {order.carrier ?? "Not recorded"}</p>
       <p>Created: {whenText(order.created_at)} · Placed: {whenText(order.placed_at)} · Shipped: {whenText(order.shipped_at)}</p>
-      <p>Local update: {whenText(order.updated_at)} — not a marketplace sync timestamp</p>
+      <p>{orderUpdateLine(order)}</p>
     </RecordCard>
   );
 }
@@ -175,10 +226,10 @@ export function ProductCard({ product }: { product: Product }) {
   );
 }
 
-/** The card shell for a local store record; the page supplies its original lines as children. */
+/** The card shell for a store; the page supplies its sync lines and buttons as `extra` and its exact lines as children. */
 export function StoreCard({
-  id, store, children,
-}: { id: string; store: StoreSummaryInput; children: ReactNode }) {
+  id, store, extra, children,
+}: { id: string; store: StoreSummaryInput; extra?: ReactNode; children: ReactNode }) {
   const summary = storeSummary(store);
   return (
     <RecordCard
@@ -188,6 +239,7 @@ export function StoreCard({
       subtitle={summary.subtitle}
       labels={[{ testId: "status", tone: storeStatusTone(store.connection.status), text: summary.status }]}
       groups={storeDetailGroups(store)}
+      extra={extra}
     >
       {children}
     </RecordCard>

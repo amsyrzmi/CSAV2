@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     KB_MAX_FILE_BYTES: int = Field(default=10 * 1024 * 1024, ge=1024)
     TIKTOK_APP_KEY: str | None = None
     TIKTOK_APP_SECRET: SecretStr | None = None
+    # Public (it appears in authorize URLs) but kept a setting so a second app needs no code change.
+    TIKTOK_SERVICE_ID: str | None = None
+    # Row in ecommerce_apps that holds this app's revision and active/disabled state.
+    TIKTOK_APP_ID: str = Field(default="tiktok_shop", min_length=1, max_length=100)
     INVOICE_SIGNING_SECRET: SecretStr | None = None
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: SecretStr | None = None
@@ -306,6 +310,23 @@ class Settings(BaseSettings):
     def whatsapp_enabled(self) -> bool:
         """True when the WhatsApp ingress secrets are configured."""
         return self.WHATSAPP_APP_SECRET is not None and self.WHATSAPP_VERIFY_TOKEN is not None
+
+    @field_validator("TIKTOK_APP_KEY", "TIKTOK_APP_SECRET", "TIKTOK_SERVICE_ID", mode="before")
+    @classmethod
+    def _tiktok_disabled_is_unset(cls, value: object) -> object:
+        # Same convention as WhatsApp: staging secret files hold "disabled" until the owner
+        # fills them, and an empty or blank value is unset too.
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        return None if isinstance(raw, str) and raw.strip() in {"", "disabled"} else value
+
+    @property
+    def tiktok_enabled(self) -> bool:
+        """True when the TikTok app key, secret and service id are all configured."""
+        return (
+            self.TIKTOK_APP_KEY is not None
+            and self.TIKTOK_APP_SECRET is not None
+            and self.TIKTOK_SERVICE_ID is not None
+        )
 
     @model_validator(mode="after")
     def _validate_whatsapp(self) -> Settings:

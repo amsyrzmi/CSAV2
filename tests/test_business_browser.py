@@ -70,6 +70,7 @@ def make_order(n: int) -> dict[str, Any]:
     channel = CHANNELS[n % 5]
     status = STATUSES[n % 8]
     created = datetime(2026, 11, 2, 1, 59, tzinfo=UTC) - timedelta(minutes=n)
+    synced = channel == "tiktok_shop"
     return {
         "id": oid(n),
         "status": status,
@@ -85,7 +86,67 @@ def make_order(n: int) -> dict[str, Any]:
         "shipped_at": created.isoformat().replace("+00:00", "Z") if status == "shipped" else None,
         "created_at": created.isoformat().replace("+00:00", "Z"),
         "updated_at": created.isoformat().replace("+00:00", "Z"),
+        # Orders copied from TikTok carry its own status and sync time (NOW is 02:00 UTC).
+        "provider_status": "AWAITING_SHIPMENT" if synced else None,
+        "synced_at": "2026-11-02T01:57:00Z" if synced else None,
+        "buyer_cleared": False,
     }
+
+
+def make_detail(order: dict[str, Any], *, cleared: bool = False) -> dict[str, Any]:
+    """The order detail read: lines, totals and ship-to for a synced order, null otherwise."""
+    if order["channel"] != "tiktok_shop":
+        return {
+            **order,
+            "lines": None,
+            "subtotal": None,
+            "shipping_fee": None,
+            "discount": None,
+            "ship_to": None,
+        }
+    return {
+        **order,
+        "buyer_cleared": cleared,
+        "lines": [
+            {"sku": "MUG-1", "name": "Blue mug", "qty": 2, "unit_price": "13.00"},
+            {"sku": "", "name": "Gift wrap", "qty": 1, "unit_price": "0.00"},
+        ],
+        "subtotal": "26.00",
+        "shipping_fee": "5.00",
+        "discount": "1.00",
+        "ship_to": None
+        if cleared
+        else {
+            "recipient_name": "Aisyah B***",
+            "phone": "(+60)12****78",
+            "address_text": "12 Jalan Contoh, Taman Uji",
+            "region": "MY",
+        },
+    }
+
+
+LISTING_PAGE_SIZE = 2
+
+
+def make_listing(n: int) -> dict[str, Any]:
+    """Listing 1 matches a local product by SKU; listing 2 has a masked SKU and no stock."""
+    return {
+        "id": f"{n:08x}-0000-4000-8000-0000000000ee",
+        "product_name": f"TikTok mug {n}",
+        "variant_name": "Large" if n == 1 else None,
+        "seller_sku": f"MUG-{n}" if n != 2 else None,
+        "price": f"{20 + n}.00",
+        "currency": "MYR",
+        "stock_qty": 0 if n == 2 else 4 * n,
+        "product_status": "ACTIVATE" if n != 3 else "DRAFT",
+        "image_url": "https://img.example.test/mug.png",
+        "synced_at": "2026-11-02T01:57:00Z",
+        "same_sku_product": "Blue mug 1" if n == 1 else None,
+    }
+
+
+def lid(n: int) -> str:
+    return make_listing(n)["id"]
 
 
 def make_products(available: tuple[int, ...] = (7, 7)) -> list[dict[str, Any]]:
@@ -107,18 +168,45 @@ def make_products(available: tuple[int, ...] = (7, 7)) -> list[dict[str, Any]]:
     ]
 
 
-def make_store() -> dict[str, Any]:
+STORE_ID = "00000000-0000-4000-8000-0000000000aa"
+SECOND_ID = "00000000-0000-4000-8000-0000000000bb"  # the expired store
+DISCONNECTED_ID = "00000000-0000-4000-8000-0000000000cc"
+WAITING_ID = "00000000-0000-4000-8000-0000000000dd"
+AUTHORIZE_URL = "https://services.tiktokshop.com/open/authorize?service_id=SYNTH&state=synthetic"
+CONNECT_PATH = "business/stores/tiktok/connect"
+SYNTH_SYNC = {
+    # NOW is 10:00 local (02:00 UTC): 3 minutes and 1 hour earlier.
+    "orders_synced_at": "2026-11-02T01:57:00Z",
+    "products_synced_at": "2026-11-02T01:00:00Z",
+    "problem": None,
+}
+
+
+def make_store(
+    status: str = "authorization_recorded",
+    *,
+    store_id: str = STORE_ID,
+    shop_id: str | None = "SHOP-A",
+    can_manage: bool = True,
+    sync: dict[str, Any] | None = SYNTH_SYNC,
+) -> dict[str, Any]:
+    connected = status == "authorization_recorded"
     return {
-        "id": "00000000-0000-4000-8000-0000000000aa",
+        "id": store_id,
         "platform": "tiktok_shop",
-        "shop_id": "SHOP-A",
+        "shop_id": shop_id,
         "expires_at": None,
         "updated_at": "2026-10-03T00:00:00Z",
         "expiry": "unknown",
-        "authorization": "unverified",
-        "permissions": "unknown",
-        "provider_reads": "unavailable",
-        "connection": {"status": "unverified", "live_integration": "unavailable"},
+        "authorization": "verified" if connected else "unverified",
+        "permissions": "granted" if connected else "unknown",
+        "provider_reads": "available" if connected else "unavailable",
+        "connection": {
+            "status": status,
+            "live_integration": "available" if connected else "unavailable",
+        },
+        "sync": sync,
+        "can_manage": can_manage,
     }
 
 
@@ -130,6 +218,16 @@ class Stub:
         default_factory=lambda: [make_order(n) for n in range(1, ORDERS_TOTAL + 1)]
     )
     counts_fail: bool = False
+    # What the orders and products reads say about a connected TikTok shop.
+    marketplace_sync: str = "connected"
+    # The order detail read: orders whose buyer details were cleared, and failures to serve first.
+    cleared: set[int] = field(default_factory=set)
+    detail_failures: int = 0
+    detail_calls: list[str] = field(default_factory=list)
+    listings: list[dict[str, Any]] = field(
+        default_factory=lambda: [make_listing(n) for n in (1, 2, 3)]
+    )
+    listing_queries: list[dict[str, list[str]]] = field(default_factory=list)
     # Available quantity of each product, and whether a further products page exists.
     availability: tuple[int, ...] = (7, 7)
     products_more: bool = False
@@ -144,6 +242,14 @@ class Stub:
     other_calls: list[str] = field(default_factory=list)
     product_queries: list[dict[str, list[str]]] = field(default_factory=list)
     store_queries: list[dict[str, list[str]]] = field(default_factory=list)
+    stores: list[dict[str, Any]] = field(default_factory=lambda: [make_store()])
+    # Answer of the Connect call, and the bodies and queries of the writes the page made.
+    connect_status: int = 200
+    connect_data: dict[str, Any] = field(
+        default_factory=lambda: {"authorization_url": AUTHORIZE_URL}
+    )
+    connect_calls: list[dict[str, Any]] = field(default_factory=list)
+    disconnect_calls: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
 
     def filtered(self, query: dict[str, list[str]], *, with_status: bool) -> list[dict[str, Any]]:
@@ -196,7 +302,7 @@ class Stub:
             more = len(rows) > PAGE_SIZE
             data = {
                 "source": "local_records",
-                "marketplace_sync": "unavailable",
+                "marketplace_sync": self.marketplace_sync,
                 "items": page,
                 "next_cursor": page[-1]["id"] if more else None,
             }
@@ -212,19 +318,62 @@ class Stub:
             items = make_products(self.availability)
             data = {
                 "source": "local_catalogue",
-                "marketplace_sync": "unavailable",
+                "marketplace_sync": self.marketplace_sync,
                 "items": items,
                 "next_cursor": items[-1]["id"] if self.products_more else None,
+            }
+        elif re.fullmatch(r"business/orders/[0-9a-f-]+", path) and request.method == "GET":
+            order_id = path.rsplit("/", 1)[1]
+            self.detail_calls.append(order_id)
+            match = [row for row in self.orders if row["id"] == order_id]
+            if self.detail_failures > 0:
+                self.detail_failures -= 1
+                status, data = 503, {"detail": "synthetic detail outage"}
+            elif not match:
+                status, data = 404, {"detail": "resource_unavailable"}
+            else:
+                number = int(order_id.split("-")[0], 16)
+                data = make_detail(match[0], cleared=number in self.cleared)
+        elif path == "business/listings" and request.method == "GET":
+            self.other_calls.append("listings")
+            self.listing_queries.append(query)
+            rows = self.listings
+            if query.get("before"):
+                ids = [row["id"] for row in rows]
+                rows = rows[ids.index(query["before"][0]) + 1 :]
+            page = rows[:LISTING_PAGE_SIZE]
+            data = {
+                "items": page,
+                "next_cursor": page[-1]["id"] if len(rows) > LISTING_PAGE_SIZE else None,
             }
         elif path == "business/stores" and request.method == "GET":
             self.other_calls.append("stores")
             self.store_queries.append(query)
             data = {
                 "source": "local_credential_records",
-                "marketplace_sync": "unavailable",
-                "items": [make_store()],
+                "marketplace_sync": "not_connected",
+                "items": self.stores,
                 "next_cursor": None,
             }
+        elif path == CONNECT_PATH and request.method == "POST":
+            self.connect_calls.append(
+                {"body": request.post_data_json or {}, "client_id": query.get("client_id")}
+            )
+            status, data = self.connect_status, self.connect_data
+        elif (
+            re.fullmatch(r"business/stores/[0-9a-f-]+/disconnect", path)
+            and request.method == "POST"
+        ):
+            store_id = path.split("/")[2]
+            self.disconnect_calls.append(store_id)
+            for store in self.stores:
+                if store["id"] == store_id:
+                    store["connection"] = {
+                        "status": "disconnected",
+                        "live_integration": "unavailable",
+                    }
+            await request_route.fulfill(status=204)
+            return
         else:
             self.unexpected.append(f"{request.method} {path}")
             status, data = 500, {"detail": "unexpected synthetic call"}
@@ -438,53 +587,394 @@ async def test_products_page_lists_products_with_arrow_details(site: Site) -> No
     await with_browser(body)
 
 
-async def test_stores_page_shows_store_records(site: Site) -> None:
+async def test_stores_page_shows_status_sync_lines_and_true_notices(site: Site) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(
             browser, site, stub, path="/portal/business/stores", wait_for_rows=False
         ) as page:
-            # The buttons, the platform choice and the records are on the page itself.
-            store = page.get_by_test_id("business-store-00000000-0000-4000-8000-0000000000aa")
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
             await expect(store).to_be_visible(timeout=WAIT)
-            await expect(
-                page.get_by_role("button", name="Connect unavailable", exact=True)
-            ).to_be_disabled()
-            await expect(page.get_by_label("Store-record platform")).to_be_visible()
-            # The long notices stay in the fold.
+            await expect(page.get_by_label("Marketplace")).to_be_visible()
+            await expect(store).to_contain_text("TikTok Shop · SHOP-A")
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-status")).to_have_text(
+                "Connected"
+            )
+            await expect(store).to_contain_text("Orders synced 3 min ago")
+            await expect(store).to_contain_text("Products synced 1 h ago")
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-problem")).to_have_count(0)
+            # The old "saved records only" statements are gone from the page.
+            body_text = await page.locator("body").inner_text()
+            for stale in (
+                "saved records only",
+                "coming soon",
+                "Partner Center eligibility",
+                "Live integration: unavailable",
+                "not verified live",
+                "Connect unavailable",
+            ):
+                assert stale not in body_text, stale
+            # The long notice stays in the fold, and its text is true.
             await expect(page.get_by_test_id("business-stores-details")).to_be_hidden()
             await open_fold(page, "stores")
             await expect(page.get_by_test_id("business-stores-details")).to_contain_text(
-                "Store connections are coming soon. These are saved store details only"
+                "Connecting a shop lets fourstacks read its orders and products from TikTok Shop"
             )
-            # The original notices are word for word under Technical details.
             await open_tech(page, "business-stores")
             await expect(page.get_by_test_id("business-stores-tech-details")).to_contain_text(
-                "Account registration alone does not establish eligibility"
+                "Pages follow stable record IDs"
             )
-            await expect(page.get_by_test_id("business-stores-tech-details")).to_contain_text(
-                "Pages follow stable local record IDs"
-            )
-            await expect(store).to_contain_text("TikTok Shop · SHOP-A")
-            await expect(store).to_contain_text("Not verified")
-            store_details = page.get_by_test_id(
-                "business-store-00000000-0000-4000-8000-0000000000aa-details"
-            )
+            store_details = page.get_by_test_id(f"business-store-{STORE_ID}-details")
             await expect(store_details).to_be_hidden()
             await store.get_by_role("button", name="Show details").click()
             await expect(store_details).to_contain_text("Marketplace: TikTok Shop")
             await expect(store_details).to_contain_text("Store ID: SHOP-A")
-            await expect(store_details).to_contain_text("Status: Not verified")
+            await expect(store_details).to_contain_text("Status: Connected")
             await expect(store_details).to_contain_text("Last changed here: 3 Oct 2026, 08:00")
-            await open_tech(page, "business-store-00000000-0000-4000-8000-0000000000aa")
-            raw = page.get_by_test_id(
-                "business-store-00000000-0000-4000-8000-0000000000aa-tech-details"
-            )
-            await expect(raw).to_contain_text(
-                "Stored lifecycle: No usable local authorization evidence"
-            )
-            await expect(raw).to_contain_text("Live integration: unavailable")
+            await open_tech(page, f"business-store-{STORE_ID}")
+            raw = page.get_by_test_id(f"business-store-{STORE_ID}-tech-details")
+            await expect(raw).to_contain_text("Stored status: Connected and checked with TikTok")
+            await expect(raw).to_contain_text("Live integration: available")
             assert not stub.order_queries and set(stub.other_calls) == {"stores"}, stub.other_calls
+
+    await with_browser(body)
+
+
+async def test_sync_failing_shows_a_problem_line(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        failing = {**SYNTH_SYNC, "problem": "sync_failing"}
+        stub = Stub(stores=[make_store(sync=failing)])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-problem")).to_have_text(
+                "Syncing is failing. We'll keep trying, and tell you if it keeps failing.",
+                timeout=WAIT,
+            )
+
+    await with_browser(body)
+
+
+async def test_never_synced_store_says_not_synced_yet(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        never = {"orders_synced_at": None, "products_synced_at": None, "problem": None}
+        stub = Stub(stores=[make_store(sync=never)])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
+            await expect(store).to_contain_text("Orders not synced yet", timeout=WAIT)
+            await expect(store).to_contain_text("Products not synced yet")
+
+    await with_browser(body)
+
+
+async def test_admin_sees_connect_and_disconnect_staff_sees_neither(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        expired = make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B")
+        stub = Stub(stores=[make_store(), expired])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
+                timeout=WAIT
+            )
+            # Admins: Disconnect on the connected shop, Reconnect on the other; no second Connect
+            # beside a shop that needs reconnecting.
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            ).to_be_visible()
+            await expect(page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")).to_have_count(
+                0
+            )
+            await expect(
+                page.get_by_test_id(f"business-store-reconnect-{SECOND_ID}")
+            ).to_be_visible()
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{SECOND_ID}")
+            ).to_have_count(0)
+            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
+            await expect(page.get_by_test_id("business-store-staff-note")).to_have_count(0)
+
+        stub = Stub(stores=[make_store()])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id("business-store-connect")).to_be_visible()
+            await expect(
+                page.get_by_role("button", name="Connect TikTok Shop", exact=True)
+            ).to_be_enabled()
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            ).to_be_visible()
+
+        # Staff: the server says can_manage false, and the page offers no button at all.
+        stub = Stub(
+            stores=[
+                make_store(can_manage=False),
+                make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B", can_manage=False),
+            ]
+        )
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path="/portal/business/stores",
+            wait_for_rows=False,
+            role="tenant_staff",
+        ) as page:
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_contain_text(
+                "Connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id(f"business-store-{SECOND_ID}")).to_contain_text(
+                "Needs reconnecting"
+            )
+            await expect(page.get_by_test_id("business-store-staff-note")).to_be_visible()
+            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
+            await expect(
+                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+            ).to_have_count(0)
+            assert not stub.connect_calls and not stub.disconnect_calls
+
+    await with_browser(body)
+
+
+async def test_connect_navigates_to_the_returned_authorize_url(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(stores=[])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            # TikTok is never contacted: the authorize host is answered here.
+            reached: list[str] = []
+
+            async def tiktok(route: Any) -> None:
+                reached.append(route.request.url)
+                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
+
+            await page.route("https://services.tiktokshop.com/**", tiktok)
+            connect = page.get_by_test_id("business-store-connect")
+            await expect(connect).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_text("No online store is connected yet.")).to_be_visible()
+            await connect.click()
+            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
+            assert reached == [AUTHORIZE_URL]
+            assert stub.connect_calls == [{"body": {}, "client_id": None}]
+
+    await with_browser(body)
+
+
+async def test_platform_admin_connect_and_reconnect_send_the_chosen_client(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(stores=[make_store("disconnected", shop_id="SHOP-A")])
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path=f"/business/stores?client_id={TENANT}",
+            wait_for_rows=False,
+            role="platform_admin",
+        ) as page:
+
+            async def tiktok(route: Any) -> None:
+                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
+
+            await page.route("https://services.tiktokshop.com/**", tiktok)
+            reconnect = page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
+            await expect(reconnect).to_be_visible(timeout=WAIT)
+            await reconnect.click()
+            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
+            assert stub.connect_calls == [{"body": {"store_id": STORE_ID}, "client_id": [TENANT]}]
+
+    await with_browser(body)
+
+
+async def test_an_expired_store_offers_reconnect_only(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(stores=[make_store("expired")])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
+            await expect(store).to_contain_text("Needs reconnecting", timeout=WAIT)
+            await expect(
+                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
+            ).to_be_visible()
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            ).to_have_count(0)
+            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
+
+            async def tiktok(route: Any) -> None:
+                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
+
+            await page.route("https://services.tiktokshop.com/**", tiktok)
+            await page.get_by_test_id(f"business-store-reconnect-{STORE_ID}").click()
+            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
+            assert stub.connect_calls == [{"body": {"store_id": STORE_ID}, "client_id": None}]
+
+    await with_browser(body)
+
+
+async def test_a_pending_store_reads_waiting_for_tiktok_approval(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(stores=[make_store("missing_shop_id", shop_id=None)])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-status")).to_have_text(
+                "Waiting for TikTok approval", timeout=WAIT
+            )
+            await expect(store).to_contain_text("Store ID not recorded")
+            await expect(
+                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
+            ).to_be_visible()
+            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
+            # Nothing has been synced from a shop nobody has approved yet.
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-sync")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_an_address_that_is_not_tiktoks_is_never_followed(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            stores=[], connect_data={"authorization_url": "https://evil.example/open/authorize"}
+        )
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            reached: list[str] = []
+
+            async def elsewhere(route: Any) -> None:
+                reached.append(route.request.url)
+                await route.abort()
+
+            await page.route("https://evil.example/**", elsewhere)
+            await page.get_by_test_id("business-store-connect").click(timeout=WAIT)
+            await expect(page.get_by_test_id("business-store-problem")).to_have_text(
+                "We couldn't start the connection. Try again in a moment."
+            )
+            await expect(page.get_by_test_id("business-store-connect")).to_be_enabled()
+            assert reached == []
+            assert page.url.endswith("/portal/business/stores")
+
+    await with_browser(body)
+
+
+async def test_tiktok_off_on_this_server_disables_the_buttons(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(stores=[], connect_status=503, connect_data={"detail": "tiktok_unavailable"})
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            connect = page.get_by_test_id("business-store-connect")
+            await connect.click(timeout=WAIT)
+            await expect(page.get_by_test_id("business-store-unavailable")).to_have_text(
+                "TikTok Shop isn't set up on this server yet."
+            )
+            await expect(connect).to_be_disabled()
+            assert len(stub.connect_calls) == 1
+
+    await with_browser(body)
+
+
+async def test_failed_return_from_tiktok_shows_the_sentence_and_clears_the_query(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path="/portal/business/stores?tiktok=failed&reason=multiple_shops",
+            wait_for_rows=False,
+        ) as page:
+            result = page.get_by_test_id("business-tiktok-result")
+            await expect(result).to_have_text(
+                "This TikTok account has more than one shop. "
+                "Contact support to connect the right one.",
+                timeout=WAIT,
+            )
+            await expect(page).to_have_url(re.compile(r"/portal/business/stores$"), timeout=WAIT)
+            # The line stays after the address is cleaned.
+            await expect(result).to_be_visible()
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_success_return_for_a_platform_admin_keeps_the_client(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path=f"/business/stores?client_id={TENANT}&tiktok=connected",
+            wait_for_rows=False,
+            role="platform_admin",
+        ) as page:
+            await expect(page.get_by_test_id("business-tiktok-result")).to_have_text(
+                "TikTok Shop is connected. Orders and products will start syncing shortly.",
+                timeout=WAIT,
+            )
+            await expect(page).to_have_url(
+                re.compile(rf"/business/stores\?client_id={TENANT}$"), timeout=WAIT
+            )
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_disconnect_asks_first_then_the_card_reads_disconnected(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            asked: list[str] = []
+            answers = [False, True]
+
+            async def reply(dialog: Any) -> None:
+                asked.append(dialog.message)
+                if answers.pop(0):
+                    await dialog.accept()
+                else:
+                    await dialog.dismiss()
+
+            page.on("dialog", lambda dialog: asyncio.ensure_future(reply(dialog)))
+            button = page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            await button.click(timeout=WAIT)
+            await until(lambda: len(asked) == 1)
+            await asyncio.sleep(0.3)
+            assert stub.disconnect_calls == []
+            await button.click()
+            await until(lambda: len(stub.disconnect_calls) == 1)
+            assert (
+                asked
+                == [
+                    "Stop syncing this shop? Orders stay visible for 30 days, then customer "
+                    "details are removed."
+                ]
+                * 2
+            )
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-status")).to_have_text(
+                "Disconnected"
+            )
+            await expect(
+                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
+            ).to_be_visible()
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            ).to_have_count(0)
+            await expect(store).to_contain_text("Customer details are removed 30 days")
 
     await with_browser(body)
 
@@ -1200,6 +1690,371 @@ async def test_empty_state_keeps_the_original_sentence(site: Site) -> None:
     await with_browser(body)
 
 
+TIKTOK = 5  # The first order from the TikTok Shop channel: delivered, synced 3 minutes ago.
+TIKTOK_SHIPPED = 20  # A TikTok order that is shipped, with tracking and a courier.
+TIKTOK_CLEARED = 10
+
+
+async def test_tiktok_order_card_shows_badge_both_statuses_and_synced(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            tiktok = order_card(page, TIKTOK)
+            await expect(page.get_by_test_id(f"business-order-badge-{oid(TIKTOK)}")).to_have_text(
+                "TikTok"
+            )
+            await expect(
+                tiktok.get_by_test_id(f"business-order-{oid(TIKTOK)}-status")
+            ).to_have_text("Delivered")
+            await expect(
+                tiktok.get_by_test_id(f"business-order-{oid(TIKTOK)}-provider-status")
+            ).to_have_text("TikTok: Awaiting shipment")
+            await expect(tiktok.get_by_test_id(f"business-order-{oid(TIKTOK)}-sync")).to_have_text(
+                "Synced 3 min ago"
+            )
+            # The exact lines say when it was synced, not "Local update ... not a marketplace sync".
+            await tiktok.get_by_test_id(f"business-order-{oid(TIKTOK)}-toggle").click()
+            await open_tech(page, f"business-order-{oid(TIKTOK)}")
+            raw = page.get_by_test_id(f"business-order-{oid(TIKTOK)}-tech-details")
+            await expect(raw).to_contain_text("Synced from TikTok: 2 Nov 2026, 09:57")
+            await expect(raw).not_to_contain_text("not a marketplace sync timestamp")
+            await expect(raw).not_to_contain_text("Local update:")
+            # A local order has no badge, no TikTok status and no sync line, and keeps its old line.
+            local = order_card(page, 1)
+            await expect(page.get_by_test_id(f"business-order-badge-{oid(1)}")).to_have_count(0)
+            await expect(
+                local.get_by_test_id(f"business-order-{oid(1)}-provider-status")
+            ).to_have_count(0)
+            await expect(local.get_by_test_id(f"business-order-{oid(1)}-sync")).to_have_count(0)
+            await local.get_by_test_id(f"business-order-{oid(1)}-toggle").click()
+            await open_tech(page, f"business-order-{oid(1)}")
+            await expect(
+                page.get_by_test_id(f"business-order-{oid(1)}-tech-details")
+            ).to_contain_text("not a marketplace sync timestamp")
+            # The source filter under More filters still lists TikTok Shop.
+            await open_filters(page)
+            await open_fold(page, "more-filters")
+            await expect(
+                page.get_by_label("Where the order came from").locator(
+                    "option", has_text="TikTok Shop"
+                )
+            ).to_have_count(1)
+
+    await with_browser(body)
+
+
+async def test_opening_a_tiktok_order_reads_its_detail_and_shows_lines_totals_and_ship_to(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            card_id = f"business-order-{oid(TIKTOK_SHIPPED)}"
+            detail = page.get_by_test_id(f"business-order-detail-{oid(TIKTOK_SHIPPED)}")
+            # Nothing is read until a card is opened.
+            await expect(detail).to_have_count(0)
+            assert stub.detail_calls == []
+            await page.get_by_test_id(f"{card_id}-toggle").click()
+            await expect(detail).to_be_visible()
+            await expect(detail).to_contain_text("2 × Blue mug (MUG-1) · RM 13.00 each")
+            await expect(detail).to_contain_text("1 × Gift wrap · RM 0.00 each")
+            for line in (
+                "Subtotal: RM 26.00",
+                "Shipping: RM 5.00",
+                "Discount: RM 1.00",
+                "Total: RM 1,020.50",
+                "Recipient: Aisyah B***",
+                "Phone: (+60)12****78",
+                "Address: 12 Jalan Contoh, Taman Uji",
+                "Region: MY",
+            ):
+                await expect(detail).to_contain_text(line)
+            # Tracking and courier come from the order itself, in the plain groups above.
+            group = page.get_by_test_id(f"{card_id}-details")
+            await expect(group).to_contain_text("Tracking number: TRK00020")
+            await expect(group).to_contain_text("Courier: J&T")
+            await expect(group).to_contain_text("TikTok status: Awaiting shipment")
+            await expect(group).to_contain_text("Synced from TikTok: 2 Nov 2026, 09:57")
+            await expect(group).not_to_contain_text("Customer details removed")
+            assert stub.detail_calls == [oid(TIKTOK_SHIPPED)]
+            # Closing and opening again keeps what was read.
+            await page.get_by_test_id(f"{card_id}-toggle").click()
+            await page.get_by_test_id(f"{card_id}-toggle").click()
+            await expect(detail).to_contain_text("Recipient: Aisyah B***")
+            assert stub.detail_calls == [oid(TIKTOK_SHIPPED)]
+            # A local order opens as before: no detail read, no items block.
+            await page.get_by_test_id(f"business-order-{oid(1)}-toggle").click()
+            await expect(page.get_by_test_id(f"business-order-{oid(1)}-details")).to_contain_text(
+                "Last changed here: 2 Nov 2026, 09:58"
+            )
+            await expect(page.get_by_test_id(f"business-order-detail-{oid(1)}")).to_have_count(0)
+            assert stub.detail_calls == [oid(TIKTOK_SHIPPED)]
+
+    await with_browser(body)
+
+
+async def test_the_technical_switch_never_reads_an_order_detail(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(browser, site, stub) as page:
+            await page.get_by_test_id("business-tech-all").click()
+            card_id = f"business-order-{oid(TIKTOK_SHIPPED)}"
+            # Every card is open, yet no ship-to is read and none is on the page.
+            await expect(page.get_by_test_id(f"{card_id}-toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+            await expect(
+                page.get_by_test_id(f"business-order-{oid(TIKTOK)}-toggle")
+            ).to_have_attribute("aria-expanded", "true")
+            await expect(page.get_by_test_id(f"{card_id}-tech-details")).to_be_visible()
+            await expect(
+                page.get_by_test_id(f"business-order-detail-{oid(TIKTOK_SHIPPED)}")
+            ).to_have_count(0)
+            assert stub.detail_calls == []
+            # A person closes one card and opens it again: now exactly that order is read.
+            await page.get_by_test_id(f"{card_id}-toggle").click()
+            await page.get_by_test_id(f"{card_id}-toggle").click()
+            await expect(
+                page.get_by_test_id(f"business-order-detail-{oid(TIKTOK_SHIPPED)}")
+            ).to_contain_text("Recipient: Aisyah B***")
+            assert stub.detail_calls == [oid(TIKTOK_SHIPPED)]
+
+    await with_browser(body)
+
+
+async def test_a_cleared_order_shows_the_notice_and_no_ship_to(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(cleared={TIKTOK_CLEARED})
+        async with business_page(browser, site, stub) as page:
+            await page.get_by_test_id(f"business-order-{oid(TIKTOK_CLEARED)}-toggle").click()
+            detail = page.get_by_test_id(f"business-order-detail-{oid(TIKTOK_CLEARED)}")
+            await expect(detail).to_contain_text("Customer details removed after 90 days")
+            for gone in ("Recipient", "Phone", "Address", "Region", "Aisyah", "Jalan Contoh"):
+                await expect(detail).not_to_contain_text(gone)
+            # Items and totals stay.
+            await expect(detail).to_contain_text("2 × Blue mug (MUG-1)")
+            await expect(detail).to_contain_text("Subtotal: RM 26.00")
+
+    await with_browser(body)
+
+
+async def test_a_failed_detail_read_says_so_and_can_be_tried_again(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(detail_failures=1)
+        async with business_page(browser, site, stub) as page:
+            await page.get_by_test_id(f"business-order-{oid(TIKTOK)}-toggle").click()
+            error = page.get_by_test_id(f"business-order-detail-{oid(TIKTOK)}-error")
+            await expect(error).to_contain_text("load this order")
+            await page.get_by_role("button", name="Try again").click()
+            await expect(
+                page.get_by_test_id(f"business-order-detail-{oid(TIKTOK)}")
+            ).to_contain_text("Recipient: Aisyah B***")
+            assert stub.detail_calls == [oid(TIKTOK), oid(TIKTOK)]
+
+    await with_browser(body)
+
+
+async def test_the_orders_folds_say_what_is_true_for_each_sync_state(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stale = (
+            "not a live TikTok Shop feed",
+            "Coming later",
+            "No seller account is connected or checked yet",
+            "Stores are not connected or checked",
+        )
+        for sync, connect_hint in (("connected", False), ("not_connected", True)):
+            stub = Stub(marketplace_sync=sync)
+            async with business_page(browser, site, stub) as page:
+                await open_fold(page, "about")
+                await open_fold(page, "not-yet")
+                about = page.get_by_test_id("business-about-details")
+                await expect(about).to_contain_text("copied into fourstacks and kept up to date")
+                await expect(about).to_contain_text("never changes an order there")
+                await expect(about).to_contain_text("Shopee is not connected")
+                hint = "Connect your TikTok Shop under Store connections"
+                if connect_hint:
+                    await expect(about).to_contain_text(hint)
+                else:
+                    await expect(about).not_to_contain_text(hint)
+                await expect(page.get_by_test_id("business-not-yet-details")).to_contain_text(
+                    "does not send anything to TikTok Shop"
+                )
+                text = await page.locator("body").inner_text()
+                for phrase in stale:
+                    assert phrase not in text, (sync, phrase)
+
+    await with_browser(body)
+
+
+async def open_listings(page: Page) -> None:
+    """Choose the TikTok Shop source on the Products page and wait for the first listing."""
+    await page.get_by_test_id("business-source-switch-tiktok").click()
+    await expect(page.get_by_test_id(f"business-listing-{lid(1)}")).to_be_visible(timeout=WAIT)
+
+
+async def test_source_switch_shows_listings_and_keeps_the_local_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        product_id = "business-product-00000000-0000-4000-8000-000000000001"
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id(product_id)).to_be_visible(timeout=WAIT)
+            # Your catalogue is the default and nothing asks for listings yet.
+            await expect(page.get_by_test_id("business-source-switch-catalogue")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            await expect(page.get_by_test_id("business-listings-list")).to_have_count(0)
+            assert "listings" not in stub.other_calls
+            await open_listings(page)
+            await expect(page.get_by_test_id("business-source-switch-tiktok")).to_have_attribute(
+                "aria-pressed", "true"
+            )
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            first = page.get_by_test_id(f"business-listing-{lid(1)}")
+            await expect(first).to_contain_text("TikTok mug 1")
+            await expect(first).to_contain_text("Large · SKU MUG-1 · RM 21.00 · 4 in stock")
+            await expect(first.get_by_test_id(f"business-listing-{lid(1)}-sync")).to_have_text(
+                "Synced 3 min ago"
+            )
+            await expect(first.get_by_test_id(f"business-listing-{lid(1)}-same-sku")).to_have_text(
+                "Same SKU as your product Blue mug 1"
+            )
+            await expect(first.get_by_test_id(f"business-listing-{lid(1)}-status")).to_have_text(
+                "Active"
+            )
+            # A masked SKU and no stock: no match claimed, and it is marked out of stock.
+            second = page.get_by_test_id(f"business-listing-{lid(2)}")
+            await expect(second).to_contain_text("No SKU shared")
+            await expect(
+                second.get_by_test_id(f"business-listing-{lid(2)}-same-sku")
+            ).to_have_count(0)
+            await expect(second.get_by_test_id(f"business-listing-{lid(2)}-stock")).to_have_text(
+                "Out of stock"
+            )
+            # The product picture is never drawn.
+            await expect(page.locator("img")).to_have_count(0)
+            # Paging: the same Older pattern as the catalogue.
+            await expect(
+                page.get_by_test_id("business-listings-list").locator("> li")
+            ).to_have_count(2)
+            await page.get_by_test_id("business-listings-older").click()
+            await expect(
+                page.get_by_test_id("business-listings-list").locator("> li")
+            ).to_have_count(3)
+            await expect(page.get_by_test_id("business-listings-older")).to_have_count(0)
+            assert stub.listing_queries[0] == {}, stub.listing_queries
+            assert stub.listing_queries[-1] == {"before": [lid(2)]}, stub.listing_queries
+            # The stock filter narrows the listings loaded so far.
+            await page.get_by_test_id("business-stock-filter-out").click()
+            await expect(
+                page.get_by_test_id("business-listings-list").locator("> li")
+            ).to_have_count(1)
+            await expect(page.get_by_test_id(f"business-listing-{lid(2)}")).to_be_visible()
+            await page.get_by_test_id("business-stock-filter-all").click()
+            # Refresh starts again from the newest.
+            await page.get_by_test_id("business-listings-refresh").click()
+            await until(lambda: len(stub.listing_queries) >= 3 and stub.listing_queries[-1] == {})
+            # Back to your catalogue: today's list, unchanged, and no further listing read.
+            reads = len(stub.listing_queries)
+            await page.get_by_test_id("business-source-switch-catalogue").click()
+            await expect(page.get_by_test_id(product_id)).to_contain_text("RM 18.00 · 7 available")
+            await expect(page.get_by_test_id("business-listings-list")).to_have_count(0)
+            assert len(stub.listing_queries) == reads
+            await expect(page.get_by_test_id("business-stock-filter-out")).to_be_visible()
+            # The about text says the two stocks are separate.
+            await open_fold(page, "about-catalogue")
+            await expect(page.get_by_test_id("business-about-catalogue-details")).to_contain_text(
+                "separate and are not merged"
+            )
+
+    await with_browser(body)
+
+
+async def test_empty_listings_say_how_to_connect_or_that_none_were_found(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        for sync, sentence in (
+            (
+                "not_connected",
+                "No TikTok Shop products copied yet. Connect your shop under Store connections.",
+            ),
+            ("connected", "No TikTok Shop products found."),
+        ):
+            stub = Stub(marketplace_sync=sync, listings=[])
+            async with business_page(
+                browser, site, stub, path="/portal/business/products", wait_for_rows=False
+            ) as page:
+                await expect(
+                    page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
+                ).to_be_visible(timeout=WAIT)
+                await page.get_by_test_id("business-source-switch-tiktok").click()
+                await expect(page.get_by_test_id("business-listings-empty")).to_have_text(
+                    sentence, timeout=WAIT
+                )
+
+    await with_browser(body)
+
+
+async def test_a_listing_image_url_is_never_loaded(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        requested: list[str] = []
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            page.on("request", lambda request: requested.append(request.url))
+            await expect(
+                page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
+            ).to_be_visible(timeout=WAIT)
+            await open_listings(page)
+            await page.get_by_test_id(f"business-listing-{lid(1)}-toggle").click()
+            await open_tech(page, f"business-listing-{lid(1)}")
+            assert not [url for url in requested if "img.example.test" in url], requested
+            await expect(page.locator("img")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_tiktok_orders_and_listings_in_three_themes_and_at_phone_width(
+    site: Site, theme: str
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(cleared={TIKTOK_CLEARED})
+        async with business_page(browser, site, stub, theme=theme) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            for number in (TIKTOK, TIKTOK_SHIPPED, TIKTOK_CLEARED):
+                await page.get_by_test_id(f"business-order-{oid(number)}-toggle").click()
+                await expect(
+                    page.get_by_test_id(f"business-order-detail-{oid(number)}")
+                ).to_contain_text("Subtotal: RM 26.00")
+            await open_tech(page, f"business-order-{oid(TIKTOK)}")
+            await expect(
+                page.get_by_test_id(f"business-order-detail-{oid(TIKTOK_CLEARED)}-cleared")
+            ).to_be_visible()
+            await check_widths(page, theme, "tiktok-orders")
+            # At phone width the badge, both statuses and the sync line are all on screen.
+            await page.set_viewport_size({"width": 390, "height": 800})
+            tiktok = order_card(page, TIKTOK)
+            for part in ("badge", "status", "provider-status", "payment", "sync"):
+                target = (
+                    page.get_by_test_id(f"business-order-badge-{oid(TIKTOK)}")
+                    if part == "badge"
+                    else tiktok.get_by_test_id(f"business-order-{oid(TIKTOK)}-{part}")
+                )
+                await expect(target).to_be_visible()
+            await page.get_by_test_id("business-subnav-products").click()
+            await expect(
+                page.get_by_test_id("business-product-00000000-0000-4000-8000-000000000001")
+            ).to_be_visible(timeout=WAIT)
+            await open_listings(page)
+            await page.get_by_test_id(f"business-listing-{lid(1)}-toggle").click()
+            await open_tech(page, f"business-listing-{lid(1)}")
+            await check_widths(page, theme, "listings")
+
+    await with_browser(body)
+
+
 async def overflow(page: Page) -> dict[str, int]:
     return await page.evaluate(
         "() => ({scroll: document.documentElement.scrollWidth, inner: window.innerWidth})"
@@ -1276,7 +2131,51 @@ async def test_business_at_five_widths_in_three_themes(site: Site, theme: str) -
     await with_browser(body)
 
 
-async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site) -> None:
+@pytest.mark.parametrize("theme", THEMES)
+async def test_store_connections_in_three_themes_and_at_phone_width(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        failing = {**SYNTH_SYNC, "problem": "sync_failing"}
+        stub = Stub(
+            stores=[
+                make_store(sync=failing),
+                make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B"),
+                make_store("disconnected", store_id=DISCONNECTED_ID, shop_id="SHOP-C"),
+                make_store("missing_shop_id", store_id=WAITING_ID, shop_id=None),
+            ]
+        )
+        async with business_page(
+            browser,
+            site,
+            stub,
+            theme=theme,
+            path="/portal/business/stores?tiktok=failed&reason=connect_failed",
+            wait_for_rows=False,
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await expect(page.get_by_test_id("business-tiktok-result")).to_be_visible(timeout=WAIT)
+            for store_id in (STORE_ID, SECOND_ID, DISCONNECTED_ID, WAITING_ID):
+                await expect(page.get_by_test_id(f"business-store-{store_id}")).to_be_visible()
+            await open_fold(page, "stores")
+            await (
+                page.get_by_test_id(f"business-store-{STORE_ID}")
+                .get_by_role("button", name="Show details")
+                .click()
+            )
+            await open_tech(page, f"business-store-{STORE_ID}")
+            await check_widths(page, theme, "store-connections")
+            # The buttons stay reachable at phone width and keep their names.
+            await page.set_viewport_size({"width": 390, "height": 800})
+            await expect(
+                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
+            ).to_be_visible()
+            await expect(
+                page.get_by_test_id(f"business-store-reconnect-{SECOND_ID}")
+            ).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_demo_mode_strings_remain_and_connect_is_a_real_button(site: Site) -> None:
     async def body(browser: Any) -> None:
         stub = Stub()
         async with business_page(browser, site, stub) as page:
@@ -1284,10 +2183,12 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             await expect(page.get_by_test_id("business-about-details")).to_be_hidden()
             await open_fold(page, "about")
             await expect(
-                page.get_by_text("These are orders and products saved in fourstacks.", exact=False)
+                page.get_by_text("copied into fourstacks and kept up to date.", exact=False)
             ).to_be_visible()
             await open_fold(page, "not-yet")
-            await expect(page.get_by_text("Not available yet", exact=True)).to_be_visible()
+            await expect(
+                page.get_by_text("fourstacks does not send anything to TikTok Shop.", exact=False)
+            ).to_be_visible()
             before = (len(stub.order_queries), len(stub.counts_queries), list(stub.other_calls))
             await page.get_by_role("button", name="See an example").click()
             await expect(
@@ -1314,11 +2215,8 @@ async def test_demo_mode_strings_and_disabled_connect_buttons_remain(site: Site)
             # The demo lives on the Orders page only; the Connect buttons live on Stores.
             await page.get_by_test_id("business-subnav-stores").click()
             await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
-            connect = page.get_by_role("button", name="Connect unavailable", exact=True)
-            reconnect = page.get_by_role("button", name="Reconnect unavailable", exact=True)
-            await expect(connect).to_be_disabled()
-            await expect(reconnect).to_be_disabled()
-            await expect(page.get_by_role("button", name=" unavailable")).to_have_count(2)
+            await expect(page.get_by_test_id("business-store-connect")).to_be_enabled()
+            await expect(page.get_by_role("button", name=" unavailable")).to_have_count(0)
             await page.get_by_test_id("business-subnav-products").click()
             await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
 

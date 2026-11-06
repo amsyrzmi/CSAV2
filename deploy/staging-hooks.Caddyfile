@@ -10,13 +10,19 @@ http://hooks.fourstacks.my {
 		method GET POST
 		path /channels/whatsapp
 	}
+	# TikTok Shop webhook only. The connect callback is on the console origin, not here.
+	@tiktok_ingress {
+		method POST
+		path /api/v1/channels/tiktok_shop/webhook
+	}
 	# route keeps the written order: deny unknown peers first, then forward only
-	# Telegram POSTs and the WhatsApp GET/POST path to the staging gateway, then
-	# 404 everything else.
+	# Telegram POSTs, the WhatsApp GET/POST path and the TikTok webhook POST to the
+	# staging gateway, then 404 everything else.
 	route {
 		respond @not_connector 403
 		reverse_proxy @telegram_ingress 127.0.0.1:18031
 		reverse_proxy @whatsapp_ingress 127.0.0.1:18031
+		reverse_proxy @tiktok_ingress 127.0.0.1:18031
 		respond "Not Found" 404
 	}
 }

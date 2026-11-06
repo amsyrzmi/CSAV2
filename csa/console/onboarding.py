@@ -82,8 +82,9 @@ async def create_client(
             (client_id, body.slug, body.name, body.timezone),
             conn=conn,
         )
-        for agent_class in _AGENTS:
-            agent = agent_class()
+        # Class attributes only: an agent with runtime dependencies (EcommerceAgent's reader)
+        # is never constructed here.
+        for agent in _AGENTS:
             await db.q.execute(
                 "console/provision_capabilities.sql",
                 (

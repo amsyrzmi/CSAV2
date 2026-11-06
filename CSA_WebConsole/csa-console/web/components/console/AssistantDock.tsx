@@ -13,6 +13,7 @@ import {
   navigateText,
   openProposals,
   optionAnswer,
+  orderCardText,
   originFor,
   resultView,
   resumeContext,
@@ -558,11 +559,10 @@ function TurnResult({
       );
     case "order": {
       const { order } = view.result;
+      const shown = orderCardText(view.result, language);
       return (
         <div className={box}>
-          <p className="font-semibold">
-            {panelText(language, "order_local", { id: order.resource.order_id })}
-          </p>
+          <p className="font-semibold">{shown.title}</p>
           <p>
             {order.status} · {text.order_payment}: {order.payment_status} · {order.currency} {order.total}
           </p>
@@ -573,12 +573,32 @@ function TurnResult({
           </p>
           <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
             {text.order_source}: {view.result.source} · {text.order_marketplace_sync}:{" "}
-            {view.result.marketplace_sync} · {text.order_as_of}{" "}
+            {shown.sync} · {text.order_as_of}{" "}
             {new Date(view.result.as_of).toLocaleString()}
           </p>
         </div>
       );
     }
+    case "stock":
+      // A TikTok Shop stock read: exact counts per variant, read-only.
+      return (
+        <div className={box} data-testid="assistant-stock">
+          <p className="font-semibold break-words">{view.title}</p>
+          <ul className="mt-1 space-y-0.5">
+            {view.rows.map((row, index) => (
+              <li key={index} className="flex justify-between gap-3">
+                <span className="break-words">{row.label}</span>
+                <span className="font-medium tabular-nums">{row.count}</span>
+              </li>
+            ))}
+          </ul>
+          {view.total && <p className="mt-1 font-medium">{view.total}</p>}
+          {view.offSale && <p className="mt-1">{view.offSale}</p>}
+          <p className="mt-2 text-xs text-[color:var(--fs-text-secondary)]">
+            {view.note} · {text.order_as_of} {new Date(view.asOf).toLocaleString()}
+          </p>
+        </div>
+      );
     case "proposal":
       return (
         <ProposalCard

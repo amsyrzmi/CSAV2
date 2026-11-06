@@ -106,14 +106,17 @@ PACKAGES: tuple[Package, ...] = (
     Package(
         key="marketplaces",
         title="Marketplaces",
-        summary=("Connects your e-commerce store; marketplace setup is needed before use."),
+        summary=(
+            "Connects your TikTok Shop so your assistant can check orders and stock "
+            "for customers and your team."
+        ),
         kind="addon",
         requires=("customer_support",),
         capabilities=("ecommerce_agent",),
         hr_modules=(),
         email=False,
         tabs=("ecommerce",),
-        sellable=False,
+        sellable=True,
     ),
     Package(
         key="e_invoicing",

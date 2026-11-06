@@ -110,7 +110,7 @@ def _unknown_package(d: dict[str, Any]) -> None:
 
 
 def _unsellable_package(d: dict[str, Any]) -> None:
-    d["companies"][0]["packages"].append("marketplaces")
+    d["companies"][0]["packages"].append("e_invoicing")
 
 
 def _missing_requirement(d: dict[str, Any]) -> None:

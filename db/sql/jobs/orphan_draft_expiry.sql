@@ -5,6 +5,7 @@ WITH dead AS (
   WHERE o.client_id = %s
     AND o.status = 'draft'
     AND o.created_at <= %s
+    AND NOT (o.channel IN ('tiktok_shop', 'shopee') AND o.external_order_id IS NOT NULL)
     AND NOT EXISTS (
       SELECT 1 FROM order_confirmations c
       WHERE c.client_id = %s AND c.order_id = o.id AND c.state = 'pending'

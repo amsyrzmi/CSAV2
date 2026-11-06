@@ -316,3 +316,40 @@ async def test_documented_line_items_without_quantity_are_not_invented() -> None
         adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
         with pytest.raises(TikTokReadError, match="invalid_response"):
             await adapter.get_order(uuid4(), "SYNTHETIC-1")
+
+
+@pytest.mark.asyncio
+async def test_provider_says_empty_without_a_list_is_an_empty_page() -> None:
+    payload = {"code": 0, "data": {"total_count": 0}}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        page = await adapter.search_order_page(uuid4(), limit=1)
+        assert page.items == [] and page.next_page_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"total_count": 3},
+        {"total_count": "0"},
+        {"total_count": False},
+        {"total_count": 0.0},
+        {"total_count": 0, "orders": None},
+        {"total_count": 0, "orders": [{}]},
+        {},
+    ],
+)
+async def test_missing_list_is_empty_only_when_total_count_is_integer_zero(
+    data: dict[str, Any],
+) -> None:
+    payload = {"code": 0, "data": data}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        adapter = TikTokShopAdapter(_sample_creds(), http_client=client)
+        with pytest.raises(TikTokReadError) as caught:
+            await adapter.search_order_page(uuid4(), limit=1)
+        assert caught.value.code == "invalid_response"

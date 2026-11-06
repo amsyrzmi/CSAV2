@@ -3,6 +3,11 @@ WITH dead AS (
   SELECT c.id, c.order_id
   FROM order_confirmations c
   WHERE c.client_id = %s AND c.state = 'pending' AND c.expires_at <= now()
+    AND NOT EXISTS (
+      SELECT 1 FROM orders so
+      WHERE so.client_id = c.client_id AND so.id = c.order_id
+        AND so.channel IN ('tiktok_shop', 'shopee') AND so.external_order_id IS NOT NULL
+    )
   ORDER BY c.expires_at
   FOR UPDATE SKIP LOCKED
   LIMIT %s
