@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import boto3
 import httpx
 import psycopg
 import pytest
@@ -29,7 +30,11 @@ from csa.hr.api import build_hr_router
 from csa.hr.automation_models import PersonalSave
 from csa.hr.operations import HrOperations
 from csa.hr.personal import fingerprint_payload, personal_fingerprint
+from csa.storage.base import ObjectStore
+from csa.storage.local import LocalObjectStore
+from csa.storage.s3 import S3ObjectStore
 from fastapi import FastAPI
+from moto import mock_aws
 from psycopg.conninfo import make_conninfo
 from psycopg.types.json import Jsonb
 from structlog.testing import capture_logs
@@ -1069,17 +1074,22 @@ def docx_bytes(*names: str) -> bytes:
 DOCX = docx_bytes("[Content_Types].xml", "word/document.xml")
 
 
-@pytest.fixture
-def hr_root(world: HrWorld, tmp_path: Path) -> Path:
-    """The same world, with the HR document routes mounted on a temporary storage root."""
-    root = tmp_path / "hr-uploads"
+def mount_documents(world: HrWorld, store: ObjectStore) -> None:
+    """The same world, with the HR document routes mounted on the given store."""
     app = FastAPI()
     for name in ("identity_service", "hr_service", "pool"):
         setattr(app.state, name, getattr(world.app.state, name))
     app.include_router(build_identity_router())
-    app.include_router(build_hr_router(hr_upload_root=root))
+    app.include_router(build_hr_router(hr_store=store))
     assert not world.browsers  # browsers bind to the app of their first call
     world.app = app
+
+
+@pytest.fixture
+def hr_root(world: HrWorld, tmp_path: Path) -> Path:
+    """The same world, with the HR document routes mounted on a temporary storage root."""
+    root = tmp_path / "hr-uploads"
+    mount_documents(world, LocalObjectStore(root))
     return root
 
 
@@ -1459,9 +1469,94 @@ async def test_document_cleanup_removes_only_unreferenced_stored_files(
     stray = directory / "notes.txt"
     for path in (orphan, half, stray):
         path.write_bytes(b"x")
-    removed = await documents.cleanup(world.service.pool, hr_root, world.tenant)
+    removed = await documents.cleanup(world.service.pool, LocalObjectStore(hr_root), world.tenant)
     assert removed == 2
     assert not orphan.exists() and not half.exists() and stray.exists()
+    assert (await download(world, "owner", made["document_id"])).content == PDF
+
+
+BUCKET = "hr-test-bucket"
+
+
+@pytest.fixture
+def s3(world: HrWorld) -> Iterator[Any]:
+    """The HR document routes on a mocked S3 bucket (HR under `hr/`, KB under `kb/`)."""
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name="us-east-1",
+            aws_access_key_id="testing",
+            aws_secret_access_key="fake-secret-value",
+        )
+        client.create_bucket(Bucket=BUCKET)
+        mount_documents(world, S3ObjectStore(BUCKET, "hr", client))
+        yield client
+
+
+def object_keys(client: Any) -> list[str]:
+    pages = client.get_paginator("list_objects_v2").paginate(Bucket=BUCKET)
+    return sorted(item["Key"] for page in pages for item in page.get("Contents", []))
+
+
+async def test_hr_document_roundtrip_with_s3_store(world: HrWorld, s3: Any) -> None:
+    staff = world.employees["staff"]
+    made = await uploaded(world, "owner", staff, "Offer letter.pdf", PDF)
+    names = [row["storage_name"] for row in await documents_rows(world)]
+    assert len(names) == 1
+    assert object_keys(s3) == [f"hr/{world.tenant}/{names[0]}"]
+    got = await download(world, "owner", made["document_id"])
+    assert got.status_code == 200 and got.content == PDF
+    assert got.headers["content-length"] == str(len(PDF))
+    assert (await listed(world, "owner", staff)).json() == {"items": [made]}
+    gone = await remove(world, "owner", made["document_id"])
+    assert gone.status_code == 204
+    assert object_keys(s3) == []
+    assert (await download(world, "owner", made["document_id"])).status_code == 404
+
+
+async def test_duplicate_retry_deletes_the_unreferenced_copy_and_keeps_the_first(
+    world: HrWorld, s3: Any
+) -> None:
+    staff = world.employees["staff"]
+    key = uuid4()
+    first = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+    again = await upload(world, "owner", staff, "a.pdf", PDF, key=key)
+    assert first.status_code == again.status_code == 201
+    assert first.json() == again.json()
+    rows = await documents_rows(world)
+    assert len(rows) == 1
+    # Exactly one object remains, and it is the first request's file.
+    assert object_keys(s3) == [f"hr/{world.tenant}/{rows[0]['storage_name']}"]
+    got = await download(world, "owner", first.json()["document_id"])
+    assert got.status_code == 200 and got.content == PDF
+
+
+async def test_hr_download_of_a_missing_object_is_503(world: HrWorld, s3: Any) -> None:
+    staff = world.employees["staff"]
+    made = await uploaded(world, "owner", staff, "a.pdf", PDF)
+    (row,) = await documents_rows(world)
+    s3.delete_object(Bucket=BUCKET, Key=f"hr/{world.tenant}/{row['storage_name']}")
+    with capture_logs() as logs:
+        response = await download(world, "owner", made["document_id"])
+    assert (response.status_code, response.json()) == (
+        503,
+        {"detail": "hr_document_file_unavailable"},
+    )
+    assert any(entry["event"] == "hr_document_file_missing" for entry in logs)
+
+
+async def test_hr_cleanup_never_touches_kb_prefix_objects(world: HrWorld, s3: Any) -> None:
+    staff = world.employees["staff"]
+    made = await uploaded(world, "owner", staff, "keep.pdf", PDF)
+    (row,) = await documents_rows(world)
+    orphan = f"{uuid4()}.pdf"
+    kb_key = f"kb/{world.tenant}/{uuid4()}.pdf"
+    s3.put_object(Bucket=BUCKET, Key=f"hr/{world.tenant}/{orphan}", Body=b"x")
+    s3.put_object(Bucket=BUCKET, Key=kb_key, Body=b"x")
+    store = S3ObjectStore(BUCKET, "hr", s3)
+    removed = await documents.cleanup(world.service.pool, store, world.tenant)
+    assert removed == 1
+    assert object_keys(s3) == sorted([f"hr/{world.tenant}/{row['storage_name']}", kb_key])
     assert (await download(world, "owner", made["document_id"])).content == PDF
 
 

@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import re
 from collections.abc import Iterator
 from contextlib import ExitStack
@@ -118,45 +117,6 @@ async def audit(
     await db.q.execute(
         "console/audit.sql", (actor.user_id, client_id, action, target, Jsonb({})), conn=conn
     )
-
-
-def tenant_directory(root: Path, client_id: UUID) -> Path:
-    root = root.resolve()
-    directory = root / str(client_id)
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if directory.is_symlink() or directory.resolve() != directory:
-        raise RuntimeError("KB tenant storage directory must not be a symlink")
-    return directory
-
-
-def publish(directory: Path, name: str, data: bytes) -> Path:
-    final = directory / name
-    temporary = directory / f".{name}.part"
-    try:
-        with temporary.open("xb") as stream:
-            os.chmod(temporary, 0o600)
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, final)
-        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return final
-
-
-async def durable_publish(directory: Path, name: str, data: bytes) -> None:
-    task = asyncio.create_task(asyncio.to_thread(publish, directory, name, data))
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # Finish publication before releasing the tenant lock and reconciling.
-        await task
-        raise
 
 
 async def cleanup_storage(pool: AsyncConnectionPool, store: ObjectStore, client_id: UUID) -> int:
