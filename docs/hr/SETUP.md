@@ -158,8 +158,10 @@ Migration `0521` (project 1b) adds documents on a person's profile: a contract, 
 certificate or another file. The HR owner and Manage people holders add, see and remove them, for
 any person including those who have left. The person sees their own contract, identity and
 certificate files, not the ones filed as Other, and cannot add or remove anything. A manager or a
-colleague sees none. Removing a document hides it and deletes its file; the record and its
-history entry are kept.
+colleague sees none. Removing a document hides it and removes its file; the record and its
+history entry are kept. With the local backend the file is deleted at once. With
+`STORAGE_BACKEND=s3` it leaves the live prefix at once, and because the bucket is versioned it
+stays recoverable as a non-current version for 7 days before it is permanently removed.
 
 - **Files.** PDF, JPG, PNG or DOCX, at most 10 MB each, one per upload. The file's content must
   match its extension; a renamed file is refused. Names are kept as given (up to 255 characters).

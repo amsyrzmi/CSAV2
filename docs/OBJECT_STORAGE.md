@@ -73,6 +73,24 @@ leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
 - Private, with all four "Block public access" options on.
 - Default encryption: SSE-S3 (`AES256`).
 - Versioning on.
+- Bucket policy that refuses any request not made over TLS (replace `<bucket>`):
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "DenyInsecureTransport",
+        "Effect": "Deny",
+        "Principal": "*",
+        "Action": "s3:*",
+        "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"],
+        "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+      }
+    ]
+  }
+  ```
+
 - Lifecycle, two rules:
   - `backups/`: current versions expire after 14 days.
   - Whole bucket: non-current versions expire after 7 days, expired object delete markers are
@@ -95,43 +113,53 @@ docker volume inspect csa-staging_staging-hr-uploads > /dev/null
 
 TMP=$(mktemp -d)
 [ -n "$TMP" ] && [ -d "$TMP" ] || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -rf "$TMP"' EXIT   # the copy is removed even when a command below fails
+# The copy runs as root inside Docker, so files can be root-owned: remove with sudo, even when
+# a command below fails.
+trap 'sudo rm -rf "$TMP"' EXIT
 mkdir "$TMP/kb" "$TMP/hr"
 
 # 1. Copy each volume out with a throwaway container; the volumes are mounted read-only.
 docker run --rm --entrypoint cp -v csa-staging_staging-uploads:/src:ro -v "$TMP/kb":/dst \
-  python:3.12.12-slim-bookworm -a /src/. /dst/
+  python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c \
+  -a /src/. /dst/
 docker run --rm --entrypoint cp -v csa-staging_staging-hr-uploads:/src:ro -v "$TMP/hr":/dst \
-  python:3.12.12-slim-bookworm -a /src/. /dst/
+  python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c \
+  -a /src/. /dst/
 sudo chown -R "$(id -u):$(id -g)" "$TMP"
 
-# 2. Upload; check each plan first with --dryrun.
+# 2. Upload: show both plans with --dryrun, read them, then confirm.
 aws s3 sync "$TMP/kb" s3://<bucket>/kb/ --profile <admin> --dryrun
-aws s3 sync "$TMP/kb" s3://<bucket>/kb/ --profile <admin>
 aws s3 sync "$TMP/hr" s3://<bucket>/hr/ --profile <admin> --dryrun
+read -r -p "Proceed with the real upload? [y/N] " ok
+[ "$ok" = y ] || exit 1
+aws s3 sync "$TMP/kb" s3://<bucket>/kb/ --profile <admin>
 aws s3 sync "$TMP/hr" s3://<bucket>/hr/ --profile <admin>
 
 # 3. Verify: object count and total bytes in the bucket must equal the local copy.
-aws s3 ls s3://<bucket>/kb/ --recursive --summarize --profile <admin> | tail -2
+# `aws s3 ls` exits 1 for an empty prefix, which pipefail would turn into an abort, so the
+# summary lines tolerate it. A real error still prints and no Total lines follow it.
+aws s3 ls s3://<bucket>/kb/ --recursive --summarize --profile <admin> | tail -2 || true
 find "$TMP/kb" -type f | wc -l
 find "$TMP/kb" -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}'
-aws s3 ls s3://<bucket>/hr/ --recursive --summarize --profile <admin> | tail -2
+aws s3 ls s3://<bucket>/hr/ --recursive --summarize --profile <admin> | tail -2 || true
 find "$TMP/hr" -type f | wc -l
 find "$TMP/hr" -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}'
 
 # 4. Remove the temporary copy (it holds real files); the trap does it again harmlessly.
-rm -rf "$TMP"
+sudo rm -rf "$TMP"
 ```
 
-Save the block as a script file and run it with `bash`, rather than pasting it into your login
-shell, because `set -e` would end that shell on the first error.
+Save the block as a script file and run it with `bash` in a terminal (it asks for a
+confirmation before the real upload), rather than pasting it into your login shell, because
+`set -e` would end that shell on the first error.
 
 Compare "Total Objects" with the first `find` count and "Total Size" with the byte total printed
 after it, for each of kb and hr; they must be equal.
 
 The temporary directory holds real HR files and needs enough free space for both volumes. The
-`trap` removes it even if the run fails; if you ran the commands another way, run
-`rm -rf "$TMP"` yourself before doing anything else.
+container copies the files as root, so they can be root-owned and the removal uses `sudo`. The
+`trap` removes the directory even if the run fails; if you ran the commands another way, run
+`sudo rm -rf "$TMP"` yourself before doing anything else.
 
 Copy while uploads are quiet, or run the sync again after the switch is planned so files added in
 between are included.
