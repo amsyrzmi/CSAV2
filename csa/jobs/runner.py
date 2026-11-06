@@ -26,11 +26,14 @@ from csa.jobs.subscriptions import run_subscriptions_due
 logger = structlog.get_logger(__name__)
 
 
-def build_default_registry(mailer: Mailer | None = None) -> JobRegistry:
+def build_default_registry(
+    mailer: Mailer | None = None, app_pool: AsyncConnectionPool | None = None
+) -> JobRegistry:
     """Build the standard production registry of scheduled jobs.
 
-    `mailer` sends the booking reminders and lapse notices by email. With none, the mail job runs
-    and sends nothing, so the rows wait in the queue for a worker that has one.
+    `mailer` sends the booking reminders and lapse notices by email, and `app_pool` is the pool
+    every company's rows are read and written through. With either missing, the mail job runs and
+    sends nothing, so the rows wait in the queue for a worker that has both.
     """
     registry = JobRegistry()
     registry.register(
@@ -101,9 +104,12 @@ def build_default_registry(mailer: Mailer | None = None) -> JobRegistry:
     async def booking_reminder_mail(
         conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
     ) -> dict[str, Any]:
-        return await run_reminder_mail(conn, mailer, clock, batch_size=batch_size)
+        if app_pool is None:
+            return {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+        return await run_reminder_mail(conn, app_pool, mailer, clock, batch_size=batch_size)
 
-    # Once for every company, as the owner (the queue spans companies). Sends run a few at a time
+    # Once for every company: the owner connection lists which have mail queued, and each row is
+    # then handled in its own company's transaction. Sends run a few at a time
     # and each may take its mailer's limit, so a run gets longer than the usual 30 seconds.
     registry.register(
         Job(

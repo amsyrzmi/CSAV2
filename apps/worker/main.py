@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import signal
 import time
+from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
@@ -570,15 +573,58 @@ class _Closable(Protocol):
     async def close(self) -> None: ...
 
 
-async def drain_then_close(deps: PostgresTurnDependencies | None, *pools: _Closable) -> None:
+# Docker's default stop grace is 10 seconds before SIGKILL; the drain gets most of it.
+DRAIN_SECONDS = 8.0
+
+
+async def drain_then_close(
+    deps: PostgresTurnDependencies | None, *pools: _Closable, timeout: float = DRAIN_SECONDS
+) -> None:
     """Let the booking mail still on its way finish, then close the pools it reads through.
 
     A normal restart must not lose it: the mail tasks read the app pool, so it closes after them.
+    The wait is bounded, under the stop grace, so a stuck relay cannot hold the pools open until
+    the kill: past the bound the pools close anyway and the category is logged.
     """
     if deps is not None:
-        await deps.drain()
+        try:
+            await asyncio.wait_for(deps.drain(), timeout)
+        except TimeoutError:
+            logger.warning("worker_drain_incomplete", category="timeout")
     for pool in pools:
         await pool.close()
+
+
+def stop_on_signals(task: asyncio.Task[Any]) -> None:
+    """Cancel `task` on SIGTERM or SIGINT, so its `finally` runs.
+
+    The worker is PID 1 in its container, where a signal with no handler is ignored and the stop
+    ends in SIGKILL after the grace: nothing after the loop would ever run.
+    """
+    loop = asyncio.get_running_loop()
+    for number in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(number, task.cancel)
+
+
+async def run_until_stopped(
+    work: Awaitable[Any],
+    *,
+    background: Sequence[asyncio.Task[Any]],
+    llm_http: httpx.AsyncClient,
+    deps: PostgresTurnDependencies | None,
+    pools: Sequence[_Closable],
+) -> None:
+    """Run `work` until it ends or the process is told to stop, then shut down in order: the
+    background tasks, the HTTP client, the booking mail still on its way, and last the pools."""
+    stop_on_signals(asyncio.current_task())  # type: ignore[arg-type]
+    try:
+        await work
+    finally:
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await llm_http.aclose()
+        await drain_then_close(deps, *pools)
 
 
 async def main() -> None:  # pragma: no cover - process entrypoint
@@ -664,7 +710,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         owner_pool,
         app_pool,
         lock_conninfo=owner_dsn,
-        registry=build_default_registry(mailer),
+        registry=build_default_registry(mailer, app_pool),
     )
     hr_leavers = register_hr_leavers_task(app_pool)
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
@@ -686,15 +732,16 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 kb_ingest_loop(kb_processor, poll_seconds=settings.KB_INGEST_POLL_SECONDS)
             )
         )
-    try:
-        await liveness_loop(WORKER_ALIVE_PATH, do_work=worker.do_work)
-    finally:
-        for task in background:
-            task.cancel()
-        await asyncio.gather(*background, return_exceptions=True)
-        await llm_http.aclose()
-        await drain_then_close(turn_deps, checkpoint_pool, app_pool, owner_pool)
+    await run_until_stopped(
+        liveness_loop(WORKER_ALIVE_PATH, do_work=worker.do_work),
+        background=background,
+        llm_http=llm_http,
+        deps=turn_deps,
+        pools=(checkpoint_pool, app_pool, owner_pool),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
-    asyncio.run(main())
+    # A stop (SIGTERM) cancels `main` after its shutdown has run; that is a clean exit.
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(main())

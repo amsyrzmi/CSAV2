@@ -3,9 +3,11 @@
 Reminders are two jobs. `run_reminder_queue` runs per company, as that company, and writes what
 is owed: one row in `booking_reminders` per recipient and start time, and for a customer on
 Telegram the message itself, in the same transaction. `run_reminder_mail` runs once for everyone
-and sends the queued email rows. A row is claimed (`sending`) and committed before anything is
-sent, and settled after, so a worker that dies mid-send leaves it `sending` and it is never sent
-twice: a lost reminder is the price of never sending one twice.
+and sends the queued email rows: the owner connection only lists which companies have some, and
+each row is then claimed, checked and settled in its own company's transaction, as `csa_app`. A row
+is claimed (`sending`) only when it has a send slot and committed before it is sent, so a worker
+that dies mid-send leaves that row `sending` and it is never sent twice: a lost reminder is the
+price of never sending one twice.
 
 Logs carry categories only, never an address or a title.
 """
@@ -22,11 +24,13 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 import structlog
+from psycopg_pool import AsyncConnectionPool
 
 from csa.bookings import bot, customer_messages, notify, service, setup
 from csa.console.mail_templates import customer_lapsed_mail, reminder_mail
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
+from csa.core.tenancy import tx
 from csa.jobs.clock import Clock
 
 logger = structlog.get_logger(__name__)
@@ -347,76 +351,108 @@ async def _compose(
     return None
 
 
+async def _settle(
+    conn: psycopg.AsyncConnection[Any], row: Mapping[str, Any], status: str, now: datetime
+) -> None:
+    await db.q.execute(
+        "bookings/reminder_settle.sql",
+        {
+            "client_id": row["client_id"],
+            "id": row["id"],
+            "status": status,
+            "sent_at": now if status == "sent" else None,
+        },
+        conn=conn,
+    )
+
+
+async def _try_one(
+    app_pool: AsyncConnectionPool, mailer: Mailer, clock: Clock, client_id: UUID, row_id: UUID
+) -> str | None:
+    """Claim one row, check it, send it, settle it. Returns how it ended, or none if another run
+    had taken it. The caller holds a send slot, so every check is as close to the send as it can be.
+
+    The claim and the checks are one short transaction in the company's own tenant scope; it
+    commits before the send, so a row that is `sending` is never taken again, and the send itself
+    runs with no transaction open. A row dropped or failed while composing is settled in that same
+    transaction.
+    """
+    async with tx(app_pool, str(client_id)) as conn:
+        row = await db.q.fetch_one(
+            "bookings/reminder_claim_one.sql", {"client_id": client_id, "id": row_id}, conn=conn
+        )
+        if row is None:
+            return None
+        try:
+            async with conn.transaction():
+                composed = await _compose(
+                    conn, row, await _load_company(conn, client_id), clock.now()
+                )
+        except Exception as exc:
+            logger.error("booking_reminder_mail_failed", category=type(exc).__name__)
+            await _settle(conn, row, "failed", clock.now())
+            return "failed"
+        if composed is None:
+            await _settle(conn, row, "dropped", clock.now())
+            return "dropped"
+    try:
+        status = "sent" if await mailer.send(composed) == "sent" else "failed"
+    except Exception as exc:
+        logger.error("booking_reminder_mail_failed", category=type(exc).__name__)
+        status = "failed"
+    try:
+        async with tx(app_pool, str(client_id)) as conn:
+            await _settle(conn, row, status, clock.now())
+    except Exception as exc:
+        logger.error("booking_reminder_settle_failed", category=type(exc).__name__)
+    return status
+
+
 async def run_reminder_mail(
     conn: psycopg.AsyncConnection[Any],
+    app_pool: AsyncConnectionPool,
     mailer: Mailer | None,
     clock: Clock,
     *,
     batch_size: int = 100,
 ) -> dict[str, Any]:
-    """Send the queued email rows of every company; `conn` is the runner's owner connection.
+    """Send the queued email rows of every company. `conn` is the runner's owner connection and is
+    used only to list which companies have queued rows; everything else, for each company, runs
+    through that company's own transaction on `app_pool` (as `csa_app`, row security on).
 
-    With no mailer, or mail switched off, nothing is claimed and the rows stay `queued`. Otherwise
-    up to `batch_size` are claimed as `sending` in one transaction that commits before anything is
-    sent. Each is then checked again (still confirmed at the same start, gates and address as they
-    are now), sent outside any transaction, and settled as `sent`, `failed` or `dropped`. A failed
-    send is not retried, and a row left `sending` by a dead worker is never sent. Sends run
-    together, a few at a time, and the database steps take turns on the one connection.
+    With no mailer, or mail switched off, nothing is touched and the rows stay `queued`. Otherwise
+    up to `batch_size` rows are worked on, a few at a time (`notify.SIMULTANEOUS`). A row is claimed
+    as `sending` only when it has a send slot, in a short transaction that also checks it again
+    (still confirmed at the same start and not begun, the company's gates, the address as it is
+    now, the person still on the booking) and commits before the send. It is then settled `sent`,
+    `failed` or `dropped`. A failed send is not retried. A row left `sending` by a dead worker is
+    never sent, and a run cut short by its timeout leaves only the rows being sent that moment:
+    rows still waiting for a slot are still `queued`.
     """
     stats = {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
     if mailer is None or not mailer.enabled:
         return stats
     async with conn.transaction():
-        claimed = await db.q.fetch_all(
-            "bookings/reminders_claim.sql", {"batch_size": batch_size}, conn=conn
-        )
-    stats["claimed"] = len(claimed)
-    turn = asyncio.Lock()
+        companies = await db.q.fetch_all("bookings/reminders_companies.sql", conn=conn)
+    work: list[tuple[UUID, UUID]] = []
+    for company in companies:
+        if len(work) >= batch_size:
+            break
+        async with tx(app_pool, str(company["client_id"])) as scoped:
+            queued = await db.q.fetch_all(
+                "bookings/reminders_queued.sql",
+                {"client_id": company["client_id"], "batch_size": batch_size - len(work)},
+                conn=scoped,
+            )
+        work += [(company["client_id"], row["id"]) for row in queued]
     gate = asyncio.Semaphore(notify.SIMULTANEOUS)
-    companies: dict[UUID, _Company] = {}
 
-    async def settle(row: Mapping[str, Any], status: str, now: datetime) -> None:
-        try:
-            async with turn, conn.transaction():
-                await db.q.execute(
-                    "bookings/reminder_settle.sql",
-                    {
-                        "client_id": row["client_id"],
-                        "id": row["id"],
-                        "status": status,
-                        "sent_at": now if status == "sent" else None,
-                    },
-                    conn=conn,
-                )
-        except Exception as exc:
-            logger.error("booking_reminder_settle_failed", error=type(exc).__name__)
+    async def one(client_id: UUID, row_id: UUID) -> str | None:
+        async with gate:
+            return await _try_one(app_pool, mailer, clock, client_id, row_id)
 
-    async def one(row: Mapping[str, Any]) -> str:
-        status = "failed"
-        try:
-            now = clock.now()
-            async with turn, conn.transaction():
-                # The owner sees every company; the team read still insists the transaction is
-                # this company's, as `csa.core.tenancy.tx` sets it: for this transaction only.
-                await conn.execute(
-                    "SELECT set_config('app.client_id', %s, true)", (str(row["client_id"]),)
-                )
-                company = companies.get(row["client_id"])
-                if company is None:
-                    company = companies[row["client_id"]] = await _load_company(
-                        conn, row["client_id"]
-                    )
-                composed = await _compose(conn, row, company, now)
-            if composed is None:
-                status = "dropped"
-            else:
-                async with gate:
-                    status = "sent" if await mailer.send(composed) == "sent" else "failed"
-        except Exception as exc:
-            logger.error("booking_reminder_mail_failed", category=type(exc).__name__)
-        await settle(row, status, clock.now())
-        return status
-
-    for status in await asyncio.gather(*(one(row) for row in claimed)):
-        stats[status] += 1
+    for status in await asyncio.gather(*(one(client_id, row_id) for client_id, row_id in work)):
+        if status is not None:
+            stats["claimed"] += 1
+            stats[status] += 1
     return stats

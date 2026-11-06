@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
 import pytest
-from csa.console.mailer import Mailer
+from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
@@ -49,7 +51,9 @@ async def mail(
 ) -> dict[str, Any]:
     mailer = None if transport is None else Mailer(transport, SENDER)
     async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as conn:
-        return await run_reminder_mail(conn, mailer, FakeClock(when), batch_size=batch_size)
+        return await run_reminder_mail(
+            conn, shop.w.pool, mailer, FakeClock(when), batch_size=batch_size
+        )
 
 
 async def remind(shop: Shop, transport: FakeTransport, when: datetime = EARLY) -> None:
@@ -477,7 +481,9 @@ async def test_no_mailer_or_mail_switched_off_leaves_rows_queued(shop: Shop) -> 
     await queue(shop)
     assert (await mail(shop, None))["sent"] == 0
     async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as conn:
-        stats = await run_reminder_mail(conn, Mailer(None, SENDER), FakeClock(EARLY), batch_size=10)
+        stats = await run_reminder_mail(
+            conn, shop.w.pool, Mailer(None, SENDER), FakeClock(EARLY), batch_size=10
+        )
     assert stats["sent"] == 0
     assert {r["status"] for r in await rows(shop)} == {"queued"}
     relay = FakeTransport()
@@ -530,7 +536,7 @@ async def test_the_jobs_are_registered_every_five_minutes_and_onboarding_compani
     shop: Shop,
 ) -> None:
     transport = FakeTransport()
-    registry = build_default_registry(Mailer(transport, SENDER))
+    registry = build_default_registry(Mailer(transport, SENDER), shop.w.pool)
     queue_job = registry.get("booking_reminder_queue")
     mail_job = registry.get("booking_reminder_mail")
     assert queue_job is not None and queue_job.per_client
@@ -644,3 +650,155 @@ async def test_the_expiry_job_still_runs_the_same_as_before_with_no_customer(sho
         clock = FakeClock(datetime(2032, 1, 1, tzinfo=UTC))
         stats = await run_pending_expiry(conn, shop.client, clock)
     assert stats == {"expired": 0, "told": 0, "mailed": 0, "failed": 0}
+
+
+# --- each company's mail is read and settled as that company --------------------------------------
+
+
+class Hooked(FakeTransport):
+    """A relay that runs `hook` (blocking) the first time it is asked to send."""
+
+    def __init__(self, hook: Callable[[], None]) -> None:
+        super().__init__()
+        self.hook = hook
+        self.fired = False
+
+    def send(self, mail: OutgoingMail, sender: str) -> None:
+        if not self.fired:
+            self.fired = True
+            self.hook()
+        super().send(mail, sender)
+
+
+def owner_exec(shop: Shop, statement: str, *params: Any) -> None:
+    with psycopg.connect(shop.w.owner_dsn, autocommit=True) as conn:
+        conn.execute(statement, params)  # type: ignore[arg-type]
+
+
+async def test_two_companies_in_one_run_each_get_their_own_brand_zone_and_rows(
+    shop: Shop,
+) -> None:
+    other = shop.w.tenants[1]
+    await staff_meeting(shop)
+    elsewhere = await shop.team.send(
+        shop.team.other, "/people", {"display_name": "Other Person", "email": "other@example.test"}
+    )
+    assert elsewhere.status_code == 201, elsewhere.text
+    there = meeting(elsewhere.json(), start=at(10), guests=[{"email": "other-guest@example.test"}])
+    await booked(shop.team, shop.team.other, there)
+    await shop.w.q(
+        "UPDATE clients SET timezone = 'Asia/Jakarta', brand_name = 'Mawar' WHERE id = %s",
+        shop.tenant,
+    )
+    await shop.w.q(
+        "UPDATE clients SET timezone = 'Asia/Tokyo', brand_name = 'Cekap' WHERE id = %s", other
+    )
+    await queue(shop)
+    async with tx(shop.w.pool, other) as conn:
+        await run_reminder_queue(conn, uuid.UUID(other), FakeClock(EARLY), batch_size=100)
+    # A company's own transaction sees its own rows only, and cannot claim another's.
+    ours = await shop.w.q("SELECT id FROM booking_reminders WHERE client_id = %s", shop.tenant)
+    async with tx(shop.w.pool, other) as conn:
+        visible = await db.q.fetch_all(
+            "bookings/reminders_queued.sql",
+            {"client_id": shop.client, "batch_size": 10},
+            conn=conn,
+        )
+        stolen = await db.q.fetch_one(
+            "bookings/reminder_claim_one.sql",
+            {"client_id": shop.client, "id": ours[0]["id"]},
+            conn=conn,
+        )
+    assert visible == [] and stolen is None
+    relay = FakeTransport()
+    stats = await mail(shop, relay)
+    assert stats["sent"] == 5 and stats["failed"] == 0
+    first = {CUSTOMER, STAFF, GUEST}
+    second = {"other@example.test", "other-guest@example.test"}
+    assert {m.to for m in relay.sent} == first | second
+    for sent in relay.sent:
+        if sent.to in first:
+            assert "Mawar" in sent.text and "4 Mar 2031, 17:00" in sent.text
+            assert "Cekap" not in sent.text and "Asia/Jakarta" in sent.text
+        else:
+            assert "Cekap" in sent.text and "4 Mar 2031, 19:00" in sent.text
+            assert "Mawar" not in sent.text and "Asia/Tokyo" in sent.text
+    assert {r["status"] for r in await rows(shop)} == {"sent"}
+
+
+# --- the checks are made when a row's turn to send comes ------------------------------------------
+
+
+async def test_a_cancel_that_arrives_while_a_row_waits_for_a_send_slot_is_seen(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("csa.bookings.notify.SIMULTANEOUS", 1)
+    first = await make_person(shop.team, "First Person", email="first@example.test")
+    second = await make_person(shop.team, "Second Person", email="second@example.test")
+    await booked(shop.team, shop.team.admin, meeting(first, start=at(10)))
+    await queue(shop)  # the first booking's row is queued before the second's exists
+    two = await booked(shop.team, shop.team.admin, meeting(second, start=at(11)))
+    await queue(shop)
+    cancel = "UPDATE bookings SET status = 'cancelled' WHERE id = %s"
+    relay = Hooked(lambda: owner_exec(shop, cancel, two["id"]))
+    stats = await mail(shop, relay)
+    # One slot: the second row waits while the first is being sent, and the cancel lands then.
+    assert relay.to() == ["first@example.test"]
+    assert stats["sent"] == 1 and stats["dropped"] == 1
+    assert statuses(await rows(shop)) == {
+        ("staff", "first@example.test"): "sent",
+        ("staff", "second@example.test"): "dropped",
+    }
+
+
+async def test_replies_turned_off_while_a_row_waits_for_a_send_slot_is_seen(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("csa.bookings.notify.SIMULTANEOUS", 1)
+    person = await make_person(shop.team, "Aina Plain")
+    kind = await make_type(shop.team, delivery="named", person_ids=[person["id"]])
+    first, second = await shop.customer("First"), await shop.customer("Second")
+    await with_email(shop, first, "first@example.test")
+    await with_email(shop, second, "second@example.test")
+    await shop.mode("auto")
+    assert (await shop.book(first, kind["id"], TEN)).code == "confirmed"
+    await queue(shop)
+    assert (await shop.book(second, kind["id"], TEN + timedelta(minutes=30))).code == "confirmed"
+    await queue(shop)
+    off = (
+        "UPDATE clients SET config = jsonb_set(coalesce(config, '{}'::jsonb), '{policy}',"
+        ' \'{"deployment_mode": "shadow"}\'::jsonb) WHERE id = %s'
+    )
+    relay = Hooked(lambda: owner_exec(shop, off, shop.tenant))
+    stats = await mail(shop, relay)
+    assert relay.to() == ["first@example.test"]
+    assert stats["sent"] == 1 and stats["dropped"] == 1
+    assert statuses(await rows(shop)) == {
+        ("customer", "first@example.test"): "sent",
+        ("customer", "second@example.test"): "dropped",
+    }
+
+
+async def test_a_timeout_leaves_only_the_row_being_sent_not_the_ones_still_waiting(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("csa.bookings.notify.SIMULTANEOUS", 1)
+    await staff_meeting(shop)
+    await queue(shop)
+    sending = asyncio.Event()
+    mailer = Mailer(FakeTransport(), SENDER)
+
+    async def stuck(message: OutgoingMail) -> Any:
+        sending.set()
+        await asyncio.sleep(30)
+
+    mailer.send = stuck  # type: ignore[method-assign]
+    async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as conn:
+        task = asyncio.create_task(
+            run_reminder_mail(conn, shop.w.pool, mailer, FakeClock(EARLY), batch_size=100)
+        )
+        await sending.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert sorted(r["status"] for r in await rows(shop)) == ["queued", "queued", "sending"]
