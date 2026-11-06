@@ -602,7 +602,8 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     """Start queue/reaper, checkpoint retention, and the liveness heartbeat."""
     settings = get_settings()
     # A bad bucket or root stops the worker before it opens pools or starts any loop.
-    await verify_stores(build_stores(settings))
+    stores = build_stores(settings)
+    await verify_stores(stores)
     owner_dsn = str(settings.LG_DATABASE_URL)
     owner_pool = db.build_pool(owner_dsn, max_size=4)
     app_pool = db.build_pool(str(settings.DATABASE_URL), max_size=8)
@@ -686,13 +687,13 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
     background = [jobs_task, retention, hr_leavers]
     if settings.KB_INGEST_ENABLED:
-        assert settings.KB_UPLOAD_ROOT is not None
+        assert stores.kb is not None
         kb_processor = KbIngestProcessor(
             owner_pool,
             app_pool,
             embedder=DefaultKbEmbedder.from_settings(settings),
             config=KbIngestConfig(
-                upload_root=settings.KB_UPLOAD_ROOT,
+                store=stores.kb,
                 max_files=settings.KB_MAX_FILES_PER_JOB,
                 max_file_bytes=settings.KB_MAX_FILE_BYTES,
             ),

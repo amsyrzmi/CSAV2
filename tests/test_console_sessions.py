@@ -18,6 +18,8 @@ from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
 from csa.console.security import digest
 from csa.core import db
+from csa.storage.base import ObjectStore
+from csa.storage.local import LocalObjectStore
 from fastapi import FastAPI, HTTPException
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
@@ -42,6 +44,7 @@ class SessionWorld:
         pool: AsyncConnectionPool,
         app: FastAPI,
         upload_root: Path,
+        kb_store: ObjectStore,
     ) -> None:
         self.owner_dsn = owner_dsn
         self.identity_dsn = ""
@@ -49,6 +52,7 @@ class SessionWorld:
         self.pool = pool
         self.app = app
         self.upload_root = upload_root
+        self.kb_store = kb_store
         self.browsers: list[httpx.AsyncClient] = []
         self.admin: httpx.AsyncClient
         self.admin_id: str
@@ -110,7 +114,14 @@ class SessionWorld:
 
 
 @pytest.fixture
-async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIterator[SessionWorld]:
+def kb_store(tmp_path: Path) -> ObjectStore:
+    return LocalObjectStore(tmp_path)
+
+
+@pytest.fixture
+async def sessions(
+    migrated_dsn: str, app_dsn: str, tmp_path: Path, kb_store: ObjectStore
+) -> AsyncIterator[SessionWorld]:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
         await reset_console_identity(owner)
         await owner.execute(
@@ -131,7 +142,7 @@ async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIter
     app.state.pool = domain_pool
     app.include_router(build_identity_router())
     app.include_router(build_onboarding_router())
-    world = SessionWorld(migrated_dsn, service, domain_pool, app, tmp_path)
+    world = SessionWorld(migrated_dsn, service, domain_pool, app, tmp_path, kb_store)
     world.identity_dsn = identity_dsn
     try:
         await service.check_ready()
@@ -169,7 +180,7 @@ async def sessions(migrated_dsn: str, app_dsn: str, tmp_path: Path) -> AsyncIter
             build_router(
                 MACHINE_TOKEN,
                 machine_client_ids=frozenset({uuid.UUID(world.tenants[0])}),
-                kb_upload_root=tmp_path,
+                kb_store=kb_store,
             )
         )
         yield world

@@ -1,7 +1,7 @@
 """Queue processor for console knowledge base uploads (LG13).
 
-The console stores up to ``KB_MAX_FILES_PER_JOB`` files under
-``<KB_UPLOAD_ROOT>/<client_id>/`` and inserts a ``kb_ingest_jobs`` row with
+The console stores up to ``KB_MAX_FILES_PER_JOB`` files under the
+tenant's prefix in the object store and inserts a ``kb_ingest_jobs`` row with
 ``source='upload'`` and ``files`` set to a list of relative paths (or objects
 with ``path`` and optional ``name``/``title``/``category``/``language``).
 
@@ -29,17 +29,12 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from csa.agents.kb.embedder import KbEmbedder, KbEmbeddingError
-from csa.agents.kb.extract import (
-    KbFileError,
-    extract_document,
-    file_kind_for,
-    read_upload,
-    resolve_upload_path,
-)
+from csa.agents.kb.extract import KbFileError, extract_document, file_kind_for
 from csa.agents.kb.lifecycle import check_ingestion
 from csa.agents.kb.store import store_document
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.storage.base import InvalidObjectName, ObjectStore, StorageError, StorageNotFound
 
 logger = structlog.get_logger(__name__)
 
@@ -69,12 +64,31 @@ class KbJobMeta(BaseModel):
 
 @dataclass(frozen=True)
 class KbIngestConfig:
-    upload_root: Path
+    store: ObjectStore
     max_files: int = 3
     max_file_bytes: int = 10 * 1024 * 1024
     max_attempts: int = 3
     stale_after_seconds: float = 900.0
     retry_backoff_seconds: float = 60.0
+
+
+def read_source(store: ObjectStore, client_id: UUID, path: str, max_bytes: int) -> bytes:
+    """Read one stored source file, refusing oversize and empty content.
+
+    ``StorageNotFound`` and other ``StorageError`` values propagate for the caller to map.
+    """
+    if not path or "\x00" in path:
+        raise KbFileError("file path is empty or invalid")
+    try:
+        data = store.read(client_id, path, max_bytes + 1)
+    except InvalidObjectName as exc:
+        # A name with separators or dot segments can only point outside the tenant's prefix.
+        raise KbFileError("file is outside the client upload directory") from exc
+    if len(data) > max_bytes:
+        raise KbFileError(f"file exceeds the {max_bytes // (1024 * 1024)} MB limit")
+    if not data:
+        raise KbFileError("file is empty")
+    return data
 
 
 def parse_job_files(raw: Any) -> list[KbUploadFile]:
@@ -192,10 +206,16 @@ class KbIngestProcessor:
         result: dict[str, Any] = {"file": display, "path": upload.path}
         try:
             kind = file_kind_for(display)
-            path = resolve_upload_path(self._config.upload_root, client_id, upload.path)
-            if path.suffix.lower() in _KNOWN_SUFFIXES and file_kind_for(path.name) != kind:
+            stored = Path(upload.path)
+            if stored.suffix.lower() in _KNOWN_SUFFIXES and file_kind_for(stored.name) != kind:
                 raise KbFileError("file name and stored file type do not match")
-            data = await asyncio.to_thread(read_upload, path, self._config.max_file_bytes)
+            data = await asyncio.to_thread(
+                read_source,
+                self._config.store,
+                client_id,
+                upload.path,
+                self._config.max_file_bytes,
+            )
             content_hash = hashlib.sha256(data).hexdigest()
 
             async with tx(self._app_pool, str(client_id)) as conn:
@@ -221,7 +241,7 @@ class KbIngestProcessor:
             document = await asyncio.to_thread(extract_document, data, kind, title=title)
         except KbFileError as exc:
             return result | {"status": "failed", "error": str(exc)}
-        except FileNotFoundError:
+        except StorageNotFound:
             logger.warning(
                 "kb_source_removed_before_read",
                 client_id=str(client_id),
@@ -230,6 +250,16 @@ class KbIngestProcessor:
             return result | {
                 "status": "failed",
                 "error": "source file was deleted or is unavailable",
+            }
+        except StorageError as exc:
+            logger.exception(
+                "kb_source_storage_failed",
+                client_id=str(client_id),
+                file_id=str(upload.file_id) if upload.file_id else None,
+            )
+            return result | {
+                "status": "failed",
+                "error": f"source file could not be read from storage: {type(exc).__name__}",
             }
 
         embeddings = await self._embedder.embed_batch([c.content for c in document.chunks])

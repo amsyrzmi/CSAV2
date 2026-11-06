@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.datastructures import UploadFile
 from starlette.types import Receive, Scope, Send
 
-from csa.agents.kb.extract import KbFileError, extract_document, file_kind_for, resolve_upload_path
+from csa.agents.kb.extract import KbFileError, extract_document, file_kind_for
 from csa.agents.kb.lifecycle import delete_document, lock
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Role
@@ -32,6 +32,7 @@ from csa.console.services import package_gate
 from csa.contracts.registry import CapabilityRegistry
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.storage.base import ObjectStore, StorageError, durable_put
 
 logger = structlog.get_logger(__name__)
 MEDIA = {
@@ -39,6 +40,8 @@ MEDIA = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "csv": "text/csv",
 }
+# Only names this module generated are ever swept; anything else in the prefix is left alone.
+SERVER_NAME = re.compile(r"\.?[a-f0-9-]{36}\.(pdf|docx|csv)(\.part)?")
 
 
 class FileOut(BaseModel):
@@ -156,30 +159,40 @@ async def durable_publish(directory: Path, name: str, data: bytes) -> None:
         raise
 
 
-async def cleanup_storage(pool: AsyncConnectionPool, root: Path, client_id: UUID) -> int:
+async def cleanup_storage(pool: AsyncConnectionPool, store: ObjectStore, client_id: UUID) -> int:
     """Reconcile only server-generated files, under the same publication lock."""
     removed = 0
     async with tx(pool, str(client_id)) as conn:
         await lock(conn, client_id)
         rows = await db.q.fetch_all("kb/files_inventory.sql", (client_id,), conn=conn)
         keep = {r["storage_name"] for r in rows if r["deleted_at"] is None}
-        directory = tenant_directory(root, client_id)
-        for path in directory.iterdir():
-            if re.fullmatch(r"\.?[a-f0-9-]{36}\.(pdf|docx|csv)(\.part)?", path.name):
-                if path.name not in keep:
-                    await asyncio.to_thread(path.unlink, missing_ok=True)
-                    removed += 1
+        for name in await asyncio.to_thread(store.list_names, client_id):
+            if SERVER_NAME.fullmatch(name) and name not in keep:
+                await asyncio.to_thread(store.delete, client_id, name)
+                removed += 1
     return removed
 
 
-def build_upload_router(root: Path | None) -> APIRouter:
+async def cleanup_after_remove(
+    pool: AsyncConnectionPool, store: ObjectStore | None, client_id: UUID
+) -> None:
+    """Sweep after a committed removal; the row is gone, so a later reconcile can finish."""
+    if store is None:
+        return
+    try:
+        await cleanup_storage(pool, store, client_id)
+    except Exception:
+        logger.exception("kb_storage_cleanup_failed", client_id=str(client_id))
+
+
+def build_upload_router(store: ObjectStore | None) -> APIRouter:
     # Every KB file route, reads and downloads included, belongs to the knowledge base add-on.
     router = APIRouter(dependencies=[Depends(package_gate("knowledge_base"))])
 
-    def storage() -> Path:
-        if root is None:
+    def storage() -> ObjectStore:
+        if store is None:
             raise HTTPException(503, "KB upload storage is not configured")
-        return root
+        return store
 
     async def enabled(
         client_id: Annotated[UUID, Depends(tenant)],
@@ -220,7 +233,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(writer)],
-        directory_root: Annotated[Path, Depends(storage)],
+        objects: Annotated[ObjectStore, Depends(storage)],
         idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
     ) -> UploadOut:
         staged: list[tuple[UUID, str, str, bytes, str]] = []
@@ -258,7 +271,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
                 ensure_ascii=True,
             ).encode()
         ).hexdigest()
-        published: list[Path] = []
+        published: list[str] = []
         try:
             async with tx(db_pool, str(client_id)) as conn:
                 await lock(conn, client_id)
@@ -269,14 +282,13 @@ def build_upload_router(root: Path | None) -> APIRouter:
                     if previous["fingerprint"] != fingerprint:
                         raise HTTPException(409, "idempotency key already used for different files")
                     return UploadOut(job_id=previous["job_id"], duplicate_request=True)
-                directory = await asyncio.to_thread(tenant_directory, directory_root, client_id)
                 batch_id, job_id = uuid4(), uuid4()
                 files = []
                 for file_id, name, kind, data, _digest in staged:
                     storage_name = f"{file_id}.{kind}"
                     # Track the destination before publication, including fsync failures.
-                    published.append(directory / storage_name)
-                    await durable_publish(directory, storage_name, data)
+                    published.append(storage_name)
+                    await durable_put(objects, client_id, storage_name, data)
                     files.append({"file_id": str(file_id), "path": storage_name, "name": name})
                 await db.q.execute(
                     "kb/upload_job_insert.sql",
@@ -309,7 +321,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
             # rather than removing a file that a committed job may already be reading.
             if published:
                 try:
-                    await asyncio.shield(cleanup_storage(db_pool, directory_root, client_id))
+                    await asyncio.shield(cleanup_storage(db_pool, objects, client_id))
                 except Exception:
                     logger.exception("kb_upload_reconciliation_failed", client_id=str(client_id))
             raise
@@ -342,7 +354,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
         file_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
-        directory_root: Annotated[Path, Depends(storage)],
+        objects: Annotated[ObjectStore, Depends(storage)],
     ) -> StreamingResponse:
         with ExitStack() as handles:
             async with tx(db_pool, str(client_id)) as conn:
@@ -352,15 +364,15 @@ def build_upload_router(root: Path | None) -> APIRouter:
                     raise HTTPException(404, "source file not found")
                 record = FileRecord.model_validate(row)
                 try:
-                    path = resolve_upload_path(directory_root, client_id, record.storage_name)
-                    stream = handles.enter_context(path.open("rb"))
-                except (KbFileError, OSError) as exc:
+                    stream = await asyncio.to_thread(objects.open, client_id, record.storage_name)
+                except (StorageError, OSError) as exc:
                     logger.exception(
                         "kb_source_missing", file_id=str(file_id), client_id=str(client_id)
                     )
                     raise HTTPException(
                         503, "source file unavailable; storage repair required"
                     ) from exc
+                handles.enter_context(stream)
             # Deletion may unlink the source without breaking an authorized download.
             response = SourceDownload(stream, record)
             handles.pop_all()
@@ -374,7 +386,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(writer)],
-        directory_root: Annotated[Path, Depends(storage)],
+        objects: Annotated[ObjectStore, Depends(storage)],
     ) -> None:
         async with tx(db_pool, str(client_id)) as conn:
             await lock(conn, client_id)
@@ -384,7 +396,7 @@ def build_upload_router(root: Path | None) -> APIRouter:
             if row["document_id"]:
                 await delete_document(conn, client_id, row["document_id"])
             await audit(conn, actor, client_id, "kb.source_deleted", str(file_id))
-        await cleanup_storage(db_pool, directory_root, client_id)
+        await cleanup_after_remove(db_pool, objects, client_id)
 
     @router.delete(
         "/kb/documents/{document_id}",
@@ -401,17 +413,16 @@ def build_upload_router(root: Path | None) -> APIRouter:
             if not await delete_document(conn, client_id, document_id):
                 raise HTTPException(404, "document not found")
             await audit(conn, actor, client_id, "kb.document_deleted", str(document_id))
-        if root:
-            await cleanup_storage(db_pool, root, client_id)
+        await cleanup_after_remove(db_pool, store, client_id)
 
     @router.post("/kb/storage/reconcile", response_model=ReconcileOut)
     async def reconcile(
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(writer)],
-        directory_root: Annotated[Path, Depends(storage)],
+        objects: Annotated[ObjectStore, Depends(storage)],
     ) -> ReconcileOut:
-        removed = await cleanup_storage(db_pool, directory_root, client_id)
+        removed = await cleanup_storage(db_pool, objects, client_id)
         async with tx(db_pool, str(client_id)) as conn:
             await audit(conn, actor, client_id, "kb.storage_reconciled", str(client_id))
         return ReconcileOut(removed_files=removed)

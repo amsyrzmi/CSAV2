@@ -31,6 +31,7 @@ from csa.agents.kb.extract import (
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, parse_job_files
 from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
+from csa.storage.local import LocalObjectStore
 from docx import Document
 from psycopg.rows import dict_row
 
@@ -361,7 +362,9 @@ class KbWorld:
             owner_pool,
             app_pool,
             embedder=self.embedder,
-            config=KbIngestConfig(upload_root=root, max_attempts=2, retry_backoff_seconds=60),
+            config=KbIngestConfig(
+                store=LocalObjectStore(root), max_attempts=2, retry_backoff_seconds=60
+            ),
         )
 
     def tenant(self) -> Tenant:

@@ -7,7 +7,8 @@ from unittest.mock import Mock
 
 import pytest
 from csa.core.settings import Settings
-from scripts.dev_kb_ingest import validate
+from csa.storage.local import LocalObjectStore
+from scripts.dev_kb_ingest import ingest_config, validate
 
 
 def config(**changes) -> Settings:
@@ -19,6 +20,16 @@ def config(**changes) -> Settings:
         "TEI_ENDPOINT": "http://127.0.0.1:18082",
     }
     return Mock(spec=Settings, **(values | changes))
+
+
+def test_dev_worker_reads_from_the_local_upload_root() -> None:
+    settings = config(KB_MAX_FILES_PER_JOB=2, KB_MAX_FILE_BYTES=4096)
+
+    ingest = ingest_config(settings)
+
+    assert isinstance(ingest.store, LocalObjectStore)
+    assert ingest.store.root == Path("/tmp/synthetic-kb")
+    assert (ingest.max_files, ingest.max_file_bytes) == (2, 4096)
 
 
 def test_isolated_worker_config() -> None:

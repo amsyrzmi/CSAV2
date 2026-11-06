@@ -124,6 +124,8 @@ def create_app() -> FastAPI:
     """
     settings = get_settings()
     configure_logging(env=settings.ENV)
+    # One set of stores serves the KB routes and the startup check.
+    stores = build_stores(settings)
     configure_tracing(
         exporter=settings.OTEL_EXPORTER,
         otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
@@ -147,7 +149,7 @@ def create_app() -> FastAPI:
         workspace_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
-            await verify_stores(build_stores(settings))
+            await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
             # TikTok Shop connect routes; they answer tiktok_unavailable while TikTok is off.
@@ -423,7 +425,7 @@ def create_app() -> FastAPI:
             if settings.TEI_ENDPOINT is not None
             else ("hash-384" if settings.ENV != "prod" else None),
             kb_tei_configured=settings.TEI_ENDPOINT is not None,
-            kb_upload_root=settings.KB_UPLOAD_ROOT,
+            kb_store=stores.kb,
         )
     )
 
