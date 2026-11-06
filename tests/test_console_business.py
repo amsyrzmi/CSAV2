@@ -929,6 +929,9 @@ SHIP_TO = {
 DETAIL_KEYS = ORDER_KEYS | {"lines", "subtotal", "shipping_fee", "discount", "ship_to"}
 
 
+_NO_DIGITS = str.maketrans("0123456789", "ghijklmnop")
+
+
 async def put_tiktok_order(
     w: SessionWorld,
     tenant: str,
@@ -938,7 +941,9 @@ async def put_tiktok_order(
     channel: str = "tiktok_shop",
     lines: bool = True,
 ) -> str:
-    order_id = f"tt-synthetic-{uuid4()}"
+    # Letters only: a random UUID sometimes holds a Luhn-valid run of digits, which redaction
+    # turns into [CARD_0], so tests comparing a redacted summary failed now and then.
+    order_id = f"tt-synthetic-{uuid4().hex.translate(_NO_DIGITS)}"
     await w.q(
         "INSERT INTO orders (id,client_id,status,payment_status,channel,external_order_id,"
         "external_shop_id,total,currency,provider_status,synced_at,provider_updated_at,"
