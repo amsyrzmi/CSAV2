@@ -20,6 +20,7 @@ from csa.jobs.bookings import (
     run_pending_expiry,
     run_reminder_mail,
     run_reminder_queue,
+    run_turn_action_retention,
 )
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
@@ -142,6 +143,16 @@ def build_default_registry(
             per_client=False,
             timeout=150.0,
             batch_size=50,
+        )
+    )
+    # Once a day, for every company, as the owner: the app role never deletes these rows.
+    registry.register(
+        Job(
+            name="booking_turn_action_retention",
+            every=timedelta(hours=24),
+            fn=run_turn_action_retention,
+            per_client=False,
+            batch_size=1000,
         )
     )
     return registry

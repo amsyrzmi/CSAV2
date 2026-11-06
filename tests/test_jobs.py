@@ -14,6 +14,7 @@ from csa.jobs.bookings import (
     run_pending_expiry,
     run_reminder_mail,
     run_reminder_queue,
+    run_turn_action_retention,
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
@@ -463,6 +464,13 @@ async def test_registry_runs_the_booking_reminders_every_five_minutes() -> None:
         assert send is not None and send.per_client is False
         assert send.every == timedelta(minutes=5) and send.timeout > 30
         assert send.fn is not run_reminder_mail  # the registry binds the mailer around it
+
+
+async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner() -> None:
+    job = build_default_registry().get("booking_turn_action_retention")
+    assert job is not None and job.fn is run_turn_action_retention
+    # The app role never deletes what a turn key did, so this runs once, as the owner.
+    assert job.per_client is False and job.every == timedelta(hours=24)
 
 
 async def test_job_runner_due_and_heartbeat_health(

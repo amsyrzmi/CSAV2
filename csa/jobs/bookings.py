@@ -47,6 +47,10 @@ LAPSE_NOTICE_LIFE = timedelta(hours=24)
 # run at a time, so a row a run is sending is never swept: the age only says how soon one is shown.
 LOST_AFTER = timedelta(hours=1)
 MAIL_STATS = ("claimed", "sent", "failed", "dropped", "lost", "errors")
+# What a turn key did is kept this long, then removed: a message or a card retried later than
+# this is long settled (ingress gives up within minutes, checkpoints go after 14 days), and a cancel
+# question runs out within the hour.
+TURN_ACTION_LIFE = timedelta(days=30)
 
 
 # --- a reminder row -----------------------------------------------------------------------------
@@ -323,6 +327,33 @@ async def run_reminder_queue(
             break
         after = {"after_starts": page[-1]["starts_at"], "after_id": page[-1]["id"]}
     return {"bookings": bookings, "queued": queued, "told": told, "failed": failed}
+
+
+# --- retention ----------------------------------------------------------------------------------
+
+
+async def run_turn_action_retention(
+    conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int = 1000
+) -> dict[str, Any]:
+    """Remove the `booking_turn_actions` rows older than `TURN_ACTION_LIFE` that are done with:
+    every book, change and cancel, and every cancel question that has run out. A batch of
+    `batch_size` rows at a time, each batch its own transaction, until none is left.
+
+    `conn` is the runner's owner connection, and this is the only thing that deletes these rows:
+    the app role can't, so a company's own transactions can never undo what a turn key did.
+    """
+    now = clock.now()
+    removed = 0
+    while True:
+        async with conn.transaction():
+            gone = await db.q.fetch_all(
+                "bookings/turn_actions_purge.sql",
+                {"before": now - TURN_ACTION_LIFE, "now": now, "batch_size": batch_size},
+                conn=conn,
+            )
+        removed += len(gone)
+        if len(gone) < batch_size:
+            return {"removed": removed}
 
 
 # --- sending the queued mail --------------------------------------------------------------------
