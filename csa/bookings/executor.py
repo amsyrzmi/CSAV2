@@ -8,9 +8,10 @@ not part of is never found) and stores ids, never names. A time is the company's
 clock, turned into UTC here.
 
 The card is a rehearsal: the service runs inside a transaction that is rolled back, so the card
-shows exactly what Confirm will meet. Warnings (outside hours, a closed day) are shown on the
-card and bound into its version, and confirming counts as acknowledging those, no others. Leave
-is never acknowledged and never explained: a refusal is "Not available that day.".
+shows exactly what Confirm will meet. Warnings (outside hours, a closed day, and for an Admin a
+person away that day) are shown on the card and bound into its version, and confirming counts as
+acknowledging those, no others. Leave is never explained, as the tab's rules have it: staff are
+refused with "Not available that day.", and an Admin's card warns with that same sentence.
 
 Idempotency: ``booking_turn_actions`` (made for customer messages) records the proposal's key
 with the booking it made, moved or cancelled, so a replay finds that and acts no more.
@@ -30,7 +31,7 @@ from fastapi import HTTPException, Request
 from pydantic import AwareDatetime, Field, ValidationError, model_validator
 
 from csa.bookings import api as bookings_api
-from csa.bookings import customer_messages, service, setup
+from csa.bookings import customer_messages, service, setup, turn_actions
 from csa.bookings.bot import format_slot
 from csa.bookings.contracts import BookingActionIn, BookingIn, BookingMoveIn
 from csa.console.contracts import ConsoleActor
@@ -77,6 +78,9 @@ MAX_FREE_LINES = 6
 DEFAULT_MINUTES = 30
 LIVE = ("pending", "confirmed")
 TURN_ACTION = {"book": "book", "move": "change", "cancel": "cancel"}
+# A 403 while a card is made, by its code: the package suspended since the turn's facts were read,
+# or a booking the caller may not change. Any other (a tenant mismatch) is the plain "can't".
+FORBIDDEN = {"package_inactive": "bookings_unavailable", "own_bookings_only": "booking_own_only"}
 MAIL: dict[str, Literal["created", "moved", "cancelled"]] = {
     "book": "created",
     "move": "moved",
@@ -338,7 +342,8 @@ async def resolve(
         raise
     except HTTPException as exc:
         if exc.status_code == 403:
-            return _say(text["booking_own_only"])
+            # The card's gate or the tab's rule refused it: say which, never another's sentence.
+            return _say(text[FORBIDDEN.get(str(exc.detail), "booking_cannot")])
         if exc.status_code in (404, 409, 422):
             return _say(text["booking_cannot"])
         raise
@@ -559,8 +564,9 @@ async def _rehearse(
     """Run ``run`` in a transaction that is rolled back; the warnings it needed, with the sight.
 
     The first run acknowledges nothing: a refusal is raised plainly, and a time that needs
-    acknowledging yields its findings. Hours and a closed day are acknowledged by Confirm; leave
-    is refused, whoever asks.
+    acknowledging yields its findings. Hours and a closed day are acknowledged by Confirm. Leave
+    (`unavailable`) is too, for an Admin only, whose card warns "Not available that day."; staff
+    are refused it.
     """
 
     async def attempt(acknowledged: list[str]) -> _Seen:
@@ -775,12 +781,7 @@ class BookingActionExecutor:
         invite = True
         try:
             async with tx(request.app.state.pool, str(client_id)) as conn:
-                await setup.lock(conn, "turn", client_id, turn_key)
-                done = await db.q.fetch_one(
-                    "bookings/booking_turn_action_get.sql",
-                    {"client_id": client_id, "turn_key": turn_key},
-                    conn=conn,
-                )
+                done = await turn_actions.done_by(conn, client_id, turn_key)
                 if done is not None:
                     # Replayed: the booking the first run made, moved or cancelled, as it is now.
                     found = await service.read_records(
@@ -788,15 +789,8 @@ class BookingActionExecutor:
                     )
                     return _receipt(data.change, found[0])
                 record = await self._apply(conn, client_id, actor, data, bound, acknowledged)
-                await db.q.execute(
-                    "bookings/booking_turn_action_insert.sql",
-                    {
-                        "client_id": client_id,
-                        "turn_key": turn_key,
-                        "booking_id": record.id,
-                        "action": TURN_ACTION[data.change],
-                    },
-                    conn=conn,
+                await turn_actions.remember(
+                    conn, client_id, turn_key, record.id, TURN_ACTION[data.change]
                 )
                 if data.change != "book":
                     by_chat = await customer_messages.after_staff_action(

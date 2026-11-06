@@ -441,6 +441,25 @@ async def test_read_only_members_get_no_card(planned, team: Team) -> None:  # no
     assert await _proposal_count(w) == 0 and model.replies == []
 
 
+async def test_a_card_its_gate_refuses_after_the_turn_began_says_why_not_own_bookings_only(
+    planned,  # noqa: F811
+    team: Team,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w, model = planned
+    await make_person(team, "Aina Salleh")
+
+    async def suspended_since(*args: Any, **kwargs: Any) -> None:
+        raise HTTPException(403, "package_inactive")
+
+    # The facts said Bookings was on; the card's own gate finds it suspended since.
+    monkeypatch.setattr("csa.bookings.executor.require_package", suspended_since)
+    answer = answer_of(await say(w, model, team.staff, sync(people=["Aina"])))
+    assert "not part of this workspace's active services" in answer
+    assert "only change bookings you made" not in answer
+    assert await _proposal_count(w) == 0
+
+
 async def test_staff_change_only_their_own_or_attended_bookings(planned, team: Team) -> None:  # noqa: F811
     w, model = planned
     aina = await make_person(team, "Aina Salleh")
