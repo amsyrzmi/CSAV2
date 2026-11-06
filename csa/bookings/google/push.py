@@ -20,7 +20,7 @@ import math
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -34,7 +34,9 @@ from csa.bookings.google.client import CalendarError, EventResult
 from csa.bookings.google.connections import CalendarAccess, CalendarConnections
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.jobs.clock import Clock
+
+if TYPE_CHECKING:
+    from csa.jobs.clock import Clock  # the jobs package imports this module
 
 logger = structlog.get_logger(__name__)
 
