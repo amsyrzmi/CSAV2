@@ -762,16 +762,18 @@ async def test_a_declined_request_the_bot_made_owes_the_customer_a_staff_one_doe
     staff_made = record(status="cancelled", previous_status="pending", source="staff")
     # The default is the PR 1 rule: a booking never confirmed tells the customer nothing.
     assert await notified(staff_made, "cancelled") == (PEOPLE, None)
-    # A customer's bot asked, so the API says they are owed one.
-    assert await notified(bots, "cancelled", owed=True) == (EVERYONE, True)
+    # A customer's bot asked, so the API says they are owed one. Nobody on it was ever invited
+    # (staff had not confirmed it), so nobody else gets a cancellation.
+    assert await notified(bots, "cancelled", owed=True) == ([CUSTOMER], True)
 
 
 async def test_a_chat_message_replaces_the_mail_for_a_decline_but_not_for_a_confirmed_booking() -> (
     None
 ):
     bots = record(status="cancelled", previous_status="pending", source="bot")
-    # They never had the event, so the chat message is the only word and no mail adds to it.
-    assert await notified(bots, "declined", owed=True, by_chat=True) == (PEOPLE, True)
+    # They never had the event, so the chat message is the only word and no mail adds to it; the
+    # people on it were never invited, so they get nothing either.
+    assert await notified(bots, "declined", owed=True, by_chat=True) == ([], True)
     # A confirmation, a move or the cancellation of a booking they were invited to carries the
     # calendar file, so it still goes to the customer.
     confirmed = record(source="bot", previous_status="pending")
@@ -787,9 +789,7 @@ async def test_a_chat_message_replaces_the_mail_for_a_decline_but_not_for_a_conf
     assert await notified(silent, "created") == (PEOPLE, False)
 
 
-async def test_a_declined_booking_mails_the_customer_plain_text_and_the_people_a_cancellation() -> (
-    None
-):
+async def test_a_declined_booking_mails_the_customer_plain_text_and_the_people_nothing() -> None:
     bots = record(status="cancelled", previous_status="pending", source="bot")
     relay = FakeTransport()
     outcome = await notify.notify(Mailer(relay, SENDER), bots, "declined", FACTS, owed=True)
@@ -797,9 +797,8 @@ async def test_a_declined_booking_mails_the_customer_plain_text_and_the_people_a
     customer = relay.for_(CUSTOMER)
     assert customer.calendar is None and "wasn't confirmed" in customer.text
     assert "calendar" not in customer.text.lower() and "cancelled" not in customer.subject.lower()
-    for address in PEOPLE:
-        mail = relay.for_(address)
-        assert mail.calendar is not None and mail.calendar.method == "CANCEL"
+    # The people on it were never sent its invitation, so there is nothing to cancel for them.
+    assert relay.to() == [CUSTOMER]
 
 
 async def test_a_declined_request_mails_only_the_customer_and_says_the_booking_stands() -> None:
