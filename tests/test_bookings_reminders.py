@@ -688,14 +688,57 @@ async def test_no_mailer_or_mail_switched_off_leaves_rows_queued(shop: Shop) -> 
     assert len(relay.sent) == 3  # and they go once mail is on
 
 
-async def test_a_row_claimed_by_a_worker_that_died_is_never_sent_again(shop: Shop) -> None:
+async def test_a_row_claimed_by_a_worker_that_died_is_never_sent_again_and_is_shown_failed(
+    shop: Shop,
+) -> None:
     await staff_meeting(shop)
     await queue(shop)
-    await shop.w.q("UPDATE booking_reminders SET status = 'sending'")
+    await shop.w.q(
+        "UPDATE booking_reminders SET status = 'sending', created_at = %s",
+        EARLY - timedelta(minutes=10),
+    )
     relay = FakeTransport()
-    await mail(shop, relay)
-    assert relay.sent == []
+    stats = await mail(shop, relay)
+    assert relay.sent == [] and stats["lost"] == 0
     assert {r["status"] for r in await rows(shop)} == {"sending"}
+    # An hour after it was queued, a row still `sending` was lost: it is failed, never queued again.
+    stats = await mail(shop, relay, EARLY + timedelta(minutes=51))
+    assert relay.sent == []
+    assert stats["lost"] == 3 and stats["claimed"] == 0
+    assert {r["status"] for r in await rows(shop)} == {"failed"}
+    assert (await mail(shop, relay, EARLY + timedelta(minutes=56)))["lost"] == 0
+
+
+async def test_a_row_whose_claim_fails_does_not_stop_the_others_or_lose_the_stats(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await staff_meeting(shop)
+    await queue(shop)
+    real = db.q.fetch_one
+    calls: list[str] = []
+
+    async def flaky(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "bookings/reminder_claim_one.sql":
+            calls.append(name)
+            if len(calls) == 1:
+                raise psycopg.OperationalError("synthetic claim failure")
+        return await real(name, *args, **kwargs)
+
+    monkeypatch.setattr(db.q, "fetch_one", flaky)
+    relay = FakeTransport()
+    with capture_logs() as logs:
+        stats = await mail(shop, relay)
+    assert stats["claimed"] == 2 and stats["sent"] == 2 and stats["errors"] == 1
+    assert len(relay.sent) == 2
+    assert ("booking_reminder_claim_failed", "OperationalError") in [
+        (e["event"], e.get("category")) for e in logs
+    ]
+    for secret in (CUSTOMER, STAFF, GUEST):
+        assert secret not in repr(logs)
+    # The row whose claim failed was never claimed, so the next run sends it.
+    assert sorted(r["status"] for r in await rows(shop)) == ["queued", "sent", "sent"]
+    assert (await mail(shop, relay))["sent"] == 1
+    assert len(relay.sent) == 3
 
 
 async def test_the_batch_size_limits_one_run_and_the_rest_wait_for_the_next(shop: Shop) -> None:
@@ -946,6 +989,46 @@ async def test_two_companies_in_one_run_each_get_their_own_brand_zone_and_rows(
             assert "Cekap" in sent.text and "4 Mar 2031, 19:00" in sent.text
             assert "Mawar" not in sent.text and "Asia/Tokyo" in sent.text
     assert {r["status"] for r in await rows(shop)} == {"sent"}
+
+
+async def other_company_meeting(shop: Shop) -> None:
+    """A meeting at ten at the second company: one staff attendee."""
+    elsewhere = await shop.team.send(
+        shop.team.other, "/people", {"display_name": "Other Person", "email": "other@example.test"}
+    )
+    assert elsewhere.status_code == 201, elsewhere.text
+    await booked(shop.team, shop.team.other, meeting(elsewhere.json(), start=at(10)))
+    async with tx(shop.w.pool, shop.w.tenants[1]) as conn:
+        await run_reminder_queue(
+            conn, uuid.UUID(shop.w.tenants[1]), FakeClock(EARLY), batch_size=100
+        )
+
+
+async def test_one_company_with_many_rows_does_not_fill_every_batch(shop: Shop) -> None:
+    await staff_meeting(shop)
+    await queue(shop)  # three rows, all older than the other company's one
+    await other_company_meeting(shop)
+    relay = FakeTransport()
+    stats = await mail(shop, relay, batch_size=2)
+    assert stats["sent"] == 2
+    assert "other@example.test" in relay.to()  # one from each company, not two from the first
+    await mail(shop, relay, batch_size=2)
+    assert len(relay.sent) == 4
+
+
+@pytest.mark.parametrize("status", ["suspended", "offboarded", "onboarding"])
+async def test_a_company_that_is_not_live_gets_no_mail_and_its_rows_wait(
+    shop: Shop, status: str
+) -> None:
+    await staff_meeting(shop)
+    await queue(shop)
+    await shop.w.q("UPDATE clients SET status = %s WHERE id = %s", status, shop.tenant)
+    relay = FakeTransport()
+    stats = await mail(shop, relay)
+    assert relay.sent == [] and stats["claimed"] == 0
+    assert {r["status"] for r in await rows(shop)} == {"queued"}
+    await shop.w.q("UPDATE clients SET status = 'active' WHERE id = %s", shop.tenant)
+    assert (await mail(shop, relay))["sent"] == 3
 
 
 # --- the checks are made when a row's turn to send comes ------------------------------------------

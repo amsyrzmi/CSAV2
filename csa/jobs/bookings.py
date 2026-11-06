@@ -7,7 +7,8 @@ and sends the queued email rows: the owner connection only lists which companies
 each row is then claimed, checked and settled in its own company's transaction, as `csa_app`. A row
 is claimed (`sending`) only when it has a send slot and committed before it is sent, so a worker
 that dies mid-send leaves that row `sending` and it is never sent twice: a lost reminder is the
-price of never sending one twice.
+price of never sending one twice. A later run settles such a row `failed` (`LOST_AFTER`), so a lost
+reminder shows as failed rather than staying out of sight.
 
 Logs carry categories only, never an address or a title.
 """
@@ -15,7 +16,8 @@ Logs carry categories only, never an address or a title.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import itertools
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -39,6 +41,11 @@ Audience = Literal["customer", "staff", "lapse"]
 # A lapse notice not sent within a day of the lapse is dropped, never sent late: by then "your
 # request wasn't confirmed in time" is old news, and the customer may well have asked again.
 LAPSE_NOTICE_LIFE = timedelta(hours=24)
+# An email row still `sending` this long after it was queued was claimed by a run that never
+# finished it, and is settled `failed`. Only a run holds rows `sending`, and the job's lock lets one
+# run at a time, so a row a run is sending is never swept: the age only says how soon one is shown.
+LOST_AFTER = timedelta(hours=1)
+MAIL_STATS = ("claimed", "sent", "failed", "dropped", "lost", "errors")
 
 
 # --- a reminder row -----------------------------------------------------------------------------
@@ -452,6 +459,41 @@ async def _try_one(
     return status
 
 
+def _take_turns(
+    lists: Sequence[Sequence[tuple[UUID, UUID]]], limit: int
+) -> list[tuple[UUID, UUID]]:
+    """One row from each company in turn, up to `limit`: a company with many queued rows cannot
+    fill a batch while another waits."""
+    work = [one for turn in itertools.zip_longest(*lists) for one in turn if one is not None]
+    return work[:limit]
+
+
+async def _company_rows(
+    app_pool: AsyncConnectionPool,
+    client_id: UUID,
+    *,
+    lost: bool,
+    lost_before: datetime,
+    batch_size: int,
+) -> tuple[int, list[tuple[UUID, UUID]]]:
+    """In the company's own transaction: settle its lost rows `failed` (see `LOST_AFTER`), then
+    list up to `batch_size` of its queued rows. Returns `(rows found lost, queued rows)`."""
+    async with tx(app_pool, str(client_id)) as scoped:
+        swept = []
+        if lost:
+            swept = await db.q.fetch_all(
+                "bookings/reminders_lost.sql",
+                {"client_id": client_id, "lost_before": lost_before},
+                conn=scoped,
+            )
+        queued = await db.q.fetch_all(
+            "bookings/reminders_queued.sql",
+            {"client_id": client_id, "batch_size": batch_size},
+            conn=scoped,
+        )
+    return len(swept), [(client_id, row["id"]) for row in queued]
+
+
 async def run_reminder_mail(
     conn: psycopg.AsyncConnection[Any],
     app_pool: AsyncConnectionPool,
@@ -460,43 +502,68 @@ async def run_reminder_mail(
     *,
     batch_size: int = 100,
 ) -> dict[str, Any]:
-    """Send the queued email rows of every company. `conn` is the runner's owner connection and is
-    used only to list which companies have queued rows; everything else, for each company, runs
-    through that company's own transaction on `app_pool` (as `csa_app`, row security on).
+    """Send the queued email rows of every live company. `conn` is the runner's owner connection
+    and is used only to list which companies have rows to work on; everything else, for each
+    company, runs through that company's own transaction on `app_pool` (as `csa_app`, row
+    security on). A company that is not pilot or active is skipped, as every other job skips it,
+    and its rows stay `queued` until it is live again.
 
     With no mailer, or mail switched off, nothing is touched and the rows stay `queued`. Otherwise
-    up to `batch_size` rows are worked on, a few at a time (`notify.SIMULTANEOUS`). A row is claimed
-    as `sending` only when it has a send slot, in a short transaction that also checks it again
-    (still confirmed at the same start and not begun, the company's gates, the address as it is
-    now, the person still on the booking) and commits before the send. It is then settled `sent`,
-    `failed` or `dropped`. A failed send is not retried. A row left `sending` by a dead worker is
-    never sent, and a run cut short by its timeout leaves only the rows being sent that moment:
-    rows still waiting for a slot are still `queued`.
+    a company's rows left `sending` since before `LOST_AFTER` are settled `failed` and counted as
+    `lost`, and up to `batch_size` rows are worked on, taking one from each company in turn, a few
+    at a time (`notify.SIMULTANEOUS`). A row is claimed as `sending` only when it has a send slot,
+    in a short transaction that also checks it again (still confirmed at the same start and not
+    begun, the company's gates, the address as it is now, the person still on the booking) and
+    commits before the send. It is then settled `sent`, `failed` or `dropped`. A failed send is not
+    retried. A row whose claim fails is counted in `errors` and left as it was, for the next run,
+    and the other rows still go. A run cut short by its timeout leaves only the rows being sent
+    that moment `sending`: rows still waiting for a slot are still `queued`.
     """
-    stats = {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+    stats = {name: 0 for name in MAIL_STATS}
     if mailer is None or not mailer.enabled:
         return stats
+    lost_before = clock.now() - LOST_AFTER
     async with conn.transaction():
-        companies = await db.q.fetch_all("bookings/reminders_companies.sql", conn=conn)
-    work: list[tuple[UUID, UUID]] = []
+        companies = await db.q.fetch_all(
+            "bookings/reminders_companies.sql", {"lost_before": lost_before}, conn=conn
+        )
+    lists: list[list[tuple[UUID, UUID]]] = []
     for company in companies:
-        if len(work) >= batch_size:
-            break
-        async with tx(app_pool, str(company["client_id"])) as scoped:
-            queued = await db.q.fetch_all(
-                "bookings/reminders_queued.sql",
-                {"client_id": company["client_id"], "batch_size": batch_size - len(work)},
-                conn=scoped,
+        if len(lists) >= batch_size and not company["lost"]:
+            continue
+        try:
+            lost, queued = await _company_rows(
+                app_pool,
+                company["client_id"],
+                lost=company["lost"],
+                lost_before=lost_before,
+                batch_size=batch_size if len(lists) < batch_size else 0,
             )
-        work += [(company["client_id"], row["id"]) for row in queued]
+        except Exception as exc:
+            stats["errors"] += 1
+            logger.error("booking_reminder_list_failed", category=type(exc).__name__)
+            continue
+        stats["lost"] += lost
+        if queued:
+            lists.append(queued)
+    if stats["lost"]:
+        logger.warning("booking_reminder_mail_lost", count=stats["lost"])
     gate = asyncio.Semaphore(notify.SIMULTANEOUS)
 
     async def one(client_id: UUID, row_id: UUID) -> str | None:
         async with gate:
-            return await _try_one(app_pool, mailer, clock, client_id, row_id)
+            try:
+                return await _try_one(app_pool, mailer, clock, client_id, row_id)
+            except Exception as exc:
+                # The claim's transaction failed and rolled back: the row is as it was.
+                logger.error("booking_reminder_claim_failed", category=type(exc).__name__)
+                return "errors"
 
+    work = _take_turns(lists, batch_size)
     for status in await asyncio.gather(*(one(client_id, row_id) for client_id, row_id in work)):
-        if status is not None:
+        if status == "errors":
+            stats["errors"] += 1
+        elif status is not None:
             stats["claimed"] += 1
             stats[status] += 1
     return stats

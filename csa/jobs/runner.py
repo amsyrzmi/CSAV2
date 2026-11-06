@@ -15,7 +15,12 @@ from psycopg_pool import AsyncConnectionPool
 from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
+from csa.jobs.bookings import (
+    MAIL_STATS,
+    run_pending_expiry,
+    run_reminder_mail,
+    run_reminder_queue,
+)
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
@@ -122,7 +127,7 @@ def build_default_registry(
         conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
     ) -> dict[str, Any]:
         if app_pool is None:
-            return {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+            return {name: 0 for name in MAIL_STATS}
         return await run_reminder_mail(conn, app_pool, mailer, clock, batch_size=batch_size)
 
     # Once for every company: the owner connection lists which have mail queued, and each row is
