@@ -164,8 +164,19 @@ once (section 10); compose will not recreate the gateway while the SMTP secret f
 same two SMTP secret files and the same `CSA_STAGING_INVITE_MAIL` switch as the gateway. This is
 a compose change, so the rollout recreates the worker with the new file, and compose will not
 recreate it while the SMTP secret files are missing (section 10). The `smtp-install` step is
-already done on staging, so nothing new is written; export `CSA_STAGING_INVITE_MAIL=true` in the
-shell as well, or the worker's mail is switched off even though the gateway's is on.
+already done on staging, so nothing new is written. The scripted rollout
+(`scripts/staging_rollout.py`) reads `deploy/staging-rollout.env`, which already sets
+`CSA_STAGING_INVITE_MAIL=true`, so the recreated worker sends mail at once; only a hand-run compose
+needs `export CSA_STAGING_INVITE_MAIL=true` in the shell, or the worker's mail is off even though
+the gateway's is on.
+
+Expect, within the first five minutes of the first such rollout: a reminder for every confirmed
+booking that starts within its company's reminder time (by default the next 24 hours), mailed to
+each person on it with an address, each guest and each customer with an address, and a Telegram
+message to each customer with a Telegram chat at a company with Customer support active and
+replies on, bookings made while PR 1 was tested included. Only a booking made or moved after its
+reminder was due is skipped (its confirmation was enough). The mail job then sends up to 50 every
+five minutes. Check which addresses and Telegram contacts the staging companies hold first.
 
 **Once the email assistant is wired (section 11):** the two Google OAuth files must also
 exist before the gateway is recreated; compose will not recreate it while either is missing.
@@ -482,7 +493,8 @@ csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull neve
 ```
 
 With the flag off, a reminder is queued and waits: the worker's mail job leaves the rows
-`queued` and sends them once mail is on, as long as the booking has not started. To check the
+`queued` and sends them once mail is on, as long as the booking has not started; a notice that a
+held booking ran out of time is dropped instead once it is a day old. To check the
 worker's side, `csa_pipeline_compose logs --no-log-prefix worker 2>&1 | grep -o 'smtp_[a-z_]*' |
 sort | uniq -c` lists the same categories as the gateway's check below, never an address.
 

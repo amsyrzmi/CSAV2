@@ -214,6 +214,8 @@ class BookingRecord:
     replaces_starts_at: datetime | None = None
     replaces_ends_at: datetime | None = None
     pending_change_id: UUID | None = None
+    # Its current start was set after its reminder was due: it gets no reminder.
+    late_for_reminder: bool = False
 
 
 def involved(record: BookingRecord, user_id: UUID) -> bool:
@@ -505,6 +507,7 @@ async def read_records(
             source=row["source"],
             conversation_id=row["conversation_id"],
             cancel_reason=row["cancel_reason"],
+            late_for_reminder=row["late_for_reminder"],
         )
         for row in rows
     ]
@@ -777,6 +780,18 @@ def _max_advance(author: Author, booking_type: BookingTypeOut | None) -> timedel
     return timedelta(days=booking_type.max_advance_days)
 
 
+async def late_for_reminder(conn: Conn, client_id: UUID, start: datetime, now: datetime) -> bool:
+    """A start set now would already be past its reminder (`start - reminder_minutes < now`).
+
+    Judged once, when the start is set, with the company's reminder time at that moment: such a
+    booking gets no reminder, because its confirmation is enough, and one set before its reminder
+    was due keeps it whatever the reminder time later becomes. Every audience is the same.
+    """
+    row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+    minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+    return start - timedelta(minutes=minutes) < now
+
+
 async def create_booking(
     conn: Conn,
     client_id: UUID,
@@ -901,6 +916,7 @@ async def create_for(
             "conversation_id": conversation_id,
             "expires_at": expires_at,
             "replaces_booking_id": replaces_booking_id,
+            "late_for_reminder": await late_for_reminder(conn, client_id, start, now),
             "private": data.private,
             # The place is copied from the type, so editing the type later moves no booking. A
             # meeting with no type brings its own.
@@ -1048,7 +1064,13 @@ async def move_to(
     await _insert_holds(conn, client_id, booking_id, subjects, start, hold_end)
     await db.q.execute(
         "bookings/booking_times_set.sql",
-        {"client_id": client_id, "id": booking_id, "starts_at": start, "ends_at": end},
+        {
+            "client_id": client_id,
+            "id": booking_id,
+            "starts_at": start,
+            "ends_at": end,
+            "late_for_reminder": await late_for_reminder(conn, client_id, start, now),
+        },
         conn=conn,
     )
     await _audit(conn, author, client_id, "bookings.booking.moved", str(booking_id))
@@ -1150,13 +1172,20 @@ async def decline_booking(
 
 
 async def confirm_booking(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID, data: BookingActionIn
+    conn: Conn,
+    client_id: UUID,
+    actor: ConsoleActor,
+    booking_id: UUID,
+    data: BookingActionIn,
+    *,
+    now: datetime | None = None,
 ) -> BookingRecord:
     """Confirm a pending booking. It already holds its time.
 
     A pending request to move a booking is confirmed by moving that booking, which keeps its id (so
-    its calendar event is updated, not duplicated). The booking is locked first and the request
-    second, the order the bot takes them in, so the two can never wait on each other.
+    its calendar event is updated, not duplicated), and its new start is set at `now`. The booking
+    is locked first and the request second, the order the bot takes them in, so the two can never
+    wait on each other.
     """
     asked = await db.q.fetch_one(
         "bookings/booking_replaces.sql", {"client_id": client_id, "id": booking_id}, conn=conn
@@ -1172,12 +1201,12 @@ async def confirm_booking(
         raise HTTPException(409, "wrong_status")
     author = author_of(actor)
     if record.replaces_booking_id is not None:
-        return await _apply_change(conn, client_id, author, record)
+        return await _apply_change(conn, client_id, author, record, now or datetime.now(UTC))
     return await _finish(conn, client_id, author, record, "confirmed", "confirmed", free=False)
 
 
 async def _apply_change(
-    conn: Conn, client_id: UUID, author: Author, request: BookingRecord
+    conn: Conn, client_id: UUID, author: Author, request: BookingRecord, now: datetime
 ) -> BookingRecord:
     """Move the booking a request asks to move, to the request's time, and close the request.
 
@@ -1214,6 +1243,7 @@ async def _apply_change(
             "id": original.id,
             "starts_at": request.starts_at,
             "ends_at": request.ends_at,
+            "late_for_reminder": await late_for_reminder(conn, client_id, request.starts_at, now),
         },
         conn=conn,
     )

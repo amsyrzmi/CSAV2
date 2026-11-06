@@ -10,6 +10,8 @@ from typing import Any
 
 import psycopg
 import pytest
+from csa.bookings import service
+from csa.bookings.contracts import BookingActionIn
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
 from csa.core.tenancy import tx
@@ -20,8 +22,9 @@ from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_bookings_api import at, booked, meeting
-from tests.test_bookings_bot import TEN, Shop, shop
+from tests.test_bookings_bot import ELEVEN, TEN, Shop, pending_change, shop
 from tests.test_bookings_customer_messages import chat, outbound, pending_booking, run_expiry
+from tests.test_bookings_executor import _actor
 from tests.test_bookings_mail import SENDER, FakeTransport
 from tests.test_bookings_setup import make_person, make_type
 
@@ -33,6 +36,7 @@ ADDRESS = "12 Jalan Contoh, Kuala Lumpur"
 TEN_TEXT = "Tuesday 4 March 2031, 10:00 am (2031-03-04 10:00)"
 ZONED_TEXT = "Tuesday 4 March 2031, 5:00 pm (2031-03-04 17:00)"
 EARLY = TEN - timedelta(hours=2)  # inside the default 24 hour window
+MADE = TEN - timedelta(days=3)  # when the bot's bookings are made: before their reminder is due
 CUSTOMER = "customer@example.test"
 STAFF = "aina@example.test"
 GUEST = "guest@example.test"
@@ -86,9 +90,11 @@ async def a_person_and_type(shop: Shop, **extra: Any) -> tuple[dict[str, Any], d
     return person, kind
 
 
-async def bot_booking(shop: Shop, contact: uuid.UUID, kind: dict[str, Any]) -> Any:
+async def bot_booking(
+    shop: Shop, contact: uuid.UUID, kind: dict[str, Any], *, now: datetime = MADE
+) -> Any:
     await shop.mode("auto")
-    made = await shop.book(contact, kind["id"], TEN)
+    made = await shop.book(contact, kind["id"], TEN, now=now)
     assert made.code == "confirmed" and made.booking is not None
     return made.booking
 
@@ -209,14 +215,93 @@ async def test_a_booking_that_has_started_or_is_far_off_gets_no_reminder(shop: S
     assert await rows(shop) == [] and relay.sent == []
 
 
-async def test_a_booking_made_inside_the_reminder_window_is_reminded_on_the_next_run(
+async def late(shop: Shop) -> dict[str, bool]:
+    found = await shop.w.q(
+        "SELECT id::text AS id, late_for_reminder FROM bookings WHERE client_id = %s", shop.tenant
+    )
+    return {r["id"]: r["late_for_reminder"] for r in found}
+
+
+async def test_a_booking_made_after_its_reminder_was_due_gets_none(shop: Shop) -> None:
+    """Made two hours ahead with a 24 hour reminder: the confirmation is the reminder. Nobody is
+    reminded, on any channel: not the customer, not the people on it."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer()
+    await with_email(shop, contact)
+    await chat(shop, contact)
+    booking = await bot_booking(shop, contact, kind, now=TEN - timedelta(hours=2))
+    assert (await late(shop))[str(booking.id)] is True
+    relay = FakeTransport()
+    await remind(shop, relay, TEN - timedelta(hours=2))
+    await remind(shop, relay, TEN - timedelta(minutes=30))
+    assert await rows(shop) == [] and relay.sent == []
+    assert await reminders_in_chat(shop) == []
+
+
+async def test_a_booking_made_before_its_reminder_was_due_keeps_it_when_the_time_changes(
     shop: Shop,
 ) -> None:
-    await staff_meeting(shop)
+    """Made three days ahead with a 24 hour reminder, so it is owed one. The company then asks for
+    a week's notice: the booking still gets its reminder."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    await bot_booking(shop, contact, kind)
+    await shop.w.q(
+        "INSERT INTO booking_settings (client_id, reminder_minutes) VALUES (%s, 10080)",
+        shop.tenant,
+    )
     relay = FakeTransport()
-    # Made two hours ahead with a 24 hour reminder: the time to remind has already gone by.
-    await remind(shop, relay, TEN - timedelta(minutes=2 * 60))
-    assert relay.to() == sorted([CUSTOMER, STAFF, GUEST])
+    await remind(shop, relay)
+    assert relay.to() == sorted([CUSTOMER, STAFF])
+
+
+async def test_a_booking_moved_after_its_new_reminder_was_due_gets_none(shop: Shop) -> None:
+    """The bot moves it in place three hours before the new time: the move's own reply is enough.
+    Moved again, a day and more ahead, it is owed one again."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    booking = await bot_booking(shop, contact, kind)
+    moved = await shop.change(contact, booking.id, ELEVEN, now=ELEVEN - timedelta(hours=3))
+    assert moved.code == "moved"
+    relay = FakeTransport()
+    await remind(shop, relay, ELEVEN - timedelta(hours=2))
+    assert relay.sent == [] and await rows(shop) == []
+    later = ELEVEN + timedelta(days=2)
+    back = await shop.change(contact, booking.id, later, now=ELEVEN - timedelta(hours=2))
+    assert back.code == "moved" and (await late(shop))[str(booking.id)] is False
+    await remind(shop, relay, later - timedelta(hours=2))
+    assert relay.to() == sorted([CUSTOMER, STAFF])
+
+
+@pytest.mark.parametrize(
+    ("ahead", "reminded"), [(timedelta(hours=2), False), (timedelta(days=2), True)]
+)
+async def test_a_change_staff_confirm_is_judged_at_the_moment_it_moves_the_booking(
+    shop: Shop, ahead: timedelta, reminded: bool
+) -> None:
+    """Confirming a request to move a booking moves the booking then, so that is when its new
+    start is set."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    _, asked = await pending_change(shop, kind, contact, ELEVEN)
+    assert asked.booking is not None
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        moved = await service.confirm_booking(
+            conn,
+            shop.client,
+            _actor(shop.team.admin_info),
+            asked.booking.id,
+            BookingActionIn(version=asked.booking.version),
+            now=ELEVEN - ahead,
+        )
+    assert moved.starts_at == ELEVEN and moved.moved_by_request
+    assert (await late(shop))[str(moved.id)] is not reminded
+    relay = FakeTransport()
+    await remind(shop, relay, ELEVEN - timedelta(hours=1))
+    assert (CUSTOMER in relay.to()) is reminded
 
 
 async def test_the_company_chooses_how_early(shop: Shop) -> None:
@@ -332,7 +417,67 @@ async def test_a_bookings_only_company_reminds_its_customers_by_email(shop: Shop
     assert relay.to() == sorted([CUSTOMER, STAFF, GUEST])
 
 
+@pytest.mark.parametrize("how", ["no_package", "requested"])
+async def test_a_company_without_customer_support_reminds_by_email_and_never_on_telegram(
+    shop: Shop, how: str
+) -> None:
+    """With no active or suspended Customer support package nobody has switched Telegram on, even
+    if a chat survives from before: the customer is reminded by email only."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    await chat(shop, contact)
+    await bot_booking(shop, contact, kind)
+    if how == "no_package":
+        await shop.w.q(
+            "DELETE FROM console_service_packages"
+            " WHERE client_id = %s AND package = 'customer_support'",
+            shop.tenant,
+        )
+    else:
+        await shop.w.q(
+            "UPDATE console_service_packages SET status = 'requested'"
+            " WHERE client_id = %s AND package = 'customer_support'",
+            shop.tenant,
+        )
+    relay = FakeTransport()
+    await remind(shop, relay)
+    assert relay.to() == sorted([CUSTOMER, STAFF])
+    assert await reminders_in_chat(shop) == []
+    assert {(r["audience"], r["channel"]) for r in await rows(shop)} == {
+        ("customer", "email"),
+        ("staff", "email"),
+    }
+
+
 # --- moved and cancelled ------------------------------------------------------------------------
+
+
+async def test_a_telegram_reminder_waits_for_a_move_being_committed_and_names_the_new_time(
+    shop: Shop,
+) -> None:
+    """A move that has locked the booking and not yet committed is waited for: the reminder is
+    written after it, for the new time, never for the old one after the "moved" message."""
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer()
+    await chat(shop, contact)
+    booking = await bot_booking(shop, contact, kind)
+    async with await psycopg.AsyncConnection.connect(shop.w.owner_dsn) as mover:
+        async with mover.transaction():
+            await mover.execute(
+                "SELECT id FROM bookings WHERE id = %s FOR UPDATE", (str(booking.id),)
+            )
+            await mover.execute(
+                "UPDATE bookings SET starts_at = starts_at + interval '1 hour',"
+                " ends_at = ends_at + interval '1 hour', version = version + 1 WHERE id = %s",
+                (str(booking.id),),
+            )
+            job = asyncio.create_task(queue(shop))
+            await asyncio.sleep(1.0)
+            assert not job.done()
+        await asyncio.wait_for(job, 30)
+    (message,) = await reminders_in_chat(shop)
+    assert "11:00 am" in message["body"] and "10:00 am" not in message["body"]
 
 
 async def test_a_moved_booking_gets_a_new_reminder_and_no_stale_one(shop: Shop) -> None:
@@ -596,6 +741,31 @@ async def test_a_lapsed_booking_emails_a_customer_with_no_telegram(shop: Shop) -
     assert await outbound(shop) == []
 
 
+async def test_a_lapse_notice_more_than_a_day_old_is_dropped_and_never_sent_late(
+    shop: Shop,
+) -> None:
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    await pending_booking(shop, contact, kind)
+    assert (await run_expiry(shop, TEN))["mailed"] == 1
+    relay = FakeTransport()
+    await mail(shop, relay, TEN + timedelta(hours=25))  # mail was off for a day
+    assert relay.sent == []
+    assert [(r["audience"], r["status"]) for r in await rows(shop)] == [("lapse", "dropped")]
+
+
+async def test_a_lapse_notice_inside_its_day_still_goes(shop: Shop) -> None:
+    _, kind = await a_person_and_type(shop)
+    contact = await shop.customer("Email Only")
+    await with_email(shop, contact)
+    await pending_booking(shop, contact, kind)
+    await run_expiry(shop, TEN)
+    relay = FakeTransport()
+    await mail(shop, relay, TEN + timedelta(hours=23))
+    assert [m.to for m in relay.sent] == [CUSTOMER]
+
+
 async def test_a_lapsed_booking_tells_a_telegram_customer_there_and_does_not_email(
     shop: Shop,
 ) -> None:
@@ -761,9 +931,10 @@ async def test_replies_turned_off_while_a_row_waits_for_a_send_slot_is_seen(
     await with_email(shop, first, "first@example.test")
     await with_email(shop, second, "second@example.test")
     await shop.mode("auto")
-    assert (await shop.book(first, kind["id"], TEN)).code == "confirmed"
+    assert (await shop.book(first, kind["id"], TEN, now=MADE)).code == "confirmed"
     await queue(shop)
-    assert (await shop.book(second, kind["id"], TEN + timedelta(minutes=30))).code == "confirmed"
+    later = TEN + timedelta(minutes=30)
+    assert (await shop.book(second, kind["id"], later, now=MADE)).code == "confirmed"
     await queue(shop)
     off = (
         "UPDATE clients SET config = jsonb_set(coalesce(config, '{}'::jsonb), '{policy}',"

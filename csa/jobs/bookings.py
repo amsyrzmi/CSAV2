@@ -36,6 +36,9 @@ from csa.jobs.clock import Clock
 logger = structlog.get_logger(__name__)
 
 Audience = Literal["customer", "staff", "lapse"]
+# A lapse notice not sent within a day of the lapse is dropped, never sent late: by then "your
+# request wasn't confirmed in time" is old news, and the customer may well have asked again.
+LAPSE_NOTICE_LIFE = timedelta(hours=24)
 
 
 # --- a reminder row -----------------------------------------------------------------------------
@@ -50,9 +53,11 @@ async def _queue_row(
     channel: Literal["telegram", "email"],
     address: str | None,
     sent_at: datetime | None = None,
+    at: datetime | None = None,
 ) -> bool:
     """Make the row. True when it is new or was dropped and is queued again; false when this
-    booking, start, audience and address already has one (sent, failed or waiting)."""
+    booking, start, audience and address already has one (sent, failed or waiting). `at` is when
+    it was owed, by the job's clock (a lapse notice's age is measured from it); else now."""
     row = await db.q.fetch_one(
         "bookings/reminder_insert.sql",
         {
@@ -65,6 +70,7 @@ async def _queue_row(
             "address": None if address is None else address.lower(),
             "status": "sent" if channel == "telegram" else "queued",
             "sent_at": sent_at,
+            "created_at": at,
         },
         conn=conn,
     )
@@ -94,7 +100,8 @@ async def run_pending_expiry(
     message (replies not Off, Customer support active): nothing goes without them. A customer on
     Telegram is told there, in the Inbox thread. One who is not, and has an address, is mailed:
     the row goes in `booking_reminders` as audience `lapse`, in the same savepoint, so the mail job
-    sends it once and a worker that dies mid-send does not repeat it.
+    sends it once and a worker that dies mid-send does not repeat it. One the mail job has not sent
+    within `LAPSE_NOTICE_LIFE` is dropped instead.
     """
     blocked, _ = await bot.gate(conn, client_id)
     due = await db.q.fetch_all(
@@ -113,7 +120,13 @@ async def run_pending_expiry(
                         told += 1
                     elif address := notify.clean_address(notify.customer_address(lapsed)):
                         mailed += await _queue_row(
-                            conn, client_id, lapsed, "lapse", channel="email", address=address
+                            conn,
+                            client_id,
+                            lapsed,
+                            "lapse",
+                            channel="email",
+                            address=address,
+                            at=clock.now(),
                         )
             expired += 1
         except Exception as exc:
@@ -133,7 +146,7 @@ async def run_pending_expiry(
 async def customers_remindable(conn: psycopg.AsyncConnection[Any], client_id: UUID) -> bool:
     """Nothing automatic reaches a customer while replies are Off or Customer support is
     suspended. A company with no Customer support package has no replies setting, so its customers
-    are still reminded by email."""
+    are still reminded, by email only (`telegram_reminders`)."""
     has_package = await db.q.fetch_one(
         "console/service_package_any_in_status.sql",
         (client_id, [setup.REPLIES_PACKAGE], sorted(setup.REPLIES_STATUSES)),
@@ -145,18 +158,28 @@ async def customers_remindable(conn: psycopg.AsyncConnection[Any], client_id: UU
     return blocked is None
 
 
+async def telegram_reminders(conn: psycopg.AsyncConnection[Any], client_id: UUID) -> bool:
+    """A customer may be reminded on Telegram only where Customer support is active and replies
+    are not Off: that is the channel the company switched on. Without the package (none, or one
+    still being asked for) a chat surviving from earlier is not a channel anyone chose."""
+    blocked, _ = await bot.gate(conn, client_id)
+    return blocked is None
+
+
 async def _remind_customer(
     conn: psycopg.AsyncConnection[Any],
     client_id: UUID,
     booking: service.BookingRecord,
     zone: ZoneInfo,
     now: datetime,
+    telegram: bool,
 ) -> tuple[int, int]:
     """Queue the customer's one reminder for this start: `(emails queued, messages written)`.
 
     A customer on Telegram gets the message, in the Inbox thread as `reviewed` so a person's
-    takeover does not hold it. Anyone else with an address gets an email row. A WhatsApp customer
-    with no address gets nothing: nothing proactive goes there.
+    takeover does not hold it, when `telegram` allows it (`telegram_reminders`). Anyone else with
+    an address gets an email row. A WhatsApp customer with no address gets nothing: nothing
+    proactive goes there.
     """
     live = await db.q.fetch_one(
         "bookings/reminder_customer_live.sql",
@@ -167,7 +190,7 @@ async def _remind_customer(
         return 0, 0
     # The key names the start, so a booking moved away and back is not written to twice.
     key = f"booking:{booking.id}:reminder:{int(booking.starts_at.timestamp())}"
-    if await customer_messages.telegram_message(
+    if telegram and await customer_messages.telegram_message(
         conn,
         client_id,
         booking,
@@ -195,16 +218,28 @@ async def _remind(
     facts: notify.MailFacts,
     zone: ZoneInfo,
     customers: bool,
+    telegram: bool,
     now: datetime,
 ) -> tuple[int, int]:
+    """One booking's reminders. The booking is locked `FOR SHARE` before it is read, until the
+    company's run commits: a move or cancel already holding it is waited for and then read as it
+    stands, and one that comes after waits, so its own message follows the reminder. A reminder
+    for the old time can never land after the "moved" message."""
+    locked = await db.q.fetch_one(
+        "bookings/booking_share_lock.sql", {"client_id": client_id, "id": booking_id}, conn=conn
+    )
+    if locked is None:
+        return 0, 0
     found = await service.read_records(conn, client_id, booking_id=booking_id)
-    if not found or found[0].status != "confirmed" or found[0].starts_at <= now:
+    if not found:
         return 0, 0
     booking = found[0]
+    if booking.status != "confirmed" or booking.starts_at <= now or booking.late_for_reminder:
+        return 0, 0
     queued = told = 0
     # A private meeting is for its attendees and guests; its customer hears nothing.
     if customers and booking.customer is not None and not booking.private:
-        queued, told = await _remind_customer(conn, client_id, booking, zone, now)
+        queued, told = await _remind_customer(conn, client_id, booking, zone, now, telegram)
     for one in notify.recipients(booking, facts, customer=False):
         queued += await _queue_row(
             conn, client_id, booking, "staff", channel="email", address=one.address
@@ -221,7 +256,9 @@ async def run_reminder_queue(
 ) -> dict[str, Any]:
     """Queue the reminders owed for the company's confirmed bookings starting within its reminder
     time. Idempotent: a recipient already queued, sent or failed for a start is left alone, so it
-    can run every five minutes. A booking made inside the window is queued on the next run.
+    can run every five minutes. A booking whose current start was set after its reminder was due
+    (made or moved inside the window) gets none, for anyone: its confirmation is enough
+    (`service.late_for_reminder`).
 
     Bookings are read a page of `batch_size` at a time until none is left, each in its own
     savepoint, so one that cannot be queued does not stop the rest. Customers are reminded only
@@ -235,6 +272,7 @@ async def run_reminder_queue(
     facts = await notify.load_facts(conn, client_id)
     zone = ZoneInfo(facts.timezone)
     customers = await customers_remindable(conn, client_id)
+    telegram = await telegram_reminders(conn, client_id)
     bookings = queued = told = failed = 0
     after: dict[str, Any] = {"after_starts": None, "after_id": None}
     while True:
@@ -253,7 +291,7 @@ async def run_reminder_queue(
             try:
                 async with conn.transaction():
                     mails, messages = await _remind(
-                        conn, client_id, row["id"], facts, zone, customers, now
+                        conn, client_id, row["id"], facts, zone, customers, telegram, now
                     )
                 queued += mails
                 told += messages
@@ -311,7 +349,10 @@ async def _compose(
     booking, audience, address = found[0], row["audience"], row["address"]
     facts = company.facts
     if audience == "lapse":
-        # The booking was cancelled when it lapsed; it never comes back.
+        # The booking was cancelled when it lapsed; it never comes back. A notice that waited
+        # longer than `LAPSE_NOTICE_LIFE` (mail was off, say) would arrive as news it no longer is.
+        if now - row["created_at"] > LAPSE_NOTICE_LIFE:
+            return None
         if booking.status != "cancelled" or booking.customer is None or not company.replies:
             return None
         to = notify.clean_address(notify.customer_address(booking))
@@ -325,8 +366,11 @@ async def _compose(
             original=await customer_messages.the_original(conn, client_id, booking),
             tz=facts.timezone,
         )
-    # A reminder is for a confirmed booking at the start it was queued for, and never after it.
+    # A reminder is for a confirmed booking at the start it was queued for, and never after it. A
+    # booking moved away and back after its reminder was due gets none (`late_for_reminder`).
     if booking.status != "confirmed" or booking.starts_at != row["starts_at"]:
+        return None
+    if booking.late_for_reminder:
         return None
     if booking.starts_at <= now:
         return None

@@ -1,7 +1,11 @@
 -- Bookings, PR 2: what the customer bot, the reminders and the staff alert need.
 -- bookings gets three nullable columns: replaces_booking_id (the booking this one moves, in the
 --   same company), conversation_id (the chat the booking came from) and expires_at (when a pending
---   booking lapses). Old rows and staff bookings leave all three empty. Two partial indexes:
+--   booking lapses). Old rows and staff bookings leave all three empty. It also gets
+--   late_for_reminder: true when the booking's current start was set (made, moved, or moved by a
+--   confirmed request) after its reminder was due, judged with the company's reminder time at that
+--   moment. Such a booking gets no reminder: its confirmation is enough. Every write of a start
+--   sets it again; old rows are false, so they are reminded as before. Two partial indexes:
 --   bookings_pending_changes (the live requests to move a booking, read for every calendar row
 --   and locked by every cancel, decline and move) and bookings_contact (a customer's own bookings,
 --   read on every customer turn at a company whose customers can book).
@@ -42,7 +46,8 @@
 --   DROP TABLE public.booking_turn_actions, public.booking_reminders, public.booking_settings;
 --   DROP INDEX public.bookings_pending_changes, public.bookings_contact;
 --   ALTER TABLE public.bookings DROP CONSTRAINT bookings_replaces_fk,
---     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at;
+--     DROP COLUMN replaces_booking_id, DROP COLUMN conversation_id, DROP COLUMN expires_at,
+--     DROP COLUMN late_for_reminder;
 --     (bookings that were made by the bot stay)
 --   ALTER TABLE public.contacts DROP COLUMN customer_given_email;
 --   ALTER TABLE public.staff_notification_targets ALTER COLUMN events SET DEFAULT
@@ -64,7 +69,8 @@ END $$;
 ALTER TABLE public.bookings
     ADD COLUMN replaces_booking_id uuid,
     ADD COLUMN conversation_id uuid,
-    ADD COLUMN expires_at timestamptz;
+    ADD COLUMN expires_at timestamptz,
+    ADD COLUMN late_for_reminder boolean NOT NULL DEFAULT false;
 ALTER TABLE public.bookings ADD CONSTRAINT bookings_replaces_fk
     FOREIGN KEY (client_id, replaces_booking_id) REFERENCES public.bookings(client_id, id);
 -- The live request to move a booking: the calendar looks for one on every row it shows, and every

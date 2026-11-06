@@ -3,6 +3,7 @@
 SELECT b.id, b.status, b.kind, b.type_id, coalesce(b.title, b.service) AS title, b.private,
        b.starts_at, b.ends_at, b.version, b.created_by, b.location_kind, b.address,
        b.meeting_link, b.contact_id, b.replaces_booking_id, b.source, b.conversation_id, b.cancel_reason,
+       b.late_for_reminder,
        c.full_name AS customer_name, c.phone AS customer_phone, c.email AS customer_email,
        c.customer_given_email AS customer_given_email,
        -- On a request to move a booking: when that booking is, wherever its week.
