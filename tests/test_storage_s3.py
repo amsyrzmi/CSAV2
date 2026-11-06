@@ -57,8 +57,17 @@ def test_list_names_paginates(client: Any) -> None:
     store = S3ObjectStore(BUCKET, "kb", client, list_page_size=2)
     for index in range(5):
         store.put(tenant, f"file-{index}.csv", b"x")
+    list_calls: list[dict[str, Any]] = []
+    client.meta.events.register(
+        "before-call.s3.ListObjectsV2",
+        lambda params, **_: list_calls.append(params),
+    )
 
-    assert sorted(store.list_names(tenant)) == [f"file-{index}.csv" for index in range(5)]
+    names = store.list_names(tenant)
+
+    assert names == [f"file-{index}.csv" for index in range(5)]
+    # Five objects at two per page need three requests; one request means paging is not applied.
+    assert len(list_calls) == 3
 
 
 def test_read_of_an_empty_object_returns_empty_bytes(client: Any) -> None:
