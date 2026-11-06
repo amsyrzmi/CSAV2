@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # HR document files land in HR_UPLOAD_ROOT/<client_id>/; without it the routes answer 503.
     HR_UPLOAD_ROOT: Path | None = None
     KB_INGEST_ENABLED: bool = False
+    # Where KB and HR files live: the *_UPLOAD_ROOT folders ("local") or one S3 bucket ("s3").
+    # The S3 values may come from Docker secret files named after the field.
+    STORAGE_BACKEND: Literal["local", "s3"] = "local"
+    S3_BUCKET: str | None = None
+    S3_REGION: str | None = None
+    S3_ACCESS_KEY_ID: SecretStr | None = None
+    S3_SECRET_ACCESS_KEY: SecretStr | None = None
     KB_INGEST_POLL_SECONDS: float = Field(default=10.0, gt=0)
     KB_MAX_FILES_PER_JOB: int = Field(default=3, ge=1, le=20)
     KB_MAX_FILE_BYTES: int = Field(default=10 * 1024 * 1024, ge=1024)
@@ -275,7 +282,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_kb_ingest(self) -> Settings:
-        if self.KB_INGEST_ENABLED and self.KB_UPLOAD_ROOT is None:
+        local = self.STORAGE_BACKEND == "local"
+        if local and self.KB_INGEST_ENABLED and self.KB_UPLOAD_ROOT is None:
             raise ValueError("KB_INGEST_ENABLED requires KB_UPLOAD_ROOT")
         if self.ENV == "prod" and self.KB_INGEST_ENABLED and self.TEI_ENDPOINT is None:
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
@@ -286,6 +294,35 @@ class Settings(BaseSettings):
     def _blank_upload_root_is_unset(cls, value: object) -> object:
         # .env.example leaves these empty; Path("") would be the current folder.
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator(
+        "S3_BUCKET", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", mode="before"
+    )
+    @classmethod
+    def _blank_s3_value_is_unset(cls, value: object) -> object:
+        # An empty .env line or secret file must read as missing, not as an empty credential.
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        return None if isinstance(raw, str) and not raw.strip() else value
+
+    @model_validator(mode="after")
+    def _validate_storage_backend(self) -> Settings:
+        # Never fall back to local disk: an incomplete or ambiguous s3 setup stops the process.
+        if self.STORAGE_BACKEND != "s3":
+            return self
+        if None in (
+            self.S3_BUCKET,
+            self.S3_REGION,
+            self.S3_ACCESS_KEY_ID,
+            self.S3_SECRET_ACCESS_KEY,
+        ):
+            raise ValueError(
+                "STORAGE_BACKEND=s3 requires S3_BUCKET, S3_REGION, "
+                "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY"
+            )
+        for name in ("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"):
+            if getattr(self, name) is not None:
+                raise ValueError(f"STORAGE_BACKEND=s3 conflicts with {name}; unset {name}")
+        return self
 
     @model_validator(mode="after")
     def _validate_upload_roots(self) -> Settings:

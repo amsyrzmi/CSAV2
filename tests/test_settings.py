@@ -153,3 +153,57 @@ def test_blank_upload_roots_are_unset(blank: str) -> None:
     s = _settings(KB_UPLOAD_ROOT=blank, HR_UPLOAD_ROOT=blank)
     assert s.KB_UPLOAD_ROOT is None
     assert s.HR_UPLOAD_ROOT is None
+
+
+_S3 = {
+    "STORAGE_BACKEND": "s3",
+    "S3_BUCKET": "synthetic-bucket",
+    "S3_REGION": "us-east-1",
+    "S3_ACCESS_KEY_ID": "synthetic-key-id",
+    "S3_SECRET_ACCESS_KEY": "synthetic-secret",
+}
+
+
+def test_storage_backend_defaults_to_local() -> None:
+    s = _settings()
+    assert s.STORAGE_BACKEND == "local"
+    assert s.S3_BUCKET is None and s.S3_ACCESS_KEY_ID is None
+
+
+@pytest.mark.parametrize(
+    "missing", ["S3_BUCKET", "S3_REGION", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]
+)
+def test_s3_backend_requires_bucket_region_and_both_keys(missing: str) -> None:
+    values = {name: value for name, value in _S3.items() if name != missing}
+    message = (
+        "STORAGE_BACKEND=s3 requires S3_BUCKET, S3_REGION, "
+        "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY"
+    )
+    with pytest.raises(ValidationError, match=message):
+        _settings(**values)
+    # A blank value (an empty .env line or secret file) counts as missing.
+    with pytest.raises(ValidationError, match=message):
+        _settings(**{**values, missing: "  "})
+
+
+def test_s3_backend_secrets_are_masked() -> None:
+    s = _settings(**_S3)
+    assert "synthetic-secret" not in repr(s)
+    assert s.S3_SECRET_ACCESS_KEY is not None
+    assert s.S3_SECRET_ACCESS_KEY.get_secret_value() == "synthetic-secret"
+
+
+@pytest.mark.parametrize("root", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"])
+def test_s3_backend_refuses_local_upload_roots(root: str) -> None:
+    with pytest.raises(ValidationError, match=f"STORAGE_BACKEND=s3 conflicts with {root}"):
+        _settings(**_S3, **{root: "/srv/uploads"})
+
+
+def test_s3_backend_ingest_does_not_need_kb_upload_root() -> None:
+    s = _settings(**_S3, ENV="prod", KB_INGEST_ENABLED="true", TEI_ENDPOINT="http://tei.test")
+    assert s.KB_INGEST_ENABLED and s.KB_UPLOAD_ROOT is None
+
+
+def test_local_backend_ingest_still_needs_kb_upload_root() -> None:
+    with pytest.raises(ValidationError, match="KB_INGEST_ENABLED requires KB_UPLOAD_ROOT"):
+        _settings(KB_INGEST_ENABLED="true")

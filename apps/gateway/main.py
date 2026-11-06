@@ -48,6 +48,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.marketplace.reads import live_read_access
+from csa.storage.factory import build_stores, verify_stores
 from csa.subscriptions.api import build_subscriptions_router
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.planner import WorkspacePlanner
@@ -145,6 +146,8 @@ def create_app() -> FastAPI:
         email_http: httpx.AsyncClient | None = None
         workspace_http: httpx.AsyncClient | None = None
         try:
+            # A bad bucket or root stops startup; there is no fallback to local disk.
+            await verify_stores(build_stores(settings))
             await pool.open(wait=True)
             app.state.pool = pool
             # TikTok Shop connect routes; they answer tiktok_unavailable while TikTok is off.

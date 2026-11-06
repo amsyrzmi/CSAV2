@@ -40,6 +40,7 @@ from csa.marketplace.processor import (
 from csa.marketplace.reads import LiveReadAccess, live_read_access
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
+from csa.storage.factory import build_stores, verify_stores
 from csa.turn.deps import CAPABILITIES, PostgresTurnDependencies, build_llm_provider
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -600,6 +601,8 @@ def register_marketplace_sync_task(
 async def main() -> None:  # pragma: no cover - process entrypoint
     """Start queue/reaper, checkpoint retention, and the liveness heartbeat."""
     settings = get_settings()
+    # A bad bucket or root stops the worker before it opens pools or starts any loop.
+    await verify_stores(build_stores(settings))
     owner_dsn = str(settings.LG_DATABASE_URL)
     owner_pool = db.build_pool(owner_dsn, max_size=4)
     app_pool = db.build_pool(str(settings.DATABASE_URL), max_size=8)

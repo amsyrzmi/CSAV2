@@ -21,7 +21,9 @@ from csa.console.identity import IdentityConfig, IdentityService
 from csa.console.mailer import Mailer, OutgoingMail
 from csa.console.security import digest
 from csa.core import db
+from csa.storage.base import StorageError
 from fastapi import FastAPI
+from moto import mock_aws
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
@@ -36,6 +38,7 @@ def application(
     *,
     env: str = "ci",
     whatsapp: tuple[str, str] | None = None,
+    storage: dict[str, Any] | None = None,
 ) -> FastAPI:
     synthetic = SimpleNamespace(
         ENV=env,
@@ -66,6 +69,7 @@ def application(
         KB_EMBED_MODEL_LABEL="synthetic-384",
         KB_UPLOAD_ROOT=None,
         HR_UPLOAD_ROOT=None,
+        **{"STORAGE_BACKEND": "local", **(storage or {})},
         INVITE_MAIL_ENABLED=False,
         INVITE_MAIL_FROM="FourStacks <no-reply@fourstacks.my>",
         SMTP_HOST="smtp-relay.example.test",
@@ -155,6 +159,29 @@ async def test_identity_pool_is_explicitly_opened_validated_and_closed_on_all_pa
             assert not domain.closed and not identity.closed
     assert domain.closed and identity.closed
     assert events[-2:] == ["identity.close", "domain.close"]
+
+
+async def test_startup_fails_when_the_object_storage_bucket_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    domain = SimpleNamespace(open=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(gateway, "build_pool", lambda *_, **__: domain)
+    app = application(
+        monkeypatch,
+        storage={
+            "STORAGE_BACKEND": "s3",
+            "S3_BUCKET": "bucket-that-was-never-created",
+            "S3_REGION": "us-east-1",
+            "S3_ACCESS_KEY_ID": SecretStr("testing"),
+            "S3_SECRET_ACCESS_KEY": SecretStr("fake-secret-value"),
+        },
+    )
+    with mock_aws():
+        with pytest.raises(StorageError, match="check failed: NoSuchBucket"):
+            async with app.router.lifespan_context(app):
+                pytest.fail("a bad bucket must stop startup before the app serves")
+    domain.open.assert_not_awaited()
+    domain.close.assert_awaited()
 
 
 async def test_domain_pool_still_closes_when_identity_shutdown_fails(
