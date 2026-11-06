@@ -20,7 +20,9 @@ to local disk. The gateway and the ingest worker also run the store's startup ch
 the bucket is unreachable or the key is refused.
 
 Keep the two key values in secret files, not in `.env` files or compose files. Each setting is
-read from `/run/secrets/<SETTING>` first, then from the environment:
+read from the Docker secret file `/run/secrets/<SETTING>` or from an environment variable of the
+same name. If both exist, the environment variable wins, so production must not set
+`S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` in the environment, only as secret files:
 
 - `/run/secrets/S3_ACCESS_KEY_ID`
 - `/run/secrets/S3_SECRET_ACCESS_KEY`
@@ -71,8 +73,11 @@ leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
 - Private, with all four "Block public access" options on.
 - Default encryption: SSE-S3 (`AES256`).
 - Versioning on.
-- Lifecycle rules: expire objects under `backups/` after 14 days; expire non-current versions
-  after 7 days.
+- Lifecycle, two rules:
+  - `backups/`: current versions expire after 14 days.
+  - Whole bucket: non-current versions expire after 7 days, expired object delete markers are
+    removed (`ExpiredObjectDeleteMarker: true`), and incomplete multipart uploads are aborted
+    after 1 day.
 
 ## Copy existing local files into S3
 
@@ -82,7 +87,15 @@ is added. The staging volumes are `csa-staging_staging-uploads` (knowledge base)
 `csa-staging_staging-hr-uploads` (HR). Run these on the host, replacing `<bucket>` and `<admin>`:
 
 ```bash
+set -euo pipefail
+
+# 0. Fail on a mistyped volume name: Docker would otherwise create an empty volume silently.
+docker volume inspect csa-staging_staging-uploads > /dev/null
+docker volume inspect csa-staging_staging-hr-uploads > /dev/null
+
 TMP=$(mktemp -d)
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$TMP"' EXIT   # the copy is removed even when a command below fails
 mkdir "$TMP/kb" "$TMP/hr"
 
 # 1. Copy each volume out with a throwaway container; the volumes are mounted read-only.
@@ -92,20 +105,33 @@ docker run --rm --entrypoint cp -v csa-staging_staging-hr-uploads:/src:ro -v "$T
   python:3.12.12-slim-bookworm -a /src/. /dst/
 sudo chown -R "$(id -u):$(id -g)" "$TMP"
 
-# 2. Upload; check the plan first with --dryrun.
+# 2. Upload; check each plan first with --dryrun.
 aws s3 sync "$TMP/kb" s3://<bucket>/kb/ --profile <admin> --dryrun
 aws s3 sync "$TMP/kb" s3://<bucket>/kb/ --profile <admin>
+aws s3 sync "$TMP/hr" s3://<bucket>/hr/ --profile <admin> --dryrun
 aws s3 sync "$TMP/hr" s3://<bucket>/hr/ --profile <admin>
 
-# 3. Verify: object counts and total sizes must match the local copy.
+# 3. Verify: object count and total bytes in the bucket must equal the local copy.
 aws s3 ls s3://<bucket>/kb/ --recursive --summarize --profile <admin> | tail -2
-aws s3 ls s3://<bucket>/hr/ --recursive --summarize --profile <admin> | tail -2
 find "$TMP/kb" -type f | wc -l
+find "$TMP/kb" -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}'
+aws s3 ls s3://<bucket>/hr/ --recursive --summarize --profile <admin> | tail -2
 find "$TMP/hr" -type f | wc -l
+find "$TMP/hr" -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}'
 
-# 4. Remove the temporary copy (it holds real files).
+# 4. Remove the temporary copy (it holds real files); the trap does it again harmlessly.
 rm -rf "$TMP"
 ```
+
+Save the block as a script file and run it with `bash`, rather than pasting it into your login
+shell, because `set -e` would end that shell on the first error.
+
+Compare "Total Objects" with the first `find` count and "Total Size" with the byte total printed
+after it, for each of kb and hr; they must be equal.
+
+The temporary directory holds real HR files and needs enough free space for both volumes. The
+`trap` removes it even if the run fails; if you ran the commands another way, run
+`rm -rf "$TMP"` yourself before doing anything else.
 
 Copy while uploads are quiet, or run the sync again after the switch is planned so files added in
 between are included.
@@ -125,8 +151,8 @@ Run the smoke script inside the gateway container, so it uses the real applicati
 docker exec csa-prod-gateway-1 python -m scripts.storage_smoke
 ```
 
-It writes a few small objects under a random tenant id in both the `kb` and `hr` prefixes, checks
-the startup check, put and read, listing, streaming, delete, and reading a missing name, then
+It writes one small object per store, under a random tenant id in the `kb` and `hr` prefixes, and
+checks the startup check, put and read, listing, streaming, delete, and reading a missing name, then
 removes them. It prints one `PASS` or `FAIL` line per check and never prints keys or contents.
 Exit code 0 means every check passed, 1 means a check failed, 2 means the settings are unusable.
 
@@ -140,4 +166,5 @@ happened.
 - A transient S3 error during knowledge-base ingest is retried by the ingest job's normal retry.
 - Deleted files stay recoverable for 7 days as non-current versions in the bucket (versioning
   plus the lifecycle rule); ask an admin to restore one. The smoke script's own deletes leave
-  such versions too, which expire the same way.
+  the same kind of non-current versions, which expire after 7 days, and the lifecycle then
+  removes the leftover delete markers.
