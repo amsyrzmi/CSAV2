@@ -1738,6 +1738,25 @@ stored encrypted and only the sync code reads them.
 A refused refresh token (`invalid_grant`) makes the connection `needs_reconnect`; nothing more is
 tried for that person until they connect again, and everyone else is unaffected.
 
+#### Meet links (`BOOKINGS_GOOGLE_MEET_ENABLED`, needs the calendar switch)
+
+A confirmed online booking with no meeting link gets a Google Meet link: the connected attendee who
+made it (else the first connected attendee) asks Google when their event is made, and the link is
+kept on `bookings.meeting_link` only if the field is still empty (a link staff typed always wins),
+which moves `version`. The answer to the booking change says what the booking is after that, so it
+can already hold the link. Everyone else's event carries the link in its location. If Google would
+not make one the booking, its mail and the answer are as without Meet, and the job asks again
+(up to five times at one version). No mail or customer message goes out when a link is added later.
+
+- `BookingOut.meet_missing`: true for a confirmed online booking still to come with no link while
+  Meet links are on; false everywhere else and with them off. A client shows "No Meet link yet"
+  with a retry and the existing field to paste a link.
+- `POST /console/v1/bookings/{id}/meet` (no body): ask Google again now, for someone who may change
+  the booking (403 for a read-only member or `own_bookings_only`; an Admin may for any). Answers
+  with the `BookingOut`, which still has `meet_missing` true if Google still would not make a link.
+  409 `calendar_unavailable` (Meet links off), `wrong_status` (not a confirmed online booking still
+  to come without a link), `not_connected` (no one on it has a calendar connected).
+
 ## Services and packages
 Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`; `bookings` is a separate service and requires nothing). Packages are the management surface; the capability switches below remain the runtime enforcement.
 

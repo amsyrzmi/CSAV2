@@ -294,3 +294,34 @@ async def test_an_event_takes_an_id_of_our_own_and_a_taken_id_is_event_exists() 
     with pytest.raises(CalendarError) as caught:
         await taken.insert_event(ACCESS, CALENDAR, {"summary": "x"}, event_id="abc123")
     assert caught.value.code == "event_exists"
+
+
+async def test_a_patch_with_meet_asks_for_a_conference_and_returns_the_link() -> None:
+    answer = {"id": "evt-1", "hangoutLink": "https://meet.example.test/abc-defg-hij"}
+    client, seen = _client(_answer(200, answer))
+    link = await client.patch_event(ACCESS, CALENDAR, "evt-1", {"summary": "New"}, meet=True)
+    assert link == "https://meet.example.test/abc-defg-hij"
+    query = parse_qs(seen[0].url.query.decode())
+    assert query["conferenceDataVersion"] == ["1"] and query["sendUpdates"] == ["none"]
+    body = _json(seen[0])
+    assert body["summary"] == "New"
+    assert body["conferenceData"]["createRequest"]["conferenceSolutionKey"] == {  # type: ignore[index]
+        "type": "hangoutsMeet"
+    }
+
+
+async def test_a_patch_without_meet_asks_for_no_conference_and_a_refusal_is_meet_unavailable() -> (
+    None
+):
+    client, seen = _client(_answer(200, {"id": "evt-1"}))
+    assert await client.patch_event(ACCESS, CALENDAR, "evt-1", {"summary": "New"}) is None
+    assert "conferenceData" not in _json(seen[0])
+    assert "conferenceDataVersion" not in parse_qs(seen[0].url.query.decode())
+    refused, _ = _client(_answer(400, {"error": {"message": "Invalid conference type value."}}))
+    with pytest.raises(CalendarError) as caught:
+        await refused.patch_event(ACCESS, CALENDAR, "evt-1", {"summary": "New"}, meet=True)
+    assert caught.value.code == "meet_unavailable"
+    plain, _ = _client(_answer(400, {"error": {"message": "Bad Request"}}))
+    with pytest.raises(CalendarError) as caught:
+        await plain.patch_event(ACCESS, CALENDAR, "evt-1", {"summary": "New"})
+    assert caught.value.code == "provider_rejected"

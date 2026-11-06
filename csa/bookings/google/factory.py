@@ -22,4 +22,5 @@ def build_calendar_push(
     client = CalendarClient(
         settings.GOOGLE_CLIENT_ID, settings.GOOGLE_CLIENT_SECRET, redirect, http
     )
-    return CalendarPush(pool, CalendarConnections(pool, client, enabled=True), client)
+    connections = CalendarConnections(pool, client, enabled=True)
+    return CalendarPush(pool, connections, client, meet=settings.BOOKINGS_GOOGLE_MEET_ENABLED)

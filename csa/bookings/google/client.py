@@ -94,6 +94,16 @@ def _object(response: httpx.Response) -> dict[str, Any]:
     return data
 
 
+def _meet_request() -> dict[str, Any]:
+    """`conferenceData` asking Google to make a Meet room (a fresh request id each time)."""
+    return {
+        "createRequest": {
+            "requestId": uuid.uuid4().hex,
+            "conferenceSolutionKey": {"type": "hangoutsMeet"},
+        }
+    }
+
+
 def _meet_link(data: dict[str, Any]) -> str | None:
     """The Meet link in an event answer: `hangoutLink`, else a video entry point."""
     link = data.get("hangoutLink")
@@ -272,12 +282,7 @@ class CalendarClient:
         params = {"sendUpdates": "none"}
         if meet:
             params["conferenceDataVersion"] = "1"
-            payload["conferenceData"] = {
-                "createRequest": {
-                    "requestId": uuid.uuid4().hex,
-                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
-                }
-            }
+            payload["conferenceData"] = _meet_request()
         path = f"calendars/{quote(calendar_id, safe='')}/events"
         response = await self._send(self._api(access, "POST", path, params=params, body=payload))
         if response.status_code == 409:
@@ -295,15 +300,29 @@ class CalendarClient:
         return EventResult(event_id, _meet_link(data))
 
     async def patch_event(
-        self, access: SecretStr, calendar_id: str, event_id: str, body: dict[str, Any]
-    ) -> None:
+        self,
+        access: SecretStr,
+        calendar_id: str,
+        event_id: str,
+        body: dict[str, Any],
+        *,
+        meet: bool = False,
+    ) -> str | None:
+        """Change an event; with `meet`, ask Google for a Meet link on it. Returns the link when the
+        answer has one (a patch that did not ask can return one the event already had).
+        """
         path = f"calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"
-        request = self._api(
-            access, "PATCH", path, params={"sendUpdates": "none"}, body=self._checked(body)
-        )
-        response = await self._send(request)
+        payload = self._checked(body)
+        params = {"sendUpdates": "none"}
+        if meet:
+            params["conferenceDataVersion"] = "1"
+            payload["conferenceData"] = _meet_request()
+        response = await self._send(self._api(access, "PATCH", path, params=params, body=payload))
+        if meet and response.status_code == 400:
+            raise CalendarError("meet_unavailable")  # the whole patch was refused
         if response.status_code != 200:
             raise _failure(response)
+        return _meet_link(_object(response))
 
     async def delete_event(self, access: SecretStr, calendar_id: str, event_id: str) -> None:
         path = f"calendars/{quote(calendar_id, safe='')}/events/{quote(event_id, safe='')}"

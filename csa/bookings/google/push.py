@@ -18,7 +18,8 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import UUID
@@ -63,8 +64,14 @@ class EventsApi(Protocol):
     ) -> EventResult: ...
 
     async def patch_event(
-        self, access: SecretStr, calendar_id: str, event_id: str, body: dict[str, Any]
-    ) -> None: ...
+        self,
+        access: SecretStr,
+        calendar_id: str,
+        event_id: str,
+        body: dict[str, Any],
+        *,
+        meet: bool = False,
+    ) -> str | None: ...
 
     async def delete_event(self, access: SecretStr, calendar_id: str, event_id: str) -> None: ...
 
@@ -130,28 +137,42 @@ async def _upsert(
     event_id: str,
     body: dict[str, Any],
     pool: AsyncConnectionPool,
-) -> str:
+    *,
+    meet: bool = False,
+) -> tuple[str, str | None]:
     """Patch the event; if Google has none, make it with the stored id. A taken id is either the
     same event (the push and the job raced: patch it) or one deleted in Google (its id stays
-    reserved: a new id, once). A deleted calendar is made again, once.
+    reserved: a new id, once). A deleted calendar is made again, once. With `meet`, the write
+    asks for a Meet link, and is made again without when Google refuses one (the event is then
+    made with no link). Returns the event's id and the link Google gave, if any.
     """
     calendar_id = access.calendar_id
     token = access.token
+
+    async def patch() -> str | None:
+        return await _with_meet(
+            meet, lambda ask: api.patch_event(token, calendar_id, event_id, body, meet=ask)
+        )
+
+    async def insert() -> str | None:
+        async def make(ask: bool) -> str | None:
+            made = await api.insert_event(token, calendar_id, body, meet=ask, event_id=event_id)
+            return made.meet_link
+
+        return await _with_meet(meet, make)
+
     for renewed in (False, True):
         try:
-            await api.patch_event(token, calendar_id, event_id, body)
-            return event_id
+            return event_id, await patch()
         except CalendarError as exc:
             if exc.code != "provider_not_found":
                 raise
         try:
-            await api.insert_event(token, calendar_id, body, event_id=event_id)
-            return event_id
+            return event_id, await insert()
         except CalendarError as exc:
             if exc.code == "event_exists":
                 try:
-                    await api.patch_event(token, calendar_id, event_id, body)
-                    return event_id
+                    return event_id, await patch()
                 except CalendarError as again:
                     if again.code != "provider_not_found":
                         raise
@@ -167,8 +188,7 @@ async def _upsert(
                         },
                         conn=conn,
                     )
-                await api.insert_event(token, calendar_id, body, event_id=event_id)
-                return event_id
+                return event_id, await insert()
             if exc.code != "provider_not_found" or renewed:
                 raise
         # Neither the event nor a place to make it: the person may have deleted the calendar.
@@ -177,6 +197,41 @@ async def _upsert(
         fresh = await connections.renew_calendar(client_id, person_id)
         calendar_id, token = fresh.calendar_id, fresh.token
     raise CalendarError("provider_not_found")  # unreachable: the loop returns or raises
+
+
+async def _with_meet(meet: bool, call: Callable[[bool], Awaitable[str | None]]) -> str | None:
+    """Make `call` asking for a Meet link; if Google refuses the request that asks, make it again
+    without (the whole request was refused, so nothing was made) and say there is no link.
+    """
+    if meet:
+        try:
+            return await call(True)
+        except CalendarError as exc:
+            if exc.code != "meet_unavailable":
+                raise
+    await call(False)
+    return None
+
+
+def wants_meet(record: service.BookingRecord, now: datetime) -> bool:
+    """A confirmed online booking, still to come, with no link at all (not even one staff typed)."""
+    return (
+        record.location_kind == "online"
+        and not record.meeting_link
+        and plan_for(record, now) == "upsert"
+    )
+
+
+async def meet_organizer(
+    conn: psycopg.AsyncConnection[Any], client_id: UUID, booking_id: UUID
+) -> UUID | None:
+    """The one connected attendee who asks Google for the booking's Meet link."""
+    row = await db.q.fetch_one(
+        "bookings/google_meet_organizer.sql",
+        {"client_id": client_id, "booking_id": booking_id},
+        conn=conn,
+    )
+    return None if row is None else row["person_id"]
 
 
 async def sync_one(
@@ -188,8 +243,11 @@ async def sync_one(
     person_id: UUID,
     *,
     now: datetime,
+    meet: bool = False,
 ) -> str:
-    """Bring one person's event for one booking in line with the booking as it is now.
+    """Bring one person's event for one booking in line with the booking as it is now. With `meet`,
+    the booking's organizer (see `meet_organizer`) also asks Google for the Meet link a confirmed
+    online booking has none of, and the link is kept on the booking if it still has none.
 
     Returns how it ended: `synced`, `deleted`, `skipped` (nothing to do), `failed` (retried by
     the job, up to five times at one version) or `needs_reconnect` (Google refused the person's
@@ -210,6 +268,11 @@ async def sync_one(
             row = await db.q.fetch_one(
                 "bookings/google_event_ensure.sql", {**ids, "event_id": uuid.uuid4().hex}, conn=conn
             )
+        ask = (
+            meet
+            and wants_meet(record, now)
+            and await meet_organizer(conn, client_id, booking_id) == person_id
+        )
     assert row is not None
     version = record.version
     event_id: str = row["google_event_id"]
@@ -221,9 +284,23 @@ async def sync_one(
             access = await connections.access(client_id, person_id)
             if plan == "upsert":
                 body = event_body(record, zone=ZoneInfo(facts["timezone"]), brand=facts["brand"])
-                event_id = await _upsert(
-                    api, connections, client_id, person_id, booking_id, access, event_id, body, pool
+                event_id, link = await _upsert(
+                    api,
+                    connections,
+                    client_id,
+                    person_id,
+                    booking_id,
+                    access,
+                    event_id,
+                    body,
+                    pool,
+                    meet=ask,
                 )
+                if ask:
+                    if link is None:
+                        # The event is there without one: tried again later, up to five times.
+                        raise CalendarError("meet_unavailable")
+                    version = await _keep_link(pool, client_id, booking_id, link) or version
             else:
                 status = "deleted"
                 try:
@@ -251,6 +328,22 @@ async def sync_one(
     return status
 
 
+async def _keep_link(
+    pool: AsyncConnectionPool, client_id: UUID, booking_id: UUID, link: str
+) -> int | None:
+    """Keep the link Google made on the booking if it still has none: the version it is now at, or
+    None when staff typed one (or the booking changed) first. Its own transaction, after the
+    call.
+    """
+    async with tx(pool, str(client_id)) as conn:
+        row = await db.q.fetch_one(
+            "bookings/google_meet_link_set.sql",
+            {"client_id": client_id, "booking_id": booking_id, "link": link},
+            conn=conn,
+        )
+    return None if row is None else int(row["version"])
+
+
 class CalendarPush:
     """Pushes one booking to every connected person on it, right after it commits."""
 
@@ -261,22 +354,29 @@ class CalendarPush:
         api: EventsApi,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        meet: bool = False,
     ) -> None:
         self.pool = pool
         self.connections = connections
         self.api = api
         self.now = now
+        self.meet = meet  # whether a confirmed online booking with no link gets a Meet link
 
     @property
     def available(self) -> bool:
         return self.connections.available
 
-    async def __call__(self, booking: service.BookingRecord, *, timeout: float) -> None:
+    async def __call__(
+        self, booking: service.BookingRecord, *, timeout: float
+    ) -> service.BookingRecord:
         """Never raises: the booking has committed, and a slow or refusing Google only leaves rows
         for the job. Cut off at `timeout` seconds; whatever was not finished is the job's.
+        Returns the booking as it is now: with a Meet link made here, the link and the version it
+        moved to, so the mail that follows says what the calendar says.
         """
         if not self.available:
-            return
+            return booking
+        organizer: UUID | None = None
         try:
             async with tx(self.pool, str(booking.client_id)) as conn:
                 rows = await db.q.fetch_all(
@@ -284,29 +384,59 @@ class CalendarPush:
                     {"client_id": booking.client_id, "booking_id": booking.id},
                     conn=conn,
                 )
+                if self.meet and wants_meet(booking, self.now()):
+                    organizer = await meet_organizer(conn, booking.client_id, booking.id)
             if not rows:
-                return
+                return booking
             await asyncio.wait_for(
-                asyncio.gather(
-                    *(
-                        sync_one(
-                            self.pool,
-                            self.connections,
-                            self.api,
-                            booking.client_id,
-                            booking.id,
-                            row["person_id"],
-                            now=self.now(),
-                        )
-                        for row in rows
-                    )
-                ),
-                timeout,
+                self._sync_all(booking, [row["person_id"] for row in rows], organizer), timeout
             )
         except TimeoutError:
             logger.warning("booking_calendar_push_failed", category="timeout")
         except Exception as exc:
             logger.warning("booking_calendar_push_failed", category=type(exc).__name__)
+        return await self._refreshed(booking) if organizer is not None else booking
+
+    async def _sync_all(
+        self, booking: service.BookingRecord, people: list[UUID], organizer: UUID | None
+    ) -> None:
+        """The organizer first when a link is wanted, so everyone else's event is made with it."""
+        if organizer is not None:
+            await self._sync(booking, organizer)
+        await asyncio.gather(*(self._sync(booking, p) for p in people if p != organizer))
+
+    async def _sync(self, booking: service.BookingRecord, person_id: UUID) -> str:
+        return await sync_one(
+            self.pool,
+            self.connections,
+            self.api,
+            booking.client_id,
+            booking.id,
+            person_id,
+            now=self.now(),
+            meet=self.meet,
+        )
+
+    async def _refreshed(self, booking: service.BookingRecord) -> service.BookingRecord:
+        """The booking with the link and version it has now, or as it was if it cannot be read."""
+        try:
+            async with tx(self.pool, str(booking.client_id)) as conn:
+                [now] = await service.read_records(conn, booking.client_id, booking_id=booking.id)
+        except Exception as exc:
+            logger.warning("booking_calendar_push_failed", category=type(exc).__name__)
+            return booking
+        return replace(booking, meeting_link=now.meeting_link, version=now.version)
+
+    async def ensure_meet(self, booking: service.BookingRecord) -> service.BookingRecord:
+        """Ask again for a booking's Meet link (the retry staff press): the organizer's event, now.
+        Raises `CalendarError` with `not_connected` when no one on it has a calendar connected.
+        """
+        async with tx(self.pool, str(booking.client_id)) as conn:
+            organizer = await meet_organizer(conn, booking.client_id, booking.id)
+        if organizer is None:
+            raise CalendarError("not_connected")
+        await self._sync(booking, organizer)
+        return await self._refreshed(booking)
 
 
 async def run_calendar_reconcile(
@@ -351,6 +481,7 @@ async def run_calendar_reconcile(
                     booking_id,
                     person_id,
                     now=clock.now(),
+                    meet=push.meet,
                 )
             except Exception as exc:
                 logger.error("booking_calendar_reconcile_failed", category=type(exc).__name__)

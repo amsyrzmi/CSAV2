@@ -39,6 +39,7 @@ from csa.bookings.contracts import (
     BookingTypePatch,
     HoursKind,
 )
+from csa.bookings.google.client import CalendarError
 from csa.console.access import authenticate, tenant
 from csa.console.auth import _mailer
 from csa.console.contracts import ConsoleActor, Role
@@ -163,6 +164,11 @@ def build_bookings_router() -> APIRouter:
         require_bookings_write(actor, client_id)
         return actor
 
+    def meet_on(request: Request) -> bool:
+        """Whether Google Meet links are on in this process."""
+        push = getattr(request.app.state, "calendar_push", None)
+        return push is not None and push.available and push.meet
+
     def changer(request: Request, client_id: UUID) -> ConsoleActor:
         """Staff and Admins change bookings; read-only members get 403."""
         actor: ConsoleActor = request.state.console_actor
@@ -183,7 +189,9 @@ def build_bookings_router() -> APIRouter:
         outcome = await after_commit(
             request, record, change, by_chat=by_chat, original=original, invite=invite
         )
-        out = service.to_out(record, service.viewer_of(actor))
+        if outcome is not None and outcome.booking is not None:
+            record = outcome.booking  # the push made a Meet link
+        out = service.to_out(record, service.viewer_of(actor, meet=meet_on(request)))
         # A redacted answer says nothing about the meeting, not even whether it had addresses.
         if out.redacted or outcome is None:
             return out
@@ -420,7 +428,7 @@ def build_bookings_router() -> APIRouter:
         busy times with no id."""
         reader(request, client_id)
         service.check_window(start, end, 62)
-        viewer = service.viewer_of(request.state.console_actor)
+        viewer = service.viewer_of(request.state.console_actor, meet=meet_on(request))
         async with tx(request.app.state.pool, str(client_id)) as conn:
             records = await service.read_records(
                 conn, client_id, start=start, end=end, person=person, resource=resource
@@ -461,6 +469,23 @@ def build_bookings_router() -> APIRouter:
             record = await service.move_booking(conn, client_id, actor, booking_id, payload)
             by_chat = await customer_messages.after_staff_action(conn, client_id, record, "moved")
         return await respond(request, actor, record, "moved", by_chat=by_chat)
+
+    @router.post("/bookings/{booking_id}/meet", response_model=BookingOut)
+    async def retry_meet(request: Request, booking_id: UUID, client_id: Tenant) -> BookingOut:
+        """Ask Google again for an online booking's Meet link, for someone who may change it. The
+        link goes on the booking and its events; no mail and no customer message is sent for it.
+        Answers with the booking, which still has no link if Google still would not make one."""
+        actor = changer(request, client_id)
+        push = getattr(request.app.state, "calendar_push", None)
+        if not meet_on(request):
+            raise HTTPException(409, "calendar_unavailable")
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            record = await service.meet_target(conn, client_id, actor, booking_id)
+        try:
+            record = await push.ensure_meet(record)
+        except CalendarError as exc:
+            raise HTTPException(409, exc.code) from exc
+        return service.to_out(record, service.viewer_of(actor, meet=True))
 
     def action(
         change: Change,

@@ -189,3 +189,44 @@ def test_the_assistant_books_through_the_same_after_commit_hook() -> None:
     source = Path(REPO_ROOT / "csa" / "bookings" / "executor.py").read_text(encoding="utf-8")
     assert "bookings_api.after_commit(" in source
     assert "notify_after_commit(" not in source
+
+
+async def test_a_meet_link_made_before_the_mail_is_in_it_and_in_the_answer(
+    sessions: SessionWorld,
+    team: Team,
+    person: dict[str, Any],
+    google: FakeGoogle,
+    relay: FakeTransport,
+) -> None:
+    await connect(team, google)
+    sessions.app.state.calendar_push = CalendarPush(
+        sessions.pool, sessions.app.state.calendar_connections, google, meet=True
+    )
+    body = meeting(
+        person, start=TEN_KL, location_kind="online", guests=[{"name": "G", "email": GUEST}]
+    )
+    made = await booked(team, team.staff, body)
+    link = "https://meet.example/abc-defg-hij"
+    # What the answer says is what the booking is now, so the page does not offer a retry.
+    assert made["meeting_link"] == link and made["meet_missing"] is False and made["version"] == 2
+    mine = relay.for_(staff_address(team))
+    assert link in mine.text and mine.calendar is None  # the link is there, and so is their event
+    guest = relay.for_(GUEST)
+    assert link in guest.text and guest.calendar is not None
+
+
+async def test_a_refused_meet_link_sends_the_mail_and_answers_without_one(
+    sessions: SessionWorld,
+    team: Team,
+    person: dict[str, Any],
+    google: FakeGoogle,
+    relay: FakeTransport,
+) -> None:
+    await connect(team, google)
+    sessions.app.state.calendar_push = CalendarPush(
+        sessions.pool, sessions.app.state.calendar_connections, google, meet=True
+    )
+    google.meet_refused = True
+    made = await booked(team, team.staff, meeting(person, start=TEN_KL, location_kind="online"))
+    assert made["meeting_link"] is None and made["meet_missing"] is True and made["version"] == 1
+    assert relay.for_(staff_address(team)).calendar is not None  # their event is not yet synced

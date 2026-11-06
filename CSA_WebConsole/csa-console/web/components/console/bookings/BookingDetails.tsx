@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import {
   changeBooking,
   moveBooking,
+  retryMeet,
   type BookingAction,
   type BookingFinding,
   type BookingOut,
@@ -31,7 +32,7 @@ import { Field, input, mutedText, useAction, type BookingsScope } from "./parts"
 import { readRefusal, RefusalNotice, type Refusal } from "./Refusal";
 
 /** What was done, for the sentence on the calendar, and the booking as the server now has it. */
-export type Change = "moved" | "cancelled" | "confirmed" | "declined" | "no_show";
+export type Change = "moved" | "cancelled" | "confirmed" | "declined" | "no_show" | "meet";
 
 const STATUS: Record<string, { text: string; tone: StatusTone }> = {
   pending: { text: "Waiting to be confirmed", tone: "attention" },
@@ -42,7 +43,7 @@ const STATUS: Record<string, { text: string; tone: StatusTone }> = {
 
 const WITHDRAWS = "This also withdraws the customer's request to move it.";
 
-const POSTS: Record<Exclude<Change, "moved">, BookingAction> = {
+const POSTS: Record<Exclude<Change, "moved" | "meet">, BookingAction> = {
   cancelled: "cancel",
   confirmed: "confirm",
   declined: "decline",
@@ -86,6 +87,7 @@ export default function BookingDetails({
   const [day, setDay] = useState(dayInZone(booking.starts_at, zone));
   const [time, setTime] = useState(timeInZone(booking.starts_at, zone));
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [meetNote, setMeetNote] = useState<string | null>(null);
   // Bumped when a time turns out to be taken, so the free times are read again.
   const [round, setRound] = useState(0);
   const { busy, run } = useAction();
@@ -129,7 +131,16 @@ export default function BookingDetails({
     );
   }
 
-  function post(change: Exclude<Change, "moved">) {
+  async function askForMeet() {
+    setRefusal(null);
+    setMeetNote(null);
+    const done = await run(() => retryMeet(scope.tenantId, booking.id));
+    if (!done) return setMeetNote("Couldn't ask Google for a link. Try again in a moment.");
+    if (done.meet_missing) return setMeetNote("Google didn't make a link this time. Try again later.");
+    onChanged(done, "meet");
+  }
+
+  function post(change: Exclude<Change, "moved" | "meet">) {
     // Confirming a request moves the booking it replaces: the answer is that booking, moved.
     const said = request && change === "confirmed" ? "moved" : change;
     void attempt(() => changeBooking(scope.tenantId, booking.id, POSTS[change], booking.version), said);
@@ -226,6 +237,21 @@ export default function BookingDetails({
                         data-testid="details-link">
                         Open the meeting link
                       </a>
+                    </span>
+                  )}
+                  {booking.location_kind === "online" && booking.meet_missing && (
+                    <span className="mt-1 block" data-testid="details-meet-missing">
+                      No Meet link yet.
+                      {canChange && (
+                        <button type="button" className="ml-2 underline" disabled={busy}
+                          data-testid="details-meet-retry" onClick={() => void askForMeet()}>
+                          Try again
+                        </button>
+                      )}
+                      {meetNote && (
+                        <span className="block text-sm text-[color:var(--fs-text-secondary)]"
+                          data-testid="details-meet-note">{meetNote}</span>
+                      )}
                     </span>
                   )}
                 </Row>

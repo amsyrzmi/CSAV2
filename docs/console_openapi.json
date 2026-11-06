@@ -2302,6 +2302,11 @@
             ],
             "title": "Location Kind"
           },
+          "meet_missing": {
+            "default": false,
+            "title": "Meet Missing",
+            "type": "boolean"
+          },
           "meeting_link": {
             "anyOf": [
               {
@@ -17146,6 +17151,84 @@
           }
         },
         "summary": "Handle",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/bookings/{booking_id}/meet": {
+      "post": {
+        "description": "Ask Google again for an online booking's Meet link, for someone who may change it. The\nlink goes on the booking and its events; no mail and no customer message is sent for it.\nAnswers with the booking, which still has no link if Google still would not make one.",
+        "operationId": "retry_meet_console_v1_bookings_bookings__booking_id__meet_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Meet",
         "tags": [
           "Bookings"
         ]

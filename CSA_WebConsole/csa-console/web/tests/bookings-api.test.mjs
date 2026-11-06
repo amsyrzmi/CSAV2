@@ -123,6 +123,7 @@ test("booking, calendar, availability and customer calls", async () => {
     await bookings.moveBooking(null, ID, { version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"] });
     await bookings.changeBooking(null, ID, "cancel", 3);
     await bookings.changeBooking(null, ID, "no-show", 3);
+    await bookings.retryMeet(null, ID);
   });
   assert.deepEqual(shape(requests), [
     ["GET", "/console/v1/bookings/calendar?from=2026-11-02T00%3A00%3A00Z&to=2026-11-09T00%3A00%3A00Z"],
@@ -136,6 +137,7 @@ test("booking, calendar, availability and customer calls", async () => {
     ["PATCH", `/console/v1/bookings/bookings/${ID}`],
     ["POST", `/console/v1/bookings/bookings/${ID}/cancel`],
     ["POST", `/console/v1/bookings/bookings/${ID}/no-show`],
+    ["POST", `/console/v1/bookings/bookings/${ID}/meet`],
   ]);
   assert.deepEqual(JSON.parse(requests[8][1].body), {
     version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"],

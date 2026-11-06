@@ -211,6 +211,8 @@ class World:
         self.refusals: list[tuple[int, dict[str, Any]]] = []
         self.mail = "sent"
         self.customer_told: bool | None = None
+        # Whether asking Google again for a Meet link makes one.
+        self.meet_works = True
         self.profile_status = 200
         self.profile_delay = 0.0
         # The settings an Admin has saved (version 0 until the first save), and whether the
@@ -564,6 +566,10 @@ class World:
                 )
                 row["status"] = "cancelled"
                 return 200, replaced | {"email": self.mail, "customer_told": self.customer_told}
+            if action == "meet":
+                if self.meet_works:
+                    row.update(meeting_link="https://meet.example.test/made", meet_missing=False)
+                return 200, row
             status = {"cancel": "cancelled", "decline": "cancelled", "confirm": "confirmed"}
             row["status"] = status.get(action, row["status"])
         row["version"] += 1
@@ -2513,5 +2519,116 @@ async def test_the_google_calendar_panel_fits_320_390_and_768(site: Site, width:
             )
             sizes = await overflow(page)
             assert sizes["scroll"] <= sizes["inner"], sizes
+
+    await with_browser(body)
+
+
+async def test_an_online_booking_without_a_link_says_so_and_staff_can_ask_again(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        tuesday = monday_of(COMPANY_ZONE) + timedelta(days=1)
+        world.bookings = [
+            booking(
+                1,
+                utc_at(tuesday, "09:00"),
+                utc_at(tuesday, "10:00"),
+                title="Online chat",
+                location_kind="online",
+                meet_missing=True,
+            )
+        ]
+        world.meet_works = False
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            details = page.get_by_test_id("booking-details")
+            await page.get_by_test_id("booking").click()
+            await expect(details.get_by_test_id("details-meet-missing")).to_contain_text(
+                "No Meet link yet."
+            )
+            await expect(details.get_by_test_id("details-link")).to_have_count(0)
+
+            # Google still won't: the line stays, with a sentence, and the dialog is not closed.
+            await details.get_by_test_id("details-meet-retry").click()
+            await expect(details.get_by_test_id("details-meet-note")).to_have_text(
+                "Google didn't make a link this time. Try again later."
+            )
+            assert writes(world, "POST", f"bookings/bookings/{world.bookings[0]['id']}/meet") == [
+                {}
+            ]
+
+            # It works the second time: the dialog closes and the page says so.
+            world.meet_works = True
+            await details.get_by_test_id("details-meet-retry").click()
+            await expect(page.get_by_test_id("calendar-notice")).to_have_text("Meet link added.")
+            await expect(page.get_by_test_id("booking-details")).to_have_count(0)
+            await page.get_by_test_id("booking").click()
+            await expect(details.get_by_test_id("details-link")).to_have_attribute(
+                "href", "https://meet.example.test/made"
+            )
+            await expect(details.get_by_test_id("details-meet-missing")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_someone_who_cannot_change_the_booking_sees_the_line_without_a_retry(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        tuesday = monday_of(COMPANY_ZONE) + timedelta(days=1)
+        world.bookings = [
+            booking(
+                1,
+                utc_at(tuesday, "09:00"),
+                utc_at(tuesday, "10:00"),
+                title="Online chat",
+                location_kind="online",
+                meet_missing=True,
+            )
+        ]
+        async with bookings_page(
+            browser, site, world, role="read_only", path="/portal/bookings"
+        ) as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            await page.get_by_test_id("booking").click()
+            details = page.get_by_test_id("booking-details")
+            await expect(details.get_by_test_id("details-meet-missing")).to_be_visible()
+            await expect(details.get_by_test_id("details-meet-retry")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_a_booking_with_a_link_or_with_meet_links_off_shows_no_missing_line(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = rich_world(site.upstream)
+        tuesday = monday_of(COMPANY_ZONE) + timedelta(days=1)
+        world.bookings = [
+            booking(
+                1,
+                utc_at(tuesday, "09:00"),
+                utc_at(tuesday, "10:00"),
+                title="Online chat",
+                location_kind="online",
+                meeting_link="https://meet.example.test/chat",
+            ),
+            booking(
+                2,
+                utc_at(tuesday, "11:00"),
+                utc_at(tuesday, "12:00"),
+                title="Online, links off",
+                location_kind="online",
+            ),
+        ]
+        async with bookings_page(browser, site, world, path="/portal/bookings") as page:
+            await expect(page.get_by_test_id("calendar-week")).to_be_visible(timeout=WAIT)
+            details = page.get_by_test_id("booking-details")
+            for title in ("Online chat", "Online, links off"):
+                await page.get_by_test_id("booking").filter(has_text=title).click()
+                await expect(details).to_be_visible()
+                await expect(details.get_by_test_id("details-meet-missing")).to_have_count(0)
+                await page.keyboard.press("Escape")
+                await expect(details).to_have_count(0)
 
     await with_browser(body)

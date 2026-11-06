@@ -48,6 +48,7 @@ const SAID: Record<Change | "created", string> = {
   confirmed: "Confirmed.",
   declined: "Declined.",
   no_show: "Marked as a no-show.",
+  meet: "Meet link added.",
 };
 
 /** One calendar row: a booking, or a bare busy time (which has no id and cannot be opened). */

@@ -347,6 +347,8 @@ export interface BookingOut {
   replaces_ends_at?: string | null;
   /** On a booking: the live request to move it. Moving or cancelling it withdraws that request. */
   pending_change_id?: string | null;
+  /** A confirmed online booking still to come with no meeting link, while Meet links are on. */
+  meet_missing?: boolean;
 }
 
 /** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */
@@ -450,6 +452,11 @@ export function changeBooking(
   version: number,
 ): Promise<BookingOut> {
   return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/${action}`), { version });
+}
+
+/** Ask Google again for an online booking's Meet link; the answer still has `meet_missing` if it won't. */
+export function retryMeet(tenantId: string | null, bookingId: string): Promise<BookingOut> {
+  return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/meet`), {});
 }
 
 // ---- Settings ---------------------------------------------------------------------------------

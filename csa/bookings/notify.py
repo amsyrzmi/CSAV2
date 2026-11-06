@@ -69,6 +69,9 @@ class Outcome:
 
     email: EmailSummary
     customer_told: bool | None
+    # The booking as it is once the Google push has run (it may have a Meet link and a newer
+    # version); None when the push changed nothing or did not run.
+    booking: BookingRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +341,7 @@ async def notify_after_commit(
     category only.
     """
     unknown = _told(customer_owed(booking, owed), by_chat)
+    sent = booking  # as it was handed in: the push may return a newer one
     try:
         try:
             async with tx(pool, str(booking.client_id)) as conn:
@@ -348,9 +352,9 @@ async def notify_after_commit(
         if calendar is not None and calendar.available and change != "declined":
             # The people's Google events first, so mail to one whose calendar now holds the
             # booking carries no file (it would add a second event). The push never raises.
-            await calendar(booking, timeout=CALENDAR_PUSH_TIMEOUT)
+            booking = await calendar(booking, timeout=CALENDAR_PUSH_TIMEOUT) or booking
             facts = replace(facts, calendar_people=await _calendar_people(pool, booking, change))
-        return await notify(
+        outcome = await notify(
             mailer,
             booking,
             change,
@@ -360,6 +364,7 @@ async def notify_after_commit(
             original=original,
             invite=invite,
         )
+        return replace(outcome, booking=booking if booking is not sent else None)
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")
         return Outcome("failed", unknown)
