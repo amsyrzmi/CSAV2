@@ -1080,7 +1080,8 @@ async def test_the_planner_is_told_a_cancel_is_asked_first_and_what_a_yes_is() -
         assert yes in system
     assert "Anything else is not a yes" in system
     plain, _ = await _prompts_for(Context(), "plan")
-    assert "cancel_asked" not in plain
+    # The agent's input schema names the field for every planner; the rule is the booking one's.
+    assert "If booking.cancel_asked holds" not in plain
 
 
 async def test_the_classifier_scores_a_short_answer_that_continues_a_booking() -> None:
