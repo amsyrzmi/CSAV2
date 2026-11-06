@@ -31,6 +31,7 @@ from csa.agents.kb.extract import (
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, parse_job_files
 from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
+from csa.storage.base import StorageError
 from csa.storage.local import LocalObjectStore
 from docx import Document
 from psycopg.rows import dict_row
@@ -540,6 +541,96 @@ async def test_embedding_outage_requeues_with_backoff_then_fails(kb: KbWorld) ->
         conn.execute("UPDATE kb_ingest_jobs SET locked_at = now() WHERE id=%s", (job_id,))
     assert await kb.run(tenant) == "failed"
     assert tenant.job(job_id)["attempts"] == 2
+
+
+class FlakyStore(LocalObjectStore):
+    """Raises a plain StorageError on reads: ``failures`` times, or always when ``None``."""
+
+    def __init__(self, root: Path, failures: int | None) -> None:
+        super().__init__(root)
+        self.failures = failures
+
+    def read(self, tenant: uuid.UUID, name: str, limit: int) -> bytes:
+        if self.failures is None or self.failures > 0:
+            if self.failures is not None:
+                self.failures -= 1
+            raise StorageError("synthetic store timeout")
+        return super().read(tenant, name, limit)
+
+
+def flaky_processor(kb: KbWorld, failures: int | None) -> KbIngestProcessor:
+    return KbIngestProcessor(
+        kb.app_pool,
+        kb.app_pool,
+        embedder=kb.embedder,
+        config=KbIngestConfig(
+            store=FlakyStore(kb.root, failures), max_attempts=2, retry_backoff_seconds=60
+        ),
+    )
+
+
+async def run_with(processor: KbIngestProcessor, tenant: Tenant) -> str | None:
+    job = await processor.claim(tenant.id)
+    return None if job is None else await processor.process(job)
+
+
+def end_backoff(kb: KbWorld, job_id: uuid.UUID) -> None:
+    with psycopg.connect(kb.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE kb_ingest_jobs SET locked_at = now() WHERE id=%s", (job_id,))
+
+
+@requires_docker
+async def test_transient_storage_error_is_released_for_retry(kb: KbWorld) -> None:
+    tenant = kb.tenant()
+    job_id = tenant.enqueue([tenant.put("faq.csv", FAQ_CSV)])
+    processor = flaky_processor(kb, failures=1)
+
+    assert await run_with(processor, tenant) == "queued"
+    job = tenant.job(job_id)
+    assert (job["status"], job["attempts"], job["backing_off"]) == ("queued", 1, True)
+    assert "synthetic store timeout" in job["error"]
+    assert tenant.docs() == []
+
+    end_backoff(kb, job_id)
+    assert await run_with(processor, tenant) == "done"
+    job = tenant.job(job_id)
+    assert (job["status"], job["attempts"]) == ("done", 2)
+    assert [r["status"] for r in job["meta"]["results"]] == ["ingested"]
+    assert len(tenant.docs()) == 1
+
+
+@requires_docker
+async def test_storage_error_exhausts_attempts_and_fails_job(kb: KbWorld) -> None:
+    tenant = kb.tenant()
+    job_id = tenant.enqueue([tenant.put("faq.csv", FAQ_CSV)])
+    processor = flaky_processor(kb, failures=None)
+
+    assert await run_with(processor, tenant) == "queued"
+    end_backoff(kb, job_id)
+    assert await run_with(processor, tenant) == "failed"
+
+    job = tenant.job(job_id)
+    assert (job["status"], job["attempts"]) == ("failed", 2)
+    assert "source storage unavailable" in job["error"]
+    assert "synthetic store timeout" in job["error"]
+    assert tenant.docs() == []
+
+
+@requires_docker
+async def test_storage_not_found_still_fails_the_file_permanently(kb: KbWorld) -> None:
+    tenant = kb.tenant()
+    job_id = tenant.enqueue([tenant.put("faq.csv", FAQ_CSV), "gone.csv"])
+
+    assert await kb.run(tenant) == "partial"
+
+    job = tenant.job(job_id)
+    assert (job["status"], job["attempts"]) == ("partial", 1)
+    assert not job["backing_off"]
+    assert [(r["status"], r.get("error")) for r in job["meta"]["results"]] == [
+        ("ingested", None),
+        ("failed", "source file was deleted or is unavailable"),
+    ]
+    assert len(tenant.docs()) == 1
 
 
 @requires_docker

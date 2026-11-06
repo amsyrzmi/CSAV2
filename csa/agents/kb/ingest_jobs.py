@@ -175,6 +175,13 @@ class KbIngestProcessor:
             status = await self._release(client_id, job_id, int(job["attempts"]), str(exc))
             log.error("kb_ingest_embedding_failed", error=str(exc), status=status)
             return status
+        except StorageError as exc:
+            # A transient store failure (timeout, throttling, 5xx) is retried like an embedding
+            # outage; not-found and invalid names never reach here, they fail the one file.
+            error = f"source storage unavailable: {exc}"
+            status = await self._release(client_id, job_id, int(job["attempts"]), error)
+            log.error("kb_ingest_storage_failed", error=error, status=status)
+            return status
         except Exception as exc:
             error = f"ingestion failed: {type(exc).__name__}"
             await self._finish(client_id, job_id, "failed", error, results)
@@ -206,8 +213,11 @@ class KbIngestProcessor:
         result: dict[str, Any] = {"file": display, "path": upload.path}
         try:
             kind = file_kind_for(display)
-            stored = Path(upload.path)
-            if stored.suffix.lower() in _KNOWN_SUFFIXES and file_kind_for(stored.name) != kind:
+            source_name = Path(upload.path)
+            if (
+                source_name.suffix.lower() in _KNOWN_SUFFIXES
+                and file_kind_for(source_name.name) != kind
+            ):
                 raise KbFileError("file name and stored file type do not match")
             data = await asyncio.to_thread(
                 read_source,
@@ -250,16 +260,6 @@ class KbIngestProcessor:
             return result | {
                 "status": "failed",
                 "error": "source file was deleted or is unavailable",
-            }
-        except StorageError as exc:
-            logger.exception(
-                "kb_source_storage_failed",
-                client_id=str(client_id),
-                file_id=str(upload.file_id) if upload.file_id else None,
-            )
-            return result | {
-                "status": "failed",
-                "error": f"source file could not be read from storage: {type(exc).__name__}",
             }
 
         embeddings = await self._embedder.embed_batch([c.content for c in document.chunks])
