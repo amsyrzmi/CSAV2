@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str | None = None
     GOOGLE_CLIENT_SECRET: SecretStr | None = None
     GOOGLE_OAUTH_REDIRECT_URI: str | None = None
+    # Bookings stage 2: confirmed bookings on a person's own Google Calendar, then Meet links.
+    # Both need the Google client above; Meet needs the calendar. Off unless switched on.
+    BOOKINGS_GOOGLE_CALENDAR_ENABLED: bool = False
+    BOOKINGS_GOOGLE_MEET_ENABLED: bool = False
     GOOGLE_AI_API_KEY: SecretStr | None = None
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None
@@ -279,6 +283,40 @@ class Settings(BaseSettings):
                 "/console/v1/email/oauth/callback (HTTPS in prod)"
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_bookings_google(self) -> Settings:
+        if self.BOOKINGS_GOOGLE_MEET_ENABLED and not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+            raise ValueError(
+                "BOOKINGS_GOOGLE_MEET_ENABLED requires BOOKINGS_GOOGLE_CALENDAR_ENABLED"
+            )
+        if not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+            return self
+        if not (
+            self.GOOGLE_CLIENT_ID and self.GOOGLE_CLIENT_SECRET and self.GOOGLE_OAUTH_REDIRECT_URI
+        ):
+            raise ValueError(
+                "BOOKINGS_GOOGLE_CALENDAR_ENABLED requires GOOGLE_CLIENT_ID, "
+                "GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI"
+            )
+        origin = urlsplit(self.GOOGLE_OAUTH_REDIRECT_URI)
+        if (
+            origin.scheme not in {"http", "https"}
+            or not origin.hostname
+            or (self.ENV == "prod" and origin.scheme != "https")
+        ):
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI must be a web address (HTTPS in prod): the Bookings "
+                "calendar callback is derived from its origin"
+            )
+        return self
+
+    def bookings_calendar_redirect_uri(self) -> str | None:
+        """The Bookings calendar's OAuth callback: the console origin plus its own path."""
+        if not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED or not self.GOOGLE_OAUTH_REDIRECT_URI:
+            return None
+        origin = urlsplit(self.GOOGLE_OAUTH_REDIRECT_URI)
+        return f"{origin.scheme}://{origin.netloc}/console/v1/bookings/calendar/callback"
 
     @model_validator(mode="after")
     def _validate_kb_ingest(self) -> Settings:

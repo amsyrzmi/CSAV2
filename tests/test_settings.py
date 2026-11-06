@@ -207,3 +207,51 @@ def test_s3_backend_ingest_does_not_need_kb_upload_root() -> None:
 def test_local_backend_ingest_still_needs_kb_upload_root() -> None:
     with pytest.raises(ValidationError, match="KB_INGEST_ENABLED requires KB_UPLOAD_ROOT"):
         _settings(KB_INGEST_ENABLED="true")
+
+
+_GOOGLE = {
+    "GOOGLE_CLIENT_ID": "synthetic-client.example.test",
+    "GOOGLE_CLIENT_SECRET": "synthetic-client-secret-value",
+    "GOOGLE_OAUTH_REDIRECT_URI": "https://console.example.test/console/v1/email/oauth/callback",
+}
+
+
+def test_the_booking_google_flags_default_off() -> None:
+    s = _settings()
+    assert s.BOOKINGS_GOOGLE_CALENDAR_ENABLED is False
+    assert s.BOOKINGS_GOOGLE_MEET_ENABLED is False
+
+
+def test_meet_without_the_calendar_is_refused() -> None:
+    with pytest.raises(ValidationError, match="BOOKINGS_GOOGLE_MEET_ENABLED requires"):
+        _settings(BOOKINGS_GOOGLE_MEET_ENABLED="true", **_GOOGLE)
+
+
+@pytest.mark.parametrize(
+    "missing", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI"]
+)
+def test_the_calendar_without_the_google_client_is_refused(missing: str) -> None:
+    env = {k: v for k, v in _GOOGLE.items() if k != missing}
+    with pytest.raises(ValidationError, match="BOOKINGS_GOOGLE_CALENDAR_ENABLED requires"):
+        _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **env)
+
+
+def test_the_calendar_and_meet_with_the_google_client_construct() -> None:
+    s = _settings(
+        BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", BOOKINGS_GOOGLE_MEET_ENABLED="true", **_GOOGLE
+    )
+    assert s.BOOKINGS_GOOGLE_CALENDAR_ENABLED and s.BOOKINGS_GOOGLE_MEET_ENABLED
+
+
+def test_the_calendar_callback_is_the_console_origin_plus_its_own_path() -> None:
+    s = _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **_GOOGLE)
+    assert s.bookings_calendar_redirect_uri() == (
+        "https://console.example.test/console/v1/bookings/calendar/callback"
+    )
+    assert _settings().bookings_calendar_redirect_uri() is None
+
+
+def test_the_calendar_origin_must_be_a_web_address() -> None:
+    env = {**_GOOGLE, "GOOGLE_OAUTH_REDIRECT_URI": "not-a-url"}
+    with pytest.raises(ValidationError, match="web address"):
+        _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **env)
