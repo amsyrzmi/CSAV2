@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import io
 import random
+import struct
+import zlib
 from collections.abc import Callable
 from typing import Any
 
 import pytest
+from csa.training import limits
 from csa.training.limits import MAX_PAGES
 from csa.training.pdf import PdfInfo, PdfRefused, check_pdf, extract_text
 from pypdf import PageObject, PdfWriter
@@ -81,6 +84,78 @@ def raw_pdf(objects: list[bytes]) -> bytes:
         xref,
     )
     return bytes(out)
+
+
+def objstm_pdf(leaves: int, *, pad: int = 0, extra_objects: int = 0) -> bytes:
+    """A PDF 1.5 file whose leaves each sit in their own flate object stream.
+
+    ``pad`` spaces follow each leaf inside its stream (flate packs them about 1000:1);
+    ``extra_objects`` tiny integer objects share the first leaf's stream. A cross-reference
+    stream indexes it all.
+    """
+    out = bytearray(b"%PDF-1.7\n")
+    offsets: dict[int, int] = {}
+    compressed: dict[int, tuple[int, int]] = {}
+    kids = b" ".join(b"%d 0 R" % (3 + i) for i in range(leaves))
+    for number, body in (
+        (1, CATALOG),
+        (2, b"<< /Type /Pages /Kids [%s] /Count %d >>" % (kids, leaves)),
+    ):
+        offsets[number] = len(out)
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    next_number = 3 + leaves
+    for index in range(leaves):
+        members = [(3 + index, LEAF)]
+        if index == 0:
+            members += [(next_number + 1 + n, b"0") for n in range(extra_objects)]
+        stream_number = next_number
+        next_number += 1 + (extra_objects if index == 0 else 0)
+        header, body = bytearray(), bytearray()
+        for position, (number, obj) in enumerate(members):
+            header += b"%d %d " % (number, len(body))
+            body += obj + b" "
+            compressed[number] = (stream_number, position)
+        packed = zlib.compress(bytes(header + body) + b" " * pad, 9)
+        offsets[stream_number] = len(out)
+        shape = b"/Type /ObjStm /N %d /First %d" % (len(members), len(header))
+        out += b"%d 0 obj\n<< %s /Filter /FlateDecode /Length %d >>\nstream\n" % (
+            stream_number,
+            shape,
+            len(packed),
+        )
+        out += packed + b"\nendstream\nendobj\n"
+    xref_number = next_number
+    rows = bytearray()
+    for number in range(xref_number + 1):
+        if number == xref_number:
+            rows += struct.pack(">BII", 1, len(out), 0)
+        elif number in offsets:
+            rows += struct.pack(">BII", 1, offsets[number], 0)
+        elif number in compressed:
+            rows += struct.pack(">BII", 2, *compressed[number])
+        else:
+            rows += struct.pack(">BII", 0, 0, 65535)
+    xref_offset = len(out)
+    out += b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 4] /Root 1 0 R /Length %d >>\nstream\n" % (
+        xref_number,
+        xref_number + 1,
+        len(rows),
+    )
+    out += rows + b"\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n" % xref_offset
+    return bytes(out)
+
+
+def _heavy_page(page_index: int, size: int) -> Callable[[PdfWriter], None]:
+    """Replace one page's content with ``size`` bytes of no-op operators, flate-packed."""
+
+    def mutate(writer: PdfWriter) -> None:
+        stream = DecodedStreamObject()
+        stream.set_data(b"q Q\n" * (size // 4 + 1))
+        writer.pages[page_index][NameObject("/Contents")] = writer._add_object(
+            stream.flate_encode()
+        )
+
+    return mutate
 
 
 CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
@@ -237,8 +312,8 @@ def test_pdf_extension_with_exe_bytes_refused(data: bytes) -> None:
         "a\x1fb.pdf",
         "a\x7fb.pdf",
         "a\x85b.pdf",
-        "invoice‮fdp.pdf",
-        "line break.pdf",
+        "invoice\u202efdp.pdf",
+        "line\u2028break.pdf",
         "x" * 252 + ".pdf",
         "",
         "   ",
@@ -486,3 +561,74 @@ def test_extract_text_refuses_damaged_and_protected() -> None:
     with pytest.raises(PdfRefused) as protected:
         extract_text(make_pdf(1, texts=["hidden"], mutate=_encrypt("", "AES-256")), 24_000)
     assert protected.value.code == "training_pdf_protected"
+
+
+# --- decoding limits ---------------------------------------------------------------------
+
+
+def _damage_cause(data: bytes) -> str:
+    with pytest.raises(PdfRefused) as caught:
+        check_pdf(data, "deck.pdf")
+    assert caught.value.code == "training_pdf_damaged"
+    return str(caught.value.__cause__)
+
+
+def test_leaves_in_object_streams_are_accepted() -> None:
+    assert check_pdf(objstm_pdf(3), "deck.pdf") == PdfInfo(page_count=3, landscape=False)
+
+
+def test_object_stream_padded_past_the_stream_cap_is_damaged() -> None:
+    # About 2 KB on disk, more than PDF_STREAM_MAX_DECODED_BYTES once inflated.
+    data = objstm_pdf(1, pad=limits.PDF_STREAM_MAX_DECODED_BYTES + 1)
+    assert len(data) < 16 * 1024
+    assert "Limit reached while decompressing" in _damage_cause(data)
+
+
+def test_object_streams_under_the_cap_add_up_to_a_file_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(limits, "PDF_OBJECT_STREAMS_MAX_BYTES", 64 * 1024)
+    assert check_pdf(objstm_pdf(3, pad=20 * 1024), "deck.pdf").page_count == 3
+    assert "stream budget spent" in _damage_cause(objstm_pdf(3, pad=30 * 1024))
+
+
+def test_objects_parsed_out_of_object_streams_are_budgeted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(limits, "PDF_STREAM_OBJECTS_MAX", 20)
+    assert check_pdf(objstm_pdf(1, extra_objects=10), "deck.pdf").page_count == 1
+    assert "entry budget spent" in _damage_cause(objstm_pdf(1, extra_objects=30))
+
+
+def test_cross_reference_entries_are_budgeted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(limits, "PDF_XREF_MAX_ENTRIES", 5)
+    assert "cross-reference entry budget spent" in _damage_cause(objstm_pdf(3))
+
+
+def test_extract_text_stops_for_the_file_at_a_stream_over_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized = _heavy_page(1, limits.PDF_STREAM_MAX_DECODED_BYTES + 1)
+    data = make_pdf(3, texts=_page_texts(3), mutate=oversized)
+    original = PageObject.extract_text
+    calls: list[int] = []
+
+    def spy(self: PageObject, *args: Any, **kwargs: Any) -> str:
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(PageObject, "extract_text", spy)
+    text, truncated = extract_text(data, 24_000)
+    # Page 1 is kept; page 2 hits the limit, and page 3 is never decoded or read.
+    assert truncated is True
+    assert text.startswith("Page 001") and "Page 003" not in text
+    assert len(calls) == 1
+
+
+def test_extract_text_stops_when_the_content_budget_is_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = make_pdf(3, texts=_page_texts(3))
+    whole, _ = extract_text(data, 24_000)
+    monkeypatch.setattr(limits, "PDF_TEXT_CONTENT_MAX_BYTES", 150)
+    text, truncated = extract_text(data, 24_000)
+    assert truncated is True
+    assert text and whole.startswith(text) and "Page 003" not in text

@@ -2,9 +2,10 @@
 
 The library stores only PDFs. ``check_pdf`` runs on every upload before anything is
 stored; ``extract_text`` feeds the summary. Both treat the file as hostile: they read
-the catalog and the page tree under tighter pypdf page-tree limits, never parse a
-content stream to answer a check, and turn every error a damaged or crafted file can
-raise into a ``PdfRefused`` code. No database, network or logging of names or text.
+the catalog and the page tree under tighter pypdf page-tree and stream-decoding limits
+(see ``limits``), never parse a content stream to answer a check, and turn every error a
+damaged or crafted file can raise into a ``PdfRefused`` code. No database, network or
+logging of names or text.
 """
 
 from __future__ import annotations
@@ -16,11 +17,19 @@ import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from pypdf import PageObject, PdfReader, apply_configuration
-from pypdf.errors import DependencyError, PyPdfError
-from pypdf.generic import ArrayObject, DictionaryObject, PdfObject
+from pypdf.errors import DependencyError, LimitReachedError, PyPdfError
+from pypdf.generic import (
+    ArrayObject,
+    DictionaryObject,
+    IndirectObject,
+    PdfObject,
+    StreamObject,
+)
 
+from csa.training import limits
 from csa.training.limits import MAX_PAGES
 
 PDF_MAGIC = b"%PDF-"
@@ -36,7 +45,9 @@ _MAX_CHAINED_ACTIONS = 64
 
 _ACTIVE_ACTIONS = frozenset({"/JavaScript", "/Launch"})
 # Bidirectional controls let a name display differently from what it is ("fdp.exe").
-_BIDI_CONTROLS = frozenset("؜‎‏‪‫‬‭‮⁦⁧⁨⁩")
+_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
 # Control characters, lone surrogates and line or paragraph separators.
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cs", "Zl", "Zp"})
 
@@ -78,7 +89,7 @@ def check_pdf(data: bytes, file_name: str) -> PdfInfo:
     _check_name(file_name)
     if not file_name.lower().endswith(".pdf") or not data.startswith(PDF_MAGIC):
         raise PdfRefused("training_not_pdf")
-    with _page_tree_limits():
+    with _parse_limits():
         try:
             reader = _open(data)
             pages = _pages(reader)
@@ -97,13 +108,15 @@ def extract_text(data: bytes, max_chars: int) -> tuple[str, bool]:
 
     Pages are read in order and reading stops as soon as ``max_chars`` characters are
     gathered. A page whose text cannot be extracted is skipped. A PDF with no text (a
-    scan) gives ``("", False)``.
+    scan) gives ``("", False)``. Once a decoding limit is hit (one stream too large, or
+    the file's content budget spent) no later page is decoded: the text gathered so far
+    is returned with ``True``, as if the cap had been reached.
     """
     if max_chars < 1:
         raise ValueError("max_chars must be positive")
     if not data.startswith(PDF_MAGIC):
         raise PdfRefused("training_pdf_damaged")
-    with _page_tree_limits():
+    with _parse_limits():
         try:
             pages = _pages(_open(data))
         except PdfRefused:
@@ -112,9 +125,13 @@ def extract_text(data: bytes, max_chars: int) -> tuple[str, bool]:
             raise PdfRefused("training_pdf_damaged") from exc
         parts: list[str] = []
         gathered = 0
+        content_spent = 0
         for index, page in enumerate(pages):
             try:
+                content_spent = _charge_content(page, content_spent)
                 text = (page.extract_text() or "").strip()
+            except LimitReachedError:
+                return "".join(parts)[:max_chars], True
             except _READ_ERRORS:
                 continue
             if not text:
@@ -145,17 +162,97 @@ def _check_name(file_name: str) -> None:
 
 
 @contextmanager
-def _page_tree_limits() -> Iterator[None]:
-    """pypdf walks the page tree with these bounds (scoped to this context, not global)."""
+def _parse_limits() -> Iterator[None]:
+    """pypdf's page-tree and stream-decoding bounds, scoped to this context (not global)."""
+    stream_max = limits.PDF_STREAM_MAX_DECODED_BYTES
     with apply_configuration(
         page_tree_maximum_entries=_PAGE_TREE_ENTRIES,
         page_tree_maximum_depth=_PAGE_TREE_DEPTH,
+        zlib_maximum_output_length=stream_max,
+        lzw_maximum_output_length=stream_max,
+        run_length_maximum_output_length=stream_max,
+        brotli_maximum_output_length=stream_max,
+        array_based_stream_maximum_output_length=stream_max,
+        stream_decoding_work_maximum_length=limits.PDF_STREAM_MAX_DECODING_WORK,
+        zlib_maximum_recovery_input_length=limits.PDF_FLATE_MAX_RECOVERY_INPUT,
+        # The raw bytes of a stream: bounded by the file itself, so the file cap is enough.
+        maximum_declared_stream_length=limits.MAX_FILE_BYTES,
     ):
         yield
 
 
+class _BudgetedReader(PdfReader):
+    """A PdfReader that charges every object and cross-reference stream it decodes to one
+    budget per file, so many small-but-legal streams cannot add up to minutes of parsing.
+
+    The per-stream caps in ``_parse_limits`` bound one stream; this bounds their sum, the
+    cross-reference rows and the objects parsed out of object streams. It overrides three
+    private pypdf 6.20 hooks (pypdf is pinned exactly; recheck them on any upgrade).
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self._decoded_bytes = 0
+        self._xref_entries = 0
+        self._stream_objects = 0
+        self._charged_streams: set[int] = set()
+        super().__init__(io.BytesIO(data), strict=False)
+
+    def _charge(self, amount: int) -> None:
+        self._decoded_bytes += amount
+        if self._decoded_bytes > limits.PDF_OBJECT_STREAMS_MAX_BYTES:
+            raise LimitReachedError("object and cross-reference stream budget spent")
+
+    def _read_xref_subsections(
+        self, idx_pairs: list[int], get_entry: Any, used_before: Any
+    ) -> None:
+        # Each cross-reference stream row costs about 10 µs of Python: count them first.
+        self._xref_entries += sum(int(count) for count in idx_pairs[1::2])
+        if self._xref_entries > limits.PDF_XREF_MAX_ENTRIES:
+            raise LimitReachedError("cross-reference entry budget spent")
+        super()._read_xref_subsections(idx_pairs, get_entry, used_before)
+
+    def _read_pdf15_xref_stream(self, stream: Any) -> StreamObject:
+        xref_stream = super()._read_pdf15_xref_stream(stream)
+        self._charge(len(xref_stream.get_data()))  # decoded already, cached on the stream
+        return xref_stream
+
+    def _get_object_from_stream(self, indirect_reference: IndirectObject) -> PdfObject:
+        entry = self.xref_objStm.get(indirect_reference.idnum)
+        if entry is not None and entry[0] not in self._charged_streams:
+            number = int(entry[0])
+            self._charged_streams.add(number)
+            container = IndirectObject(number, 0, self).get_object()
+            if isinstance(container, StreamObject):
+                # Charge the raw bytes first (a broken stream costs its retries), then the
+                # decoded bytes before pypdf parses them; get_data caches the decoding.
+                self._charge(len(container._data))
+                decoded = len(container.get_data())
+                self._charge(decoded)
+                # pypdf parses every object in the stream (about 30 µs each), and caps
+                # /N at a third of the decoded length, as this does.
+                declared = _resolve(container.get("/N"))
+                count = declared if isinstance(declared, int) else 0
+                self._stream_objects += max(0, min(count, decoded // 3))
+                if self._stream_objects > limits.PDF_STREAM_OBJECTS_MAX:
+                    raise LimitReachedError("object stream entry budget spent")
+        return super()._get_object_from_stream(indirect_reference)
+
+
+def _charge_content(page: PageObject, spent: int) -> int:
+    """Decode the page's content streams (cached for extract_text) and add them to ``spent``."""
+    contents = _resolve(page.get("/Contents"))
+    streams = list(contents) if isinstance(contents, ArrayObject) else [contents]
+    for item in streams:
+        stream = _resolve(item)
+        if isinstance(stream, StreamObject):
+            spent += len(stream.get_data())
+            if spent > limits.PDF_TEXT_CONTENT_MAX_BYTES:
+                raise LimitReachedError("page content budget spent")
+    return spent
+
+
 def _open(data: bytes) -> PdfReader:
-    reader = PdfReader(io.BytesIO(data), strict=False)
+    reader = _BudgetedReader(data)
     # Any encryption counts as protected, even a file that opens with an empty password.
     if reader.is_encrypted:
         raise PdfRefused("training_pdf_protected")
