@@ -210,3 +210,4 @@ not inspected; the viewer is meant to run with scripting off.
 - **Memory:** a PDF is read whole into memory for the checks and for a summary (up to 25 MB each),
   never in bulk. Summaries of several distinct items at once multiply that; the child slots (2) and
   model slots (4) bound CPU and provider calls, not this read.
+- **Retesting on staging** after a rollout: [TRAINING_RETEST.md](./TRAINING_RETEST.md).
