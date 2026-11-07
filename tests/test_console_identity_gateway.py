@@ -48,6 +48,7 @@ def application(
         voice_transcription_key=lambda: None,
         voice_session_config=lambda: None,
         EMAIL_ASSISTANT_ENABLED=False,
+        BOOKINGS_GOOGLE_CALENDAR_ENABLED=False,
         WORKSPACE_ASSISTANT_ENABLED=False,
         whatsapp_enabled=whatsapp is not None,
         tiktok_enabled=False,

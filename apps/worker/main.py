@@ -17,6 +17,7 @@ import structlog
 from csa.agents.ecommerce.app_loader import build_app_loader
 from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.agents.kb.ingest_jobs import KbIngestConfig, KbIngestProcessor, kb_ingest_loop
+from csa.bookings.google.factory import build_calendar_push
 from csa.channels.ingress import TelegramIngress
 from csa.channels.voice import transcribe_telegram_audio
 from csa.console.mailer import Mailer
@@ -765,7 +766,11 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         owner_pool,
         app_pool,
         lock_conninfo=owner_dsn,
-        registry=build_default_registry(mailer, app_pool),
+        registry=build_default_registry(
+            mailer,
+            app_pool,
+            calendar=build_calendar_push(settings, app_pool, llm_http),
+        ),
     )
     hr_leavers = register_hr_leavers_task(app_pool)
     jobs_task = asyncio.create_task(jobs_loop(job_runner))

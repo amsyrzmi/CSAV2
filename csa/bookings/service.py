@@ -121,12 +121,14 @@ class Viewer:
     user_id: UUID
     read_only: bool
     admin: bool = False
+    # Meet links are on, so an online booking without one is shown as missing it.
+    meet: bool = False
 
 
-def viewer_of(actor: ConsoleActor) -> Viewer:
+def viewer_of(actor: ConsoleActor, *, meet: bool = False) -> Viewer:
     read_only = not actor.platform_admin and actor.role == Role.READ_ONLY
     admin = actor.platform_admin or actor.role in (Role.PLATFORM_ADMIN, Role.TENANT_ADMIN)
-    return Viewer(actor.user_id, read_only=read_only, admin=admin)
+    return Viewer(actor.user_id, read_only=read_only, admin=admin, meet=meet)
 
 
 @dataclass(frozen=True)
@@ -237,6 +239,16 @@ def may_change(record: BookingRecord, viewer: Viewer) -> bool:
     return not viewer.read_only and involved(record, viewer.user_id)
 
 
+def meet_missing(record: BookingRecord) -> bool:
+    """A confirmed online booking still to come that has no meeting link."""
+    return (
+        record.status == "confirmed"
+        and record.location_kind == "online"
+        and not record.meeting_link
+        and record.ends_at > datetime.now(UTC)
+    )
+
+
 def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
     """The one function every read goes through.
 
@@ -294,6 +306,7 @@ def to_out(record: BookingRecord, viewer: Viewer) -> BookingOut:
         replaces_starts_at=record.replaces_starts_at,
         replaces_ends_at=record.replaces_ends_at,
         pending_change_id=record.pending_change_id,
+        meet_missing=viewer.meet and meet_missing(record),
     )
 
 
@@ -975,6 +988,16 @@ async def _for_change(
         raise HTTPException(403, "own_bookings_only")
     if version is not None and record.version != version:
         raise stale()
+    return record
+
+
+async def meet_target(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, booking_id: UUID
+) -> BookingRecord:
+    """The booking a Meet retry is for: one this person may change, still wanting a link."""
+    record = await _for_change(conn, client_id, actor, booking_id, None)
+    if not meet_missing(record):
+        raise HTTPException(409, "wrong_status")
     return record
 
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from csa.bookings.api import build_bookings_router
+from csa.bookings.google.api import build_calendar_router
 from csa.console.auth import build_identity_router
 from csa.console.channels import build_channels_router
 from csa.console.onboarding import build_onboarding_router
@@ -28,6 +29,7 @@ def contract() -> dict:
     app.include_router(build_channels_router())
     app.include_router(build_subscriptions_router())
     app.include_router(build_bookings_router())
+    app.include_router(build_calendar_router())
     return app.openapi()
 
 

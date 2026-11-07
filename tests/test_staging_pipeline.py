@@ -94,7 +94,7 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
     assert {"data", "embeddings", "provider-egress"} <= set(services["worker"]["networks"])
     assert not config["networks"]["provider-egress"].get("internal", False)
     assert {"provider-egress"} <= set(services["gateway"]["networks"])
-    # Staff email assistant: the Google OAuth client on the gateway only, off by default.
+    # Staff email assistant: the Google OAuth client on the gateway, off by default.
     assert gateway_secrets["GOOGLE_CLIENT_ID"] == "staging_google_client_id"
     assert gateway_secrets["GOOGLE_CLIENT_SECRET"] == "staging_google_client_secret"
     gateway_env = services["gateway"]["environment"]
@@ -102,7 +102,9 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
     assert gateway_env["GOOGLE_OAUTH_REDIRECT_URI"] == (
         "https://staging.invalid/console/v1/email/oauth/callback"
     )
-    for name in ("worker", "delivery"):
+    # The worker refreshes Google Calendar tokens, so it has the client too (see the Google Calendar
+    # tests below); delivery never does.
+    for name in ("delivery",):
         assert not {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"} & {
             s["target"] for s in services[name]["secrets"]
         }
@@ -612,3 +614,54 @@ def test_tiktok_defaults_cli_prints_only_names(
     out = capsys.readouterr().out
     assert out.count("created pipeline/staging_tiktok_") == 3
     assert "disabled" not in out
+
+
+def test_google_calendar_and_meet_are_off_unless_the_environment_says_otherwise(
+    tmp_path: Path,
+) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    for name in ("gateway", "worker"):
+        env = services[name]["environment"]
+        assert env["BOOKINGS_GOOGLE_CALENDAR_ENABLED"] == "false"
+        assert env["BOOKINGS_GOOGLE_MEET_ENABLED"] == "false"
+    assert not [key for key in services["delivery"]["environment"] if "GOOGLE" in key]
+
+
+def test_the_environment_switches_google_calendar_and_meet_on_for_the_gateway_and_worker(
+    tmp_path: Path,
+) -> None:
+    overrides = {
+        "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "true",
+        "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "true",
+    }
+    services = render(tmp_path, "staging-approved", "pipeline-approved", env_overrides=overrides)[
+        "services"
+    ]
+    for name in ("gateway", "worker"):
+        env = services[name]["environment"]
+        assert env["BOOKINGS_GOOGLE_CALENDAR_ENABLED"] == "true"
+        assert env["BOOKINGS_GOOGLE_MEET_ENABLED"] == "true"
+
+
+def test_the_worker_carries_the_google_client_the_gateway_uses(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    for name in ("gateway", "worker"):
+        targets = {s["target"]: s["source"] for s in services[name]["secrets"]}
+        assert targets["GOOGLE_CLIENT_ID"] == "staging_google_client_id"
+        assert targets["GOOGLE_CLIENT_SECRET"] == "staging_google_client_secret"
+    # The client cannot be built without a redirect address; the worker's is the gateway's.
+    assert (
+        services["worker"]["environment"]["GOOGLE_OAUTH_REDIRECT_URI"]
+        == services["gateway"]["environment"]["GOOGLE_OAUTH_REDIRECT_URI"]
+    )
+    delivery = {s["target"] for s in services["delivery"]["secrets"]}
+    assert not delivery & {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"}
+
+
+def test_the_checked_in_rollout_flags_leave_google_calendar_and_meet_off() -> None:
+    text = (ROOT / "deploy" / "staging-rollout.env").read_text(encoding="utf-8")
+    flags = dict(
+        line.split("=", 1) for line in text.splitlines() if line and not line.startswith("#")
+    )
+    assert flags["CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR"] == "false"
+    assert flags["CSA_STAGING_BOOKINGS_GOOGLE_MEET"] == "false"
