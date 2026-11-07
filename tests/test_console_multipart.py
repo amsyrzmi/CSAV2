@@ -193,3 +193,23 @@ async def test_parser_limits_follow_the_options() -> None:
     assert (await post_parts(default, *[("files", b"a")] * 3)).status_code == 200
     assert (await post_parts(default, *[("files", b"a")] * 4)).status_code == 422
     assert (await post_parts(default, ("file", b"a"))).status_code == 422
+
+
+async def test_max_file_default_is_unchanged_and_message_says_10_mb() -> None:
+    app = one_file_app()
+    assert (await post_parts(app, ("files", b"a" * 2**20))).status_code == 200
+    refused = await post_parts(app, ("files", b"a" * (10 * 2**20 + 1)))
+    assert refused.status_code == 413
+    assert refused.json()["detail"] == "file exceeds 10 MB"
+
+
+async def test_max_file_raises_the_per_part_limit() -> None:
+    app = one_file_app(max_file=25 * 2**20)
+    assert (await post_parts(app, ("files", b"a" * (12 * 2**20)))).status_code == 200
+
+
+async def test_max_file_still_refuses_larger_part() -> None:
+    app = one_file_app(max_file=25 * 2**20)
+    refused = await post_parts(app, ("files", b"a" * (25 * 2**20 + 1)))
+    assert refused.status_code == 413
+    assert refused.json()["detail"] == "file exceeds 25 MB"
