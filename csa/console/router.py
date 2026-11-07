@@ -32,6 +32,7 @@ from csa.contracts.registry import CapabilityRegistry
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.storage.base import ObjectStore
+from csa.training.api import build_training_router
 
 
 class TraceOut(BaseModel):
@@ -135,12 +136,14 @@ def build_router(
     kb_model: str | None = None,
     kb_tei_configured: bool = False,
     kb_store: ObjectStore | None = None,
+    training_store: ObjectStore | None = None,
 ) -> APIRouter:
     async def auth(request: Request) -> None:
         await authenticate(request, token, machine_client_ids)
 
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
     router.include_router(build_upload_router(kb_store))
+    router.include_router(build_training_router(training_store))
     router.include_router(build_chat_router())
     router.include_router(build_voice_router())
     router.include_router(build_voice_sessions_router())

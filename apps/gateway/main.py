@@ -426,6 +426,7 @@ def create_app() -> FastAPI:
             else ("hash-384" if settings.ENV != "prod" else None),
             kb_tei_configured=settings.TEI_ENDPOINT is not None,
             kb_store=stores.kb,
+            training_store=stores.training,
         )
     )
 
