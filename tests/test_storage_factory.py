@@ -50,7 +50,7 @@ def s3_settings() -> Settings:
 
 
 def test_build_stores_local_returns_none_for_unset_roots() -> None:
-    assert build_stores(make_settings()) == Stores(kb=None, hr=None)
+    assert build_stores(make_settings()) == Stores(kb=None, hr=None, training=None)
 
 
 def test_build_stores_local_uses_the_configured_roots(tmp_path: Path) -> None:
@@ -61,6 +61,30 @@ def test_build_stores_local_uses_the_configured_roots(tmp_path: Path) -> None:
     assert isinstance(stores.hr, LocalObjectStore) and stores.hr.root == hr_root
     only_hr = build_stores(make_settings(HR_UPLOAD_ROOT=str(hr_root)))
     assert only_hr.kb is None and only_hr.hr is not None
+
+
+def test_build_stores_local_has_training_store(tmp_path: Path) -> None:
+    root = tmp_path / "training"
+    stores = build_stores(make_settings(TRAINING_UPLOAD_ROOT=str(root)))
+
+    assert isinstance(stores.training, LocalObjectStore) and stores.training.root == root
+    assert stores.kb is None and stores.hr is None
+
+
+def test_build_stores_s3_uses_training_prefix() -> None:
+    tenant = uuid4()
+    with mock_aws():
+        client = boto3.client(
+            "s3", region_name=REGION, aws_access_key_id="testing", aws_secret_access_key=FAKE_SECRET
+        )
+        client.create_bucket(Bucket=BUCKET)
+        stores = build_stores(s3_settings())
+        assert isinstance(stores.training, S3ObjectStore)
+
+        stores.training.put(tenant, "lesson.pdf", b"training")
+
+        keys = [item["Key"] for item in client.list_objects_v2(Bucket=BUCKET)["Contents"]]
+    assert keys == [f"training/{tenant}/lesson.pdf"]
 
 
 def test_build_stores_s3_gives_kb_and_hr_separate_prefixes() -> None:
@@ -102,6 +126,23 @@ def test_importing_the_factory_does_not_import_boto3() -> None:
     code = "import csa.storage.factory, sys; sys.exit(1 if 'boto3' in sys.modules else 0)"
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, check=False)
     assert done.returncode == 0, done.stderr.decode()
+
+
+def test_kb_only_drops_training(tmp_path: Path) -> None:
+    kb, training = LocalObjectStore(tmp_path / "kb"), LocalObjectStore(tmp_path / "training")
+
+    kept = kb_only(Stores(kb=kb, hr=None, training=training))
+
+    assert kept == Stores(kb=kb, hr=None)
+    assert kept.training is None
+
+
+async def test_verify_stores_checks_training(tmp_path: Path) -> None:
+    training = RecordingStore(tmp_path / "training")
+
+    await verify_stores(Stores(kb=None, hr=None, training=training))
+
+    assert training.checks == 1
 
 
 def test_kb_only_drops_the_hr_store(tmp_path: Path) -> None:

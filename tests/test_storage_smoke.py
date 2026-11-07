@@ -72,7 +72,7 @@ def test_smoke_passes_against_moto_and_prints_no_secrets(
     assert code == 0
     assert leftovers == []
     assert not [line for line in lines if line.startswith("FAIL ")]
-    for store in ("kb", "hr"):
+    for store in ("kb", "hr", "training"):
         for check in (
             "startup check",
             "put then read",
@@ -86,6 +86,21 @@ def test_smoke_passes_against_moto_and_prints_no_secrets(
     assert any("StorageNotFound" in line or "StorageError" in line for line in lines)
     for secret in (FAKE_KEY_ID, FAKE_SECRET, storage_smoke.PAYLOAD.decode("ascii")):
         assert secret not in output
+
+
+def test_smoke_checks_a_local_training_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "training"
+    root.mkdir()
+
+    code = storage_smoke.run(make_settings(TRAINING_UPLOAD_ROOT=str(root)))
+
+    lines = result_lines(capsys.readouterr().out)
+    assert code == 0
+    assert any(line.startswith("PASS training: put then read") for line in lines)
+    assert not [line for line in lines if line.startswith(("PASS kb", "PASS hr"))]
+    assert not [path for path in root.rglob("*") if path.is_file()]
 
 
 class CorruptingStore(LocalObjectStore):

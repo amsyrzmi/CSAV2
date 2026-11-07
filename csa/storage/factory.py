@@ -1,4 +1,4 @@
-"""Build the KB and HR object stores from settings and check them at startup."""
+"""Build the KB, HR and training object stores from settings and check them at startup."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ class Stores:
 
     kb: ObjectStore | None
     hr: ObjectStore | None
+    training: ObjectStore | None = None
 
 
 def build_stores(settings: Settings) -> Stores:
@@ -37,20 +38,25 @@ def build_stores(settings: Settings) -> Stores:
                 bucket, region, key_id.get_secret_value(), secret.get_secret_value(), prefix
             )
 
-        return Stores(kb=s3("kb"), hr=s3("hr"))
+        return Stores(kb=s3("kb"), hr=s3("hr"), training=s3("training"))
     return Stores(
         kb=LocalObjectStore(settings.KB_UPLOAD_ROOT) if settings.KB_UPLOAD_ROOT else None,
         hr=LocalObjectStore(settings.HR_UPLOAD_ROOT) if settings.HR_UPLOAD_ROOT else None,
+        training=(
+            LocalObjectStore(settings.TRAINING_UPLOAD_ROOT)
+            if settings.TRAINING_UPLOAD_ROOT
+            else None
+        ),
     )
 
 
 def kb_only(stores: Stores) -> Stores:
-    """Keep the KB store only, for processes (the worker) that never touch HR documents."""
-    return Stores(kb=stores.kb, hr=None)
+    """Keep the KB store only, for processes (the worker) that never touch HR or training files."""
+    return Stores(kb=stores.kb, hr=None, training=None)
 
 
 async def verify_stores(stores: Stores) -> None:
     """Run every configured store's check; a ``StorageError`` stops the process at startup."""
-    for store in (stores.kb, stores.hr):
+    for store in (stores.kb, stores.hr, stores.training):
         if store is not None:
             await asyncio.to_thread(store.check)

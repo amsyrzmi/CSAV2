@@ -3,9 +3,10 @@
 Run it inside the gateway container so it uses the process's own settings, for example
 ``docker exec csa-prod-gateway-1 python -m scripts.storage_smoke``.
 
-It writes only under a random tenant id, in the knowledge-base and HR stores, and removes what
-it wrote. Exit codes: 0 every check passed, 1 a check failed, 2 the setup is unusable. It
-prints one ``PASS`` or ``FAIL`` line per check and never prints keys or object contents.
+It writes only under a random tenant id, in the knowledge-base, HR and training stores, and
+removes what it wrote. Exit codes: 0 every check passed, 1 a check failed, 2 the setup is
+unusable. It prints one ``PASS`` or ``FAIL`` line per check and never prints keys or object
+contents.
 """
 
 from __future__ import annotations
@@ -102,12 +103,13 @@ def run(settings: Settings) -> int:
     except ValueError as exc:
         print(f"setup error: {exc}", file=sys.stderr)
         return 2
-    candidates = (("kb", stores.kb), ("hr", stores.hr))
+    candidates = (("kb", stores.kb), ("hr", stores.hr), ("training", stores.training))
     configured = [(label, store) for label, store in candidates if store is not None]
     if not configured:
         print(
             "setup error: no object store is configured; set STORAGE_BACKEND=s3 with the S3 "
-            "settings, or KB_UPLOAD_ROOT / HR_UPLOAD_ROOT for the local backend",
+            "settings, or KB_UPLOAD_ROOT / HR_UPLOAD_ROOT / TRAINING_UPLOAD_ROOT for the local "
+            "backend",
             file=sys.stderr,
         )
         return 2
