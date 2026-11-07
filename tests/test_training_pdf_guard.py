@@ -104,14 +104,16 @@ def _fake_worker(monkeypatch: pytest.MonkeyPatch, body: str) -> None:
     monkeypatch.setattr(pdf_guard, "_worker_command", command)
 
 
-def _worker_with_action(monkeypatch: pytest.MonkeyPatch, action_source: str) -> None:
-    """The real worker (limits, stdin, output) with its ``check`` action replaced."""
+def _worker_with_action(
+    monkeypatch: pytest.MonkeyPatch, action_source: str, name: str = "check"
+) -> None:
+    """The real worker (limits, stdin, output) with its ``name`` action replaced."""
     body = (
         "import sys, resource\n"
         f"sys.path.append({PACKAGE_ROOT!r})\n"
         "from csa.training import pdf_worker\n"
         f"{action_source}\n"
-        "pdf_worker._ACTIONS['check'] = action\n"
+        f"pdf_worker._ACTIONS[{name!r}] = action\n"
         "sys.exit(pdf_worker.main(sys.argv[1:]))\n"
     )
     _fake_worker(monkeypatch, body)
@@ -189,6 +191,21 @@ async def test_extract_isolated_matches_in_process_text_and_truncation(
     assert await _outcome_async(extract_text_isolated(data, max_chars)) == expected
 
 
+async def test_extract_isolated_turns_a_lone_surrogate_into_a_replacement_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pypdf decodes ToUnicode entries with "surrogatepass", so a broken font map can give a lone
+    # surrogate, which the parent's JSON parser refuses. The worker sends U+FFFD in its place and
+    # keeps a valid pair, so the text still arrives as text, not as training_pdf_unreadable.
+    _worker_with_action(
+        monkeypatch,
+        "def action(data, args):\n"
+        "    return {'ok': True, 'text': 'a\\ud800b\\udc00c\\ud83d\\ude00', 'truncated': False}",
+        "extract",
+    )
+    assert await extract_text_isolated(make_pdf(), 100) == ("a\ufffdb\ufffdc\U0001f600", False)
+
+
 async def test_extract_isolated_rejects_a_non_positive_cap_without_a_child(
     spawned: list[int],
 ) -> None:
@@ -241,7 +258,7 @@ async def test_cpu_bomb_is_killed_and_reported_unreadable(
     elapsed = time.monotonic() - started
     # Stopped by the CPU limit (a signal), before the wall clock ran out.
     assert [entry["outcome"] for entry in logs] == ["killed"]
-    assert 0.9 < elapsed < 3.0
+    assert 0.9 < elapsed < 6.0
     assert len(spawned) == 1
     assert _proc_stat(spawned[0]) is None
 

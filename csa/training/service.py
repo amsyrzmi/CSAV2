@@ -30,7 +30,7 @@ import asyncio
 import hashlib
 import re
 from collections.abc import Iterable, Mapping
-from contextlib import ExitStack
+from contextlib import AsyncExitStack, ExitStack
 from typing import Any, BinaryIO
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -448,7 +448,19 @@ class TrainingLibrary:
             return made
         if model is None:
             raise HTTPException(503, ASSISTANT_UNAVAILABLE)
-        async with summary.item_lock(client_id, item_id):
+        async with AsyncExitStack() as held:
+            try:
+                await held.enter_async_context(summary.item_lock(client_id, item_id))
+            except TimeoutError:
+                # Another click on this item is still making it: a plain retry, nothing stored.
+                logger.error(
+                    "training_summary_failed",
+                    item_id=str(item_id),
+                    client_id=str(client_id),
+                    model=model.model,
+                    outcome="lock_timeout",
+                )
+                raise HTTPException(503, ASSISTANT_UNAVAILABLE) from None
             if not regenerate:
                 # Another click may have made it while this one waited.
                 row = await self._summary_row(client_id, item_id)

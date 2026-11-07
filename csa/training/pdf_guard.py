@@ -211,7 +211,7 @@ async def _spawn(argv: list[str]) -> Process:
 
 
 def _worker_command(args: list[str]) -> list[str]:
-    return [sys.executable, "-I", "-c", _BOOTSTRAP, _PACKAGE_ROOT, *args]
+    return [sys.executable, "-I", "-B", "-c", _BOOTSTRAP, _PACKAGE_ROOT, *args]
 
 
 async def _exchange(process: Process, data: bytes) -> bytes:

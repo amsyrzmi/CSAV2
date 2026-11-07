@@ -7,8 +7,9 @@ and to answer in the PDF's own language. The answer is validated against ``Summa
 (length-bounded) before anything is stored.
 
 Nothing here holds a database connection or an advisory lock. Concurrent first clicks on one
-item are serialised in this process by a per-item ``asyncio.Lock`` (``item_lock``), dropped as
-soon as nobody waits for it, and at most ``MAX_CONCURRENT_CALLS`` model calls run at once.
+item are serialised in this process by a per-item ``asyncio.Lock`` (``item_lock``, waited on for
+at most ``LOCK_WAIT_SECONDS``), dropped as soon as nobody waits for it, and at most
+``MAX_CONCURRENT_CALLS`` model calls run at once.
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ __all__ = [
 MODEL_TIMEOUT_SECONDS = 20.0
 MODEL_MAX_TOKENS = 900
 MAX_CONCURRENT_CALLS = 4
+LOCK_WAIT_SECONDS = 60
+"""How long a click waits behind another one on the same item before it gives up."""
+# The prompt asks for at most 1000 and 150 characters; the validator allows 1500 and 200 on
+# purpose, as headroom for a model that runs a little over.
 SUMMARY_TEXT_MAX_CHARS = 1500
 KEY_POINTS_MAX = 6
 KEY_POINT_MAX_CHARS = 200
@@ -176,7 +181,10 @@ def item_locks() -> dict[tuple[UUID, UUID], _Waiting]:
 
 @asynccontextmanager
 async def item_lock(client_id: UUID, item_id: UUID) -> AsyncIterator[None]:
-    """Serialise summary work on one item in this process; the entry goes when unused."""
+    """Serialise summary work on one item in this process; the entry goes when unused.
+
+    Waiting is bounded: past ``LOCK_WAIT_SECONDS`` it raises ``TimeoutError``.
+    """
     locks = item_locks()
     key = (client_id, item_id)
     entry = locks.get(key)
@@ -184,8 +192,12 @@ async def item_lock(client_id: UUID, item_id: UUID) -> AsyncIterator[None]:
         entry = locks[key] = _Waiting()
     entry.users += 1
     try:
-        async with entry.lock:
+        async with asyncio.timeout(LOCK_WAIT_SECONDS):
+            await entry.lock.acquire()
+        try:
             yield
+        finally:
+            entry.lock.release()
     finally:
         entry.users -= 1
         if entry.users == 0:

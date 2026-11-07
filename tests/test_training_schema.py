@@ -22,7 +22,7 @@ from tests.test_bookings_schema import _app, _owner
 pytestmark = requires_docker
 
 TABLE = "training_items"
-OTHER_ROLES = ("csa_ro", "csa_identity", "public")
+OTHER_ROLES = ("csa_ro", "csa_identity", "csa_hr_maintenance", "public")
 PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
 
@@ -98,6 +98,10 @@ def test_company_b_cannot_see_or_write_company_a_rows(migrated_dsn: str, app_dsn
         conn.rollback()
         changed = conn.execute(f"UPDATE {TABLE} SET title = 'x' WHERE client_id = %s", (a,))
         assert changed.rowcount == 0
+        # Its own row cannot be moved to another company (the policy's WITH CHECK).
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(f"UPDATE {TABLE} SET client_id = %s WHERE client_id = %s", (a, b))
+        conn.rollback()
         assert conn.execute(f"DELETE FROM {TABLE} WHERE client_id = %s", (a,)).rowcount == 0
         # Its own rows it can write, change and remove.
         conn.execute(*_item(b))

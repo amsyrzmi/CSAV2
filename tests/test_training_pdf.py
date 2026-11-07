@@ -14,12 +14,13 @@ import zlib
 from collections.abc import Callable
 from typing import Any
 
+import pypdf
 import pytest
 from csa.training import limits
 from csa.training import pdf as pdf_module
 from csa.training.limits import MAX_PAGES
 from csa.training.pdf import PdfInfo, PdfRefused, check_pdf, extract_text
-from pypdf import PageObject, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -743,3 +744,11 @@ def test_extract_text_interprets_a_bounded_number_of_form_uses() -> None:
     cap = limits.PDF_FORM_XOBJECT_USES_PER_PAGE
     text, _ = extract_text(make_pdf(1, texts=["seed"], mutate=_form_uses(cap + 100)), 24_000)
     assert text.count("Form") == cap
+
+
+def test_pypdf_hooks_still_exist() -> None:
+    # _BudgetedReader overrides these private PdfReader methods; an upgrade that renames one
+    # would silently drop its budget, so the exact pin and the names are checked together.
+    assert pypdf.__version__ == "6.20.1"
+    for hook in ("_read_xref_subsections", "_read_pdf15_xref_stream", "_get_object_from_stream"):
+        assert hasattr(PdfReader, hook), hook

@@ -80,6 +80,8 @@ def main(argv: list[str]) -> int:
             result = _ACTIONS[args.action](data, args)
         except PdfRefused as refused:
             result = {"ok": False, "code": refused.code}
+        if isinstance(result.get("text"), str):
+            result["text"] = _without_lone_surrogates(result["text"])
         payload = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
         _write_all(result_fd, payload.encode("ascii") + b"\n")
     except MemoryError:
@@ -87,6 +89,15 @@ def main(argv: list[str]) -> int:
     except BaseException:
         return EXIT_FAILED
     return 0
+
+
+def _without_lone_surrogates(text: str) -> str:
+    """``text`` with each lone surrogate as U+FFFD and each surrogate pair joined.
+
+    pypdf decodes font maps with "surrogatepass", so extracted text can hold half of a UTF-16
+    pair, which the parent's JSON parser refuses (the whole parse would read as unreadable).
+    """
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def apply_limits(cpu_seconds: int, memory_bytes: int) -> None:

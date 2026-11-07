@@ -196,6 +196,33 @@ async def test_ten_concurrent_first_clicks_make_one_call(
     assert summary.item_locks() == {}
 
 
+async def test_a_click_behind_a_stuck_one_gives_up_after_the_lock_wait(
+    sessions: SessionWorld, model: FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await enable(sessions)
+    item = await deck(sessions)
+    staff, _ = await sessions.member()
+    monkeypatch.setattr(summary, "LOCK_WAIT_SECONDS", 0.3)
+    model.release = asyncio.Event()
+    holder = asyncio.ensure_future(ask(sessions, staff, item))
+    await asyncio.wait_for(model.started.wait(), 10)
+
+    # The first click holds the item's lock inside its model call; the next one waits a bounded
+    # time, answers the plain retry code and never calls the model itself.
+    started = time.monotonic()
+    waiter = await ask(sessions, staff, item)
+    assert time.monotonic() - started < 5
+    assert waiter.status_code == 503, waiter.text
+    assert detail(waiter) == "training_assistant_unavailable"
+    assert len(model.calls) == 1
+
+    model.release.set()
+    first = await holder
+    assert first.status_code == 200, first.text
+    assert (await stored(sessions, item))["summary"] is not None
+    assert summary.item_locks() == {}
+
+
 async def test_regenerate_needs_manage_and_replaces(
     sessions: SessionWorld, model: FakeModel
 ) -> None:
