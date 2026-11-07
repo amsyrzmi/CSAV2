@@ -47,3 +47,19 @@ PDF_FORM_XOBJECT_USES_PER_PAGE = 32
 PDF_TEXT_CONTENT_MAX_BYTES = 2 * 1024 * 1024
 """Most bytes of page content streams extract_text decodes from one file (text-show
 operators cost about 4 µs a byte to interpret; 24,000 characters rarely need 1 MB)."""
+
+# The hard bound. The budgets above cannot cover every path through pypdf (it re-parses on
+# cache misses, re-scans the file for each undefined reference, re-runs form XObjects and
+# ToUnicode CMaps), so every parse runs in a short-lived child process under these limits.
+
+PDF_CHILD_CPU_SECONDS = 10
+"""CPU seconds one parse may use; the child is killed by the kernel past it (RLIMIT_CPU)."""
+
+PDF_CHILD_WALL_SECONDS = 20
+"""Wall-clock seconds one parse may take; the child's whole process group is killed past it."""
+
+PDF_CHILD_MEMORY_BYTES = 1024 * 1024 * 1024
+"""Address space the child may map (RLIMIT_AS); the worker needs about 64 MiB to run."""
+
+PDF_CHILD_MAX_CONCURRENT = 2
+"""Most parse children one process runs at once; further callers wait for a slot."""

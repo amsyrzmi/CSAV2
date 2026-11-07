@@ -86,8 +86,8 @@ class PdfInfo:
 
 def check_pdf(data: bytes, file_name: str) -> PdfInfo:
     """Accept a PDF upload or raise ``PdfRefused``; checks run in the spec's order."""
-    _check_name(file_name)
-    if not file_name.lower().endswith(".pdf") or not data.startswith(PDF_MAGIC):
+    check_file_name(file_name)
+    if not data.startswith(PDF_MAGIC):
         raise PdfRefused("training_not_pdf")
     with _parse_limits():
         try:
@@ -143,6 +143,14 @@ def extract_text(data: bytes, max_chars: int) -> tuple[str, bool]:
             if gathered > max_chars or (gathered == max_chars and index + 1 < len(pages)):
                 return "".join(parts)[:max_chars], True
     return "".join(parts), False
+
+
+def check_file_name(file_name: str) -> None:
+    """The checks ``check_pdf`` runs on the name before it reads any byte of the file:
+    ``training_name_invalid``, then ``training_not_pdf`` for an extension other than .pdf."""
+    _check_name(file_name)
+    if not file_name.lower().endswith(".pdf"):
+        raise PdfRefused("training_not_pdf")
 
 
 def _check_name(file_name: str) -> None:
