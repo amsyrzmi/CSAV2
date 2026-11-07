@@ -32,6 +32,18 @@ def test_bookings_needs_nothing_and_is_not_an_addon():
     assert bookings.summary.startswith("A calendar for booking people")
 
 
+def test_training_library_is_a_sellable_standalone_with_no_capabilities():
+    training = package("training_library")
+    assert training.kind == "standalone" and training.requires == ()
+    assert training.capabilities == () and training.hr_modules == ()
+    assert training.email is False and training.tabs == ("training_library",)
+    assert training.sellable is True
+    assert training.title == "Training library"
+    keys = [p.key for p in PACKAGES]
+    assert keys.index("training_library") == keys.index("bookings") + 1
+    assert backfill_members()["training_library"] == ()
+
+
 def test_sellable_is_false_when_any_member_is_not_implemented():
     for p in PACKAGES:
         if any(CATALOG[c][1] == "not_implemented" for c in p.capabilities):
