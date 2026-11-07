@@ -44,6 +44,8 @@ ALL_FLAGS = {
     "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_model_key",
     "CSA_STAGING_INVITE_MAIL": "true",
     "CSA_STAGING_EMAIL_ASSISTANT": "true",
+    "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "true",
+    "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "false",
 }
 FLAGS_TEXT = "".join(f"{key}={value}\n" for key, value in ALL_FLAGS.items())
 
@@ -173,7 +175,7 @@ def rollout_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return secret_dir
 
 
-def test_load_flags_reads_the_six_keys(tmp_path: Path) -> None:
+def test_load_flags_reads_every_key(tmp_path: Path) -> None:
     path = tmp_path / "flags.env"
     path.write_text("# header\n\n" + FLAGS_TEXT)
     assert sr.load_flags(path) == ALL_FLAGS

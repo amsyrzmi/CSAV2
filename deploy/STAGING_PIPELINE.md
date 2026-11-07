@@ -995,6 +995,38 @@ orders or listings; the only rows it adds are the single-use read-operation rows
 (`ecommerce_read_operations`) that every sync read adds. It is still the owner's call to paste
 the shape report anywhere outside the host.
 
+## 13. Bookings and Google Calendar (owner, in Google Cloud, then one reviewed PR)
+
+Bookings can put each person's confirmed bookings on a calendar called "Bookings" in their own
+Google account (`csa/bookings/google/`, design `docs/superpowers/specs/2026-11-06-bookings-google-calendar-design.md`).
+It uses the same Google OAuth client as section 11 (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`,
+files the gateway and the worker both read) with one more scope, `calendar.app.created`: the app
+can make a calendar and manage the events on it, and nothing else in the account. Nothing is
+requested from Google until a person presses Connect, and the feature is off until step 4.
+
+1. **Enable the Calendar API** in the fourstacks.my Google Cloud project (APIs and services, Library,
+   Google Calendar API, Enable).
+2. **Add the scope** to the consent screen (Google Auth platform, Data access, Add or remove
+   scopes): `https://www.googleapis.com/auth/calendar.app.created`. Note on that screen whether
+   Google marks it sensitive. If it does, going beyond test users needs Google's verification;
+   if not, it does not. Either way this is a separate submission from the Gmail scopes.
+3. **Register the callback** on the OAuth client, under Authorised redirect URIs:
+   `https://staging-console.fourstacks.my/console/v1/bookings/calendar/callback`.
+   The email assistant's own address stays as it is.
+4. **Turn it on** with a reviewed pull request that changes
+   `CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR=false` to `true` in `deploy/staging-rollout.env`, then a
+   normal rollout. Meet links are a second switch, `CSA_STAGING_BOOKINGS_GOOGLE_MEET`, and need the
+   first. The rollout tool exports both; nothing is exported by hand.
+
+While the client is in testing, only the test users listed in Google Cloud can connect, and Google
+ends their grant after 7 days, so their panel will say "Needs reconnecting" about weekly and they
+connect again. That is the testing limit, not a fault. Connecting a person who is not a test user
+returns to the Bookings page with "Google didn't give access". The worker needs the same two Google
+secret files the gateway has, and is given them by the compose file; the worker and gateway
+both call Google through `provider-egress`.
+
+Retest: the Google Calendar rows in `docs/ASSISTANT_RETEST.md`, under Bookings.
+
 ## Resetting staging
 
 `scripts/staging_reset.py` wipes the staging database and the three upload folders, rebuilds

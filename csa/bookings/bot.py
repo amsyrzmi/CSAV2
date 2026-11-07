@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 
-from csa.bookings import service, setup
+from csa.bookings import service, setup, turn_actions
 from csa.bookings.availability import on_slot_grid
 from csa.bookings.contracts import BookingIn, BookingTime, BookingTypeOut
 from csa.core import db
@@ -388,16 +388,6 @@ def _expiry(now: datetime, settings: dict[str, Any], starts_at: datetime) -> dat
     return min(now + timedelta(hours=settings["pending_hours"]), starts_at.astimezone(UTC))
 
 
-async def _done_by(conn: Conn, client_id: UUID, turn_key: str) -> dict[str, Any] | None:
-    """Queue behind any other delivery of this message, then say what its key already did."""
-    await setup.lock(conn, "turn", client_id, turn_key)
-    return await db.q.fetch_one(
-        "bookings/booking_turn_action_get.sql",
-        {"client_id": client_id, "turn_key": turn_key},
-        conn=conn,
-    )
-
-
 async def _one_at_a_time(conn: Conn, client_id: UUID, contact_id: UUID) -> None:
     """Queue behind this customer's other messages, before any booking row is locked.
 
@@ -406,17 +396,6 @@ async def _one_at_a_time(conn: Conn, client_id: UUID, contact_id: UUID) -> None:
     booking would).
     """
     await setup.lock(conn, "customer", client_id, contact_id)
-
-
-async def _remember(
-    conn: Conn, client_id: UUID, turn_key: str, booking_id: UUID, action: str
-) -> None:
-    """Record what this key did, in the same savepoint as the write itself."""
-    await db.q.execute(
-        "bookings/booking_turn_action_insert.sql",
-        {"client_id": client_id, "turn_key": turn_key, "booking_id": booking_id, "action": action},
-        conn=conn,
-    )
 
 
 async def _tell_staff(conn: Conn, client_id: UUID, booking_id: UUID) -> None:
@@ -489,7 +468,7 @@ async def book(
     blocked, mode = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    done = await _done_by(conn, client_id, turn_key)
+    done = await turn_actions.done_by(conn, client_id, turn_key)
     if done is not None:
         if done["action"] != "book" or done["contact_id"] != contact_id:
             return BotOutcome("not_found")
@@ -533,7 +512,7 @@ async def book(
                 conversation_id=conversation_id,
                 expires_at=_expiry(now, settings, starts_at) if pending else None,
             )
-            await _remember(conn, client_id, turn_key, record.id, "book")
+            await turn_actions.remember(conn, client_id, turn_key, record.id, "book")
             if record.status == "pending":
                 await _tell_staff(conn, client_id, record.id)
     except HTTPException as exc:
@@ -571,7 +550,7 @@ async def change(
     blocked, mode = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    done = await _done_by(conn, client_id, turn_key)
+    done = await turn_actions.done_by(conn, client_id, turn_key)
     await _one_at_a_time(conn, client_id, contact_id)
     # Given a request, lock the booking it belongs to first, as staff do (a staff confirm takes the
     # booking, then the request), so the two can never wait on each other.
@@ -607,7 +586,7 @@ async def change(
         async with conn.transaction():
             dropped = await _drop_pending_changes(conn, client_id, record.id)
             if dropped:
-                await _remember(conn, client_id, turn_key, record.id, "change")
+                await turn_actions.remember(conn, client_id, turn_key, record.id, "change")
         if dropped:
             return BotOutcome("change_withdrawn", await _record(conn, client_id, record.id))
         if in_place:
@@ -621,7 +600,7 @@ async def change(
                 moved = await service.move_to(
                     conn, client_id, service.BOT, record, starts_at, now=now
                 )
-                await _remember(conn, client_id, turn_key, record.id, "change")
+                await turn_actions.remember(conn, client_id, turn_key, record.id, "change")
             return BotOutcome("moved", moved)
         return await _ask_to_move(
             conn, client_id, contact_id, record, booking_type, starts_at, turn_key, now
@@ -683,7 +662,7 @@ async def _ask_to_move(
             expires_at=expires,
             replaces_booking_id=record.id,
         )
-        await _remember(conn, client_id, turn_key, asked.id, "change")
+        await turn_actions.remember(conn, client_id, turn_key, asked.id, "change")
         await _tell_staff(conn, client_id, asked.id)
     return BotOutcome("change_pending", asked)
 
@@ -709,7 +688,7 @@ async def cancel(
     blocked, _ = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    done = await _done_by(conn, client_id, turn_key)
+    done = await turn_actions.done_by(conn, client_id, turn_key)
     await _one_at_a_time(conn, client_id, contact_id)
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
@@ -748,7 +727,7 @@ async def ask_to_cancel(
     blocked, _ = await gate(conn, client_id)
     if blocked is not None:
         return BotOutcome(blocked)
-    done = await _done_by(conn, client_id, turn_key)
+    done = await turn_actions.done_by(conn, client_id, turn_key)
     await _one_at_a_time(conn, client_id, contact_id)
     own = await _own(conn, client_id, contact_id, booking_id)
     if own is None:
@@ -859,14 +838,14 @@ async def _cancel_now(
     if record.replaces_booking_id is not None:
         async with conn.transaction():
             await service.cancel_for(conn, client_id, service.BOT, record)
-            await _remember(conn, client_id, turn_key, booking_id, "cancel")
+            await turn_actions.remember(conn, client_id, turn_key, booking_id, "cancel")
         original = await _record(conn, client_id, record.replaces_booking_id)
         return BotOutcome("change_withdrawn", original)
     try:
         async with conn.transaction():
             await _drop_pending_changes(conn, client_id, booking_id)
             cancelled = await service.cancel_for(conn, client_id, service.BOT, record)
-            await _remember(conn, client_id, turn_key, booking_id, "cancel")
+            await turn_actions.remember(conn, client_id, turn_key, booking_id, "cancel")
     except HTTPException as exc:
         return BotOutcome(_code_for(exc))
     return BotOutcome("cancelled", cancelled)

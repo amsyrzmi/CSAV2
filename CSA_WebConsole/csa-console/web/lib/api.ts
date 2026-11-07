@@ -138,6 +138,10 @@ const explained: Record<string, string> = {
   window_too_large: "That is too many days to show at once.",
   "customer details are not available to read-only members":
     "Customer details are not available to read-only members.",
+  person_required:
+    "Your account isn't on the Bookings people list, so there is nothing to connect. Ask an Admin to add you.",
+  not_connected: "Google Calendar isn't connected.",
+  calendar_unavailable: "Google Calendar isn't switched on for this company yet.",
 };
 
 /**

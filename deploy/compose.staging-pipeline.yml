@@ -39,6 +39,10 @@ services:
       # Staff email assistant (Gmail). Off unless the owner sets CSA_STAGING_EMAIL_ASSISTANT=true.
       EMAIL_ASSISTANT_ENABLED: ${CSA_STAGING_EMAIL_ASSISTANT:-false}
       GOOGLE_OAUTH_REDIRECT_URI: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}/console/v1/email/oauth/callback
+      # Bookings and Google Calendar, each off unless the owner sets its variable to true. Set up in
+      # Google first: the Calendar API, the scope and this callback address (docs/STAGING_PIPELINE).
+      BOOKINGS_GOOGLE_CALENDAR_ENABLED: ${CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR:-false}
+      BOOKINGS_GOOGLE_MEET_ENABLED: ${CSA_STAGING_BOOKINGS_GOOGLE_MEET:-false}
     secrets:
       - source: staging_whatsapp_app_secret
         target: WHATSAPP_APP_SECRET
@@ -83,6 +87,11 @@ services:
       # Booking reminders and mail about a lapsed booking. The same switch as the gateway's: off
       # unless the owner sets CSA_STAGING_INVITE_MAIL=true, and then only with both secrets.
       INVITE_MAIL_ENABLED: ${CSA_STAGING_INVITE_MAIL:-false}
+      # Google Calendar: the worker keeps people's events in line with their bookings and refreshes
+      # their tokens. The redirect address is only here because the client cannot be built without one.
+      BOOKINGS_GOOGLE_CALENDAR_ENABLED: ${CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR:-false}
+      BOOKINGS_GOOGLE_MEET_ENABLED: ${CSA_STAGING_BOOKINGS_GOOGLE_MEET:-false}
+      GOOGLE_OAUTH_REDIRECT_URI: ${CSA_STAGING_CONSOLE_ORIGIN:?approved staging origin required}/console/v1/email/oauth/callback
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL
@@ -105,6 +114,11 @@ services:
         target: TIKTOK_APP_SECRET
       - source: staging_tiktok_service_id
         target: TIKTOK_SERVICE_ID
+      # Google OAuth client, the gateway's own files, to refresh a person's calendar token.
+      - source: staging_google_client_id
+        target: GOOGLE_CLIENT_ID
+      - source: staging_google_client_secret
+        target: GOOGLE_CLIENT_SECRET
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
     # provider-egress is a plain bridge with outbound access, the one the worker already reaches
     # the model provider through, so it reaches the SMTP relay too. No network is added.

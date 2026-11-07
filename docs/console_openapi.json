@@ -2302,6 +2302,11 @@
             ],
             "title": "Location Kind"
           },
+          "meet_missing": {
+            "default": false,
+            "title": "Meet Missing",
+            "type": "boolean"
+          },
           "meeting_link": {
             "anyOf": [
               {
@@ -4157,6 +4162,51 @@
         "title": "CalculatedPayroll",
         "type": "object"
       },
+      "CalendarConnectOut": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "CalendarConnectOut",
+        "type": "object"
+      },
+      "CalendarPersonOut": {
+        "additionalProperties": false,
+        "description": "One bookable person with an account, and where their connection stands (Admins only).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "person_id": {
+            "format": "uuid",
+            "title": "Person Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_connected",
+              "connected",
+              "needs_reconnect"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person_id",
+          "name",
+          "status"
+        ],
+        "title": "CalendarPersonOut",
+        "type": "object"
+      },
       "CalendarRecord": {
         "additionalProperties": false,
         "properties": {
@@ -4257,6 +4307,58 @@
           "holidays"
         ],
         "title": "CalendarSave",
+        "type": "object"
+      },
+      "CalendarStatusOut": {
+        "additionalProperties": false,
+        "description": "`available` is false when the feature is off or the Google client is not set up.\n`can_connect` is true for a member linked to an active bookable person who can change\nbookings, and `status` is theirs. `people` is for an Admin, as a status only.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "can_connect": {
+            "title": "Can Connect",
+            "type": "boolean"
+          },
+          "people": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CalendarPersonOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "People"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "not_connected",
+                  "connected",
+                  "needs_reconnect"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "available",
+          "can_connect",
+          "status",
+          "people"
+        ],
+        "title": "CalendarStatusOut",
         "type": "object"
       },
       "CandidateDetails": {
@@ -17280,6 +17382,84 @@
         ]
       }
     },
+    "/console/v1/bookings/bookings/{booking_id}/meet": {
+      "post": {
+        "description": "Ask Google again for an online booking's Meet link, for someone who may change it. The\nlink goes on the booking and its events; no mail and no customer message is sent for it.\nAnswers with the booking, which still has no link if Google still would not make one.",
+        "operationId": "retry_meet_console_v1_bookings_bookings__booking_id__meet_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Booking Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Meet",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
     "/console/v1/bookings/bookings/{booking_id}/no-show": {
       "post": {
         "operationId": "handle_console_v1_bookings_bookings__booking_id__no_show_post",
@@ -17491,6 +17671,337 @@
           }
         },
         "summary": "Calendar",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/calendar/callback": {
+      "get": {
+        "description": "Google sends the browser back here; the answer is a redirect to the Bookings page.",
+        "operationId": "callback_console_v1_bookings_calendar_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "in": "query",
+            "name": "iss",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Iss"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/calendar/connect": {
+      "post": {
+        "description": "The Google address to send this member to: only for themselves, and only if they are\nlinked to a bookable person.",
+        "operationId": "connect_console_v1_bookings_calendar_connect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarConnectOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Connect",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/calendar/disconnect": {
+      "post": {
+        "description": "Stop syncing for this member; their calendar and its events stay in their account.",
+        "operationId": "disconnect_console_v1_bookings_calendar_disconnect_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect",
+        "tags": [
+          "Bookings"
+        ]
+      }
+    },
+    "/console/v1/bookings/calendar/status": {
+      "get": {
+        "description": "Whether the feature is on, the member's own state, and (for an Admin) everyone's.",
+        "operationId": "status_console_v1_bookings_calendar_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Status",
         "tags": [
           "Bookings"
         ]

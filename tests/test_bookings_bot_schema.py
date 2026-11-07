@@ -7,11 +7,14 @@ import hashlib
 import re
 import typing
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
+from csa.jobs.bookings import run_turn_action_retention
+from csa.jobs.clock import FakeClock
 from csa.workspace.contracts import ProposalKind, TabKey
 from psycopg import errors, sql
 from psycopg.rows import dict_row
@@ -118,6 +121,65 @@ def test_each_bot_table_is_tenant_isolated(migrated_dsn: str, app_dsn: str) -> N
     with _app(app_dsn, None) as conn:
         for table in BOT_TABLES:
             assert conn.execute(f"SELECT 1 FROM {table}").fetchall() == [], table
+
+
+async def test_turn_actions_past_their_life_are_removed_and_younger_ones_kept(
+    migrated_dsn: str,
+) -> None:
+    a, b = _company(migrated_dsn), _company(migrated_dsn)
+    now = datetime.now(UTC)
+    old, young = now - timedelta(days=31), now - timedelta(days=29)
+    insert = (
+        "INSERT INTO booking_turn_actions (client_id, turn_key, booking_id, action, created_at,"
+        " booking_version, trace_id, expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+    with _owner(migrated_dsn) as conn:
+        for c in (a, b):
+            conn.execute(
+                insert, (c.client_id, "old-book", c.booking_id, "book", old, None, None, None)
+            )
+            conn.execute(
+                insert,
+                (
+                    c.client_id,
+                    "old-ask",
+                    c.booking_id,
+                    "ask_cancel",
+                    old,
+                    1,
+                    uuid.uuid4(),
+                    old + timedelta(minutes=30),
+                ),
+            )
+        conn.execute(
+            insert, (a.client_id, "young-cancel", a.booking_id, "cancel", young, None, None, None)
+        )
+        conn.execute(
+            insert,
+            (
+                a.client_id,
+                "young-ask",
+                a.booking_id,
+                "ask_cancel",
+                young,
+                1,
+                uuid.uuid4(),
+                young + timedelta(minutes=30),
+            ),
+        )
+    async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
+        stats = await run_turn_action_retention(conn, FakeClock(now), batch_size=1)
+    assert stats["removed"] >= 4  # a batch of one, so every batch until none is left
+    with _owner(migrated_dsn) as conn:
+        kept = conn.execute(
+            "SELECT client_id::text AS client_id, turn_key FROM booking_turn_actions"
+            " WHERE client_id IN (%s, %s)",
+            (a.client_id, b.client_id),
+        ).fetchall()
+    assert sorted((r["client_id"] == a.client_id, r["turn_key"]) for r in kept) == [
+        (True, "young-ask"),
+        (True, "young-cancel"),
+    ]
 
 
 def test_a_turn_key_does_one_thing_per_company_and_repeats_across_companies(

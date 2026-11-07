@@ -252,8 +252,16 @@ def test_each_new_table_is_tenant_isolated(migrated_dsn: str, app_dsn: str) -> N
                 " WHERE table_schema = 'public' AND table_name LIKE 'booking\\_%'"
             )
         }
-        # The tables 0512 adds have their own isolation test (test_bookings_bot_schema.py).
-        later = {"booking_settings", "booking_reminders", "booking_turn_actions"}
+        # The tables 0512 and 0513 add have their own isolation tests (test_bookings_bot_schema.py,
+        # test_bookings_google_schema.py).
+        later = {
+            "booking_settings",
+            "booking_reminders",
+            "booking_turn_actions",
+            "booking_calendar_connections",
+            "booking_calendar_oauth_states",
+            "booking_calendar_events",
+        }
         assert found - later == set(NEW_TABLES), (
             "a booking table is missing from this isolation test"
         )
