@@ -473,6 +473,16 @@ async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner(
     assert job.per_client is False and job.every == timedelta(hours=24)
 
 
+async def test_registry_runs_the_calendar_reconcile_for_everyone_and_idles_without_a_push() -> None:
+    for registry in (build_default_registry(), build_default_registry(None, None, None)):
+        job = registry.get("booking_calendar_reconcile")
+        # One run for everyone, as the owner, with room for slow calls to Google.
+        assert job is not None and job.per_client is False
+        assert job.every == timedelta(minutes=5) and job.timeout > 30
+        idle = await job.fn(None, FakeClock(datetime(2031, 1, 1, tzinfo=UTC)), batch_size=10)  # type: ignore[call-arg, arg-type]
+        assert idle["due"] == 0 and idle["synced"] == 0
+
+
 async def test_job_runner_due_and_heartbeat_health(
     pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

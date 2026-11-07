@@ -347,6 +347,8 @@ export interface BookingOut {
   replaces_ends_at?: string | null;
   /** On a booking: the live request to move it. Moving or cancelling it withdraws that request. */
   pending_change_id?: string | null;
+  /** A confirmed online booking still to come with no meeting link, while Meet links are on. */
+  meet_missing?: boolean;
 }
 
 /** A private meeting the viewer is not part of, on a filtered read: times only, and no id. */
@@ -452,6 +454,11 @@ export function changeBooking(
   return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/${action}`), { version });
 }
 
+/** Ask Google again for an online booking's Meet link; the answer still has `meet_missing` if it won't. */
+export function retryMeet(tenantId: string | null, bookingId: string): Promise<BookingOut> {
+  return post(bookingsPath(tenantId, `/bookings${id(bookingId)}/meet`), {});
+}
+
 // ---- Settings ---------------------------------------------------------------------------------
 
 /**
@@ -482,4 +489,41 @@ export function getSettings(tenantId: string | null, signal?: AbortSignal): Prom
 
 export function saveSettings(tenantId: string | null, body: BookingSettingsIn): Promise<BookingSettings> {
   return api(bookingsPath(tenantId, "/settings"), { method: "PUT", body: JSON.stringify(body) });
+}
+
+// --- Google Calendar -----------------------------------------------------------------------
+
+export type CalendarState = "not_connected" | "connected" | "needs_reconnect";
+
+/** An Admin's view of one person with an account: where their connection stands, nothing more. */
+export interface CalendarPerson {
+  person_id: string;
+  name: string;
+  status: CalendarState;
+}
+
+/**
+ * `available` is false when the feature is off. `can_connect` is true for a member linked to a
+ * bookable person who may change bookings, and `status` is theirs. `people` is for an Admin only.
+ * No answer ever holds a token.
+ */
+export interface CalendarStatus {
+  available: boolean;
+  can_connect: boolean;
+  status: CalendarState | null;
+  people: CalendarPerson[] | null;
+}
+
+export function getCalendarStatus(tenantId: string | null, signal?: AbortSignal): Promise<CalendarStatus> {
+  return api(bookingsPath(tenantId, "/calendar/status"), { signal });
+}
+
+/** The Google address to send this member to. Only for themselves. */
+export function startCalendarConnect(tenantId: string | null): Promise<{ url: string }> {
+  return api(bookingsPath(tenantId, "/calendar/connect"), { method: "POST" });
+}
+
+/** Stops syncing; the calendar and its events stay in the person's Google account. */
+export function disconnectCalendar(tenantId: string | null): Promise<void> {
+  return api(bookingsPath(tenantId, "/calendar/disconnect"), { method: "POST" });
 }

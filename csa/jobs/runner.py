@@ -12,6 +12,7 @@ import structlog
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from csa.bookings.google.push import STATS, CalendarPush, run_calendar_reconcile
 from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
@@ -34,13 +35,16 @@ logger = structlog.get_logger(__name__)
 
 
 def build_default_registry(
-    mailer: Mailer | None = None, app_pool: AsyncConnectionPool | None = None
+    mailer: Mailer | None = None,
+    app_pool: AsyncConnectionPool | None = None,
+    calendar: CalendarPush | None = None,
 ) -> JobRegistry:
     """Build the standard production registry of scheduled jobs.
 
     `mailer` sends the booking reminders and lapse notices by email, and `app_pool` is the pool
     every company's rows are read and written through. With either missing, the mail job runs and
     sends nothing, so the rows wait in the queue for a worker that has both.
+    `calendar` brings people's Google events in line with their bookings; without it that job idles.
     """
     registry = JobRegistry()
     registry.register(
@@ -153,6 +157,27 @@ def build_default_registry(
             fn=run_turn_action_retention,
             per_client=False,
             batch_size=1000,
+        )
+    )
+
+    async def booking_calendar_reconcile(
+        conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
+    ) -> dict[str, Any]:
+        if app_pool is None:
+            return dict.fromkeys(STATS, 0)
+        return await run_calendar_reconcile(conn, app_pool, calendar, clock, batch_size=batch_size)
+
+    # Once for every company with someone connected: the owner connection only lists them, and each
+    # booking is then synced in its own company's transaction. Calls to Google are slow, so a run
+    # gets longer than the usual 30 seconds.
+    registry.register(
+        Job(
+            name="booking_calendar_reconcile",
+            every=timedelta(minutes=5),
+            fn=booking_calendar_reconcile,
+            per_client=False,
+            timeout=150.0,
+            batch_size=50,
         )
     )
     return registry

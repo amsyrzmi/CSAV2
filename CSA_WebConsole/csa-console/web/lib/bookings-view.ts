@@ -17,6 +17,8 @@ import type {
   BookingTypeIn,
   BookingTypeOut,
   BookingTypePatch,
+  CalendarState,
+  CalendarStatus,
 } from "@/lib/bookings-api";
 
 export const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
@@ -817,4 +819,72 @@ export function formToSettingsIn(form: SettingsForm, version: number): BookingSe
     customer_limit: Number(form.limit.trim()),
     version,
   };
+}
+
+// --- Google Calendar -----------------------------------------------------------------------
+
+const CALENDAR_STATE_WORDS: Record<CalendarState, string> = {
+  not_connected: "Not connected",
+  connected: "Connected",
+  needs_reconnect: "Needs reconnecting",
+};
+
+/** A connection's state in plain words; anything unknown reads as not connected. */
+export function calendarStateWord(state: string | null | undefined): string {
+  return state && Object.hasOwn(CALENDAR_STATE_WORDS, state)
+    ? CALENDAR_STATE_WORDS[state as CalendarState]
+    : CALENDAR_STATE_WORDS.not_connected;
+}
+
+export interface CalendarControls {
+  /** The member's own Google Calendar panel is shown at all. */
+  panel: boolean;
+  connect: boolean;
+  reconnect: boolean;
+  disconnect: boolean;
+}
+
+/**
+ * What a member sees of their own connection. Nothing while the feature is off or for someone who
+ * cannot connect (no bookable person, or read-only): an unavailable feature is not an error.
+ */
+export function calendarControls(
+  status: Pick<CalendarStatus, "available" | "can_connect" | "status"> | null,
+): CalendarControls {
+  if (!status || !status.available || !status.can_connect || status.status === null) {
+    return { panel: false, connect: false, reconnect: false, disconnect: false };
+  }
+  return {
+    panel: true,
+    connect: status.status === "not_connected",
+    reconnect: status.status === "needs_reconnect",
+    disconnect: status.status !== "not_connected",
+  };
+}
+
+const CALENDAR_RESULT_ERRORS: Record<string, string> = {
+  oauth_state_invalid: "That connection attempt expired or was already used. Try connecting again.",
+  provider_denied: "Google didn't give access, so nothing was connected. Try again and choose Allow.",
+  oauth_issuer_invalid: "Google's answer couldn't be checked, so nothing was connected. Try again.",
+  scopes_not_granted: "Google didn't allow access to the calendar this makes. Try again and allow it.",
+  calendar_unavailable: "Google Calendar isn't switched on for this company yet. Ask your Admin.",
+};
+
+export interface CalendarResult {
+  tone: "success" | "error";
+  text: string;
+}
+
+/** What Google sent the browser back with (`?calendar=connected` or `?calendar_error=<code>`). */
+export function calendarResult(params: { get(name: string): string | null }): CalendarResult | null {
+  if (params.get("calendar") === "connected") {
+    return {
+      tone: "success",
+      text: "Google Calendar is connected. Your confirmed bookings will appear on a Bookings calendar in your Google account.",
+    };
+  }
+  const code = params.get("calendar_error");
+  if (!code) return null;
+  const known = Object.hasOwn(CALENDAR_RESULT_ERRORS, code) ? CALENDAR_RESULT_ERRORS[code] : null;
+  return { tone: "error", text: known ?? "Google Calendar could not be connected. Try again." };
 }
