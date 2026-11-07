@@ -110,6 +110,9 @@ def event_body(record: service.BookingRecord, *, zone: ZoneInfo, brand: str) -> 
         "start": {"dateTime": record.starts_at.astimezone(zone).isoformat(), "timeZone": zone.key},
         "end": {"dateTime": record.ends_at.astimezone(zone).isoformat(), "timeZone": zone.key},
         "transparency": "opaque",
+        # An event the person deleted stays in Google as cancelled, and a patch only brings it
+        # back if it says it is confirmed.
+        "status": "confirmed",
     }
     if place:
         body["location"] = place
@@ -194,7 +197,7 @@ async def _upsert(
         # Neither the event nor a place to make it: the person may have deleted the calendar.
         if await api.calendar_exists(token, calendar_id):
             raise CalendarError("provider_not_found")
-        fresh = await connections.renew_calendar(client_id, person_id)
+        fresh = await connections.renew_calendar(client_id, person_id, calendar_id)
         calendar_id, token = fresh.calendar_id, fresh.token
     raise CalendarError("provider_not_found")  # unreachable: the loop returns or raises
 
@@ -277,6 +280,7 @@ async def sync_one(
     version = record.version
     event_id: str = row["google_event_id"]
     status = "synced"
+    access: CalendarAccess | None = None
     try:
         if plan == "keep":
             status = "synced" if row["synced_version"] is not None else "deleted"
@@ -300,7 +304,9 @@ async def sync_one(
                     if link is None:
                         # The event is there without one: tried again later, up to five times.
                         raise CalendarError("meet_unavailable")
-                    version = await _keep_link(pool, client_id, booking_id, link) or version
+                    written = await _keep_link(pool, client_id, booking_id, link)
+                    if written == version + 1:  # our write alone moved it
+                        version = written
             else:
                 status = "deleted"
                 try:
@@ -311,6 +317,11 @@ async def sync_one(
     except CalendarError as exc:
         if exc.code in {"invalid_grant", "not_connected"}:
             return "needs_reconnect"
+        if exc.code == "provider_unauthorized" and access is not None and not access.refreshed:
+            # Probably a token Google revoked early: refresh it next time, which finds out whether
+            # the grant is gone. Not counted, or five of the job's runs would use the tries up.
+            await connections.expire_token(client_id, person_id)
+            return "failed"
         logger.warning("booking_calendar_sync_failed", category=exc.code)
         async with tx(pool, str(client_id)) as conn:
             await db.q.execute(
@@ -320,11 +331,16 @@ async def sync_one(
             )
         return "failed"
     async with tx(pool, str(client_id)) as conn:
-        await db.q.execute(
+        settled = await db.q.fetch_one(
             "bookings/google_event_settle.sql",
             {**ids, "version": version, "status": status, "event_id": event_id},
             conn=conn,
         )
+        if settled is None:
+            # A newer version is recorded, but this write may have reached Google after it.
+            await db.q.execute(
+                "bookings/google_event_stale.sql", {**ids, "version": version}, conn=conn
+            )
     return status
 
 
@@ -424,6 +440,10 @@ class CalendarPush:
                 [now] = await service.read_records(conn, booking.client_id, booking_id=booking.id)
         except Exception as exc:
             logger.warning("booking_calendar_push_failed", category=type(exc).__name__)
+            return booking
+        # The version only when the link alone moved it: otherwise the booking changed under us.
+        moved = now.version == booking.version + 1 and now.meeting_link != booking.meeting_link
+        if not moved:  # the booking changed under us: it is as it was handed in
             return booking
         return replace(booking, meeting_link=now.meeting_link, version=now.version)
 

@@ -7,6 +7,7 @@ grant is encrypted with `csa.core.crypto`, bound to its row and column. Logs car
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import secrets
@@ -56,6 +57,7 @@ class CalendarAccess:
     token: SecretStr
     calendar_id: str
     connection_id: UUID
+    refreshed: bool = False  # the token was refreshed for this call
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -96,6 +98,9 @@ class CalendarConnections:
         self.client = client
         self.enabled = enabled
         self.now = now
+        # One calendar is made at a time for a connection, so syncs that find it missing together
+        # make it once (across processes the stored id decides, see `renew_calendar`).
+        self._renewing: dict[UUID, asyncio.Lock] = {}
 
     @property
     def available(self) -> bool:
@@ -142,6 +147,11 @@ class CalendarConnections:
             person = await self.person_for(conn, client_id, user_id)
             if person is None:
                 raise CalendarError("person_required")
+            await db.q.execute(
+                "bookings/google_connection_release_person.sql",
+                {"client_id": client_id, "user_id": user_id, "person_id": person},
+                conn=conn,
+            )
             row = await db.q.fetch_one(
                 "bookings/google_connection_pending_upsert.sql",
                 {"client_id": client_id, "user_id": user_id, "person_id": person},
@@ -185,6 +195,7 @@ class CalendarConnections:
         if row is None or facts is None or row["id"] != consumed["connection_id"]:
             raise CalendarError("oauth_state_invalid")
         calendar_id: str | None = row["calendar_id"]
+        previous = calendar_id
         if calendar_id is None or not await api.calendar_exists(tokens.access_token, calendar_id):
             calendar_id = await api.create_calendar(
                 tokens.access_token,
@@ -216,11 +227,10 @@ class CalendarConnections:
             )
             if done is None:
                 raise CalendarError("oauth_state_invalid")
-            await db.q.execute(
-                "bookings/google_events_resume.sql",
-                {"client_id": client_id, "person_id": row["person_id"]},
-                conn=conn,
-            )
+            person = {"client_id": client_id, "person_id": row["person_id"]}
+            await db.q.execute("bookings/google_events_resume.sql", person, conn=conn)
+            if previous is not None and calendar_id != previous:
+                await db.q.execute("bookings/google_events_repush.sql", person, conn=conn)
 
     async def disconnect(self, client_id: UUID, user_id: UUID) -> None:
         """Clear the grant and drop the person's open rows at once, then revoke at Google as well
@@ -304,28 +314,68 @@ class CalendarConnections:
                 },
                 conn=conn,
             )
-        return CalendarAccess(fresh.access_token, row["calendar_id"], connection_id)
+        return CalendarAccess(fresh.access_token, row["calendar_id"], connection_id, refreshed=True)
 
-    async def renew_calendar(self, client_id: UUID, person_id: UUID) -> CalendarAccess:
-        """Make the person's Bookings calendar again, after they deleted it in Google, and store
-        it. Their events there are gone with it: the sync makes each one again as it reaches it."""
-        access = await self.access(client_id, person_id)
-        api = self._api()
+    async def expire_token(self, client_id: UUID, person_id: UUID) -> None:
+        """Google refused the access token: refresh it before the next call."""
         async with tx(self.pool, str(client_id)) as conn:
-            facts = await db.q.fetch_one(
-                "bookings/mail_facts.sql", {"client_id": client_id}, conn=conn
-            )
-        if facts is None:
-            raise CalendarError("not_connected")
-        calendar_id = await api.create_calendar(
-            access.token, summary=f"{facts['brand']} Bookings", time_zone=facts["timezone"]
-        )
-        async with tx(self.pool, str(client_id)) as conn:
-            done = await db.q.fetch_one(
-                "bookings/google_connection_calendar_set.sql",
-                {"client_id": client_id, "id": access.connection_id, "calendar_id": calendar_id},
+            await db.q.execute(
+                "bookings/google_connection_token_expire.sql",
+                {"client_id": client_id, "person_id": person_id},
                 conn=conn,
             )
-        if done is None:
-            raise CalendarError("not_connected")
-        return CalendarAccess(access.token, calendar_id, access.connection_id)
+
+    async def renew_calendar(
+        self, client_id: UUID, person_id: UUID, stale: str | None = None
+    ) -> CalendarAccess:
+        """Make the person's Bookings calendar again, after they deleted it in Google, and store
+        it. `stale` is the calendar that was found missing: if the stored one is another, someone
+        made it first and that one is used. Their events went with the old calendar, so every row
+        that said an event was there is pushed again by the job.
+        """
+        key = (await self._connection_id(client_id, person_id)) or person_id
+        lock = self._renewing.setdefault(key, asyncio.Lock())
+        async with lock:
+            access = await self.access(client_id, person_id)
+            if stale is not None and access.calendar_id != stale:
+                return access
+            api = self._api()
+            async with tx(self.pool, str(client_id)) as conn:
+                facts = await db.q.fetch_one(
+                    "bookings/mail_facts.sql", {"client_id": client_id}, conn=conn
+                )
+            if facts is None:
+                raise CalendarError("not_connected")
+            calendar_id = await api.create_calendar(
+                access.token, summary=f"{facts['brand']} Bookings", time_zone=facts["timezone"]
+            )
+            async with tx(self.pool, str(client_id)) as conn:
+                done = await db.q.fetch_one(
+                    "bookings/google_connection_calendar_set.sql",
+                    {
+                        "client_id": client_id,
+                        "id": access.connection_id,
+                        "calendar_id": calendar_id,
+                        "old_calendar_id": access.calendar_id,
+                    },
+                    conn=conn,
+                )
+                if done is not None:
+                    await db.q.execute(
+                        "bookings/google_events_repush.sql",
+                        {"client_id": client_id, "person_id": person_id},
+                        conn=conn,
+                    )
+            if done is None:
+                # Another process stored a calendar first: use it, ours stays empty.
+                return await self.access(client_id, person_id)
+            return CalendarAccess(access.token, calendar_id, access.connection_id)
+
+    async def _connection_id(self, client_id: UUID, person_id: UUID) -> UUID | None:
+        async with tx(self.pool, str(client_id)) as conn:
+            row = await db.q.fetch_one(
+                "bookings/google_connection_by_person.sql",
+                {"client_id": client_id, "person_id": person_id},
+                conn=conn,
+            )
+        return None if row is None else row["id"]  # type: ignore[no-any-return]

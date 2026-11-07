@@ -167,3 +167,8 @@ def test_mail_with_no_file_says_the_booking_is_on_their_google_calendar() -> Non
     assert gone.calendar is None and "removed from your Google Calendar" in gone.text
     filed = mail("created", CalendarFile("REQUEST", "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"))
     assert filed.calendar is not None and "attached calendar file" in filed.text
+
+
+def test_an_event_says_it_is_confirmed_so_a_patch_brings_back_one_deleted_in_google() -> None:
+    """Google keeps a deleted event as `cancelled` and answers a patch on it with 200."""
+    assert event_body(record(), zone=ZONE, brand="B")["status"] == "confirmed"

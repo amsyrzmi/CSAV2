@@ -68,6 +68,9 @@ CREATE TABLE public.booking_calendar_events (
     -- The mail about this booking to this person left out the calendar file, because their Google
     -- event holds it. A cancellation sends the cancel file to everyone else who has a row.
     file_free boolean NOT NULL DEFAULT false,
+    -- Some mail about this booking to this person carried a calendar file, so an event made from
+    -- it may exist that we cannot remove: a cancellation sends the cancel file whatever came after.
+    file_sent boolean NOT NULL DEFAULT false,
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (client_id, booking_id, person_id),
     FOREIGN KEY (client_id, booking_id) REFERENCES public.bookings(client_id, id),
@@ -94,3 +97,23 @@ END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.booking_calendar_connections,
     public.booking_calendar_events TO csa_app;
 GRANT SELECT, INSERT, DELETE ON public.booking_calendar_oauth_states TO csa_app;
+
+-- Whether a member may still receive events: enabled, and staff or an admin. csa_app cannot read
+-- console_memberships, so a narrow SECURITY DEFINER function answers, in the style of
+-- booking_leave_days (0510): it runs as the owner, and raises when p_client is not the
+-- transaction's app.client_id.
+CREATE OR REPLACE FUNCTION public.booking_member_active(p_client uuid, p_user uuid)
+RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+    IF p_client IS DISTINCT FROM nullif(pg_catalog.current_setting('app.client_id', true), '')::uuid
+    THEN
+        RAISE EXCEPTION 'booking_member_active: not this company' USING ERRCODE = '42501';
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM public.console_memberships m
+         WHERE m.client_id = p_client AND m.user_id = p_user AND m.is_enabled
+           AND m.role IN ('tenant_admin', 'tenant_staff'));
+END $$;
+REVOKE ALL ON FUNCTION public.booking_member_active(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.booking_member_active(uuid, uuid) TO csa_app;

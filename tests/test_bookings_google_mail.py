@@ -230,3 +230,23 @@ async def test_a_refused_meet_link_sends_the_mail_and_answers_without_one(
     made = await booked(team, team.staff, meeting(person, start=TEN_KL, location_kind="online"))
     assert made["meeting_link"] is None and made["meet_missing"] is True and made["version"] == 1
     assert relay.for_(staff_address(team)).calendar is not None  # their event is not yet synced
+
+
+async def test_a_cancel_still_carries_the_file_to_someone_sent_one_before_a_later_move(
+    team: Team, person: dict[str, Any], google: FakeGoogle, relay: FakeTransport
+) -> None:
+    await connect(team, google)
+    google.fail = "provider_unreachable"  # the invitation went with a file
+    made = await booked(team, team.admin, meeting(person, start=TEN_KL, title="Third"))
+    assert relay.for_(staff_address(team)).calendar is not None
+    google.fail = None
+    relay.sent.clear()
+    moved = await later(team, made)  # this time their event is synced, so no file
+    assert moved.status_code == 200, moved.text
+    assert relay.for_(staff_address(team)).calendar is None
+    relay.sent.clear()
+    version = moved.json()["version"]
+    await team.send(team.admin, f"/bookings/{made['id']}/cancel", {"version": version})
+    mail = relay.for_(staff_address(team))
+    # The first invitation's file may have put an event on their calendar that we cannot remove.
+    assert mail.calendar is not None and mail.calendar.method == "CANCEL"
