@@ -90,3 +90,23 @@ class ItemPatch(_Model):
         if all(value is None for value in self.model_dump().values()):
             raise ValueError("a change is required")
         return self
+
+
+class SummaryRequest(_Model):
+    """Asking for an item's summary; ``regenerate`` replaces a stored one and needs manage."""
+
+    regenerate: bool = False
+
+
+class SummaryOut(_Model):
+    summary: str
+    key_points: list[str]
+    truncated: bool
+    model: str
+    summarised_at: AwareDatetime
+
+
+class NoSummary(_Model):
+    """No summary has been made for the item yet."""
+
+    summary: None = None

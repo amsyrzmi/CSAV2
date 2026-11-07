@@ -147,6 +147,7 @@ def create_app() -> FastAPI:
         hr_http: httpx.AsyncClient | None = None
         email_http: httpx.AsyncClient | None = None
         workspace_http: httpx.AsyncClient | None = None
+        training_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
@@ -195,6 +196,12 @@ def create_app() -> FastAPI:
                 hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
                 await hr.check_ready()
                 app.state.hr_service = hr
+                # The training library's one-click PDF summary; without it the summary POST
+                # answers training_assistant_unavailable.
+                training_http = httpx.AsyncClient()
+                app.state.training_model = GroqClient(
+                    settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, training_http
+                )
                 if settings.HR_ASSISTANT_ENABLED:
                     hr_http = httpx.AsyncClient()
                     app.state.hr_assistant = HrAssistant(
@@ -248,6 +255,8 @@ def create_app() -> FastAPI:
                     await email_http.aclose()
                 if workspace_http is not None:
                     await workspace_http.aclose()
+                if training_http is not None:
+                    await training_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:

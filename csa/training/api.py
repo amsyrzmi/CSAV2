@@ -1,8 +1,10 @@
-"""The training library's console routes: list, add, edit, remove and open an item.
+"""The training library's console routes: list, add, edit, remove, open and summarise an item.
 
 Every route belongs to the ``training_library`` package and to human sessions only. Who may
 manage is decided per request in ``access.can_manage``; reading is open to every member of the
-company, ``read_only`` included.
+company, ``read_only`` included. Asking for a summary counts as reading (the console's write rule
+lets ``read_only`` make that one POST, see ``csa.console.access.reader_may_post``); regenerating
+one is managing.
 """
 
 # No ``from __future__ import annotations``: the store dependency is a closure here, and FastAPI
@@ -19,8 +21,16 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import IdentityService
 from csa.console.kb_uploads import human
 from csa.console.services import package_gate
+from csa.decide.completion import JsonCompletionClient
 from csa.storage.base import ObjectStore
-from csa.training.models import ItemList, ItemOut, ItemPatch
+from csa.training.models import (
+    ItemList,
+    ItemOut,
+    ItemPatch,
+    NoSummary,
+    SummaryOut,
+    SummaryRequest,
+)
 from csa.training.service import MEDIA_TYPE, STORAGE_UNAVAILABLE, TrainingLibrary
 
 Actor = Annotated[ConsoleActor, Depends(human)]
@@ -107,5 +117,28 @@ def build_training_router(store: ObjectStore | None) -> APIRouter:
         lib: Annotated[TrainingLibrary, Depends(library)],
     ) -> StreamingResponse:
         return await lib.open_file(client_id, item_id)
+
+    @router.get("/training/items/{item_id}/summary", response_model=SummaryOut | NoSummary)
+    async def get_summary(
+        item_id: UUID,
+        client_id: Company,
+        lib: Annotated[TrainingLibrary, Depends(library)],
+    ) -> SummaryOut | NoSummary:
+        made = await lib.get_summary(client_id, item_id)
+        return made if made is not None else NoSummary()
+
+    @router.post("/training/items/{item_id}/summary", response_model=SummaryOut)
+    async def make_summary(
+        item_id: UUID,
+        body: SummaryRequest,
+        request: Request,
+        actor: Actor,
+        client_id: Company,
+        lib: Annotated[TrainingLibrary, Depends(library)],
+    ) -> SummaryOut:
+        model: JsonCompletionClient | None = getattr(request.app.state, "training_model", None)
+        return await lib.make_summary(
+            actor, client_id, item_id, regenerate=body.regenerate, model=model
+        )
 
     return router

@@ -14,8 +14,14 @@ committed rows (``cleanup``), as the HR documents do. A removal deletes the row,
 Reads (the list, a download) never take the lock, and a download holds no connection while the
 object is opened or streamed.
 
-Logs carry the item id, the company id, byte counts and an outcome: never a title, a file name or
-any of the file's text.
+A summary (``make_summary``) is made once per item and stored. The stored one is read in a plain
+transaction; making one reads the object, extracts the text in the limited child and calls the
+model with no connection and no advisory lock held (concurrent first clicks wait on an in-process
+per-item lock instead, ``summary.item_lock``), then writes with a conditional ``UPDATE`` that
+never inserts: the first writer wins, and a removal that committed meanwhile answers 404.
+
+Logs carry the item id, the company id, the model name, byte counts and an outcome: never a
+title, a file name, any of the file's text or the summary.
 """
 
 from __future__ import annotations
@@ -41,17 +47,19 @@ from csa.console.kb_uploads import FileRecord, SourceDownload, audit
 from csa.console.multipart import upload_form
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.storage.base import ObjectStore, StorageError, durable_put
-from csa.training import limits
+from csa.training import limits, summary
 from csa.training.access import can_manage
 from csa.training.limits import MAX_FILE_BYTES
-from csa.training.models import TITLE_MAX_CHARS, ItemList, ItemOut, ItemPatch
+from csa.training.models import TITLE_MAX_CHARS, ItemList, ItemOut, ItemPatch, SummaryOut
 from csa.training.pdf import PDF_MAGIC, PdfRefused, check_file_name
-from csa.training.pdf_guard import PdfGuardError, check_pdf_isolated
+from csa.training.pdf_guard import PdfGuardError, check_pdf_isolated, extract_text_isolated
 
 logger = structlog.get_logger(__name__)
 
 __all__ = [
+    "ASSISTANT_UNAVAILABLE",
     "FORBIDDEN",
     "NOT_FOUND",
     "STORAGE_UNAVAILABLE",
@@ -78,6 +86,8 @@ KEY_CONFLICT = "training_key_conflict"
 NAME_INVALID = "training_name_invalid"
 NOT_PDF = "training_not_pdf"
 UPLOAD_INVALID = "training_upload_invalid"
+NO_TEXT = "training_no_text"
+ASSISTANT_UNAVAILABLE = "training_assistant_unavailable"
 
 # The shared parser's own refusals, by their text (csa/console/multipart.py).
 _PARSER_BAD_NAME = "invalid original filename"
@@ -186,6 +196,26 @@ async def _check(client_id: UUID, name: str, data: bytes) -> tuple[int, bool]:
         )
         raise HTTPException(422, refused.code) from None
     return info.page_count, info.landscape
+
+
+async def _extract(data: bytes, fields: Mapping[str, str]) -> tuple[str, bool]:
+    """The PDF's text for a summary, from the limited child, or a plain refusal."""
+    try:
+        async with asyncio.timeout(PARSE_TIMEOUT_SECONDS):
+            text, truncated = await extract_text_isolated(data, limits.SUMMARY_MAX_CHARS)
+    except (TimeoutError, PdfGuardError) as exc:
+        logger.error(
+            "training_summary_failed", **fields, byte_size=len(data), outcome=type(exc).__name__
+        )
+        raise HTTPException(503, PARSER_UNAVAILABLE) from None
+    except PdfRefused as refused:
+        logger.info("training_summary_failed", **fields, byte_size=len(data), outcome=refused.code)
+        raise HTTPException(422, refused.code) from None
+    if not text.strip():
+        # A scan, or the content budget ran out before any text: nothing to summarise.
+        logger.info("training_summary_failed", **fields, byte_size=len(data), outcome=NO_TEXT)
+        raise HTTPException(422, NO_TEXT)
+    return text, truncated
 
 
 def _default_title(name: str) -> str:
@@ -388,6 +418,111 @@ class TrainingLibrary:
             response = TrainingFile(stream, record)
             handles.pop_all()
             return response
+
+    async def get_summary(self, client_id: UUID, item_id: UUID) -> SummaryOut | None:
+        row = await self._summary_row(client_id, item_id)
+        if row is None:
+            raise HTTPException(404, NOT_FOUND)
+        return summary.decode(row)
+
+    async def make_summary(
+        self,
+        actor: ConsoleActor,
+        client_id: UUID,
+        item_id: UUID,
+        *,
+        regenerate: bool,
+        model: JsonCompletionClient | None,
+    ) -> SummaryOut:
+        """The stored summary, made first when there is none (or replaced, for ``regenerate``).
+
+        No connection or advisory lock is held across the PDF parse or the model call.
+        """
+        async with tx(self.pool, str(client_id)) as conn:
+            if regenerate and not await can_manage(conn, actor, client_id):
+                raise HTTPException(403, FORBIDDEN)
+            row = await db.q.fetch_one("training/summary_get.sql", (client_id, item_id), conn=conn)
+        if row is None:
+            raise HTTPException(404, NOT_FOUND)
+        if not regenerate and (made := summary.decode(row)) is not None:
+            return made
+        if model is None:
+            raise HTTPException(503, ASSISTANT_UNAVAILABLE)
+        async with summary.item_lock(client_id, item_id):
+            if not regenerate:
+                # Another click may have made it while this one waited.
+                row = await self._summary_row(client_id, item_id)
+                if row is None:
+                    raise HTTPException(404, NOT_FOUND)
+                if (made := summary.decode(row)) is not None:
+                    return made
+            data = await self._read_object(client_id, item_id, row["storage_name"])
+            fields = {"item_id": str(item_id), "client_id": str(client_id), "model": model.model}
+            text, truncated = await _extract(data, fields)
+            try:
+                draft = await summary.summarise(model, text)
+            except (TimeoutError, CompletionError) as exc:
+                outcome = exc.code if isinstance(exc, CompletionError) else "timeout"
+                logger.error(
+                    "training_summary_failed", **fields, byte_size=len(data), outcome=outcome
+                )
+                raise HTTPException(503, ASSISTANT_UNAVAILABLE) from None
+            async with tx(self.pool, str(client_id)) as conn:
+                # Asked again: the HR owner may have moved during the model call.
+                if regenerate and not await can_manage(conn, actor, client_id):
+                    raise HTTPException(403, FORBIDDEN)
+                written = await db.q.fetch_one(
+                    "training/summary_set.sql",
+                    {
+                        "client_id": client_id,
+                        "id": item_id,
+                        "summary": summary.encode(draft),
+                        "truncated": truncated,
+                        "model": model.model,
+                        "replace": regenerate,
+                    },
+                    conn=conn,
+                )
+                if written is None:
+                    # Removed meanwhile (404), or another first click stored its summary first.
+                    current = await db.q.fetch_one(
+                        "training/summary_get.sql", (client_id, item_id), conn=conn
+                    )
+                    if current is None or (made := summary.decode(current)) is None:
+                        raise HTTPException(404, NOT_FOUND)
+                    return made
+                action = (
+                    "training.summary_regenerated"
+                    if written["replaced"]
+                    else "training.summary_generated"
+                )
+                await audit(conn, actor, client_id, action, str(item_id))
+        logger.info(
+            "training_summary_made",
+            **fields,
+            byte_size=len(data),
+            text_bytes=len(text.encode()),
+            outcome="replaced" if written["replaced"] else "stored",
+        )
+        made = summary.decode(written)
+        assert made is not None
+        return made
+
+    async def _read_object(self, client_id: UUID, item_id: UUID, storage_name: str) -> bytes:
+        try:
+            return await asyncio.to_thread(
+                self.store.read, client_id, storage_name, MAX_FILE_BYTES + 1
+            )
+        except (OSError, StorageError):
+            # A removal may have committed and swept since the row was read.
+            if await self._summary_row(client_id, item_id) is None:
+                raise HTTPException(404, NOT_FOUND) from None
+            logger.error("training_file_missing", item_id=str(item_id), client_id=str(client_id))
+            raise HTTPException(503, STORAGE_UNAVAILABLE) from None
+
+    async def _summary_row(self, client_id: UUID, item_id: UUID) -> Mapping[str, Any] | None:
+        async with tx(self.pool, str(client_id)) as conn:
+            return await db.q.fetch_one("training/summary_get.sql", (client_id, item_id), conn=conn)
 
     async def _row(self, client_id: UUID, item_id: UUID) -> Mapping[str, Any] | None:
         async with tx(self.pool, str(client_id)) as conn:
