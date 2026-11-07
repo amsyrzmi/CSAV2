@@ -11,12 +11,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from csa.console.access import reader_may_post
+from csa.console.access import authenticate, reader_may_post
 from csa.decide.groq import GroqError
 from csa.training import service, summary
 from csa.training.pdf import PdfRefused
 from csa.training.pdf_guard import PdfGuardError
 from csa.training.summary import SUMMARY_SYSTEM, SummaryDraft
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from structlog.testing import capture_logs
 
@@ -292,10 +293,62 @@ async def test_read_only_may_request_a_summary_but_not_write(
         assert (await machine.get(summary_path(item), headers=headers)).status_code == 403
 
 
+async def test_encoded_lookalike_paths_are_not_exempt(
+    sessions: SessionWorld, model: FakeModel
+) -> None:
+    tenant = await enable(sessions)
+    item = await deck(sessions)
+    reader, _ = await sessions.member(role="read_only")
+    reached: list[str] = []
+
+    # A route with a free last segment, as a future route under an item might have. The
+    # encoded "?" or "#" cuts request.url.path back to ".../summary"; routing does not.
+    async def console_auth(request: Request) -> None:
+        await authenticate(request, None, frozenset())
+
+    probe = APIRouter(dependencies=[Depends(console_auth)])
+
+    @probe.post("/console/v1/training/items/{item_id}/{tail}")
+    async def free_tail(item_id: str, tail: str) -> dict[str, str]:
+        reached.append(tail)
+        return {"tail": tail}
+
+    sessions.app.include_router(probe)
+    for suffix in ("%3Fx", "%23x/y", "%3F", "%23"):
+        answer = await sessions.mutate(reader, summary_path(item) + suffix, {"regenerate": False})
+        assert answer.status_code in {403, 404}, (suffix, answer.text)
+        if answer.status_code == 403:
+            assert detail(answer) == "write permission required"
+    assert reached == []
+    assert model.calls == []
+    assert (await stored(sessions, item))["summary"] is None
+    assert await audits(sessions, tenant, "training.summary_generated") == []
+    # The real route is still exempt.
+    assert (await ask(sessions, reader, item)).status_code == 200
+
+
 async def test_reader_post_exemption_matches_only_the_summary_route() -> None:
     item = str(uuid4())
-    assert reader_may_post("POST", f"/console/v1/training/items/{item}/summary")
-    assert reader_may_post("POST", f"/console/v1/training/items/{item.upper()}/summary")
+    route = "/training/items/{item_id}/summary"
+    full = f"/console/v1/training/items/{item}/summary"
+    assert reader_may_post("POST", route, full)
+    assert reader_may_post("POST", "/console/v1" + route, full)
+    assert reader_may_post("POST", route, f"/console/v1/training/items/{item.upper()}/summary")
+    # The route routing matched must be the summary route, whatever the path says.
+    for other in (
+        None,
+        "",
+        "/training/items/{item_id}",
+        "/training/items/{item_id}/file",
+        "/training/items/{item_id}/{tail}",
+        "/console/v1/training/items/{item_id}/{tail}",
+        "/training/items/{item_id}/summary/",
+        "/x/training/items/{item_id}/summary",
+    ):
+        assert not reader_may_post("POST", other, full), other
+    # Routing's decoded path keeps an encoded "?" or "#": such paths never match.
+    for decoded in (f"{full}?x", f"{full}#x/y", f"{full}?", f"{full}#"):
+        assert not reader_may_post("POST", route, decoded), decoded
     for method, path in (
         ("PATCH", f"/console/v1/training/items/{item}/summary"),
         ("DELETE", f"/console/v1/training/items/{item}/summary"),
@@ -315,7 +368,7 @@ async def test_reader_post_exemption_matches_only_the_summary_route() -> None:
         ("POST", f"/x/console/v1/training/items/{item}/summary"),
         ("POST", f"/console/v1/training/items/{item}/file"),
     ):
-        assert not reader_may_post(method, path), (method, path)
+        assert not reader_may_post(method, route, path), (method, path)
 
 
 async def test_summary_routes_need_the_package(sessions: SessionWorld, model: FakeModel) -> None:

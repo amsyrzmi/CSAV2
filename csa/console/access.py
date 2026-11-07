@@ -15,18 +15,33 @@ from csa.core import db
 from csa.core.tenancy import tx
 
 # The one write a read_only member may make: asking for an item's stored training summary
-# (regenerating it stays manage-only, refused by the route). Matched on the exact path with a
-# canonical UUID segment, so no other route, method or lookalike path is exempt.
+# (regenerating it stays manage-only, refused by the route). Both the route routing matched and
+# the path it matched on are checked, so no other route, method or lookalike path is exempt.
 _READER_POST = re.compile(
     r"/console/v1/training/items/"
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     r"/summary"
 )
+# The summary route's template as routing reports it. FastAPI 0.143 keeps included routers
+# nested, so the route carries its own template without the /console/v1 prefix; the prefixed
+# form is accepted too, so a FastAPI that flattens the prefix still names the same one route.
+_READER_POST_ROUTES = frozenset(
+    {"/training/items/{item_id}/summary", "/console/v1/training/items/{item_id}/summary"}
+)
 
 
-def reader_may_post(method: str, path: str) -> bool:
-    """Whether a read_only member's ``method`` on ``path`` is exempt from the write refusal."""
-    return method == "POST" and _READER_POST.fullmatch(path) is not None
+def reader_may_post(method: str, route_format: str | None, path: str) -> bool:
+    """Whether a read_only member's request is exempt from the write refusal.
+
+    ``route_format`` is the template of the route routing matched (``scope["route"]``) and
+    ``path`` the decoded path routing matched on (``scope["path"]``; not ``request.url.path``,
+    which is re-parsed and so is cut at an encoded ``?`` or ``#``).
+    """
+    return (
+        method == "POST"
+        and route_format in _READER_POST_ROUTES
+        and _READER_POST.fullmatch(path) is not None
+    )
 
 
 class MachineActor(BaseModel):
@@ -62,8 +77,10 @@ async def authenticate(
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             await service.require_csrf(request, human)
             writer = human.role in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}
+            # Router dependencies run after routing, so scope["route"] is the matched route.
+            route = request.scope.get("route")
             asking = human.role == Role.READ_ONLY and reader_may_post(
-                request.method, request.url.path
+                request.method, getattr(route, "path_format", None), request.scope["path"]
             )
             if not writer and not asking:
                 raise HTTPException(403, "write permission required")
