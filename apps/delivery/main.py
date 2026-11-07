@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
@@ -20,6 +22,7 @@ from csa.contracts.facts import Ui
 from csa.core import crypto, db
 from csa.core.liveness import DELIVERY_ALIVE_PATH, liveness_loop
 from csa.core.settings import get_settings
+from csa.core.shutdown import run_until_signalled
 from csa.core.tenancy import tx
 from csa.notify.notifier import notify
 from csa.notify.sender import StaffNotificationSender
@@ -531,6 +534,26 @@ def _buttons(raw: object) -> list[tuple[str, str]]:
     return result
 
 
+class _Closable(Protocol):
+    async def close(self) -> None: ...
+
+
+async def run_until_stopped(
+    work: Awaitable[Any], *, http: httpx.AsyncClient, pools: Sequence[_Closable]
+) -> None:
+    """Run `work` until it ends or the process is told to stop (SIGTERM or SIGINT), then close
+    the HTTP client and the pools, in that order. A second signal can't cut the close short."""
+
+    async def shut_down() -> None:
+        try:
+            await http.aclose()
+        finally:
+            for pool in pools:
+                await pool.close()
+
+    await run_until_signalled(work, shut_down)
+
+
 async def main() -> None:  # pragma: no cover - process entrypoint
     """Start the outbox drain/reaper and its liveness heartbeat."""
     settings = get_settings()
@@ -539,14 +562,16 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     await owner_pool.open(wait=True)
     await app_pool.open(wait=True)
     timeout = httpx.Timeout(connect=3, read=10, write=10, pool=3)
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            worker = DeliveryWorker(owner_pool, app_pool, client)
-            await liveness_loop(DELIVERY_ALIVE_PATH, do_work=worker.do_work)
-    finally:
-        await app_pool.close()
-        await owner_pool.close()
+    client = httpx.AsyncClient(timeout=timeout)
+    worker = DeliveryWorker(owner_pool, app_pool, client)
+    await run_until_stopped(
+        liveness_loop(DELIVERY_ALIVE_PATH, do_work=worker.do_work),
+        http=client,
+        pools=(app_pool, owner_pool),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
-    asyncio.run(main())
+    # A stop (SIGTERM) cancels `main` after its shutdown has run; that is a clean exit.
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(main())

@@ -1110,7 +1110,11 @@ async def _finish(
     *,
     free: bool,
 ) -> BookingRecord:
-    """Set the new status, delete the holds when the time is freed, and write the audit row."""
+    """Set the new status, delete the holds when the time is freed, and write the audit row.
+
+    The record returned is read again after the change, so it says what is true now: a pending
+    request to move this booking withdrawn earlier in the transaction is no longer named.
+    """
     if free:
         await db.q.execute(
             "bookings/holds_delete.sql",
@@ -1123,16 +1127,10 @@ async def _finish(
         conn=conn,
     )
     await _audit(conn, author, client_id, f"bookings.booking.{action}", str(record.id))
+    fresh = (await read_records(conn, client_id, booking_id=record.id))[0]
     if free:
         # The rooms live on the holds, which are gone now: keep them on the returned record.
-        return replace(
-            record,
-            status=status,
-            version=record.version + 1,
-            conflict=False,
-            previous_status=record.status,
-        )
-    fresh = (await read_records(conn, client_id, booking_id=record.id))[0]
+        fresh = replace(fresh, resources=record.resources, conflict=False)
     return replace(fresh, previous_status=record.status)
 
 

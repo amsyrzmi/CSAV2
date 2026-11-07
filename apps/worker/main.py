@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import signal
 import time
 from collections.abc import Awaitable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -27,6 +26,7 @@ from csa.core.langfuse import LangfuseSink
 from csa.core.liveness import WORKER_ALIVE_PATH, liveness_loop
 from csa.core.pii import redact
 from csa.core.settings import Settings, get_settings
+from csa.core.shutdown import run_until_signalled
 from csa.core.tenancy import tx
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient
@@ -606,17 +606,6 @@ async def drain_then_close(
         await pool.close()
 
 
-def stop_on_signals(task: asyncio.Task[Any]) -> None:
-    """Cancel `task` on SIGTERM or SIGINT, so its `finally` runs.
-
-    The worker is PID 1 in its container, where a signal with no handler is ignored and the stop
-    ends in SIGKILL after the grace: nothing after the loop would ever run.
-    """
-    loop = asyncio.get_running_loop()
-    for number in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(number, task.cancel)
-
-
 async def run_until_stopped(
     work: Awaitable[Any],
     *,
@@ -626,16 +615,20 @@ async def run_until_stopped(
     pools: Sequence[_Closable],
 ) -> None:
     """Run `work` until it ends or the process is told to stop, then shut down in order: the
-    background tasks, the HTTP client, the booking mail still on its way, and last the pools."""
-    stop_on_signals(asyncio.current_task())  # type: ignore[arg-type]
-    try:
-        await work
-    finally:
+    background tasks, the HTTP client, the booking mail still on its way, and last the pools.
+
+    Once shutdown has begun, a second SIGTERM or SIGINT is logged and ignored, so it can't cut the
+    drain or the pool close short.
+    """
+
+    async def shut_down() -> None:
         for task in background:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await llm_http.aclose()
         await drain_then_close(deps, *pools)
+
+    await run_until_signalled(work, shut_down)
 
 
 def marketplace_live_access(

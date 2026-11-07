@@ -9,6 +9,7 @@ from typing import Any
 
 # Job function signature:
 # - If per_client is True: (conn, client_id, clock, [batch_size]) -> dict[str, Any]
+#   or, with own_transactions, (app_pool, client_id, clock, [batch_size]) -> dict[str, Any]
 # - If per_client is False: (conn, clock, [batch_size]) -> dict[str, Any]
 JobFn = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -23,6 +24,10 @@ class Job:
     timeout: float = 30.0
     per_client: bool = True
     batch_size: int = 100
+    # A per-client job that opens its own short transactions, each scoped to the company, instead
+    # of running in one: the runner hands it the app pool. What it committed stands if it is cut
+    # off by its timeout, and no lock it takes is held for the whole run.
+    own_transactions: bool = False
 
 
 class JobRegistry:

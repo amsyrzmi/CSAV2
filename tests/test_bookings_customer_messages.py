@@ -985,6 +985,46 @@ async def test_a_confirmed_request_leaves_no_waiting_change_and_no_replaced_time
     assert seen[str(old.booking.id)]["pending_change_id"] is None
 
 
+async def test_a_cancelled_booking_answers_with_no_waiting_change(shop: Shop) -> None:
+    """The cancel withdraws the request in the same transaction, and the answer says so."""
+    kind = await a_type(shop)
+    old, asked = await pending_change(shop, kind, await shop.customer(), ELEVEN)
+    assert old.booking is not None and asked.booking is not None
+    done = await shop.team.send(
+        shop.team.admin, f"/bookings/{old.booking.id}/cancel", {"version": old.booking.version}
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "cancelled"
+    assert done.json()["pending_change_id"] is None
+
+
+async def test_a_declined_request_leaves_its_booking_with_no_waiting_change(shop: Shop) -> None:
+    kind = await a_type(shop)
+    old, asked = await pending_change(shop, kind, await shop.customer(), ELEVEN)
+    assert old.booking is not None and asked.booking is not None
+    done = await shop.team.send(
+        shop.team.admin, f"/bookings/{asked.booking.id}/decline", {"version": asked.booking.version}
+    )
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "cancelled" and done.json()["pending_change_id"] is None
+    seen = await week_of(shop, TUESDAY, "2031-03-05")
+    assert list(seen) == [str(old.booking.id)]
+    assert seen[str(old.booking.id)]["pending_change_id"] is None
+
+
+async def test_an_expired_request_leaves_its_booking_with_no_waiting_change(shop: Shop) -> None:
+    kind = await a_type(shop)
+    old, asked = await pending_change(shop, kind, await shop.customer(), ELEVEN)
+    assert old.booking is not None and asked.booking is not None
+    assert (await week_of(shop, TUESDAY, "2031-03-05"))[str(old.booking.id)][
+        "pending_change_id"
+    ] == str(asked.booking.id)
+    assert (await run_expiry(shop, ELEVEN))["expired"] == 1
+    seen = await week_of(shop, TUESDAY, "2031-03-05")
+    assert list(seen) == [str(old.booking.id)]
+    assert seen[str(old.booking.id)]["pending_change_id"] is None
+
+
 async def test_a_redacted_private_meeting_says_nothing_about_requests(shop: Shop) -> None:
     aina = await make_person(shop.team, "Aina", email="aina.staff@example.test")
     await booked(shop.team, shop.team.admin, meeting(aina, start=at(12), private=True))

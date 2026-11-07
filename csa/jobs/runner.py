@@ -16,7 +16,13 @@ from csa.bookings.google.push import STATS, CalendarPush, run_calendar_reconcile
 from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.jobs.bookings import run_pending_expiry, run_reminder_mail, run_reminder_queue
+from csa.jobs.bookings import (
+    MAIL_STATS,
+    run_pending_expiry,
+    run_reminder_mail,
+    run_reminder_queue,
+    run_turn_action_retention,
+)
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
@@ -119,6 +125,7 @@ def build_default_registry(
             every=timedelta(minutes=5),
             fn=run_reminder_queue,
             per_client=True,
+            own_transactions=True,
         )
     )
 
@@ -126,7 +133,7 @@ def build_default_registry(
         conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
     ) -> dict[str, Any]:
         if app_pool is None:
-            return {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+            return {name: 0 for name in MAIL_STATS}
         return await run_reminder_mail(conn, app_pool, mailer, clock, batch_size=batch_size)
 
     # Once for every company: the owner connection lists which have mail queued, and each row is
@@ -140,6 +147,16 @@ def build_default_registry(
             per_client=False,
             timeout=150.0,
             batch_size=50,
+        )
+    )
+    # Once a day, for every company, as the owner: the app role never deletes these rows.
+    registry.register(
+        Job(
+            name="booking_turn_action_retention",
+            every=timedelta(hours=24),
+            fn=run_turn_action_retention,
+            per_client=False,
+            batch_size=1000,
         )
     )
 
@@ -277,11 +294,17 @@ class JobRunner:
             stats: dict[str, Any] = {}
             error_msg: str | None = None
             try:
-                async with tx(self._app_pool, str(client_id)) as conn:
+                if job.own_transactions:
                     stats = await asyncio.wait_for(
-                        job.fn(conn, client_id, self._clock, batch_size=job.batch_size),
+                        job.fn(self._app_pool, client_id, self._clock, batch_size=job.batch_size),
                         timeout=job.timeout,
                     )
+                else:
+                    async with tx(self._app_pool, str(client_id)) as conn:
+                        stats = await asyncio.wait_for(
+                            job.fn(conn, client_id, self._clock, batch_size=job.batch_size),
+                            timeout=job.timeout,
+                        )
             except Exception as exc:
                 ok = False
                 all_ok = False
