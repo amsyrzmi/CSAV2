@@ -594,6 +594,55 @@ async def test_file_route_headers(sessions: SessionWorld) -> None:
     assert response.headers["content-length"] == str(len(data))
 
 
+async def test_download_does_not_wait_for_the_company_lock(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    data = make_pdf(2)
+    item = (await upload(sessions, admin, data)).json()
+    # Hold the lock an upload holds across its durable_put, from another connection.
+    async with await psycopg.AsyncConnection.connect(sessions.owner_dsn) as holder:
+        await holder.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"{tenant}:training",)
+        )
+        try:
+            opened = await asyncio.wait_for(admin.get(f"{ITEMS}/{item['id']}/file"), 2)
+            listed = await asyncio.wait_for(admin.get(ITEMS), 2)
+        finally:
+            await holder.rollback()
+    assert opened.status_code == 200 and opened.content == data
+    assert listed.status_code == 200 and [row["id"] for row in listed.json()["items"]] == [
+        item["id"]
+    ]
+
+
+@pytest.mark.parametrize("row_gone", [True, False], ids=["row removed", "row still there"])
+async def test_download_of_an_item_removed_after_the_row_read_is_404_not_503(
+    sessions: SessionWorld,
+    training_store: ObjectStore,
+    monkeypatch: pytest.MonkeyPatch,
+    row_gone: bool,
+) -> None:
+    await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    item = (await upload(sessions, admin, make_pdf())).json()
+
+    def removed_meanwhile(tenant_id: UUID, name: str) -> Any:
+        # A removal commits and sweeps between the row read and the open.
+        if row_gone:
+            with psycopg.connect(sessions.owner_dsn, autocommit=True) as conn:
+                conn.execute("DELETE FROM training_items WHERE id=%s", (item["id"],))
+        raise StorageNotFound(name)
+
+    monkeypatch.setattr(training_store, "open", removed_meanwhile)
+    answer = await admin.get(f"{ITEMS}/{item['id']}/file")
+    if row_gone:
+        assert answer.status_code == 404, answer.text
+        assert detail(answer) == "training_not_found"
+    else:
+        assert answer.status_code == 503, answer.text
+        assert detail(answer) == "training_storage_unavailable"
+
+
 async def test_missing_object_answers_503_and_logs_id_only(
     sessions: SessionWorld, training_store: ObjectStore
 ) -> None:

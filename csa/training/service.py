@@ -11,6 +11,8 @@ first bytes are checked here, then the PDF is parsed in a limited child process
 idempotency check, the quota, the file write (``durable_put``) and the row insert then run under
 one advisory lock per company, and any failure after the write reconciles the store against the
 committed rows (``cleanup``), as the HR documents do. A removal deletes the row, then sweeps.
+Reads (the list, a download) never take the lock, and a download holds no connection while the
+object is opened or streamed.
 
 Logs carry the item id, the company id, byte counts and an outcome: never a title, a file name or
 any of the file's text.
@@ -356,23 +358,21 @@ class TrainingLibrary:
             )
 
     async def open_file(self, client_id: UUID, item_id: UUID) -> StreamingResponse:
+        """Stream the item's PDF. Reading never waits for the company lock or holds a
+        connection while the object is opened or sent."""
+        row = await self._row(client_id, item_id)
+        if row is None:
+            raise HTTPException(404, NOT_FOUND)
+        try:
+            stream = await asyncio.to_thread(self.store.open, client_id, row["storage_name"])
+        except (OSError, StorageError):
+            # A removal may have committed and swept between the read and the open.
+            if await self._row(client_id, item_id) is None:
+                raise HTTPException(404, NOT_FOUND) from None
+            logger.error("training_file_missing", item_id=str(item_id), client_id=str(client_id))
+            raise HTTPException(503, STORAGE_UNAVAILABLE) from None
         with ExitStack() as handles:
-            async with tx(self.pool, str(client_id)) as conn:
-                # Serialised with the sweep, so a row read here still has its file when opened.
-                await _lock(conn, client_id)
-                row = await db.q.fetch_one("training/get.sql", (client_id, item_id), conn=conn)
-                if row is None:
-                    raise HTTPException(404, NOT_FOUND)
-                try:
-                    stream = await asyncio.to_thread(
-                        self.store.open, client_id, row["storage_name"]
-                    )
-                except (OSError, StorageError):
-                    logger.error(
-                        "training_file_missing", item_id=str(item_id), client_id=str(client_id)
-                    )
-                    raise HTTPException(503, STORAGE_UNAVAILABLE) from None
-                handles.enter_context(stream)
+            handles.enter_context(stream)
             record = FileRecord(
                 id=row["id"],
                 name=row["original_name"],
@@ -384,9 +384,14 @@ class TrainingLibrary:
                 content_hash=row["sha256"],
                 deleted_at=None,
             )
+            # The open handle outlives a later delete, so a removal never breaks this download.
             response = TrainingFile(stream, record)
             handles.pop_all()
             return response
+
+    async def _row(self, client_id: UUID, item_id: UUID) -> Mapping[str, Any] | None:
+        async with tx(self.pool, str(client_id)) as conn:
+            return await db.q.fetch_one("training/get.sql", (client_id, item_id), conn=conn)
 
     async def _items(self, client_id: UUID, rows: list[Mapping[str, Any]]) -> list[ItemOut]:
         names = await self._names(client_id, {row["created_by"] for row in rows} - {None})
