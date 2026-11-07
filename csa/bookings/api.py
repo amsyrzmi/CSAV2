@@ -477,7 +477,7 @@ def build_bookings_router() -> APIRouter:
         Answers with the booking, which still has no link if Google still would not make one."""
         actor = changer(request, client_id)
         push = getattr(request.app.state, "calendar_push", None)
-        if not meet_on(request):
+        if push is None or not meet_on(request):
             raise HTTPException(409, "calendar_unavailable")
         async with tx(request.app.state.pool, str(client_id)) as conn:
             record = await service.meet_target(conn, client_id, actor, booking_id)
