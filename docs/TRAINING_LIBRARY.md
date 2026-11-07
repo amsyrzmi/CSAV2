@@ -159,6 +159,8 @@ not inspected; the viewer is meant to run with scripting off.
   model call, and a stored summary is served even if the provider is switched off. Ten simultaneous
   first clicks in one gateway process make one call; with several gateway processes a race can cost
   one extra call, but one summary is stored (first writer wins).
+- **The request** is `POST /training/items/{id}/summary` with a JSON body, which is required (an empty
+  POST is 422): send `{}` for a plain read-or-make, or `{"regenerate": true}` to regenerate.
 - **Regenerate** is manage-only, always calls the model and replaces the stored text.
 - **No readable text** (a scan) is 422 `training_no_text`; a provider failure is 503
   `training_assistant_unavailable`. Neither stores anything.

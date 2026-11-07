@@ -1761,7 +1761,7 @@ Who may call:
 | `DELETE /training/items/{id}` | manage | 204. Removes the row, then the file |
 | `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below |
 | `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model |
-| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below |
+| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below |
 
 ### Limits
 
