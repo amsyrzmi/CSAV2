@@ -359,6 +359,18 @@ async def scrolled(page: Page) -> float:
     )
 
 
+async def settled_scroll(page: Page) -> float:
+    """The scroll position once it has stopped moving (a keyboard scroll animates for a while)."""
+    last = await scrolled(page)
+    for _ in range(40):
+        await asyncio.sleep(0.15)
+        now = await scrolled(page)
+        if now == last:
+            return now
+        last = now
+    raise AssertionError("the page kept scrolling for 6 seconds")
+
+
 async def test_manager_adds_a_pdf_and_it_opens_as_slides(site: Site, files: Files) -> None:
     async def body(browser: Any) -> None:
         library = Library(files)
@@ -621,11 +633,11 @@ async def test_arrow_keys_change_the_slide_only_from_inside_the_viewer(
             await expect_slide(page, 1)
             # Focus on the stage: the arrows change the slide and leave the page where it is.
             await page.get_by_role("group", name=re.compile(r"^Slides")).focus()
-            before = await scrolled(page)
+            before = await settled_scroll(page)
             await page.keyboard.press("ArrowRight")
             await expect_slide(page, 2)
             await page.keyboard.press("ArrowDown")
             await expect_slide(page, 3)
-            assert await scrolled(page) == before
+            assert await settled_scroll(page) == before
 
     await with_browser(body)
