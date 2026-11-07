@@ -1060,7 +1060,7 @@ output names people. They need the owner's passwords, so an agent can only run `
 1. Read the plan. It prints what staging holds now, what will be lost, the size of the
    backup and what `wipe` would refuse. Before the first real wipe it also checks that
    the database container's maintenance database can be reached, that user 1000 can read
-   both volumes, and that user 1000 owns every folder in them, the top one included,
+   all three upload volumes, and that user 1000 owns every folder in them, the top one included,
    because `wipe` could not empty them otherwise. If any of that fails, it refuses.
 
    ```bash
@@ -1081,7 +1081,7 @@ output names people. They need the owner's passwords, so an agent can only run `
    ```
 
    In order, it backs up, stops the four services, drops and creates the database, empties
-   the two volumes, loads the base schema, migrates, creates the first platform admin,
+   the three upload volumes, loads the base schema, migrates, creates the first platform admin,
    starts the services and waits until they are ready. If it fails at the stop or at the
    drop and the database is still there, nothing is lost, and it prints the command that
    brings staging back. If it fails later, it says which step failed and what state
