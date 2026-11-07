@@ -153,6 +153,18 @@ export function itemFacts(item: TrainingItem): string[] {
   return facts.filter(Boolean);
 }
 
+// ---- Download ---------------------------------------------------------------------------------
+
+// Characters Windows, macOS or Linux refuse in a file name, and the control range.
+const UNSAFE_IN_NAME = /[\u0000-\u001f\u007f-\u009f/\\:*?"<>|]/g;
+
+/** The saved file's name: the item's title made safe for a computer, ending in `.pdf`. */
+export function downloadName(title: string): string {
+  const name = title.replace(UNSAFE_IN_NAME, "-").trim().replace(/^[.\s]+|[.\s]+$/g, "");
+  if (!name) return "training.pdf";
+  return /\.pdf$/i.test(name) ? name : `${name}.pdf`;
+}
+
 // ---- The summary panel --------------------------------------------------------------------------
 
 /** Where the panel is: reading a stored summary, showing what it has, or asking for one. */

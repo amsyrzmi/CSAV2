@@ -75,6 +75,8 @@ const OWNED = [
   "components/console/AssistantDock.tsx",
   "components/console/ProposalCard.tsx",
   "components/console/training/",
+  "components/console/TrainingWorkspace.tsx",
+  "lib/training-form.ts",
   "lib/training-viewer-logic.ts",
 ];
 

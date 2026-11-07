@@ -240,3 +240,15 @@ test("a failure is a plain sentence and leaves the way to try again", () => {
     assert.equal(kept.regenerate, true);
   }
 });
+
+// ---- Download ---------------------------------------------------------------------------------
+
+test("a download is saved under the item's title, as a PDF name a computer accepts", () => {
+  assert.equal(form.downloadName("Fire safety"), "Fire safety.pdf");
+  assert.equal(form.downloadName("Induction.PDF"), "Induction.PDF");
+  assert.equal(form.downloadName("Q3: plan / budget?"), "Q3- plan - budget-.pdf");
+  assert.equal(form.downloadName(' a"b<c>d|e*f\\g '), "a-b-c-d-e-f-g.pdf");
+  assert.equal(form.downloadName("Keselamatan kebakaran — 2026"), "Keselamatan kebakaran — 2026.pdf");
+  assert.equal(form.downloadName("   "), "training.pdf");
+  assert.equal(form.downloadName("..."), "training.pdf");
+});
