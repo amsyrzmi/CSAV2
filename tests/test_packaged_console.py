@@ -190,6 +190,7 @@ class PackagedConsole:
     origin: str
     tls: ssl.SSLContext
     gateway: str
+    frontend: Container
 
 
 @pytest.fixture
@@ -265,7 +266,7 @@ def packaged_console(
             )
             await_http(gateway_url + "/readyz", gateway)
             await_http(frontend_url + "/login", frontend)
-            yield PackagedConsole(origin, tls, gateway_url)
+            yield PackagedConsole(origin, tls, gateway_url, frontend)
 
 
 @pytest.fixture
@@ -2279,3 +2280,60 @@ async def test_packaged_hr_browser_acceptance(
             for context in reversed(contexts):
                 await context.close()
             await browser.close()
+
+
+# Lists the build's pdf.js worker files and how many client chunks name one, run inside the image.
+WORKER_LISTING = (
+    "const fs = require('fs');"
+    "const walk = d => fs.readdirSync(d, {withFileTypes: true}).flatMap("
+    "e => e.isDirectory() ? walk(d + '/' + e.name) : [d + '/' + e.name]);"
+    "const workers = fs.readdirSync('.next/static/media').filter("
+    "n => /^pdf\\.worker\\.min\\.[\\w-]+\\.mjs$/.test(n));"
+    "const users = walk('.next/static/chunks').filter("
+    "f => workers.some(w => fs.readFileSync(f, 'utf8').includes(w)));"
+    "console.log(JSON.stringify({workers, users: users.length}));"
+)
+
+
+async def test_packaged_training_library_serves_the_pdf_worker(
+    packaged_console: PackagedConsole,
+) -> None:
+    """The image's build emits pdf.js's worker as its own file, a client chunk points at it, the
+    standalone server serves it as JavaScript (the console sends nosniff, so a module worker
+    needs that type), and the Training library's pages are in the build."""
+    w = packaged_console
+    # The file name carries a content hash: read it from the build inside the image.
+    listing = w.frontend.exec_run(["node", "-e", WORKER_LISTING])
+    assert listing.exit_code == 0 and isinstance(listing.output, bytes), listing.output
+    found = json.loads(listing.output)
+    assert found["workers"] and found["users"] >= 1, found
+    with httpx.Client(base_url=w.origin, verify=w.tls, trust_env=False, timeout=30) as admin:
+        for name in found["workers"]:
+            worker = admin.get(f"/_next/static/media/{name}")
+            assert worker.status_code == 200, name
+            assert re.match(r"(application|text)/javascript", worker.headers["content-type"]), (
+                worker.headers
+            )
+            assert "nosniff" in worker.headers.get("x-content-type-options", ""), worker.headers
+            assert b"WorkerMessageHandler" in worker.content
+
+        def mutate(path: str, body: object) -> httpx.Response:
+            csrf = admin.get("/console/v1/auth/csrf")
+            assert csrf.status_code == 200
+            return admin.post(
+                path,
+                json=body,
+                headers={"Origin": w.origin, "X-CSRF-Token": csrf.json()["csrf_token"]},
+            )
+
+        login = {"email": "packaged-admin@example.test", "password": PASSWORD}
+        assert mutate("/console/v1/auth/login", login).status_code == 200
+        changed = {"current_password": PASSWORD, "new_password": CHANGED_PASSWORD}
+        assert mutate("/console/v1/auth/password/change", changed).status_code == 200
+        # A platform admin's two pages; with no company chosen they ask for one.
+        for path in ("/training", f"/training/{uuid4()}"):
+            page = admin.get(path)
+            assert page.status_code == 200, (path, page.status_code)
+            assert "Training library" in page.text, path
+        # Only a UUID names an item.
+        assert admin.get("/training/not-an-item").status_code == 404

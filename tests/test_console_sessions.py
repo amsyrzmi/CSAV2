@@ -119,8 +119,17 @@ def kb_store(tmp_path: Path) -> ObjectStore:
 
 
 @pytest.fixture
+def training_store(tmp_path: Path) -> ObjectStore:
+    return LocalObjectStore(tmp_path / "training")
+
+
+@pytest.fixture
 async def sessions(
-    migrated_dsn: str, app_dsn: str, tmp_path: Path, kb_store: ObjectStore
+    migrated_dsn: str,
+    app_dsn: str,
+    tmp_path: Path,
+    kb_store: ObjectStore,
+    training_store: ObjectStore,
 ) -> AsyncIterator[SessionWorld]:
     async with await psycopg.AsyncConnection.connect(migrated_dsn, autocommit=True) as owner:
         await reset_console_identity(owner)
@@ -181,6 +190,7 @@ async def sessions(
                 MACHINE_TOKEN,
                 machine_client_ids=frozenset({uuid.UUID(world.tenants[0])}),
                 kb_store=kb_store,
+                training_store=training_store,
             )
         )
         yield world

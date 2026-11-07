@@ -23,6 +23,7 @@ export type TabKey =
   | "email"
   | "subscriptions"
   | "bookings"
+  | "training_library"
   | "activity"
   | "chat";
 

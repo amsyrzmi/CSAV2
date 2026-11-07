@@ -535,7 +535,7 @@ def test_0531_keeps_a_kind_it_does_not_know() -> None:
 
 # Migrations that already redefine one of the three constraints (found by searching db/migrations).
 # Any other migration that names either must be numbered above 0531 or read the current list.
-KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531"}
+KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531", "0540"}
 
 
 def migrations_that_rebuild_the_constraints(

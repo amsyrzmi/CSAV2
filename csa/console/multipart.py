@@ -16,7 +16,9 @@ MAX_BODY_BYTES = 3 * MAX_FILE_BYTES + 1024 * 1024
 
 
 class BoundedParser(MultiPartParser):
-    def __init__(self, request: Request, *, max_files: int, max_body: int, field: str) -> None:
+    def __init__(
+        self, request: Request, *, max_files: int, max_body: int, max_file: int, field: str
+    ) -> None:
         async def stream() -> AsyncGenerator[bytes, None]:
             total = 0
             async for chunk in request.stream():
@@ -29,6 +31,7 @@ class BoundedParser(MultiPartParser):
             request.headers, stream(), max_files=max_files, max_fields=0, max_part_size=1024
         )
         self.field = field
+        self.max_file = max_file
         self.complete = False
         self.part_bytes = 0
         self.header_bytes = 0
@@ -40,8 +43,8 @@ class BoundedParser(MultiPartParser):
 
     def on_part_data(self, data: bytes, start: int, end: int) -> None:
         self.part_bytes += end - start
-        if self.part_bytes > MAX_FILE_BYTES:
-            raise HTTPException(413, "file exceeds 10 MB")
+        if self.part_bytes > self.max_file:
+            raise HTTPException(413, f"file exceeds {-(-self.max_file // 2**20)} MB")
         super().on_part_data(data, start, end)
 
     def _header_bound(self, size: int) -> None:
@@ -82,17 +85,20 @@ async def upload_form(
     *,
     max_files: int = 3,
     max_body: int | None = None,
+    max_file: int | None = None,
     field: str = "files",
 ) -> AsyncIterator[FormData]:
     """Parse a bounded multipart upload of at most `max_files` files in the `field` part.
 
-    `max_body` defaults to MAX_BODY_BYTES, read when called."""
+    `max_body` defaults to MAX_BODY_BYTES and `max_file` (bytes per file) to MAX_FILE_BYTES,
+    both read when called. The 413 text names `max_file` in whole MB, rounded up."""
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
         raise HTTPException(415, "multipart/form-data required")
     parser = BoundedParser(
         request,
         max_files=max_files,
         max_body=MAX_BODY_BYTES if max_body is None else max_body,
+        max_file=MAX_FILE_BYTES if max_file is None else max_file,
         field=field,
     )
     try:

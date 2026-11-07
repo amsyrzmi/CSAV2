@@ -37,6 +37,7 @@ DB_BYTES = 52_428_800
 VOLUME_FILES = {
     "csa-staging_staging-uploads": (12, 4096),
     "csa-staging_staging-hr-uploads": (3, 512),
+    "csa-staging_staging-training-uploads": (2, 2048),
 }
 NEWEST = discover_migrations()[-1][0]
 SOCKET_PREFIX = f"docker --host {SOCKET}"
@@ -191,7 +192,11 @@ def _prepare(
 
 def test_targets_are_constants() -> None:
     assert rs.DATABASE == "csa_staging"
-    assert rs.UPLOAD_VOLUMES == ("csa-staging_staging-uploads", "csa-staging_staging-hr-uploads")
+    assert rs.UPLOAD_VOLUMES == (
+        "csa-staging_staging-uploads",
+        "csa-staging_staging-hr-uploads",
+        "csa-staging_staging-training-uploads",
+    )
     assert rs.CONFIRM_PHRASE == "wipe csa-staging"
     assert rs.DROP_DATABASE_SQL == "DROP DATABASE IF EXISTS csa_staging WITH (FORCE)"
     assert rs.CREATE_DATABASE_SQL == "CREATE DATABASE csa_staging OWNER csa"
@@ -280,6 +285,7 @@ def test_plan_shows_what_will_go(reset_env: Path, tmp_path: Path) -> None:
     assert "Accounts: 7" in text
     assert "csa-staging_staging-uploads: 12 files, 4.0 KiB" in text
     assert "csa-staging_staging-hr-uploads: 3 files, 512 B" in text
+    assert "csa-staging_staging-training-uploads: 2 files, 2.0 KiB" in text
     assert "platform admins: 3" in text
     assert "team-jo (Team Jo): packages customer_support, " in text
     assert "mode auto; 1 read_only, 1 tenant_admin, 3 tenant_staff" in text
@@ -584,7 +590,7 @@ def test_volumes_are_read_through_the_gateways_python_image(
     context = _prepare(runner, reset_env, tmp_path)
     assert context.python_image == "ghcr.io/amsyrzmi/csa-python@sha256:" + "g" * 64
     runs = [argv for argv in runner.argvs if argv[3:4] == ["run"]]
-    assert len(runs) == 2
+    assert len(runs) == 3
     assert all(context.python_image in argv for argv in runs)
     assert context.env["CSA_STAGING_PYTHON_IMAGE"] == context.python_image
 
@@ -808,7 +814,7 @@ def test_wipe_runs_the_steps_in_order(reset_env: Path, tmp_path: Path) -> None:
     runner = wipe_runner()
     code, lines = _wipe(runner, reset_env, tmp_path)
     assert code == 0
-    uploads, hr_uploads = rs.UPLOAD_VOLUMES
+    uploads, hr_uploads, training_uploads = rs.UPLOAD_VOLUMES
     first = load_roster(rs.ROSTER_PATH).platform_admins[0]
     _assert_in_order(
         runner,
@@ -816,11 +822,13 @@ def test_wipe_runs_the_steps_in_order(reset_env: Path, tmp_path: Path) -> None:
             (PG_DUMP,),
             ("--entrypoint tar", f"{uploads}:/data:ro"),
             ("--entrypoint tar", f"{hr_uploads}:/data:ro"),
+            ("--entrypoint tar", f"{training_uploads}:/data:ro"),
             (STOP,),
             ("-d postgres", rs.DROP_DATABASE_SQL),
             ("-d postgres", rs.CREATE_DATABASE_SQL),
             ("--network none", f"{uploads}:/data ", EMPTY_VOLUME),
             ("--network none", f"{hr_uploads}:/data ", EMPTY_VOLUME),
+            ("--network none", f"{training_uploads}:/data ", EMPTY_VOLUME),
             ("-d csa_staging", EMPTINESS),
             (CAT_BASELINE, "/app/db/schema_baseline.sql"),
             (LOAD_BASELINE,),
@@ -837,7 +845,7 @@ def test_wipe_runs_the_steps_in_order(reset_env: Path, tmp_path: Path) -> None:
     # Backups go through run_to_file, the bootstrap's prompts through run_tty.
     assert [" ".join(argv) for argv in runner.file_calls][0].endswith(PG_DUMP)
     assert all("tar" in argv for argv in runner.file_calls[1:])
-    assert len(runner.file_calls) == 3
+    assert len(runner.file_calls) == 4
     assert len(runner.tty_calls) == 1
     bootstrap_env = runner.envs[-1]
     assert bootstrap_env is not None
@@ -905,7 +913,7 @@ def test_backup_directory_and_files(reset_env: Path, tmp_path: Path) -> None:
     # The success line carries the counts, so the owner sees what the backup holds.
     success = next(line for line in lines if line.startswith("Staging is rebuilt"))
     assert str(directory) in success
-    assert "companies 2" in success and "accounts 7" in success and "upload files 15" in success
+    assert "companies 2" in success and "accounts 7" in success and "upload files 17" in success
 
 
 def test_the_manifest_is_written_last(reset_env: Path, tmp_path: Path) -> None:
@@ -919,7 +927,7 @@ def test_the_manifest_is_written_last(reset_env: Path, tmp_path: Path) -> None:
 
     runner.run_to_file = watching  # type: ignore[method-assign]
     assert _wipe(runner, reset_env, tmp_path)[0] == 0
-    assert seen == [False, False, False]
+    assert seen == [False, False, False, False]
     assert not list((rs.BACKUP_ROOT / "20261103T083015Z").glob("*.tmp"))
 
 
@@ -1167,7 +1175,7 @@ def test_a_mistyped_bootstrap_password_gets_another_try(reset_env: Path, tmp_pat
     assert _ran(runner, UP)
     # The rebuild isn't repeated, and only one backup was taken.
     assert sum(rs.DROP_DATABASE_SQL in " ".join(argv) for argv in runner.order) == 1
-    assert len(runner.file_calls) == 3
+    assert len(runner.file_calls) == 4
 
 
 WAIT_FOR_PROMPT = (
@@ -1274,7 +1282,7 @@ def test_wipe_after_a_partial_wipe(reset_env: Path, tmp_path: Path) -> None:
     text = "\n".join(lines)
     assert "skipping pg_dump" in text
     assert not any("pg_dump" in argv for argv in runner.file_calls)
-    assert [argv.count("tar") for argv in runner.file_calls] == [1, 1]
+    assert [argv.count("tar") for argv in runner.file_calls] == [1, 1, 1]
     assert _ran(runner, rs.DROP_DATABASE_SQL)
     assert _ran(runner, BOOTSTRAP)
     directory = rs.BACKUP_ROOT / "20261103T083015Z"
@@ -1528,7 +1536,7 @@ def test_a_later_stop_tells_the_backups_apart(reset_env: Path, tmp_path: Path) -
     assert f"revision {SHA[:7]}" in this_run
     assert "schema 0520" in this_run
     assert "companies 2" in this_run and "accounts 7" in this_run
-    assert "upload files 15" in this_run
+    assert "upload files 17" in this_run
     # This run's backup holds the real data, so nothing points away from it.
     assert not any("most recent complete backup" in line for line in lines)
 

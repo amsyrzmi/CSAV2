@@ -294,7 +294,7 @@ def test_0513_arrives_on_a_database_already_at_0531(
     _run_migrations(at)
     with _owner(at) as conn:
         [row] = conn.execute("SELECT max(version) AS top FROM schema_migrations")
-        assert row["top"] == EXPECTED_SCHEMA_VERSION == "0531"
+        assert row["top"] == EXPECTED_SCHEMA_VERSION
         [ledger] = conn.execute(
             "SELECT count(*) AS n FROM schema_migrations WHERE version = '0513'"
         )

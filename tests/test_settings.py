@@ -155,6 +155,41 @@ def test_blank_upload_roots_are_unset(blank: str) -> None:
     assert s.HR_UPLOAD_ROOT is None
 
 
+def test_training_root_blank_is_unset() -> None:
+    assert _settings().TRAINING_UPLOAD_ROOT is None
+    assert _settings(TRAINING_UPLOAD_ROOT="").TRAINING_UPLOAD_ROOT is None
+    assert _settings(TRAINING_UPLOAD_ROOT="   ").TRAINING_UPLOAD_ROOT is None
+
+
+def test_training_root_apart_from_kb_and_hr_roots_is_accepted() -> None:
+    s = _settings(
+        KB_UPLOAD_ROOT="/srv/kb-uploads",
+        HR_UPLOAD_ROOT="/srv/hr-uploads",
+        TRAINING_UPLOAD_ROOT="/srv/training-uploads",
+    )
+    assert str(s.TRAINING_UPLOAD_ROOT) == "/srv/training-uploads"
+    assert _settings(TRAINING_UPLOAD_ROOT="/srv/training-uploads").KB_UPLOAD_ROOT is None
+
+
+@pytest.mark.parametrize("other", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"])
+@pytest.mark.parametrize(
+    ("training", "root"),
+    [
+        ("/srv/uploads", "/srv/uploads"),
+        ("/srv/uploads", "/srv/uploads/"),
+        ("/srv/uploads", "/srv/kb/../uploads"),
+        ("/srv/uploads/training", "/srv/uploads"),
+        ("/srv/uploads", "/srv/uploads/training"),
+    ],
+)
+def test_training_root_must_not_overlap_kb_or_hr_root(training: str, root: str, other: str) -> None:
+    # Training files are <uuid>.pdf under <root>/<client_id>/ and its sweep deletes the
+    # uuid-named files it does not know, so a shared or nested root would let it delete the
+    # other store's files.
+    with pytest.raises(ValidationError, match="TRAINING_UPLOAD_ROOT must not be, contain or sit"):
+        _settings(TRAINING_UPLOAD_ROOT=training, **{other: root})
+
+
 _S3 = {
     "STORAGE_BACKEND": "s3",
     "S3_BUCKET": "synthetic-bucket",
@@ -193,10 +228,16 @@ def test_s3_backend_secrets_are_masked() -> None:
     assert s.S3_SECRET_ACCESS_KEY.get_secret_value() == "synthetic-secret"
 
 
-@pytest.mark.parametrize("root", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"])
+@pytest.mark.parametrize("root", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", "TRAINING_UPLOAD_ROOT"])
 def test_s3_backend_refuses_local_upload_roots(root: str) -> None:
     with pytest.raises(ValidationError, match=f"STORAGE_BACKEND=s3 conflicts with {root}"):
         _settings(**_S3, **{root: "/srv/uploads"})
+
+
+def test_s3_backend_refuses_training_root() -> None:
+    message = "STORAGE_BACKEND=s3 conflicts with TRAINING_UPLOAD_ROOT; unset TRAINING_UPLOAD_ROOT"
+    with pytest.raises(ValidationError, match=message):
+        _settings(**_S3, TRAINING_UPLOAD_ROOT="/srv/training-uploads")
 
 
 def test_s3_backend_ingest_does_not_need_kb_upload_root() -> None:

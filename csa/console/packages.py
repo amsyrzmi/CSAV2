@@ -104,6 +104,21 @@ PACKAGES: tuple[Package, ...] = (
         sellable=True,
     ),
     Package(
+        key="training_library",
+        title="Training library",
+        summary=(
+            "Keeps your company's training slides in one place, so your team can read "
+            "them in the browser."
+        ),
+        kind="standalone",
+        requires=(),
+        capabilities=(),
+        hr_modules=(),
+        email=False,
+        tabs=("training_library",),
+        sellable=True,
+    ),
+    Package(
         key="marketplaces",
         title="Marketplaces",
         summary=(

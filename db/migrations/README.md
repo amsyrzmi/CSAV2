@@ -25,6 +25,10 @@ Reserved ranges (client growth program, 2026-10-27):
   redefined in 0521 (`console_proposals_kind_check` and `console_workspace_turns_action_check` also
   allow `booking_action`). It reads each constraint's current list and adds to it, so it keeps
   whatever other tracks allow.
+- `0540`–`0549`: training library. 0540 adds the `training_library` tab to
+  `console_workspace_turns_page_key_check`, reading the live list as 0531 does; 0541 adds
+  `training_items` (tenant isolated, `csa_app` only) and `training_is_hr_owner()`, the
+  no-argument definer check that reads `app.client_id` and `app.hr_user_id`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
