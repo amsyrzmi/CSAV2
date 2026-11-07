@@ -658,10 +658,10 @@ def test_the_worker_carries_the_google_client_the_gateway_uses(tmp_path: Path) -
     assert not delivery & {"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"}
 
 
-def test_the_checked_in_rollout_flags_leave_google_calendar_and_meet_off() -> None:
+def test_the_checked_in_rollout_flags_turn_google_calendar_on_and_leave_meet_off() -> None:
     text = (ROOT / "deploy" / "staging-rollout.env").read_text(encoding="utf-8")
     flags = dict(
         line.split("=", 1) for line in text.splitlines() if line and not line.startswith("#")
     )
-    assert flags["CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR"] == "false"
+    assert flags["CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR"] == "true"
     assert flags["CSA_STAGING_BOOKINGS_GOOGLE_MEET"] == "false"
