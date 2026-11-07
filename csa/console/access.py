@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 from typing import Annotated
 from uuid import UUID
 
@@ -12,6 +13,20 @@ from pydantic import BaseModel, ConfigDict
 from csa.console.contracts import ConsoleActor, Role
 from csa.core import db
 from csa.core.tenancy import tx
+
+# The one write a read_only member may make: asking for an item's stored training summary
+# (regenerating it stays manage-only, refused by the route). Matched on the exact path with a
+# canonical UUID segment, so no other route, method or lookalike path is exempt.
+_READER_POST = re.compile(
+    r"/console/v1/training/items/"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"/summary"
+)
+
+
+def reader_may_post(method: str, path: str) -> bool:
+    """Whether a read_only member's ``method`` on ``path`` is exempt from the write refusal."""
+    return method == "POST" and _READER_POST.fullmatch(path) is not None
 
 
 class MachineActor(BaseModel):
@@ -46,7 +61,11 @@ async def authenticate(
             raise HTTPException(400, "browser identity headers are not accepted")
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             await service.require_csrf(request, human)
-            if human.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}:
+            writer = human.role in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}
+            asking = human.role == Role.READ_ONLY and reader_may_post(
+                request.method, request.url.path
+            )
+            if not writer and not asking:
                 raise HTTPException(403, "write permission required")
         actor = human
     request.state.console_actor = actor
