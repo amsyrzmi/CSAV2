@@ -152,6 +152,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
     // Every member sees Bookings, read-only included; the setup pages hide their edit controls.
     { key: "bookings", label: "Bookings", href: to("bookings"), children: bookingsPages(admin) },
+    // Every member reads the library, read-only included; only managers see its edit controls.
+    // "Training library", not "Training": HR's own Training tab keeps that name.
     { key: "training_library", label: "Training library", href: to("training") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },

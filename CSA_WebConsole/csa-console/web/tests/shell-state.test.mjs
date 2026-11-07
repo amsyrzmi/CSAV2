@@ -38,15 +38,15 @@ test("railCookie writes a year-long, same-site cookie holding only a validated v
 
 test("NAV_ICONS covers every key navigationFor can output, each with its own icon", () => {
   const user = { email: "a@example.test", display_name: "A", must_change_password: false };
-  const packages = ["customer_support", "orders_products", "hr", "staff_email", "subscriptions", "bookings"]
+  const packages = ["customer_support", "orders_products", "hr", "staff_email", "subscriptions", "bookings", "training_library"]
     .map((key) => ({ key, status: "active" }));
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"]) {
     const me = { role, user, memberships: [], active_client_id: "t", csrf_token: "" };
     for (const link of navigationFor(me, packages)) keys.add(link.key);
   }
-  // 14 entries: 13 since the Sandbox assistant folded into Overview, plus Bookings.
-  assert.equal(keys.size, 14, `expected every entry to appear, saw ${[...keys]}`);
+  // 15 entries: 13 since the Sandbox assistant folded into Overview, plus Bookings and the Training library.
+  assert.equal(keys.size, 15, `expected every entry to appear, saw ${[...keys]}`);
   for (const key of keys) assert.ok(NAV_ICONS[key], `no icon for ${key}`);
   assert.deepEqual(Object.keys(NAV_ICONS).sort(), [...keys].sort(), "an icon for a key that is never shown");
   const names = Object.values(NAV_ICONS);
