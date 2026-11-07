@@ -45,7 +45,7 @@ ALL_FLAGS = {
     "CSA_STAGING_INVITE_MAIL": "true",
     "CSA_STAGING_EMAIL_ASSISTANT": "true",
     "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "true",
-    "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "false",
+    "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "true",
 }
 FLAGS_TEXT = "".join(f"{key}={value}\n" for key, value in ALL_FLAGS.items())
 
