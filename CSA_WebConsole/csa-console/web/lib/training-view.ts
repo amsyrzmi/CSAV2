@@ -38,6 +38,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   "machine principal has read-only access": MANAGE_ONLY,
   package_inactive: "Training library is not switched on for this company. Ask your administrator.",
   "human session required": "Sign in to the console to use the Training library.",
+  "authentication required": "Your session has ended. Sign in again to continue.",
   "active tenant membership required":
     "Your account is not an active member of this company. Ask your administrator for access.",
   "tenant is not authorized": "You cannot open the Training library for this company.",
@@ -76,7 +77,8 @@ const categoryKey = (category: string) => category.trim().toLowerCase();
 
 /**
  * Each category once, compared case-insensitively and trimmed, in the spelling first seen
- * (the list is newest first). Alphabetical, with "Uncategorised" last when any item has none.
+ * (the list is newest first). Alphabetical, with "Uncategorised" last when any item has none,
+ * unless a category of that name is already listed: then the one entry covers both.
  */
 export function categoriesOf(items: readonly TrainingItem[]): string[] {
   const seen = new Map<string, string>();
@@ -87,7 +89,7 @@ export function categoriesOf(items: readonly TrainingItem[]): string[] {
     else if (!seen.has(key)) seen.set(key, item.category.trim());
   }
   const names = [...seen.values()].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
-  return uncategorised ? [...names, UNCATEGORISED] : names;
+  return uncategorised && !seen.has(categoryKey(UNCATEGORISED)) ? [...names, UNCATEGORISED] : names;
 }
 
 export interface TrainingFilter {

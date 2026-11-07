@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { usePublishContext } from "@/lib/page-context";
 import { fileUrl, type TrainingItem, type TrainingViewMode } from "@/lib/training-api";
-import { downloadName, itemFacts } from "@/lib/training-form";
+import { downloadName, itemFacts, type UploadAttempt } from "@/lib/training-form";
 import { itemHref, refusalCopy } from "@/lib/training-view";
 import ItemDialog, { RemoveDialog } from "./training/ItemDialog";
 import ItemList from "./training/ItemList";
@@ -56,7 +56,7 @@ export function TrainingWorkspace({ me, itemId }: { me: Me; itemId?: string }) {
     const controller = new AbortController();
     api<Client[]>("/console/v1/admin/clients", { signal: controller.signal })
       .then(setClients)
-      .catch((cause: Error) => { if (!controller.signal.aborted) setError(cause.message); });
+      .catch((cause: unknown) => { if (!controller.signal.aborted) setError(refusalText(cause)); });
     return () => controller.abort();
   }, [platform, itemId]);
 
@@ -128,6 +128,8 @@ function LibraryPage({ scope }: { scope: Scope }) {
   const list = useTrainingList(scope.tenantId);
   const [open, setOpen] = useState<Open>(null);
   const [message, setMessage] = useState("");
+  // The upload's idempotency key outlives the dialog, so adding the same file again retries it.
+  const attempt = useRef<UploadAttempt | null>(null);
   const hrefFor = (id: string) => itemHref(id, scope.platform, scope.tenantId);
 
   return (
@@ -147,6 +149,7 @@ function LibraryPage({ scope }: { scope: Scope }) {
               tenantId={scope.tenantId}
               item={open.kind === "edit" ? open.item : null}
               categories={data.categories}
+              attempt={attempt}
               onClose={() => setOpen(null)}
               onChanged={list.reload}
               onSaved={(saved, added) => {

@@ -31,7 +31,7 @@ const PLATFORM_CODES = [
   "package_inactive", "write permission required", "machine principal has read-only access",
   "human session required", "active tenant membership required", "tenant is not authorized",
   "tenant not found", "platform admin must select client_id explicitly", "invalid csrf token",
-  "invalid request origin", "csrf_required",
+  "invalid request origin", "csrf_required", "authentication required",
 ];
 const FALLBACK = "We could not do that. Try again in a minute.";
 const STATUS_NUMBERS = /\b(400|401|403|404|409|413|415|422|429|500|502|503|504)\b/;
@@ -60,6 +60,13 @@ test("the sentences the spec fixes are word for word", () => {
   assert.equal(refusalCopy("training_pdf_unreadable"), refusalCopy("training_pdf_damaged"));
   assert.match(refusalCopy("training_storage_unavailable"), /try again/i);
   assert.match(refusalCopy("training_parser_unavailable"), /try again/i);
+});
+
+test("an ended session asks the person to sign in again, not to retry", () => {
+  const text = refusalCopy("authentication required");
+  assert.equal(text, "Your session has ended. Sign in again to continue.");
+  assert.doesNotMatch(text, /_/);
+  assert.doesNotMatch(text, STATUS_NUMBERS);
 });
 
 test("an unknown code, an HTTP fallback code or nothing gets the fallback sentence", () => {
@@ -94,6 +101,11 @@ test("categories merge by case and spacing, the first spelling wins, empty is Un
   assert.deepEqual(categoriesOf([item("a", " safety"), item("b", "Onboarding"), item("c", "SAFETY")]), ["Onboarding", "safety"]);
   assert.deepEqual(categoriesOf([item("a", "  ")]), [UNCATEGORISED]);
   assert.deepEqual(categoriesOf([]), []);
+});
+
+test("a category literally named Uncategorised and items with none give one entry", () => {
+  assert.deepEqual(categoriesOf([item("a", "Uncategorised"), item("b", ""), item("c", "HR")]), ["HR", "Uncategorised"]);
+  assert.deepEqual(categoriesOf([item("a", ""), item("b", " uncategorised ")]), ["uncategorised"]);
 });
 
 test("filterItems narrows by category and by title, ignoring case", () => {

@@ -8,14 +8,15 @@
 
 export const OPENING = "Opening the PDF…";
 
-/** Why a PDF could not be shown. */
-export type ViewerFailure = "unavailable" | "gone" | "damaged" | "protected";
+/** Why a PDF could not be shown. `signed_out` (the session ended) has no retry: signing in again does. */
+export type ViewerFailure = "unavailable" | "gone" | "damaged" | "protected" | "signed_out";
 
 const COPY: Readonly<Record<ViewerFailure, string>> = {
   unavailable: "We could not open this PDF. Try again in a minute.",
   gone: "This PDF is no longer in the library.",
   damaged: "This PDF is damaged, so we cannot show it. Ask the person who added it to upload it again.",
   protected: "This PDF is protected, so we cannot show it.",
+  signed_out: "Your session has ended. Sign in again to continue.",
 };
 
 export function viewerMessage(failure: ViewerFailure): string {
@@ -40,6 +41,7 @@ const field = (value: unknown, key: string): unknown =>
  */
 export function viewerStateFor(error: unknown): ViewerFailure {
   if (field(error, "status") === 404) return "gone";
+  if (field(error, "status") === 401) return "signed_out";
   const name = field(error, "name");
   if (name === "PasswordException") return "protected";
   if (name === "InvalidPDFException" || name === "FormatError") return "damaged";

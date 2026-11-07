@@ -285,6 +285,7 @@ try {
       ["bookings view tests", "../tests/bookings-view.test.mjs"],
       ["training transport tests", "../tests/training-api.test.mjs"],
       ["training view tests", "../tests/training-view.test.mjs"],
+      ["training form tests", "../tests/training-form.test.mjs"],
       ["training slides tests", "../tests/training-slides.test.mjs"],
       ["training viewer tests", "../tests/training-viewer-logic.test.mjs"],
       ["channels transport tests", "../tests/channels-transport.test.mjs"],

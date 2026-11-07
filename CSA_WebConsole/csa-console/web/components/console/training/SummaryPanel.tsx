@@ -32,6 +32,7 @@ export default function SummaryPanel({
   const headingId = useId();
   const noticeId = useId();
   const regenerateRef = useRef<HTMLButtonElement>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
   const itemId = item.id;
 
   useEffect(() => {
@@ -58,6 +59,8 @@ export default function SummaryPanel({
     setState({ phase: "making", summary: before, regenerate });
     try {
       setState({ phase: "ready", summary: await makeSummary(tenantId, itemId, regenerate), error: null });
+      // The confirm box that held focus is gone: move it to the new summary.
+      if (regenerate) requestAnimationFrame(() => summaryRef.current?.focus());
     } catch (cause) {
       setState({ phase: "ready", summary: before, error: codeOf(cause) });
     } finally {
@@ -66,6 +69,12 @@ export default function SummaryPanel({
   }
 
   const view = summaryView(state, canManage);
+
+  function cancelConfirm() {
+    setConfirming(false);
+    // The button that opened the confirm comes back; focus returns to it.
+    requestAnimationFrame(() => regenerateRef.current?.focus());
+  }
 
   return (
     <section
@@ -80,7 +89,7 @@ export default function SummaryPanel({
       </p>
       {view.error && <Notice error testId="training-summary-error">{view.error}</Notice>}
       {view.stored && (
-        <div data-testid="training-summary" className="min-w-0 space-y-3 [overflow-wrap:anywhere]">
+        <div ref={summaryRef} tabIndex={-1} data-testid="training-summary" className="min-w-0 space-y-3 [overflow-wrap:anywhere]">
           {view.stored.paragraphs.map((paragraph, index) => (
             <p key={index} className="text-sm leading-6 whitespace-pre-line">{paragraph}</p>
           ))}
@@ -136,6 +145,12 @@ export default function SummaryPanel({
           aria-label="Make a new summary"
           data-testid="training-regenerate-confirm-box"
           className="space-y-3 rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border-control)] bg-[var(--fs-surface-blue)] p-3"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.stopPropagation();
+            event.preventDefault();
+            cancelConfirm();
+          }}
         >
           <p className="text-sm">This replaces the summary everyone in your company sees.</p>
           <div className="flex flex-wrap gap-2">
@@ -148,15 +163,7 @@ export default function SummaryPanel({
             >
               Replace the summary
             </button>
-            <button
-              type="button"
-              className={secondary}
-              onClick={() => {
-                setConfirming(false);
-                // The button that opened the confirm comes back; focus returns to it.
-                requestAnimationFrame(() => regenerateRef.current?.focus());
-              }}
-            >
+            <button type="button" className={secondary} onClick={cancelConfirm}>
               Cancel
             </button>
           </div>

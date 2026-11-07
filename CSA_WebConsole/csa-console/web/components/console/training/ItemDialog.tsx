@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type RefObject } from "react";
+import { ApiError } from "@/lib/api";
 import { patchItem, removeItem, uploadItem, type TrainingItem, type TrainingViewMode } from "@/lib/training-api";
 import {
   afterUploadFailure,
@@ -11,6 +12,7 @@ import {
   formToPatch,
   PATCH_FAILED,
   titleFromFileName,
+  uploadMayHaveLanded,
   type FormProblems,
   type ItemForm,
   type UploadAttempt,
@@ -26,8 +28,9 @@ type Phase = "idle" | "uploading" | "saving";
  * Add a PDF (`item` null) or edit one's details. Adding is two steps: the file alone, then the
  * details as a PATCH. One idempotency key belongs to the picked file and is kept for a retry of
  * it, so a retry after a lost answer returns the first item; picking another file starts a new
- * key. When the second step fails the PDF is already in the library under its file name: the
- * dialog says so and its button then saves only the details.
+ * key. The page owns the key (`attempt`), so closing the dialog and adding the same file again
+ * still retries. When the second step fails the PDF is already in the library under its file
+ * name: the dialog says so and its button then saves only the details.
  */
 export default function ItemDialog({
   tenantId,
@@ -36,6 +39,7 @@ export default function ItemDialog({
   onClose,
   onSaved,
   onChanged,
+  attempt: pageAttempt,
 }: {
   tenantId: string | null;
   item: TrainingItem | null;
@@ -46,6 +50,8 @@ export default function ItemDialog({
   onSaved: (saved: TrainingItem, added: boolean) => void;
   /** The library changed (a PDF was added) and the list should be read again. */
   onChanged: () => void;
+  /** The page's upload attempt, kept while the dialog is closed; the dialog's own when absent. */
+  attempt?: RefObject<UploadAttempt | null>;
 }) {
   const ids = useId();
   const id = (name: string) => `${ids}-${name}`;
@@ -55,7 +61,8 @@ export default function ItemDialog({
   const [problem, setProblem] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [uploaded, setUploaded] = useState<TrainingItem | null>(null);
-  const attempt = useRef<UploadAttempt | null>(null);
+  const ownAttempt = useRef<UploadAttempt | null>(null);
+  const attempt = pageAttempt ?? ownAttempt;
   const running = useRef(false);
   const busy = phase !== "idle";
   const adding = item === null;
@@ -103,9 +110,15 @@ export default function ItemDialog({
         } catch (cause) {
           attempt.current = afterUploadFailure(current, codeOf(cause));
           setProblem(refusalText(cause));
+          // The answer may be lost after the PDF was stored: show it in the list.
+          if (uploadMayHaveLanded(codeOf(cause), cause instanceof ApiError ? cause.status : null)) onChanged();
           return;
         }
+        attempt.current = null;
         setUploaded(saved);
+        // "Show as" shows the server's default for this PDF, unless the person already chose.
+        const mode = saved.view_mode;
+        setForm((before) => (before.view_mode ? before : { ...before, view_mode: mode }));
         onChanged();
       }
       if (!saved) return;

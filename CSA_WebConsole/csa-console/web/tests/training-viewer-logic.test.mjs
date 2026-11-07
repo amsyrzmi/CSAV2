@@ -28,6 +28,11 @@ test("a missing file says it is no longer in the library", () => {
   assert.equal(viewerMessage("gone"), "This PDF is no longer in the library.");
 });
 
+test("an ended session asks the person to sign in again", () => {
+  assert.equal(viewerStateFor(new FileResponseError(401)), "signed_out");
+  assert.equal(viewerMessage("signed_out"), "Your session has ended. Sign in again to continue.");
+});
+
 test("storage trouble, a network failure and anything unknown ask to try again", () => {
   assert.equal(viewerStateFor(new FileResponseError(503)), "unavailable");
   assert.equal(viewerStateFor(new FileResponseError(500)), "unavailable");
@@ -58,7 +63,7 @@ test("a password-protected file says so", () => {
 });
 
 test("no sentence carries raw error text or a status number", () => {
-  for (const state of ["unavailable", "gone", "damaged", "protected"]) {
+  for (const state of ["unavailable", "gone", "damaged", "protected", "signed_out"]) {
     assert.doesNotMatch(viewerMessage(state), /\d{3}|Exception|Error/);
   }
 });

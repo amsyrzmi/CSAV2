@@ -127,6 +127,15 @@ export function afterUploadFailure(attempt: UploadAttempt | null, code: string):
   return code === "training_key_conflict" ? null : attempt;
 }
 
+/**
+ * Whether a failed upload may still have been stored: no answer at all (`code` empty, the
+ * network) or a server error (`status` 500 or more). The list is then read again, so a first
+ * copy that landed shows. `status` is null when there was no HTTP answer.
+ */
+export function uploadMayHaveLanded(code: string, status: number | null): boolean {
+  return code === "" || (status !== null && status >= 500);
+}
+
 // ---- Dates and the facts on a row --------------------------------------------------------------
 
 /** "Added 7 Nov 2026" in the viewer's zone; empty when the date cannot be read. */

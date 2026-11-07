@@ -145,6 +145,19 @@ test("a failed upload keeps its key for the retry, except when the server says t
   assert.equal(form.afterUploadFailure(null, "training_storage_unavailable"), null);
 });
 
+test("a failed upload that may still have been stored reads the list again", () => {
+  // No answer at all (the network) or a server error: the first copy may be in the library.
+  assert.equal(form.uploadMayHaveLanded("", null), true);
+  for (const status of [500, 502, 503, 504])
+    assert.equal(form.uploadMayHaveLanded("training_storage_unavailable", status), true, String(status));
+  // A refusal the server gave on purpose stored nothing.
+  for (const [code, status] of [
+    ["training_not_pdf", 422], ["training_key_conflict", 409], ["training_library_full", 409],
+    ["authentication required", 401], ["write permission required", 403],
+  ])
+    assert.equal(form.uploadMayHaveLanded(code, status), false, code);
+});
+
 // ---- Dates and the facts on a row --------------------------------------------------------------
 
 test("dates read as day, short month and year, and the summary line adds 24-hour time", () => {
