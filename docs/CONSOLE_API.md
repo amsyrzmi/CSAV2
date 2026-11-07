@@ -1760,20 +1760,23 @@ not make one the booking, its mail and the answer are as without Meet, and the j
 ## Training library
 
 A company's own training PDFs: staff list them and open them, tenant admins and the company's HR
-owner add, edit and remove them, and anyone may ask for a stored summary. Backend only so far; the
-web client follows. Operations, settings and what is out of scope are in
-[TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key) and `0541`
-(`training_items`, `training_is_hr_owner()`). The schemas are published in
+owner add, edit and remove them, and anyone may ask for a stored summary. The web client is
+`TrainingWorkspace` under `/training` and `/portal/training`. Operations, settings and what is out
+of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key)
+and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
 `docs/console_openapi.json` as `ItemOut`, `ItemList`, `ItemPatch`, `SummaryRequest`, `SummaryOut`
 and `NoSummary`.
 
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
 every role, a platform admin included, gets 403 `package_inactive` until it is activated) and for
-human sessions only: a machine token is refused, as on the KB and HR routes. A platform admin
-chooses the company with `?client_id=` (400 without it); a member of another company is refused (403
-with `client_id`, 404 on an item id). An item of another company is always 404 `training_not_found`,
-never 403. The file store is the `training` store (`TRAINING_UPLOAD_ROOT` or the `training/` S3
-prefix); when it is not configured every route answers 503 `training_storage_unavailable`.
+human sessions only: a machine token is refused, as on the KB and HR routes (a machine `POST`,
+`PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
+authentication before the route runs; only a machine `GET` reaches the route's 403 `human session
+required`). A platform admin chooses the company with `?client_id=` (400 without it); a member of
+another company is refused (403 with `client_id`, 404 on an item id). An item of another company is
+always 404 `training_not_found`, never 403. The file store is the `training` store
+(`TRAINING_UPLOAD_ROOT` or the `training/` S3 prefix); when it is not configured every route answers
+503 `training_storage_unavailable`.
 
 Who may call:
 
@@ -1864,7 +1867,8 @@ a plain sentence (see below).
 | Status | `detail` | When |
 |---|---|---|
 | 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
-| 403 | `human session required` | A machine token on any route |
+| 403 | `human session required` | A machine token on a `GET` route |
+| 403 | `machine principal has read-only access` | A machine token on `POST`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
 | 403 | `write permission required` | A `read_only` member on `POST`, `PATCH` or `DELETE`, except the summary `POST` |
 | 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit or remove; anyone but a manager sending `regenerate: true` |
 | 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
@@ -1884,14 +1888,14 @@ a plain sentence (see below).
 | 422 | `training_no_text` | Summary only: the PDF has no text to read (a scan), or the content budget ran out before any text. Nothing is stored |
 | 503 | `training_storage_unavailable` | The store is not configured, the write failed after the client's retries, or the stored object is missing or unreadable (the log carries the item id only). Retry |
 | 503 | `training_parser_unavailable` | The PDF checker could not run, or the 30 second wait for it (slot and parse) ran out. Infrastructure, not the file. Retry |
-| 503 | `training_assistant_unavailable` | Summary only: no model is configured and none is stored, the provider failed, timed out (20 seconds) or answered something that does not fit the summary shape. Nothing is stored |
+| 503 | `training_assistant_unavailable` | Summary only: the provider failed, timed out (20 seconds) or answered something that does not fit the summary shape, or another click on the same item was still making it after 60 seconds; also no model client and none is stored, which happens only when the gateway's console identity block did not run at startup (`GROQ_API_KEY` is a required setting, so the client is always built when it does). Nothing is stored |
 | 422 | (FastAPI validation) | A missing or non-UUID `Idempotency-Key`, a non-UUID item id, an invalid or empty `PATCH` body |
 
 A file refusal on the summary route can only be `training_pdf_damaged`, `training_pdf_protected`,
-`training_pdf_too_many_pages`, `training_pdf_active_content`, `training_pdf_unreadable` or
-`training_no_text`, as the stored file is read again for its text. Other platform codes
+`training_pdf_too_many_pages`, `training_pdf_unreadable` or `training_no_text`, as the stored file
+is read again for its text (that read does not run the active-content check). Other platform codes
 (`400 platform admin must select client_id explicitly`, `404 tenant not found`, `403 tenant is not
-authorized`) are the console's usual tenant ones.
+authorized`, `403 active tenant membership required`) are the console's usual tenant ones.
 
 ### The file route
 

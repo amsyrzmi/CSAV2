@@ -1268,7 +1268,10 @@ B=~/csa-staging-backups/<timestamp>
    done
    ```
 
-   If this prints an error, stop; the volume may be empty.
+   If this prints an error, stop; the volume may be empty. A backup made before the training
+   volume existed has only the first two tars: the loop then stops at the third with an error
+   about the missing `csa-staging_staging-training-uploads.tar`. That is expected, and that volume
+   is correctly left empty.
 
 4. Bring the services back. First check that the restored data fits the images that will
    run it. Read the backup's schema and revision from its manifest or from the tool's

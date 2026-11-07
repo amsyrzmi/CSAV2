@@ -65,7 +65,7 @@ it for itself with `max_file`.
 | `STORAGE_BACKEND` | `local` (default) or `s3`; see [OBJECT_STORAGE.md](./OBJECT_STORAGE.md). |
 | `TRAINING_UPLOAD_ROOT` | Local backend only: the folder for training PDFs, stored as `<root>/<company id>/<uuid>.pdf`. Unset means the store is not configured and every training route answers 503 `training_storage_unavailable`. It may not be, contain or sit inside `KB_UPLOAD_ROOT` or `HR_UPLOAD_ROOT`. |
 | S3 `training/` prefix | With `STORAGE_BACKEND=s3` the files go under `training/<company id>/<name>` in the same bucket, with the same SSE-S3 settings. `TRAINING_UPLOAD_ROOT` must then be unset (anything else stops the process at startup). The application key needs list, read, write and delete on `training/*`: see the IAM statement and the lifecycle rules in [OBJECT_STORAGE.md](./OBJECT_STORAGE.md). A deleted object stays recoverable there for 7 days as a non-current version. |
-| `GROQ_API_KEY`, `GROQ_MODEL` | The language-model provider's key and model name, used by summaries (the same settings the assistants use). The model client is built at startup with the console's identity block; without it a first summary answers 503 `training_assistant_unavailable`. |
+| `GROQ_API_KEY`, `GROQ_MODEL` | The language-model provider's key and model name, used by summaries (the same settings the assistants use). `GROQ_API_KEY` is a required setting, so the model client is always built at startup when the console's identity block runs; a first summary answers 503 `training_assistant_unavailable` for want of a client only when that block did not run. |
 
 Staging mounts a new volume for the local root on the gateway only (`staging-training-uploads`, in
 `deploy/compose.staging-pipeline.yml`, at `/var/lib/csa/training-uploads`); the worker and delivery
@@ -80,10 +80,15 @@ capabilities, tab `training_library`, sellable). Nothing is backfilled: an exist
 have it until it is activated for them, and until then its tab and every route answer 403
 `package_inactive`.
 
-1. A tenant admin may request it: `POST /console/v1/services/training_library/request`.
-2. A platform admin activates it for the company with
+1. A request is optional. A tenant admin or a platform admin may request it:
+   `POST /console/v1/services/training_library/request`.
+2. A platform admin activates it for the company, with or without a request first:
    `POST /console/v1/services/training_library/activate` and the body `{"reference": "...",
-   "note": "..."}` (the Services tab does the same). That writes the `service.activated` audit row.
+   "note": "..."}` (`note` may be left out; the Services tab does the same). That writes the
+   `service.activated` audit row.
+
+   A platform admin adds `?client_id=<company>` to both calls (400 without it). Both answer 409 when
+   the package is already active.
 3. The gate accepts `active` only. If the package is suspended the routes answer `package_inactive`;
    the stored items and files stay and come back when it is activated again.
 
@@ -209,5 +214,7 @@ not inspected; the viewer is meant to run with scripting off.
   The rollback steps are in the migration's header.
 - **Memory:** a PDF is read whole into memory for the checks and for a summary (up to 25 MB each),
   never in bulk. Summaries of several distinct items at once multiply that; the child slots (2) and
-  model slots (4) bound CPU and provider calls, not this read.
+  model slots (4) bound CPU and provider calls, not this read. A queued upload or summary holds its
+  file, up to 25 MB, in the gateway while it waits for one of the 2 parser slots, and the staging
+  compose (`deploy/compose.staging-pipeline.yml`) sets no container memory limit.
 - **Retesting on staging** after a rollout: [TRAINING_RETEST.md](./TRAINING_RETEST.md).

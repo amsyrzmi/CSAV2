@@ -80,10 +80,11 @@ printf 'This is not a PDF.\n' > /tmp/training-renamed.pdf
    - the `pdf.worker.min.<hash>.mjs` request answers `200` with a JavaScript `Content-Type`.
 10. **The staging reset covers the new volume.** Run the reset's read-only plan (see "Resetting
     staging" in [deploy/STAGING_PIPELINE.md](../deploy/STAGING_PIPELINE.md)) and check that it
-    lists `csa-staging_staging-training-uploads` with the other two upload volumes:
+    lists `csa-staging_staging-training-uploads` with the other two upload volumes. Run it from
+    the main checkout:
 
     ```bash
-    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset plan
+    .venv/bin/python -m scripts.staging_reset plan
     ```
 
 ## What staging cannot show
