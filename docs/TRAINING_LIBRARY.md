@@ -52,6 +52,12 @@ other caps on the path: the console's Next rewrite (31 MB) and Cloudflare (100 M
 parser's own default (10 MB, used by the KB and HR uploads) is unchanged; the training route raises
 it for itself with `max_file`.
 
+### Known limits
+
+- **Some images may not draw in the viewer.** pdf.js decodes JPEG 2000 images and ICC colour
+  profiles with WebAssembly files that the console does not serve (no `wasmUrl`), so a page with
+  such an image can show blank where the image is. The rest of the page draws as usual.
+
 ## Settings
 
 | Setting | Meaning |

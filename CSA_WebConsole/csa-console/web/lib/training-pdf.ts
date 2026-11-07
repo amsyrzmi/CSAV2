@@ -15,6 +15,9 @@
  * streaming), XFA forms are off, and the viewer draws pages to a canvas only, so no annotation
  * links or form scripts run. pdf.js 6 has no `isEvalSupported` option any more: it no longer
  * generates code with eval or Function at all.
+ *
+ * Known gap: no `wasmUrl`, `cMapUrl` or `standardFontDataUrl` is served, so JPEG 2000 images and
+ * ICC colour profiles (decoded by pdf.js's WebAssembly) may not draw (docs/TRAINING_LIBRARY.md).
  */
 import type { DocumentInitParameters } from "pdfjs-dist/types/src/display/api";
 
