@@ -40,6 +40,10 @@ PDF_STREAM_OBJECTS_MAX = 100_000
 PDF_XREF_MAX_ENTRIES = 250_000
 """Most cross-reference stream entries one file may declare (real decks have a few thousand)."""
 
+PDF_FORM_XOBJECT_USES_PER_PAGE = 32
+"""Most form XObject invocations extract_text interprets on one page (pypdf's default is
+5,000, and it re-interprets the form's whole stream each time); later ones are skipped."""
+
 PDF_TEXT_CONTENT_MAX_BYTES = 2 * 1024 * 1024
 """Most bytes of page content streams extract_text decodes from one file (text-show
 operators cost about 4 µs a byte to interpret; 24,000 characters rarely need 1 MB)."""

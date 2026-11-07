@@ -86,17 +86,30 @@ def raw_pdf(objects: list[bytes]) -> bytes:
     return bytes(out)
 
 
-def objstm_pdf(leaves: int, *, pad: int = 0, extra_objects: int = 0) -> bytes:
+UNLISTED = 999_999
+
+
+def objstm_pdf(
+    leaves: int,
+    *,
+    pad: int = 0,
+    extra_objects: int = 0,
+    unlisted_refs: int = 0,
+    xref_index: bytes | None = None,
+) -> bytes:
     """A PDF 1.5 file whose leaves each sit in their own flate object stream.
 
     ``pad`` spaces follow each leaf inside its stream (flate packs them about 1000:1);
     ``extra_objects`` tiny integer objects share the first leaf's stream. A cross-reference
-    stream indexes it all.
+    stream indexes it all. ``unlisted_refs`` adds that many /Kids references to object
+    ``UNLISTED``, which the xref maps into the first stream but the stream does not list.
+    ``xref_index`` sets the xref stream's /Index array.
     """
     out = bytearray(b"%PDF-1.7\n")
     offsets: dict[int, int] = {}
     compressed: dict[int, tuple[int, int]] = {}
-    kids = b" ".join(b"%d 0 R" % (3 + i) for i in range(leaves))
+    refs = [b"%d 0 R" % (3 + i) for i in range(leaves)] + [b"%d 0 R" % UNLISTED] * unlisted_refs
+    kids = b" ".join(refs)
     for number, body in (
         (1, CATALOG),
         (2, b"<< /Type /Pages /Kids [%s] /Count %d >>" % (kids, leaves)),
@@ -125,8 +138,15 @@ def objstm_pdf(leaves: int, *, pad: int = 0, extra_objects: int = 0) -> bytes:
         )
         out += packed + b"\nendstream\nendobj\n"
     xref_number = next_number
+    if unlisted_refs:
+        compressed[UNLISTED] = (3 + leaves, 0)
+    numbers = list(range(xref_number + 1))
+    index = b"[0 %d]" % (xref_number + 1)
+    if unlisted_refs:
+        numbers.append(UNLISTED)
+        index = b"[0 %d %d 1]" % (xref_number + 1, UNLISTED)
     rows = bytearray()
-    for number in range(xref_number + 1):
+    for number in numbers:
         if number == xref_number:
             rows += struct.pack(">BII", 1, len(out), 0)
         elif number in offsets:
@@ -136,9 +156,13 @@ def objstm_pdf(leaves: int, *, pad: int = 0, extra_objects: int = 0) -> bytes:
         else:
             rows += struct.pack(">BII", 0, 0, 65535)
     xref_offset = len(out)
-    out += b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 4] /Root 1 0 R /Length %d >>\nstream\n" % (
+    shape = b"/Type /XRef /Size %d /Index %s /W [1 4 4]" % (
+        max(numbers) + 1,
+        xref_index if xref_index is not None else index,
+    )
+    out += b"%d 0 obj\n<< %s /Root 1 0 R /Length %d >>\nstream\n" % (
         xref_number,
-        xref_number + 1,
+        shape,
         len(rows),
     )
     out += rows + b"\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n" % xref_offset
@@ -595,7 +619,25 @@ def test_object_streams_under_the_cap_add_up_to_a_file_budget(
 def test_objects_parsed_out_of_object_streams_are_budgeted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(limits, "PDF_STREAM_OBJECTS_MAX", 20)
     assert check_pdf(objstm_pdf(1, extra_objects=10), "deck.pdf").page_count == 1
-    assert "entry budget spent" in _damage_cause(objstm_pdf(1, extra_objects=30))
+    assert "object stream entry budget spent" in _damage_cause(objstm_pdf(1, extra_objects=30))
+
+
+def test_an_unlisted_object_stream_id_is_charged_on_every_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pypdf never caches an id its stream does not list, so each of the 40 references makes
+    # it re-parse the stream's 11 objects. Charged once, 40 x 11 reads would pass a budget
+    # of 50.
+    monkeypatch.setattr(limits, "PDF_STREAM_OBJECTS_MAX", 50)
+    assert check_pdf(objstm_pdf(1, extra_objects=10, unlisted_refs=1), "deck.pdf").page_count == 1
+    hostile = objstm_pdf(1, extra_objects=10, unlisted_refs=40)
+    assert "object stream entry budget spent" in _damage_cause(hostile)
+
+
+def test_negative_xref_index_count_is_damaged() -> None:
+    # pypdf's clamp and a signed sum both see 0 rows, then pypdf loops a million past the data.
+    hostile = objstm_pdf(1, xref_index=b"[0 -1000000 0 1000000]")
+    assert "negative cross-reference subsection count" in _damage_cause(hostile)
 
 
 def test_cross_reference_entries_are_budgeted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -632,3 +674,32 @@ def test_extract_text_stops_when_the_content_budget_is_spent(
     text, truncated = extract_text(data, 24_000)
     assert truncated is True
     assert text and whole.startswith(text) and "Page 003" not in text
+
+
+def _form_uses(uses: int) -> Callable[[PdfWriter], None]:
+    """Page 1 invokes one form XObject (which shows the word "Form") ``uses`` times."""
+
+    def mutate(writer: PdfWriter) -> None:
+        page = writer.pages[0]
+        resources = page["/Resources"].get_object()
+        assert isinstance(resources, DictionaryObject)
+        form = DecodedStreamObject()
+        form.set_data(b"BT /F1 10 Tf 36 300 Td (Form) Tj ET")
+        form[NameObject("/Type")] = NameObject("/XObject")
+        form[NameObject("/Subtype")] = NameObject("/Form")
+        form[NameObject("/BBox")] = ArrayObject([NumberObject(0), NumberObject(0)] * 2)
+        form[NameObject("/Resources")] = resources
+        resources[NameObject("/XObject")] = DictionaryObject(
+            {NameObject("/Fm0"): writer._add_object(form)}
+        )
+        content = DecodedStreamObject()
+        content.set_data(b"/Fm0 Do\n" * uses)
+        page[NameObject("/Contents")] = writer._add_object(content)
+
+    return mutate
+
+
+def test_extract_text_interprets_a_bounded_number_of_form_uses() -> None:
+    cap = limits.PDF_FORM_XOBJECT_USES_PER_PAGE
+    text, _ = extract_text(make_pdf(1, texts=["seed"], mutate=_form_uses(cap + 100)), 24_000)
+    assert text.count("Form") == cap

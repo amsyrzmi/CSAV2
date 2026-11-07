@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pypdf import PageObject, PdfReader, apply_configuration
-from pypdf.errors import DependencyError, LimitReachedError, PyPdfError
+from pypdf.errors import DependencyError, LimitReachedError, PdfReadError, PyPdfError
 from pypdf.generic import (
     ArrayObject,
     DictionaryObject,
@@ -177,6 +177,9 @@ def _parse_limits() -> Iterator[None]:
         zlib_maximum_recovery_input_length=limits.PDF_FLATE_MAX_RECOVERY_INPUT,
         # The raw bytes of a stream: bounded by the file itself, so the file cap is enough.
         maximum_declared_stream_length=limits.MAX_FILE_BYTES,
+        # pypdf re-interprets a form's whole stream on every Do; past this many per page
+        # it skips further form content (no error).
+        xform_maximum_invocations_per_extraction=limits.PDF_FORM_XOBJECT_USES_PER_PAGE,
     ):
         yield
 
@@ -194,7 +197,8 @@ class _BudgetedReader(PdfReader):
         self._decoded_bytes = 0
         self._xref_entries = 0
         self._stream_objects = 0
-        self._charged_streams: set[int] = set()
+        # Object-stream number -> objects pypdf parses each time it reads that stream.
+        self._stream_object_counts: dict[int, int] = {}
         super().__init__(io.BytesIO(data), strict=False)
 
     def _charge(self, amount: int) -> None:
@@ -206,7 +210,12 @@ class _BudgetedReader(PdfReader):
         self, idx_pairs: list[int], get_entry: Any, used_before: Any
     ) -> None:
         # Each cross-reference stream row costs about 10 µs of Python: count them first.
-        self._xref_entries += sum(int(count) for count in idx_pairs[1::2])
+        # pypdf's own clamp keeps a signed running total, so /Index [0 -N 0 N] would
+        # pass it (and a signed sum here) and then loop N rows past the data.
+        counts = [int(count) for count in idx_pairs[1::2]]
+        if any(count < 0 for count in counts):
+            raise PdfReadError("negative cross-reference subsection count")
+        self._xref_entries += sum(counts)
         if self._xref_entries > limits.PDF_XREF_MAX_ENTRIES:
             raise LimitReachedError("cross-reference entry budget spent")
         super()._read_xref_subsections(idx_pairs, get_entry, used_before)
@@ -218,24 +227,38 @@ class _BudgetedReader(PdfReader):
 
     def _get_object_from_stream(self, indirect_reference: IndirectObject) -> PdfObject:
         entry = self.xref_objStm.get(indirect_reference.idnum)
-        if entry is not None and entry[0] not in self._charged_streams:
-            number = int(entry[0])
-            self._charged_streams.add(number)
-            container = IndirectObject(number, 0, self).get_object()
-            if isinstance(container, StreamObject):
-                # Charge the raw bytes first (a broken stream costs its retries), then the
-                # decoded bytes before pypdf parses them; get_data caches the decoding.
-                self._charge(len(container._data))
-                decoded = len(container.get_data())
-                self._charge(decoded)
-                # pypdf parses every object in the stream (about 30 µs each), and caps
-                # /N at a third of the decoded length, as this does.
-                declared = _resolve(container.get("/N"))
-                count = declared if isinstance(declared, int) else 0
-                self._stream_objects += max(0, min(count, decoded // 3))
-                if self._stream_objects > limits.PDF_STREAM_OBJECTS_MAX:
-                    raise LimitReachedError("object stream entry budget spent")
+        if entry is not None:
+            self._charge_object_stream(int(entry[0]))
         return super()._get_object_from_stream(indirect_reference)
+
+    def _charge_object_stream(self, number: int) -> None:
+        """Charge one read of object stream ``number``; runs on every pypdf cache miss.
+
+        Each miss makes pypdf re-read the stream's header and re-parse every object in it
+        not cached yet (about 30 µs each), and an id the xref maps into a stream that does
+        not list it is never cached. So the object count is charged on every call, the
+        bytes once per stream. A real file pays once: its objects are cached after the
+        first read, so the hook does not run for them again.
+        """
+        count = self._stream_object_counts.get(number)
+        if count is None:
+            container = IndirectObject(number, 0, self).get_object()
+            if not isinstance(container, StreamObject):
+                return  # pypdf refuses it as damaged
+            # Raw bytes first (a broken stream costs its retries), then decoded bytes,
+            # before pypdf parses them; get_data caches the decoding. The count is
+            # recorded only after both charges pass, so a limit hit never leaves the
+            # stream free to read again.
+            self._charge(len(container._data))
+            decoded = len(container.get_data())
+            self._charge(decoded)
+            # pypdf caps /N at a third of the decoded length, as this does.
+            declared = _resolve(container.get("/N"))
+            count = max(1, min(declared if isinstance(declared, int) else 0, decoded // 3))
+            self._stream_object_counts[number] = count
+        self._stream_objects += count
+        if self._stream_objects > limits.PDF_STREAM_OBJECTS_MAX:
+            raise LimitReachedError("object stream entry budget spent")
 
 
 def _charge_content(page: PageObject, spent: int) -> int:
