@@ -64,3 +64,24 @@ export function keyToAction(key: string, modifiers: KeyModifiers = {}): SlideAct
   if (modifiers.ctrlKey || modifiers.metaKey || modifiers.altKey || modifiers.shiftKey) return null;
   return KEYS.get(key) ?? null;
 }
+
+export interface KeyContext {
+  /** The key was pressed with focus inside the viewer (its stage, a button, a thumbnail). */
+  insideViewer: boolean;
+  /** The focused element takes typing (an input, textarea, select or contenteditable). */
+  editable: boolean;
+  /** This browser can go full screen. */
+  canFullscreen: boolean;
+}
+
+/**
+ * The slide action for a key, or null when the browser should have it. Only a key pressed inside
+ * the viewer moves the deck, so arrows, Page Up/Down, Home and End keep scrolling the page
+ * everywhere else; typing in a field, a modifier, and `f` without full screen are left alone too.
+ */
+export function slideKeyAction(key: string, modifiers: KeyModifiers, context: KeyContext): SlideAction | null {
+  if (!context.insideViewer || context.editable) return null;
+  const action = keyToAction(key, modifiers);
+  if (action === "fullscreen" && !context.canFullscreen) return null;
+  return action;
+}

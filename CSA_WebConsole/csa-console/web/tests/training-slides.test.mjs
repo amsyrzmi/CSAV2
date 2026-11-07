@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { clampPage, nextPage, previousPage, keyToAction, pageForAction } = await import(moduleUrl(
+const { clampPage, nextPage, previousPage, keyToAction, pageForAction, slideKeyAction } = await import(moduleUrl(
   await readFile(new URL("../lib/training-slides.ts", import.meta.url), "utf8"),
 ));
 
@@ -69,4 +69,36 @@ test("a key held with a modifier is left to the browser", () => {
     assert.equal(keyToAction("Home", { [modifier]: true }), null, modifier);
   }
   assert.equal(keyToAction("End", { ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }), "last");
+});
+
+const ALL_KEYS = ["ArrowRight", "ArrowDown", "PageDown", "ArrowLeft", "ArrowUp", "PageUp", "Home", "End", "f", "F"];
+const inViewer = { insideViewer: true, editable: false, canFullscreen: true };
+
+test("slide keys do nothing while focus is outside the viewer, so the page keeps its own scrolling", () => {
+  for (const key of ALL_KEYS) {
+    assert.equal(slideKeyAction(key, {}, { ...inViewer, insideViewer: false }), null, key);
+    assert.equal(slideKeyAction(key, {}, { insideViewer: false, editable: true, canFullscreen: true }), null, key);
+  }
+});
+
+test("inside the viewer the keys move the slides", () => {
+  assert.equal(slideKeyAction("ArrowRight", {}, inViewer), "next");
+  assert.equal(slideKeyAction("ArrowDown", {}, inViewer), "next");
+  assert.equal(slideKeyAction("PageUp", {}, inViewer), "previous");
+  assert.equal(slideKeyAction("Home", {}, inViewer), "first");
+  assert.equal(slideKeyAction("End", {}, inViewer), "last");
+  assert.equal(slideKeyAction("f", {}, inViewer), "fullscreen");
+  assert.equal(slideKeyAction("Enter", {}, inViewer), null);
+});
+
+test("f is not taken when this browser cannot go full screen", () => {
+  assert.equal(slideKeyAction("f", {}, { ...inViewer, canFullscreen: false }), null);
+  assert.equal(slideKeyAction("F", {}, { ...inViewer, canFullscreen: false }), null);
+  assert.equal(slideKeyAction("ArrowRight", {}, { ...inViewer, canFullscreen: false }), "next");
+});
+
+test("modifier keys and typing in a field inside the viewer are left alone", () => {
+  for (const modifier of ["ctrlKey", "metaKey", "altKey", "shiftKey"])
+    for (const key of ALL_KEYS) assert.equal(slideKeyAction(key, { [modifier]: true }, inViewer), null, `${modifier} ${key}`);
+  for (const key of ALL_KEYS) assert.equal(slideKeyAction(key, {}, { ...inViewer, editable: true }), null, key);
 });

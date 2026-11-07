@@ -1,11 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from "react";
 import { ChevronLeft, ChevronRight, Maximize, Minimize, MoveHorizontal, ZoomIn, ZoomOut } from "lucide-react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import { fileUrl, type TrainingViewMode } from "@/lib/training-api";
 import { loadPdfjs, pdfSource } from "@/lib/training-pdf";
-import { clampPage, keyToAction, pageForAction } from "@/lib/training-slides";
+import { clampPage, pageForAction, slideKeyAction } from "@/lib/training-slides";
 import {
   FileResponseError,
   OPENING,
@@ -191,35 +199,32 @@ export function PdfViewer({
     else void viewer.requestFullscreen?.().catch(() => {});
   }, [viewer]);
 
-  // Slide keys: anywhere on the page except while typing in a field outside the viewer.
-  useEffect(() => {
-    if (mode !== "slides" || !opened || !viewer) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      const slideAction = keyToAction(event.key, event);
-      if (!slideAction) return;
-      const target = event.target instanceof Element ? event.target : null;
-      const inside = target !== null && viewer.contains(target);
-      if (!inside && (ignoresKeys(target as HTMLElement | null) || target?.closest("dialog, [role=dialog]"))) return;
-      event.preventDefault();
-      if (slideAction === "fullscreen") {
-        if (canFullscreen) toggleFullscreen();
-        return;
-      }
+  // Slide keys only while focus is inside the viewer (the stage, a button, a thumbnail): the
+  // handler sits on the viewer itself, so everywhere else the arrows, Page Up/Down, Home and End
+  // keep scrolling the page.
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (mode !== "slides" || !opened || event.defaultPrevented) return;
+    const slideAction = slideKeyAction(event.key, event, {
+      insideViewer: true,
+      editable: ignoresKeys(event.target as HTMLElement),
+      canFullscreen,
+    });
+    if (!slideAction) return;
+    event.preventDefault();
+    if (slideAction === "fullscreen") toggleFullscreen();
+    else
       setPlace((before) => ({
         key: opened.key,
         page: pageForAction(slideAction, before.key === opened.key ? before.page : 1, opened.total),
       }));
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [mode, opened, viewer, canFullscreen, toggleFullscreen]);
+  };
 
   return (
     <section
       ref={setViewer}
       aria-label={title}
       data-testid="training-viewer"
+      onKeyDown={onKeyDown}
       className={`card min-w-0 p-3 sm:p-4 ${
         fullscreen ? "flex h-full flex-col overflow-auto rounded-none bg-[var(--fs-bg)]" : "rounded-[14px]"
       }`}
@@ -322,7 +327,7 @@ function SlidesView({
         ref={stage}
         tabIndex={0}
         role="group"
-        aria-label="Slides. Use the arrow keys to change slide."
+        aria-label="Slides: use the arrow keys to change slide"
         style={fullscreen ? undefined : { aspectRatio: `${first.w} / ${first.h}` }}
         className={`flex w-full touch-pan-y items-center justify-center overflow-hidden rounded-[var(--fs-radius-control)] bg-[var(--fs-ink-100)] ${ring} ${
           fullscreen ? "min-h-0 flex-1" : "max-h-[70dvh]"

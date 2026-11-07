@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import { fitScale } from "@/lib/training-viewer-logic";
 
 /** Hand a canvas's memory back at once instead of waiting for the garbage collector. */
@@ -50,10 +50,12 @@ export default function PageCanvas({
     if (!host) return;
     let cancelled = false;
     let task: RenderTask | null = null;
+    let drawn: PDFPageProxy | null = null;
     doc
       .getPage(pageNumber)
       .then((page) => {
         if (cancelled) return;
+        drawn = page;
         const base = page.getViewport({ scale: 1 });
         onSize?.(pageNumber, base.width, base.height);
         const fit = fitScale(base.width, base.height, boxW, boxH, dpr);
@@ -87,6 +89,10 @@ export default function PageCanvas({
     return () => {
       cancelled = true;
       task?.cancel();
+      // Free the page's operator list and decoded images (pdf.js keeps them until cleanup); the
+      // canvas already holds the pixels. pdf.js defers this while any draw of the page is running
+      // (another PageCanvas, or the draw just cancelled) and a later draw simply rebuilds them.
+      drawn?.cleanup();
     };
   }, [doc, pageNumber, boxW, boxH, dpr, testId, onSize]);
 
