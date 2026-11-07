@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from csa.training import limits
+from csa.training import pdf as pdf_module
 from csa.training.limits import MAX_PAGES
 from csa.training.pdf import PdfInfo, PdfRefused, check_pdf, extract_text
 from pypdf import PageObject, PdfWriter
@@ -87,6 +88,7 @@ def raw_pdf(objects: list[bytes]) -> bytes:
 
 
 UNLISTED = 999_999
+ORPHAN = 888_888
 
 
 def objstm_pdf(
@@ -96,6 +98,8 @@ def objstm_pdf(
     extra_objects: int = 0,
     unlisted_refs: int = 0,
     xref_index: bytes | None = None,
+    shared_stream: bool = False,
+    orphan: bytes | None = None,
 ) -> bytes:
     """A PDF 1.5 file whose leaves each sit in their own flate object stream.
 
@@ -103,7 +107,9 @@ def objstm_pdf(
     ``extra_objects`` tiny integer objects share the first leaf's stream. A cross-reference
     stream indexes it all. ``unlisted_refs`` adds that many /Kids references to object
     ``UNLISTED``, which the xref maps into the first stream but the stream does not list.
-    ``xref_index`` sets the xref stream's /Index array.
+    ``xref_index`` sets the xref stream's /Index array. ``shared_stream`` puts every leaf
+    in one stream. ``orphan`` is the body of object ``ORPHAN``, listed first in the first
+    stream but absent from the xref, so pypdf never caches it.
     """
     out = bytearray(b"%PDF-1.7\n")
     offsets: dict[int, int] = {}
@@ -116,18 +122,23 @@ def objstm_pdf(
     ):
         offsets[number] = len(out)
         out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    groups = [list(range(leaves))] if shared_stream else [[i] for i in range(leaves)]
     next_number = 3 + leaves
-    for index in range(leaves):
-        members = [(3 + index, LEAF)]
-        if index == 0:
-            members += [(next_number + 1 + n, b"0") for n in range(extra_objects)]
+    for group_index, group in enumerate(groups):
+        members = [(3 + i, LEAF) for i in group]
         stream_number = next_number
-        next_number += 1 + (extra_objects if index == 0 else 0)
+        next_number += 1
+        if group_index == 0:
+            members += [(next_number + n, b"0") for n in range(extra_objects)]
+            next_number += extra_objects
+            if orphan is not None:
+                members.insert(0, (ORPHAN, orphan))
         header, body = bytearray(), bytearray()
         for position, (number, obj) in enumerate(members):
             header += b"%d %d " % (number, len(body))
             body += obj + b" "
-            compressed[number] = (stream_number, position)
+            if number != ORPHAN:
+                compressed[number] = (stream_number, position)
         packed = zlib.compress(bytes(header + body) + b" " * pad, 9)
         offsets[stream_number] = len(out)
         shape = b"/Type /ObjStm /N %d /First %d" % (len(members), len(header))
@@ -632,6 +643,35 @@ def test_an_unlisted_object_stream_id_is_charged_on_every_read(
     assert check_pdf(objstm_pdf(1, extra_objects=10, unlisted_refs=1), "deck.pdf").page_count == 1
     hostile = objstm_pdf(1, extra_objects=10, unlisted_refs=40)
     assert "object stream entry budget spent" in _damage_cause(hostile)
+
+
+def test_a_large_uncached_object_is_charged_by_bytes_on_every_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The stream lists a 20 KB array whose number is not in the xref, so pypdf never caches
+    # it and re-parses it on every fetch of the unlisted id. /N is only 2, so the object
+    # count alone would let all 20 fetches through; the bytes are charged on every read.
+    monkeypatch.setattr(limits, "PDF_OBJECT_STREAMS_MAX_BYTES", 64 * 1024)
+    orphan = b"[" + b"1 " * 10_000 + b"]"
+    assert check_pdf(objstm_pdf(1, orphan=orphan, unlisted_refs=1), "deck.pdf").page_count == 1
+    hostile = objstm_pdf(1, orphan=orphan, unlisted_refs=20)
+    assert "object and cross-reference stream budget spent" in _damage_cause(hostile)
+
+
+def test_a_shared_object_stream_is_charged_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 200 leaves and 2,000 small objects in one stream: the first fetch parses and caches
+    # them all, so every later leaf is a cache hit and the budget hook runs once.
+    reads: list[int] = []
+    original = pdf_module._BudgetedReader._charge_object_stream
+
+    def spy(self: Any, number: int) -> None:
+        reads.append(number)
+        original(self, number)
+
+    monkeypatch.setattr(pdf_module._BudgetedReader, "_charge_object_stream", spy)
+    data = objstm_pdf(200, shared_stream=True, extra_objects=2_000)
+    assert check_pdf(data, "deck.pdf").page_count == 200
+    assert len(reads) == 1
 
 
 def test_negative_xref_index_count_is_damaged() -> None:

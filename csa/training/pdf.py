@@ -197,8 +197,8 @@ class _BudgetedReader(PdfReader):
         self._decoded_bytes = 0
         self._xref_entries = 0
         self._stream_objects = 0
-        # Object-stream number -> objects pypdf parses each time it reads that stream.
-        self._stream_object_counts: dict[int, int] = {}
+        # Object-stream number -> (decoded bytes, objects) pypdf parses on each read of it.
+        self._stream_reads: dict[int, tuple[int, int]] = {}
         super().__init__(io.BytesIO(data), strict=False)
 
     def _charge(self, amount: int) -> None:
@@ -235,27 +235,30 @@ class _BudgetedReader(PdfReader):
         """Charge one read of object stream ``number``; runs on every pypdf cache miss.
 
         Each miss makes pypdf re-read the stream's header and re-parse every object in it
-        not cached yet (about 30 µs each), and an id the xref maps into a stream that does
-        not list it is never cached. So the object count is charged on every call, the
-        bytes once per stream. A real file pays once: its objects are cached after the
-        first read, so the hook does not run for them again.
+        that it did not cache. It never caches an object the stream lists but the xref does
+        not map to this stream, and it never caches an id the xref maps here that the
+        stream does not list. So a file can make pypdf re-parse the same large object once
+        per reference. Every call therefore charges the decoded bytes and the object count
+        again; only the raw bytes are charged once. A real file pays once: its objects are
+        cached after the first read, so the hook does not run for them again.
         """
-        count = self._stream_object_counts.get(number)
-        if count is None:
+        known = self._stream_reads.get(number)
+        if known is None:
             container = IndirectObject(number, 0, self).get_object()
             if not isinstance(container, StreamObject):
                 return  # pypdf refuses it as damaged
-            # Raw bytes first (a broken stream costs its retries), then decoded bytes,
-            # before pypdf parses them; get_data caches the decoding. The count is
-            # recorded only after both charges pass, so a limit hit never leaves the
-            # stream free to read again.
+            # Raw bytes once (a broken stream costs its retries); get_data caches the
+            # decoding. The read is recorded only after the raw charge passes, so a limit
+            # hit never leaves the stream free to read again.
             self._charge(len(container._data))
             decoded = len(container.get_data())
-            self._charge(decoded)
             # pypdf caps /N at a third of the decoded length, as this does.
             declared = _resolve(container.get("/N"))
             count = max(1, min(declared if isinstance(declared, int) else 0, decoded // 3))
-            self._stream_object_counts[number] = count
+            known = (decoded, count)
+            self._stream_reads[number] = known
+        decoded, count = known
+        self._charge(decoded)
         self._stream_objects += count
         if self._stream_objects > limits.PDF_STREAM_OBJECTS_MAX:
             raise LimitReachedError("object stream entry budget spent")
