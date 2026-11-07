@@ -997,7 +997,7 @@ the shape report anywhere outside the host.
 
 ## Resetting staging
 
-`scripts/staging_reset.py` wipes the staging database and the two upload folders, rebuilds
+`scripts/staging_reset.py` wipes the staging database and the three upload folders, rebuilds
 them, and then sets up the real accounts and the three companies from a roster file. It
 is for staging only. The project, database, host and volumes are fixed in the code and
 cannot be changed by an argument.
@@ -1011,9 +1011,10 @@ It has three commands:
   terminal.
 
 **What it wipes.** The database `csa_staging`: every account and session, all HR and
-customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the two
-upload volumes `csa-staging_staging-uploads` and `csa-staging_staging-hr-uploads`, which
-hold the knowledge base files and the HR files.
+customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the three
+upload volumes `csa-staging_staging-uploads`, `csa-staging_staging-hr-uploads` and
+`csa-staging_staging-training-uploads`, which hold the knowledge base files, the HR files and
+the training library files.
 
 **What stays.** The secret files under `/srv/csa-staging/secrets`, the role passwords,
 `CREDENTIALS_KEY`, the embeddings cache and the Google test users (they live in Google
@@ -1169,7 +1170,8 @@ Do these in order:
 Each `wipe` writes `~/csa-staging-backups/<UTC timestamp>/`, mode 0700. It holds:
 
 - `csa_staging.dump`, a `pg_dump` custom-format dump of `csa_staging`;
-- `csa-staging_staging-uploads.tar` and `csa-staging_staging-hr-uploads.tar`;
+- `csa-staging_staging-uploads.tar`, `csa-staging_staging-hr-uploads.tar` and
+  `csa-staging_staging-training-uploads.tar`;
 - `manifest.json`, written last. It holds counts and image names, no addresses and no
   secrets.
 
@@ -1224,7 +1226,7 @@ B=~/csa-staging-backups/<timestamp>
 
    ```bash
    IMAGE=$(docker --host unix:///var/run/docker.sock inspect csa-staging-gateway-1 --format '{{.Image}}')
-   for V in csa-staging_staging-uploads csa-staging_staging-hr-uploads; do
+   for V in csa-staging_staging-uploads csa-staging_staging-hr-uploads csa-staging_staging-training-uploads; do
      docker --host unix:///var/run/docker.sock run --rm --network none --read-only --cap-drop ALL \
        --security-opt no-new-privileges:true --user 1000:1000 -v "$V":/data \
        --entrypoint find "$IMAGE" /data -mindepth 1 -delete || break

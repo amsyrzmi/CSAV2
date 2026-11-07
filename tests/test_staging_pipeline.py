@@ -450,6 +450,19 @@ def test_hr_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path)
         assert "staging-hr-uploads" not in {v["source"] for v in services[name].get("volumes", [])}
 
 
+def test_training_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path) -> None:
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    gateway = services["gateway"]
+    assert gateway["environment"]["TRAINING_UPLOAD_ROOT"] == "/var/lib/csa/training-uploads"
+    mounts = {v["target"]: v["source"] for v in gateway["volumes"]}
+    assert mounts["/var/lib/csa/training-uploads"] == "staging-training-uploads"
+    for name in ("worker", "delivery"):
+        assert "TRAINING_UPLOAD_ROOT" not in services[name]["environment"]
+        assert "staging-training-uploads" not in {
+            v["source"] for v in services[name].get("volumes", [])
+        }
+
+
 def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:
     services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
     for name in ("gateway", "delivery"):
