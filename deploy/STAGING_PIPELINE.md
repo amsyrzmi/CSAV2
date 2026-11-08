@@ -1027,6 +1027,41 @@ both call Google through `provider-egress`.
 
 Retest: the Google Calendar rows in `docs/ASSISTANT_RETEST.md`, under Bookings.
 
+## 14. Connect a client's Telegram bot (platform admin)
+
+Each company with customer support gets its own Telegram bot, set up by the platform team on
+Services, in the Telegram panel (`csa/console/telegram_connect.py`, design
+`docs/superpowers/specs/2026-11-08-telegram-per-client-design.md`). Companies cannot do it
+themselves; a company's own members see its status only.
+
+What you need per company: the BotFather token of a bot made for that company, and a staff
+Telegram group with the bot added to it (staff alerts and approval buttons go there) and that
+group's chat ID. One bot serves one company, and one company has one bot.
+
+1. On Services, pick the company, open Telegram bot, paste the token, press Connect. Telegram must
+   accept the token first; the panel then registers the webhook and says "Connected".
+2. Paste the group's chat ID under "Staff chat ID" and press Send test message. The chat is saved
+   only after the test message was delivered. Without it escalations and approval requests reach
+   nobody.
+3. Press Check webhook: it should say the webhook matches, with no last error.
+
+To replace a token (the old one was revoked or leaked) paste the new token for the same bot. To
+move a bot to another company, press Disconnect on the first, then connect it on the second.
+A different bot on the same company needs a Disconnect first.
+
+The webhook is registered under the hooks origin: `HOOKS_PUBLIC_BASE_URL`, else
+`WHATSAPP_CALLBACK_BASE_URL`; never the console origin, which does not forward `/hooks/*`. On staging
+the compose file sets both from `CSA_STAGING_HOOKS_ORIGIN`. On production set
+`HOOKS_PUBLIC_BASE_URL` to the public HTTPS address that forwards `/hooks/*` to the gateway; until it
+is set the panel says Telegram isn't available and nothing is stored.
+
+Migration 0494 adds the two uniqueness rules. Before applying it anywhere, run the two queries in
+its header; it stops with the offending ids if a company or a bot already has two active
+credentials. `scripts/staging_test_bot.py` is a separate staging-only tool and is untouched: a bot it
+bound is freed by pressing Disconnect on that company in the panel.
+
+Retest: the Telegram bot rows in `docs/ASSISTANT_RETEST.md`.
+
 ## Resetting staging
 
 `scripts/staging_reset.py` wipes the staging database and the three upload folders, rebuilds
