@@ -1058,7 +1058,12 @@ is set the panel says Telegram isn't available and nothing is stored.
 Migration 0494 adds the two uniqueness rules. Before applying it anywhere, run the two queries in
 its header; it stops with the offending ids if a company or a bot already has two active
 credentials. `scripts/staging_test_bot.py` is a separate staging-only tool and is untouched: a bot it
-bound is freed by pressing Disconnect on that company in the panel.
+bound is freed by pressing Disconnect on that company in the panel. A bot it bound still works for
+customers, but the panel reads it as "saved but its webhook is not registered" (the script never
+writes the registered mark) and the staff chat step is refused. Paste the same bot's token and
+press Replace token to adopt it: the panel keeps its address, rotates the webhook secret,
+registers the webhook again and marks it connected. While a token is replaced the old secret is
+refused until Telegram has the new one, a few seconds; Telegram retries what it could not deliver.
 
 Retest: the Telegram bot rows in `docs/ASSISTANT_RETEST.md`.
 

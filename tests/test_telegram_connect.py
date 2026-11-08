@@ -583,3 +583,69 @@ async def test_the_notifier_picks_only_a_connected_bot(
     assert await credential() is not None
     await tc.disconnect(w.pool, admin(w), client, http_client=http)
     assert await credential() is None
+
+
+async def test_a_second_connect_for_the_same_company_waits_its_turn(
+    sessions: SessionWorld, telegram: TelegramStub
+) -> None:
+    """Two writers must not leave Telegram holding one secret and the database another."""
+    w = sessions
+    token = telegram.add(123456789, "synth_bot")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/setWebhook") and not entered.is_set():
+            entered.set()
+            await release.wait()
+        return telegram.handle(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as gated:
+        first = asyncio.create_task(connect(w, gated, token))
+        await asyncio.wait_for(entered.wait(), 60)
+        error = await refused(connect(w, gated, token))
+        assert (error.status, error.code) == (409, "telegram_connect_in_progress")
+        release.set()
+        status = await first
+    assert status.connected
+    [row] = await rows(w)
+    aad = crypto.credential_aad("channel_credentials", SECRET_COLUMN, str(row["id"]))
+    stored = crypto.decrypt(row["meta"]["telegram_webhook_secret_enc"], aad)
+    [call] = telegram.calls("setWebhook")
+    assert json.loads(call.content)["secret_token"] == stored
+
+
+async def test_a_bot_the_staging_script_bound_is_adopted_by_connecting_it_again(
+    sessions: SessionWorld, telegram: TelegramStub, http: httpx.AsyncClient
+) -> None:
+    """The script never writes the registered mark, so its bots read as not registered."""
+    w = sessions
+    token = telegram.add(123456789, "synth_bot")
+    credential, public_id = uuid4(), "script-bound-public-id"
+    token_aad = crypto.credential_aad("channel_credentials", "access_token", str(credential))
+    secret_aad = crypto.credential_aad("channel_credentials", SECRET_COLUMN, str(credential))
+    meta = json.dumps({"telegram_webhook_secret_enc": crypto.encrypt("script-secret", secret_aad)})
+    await w.q(
+        "INSERT INTO channel_credentials (id,client_id,channel,shop_id,access_token,meta)"
+        " VALUES (%s,%s,'telegram','123456789',%s,%s::jsonb)",
+        credential,
+        w.tenants[0],
+        crypto.encrypt(token, token_aad),
+        meta,
+    )
+    await w.q(
+        "INSERT INTO webhook_endpoints (client_id,public_id,credential_id) VALUES (%s,%s,%s)",
+        w.tenants[0],
+        public_id,
+        credential,
+    )
+    telegram.webhooks[123456789] = f"{ORIGIN}/hooks/{public_id}"
+    before = await tc.get_status(w.pool, UUID(w.tenants[0]))
+    assert not before.connected and before.bot_id == "123456789"
+    status = await connect(w, http, token)
+    assert status.connected
+    [row] = await rows(w)
+    assert row["id"] == credential
+    [endpoint] = await w.q(
+        "SELECT public_id FROM webhook_endpoints WHERE credential_id=%s", credential
+    )
+    assert endpoint["public_id"] == public_id

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -191,6 +193,26 @@ async def _store(
         raise refuse(client_id, 409, "telegram_connect_in_progress") from None
 
 
+@asynccontextmanager
+async def _one_at_a_time(pool: AsyncConnectionPool, client_id: UUID) -> AsyncIterator[None]:
+    """Let one connect or disconnect per company run at a time, the whole way through.
+
+    The per-bot lock inside `_store` only covers its own transaction. Two writers for one company
+    could otherwise leave Telegram holding one webhook secret and the database another, which shows
+    as connected while every update is refused. A session-level lock on a held connection spans the
+    network calls too; a second writer is told to wait instead of queueing behind it.
+    """
+    key = f"telegram-connect:{client_id}"
+    async with pool.connection() as conn:
+        row = await db.q.fetch_one("console/telegram_try_lock.sql", (key,), conn=conn)
+        if not row or not row["got"]:
+            raise refuse(client_id, 409, "telegram_connect_in_progress")
+        try:
+            yield
+        finally:
+            await db.q.fetch_one("console/telegram_unlock.sql", (key,), conn=conn)
+
+
 async def connect(
     pool: AsyncConnectionPool,
     actor: ConsoleActor,
@@ -206,6 +228,21 @@ async def connect(
     origin = get_settings().hooks_origin
     if origin is None:
         raise refuse(client_id, 503, "hooks_origin_not_configured")
+    async with _one_at_a_time(pool, client_id):
+        return await _connect_locked(
+            pool, actor, client_id, token, origin, replace_webhook, http_client
+        )
+
+
+async def _connect_locked(
+    pool: AsyncConnectionPool,
+    actor: ConsoleActor,
+    client_id: UUID,
+    token: str,
+    origin: str,
+    replace_webhook: bool,
+    http_client: httpx.AsyncClient | None,
+) -> TelegramStatus:
     profile = await _prove_token(client_id, token, http_client)
     async with tx(pool, str(client_id)) as conn:
         existing = await db.q.fetch_one("console/telegram_get.sql", (client_id,), conn=conn)
@@ -330,6 +367,16 @@ async def disconnect(
     http_client: httpx.AsyncClient | None = None,
 ) -> None:
     """Stop the company's bot: drop its webhook (best effort), erase the token, retire the chat."""
+    async with _one_at_a_time(pool, client_id):
+        await _disconnect_locked(pool, actor, client_id, http_client)
+
+
+async def _disconnect_locked(
+    pool: AsyncConnectionPool,
+    actor: ConsoleActor,
+    client_id: UUID,
+    http_client: httpx.AsyncClient | None,
+) -> None:
     row = await _active(pool, client_id)
     if row is None:
         return
