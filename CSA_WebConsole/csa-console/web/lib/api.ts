@@ -54,6 +54,31 @@ const explained: Record<string, string> = {
   whatsapp_token_rejected:
     "WhatsApp did not accept that access token for this phone number ID. Check both in your Meta app, then try again.",
   whatsapp_unreachable: "We could not reach WhatsApp to check the number. Wait a minute and try again.",
+  // Telegram bot setup by the platform team.
+  telegram_token_malformed: "That does not look like a Telegram bot token. Copy it again from BotFather.",
+  telegram_token_rejected:
+    "Telegram did not accept that bot token. Check it in BotFather, or make a new one, then try again.",
+  telegram_unreachable: "We could not reach Telegram. Wait a minute and try again.",
+  hooks_origin_not_configured:
+    "Telegram isn't available yet because this deployment has no public hooks address. Set it first, then connect the bot.",
+  telegram_bot_in_use:
+    "That bot is already connected to another company. Disconnect it there first, or make a new bot for this company.",
+  telegram_bot_replace:
+    "This company already has a different bot. Disconnect it first, then connect the new one.",
+  telegram_webhook_in_use:
+    "That bot is already wired to something else. Replace it only if you are sure nothing else needs it.",
+  telegram_connect_in_progress:
+    "Another setup for this company is still running. Wait a moment and reload.",
+  telegram_webhook_failed:
+    "The bot was saved but Telegram would not register the webhook. Connect again with the same token.",
+  telegram_not_connected: "No bot is connected for this company yet. Connect the bot first.",
+  telegram_chat_invalid:
+    "That chat ID is not valid. It is a number, and a group's ID starts with a minus sign.",
+  telegram_chat_unreachable:
+    "The bot could not message that chat. Add the bot to the staff group, or check the ID.",
+  telegram_chat_forbidden: "The bot was removed from that chat or blocked. Add it back and try again.",
+  telegram_credential_unavailable: "The saved bot token could not be read. Connect the bot again.",
+  platform_admin_only: "Only the platform team can change this. Ask them to set it up.",
   // Invitations and the HR access chosen on them.
   hr_preset_requires_hr_owner: "Only the HR owner can give this access. Choose Staff or No HR access.",
   hr_not_available: "HR isn't switched on for this business.",

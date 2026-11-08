@@ -17,6 +17,7 @@ import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
 import { CustomerRepliesPanel } from "./CustomerRepliesPanel";
 import { WhatsAppPanel } from "./WhatsAppPanel";
+import { TelegramPanel } from "./TelegramPanel";
 
 const GROUPS: { kind: Service["kind"]; title: string }[] = [
   { kind: "base", title: "Core service" },
@@ -153,7 +154,10 @@ function ServiceList({ clientId, platform, canManage }: {
         );
       })}
       {services.some((service) => service.key === "customer_support" && service.status === "active") && (
-        <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
+        <>
+          <WhatsAppPanel tenantId={clientId} canManage={canManage} platform={platform} />
+          <TelegramPanel tenantId={clientId} platform={platform} />
+        </>
       )}
     </div>
   );
