@@ -268,6 +268,16 @@ class Stub:
                 "callback_url": None,
                 "connected_at": None,
             }
+        elif path == "channels/telegram" and request.method == "GET":
+            data = {
+                "connected": False,
+                "bot_id": None,
+                "bot_username": None,
+                "webhook_registered": False,
+                "connected_at": None,
+                "staff_chat": None,
+                "hooks_ready": True,
+            }
         elif path.startswith("capabilities/") and request.method == "PATCH":
             name = path.removeprefix("capabilities/")
             self.patches.append({"name": name, "body": request.post_data_json})

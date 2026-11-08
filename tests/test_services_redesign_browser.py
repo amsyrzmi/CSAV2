@@ -51,6 +51,15 @@ NO_WHATSAPP = {
     "callback_url": None,
     "connected_at": None,
 }
+NO_TELEGRAM = {
+    "connected": False,
+    "bot_id": None,
+    "bot_username": None,
+    "webhook_registered": False,
+    "connected_at": None,
+    "staff_chat": None,
+    "hooks_ready": True,
+}
 
 
 def change(action: str, day: int, actor: str = "Preview Admin") -> dict[str, str]:
@@ -286,6 +295,8 @@ class Stub:
                 data = list(self.services.values())
         elif path == "channels/whatsapp" and request.method == "GET":
             data = NO_WHATSAPP
+        elif path == "channels/telegram" and request.method == "GET":
+            data = NO_TELEGRAM
         elif path == "services/customer-replies" and request.method == "GET":
             # Go live's panel, which sits in the Core service group while Customer support is on.
             data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
@@ -693,9 +704,16 @@ async def test_headings_keep_the_page_outline_valid(site: Site) -> None:
         await expect(page.get_by_role("heading", level=1)).to_have_text(["Services"])
         groups = page.get_by_role("heading", level=2)
         # While Customer support is active, the replies panel sits in the Core service group and
-        # the WhatsApp panel is a section of its own.
+        # the WhatsApp and Telegram panels are sections of their own.
         await expect(groups).to_have_text(
-            ["Core service", "Customer replies", "Add-ons", "Separate services", "WhatsApp number"]
+            [
+                "Core service",
+                "Customer replies",
+                "Add-ons",
+                "Separate services",
+                "WhatsApp number",
+                "Telegram bot",
+            ]
         )
         titles = page.get_by_role("heading", level=3)
         await expect(titles.filter(has_text="Customer support")).to_have_count(1)

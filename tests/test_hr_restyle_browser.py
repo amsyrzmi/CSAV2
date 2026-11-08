@@ -1047,6 +1047,16 @@ class WhatsAppWorld(RestyleWorld):
         if path == "channels/whatsapp" and method == "DELETE":
             self.connected = False
             return 200, {}
+        if path == "channels/telegram" and method == "GET":
+            return 200, {
+                "connected": False,
+                "bot_id": None,
+                "bot_username": None,
+                "webhook_registered": False,
+                "connected_at": None,
+                "staff_chat": None,
+                "hooks_ready": True,
+            }
         return super().answer(caller, method, path, params, body)
 
 
