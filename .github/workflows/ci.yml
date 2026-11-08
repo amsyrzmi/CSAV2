@@ -14,6 +14,9 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  # Manual run of the full sharded suite on any branch (never publishable: the publish workflow
+  # accepts only a push-to-main run).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -99,6 +102,80 @@ jobs:
           uv run python -m scripts.migrate
           uv run python -m scripts.lg_setup
 
+      - name: Gitleaks (no secrets in the checkout / history)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Policy branch coverage (90 percent minimum)
+        run: make coverage
+
+  tests:
+    name: ${{ matrix.shard == 0 && 'tests (changed files)' || format('tests (shard {0})', matrix.shard) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Pull requests run only the test files they change (shard 0); a push to main runs the whole
+    # suite split into four parallel shards by whole file (tests/shard.py).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[1,2,3,4]') }}
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+
+    services:
+      postgres:
+        image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: csa
+          POSTGRES_PASSWORD: ci_owner_pw
+          POSTGRES_DB: csa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U csa -d csa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Read-only GHCR login so the private combined image can be pulled by
+      # digest. This job's GITHUB_TOKEN has only read permissions.
+      - name: Log in to GHCR (read-only)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.6"
+
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Apply schema baseline + migrations from scratch
+        env:
+          PGPASSWORD: ci_owner_pw
+          MIGRATE_DATABASE_URL: postgres://csa:ci_owner_pw@localhost:5432/csa
+          LG_SETUP_DATABASE_URL: postgres://csa:ci_owner_pw@localhost:5432/csa
+        run: |
+          psql "postgres://csa:ci_owner_pw@localhost:5432/csa" \
+            -v ON_ERROR_STOP=1 -f db/schema_baseline.sql
+          uv run python -m scripts.migrate
+          uv run python -m scripts.lg_setup
+
       - name: Install Chromium for packaged browser acceptance
         run: uv run python -m playwright install --with-deps chromium
 
@@ -119,17 +196,23 @@ jobs:
         env:
           # A freshly generated throwaway AES-256-GCM key for crypto tests.
           CI_DATABASE_URL: postgres://csa_app:ci_app_pw@localhost:5432/csa
+          SHARD: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           export CREDENTIALS_KEY="base64:$(head -c 32 /dev/urandom | base64)"
-          uv run pytest
-
-      - name: Gitleaks (no secrets in the checkout / history)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Policy branch coverage (90 percent minimum)
-        run: make coverage
+          if [ "$SHARD" = "0" ]; then
+            changed="$(git diff --name-only --diff-filter=d "origin/$BASE_REF...HEAD" -- 'tests/test_*.py')"
+            if [ -z "$changed" ]; then
+              echo "No test files changed in this pull request; the full suite runs after merge."
+              exit 0
+            fi
+            echo "$changed"
+            # shellcheck disable=SC2086
+            uv run pytest $changed
+          else
+            CSA_TEST_SHARD="$SHARD/$SHARD_TOTAL" uv run pytest
+          fi
 
   frontend:
     runs-on: ubuntu-latest
@@ -142,7 +225,7 @@ jobs:
         run: node CSA_WebConsole/csa-console/web/scripts/check-isolated.mjs --install
 
   package:
-    needs: [gate, frontend]
+    needs: [gate, tests, frontend]
     runs-on: ubuntu-latest
     # Build-only artifacts, including for PR review. No registry write or deployment.
     steps:
