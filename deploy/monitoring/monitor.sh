@@ -57,4 +57,4 @@ if [ "${DRY_RUN:-0}" = 1 ]; then
 fi
 read -r AK SK < "$KEY"
 export AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_DEFAULT_REGION=ap-southeast-1
-aws cloudwatch put-metric-data --namespace CSA/Prod --metric-data "${DATA[@]}" --only-show-errors
+aws cloudwatch put-metric-data --namespace CSA/Prod --metric-data "${DATA[@]}"
