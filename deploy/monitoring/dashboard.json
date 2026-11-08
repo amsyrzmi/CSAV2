@@ -1,0 +1,152 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Console and database up (1 = up)",
+        "region": "ap-southeast-1",
+        "stat": "Minimum",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "ConsoleUp"
+          ],
+          [
+            "CSA/Prod",
+            "DbUp"
+          ]
+        ],
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Memory available and swap used (MB)",
+        "region": "ap-southeast-1",
+        "stat": "Average",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "MemAvailableMB"
+          ],
+          [
+            "CSA/Prod",
+            "SwapUsedMB"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Messages waiting in the queue",
+        "region": "ap-southeast-1",
+        "stat": "Maximum",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "QueueDepth"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 6,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Minutes since the last good backup",
+        "region": "ap-southeast-1",
+        "stat": "Maximum",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "BackupAgeMinutes"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Disk used (%)",
+        "region": "ap-southeast-1",
+        "stat": "Maximum",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "DiskUsedPercent"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "Out-of-memory kills",
+        "region": "ap-southeast-1",
+        "stat": "Sum",
+        "period": 300,
+        "metrics": [
+          [
+            "CSA/Prod",
+            "OOMEvents"
+          ]
+        ]
+      }
+    },
+    {
+      "type": "alarm",
+      "x": 0,
+      "y": 18,
+      "width": 24,
+      "height": 4,
+      "properties": {
+        "title": "Alarm status",
+        "alarms": [
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-console-down-or-silent",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-database-down",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-backup-stale",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-memory-low",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-swap-high",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-oom-kill",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-queue-backlog",
+          "arn:aws:cloudwatch:ap-southeast-1:ACCOUNT:alarm:csa-prod-disk-high"
+        ]
+      }
+    }
+  ]
+}
