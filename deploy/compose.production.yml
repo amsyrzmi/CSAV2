@@ -1,0 +1,121 @@
+# Production overlay. Apply LAST, after the three staging files, with the same profiles:
+#   compose.staging-local-proposal.yml, compose.staging-shared-caddy.yml,
+#   compose.staging-pipeline.yml, then this file. Requires Compose >= 2.24.4 (`!reset`, `!override`).
+#
+# It changes only what production does differently from staging, and nothing here is specific to
+# one cloud host, so the same file moves to EC2 unchanged:
+#   * files live in S3, not in local volumes (STORAGE_BACKEND=s3);
+#   * two workers, and memory limits sized for a 2 GB host, so the kernel's OOM killer picks a
+#     worker or the frontend before Postgres;
+#   * Postgres settings for 2 GB;
+#   * the gateway joins the `edge` network so the tunnel connector can reach it;
+#   * the database image can be named by the operator while the registry package is private.
+#
+# Not secrets: the bucket and region are named in the operator's env file (CSA_PROD_S3_BUCKET,
+# CSA_PROD_S3_REGION), never in this repository. The four S3 key values are secret FILES only,
+# never environment variables: an environment variable would win over the secret file
+# (docs/OBJECT_STORAGE.md).
+#
+# The memory numbers are starting values. The capacity gate (spec section 6) decides whether
+# they hold on the real instance; change them in a reviewed PR, not by hand on the host.
+
+x-s3-env: &s3-env
+  STORAGE_BACKEND: s3
+  S3_BUCKET: ${CSA_PROD_S3_BUCKET:?S3 bucket name required}
+  S3_REGION: ${CSA_PROD_S3_REGION:?S3 region required}
+
+services:
+  staging-db:
+    image: ${CSA_PROD_DB_IMAGE:-ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe}
+    # Sized for 2 GB shared with the embedding service. The gateway budgets eight connections per
+    # process and four processes (gateway, two workers, delivery) connect, so 60 leaves room for
+    # the one-shots and psql.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=60
+      - -c
+      - max_parallel_workers_per_gather=0
+    mem_limit: 640m
+    # Last to be chosen by the OOM killer.
+    oom_score_adj: -900
+
+  gateway:
+    environment:
+      <<: *s3-env
+      # With S3 on, both local upload folders must be unset or the process refuses to start.
+      # A blank value reads as unset (csa/core/settings.py). `!reset null` does NOT work here:
+      # Compose keeps a key an earlier file set, so the value would survive.
+      KB_UPLOAD_ROOT: ""
+      HR_UPLOAD_ROOT: ""
+    secrets:
+      - source: prod_s3_app_access_key_id
+        target: S3_ACCESS_KEY_ID
+      - source: prod_s3_app_secret_access_key
+        target: S3_SECRET_ACCESS_KEY
+    volumes: !reset []
+    # `edge` lets the cloudflared connector reach the gateway for the webhook hostname.
+    networks: !override ["data", "app", "embeddings", "provider-egress", "gateway-host", "edge"]
+    mem_limit: 400m
+    oom_score_adj: 100
+
+  worker:
+    environment:
+      <<: *s3-env
+      KB_UPLOAD_ROOT: ""
+      HR_UPLOAD_ROOT: ""
+    # The worker only reads knowledge-base files, so it gets the key limited to kb/ (docs section
+    # "IAM policy for the worker key"). It never needs HR documents.
+    secrets:
+      - source: prod_s3_worker_access_key_id
+        target: S3_ACCESS_KEY_ID
+      - source: prod_s3_worker_secret_access_key
+        target: S3_SECRET_ACCESS_KEY
+    volumes: !reset []
+    # Two workers, about twice the turn throughput of one. A worker is the first thing the OOM
+    # killer should take.
+    deploy:
+      replicas: 2
+    mem_limit: 320m
+    oom_score_adj: 500
+
+  delivery:
+    environment:
+      # Delivery never touches files. It keeps the local default backend with no upload folder,
+      # so it holds no S3 key.
+      KB_UPLOAD_ROOT: ""
+      HR_UPLOAD_ROOT: ""
+    mem_limit: 200m
+    oom_score_adj: 300
+
+  frontend:
+    mem_limit: 256m
+    oom_score_adj: 300
+
+  staging-embeddings:
+    # Observed about 880 MB resident; the limit leaves headroom without letting it take the host.
+    mem_limit: 1100m
+    oom_score_adj: 200
+
+  cloudflared:
+    mem_limit: 96m
+
+secrets:
+  # The application key: kb/ and hr/ read, write and delete, put-only under backups/.
+  prod_s3_app_access_key_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_app_access_key_id
+  prod_s3_app_secret_access_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_app_secret_access_key
+  # The worker key: kb/ only.
+  prod_s3_worker_access_key_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_worker_access_key_id
+  prod_s3_worker_secret_access_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_worker_secret_access_key
