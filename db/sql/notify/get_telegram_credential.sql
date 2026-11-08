@@ -3,5 +3,6 @@ FROM public.channel_credentials
 WHERE client_id = %s
   AND channel = 'telegram'
   AND access_token IS NOT NULL
+  AND disconnected_at IS NULL
 ORDER BY updated_at DESC
 LIMIT 1;

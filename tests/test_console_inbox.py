@@ -262,10 +262,15 @@ async def seed(
         str(contact.int),
         opened_at,
     )
+    # Migration 0494 allows one active Telegram credential per company; a company's later seeded
+    # chats sit on credentials that were disconnected (the inbox does not look at it).
     await w.q(
-        "INSERT INTO channel_credentials(id,client_id,channel,access_token) "
-        "VALUES (%s,%s,'telegram','synthetic-ciphertext')",
+        "INSERT INTO channel_credentials(id,client_id,channel,access_token,disconnected_at) "
+        "VALUES (%s,%s,'telegram','synthetic-ciphertext',CASE WHEN EXISTS (SELECT 1 FROM "
+        "channel_credentials WHERE client_id=%s AND channel='telegram' AND disconnected_at "
+        "IS NULL) THEN now() END)",
         credential,
+        client,
         client,
     )
     await w.q(

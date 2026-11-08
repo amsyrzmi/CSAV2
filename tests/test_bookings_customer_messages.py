@@ -70,12 +70,19 @@ async def chat(
     """The rows a customer's own message leaves: a chat, its route, and the message that came in."""
     credential, endpoint, conversation, trace = (uuid.uuid4() for _ in range(4))
     w, tenant = shop.w, shop.tenant
+    # Migration 0494 allows one active Telegram credential per company, so a company's later chats
+    # sit on credentials that were disconnected; the routing under test does not look at it.
     await w.q(
-        "INSERT INTO channel_credentials (id, client_id, channel, shop_id) VALUES (%s, %s, %s, %s)",
+        "INSERT INTO channel_credentials (id, client_id, channel, shop_id, disconnected_at)"
+        " VALUES (%s, %s, %s, %s, CASE WHEN %s AND EXISTS (SELECT 1 FROM channel_credentials"
+        " WHERE client_id = %s AND channel = 'telegram' AND disconnected_at IS NULL)"
+        " THEN now() END)",
         str(credential),
         tenant,
         channel,
         None if channel == "telegram" else uuid.uuid4().hex,
+        channel == "telegram",
+        tenant,
     )
     await w.q(
         "INSERT INTO webhook_endpoints (id, client_id, public_id, credential_id, is_enabled)"
