@@ -73,6 +73,7 @@ def application(
         TRAINING_UPLOAD_ROOT=None,
         GROQ_API_KEY=SecretStr("synthetic-groq-key"),
         GROQ_MODEL="synthetic-model",
+        GROQ_CHAT_URL="https://api.groq.com/openai/v1/chat/completions",
         **{"STORAGE_BACKEND": "local", **(storage or {})},
         INVITE_MAIL_ENABLED=False,
         INVITE_MAIL_FROM="FourStacks <no-reply@fourstacks.my>",
