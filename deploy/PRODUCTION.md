@@ -8,7 +8,7 @@ operator's half. Nothing here names a cloud product, so the same steps apply on 
 The production stack is the three staging Compose files plus `deploy/compose.production.yml`,
 applied last. The overlay changes only:
 
-- files live in S3 (`STORAGE_BACKEND=s3`) and no upload volume is mounted;
+- files (knowledge base, HR and training library) live in S3 (`STORAGE_BACKEND=s3`) and no upload volume is mounted;
 - two workers, and memory limits and OOM priorities so the kernel kills a worker or the frontend
   before Postgres;
 - Postgres settings for a 2 GB host;
@@ -24,12 +24,12 @@ whether they hold.
 
 | Service | S3 key | Allowed |
 | --- | --- | --- |
-| gateway | application key (`csa-prod-app`) | `kb/` and `hr/` read, write, delete; `backups/` put-only |
+| gateway | application key (`csa-prod-app`) | `kb/`, `hr/` and `training/` read, write, delete; `backups/` put-only |
 | worker (two replicas) | worker key (`csa-prod-worker`) | `kb/` read only |
 | delivery, frontend, database | none | |
 
 The worker only reads knowledge-base files, so a leaked worker key cannot read HR documents or
-change anything. The policy is in `docs/OBJECT_STORAGE.md`. If the owner chooses not to create a
+training files, or change anything. The policy is in `docs/OBJECT_STORAGE.md`. If the owner chooses not to create a
 second key, the worker key files may hold a copy of the application key instead; the stack works
 the same and the worker's narrower scope is lost.
 
@@ -110,3 +110,30 @@ credentials. Start only the services that serve the console.
 4. Copy the existing upload files into the bucket with the block in `docs/OBJECT_STORAGE.md`
    ("Copy existing local files into S3"), using an admin profile, before any user relies on
    uploads.
+
+## Tuning without a code change
+
+Every number the capacity test may change is read from the host's env file, with the values the
+tests pin as defaults. After editing the env file, recreate the affected services
+(`csa_compose up --detach --no-deps <service>`). A migration is never involved.
+
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `CSA_PROD_WORKER_REPLICAS` | `2` | Number of workers. Set `1` first if memory is tight. |
+| `CSA_PROD_MEM_DB`, `_GATEWAY`, `_WORKER`, `_DELIVERY`, `_FRONTEND`, `_EMBEDDINGS`, `_CLOUDFLARED` | `640m`, `400m`, `320m`, `200m`, `256m`, `1100m`, `96m` | Container memory limit (the worker value is per replica). |
+| `CSA_PROD_PG_SHARED_BUFFERS` | `192MB` | Postgres `shared_buffers`. |
+| `CSA_PROD_PG_EFFECTIVE_CACHE` | `512MB` | Postgres `effective_cache_size`. |
+| `CSA_PROD_PG_WORK_MEM` | `4MB` | Postgres `work_mem`. |
+| `CSA_PROD_PG_MAINTENANCE_MEM` | `64MB` | Postgres `maintenance_work_mem`. |
+| `CSA_PROD_PG_MAX_CONNECTIONS` | `60` | Postgres `max_connections`. |
+| `CSA_PROD_GROQ_CHAT_URL` | Groq | Model endpoint. Capacity test only (below). |
+
+## Pointing the model at a stub (capacity test only)
+
+The gateway and worker read the model endpoint from `GROQ_CHAT_URL`. To load-test without spending
+model calls, run a stub container on the `provider-egress` network and set
+`CSA_PROD_GROQ_CHAT_URL=http://<stub service name>:<port>/v1/chat/completions` in the env file,
+then recreate the gateway and worker. The setting accepts `https` anywhere, and plain `http` only
+to a single-label internal name such as a Compose service; a dotted host or an IP address with
+`http` stops the process at startup. The model key is sent to this URL, so unset the variable and
+recreate both services as soon as the test ends.

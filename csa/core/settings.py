@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: SecretStr
     GROQ_MODEL: str = "openai/gpt-oss-120b"
+    # Chat-completions endpoint. Only the production capacity test changes it, to point the
+    # gateway and worker at a stub container; the API key is sent to this URL.
+    GROQ_CHAT_URL: HttpUrl = HttpUrl("https://api.groq.com/openai/v1/chat/completions")
     HR_ASSISTANT_ENABLED: bool = False
     # Planner-driven workspace turns (page_context); off means those turns get 503.
     WORKSPACE_ASSISTANT_ENABLED: bool = False
@@ -345,6 +348,15 @@ class Settings(BaseSettings):
         # An empty .env line or secret file must read as missing, not as an empty credential.
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
         return None if isinstance(raw, str) and not raw.strip() else value
+
+    @model_validator(mode="after")
+    def _validate_groq_chat_url(self) -> Settings:
+        # The model key is sent to this URL. Plain HTTP is only for an internal stub reached by a
+        # single-label name (a Compose service); any dotted host or address must use HTTPS.
+        url = self.GROQ_CHAT_URL
+        if url.scheme != "https" and not (url.scheme == "http" and "." not in (url.host or ".")):
+            raise ValueError("GROQ_CHAT_URL must be https, or http to a single-label internal host")
+        return self
 
     @model_validator(mode="after")
     def _validate_storage_backend(self) -> Settings:

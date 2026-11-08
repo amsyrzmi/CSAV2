@@ -700,6 +700,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 settings.GROQ_API_KEY.get_secret_value(),
                 settings.GROQ_MODEL,
                 llm_http,
+                str(settings.GROQ_CHAT_URL),
             ),
             compose_fallback=compose_fallback,
         )

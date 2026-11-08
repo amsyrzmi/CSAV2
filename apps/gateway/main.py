@@ -209,14 +209,20 @@ def create_app() -> FastAPI:
                 # answers training_assistant_unavailable.
                 training_http = httpx.AsyncClient()
                 app.state.training_model = GroqClient(
-                    settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, training_http
+                    settings.GROQ_API_KEY.get_secret_value(),
+                    settings.GROQ_MODEL,
+                    training_http,
+                    str(settings.GROQ_CHAT_URL),
                 )
                 if settings.HR_ASSISTANT_ENABLED:
                     hr_http = httpx.AsyncClient()
                     app.state.hr_assistant = HrAssistant(
                         hr,
                         GroqClient(
-                            settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, hr_http
+                            settings.GROQ_API_KEY.get_secret_value(),
+                            settings.GROQ_MODEL,
+                            hr_http,
+                            str(settings.GROQ_CHAT_URL),
                         ),
                     )
                 if settings.EMAIL_ASSISTANT_ENABLED:
@@ -235,6 +241,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_API_KEY.get_secret_value(),
                             settings.GROQ_MODEL,
                             email_http,
+                            str(settings.GROQ_CHAT_URL),
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
                     )
@@ -247,6 +254,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_API_KEY.get_secret_value(),
                             settings.GROQ_MODEL,
                             workspace_http,
+                            str(settings.GROQ_CHAT_URL),
                         )
                     )
             elif (

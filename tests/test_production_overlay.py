@@ -71,10 +71,11 @@ def _compose(tmp_path: Path, env_extra: dict[str, str]) -> subprocess.CompletedP
     return subprocess.run(command, env=env, capture_output=True, text=True, check=False)
 
 
-def render(tmp_path: Path) -> dict:
+def render(tmp_path: Path, env_extra: dict[str, str] | None = None) -> dict:
     result = _compose(
         tmp_path,
-        {"CSA_PROD_S3_BUCKET": "bucket-invalid", "CSA_PROD_S3_REGION": "ap-southeast-1"},
+        {"CSA_PROD_S3_BUCKET": "bucket-invalid", "CSA_PROD_S3_REGION": "ap-southeast-1"}
+        | (env_extra or {}),
     )
     assert result.returncode == 0, result.stderr
     assert "SYNTHETIC-ONLY" not in result.stdout
@@ -105,10 +106,12 @@ def test_each_service_settings_validate_with_the_real_settings_class(tmp_path: P
         assert settings.S3_BUCKET == "bucket-invalid"
         assert settings.KB_UPLOAD_ROOT is None
         assert settings.HR_UPLOAD_ROOT is None
+        assert settings.TRAINING_UPLOAD_ROOT is None
     delivery = settings_for(services["delivery"])
     assert delivery.STORAGE_BACKEND == "local"
     assert delivery.KB_UPLOAD_ROOT is None
     assert delivery.HR_UPLOAD_ROOT is None
+    assert delivery.TRAINING_UPLOAD_ROOT is None
 
 
 def test_no_s3_key_is_ever_an_environment_variable(tmp_path: Path) -> None:
@@ -135,7 +138,11 @@ def test_s3_keys_are_split_by_service(tmp_path: Path) -> None:
 def test_no_service_mounts_a_local_upload_volume(tmp_path: Path) -> None:
     for name, service in render(tmp_path).items():
         sources = {v.get("source") for v in service.get("volumes", [])}
-        assert not sources & {"staging-uploads", "staging-hr-uploads"}, name
+        assert not sources & {
+            "staging-uploads",
+            "staging-hr-uploads",
+            "staging-training-uploads",
+        }, name
 
 
 def test_two_workers_and_memory_limits_protect_the_database(tmp_path: Path) -> None:
@@ -185,3 +192,39 @@ def test_a_missing_bucket_or_region_stops_compose(tmp_path: Path) -> None:
         result = _compose(folder, extra)
         assert result.returncode != 0
         assert "S3" in result.stderr
+
+
+def test_tuning_values_come_from_the_host_env_file_without_a_code_change(tmp_path: Path) -> None:
+    services = render(
+        tmp_path,
+        {
+            "CSA_PROD_WORKER_REPLICAS": "1",
+            "CSA_PROD_MEM_WORKER": "512m",
+            "CSA_PROD_MEM_DB": "1g",
+            "CSA_PROD_PG_SHARED_BUFFERS": "256MB",
+            "CSA_PROD_PG_MAX_CONNECTIONS": "80",
+        },
+    )
+    assert services["worker"]["deploy"]["replicas"] == 1
+    assert int(services["worker"]["mem_limit"]) == 512 * 1024 * 1024
+    assert int(services["staging-db"]["mem_limit"]) == 1024**3
+    assert "shared_buffers=256MB" in services["staging-db"]["command"]
+    assert "max_connections=80" in services["staging-db"]["command"]
+
+
+def test_the_model_url_defaults_to_groq_and_a_stub_reaches_gateway_and_worker(
+    tmp_path: Path,
+) -> None:
+    groq = "https://api.groq.com/openai/v1/chat/completions"
+    services = render(tmp_path)
+    for name in ("gateway", "worker"):
+        assert services[name]["environment"]["GROQ_CHAT_URL"] == groq
+        settings_for(services[name])
+    assert "GROQ_CHAT_URL" not in services["delivery"].get("environment", {})
+    stub = "http://model-stub:8080/v1/chat/completions"
+    folder = tmp_path / "stubbed"
+    folder.mkdir()
+    stubbed = render(folder, {"CSA_PROD_GROQ_CHAT_URL": stub})
+    for name in ("gateway", "worker"):
+        assert stubbed[name]["environment"]["GROQ_CHAT_URL"] == stub
+        assert str(settings_for(stubbed[name]).GROQ_CHAT_URL) == stub
