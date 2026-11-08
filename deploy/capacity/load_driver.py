@@ -86,22 +86,32 @@ async def offer(args: argparse.Namespace) -> tuple[list[float], dict[int, int]]:
     return acks, statuses
 
 
-def counts(dsn: str, client_id: str) -> dict[str, int]:
-    """Ingress events of the load tenant by status."""
+def database_now(dsn: str) -> object:
+    """The database clock; events of this run are the ones created after it."""
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute("SELECT now()").fetchone()
+    return row[0]  # type: ignore[index]
+
+
+def counts(dsn: str, client_id: str, since: object) -> dict[str, int]:
+    """Ingress events of this run (created since ``since``) by status."""
     with psycopg.connect(dsn, autocommit=True) as conn:
         rows = conn.execute(
-            "SELECT status, count(*) FROM ingress_events WHERE client_id=%s GROUP BY status",
-            (client_id,),
+            "SELECT status, count(*) FROM ingress_events "
+            "WHERE client_id=%s AND created_at >= %s GROUP BY status",
+            (client_id, since),
         ).fetchall()
     return {status: int(n) for status, n in rows}
 
 
-def outcome(dsn: str, client_id: str) -> tuple[int, int]:
-    """Outbound replies written and deliveries left pending for the load tenant."""
+def outcome(dsn: str, client_id: str, since: object) -> tuple[int, int]:
+    """Replies written for this run's events, and deliveries pending for the load tenant."""
     with psycopg.connect(dsn, autocommit=True) as conn:
         replies = conn.execute(
-            "SELECT count(*) FROM messages WHERE client_id=%s AND direction='outbound'",
-            (client_id,),
+            "SELECT count(*) FROM messages WHERE client_id=%s AND direction='outbound' "
+            "AND trace_id IN (SELECT trace_id FROM ingress_events "
+            "WHERE client_id=%s AND created_at >= %s)",
+            (client_id, client_id, since),
         ).fetchone()
         pending = conn.execute(
             "SELECT count(*) FROM outbound_deliveries WHERE client_id=%s AND status='pending'",
@@ -110,12 +120,12 @@ def outcome(dsn: str, client_id: str) -> tuple[int, int]:
     return int(replies[0]), int(pending[0])  # type: ignore[index]
 
 
-def drain(args: argparse.Namespace, dsn: str) -> tuple[float, dict[str, int]]:
+def drain(args: argparse.Namespace, dsn: str, since: object) -> tuple[float, dict[str, int]]:
     """Wait until every offered event is completed (or failed), or the timeout passes."""
     started = time.perf_counter()
     last_print = 0.0
     while True:
-        now = counts(dsn, args.client_id)
+        now = counts(dsn, args.client_id, since)
         done = now.get("completed", 0) + now.get("failed", 0) + now.get("dead", 0)
         elapsed = time.perf_counter() - started
         if elapsed - last_print >= 30:
@@ -140,13 +150,14 @@ def main() -> None:
     args = parser.parse_args()
     dsn = Path("/run/secrets/owner_dsn").read_text(encoding="utf-8").strip()
 
+    since = database_now(dsn)
     print(f"offering {args.count} messages over {args.duration:.0f}s", flush=True)
     wall = time.perf_counter()
     acks, statuses = asyncio.run(offer(args))
     offered_seconds = time.perf_counter() - wall
     print(f"offered in {offered_seconds:.0f}s; waiting for the queue to drain", flush=True)
-    drain_seconds, final = drain(args, dsn)
-    replies, pending = outcome(dsn, args.client_id)
+    drain_seconds, final = drain(args, dsn, since)
+    replies, pending = outcome(dsn, args.client_id, since)
 
     accepted = statuses.get(200, 0)
     completed = final.get("completed", 0)
