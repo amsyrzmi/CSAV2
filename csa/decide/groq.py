@@ -39,10 +39,17 @@ def _json_validate_failed(response: httpx.Response) -> bool:
 
 
 class GroqClient:
-    def __init__(self, api_key: str, model: str, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        http_client: httpx.AsyncClient,
+        url: str = GROQ_URL,
+    ) -> None:
         self._api_key = api_key
         self.model = model
         self._http = http_client
+        self._url = url
 
     async def json_completion(
         self,
@@ -72,7 +79,7 @@ class GroqClient:
         for attempt in range(ATTEMPTS):
             try:
                 response = await self._http.post(
-                    GROQ_URL,
+                    self._url,
                     json=body,
                     headers={"Authorization": f"Bearer {self._api_key}"},
                     timeout=timeout / ATTEMPTS,

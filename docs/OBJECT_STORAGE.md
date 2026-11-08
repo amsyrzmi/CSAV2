@@ -75,6 +75,38 @@ leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
 }
 ```
 
+## IAM policy for the worker key
+
+The ingest worker only reads knowledge-base files, so production gives it a second key that can
+list under `kb/` (its startup check) and read objects there, and nothing else. It cannot read HR
+documents, write, or delete. Replace `<bucket>` with the bucket name:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListKnowledgeBaseOnly",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<bucket>",
+      "Condition": { "StringLike": { "s3:prefix": ["kb/*"] } }
+    },
+    {
+      "Sid": "ReadKnowledgeBaseFiles",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::<bucket>/kb/*"
+    }
+  ]
+}
+```
+
+A missing object answers 404 for the application key (checked on the real bucket). The worker key
+has the same list right, so the same answer is expected, but it has not been checked: the ingest
+retry treats 404 as "this file is gone" and anything else as an error. The key goes in the secret files
+`storage/s3_worker_access_key_id` and `storage/s3_worker_secret_access_key` (`deploy/PRODUCTION.md`).
+
 ## Bucket settings
 
 - Private, with all four "Block public access" options on.
