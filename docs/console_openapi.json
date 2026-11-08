@@ -13864,6 +13864,180 @@
         "title": "SuspendIn",
         "type": "object"
       },
+      "TelegramCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "pending_update_count": {
+            "title": "Pending Update Count",
+            "type": "integer"
+          },
+          "webhook_url_matches": {
+            "title": "Webhook Url Matches",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "webhook_url_matches",
+          "pending_update_count",
+          "last_error"
+        ],
+        "title": "TelegramCheck",
+        "type": "object"
+      },
+      "TelegramConnectIn": {
+        "additionalProperties": false,
+        "properties": {
+          "bot_token": {
+            "format": "password",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Bot Token",
+            "type": "string",
+            "writeOnly": true
+          },
+          "replace_webhook": {
+            "default": false,
+            "title": "Replace Webhook",
+            "type": "boolean"
+          },
+          "staff_chat_id": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staff Chat Id"
+          }
+        },
+        "required": [
+          "bot_token"
+        ],
+        "title": "TelegramConnectIn",
+        "type": "object"
+      },
+      "TelegramStaffChat": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "address",
+          "verified"
+        ],
+        "title": "TelegramStaffChat",
+        "type": "object"
+      },
+      "TelegramStaffChatIn": {
+        "additionalProperties": false,
+        "properties": {
+          "chat_id": {
+            "maxLength": 24,
+            "minLength": 1,
+            "title": "Chat Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chat_id"
+        ],
+        "title": "TelegramStaffChatIn",
+        "type": "object"
+      },
+      "TelegramStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "bot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Id"
+          },
+          "bot_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Username"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "hooks_ready": {
+            "title": "Hooks Ready",
+            "type": "boolean"
+          },
+          "staff_chat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelegramStaffChat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "webhook_registered": {
+            "title": "Webhook Registered",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connected",
+          "bot_id",
+          "bot_username",
+          "webhook_registered",
+          "connected_at",
+          "staff_chat",
+          "hooks_ready"
+        ],
+        "title": "TelegramStatus",
+        "type": "object"
+      },
       "ThreadDetail": {
         "additionalProperties": false,
         "properties": {
@@ -20876,6 +21050,350 @@
           }
         },
         "summary": "Update Capability"
+      }
+    },
+    "/console/v1/channels/telegram": {
+      "delete": {
+        "operationId": "telegram_disconnect_console_v1_channels_telegram_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Telegram Disconnect",
+        "tags": [
+          "Channels"
+        ]
+      },
+      "get": {
+        "operationId": "telegram_status_console_v1_channels_telegram_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Telegram Status",
+        "tags": [
+          "Channels"
+        ]
+      },
+      "put": {
+        "operationId": "telegram_connect_console_v1_channels_telegram_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramConnectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Telegram Connect",
+        "tags": [
+          "Channels"
+        ]
+      }
+    },
+    "/console/v1/channels/telegram/check": {
+      "post": {
+        "operationId": "telegram_check_console_v1_channels_telegram_check_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramCheck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Telegram Check",
+        "tags": [
+          "Channels"
+        ]
+      }
+    },
+    "/console/v1/channels/telegram/staff-chat": {
+      "put": {
+        "operationId": "telegram_staff_chat_console_v1_channels_telegram_staff_chat_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelegramStaffChatIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Telegram Staff Chat",
+        "tags": [
+          "Channels"
+        ]
       }
     },
     "/console/v1/channels/whatsapp": {

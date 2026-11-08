@@ -645,6 +645,40 @@ Post-review offline full validation passes **692 tests** plus lint; ASGI/TCP ack
 Neither offline nor guarded-dev evidence is a guarantee under all laptop loads or
 approval for public deployment.
 
+## Telegram bot (one per company)
+
+Migration `0494`. The platform team sets up a separate bot per company: they paste the company's
+BotFather token and its staff chat. Routes under `/console/v1/channels/telegram` with the usual
+tenant selection (a platform admin passes `client_id`). Human sessions only and behind the
+`customer_support` package gate. Reading is open to any member of the company; every write needs a
+platform admin, otherwise 403 `platform_admin_only`.
+
+| Method/path | Result |
+|---|---|
+| `GET /telegram` | `{connected, bot_id, bot_username, webhook_registered, connected_at, staff_chat: {address, verified} or null, hooks_ready}`; database only, never calls Telegram |
+| `PUT /telegram` | Body `{bot_token, staff_chat_id?, replace_webhook?}`. Connects the company's bot, or replaces the token of the bot it already has. With `staff_chat_id` it then saves the staff chat; if that fails the bot stays connected and the error is returned |
+| `PUT /telegram/staff-chat` | Body `{chat_id}` (an integer string, negative for groups). The bot sends a test message first; only a delivered message saves the chat and marks it verified. A new chat retires the old one (kept for history) |
+| `POST /telegram/check` | Live `getWebhookInfo`: `{webhook_url_matches, pending_update_count, last_error}` |
+| `DELETE /telegram` | 204; deletes the webhook (best effort), erases the token, disables the endpoint and the staff chat. The bot is then free to connect to any company |
+
+Connect proves the token with Telegram (`getMe`) before storing anything, then stores it and a
+fresh webhook secret sealed with `CREDENTIALS_KEY`, registers the webhook at
+`<hooks origin>/hooks/<public id>` (`HOOKS_PUBLIC_BASE_URL`, else `WHATSAPP_CALLBACK_BASE_URL`,
+never the console origin) for messages and button taps, and only then shows the company as
+connected. The token and secret are never returned, logged or audited. Audit actions:
+`channels.telegram.connected`, `.token_replaced`, `.staff_chat_set`, `.disconnected` (target is the
+credential id).
+
+Refusals (`detail` is the code): 422 `telegram_token_malformed`, 422 `telegram_token_rejected`, 502
+`telegram_unreachable`, 503 `hooks_origin_not_configured`, 409 `telegram_bot_in_use` (another
+company holds the bot), 409 `telegram_bot_replace` (the company has a different bot: disconnect
+first), 409 `telegram_webhook_in_use` (the bot's webhook points elsewhere; send
+`replace_webhook: true` to take it over), 409 `telegram_connect_in_progress`, 502
+`telegram_webhook_failed` (stored but not registered; connect again with the same token), 409
+`telegram_not_connected`, 422 `telegram_chat_invalid`, 422 `telegram_chat_unreachable` (the bot is
+not in that chat, or the id is wrong), 422 `telegram_chat_forbidden` (the bot was removed or
+blocked), 503 `telegram_credential_unavailable`.
+
 ## WhatsApp channel
 
 Lane A1 (migration `0470`). One Meta app per deployment; each tenant connects its
