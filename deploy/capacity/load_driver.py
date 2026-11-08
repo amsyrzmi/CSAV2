@@ -43,13 +43,13 @@ def percentile(samples: list[float], fraction: float) -> float:
     return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
 
 
-def update(index: int, text: str) -> dict[str, object]:
-    """A Telegram message update from sender 900000 + index."""
+def update(index: int, text: str, base: int = 0) -> dict[str, object]:
+    """A Telegram message update from sender 900000 + index; ``base`` keeps update ids unique."""
     sender = 900_000 + index
     return {
-        "update_id": index + 1,
+        "update_id": base + index + 1,
         "message": {
-            "message_id": index + 1,
+            "message_id": base + index + 1,
             "date": int(time.time()),
             "from": {"id": sender, "first_name": "Load"},
             "chat": {"id": sender, "type": "private"},
@@ -62,6 +62,7 @@ async def offer(args: argparse.Namespace) -> tuple[list[float], dict[int, int]]:
     """Send every message at its scheduled moment; return ack times (ms) and status counts."""
     rng = random.Random(args.seed)
     moments = sorted(rng.uniform(0, args.duration) for _ in range(args.count))
+    base = int(time.time())  # a rerun must not repeat an earlier run's update ids
     acks: list[float] = []
     statuses: dict[int, int] = {}
     headers = {"X-Telegram-Bot-Api-Secret-Token": args.secret}
@@ -71,7 +72,7 @@ async def offer(args: argparse.Namespace) -> tuple[list[float], dict[int, int]]:
 
         async def send(index: int, moment: float) -> None:
             await asyncio.sleep(max(0.0, epoch + moment - time.perf_counter()))
-            body = update(index, rng.choice(GREETINGS))
+            body = update(index, rng.choice(GREETINGS), base)
             started = time.perf_counter()
             try:
                 response = await http.post(f"/hooks/{args.public_id}", json=body, headers=headers)

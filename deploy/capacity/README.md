@@ -96,7 +96,7 @@ Do not keep this database through cutover.
 
    ```bash
    T=~/capacity-tenant.json
-   docker run --rm --network csa-prod_app --user 1000:1000 \
+   docker run --rm --network csa-prod_data --user 1000:1000 \
      -v /srv/csa-prod/secrets/migration/staging_owner_dsn:/run/secrets/owner_dsn:ro \
      -v ~/CSAV2/deploy/capacity:/capacity:ro \
      --entrypoint python csa/python:prod-c561cac /capacity/load_driver.py \
@@ -116,7 +116,7 @@ Do not keep this database through cutover.
    ```bash
    nohup nice -n 19 ~/CSAV2/deploy/capacity/sample.sh /var/tmp/capacity-samples.log 15 >/dev/null 2>&1 &
    T=~/capacity-tenant.json
-   docker run -d --name csa-load-driver --network csa-prod_app --user 1000:1000 \
+   docker run -d --name csa-load-driver --network csa-prod_data --user 1000:1000 \
      -v /srv/csa-prod/secrets/migration/staging_owner_dsn:/run/secrets/owner_dsn:ro \
      -v ~/CSAV2/deploy/capacity:/capacity:ro \
      --entrypoint python csa/python:prod-c561cac /capacity/load_driver.py \
