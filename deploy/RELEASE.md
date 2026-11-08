@@ -9,6 +9,15 @@ before PostgreSQL starts, not merely by a later login step. The package must gra
 this repository read access; fork-token/package visibility still needs hosted-CI
 acceptance. No fallback to a different extension set is allowed.
 
+CI runs three jobs side by side before packaging: `gate` (ruff, pyright, import boundary,
+migrations from scratch, secret scan, policy coverage), `tests` and `frontend`; `package` needs
+all three. On a push to `main` the `tests` job is four shards, each a whole-file share of the
+suite chosen by `tests/shard.py` (`CSA_TEST_SHARD=n/4`), so a push to `main` still runs every
+test and the staging image publish still follows a green full run. On a pull request `tests`
+is one job that runs only the test files the pull request adds or changes, and nothing when it
+changes none; the full suite runs once after the merge. To reproduce one shard locally:
+`CSA_TEST_SHARD=2/4 uv run pytest`. To rebalance, change the weights in `tests/shard.py`.
+
 ## Inputs and artifacts
 
 Never build from the repository root or copied web checkout. Their Docker ignore

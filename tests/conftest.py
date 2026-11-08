@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from psycopg import AsyncConnection
 
+from tests import shard
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DB_DOCKERFILE = REPO_ROOT / "deploy" / "db.Dockerfile"
 SCHEMA_BASELINE = REPO_ROOT / "db" / "schema_baseline.sql"
@@ -183,3 +185,13 @@ def lg_setup_dsn(migrated_dsn: str) -> str:
 
     asyncio.run(lg_setup.setup(migrated_dsn))
     return migrated_dsn
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """CI runs the suite in parallel jobs: `CSA_TEST_SHARD=2/4` keeps only that shard's files."""
+    spec = os.environ.get("CSA_TEST_SHARD")
+    if not spec:
+        return
+    kept, dropped = shard.select(items, spec)
+    config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
