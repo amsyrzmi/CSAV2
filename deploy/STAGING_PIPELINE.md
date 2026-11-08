@@ -995,9 +995,41 @@ orders or listings; the only rows it adds are the single-use read-operation rows
 (`ecommerce_read_operations`) that every sync read adds. It is still the owner's call to paste
 the shape report anywhere outside the host.
 
+## 13. Bookings and Google Calendar (owner, in Google Cloud, then one reviewed PR)
+
+Bookings can put each person's confirmed bookings on a calendar called "Bookings" in their own
+Google account (`csa/bookings/google/`, design `docs/superpowers/specs/2026-11-06-bookings-google-calendar-design.md`).
+It uses the same Google OAuth client as section 11 (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`,
+files the gateway and the worker both read) with one more scope, `calendar.app.created`: the app
+can make a calendar and manage the events on it, and nothing else in the account. Nothing is
+requested from Google until a person presses Connect, and the feature is off until step 4.
+
+1. **Enable the Calendar API** in the fourstacks.my Google Cloud project (APIs and services, Library,
+   Google Calendar API, Enable).
+2. **Add the scope** to the consent screen (Google Auth platform, Data access, Add or remove
+   scopes): `https://www.googleapis.com/auth/calendar.app.created`. Note on that screen whether
+   Google marks it sensitive. If it does, going beyond test users needs Google's verification;
+   if not, it does not. Either way this is a separate submission from the Gmail scopes.
+3. **Register the callback** on the OAuth client, under Authorised redirect URIs:
+   `https://staging-console.fourstacks.my/console/v1/bookings/calendar/callback`.
+   The email assistant's own address stays as it is.
+4. **Turn it on** with a reviewed pull request that changes
+   `CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR=false` to `true` in `deploy/staging-rollout.env`, then a
+   normal rollout. Meet links are a second switch, `CSA_STAGING_BOOKINGS_GOOGLE_MEET`, and need the
+   first. The rollout tool exports both; nothing is exported by hand.
+
+While the client is in testing, only the test users listed in Google Cloud can connect, and Google
+ends their grant after 7 days, so their panel will say "Needs reconnecting" about weekly and they
+connect again. That is the testing limit, not a fault. Connecting a person who is not a test user
+returns to the Bookings page with "Google didn't give access". The worker needs the same two Google
+secret files the gateway has, and is given them by the compose file; the worker and gateway
+both call Google through `provider-egress`.
+
+Retest: the Google Calendar rows in `docs/ASSISTANT_RETEST.md`, under Bookings.
+
 ## Resetting staging
 
-`scripts/staging_reset.py` wipes the staging database and the two upload folders, rebuilds
+`scripts/staging_reset.py` wipes the staging database and the three upload folders, rebuilds
 them, and then sets up the real accounts and the three companies from a roster file. It
 is for staging only. The project, database, host and volumes are fixed in the code and
 cannot be changed by an argument.
@@ -1011,9 +1043,10 @@ It has three commands:
   terminal.
 
 **What it wipes.** The database `csa_staging`: every account and session, all HR and
-customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the two
-upload volumes `csa-staging_staging-uploads` and `csa-staging_staging-hr-uploads`, which
-hold the knowledge base files and the HR files.
+customer data, and every Telegram, WhatsApp and Gmail connection. It also empties the three
+upload volumes `csa-staging_staging-uploads`, `csa-staging_staging-hr-uploads` and
+`csa-staging_staging-training-uploads`, which hold the knowledge base files, the HR files and
+the training library files.
 
 **What stays.** The secret files under `/srv/csa-staging/secrets`, the role passwords,
 `CREDENTIALS_KEY`, the embeddings cache and the Google test users (they live in Google
@@ -1059,7 +1092,7 @@ output names people. They need the owner's passwords, so an agent can only run `
 1. Read the plan. It prints what staging holds now, what will be lost, the size of the
    backup and what `wipe` would refuse. Before the first real wipe it also checks that
    the database container's maintenance database can be reached, that user 1000 can read
-   both volumes, and that user 1000 owns every folder in them, the top one included,
+   all three upload volumes, and that user 1000 owns every folder in them, the top one included,
    because `wipe` could not empty them otherwise. If any of that fails, it refuses.
 
    ```bash
@@ -1080,7 +1113,7 @@ output names people. They need the owner's passwords, so an agent can only run `
    ```
 
    In order, it backs up, stops the four services, drops and creates the database, empties
-   the two volumes, loads the base schema, migrates, creates the first platform admin,
+   the three upload volumes, loads the base schema, migrates, creates the first platform admin,
    starts the services and waits until they are ready. If it fails at the stop or at the
    drop and the database is still there, nothing is lost, and it prints the command that
    brings staging back. If it fails later, it says which step failed and what state
@@ -1169,7 +1202,8 @@ Do these in order:
 Each `wipe` writes `~/csa-staging-backups/<UTC timestamp>/`, mode 0700. It holds:
 
 - `csa_staging.dump`, a `pg_dump` custom-format dump of `csa_staging`;
-- `csa-staging_staging-uploads.tar` and `csa-staging_staging-hr-uploads.tar`;
+- `csa-staging_staging-uploads.tar`, `csa-staging_staging-hr-uploads.tar` and
+  `csa-staging_staging-training-uploads.tar`;
 - `manifest.json`, written last. It holds counts and image names, no addresses and no
   secrets.
 
@@ -1224,7 +1258,7 @@ B=~/csa-staging-backups/<timestamp>
 
    ```bash
    IMAGE=$(docker --host unix:///var/run/docker.sock inspect csa-staging-gateway-1 --format '{{.Image}}')
-   for V in csa-staging_staging-uploads csa-staging_staging-hr-uploads; do
+   for V in csa-staging_staging-uploads csa-staging_staging-hr-uploads csa-staging_staging-training-uploads; do
      docker --host unix:///var/run/docker.sock run --rm --network none --read-only --cap-drop ALL \
        --security-opt no-new-privileges:true --user 1000:1000 -v "$V":/data \
        --entrypoint find "$IMAGE" /data -mindepth 1 -delete || break
@@ -1234,7 +1268,10 @@ B=~/csa-staging-backups/<timestamp>
    done
    ```
 
-   If this prints an error, stop; the volume may be empty.
+   If this prints an error, stop; the volume may be empty. A backup made before the training
+   volume existed has only the first two tars: the loop then stops at the third with an error
+   about the missing `csa-staging_staging-training-uploads.tar`. That is expected, and that volume
+   is correctly left empty.
 
 4. Bring the services back. First check that the restored data fits the images that will
    run it. Read the backup's schema and revision from its manifest or from the tool's

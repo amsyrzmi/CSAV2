@@ -90,6 +90,11 @@ test("the route names the current tab; published context wins", () => {
   const subscriptions = [...all, { key: "subscriptions", status: "active" }];
   assert.equal(view.tabForPath("/portal/subscriptions", staff, subscriptions), "subscriptions");
   assert.equal(view.tabForPath("/portal/subscriptions", staff, all), null);
+  const library = [...all, { key: "training_library", status: "active" }];
+  assert.equal(view.tabForPath("/portal/training", staff, library), "training_library");
+  assert.equal(view.tabForPath("/portal/training/44444444-4444-4444-8444-444444444444", staff, library), "training_library");
+  assert.equal(view.tabForPath("/portal/training", staff, all), null);
+  assert.equal(view.tabName("training_library"), "Training library");
   assert.equal(view.tabLabel("inbox", staff, all), "Customer inbox");
   const inbox = { tab: "inbox", record: { kind: "conversation", id: "c1" } };
   assert.deepEqual(view.effectiveContext(inbox, "hr"), inbox);
@@ -313,7 +318,8 @@ test("a hidden tab is named as the sidebar names it", async () => {
   // A platform admin sees every tab, so the sidebar's labels are the reference.
   const nav = await import(await load("navigation.ts"));
   const everyTab = nav.navigationFor(admin, all);
-  const tabs = ["overview", "services", "inbox", "knowledge_base", "business", "hr", "email", "subscriptions", "activity", "chat"];
+  const tabs = ["overview", "services", "inbox", "knowledge_base", "business", "hr", "email", "subscriptions", "bookings",
+    "training_library", "activity", "chat"];
   for (const tab of tabs) {
     // The sandbox chat folded into Overview: the dock's `chat` tab is named as Overview.
     const link = everyTab.find((item) => item.key === (tab === "chat" ? "overview" : tab));

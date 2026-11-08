@@ -1719,6 +1719,247 @@ That is accepted, because a person's calendar has to show them as busy.
 `csa_app`, that lists the company's enabled members with the HR person linked to each account;
 `csa_app` can read neither `console_memberships` nor, without an HR grant, `hr_employee_accounts`.
 
+### Google Calendar
+
+Stage 2 (migration `0513`, off unless `BOOKINGS_GOOGLE_CALENDAR_ENABLED`). A member linked to an
+active bookable person connects their own Google account once, and their confirmed bookings appear
+on a "Bookings" calendar the app creates in it. The one scope is `calendar.app.created`: the app can
+touch that calendar and nothing else in the account. Same prefix, gate and human-session rule as the
+rest of Bookings, under `/console/v1/bookings/calendar`. No answer ever holds a token; tokens are
+stored encrypted and only the sync code reads them.
+
+| Route | What it does |
+| --- | --- |
+| `GET /status` | `CalendarStatusOut` `{available, can_connect, status, people}`. `available` is false when the feature is off or the Google client is not set up (everything else is then `false` or `null`). `can_connect` is true for an Admin or staff member linked to an active bookable person, and `status` is theirs: `not_connected`, `connected` or `needs_reconnect` (`null` when they cannot connect). `people` is for an Admin or platform admin: `[{person_id, name, status}]` for each active person with an account, as a status only |
+| `POST /connect` | `{url}`: the Google address to send this member to (PKCE, a one-use state that expires after 10 minutes). Only for themselves. 409 `person_required` when their account is not linked to an active bookable person, 503 `calendar_unavailable`. A read-only member gets 403 |
+| `GET /callback` | Where Google sends the browser back. Always a 303 to `/portal/bookings` with `?calendar=connected` or `?calendar_error=<code>`: `oauth_state_invalid` (unknown, used, expired or another member's state), `provider_denied`, `oauth_issuer_invalid`, `scopes_not_granted`, `calendar_unavailable`. The calendar is made on the first connection and reused on a reconnect while it still exists |
+| `POST /disconnect` | 204. Clears the stored grant at once, drops the person's open sync rows, then revokes at Google as far as it will; the calendar and its events stay in their account. 409 `not_connected` |
+
+A refused refresh token (`invalid_grant`) makes the connection `needs_reconnect`; nothing more is
+tried for that person until they connect again, and everyone else is unaffected.
+
+#### Meet links (`BOOKINGS_GOOGLE_MEET_ENABLED`, needs the calendar switch)
+
+A confirmed online booking with no meeting link gets a Google Meet link: the connected attendee who
+made it (else the first connected attendee) asks Google when their event is made, and the link is
+kept on `bookings.meeting_link` only if the field is still empty (a link staff typed always wins),
+which moves `version`. The answer to the booking change says what the booking is after that, so it
+can already hold the link. Everyone else's event carries the link in its location. If Google would
+not make one the booking, its mail and the answer are as without Meet, and the job asks again
+(up to five times at one version). No mail or customer message goes out when a link is added later.
+
+- `BookingOut.meet_missing`: true for a confirmed online booking still to come with no link while
+  Meet links are on; false everywhere else and with them off. A client shows "No Meet link yet"
+  with a retry and the existing field to paste a link.
+- `POST /console/v1/bookings/{id}/meet` (no body): ask Google again now, for someone who may change
+  the booking (403 for a read-only member or `own_bookings_only`; an Admin may for any). Answers
+  with the `BookingOut`, which still has `meet_missing` true if Google still would not make a link.
+  409 `calendar_unavailable` (Meet links off), `wrong_status` (not a confirmed online booking still
+  to come without a link), `not_connected` (no one on it has a calendar connected).
+
+## Training library
+
+A company's own training PDFs: staff list them and open them, tenant admins and the company's HR
+owner add, edit and remove them, and anyone may ask for a stored summary. The web client is
+`TrainingWorkspace` under `/training` and `/portal/training`. Operations, settings and what is out
+of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key)
+and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
+`docs/console_openapi.json` as `ItemOut`, `ItemList`, `ItemPatch`, `SummaryRequest`, `SummaryOut`
+and `NoSummary`.
+
+All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
+every role, a platform admin included, gets 403 `package_inactive` until it is activated) and for
+human sessions only: a machine token is refused, as on the KB and HR routes (a machine `POST`,
+`PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
+authentication before the route runs; only a machine `GET` reaches the route's 403 `human session
+required`). A platform admin chooses the company with `?client_id=` (400 without it); a member of
+another company is refused (403 with `client_id`, 404 on an item id). An item of another company is
+always 404 `training_not_found`, never 403. The file store is the `training` store
+(`TRAINING_UPLOAD_ROOT` or the `training/` S3 prefix); when it is not configured every route answers
+503 `training_storage_unavailable`.
+
+Who may call:
+
+- **Read** (list, file, read a summary, ask for a summary): any member of the company, every role
+  including `read_only`, and a platform admin who chose the company.
+- **Manage** (add, edit, remove, regenerate a summary): a platform admin who chose the company, a
+  tenant admin, and the company's HR owner when that person is a `tenant_staff` member. The HR owner
+  is asked again on every request, so a move takes effect on the next call (see
+  [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#the-hr-owner-dependency)). `can_manage` on the list
+  says which a caller is. A plain staff member gets 403 `training_forbidden`.
+- A `read_only` member is refused every `POST`, `PATCH` and `DELETE` by the console's write rule
+  with 403 `write permission required` before the route runs, with one exception: `POST
+  /training/items/{id}/summary`. That exemption (`reader_may_post` in `csa/console/access.py`) holds
+  only when the matched route is that one and the decoded path is exactly that route with a
+  canonical UUID. CSRF and origin checks still apply to it. `read_only` asking for `regenerate: true`
+  gets 403 `training_forbidden`.
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary}`. `view_mode` is `slides` or `document`. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
+| `POST /training/items` | manage | 201 `ItemOut`. `multipart/form-data` with one part named `file` and no other field, plus the `Idempotency-Key` header (a UUID). Title is the file name without `.pdf` (cut to 120 characters), `view_mode` is `slides` when the first page is landscape (its `/Rotate` counted), else `document`. Step one of the two-step upload, below |
+| `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below |
+| `DELETE /training/items/{id}` | manage | 204. Removes the row, then the file |
+| `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below |
+| `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model |
+| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below |
+
+### Limits
+
+| What | Limit |
+|---|---|
+| One file | 25 MB (`25 * 1024 * 1024` bytes); the whole body is bounded at that plus 64 KB of multipart framing |
+| Pages in one PDF | 300 (at least one) |
+| Items in one company | 300 |
+| Total size of one company's items | 500 MB (counts `byte_size` of the rows) |
+| `title` | 1 to 120 characters after trimming; no control characters |
+| `description` | 0 to 1000 characters after trimming; line breaks and tabs allowed, no other control characters |
+| `category` | 0 to 60 characters after trimming; no control characters; free text |
+| Text sent for a summary | the first 24,000 characters of the PDF's text |
+| `summary` / `key_points` stored | summary 1 to 1500 characters; at most 6 points of 1 to 200 characters |
+
+The four upload limits are constants in `csa/training/limits.py`. The count and byte limits are
+checked under the company's lock, so two uploads racing for the last slot give one 201 and one 409.
+
+### Two-step upload
+
+The shared upload parser takes one file part and no other fields, so details are a second call.
+
+1. `POST /training/items` with the file and a fresh `Idempotency-Key` UUID. The server checks the
+   file (see below), stores it under a generated name (`<uuid>.pdf`; the uploaded name is kept as
+   data and never used as a path) and answers 201 with the item under its default title.
+2. `PATCH /training/items/{id}` with the title, description, category and `view_mode` the person
+   chose. If this call fails the item exists under its default title, and the page says so.
+
+A retry with the same `Idempotency-Key`, the same file name and the same content answers 201 with
+the first item and keeps one file and one audit row (also when the library has since filled up).
+The same key with other content, or the same content under another name, is 409
+`training_key_conflict`. Send a new key for each file the person picks.
+
+`PATCH` leaves a field out (or `null`) to keep it; send `description: ""` or `category: ""` to
+clear it. A body with no field to change, an unknown field, or a value outside the limits is 422
+(FastAPI validation, not a `training_` code). An id that is not in the company is 404
+`training_not_found`.
+
+### The checks on an upload
+
+In this order. A refusal stores nothing and writes no row.
+
+1. The caller may manage (403 `training_forbidden`), before the body is read.
+2. The multipart body is one part named `file`, within 25 MB and its header size.
+3. The file name is one safe segment: not blank, at most 255 characters, not `.` or `..`, no `/` or
+   `\`, no control or separator characters (including line and paragraph separators and bidi
+   controls). Ordinary Unicode with spaces is fine.
+4. The extension is `.pdf` (any case) and the content starts with `%PDF-`. An empty file is
+   `training_not_pdf`.
+5. The PDF opens and is checked in a limited child process: not encrypted (an empty-password
+   encryption counts as protected), readable, 1 to 300 pages, and no document-level JavaScript or
+   launch action (catalog `/Names/JavaScript`, an `/OpenAction` of type JavaScript or Launch or
+   carrying `/JS`, a non-empty `/AA` on the catalog or on any page).
+6. Under the company lock: the idempotency key, then the item and byte limits, then the write and
+   the row.
+
+### Detail codes
+
+Every refusal is `{"detail": "<code>"}`. The web client keeps the code on `ApiError.code` and shows
+a plain sentence (see below).
+
+| Status | `detail` | When |
+|---|---|---|
+| 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
+| 403 | `human session required` | A machine token on a `GET` route |
+| 403 | `machine principal has read-only access` | A machine token on `POST`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
+| 403 | `write permission required` | A `read_only` member on `POST`, `PATCH` or `DELETE`, except the summary `POST` |
+| 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit or remove; anyone but a manager sending `regenerate: true` |
+| 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
+| 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |
+| 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company |
+| 413 | `training_file_too_large` | The file is over 25 MB, or the body passes the bound |
+| 413 | `training_upload_invalid` | The multipart headers pass 8 KB |
+| 415 | `training_upload_invalid` | The body is not `multipart/form-data` |
+| 422 | `training_upload_invalid` | Anything else wrong with the form: no file, two files, another field name, a malformed body |
+| 422 | `training_name_invalid` | The file name fails the name rule above |
+| 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty |
+| 422 | `training_pdf_damaged` | The PDF cannot be read, has no pages, or its page tree is broken or hostile |
+| 422 | `training_pdf_protected` | The PDF is encrypted |
+| 422 | `training_pdf_too_many_pages` | More than 300 pages (a page count that lies is caught after the walk) |
+| 422 | `training_pdf_active_content` | The PDF carries document-level JavaScript or a launch action |
+| 422 | `training_pdf_unreadable` | The limited child could not finish the check in its CPU, memory or 20 second wall-clock limit, or crashed or answered garbage. The file is refused; nothing is wrong with the service |
+| 422 | `training_no_text` | Summary only: the PDF has no text to read (a scan), or the content budget ran out before any text. Nothing is stored |
+| 503 | `training_storage_unavailable` | The store is not configured, the write failed after the client's retries, or the stored object is missing or unreadable (the log carries the item id only). Retry |
+| 503 | `training_parser_unavailable` | The PDF checker could not run, or the 30 second wait for it (slot and parse) ran out. Infrastructure, not the file. Retry |
+| 503 | `training_assistant_unavailable` | Summary only: the provider failed, timed out (20 seconds) or answered something that does not fit the summary shape, or another click on the same item was still making it after 60 seconds; also no model client and none is stored, which happens only when the gateway's console identity block did not run at startup (`GROQ_API_KEY` is a required setting, so the client is always built when it does). Nothing is stored |
+| 422 | (FastAPI validation) | A missing or non-UUID `Idempotency-Key`, a non-UUID item id, an invalid or empty `PATCH` body |
+
+A file refusal on the summary route can only be `training_pdf_damaged`, `training_pdf_protected`,
+`training_pdf_too_many_pages`, `training_pdf_unreadable` or `training_no_text`, as the stored file
+is read again for its text (that read does not run the active-content check). Other platform codes
+(`400 platform admin must select client_id explicitly`, `404 tenant not found`, `403 tenant is not
+authorized`, `403 active tenant membership required`) are the console's usual tenant ones.
+
+### The file route
+
+`GET /training/items/{id}/file` reads the row under the tenant context, opens the stored object and
+streams it in 64 KB blocks. It takes no company lock and holds no database connection while it
+streams, so a removal never breaks a download already open. Headers:
+
+- `Content-Type: application/pdf`
+- `Content-Length`: the stored size
+- `Content-Disposition: inline; filename*=utf-8''<name>`: shown in the page, with the uploaded name
+  percent-encoded (the name is never used as a path)
+- `Cache-Control: private, no-store`
+- `X-Content-Type-Options: nosniff`
+- `Content-Security-Policy: sandbox`
+
+A missing or unreadable object is 503 `training_storage_unavailable` (404 when the item was removed
+in the meantime). A browser's own PDF viewer in an iframe is not an option (the console sends
+`X-Frame-Options: DENY`): the page fetches this route and draws it.
+
+### The summary
+
+- `GET` reads; `POST` reads, or makes one first. The first make stores the summary and every later
+  call, by anyone in the company, returns it with no model call. A stored summary is returned even
+  when no model is configured.
+- The server extracts the PDF's text (up to 24,000 characters) in the limited child and sends it to
+  the language-model provider as one JSON completion, with a system prompt that says the text is data
+  and never instructions, that the model has no tools, and to answer in the PDF's language. The
+  answer is checked against `{summary, key_points}` before it is stored. `truncated` is true when
+  the text was cut; the page says "Summarised from the first part of this PDF." `model` is the model
+  name that wrote it and `summarised_at` the time it was stored.
+- Concurrent first clicks in one gateway process wait on a per-item lock, so ten clicks make one call
+  and one stored summary; across several gateway processes two calls are possible, but the first
+  writer wins and one summary is stored. No connection or database lock is held during the parse or
+  the model call.
+- `regenerate: true` needs manage (403 `training_forbidden` for everyone else, `read_only` included),
+  always calls the model, and replaces the stored text. Manage is checked again just before the write.
+- Audit: `training.summary_generated` when none was stored before, `training.summary_regenerated`
+  when one was replaced; asking for an existing summary writes nothing.
+- The model's output is shown to every member of the company, so the web client escapes it and never
+  renders it as HTML or Markdown.
+- The two sentences the spec fixes for these refusals: for `training_no_text`, "This PDF has no text
+  we can read, so it cannot be summarised."; for `training_assistant_unavailable`, "We could not
+  reach the assistant. Wait a minute and try again."
+
+### Error codes the web must map
+
+Staff never see a code (see [WRITING_GUIDE.md](./WRITING_GUIDE.md): sentence case, plain words,
+what happens next). Each of these maps to a sentence in the console copy, with the raw code kept on
+`ApiError.code`: `training_not_pdf`, `training_pdf_damaged` and `training_pdf_unreadable` (damaged
+file), `training_pdf_protected`, `training_pdf_active_content`, `training_file_too_large` (25 MB),
+`training_pdf_too_many_pages` (300), `training_library_full` (items or 500 MB),
+`training_name_invalid`, `training_upload_invalid`, `training_key_conflict`,
+`training_storage_unavailable` and `training_parser_unavailable` (try again), `training_not_found`,
+`training_no_text`, `training_assistant_unavailable`, `package_inactive`, `training_forbidden` and
+`write permission required` ("only admins and the HR owner can change the library").
+
+### Audit
+
+One `console_audit` row per change, with the item id as target and empty details: `training.item_added`
+(a retry that returns the first item writes none), `training.item_edited`, `training.item_removed`,
+`training.summary_generated`, `training.summary_regenerated`. Views, downloads and reads of a summary
+are not logged. Log lines carry the item id, the company id, a byte count, the model name and an
+outcome, never a title, file name, PDF text or summary text.
+
 ## Services and packages
 Capabilities are grouped into service packages (catalogue in `csa/console/packages.py`; add-ons require `customer_support`; `bookings` is a separate service and requires nothing). Packages are the management surface; the capability switches below remain the runtime enforcement.
 
@@ -1729,6 +1970,7 @@ Capabilities are grouped into service packages (catalogue in `csa/console/packag
 | `orders_products` | addon | `order_agent`, `invoice_agent` | business | yes |
 | `subscriptions` | addon | `subscription_agent` | subscriptions | yes |
 | `bookings` | standalone | `booking_agent` | bookings | yes |
+| `training_library` | standalone | none | training_library | yes |
 | `marketplaces` | addon | `ecommerce_agent` | ecommerce | yes |
 | `e_invoicing` | addon | `lhdn_agent` | lhdn_myinvois | no |
 | `hr` | standalone | none; covers `hr_agent_settings` modules `hr_directory`, `hr_training`, `hr_recruitment`, `hr_attendance`, `hr_payroll`, `hr_assistant` | hr | yes |
@@ -1752,6 +1994,7 @@ Gates: a route behind an inactive package returns 403 `package_inactive`, and ga
 - Inbox requires `customer_support` in status `active` **or `suspended`**, so staff can still resolve held replies and escalations while a client is suspended (the required safety capabilities keep running); Business requires `orders_products` or `marketplaces` active.
 - All `/kb/*` routes (uploads, files and downloads for every role) require `knowledge_base`, which migration `0530` gave to each company with a `customer_support` row, with the same status; `/invoices*` require `orders_products`.
 - The HR API requires `hr`; the Email API, including the OAuth callback, requires `staff_email`.
+- All `/training/*` routes require `training_library` (see [Training library](#training-library)); it is not backfilled, so a company has it only once a platform admin activates it.
 - Not gated: `/tabs/specialized`, `/agents`, `/capabilities`, runtime views, sandbox chat, audit, team and settings.
 
 Activation does not flip the HR module switches or the email inner switch; the HR owner and the tenant admin keep control of those. The web navigation shows Inbox, Business knowledge, Business, People & HR and Email to tenant members only when the package is active (platform admins see all); the former Agents page is the Services tab at `/services` and `/portal/services`.

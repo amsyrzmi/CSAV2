@@ -4,7 +4,7 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password" | "subscriptions" | "bookings";
+  | "team" | "password" | "subscriptions" | "bookings" | "training_library";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
 export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
@@ -118,6 +118,7 @@ const gate: Partial<Record<NavKey, string[]>> = {
   email: ["staff_email"],
   subscriptions: ["subscriptions"],
   bookings: ["bookings"],
+  training_library: ["training_library"],
 };
 // Statuses that unlock a tab; mirrors the server gates. The Inbox stays reachable while
 // Customer Support is suspended so staff can resolve held replies and escalations; Assistant
@@ -151,6 +152,9 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
     // Every member sees Bookings, read-only included; the setup pages hide their edit controls.
     { key: "bookings", label: "Bookings", href: to("bookings"), children: bookingsPages(admin) },
+    // Every member reads the library, read-only included; only managers see its edit controls.
+    // "Training library", not "Training": HR's own Training tab keeps that name.
+    { key: "training_library", label: "Training library", href: to("training") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },

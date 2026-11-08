@@ -7,11 +7,12 @@ import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { bookingsPages, type BookingsSection } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
-import { getSettings } from "@/lib/bookings-api";
+import { getCalendarStatus, getSettings } from "@/lib/bookings-api";
 import { readReplies } from "@/lib/customer-replies";
 import { todayInZone } from "@/lib/bookings-view";
 import BookingsCalendar from "./bookings/BookingsCalendar";
 import BookingTypes from "./bookings/BookingTypes";
+import GoogleCalendarPanel, { GoogleCalendarPeople } from "./bookings/GoogleCalendarPanel";
 import PeopleAndRooms from "./bookings/PeopleAndRooms";
 import { useLoaded, type BookingsScope, type ZoneState } from "./bookings/parts";
 import { SectionNav, useSectionArrivalFocus } from "./kit";
@@ -157,6 +158,8 @@ function BookingsPage({
   servicesHref: string;
 }) {
   const settings = useLoaded(() => getSettings(scope.tenantId));
+  // Whether the feature is on and where each connection stands; nothing shows while it is off.
+  const calendar = useLoaded(() => getCalendarStatus(scope.tenantId));
   const off = settings.data?.replies_off === true;
   const canTurnOn = useCanTurnRepliesOn(scope, off);
   return (
@@ -177,9 +180,11 @@ function BookingsPage({
           </Notice>
         </div>
       )}
+      {section === "calendar" && <GoogleCalendarPanel scope={scope} calendar={calendar} />}
       {section === "calendar" && <BookingsCalendar scope={scope} />}
       {section === "types" && <BookingTypes scope={scope} peopleHref={peopleHref} />}
       {section === "people" && <PeopleAndRooms scope={scope} settings={settings} />}
+      {section === "people" && <GoogleCalendarPeople calendar={calendar} />}
     </div>
   );
 }

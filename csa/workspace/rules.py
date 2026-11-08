@@ -159,6 +159,7 @@ TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "email": (frozenset({"staff_email"}), ACTIVE),
     "subscriptions": (frozenset({"subscriptions"}), ACTIVE),
     "bookings": (frozenset({"bookings"}), ACTIVE),
+    "training_library": (frozenset({"training_library"}), ACTIVE),
 }
 # Tab -> the label the console's sidebar shows (``lib/navigation.ts``). The assistant names a tab
 # this way in every language; a test keeps the copy in step with the console.
@@ -172,6 +173,7 @@ TAB_LABELS: dict[str, str] = {
     "email": "Email assistant",
     "subscriptions": "Subscriptions",
     "bookings": "Bookings",
+    "training_library": "Training library",
     "activity": "Assistant activity",
     "chat": "Overview",
 }

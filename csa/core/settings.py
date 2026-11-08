@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str | None = None
     GOOGLE_CLIENT_SECRET: SecretStr | None = None
     GOOGLE_OAUTH_REDIRECT_URI: str | None = None
+    # Bookings stage 2: confirmed bookings on a person's own Google Calendar, then Meet links.
+    # Both need the Google client above; Meet needs the calendar. Off unless switched on.
+    BOOKINGS_GOOGLE_CALENDAR_ENABLED: bool = False
+    BOOKINGS_GOOGLE_MEET_ENABLED: bool = False
     GOOGLE_AI_API_KEY: SecretStr | None = None
     GOOGLE_AI_MODEL: str = "gemini-3.1-flash-lite"
     DEV_STAFF_CHAT_ID: str | None = None
@@ -100,8 +104,12 @@ class Settings(BaseSettings):
     KB_UPLOAD_ROOT: Path | None = None
     # HR document files land in HR_UPLOAD_ROOT/<client_id>/; without it the routes answer 503.
     HR_UPLOAD_ROOT: Path | None = None
+    # Training library PDFs land in TRAINING_UPLOAD_ROOT/<client_id>/; without it the routes
+    # answer 503.
+    TRAINING_UPLOAD_ROOT: Path | None = None
     KB_INGEST_ENABLED: bool = False
-    # Where KB and HR files live: the *_UPLOAD_ROOT folders ("local") or one S3 bucket ("s3").
+    # Where KB, HR and training files live: the *_UPLOAD_ROOT folders ("local") or one S3
+    # bucket ("s3").
     # The S3 values may come from Docker secret files named after the field.
     STORAGE_BACKEND: Literal["local", "s3"] = "local"
     S3_BUCKET: str | None = None
@@ -281,6 +289,40 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_bookings_google(self) -> Settings:
+        if self.BOOKINGS_GOOGLE_MEET_ENABLED and not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+            raise ValueError(
+                "BOOKINGS_GOOGLE_MEET_ENABLED requires BOOKINGS_GOOGLE_CALENDAR_ENABLED"
+            )
+        if not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+            return self
+        if not (
+            self.GOOGLE_CLIENT_ID and self.GOOGLE_CLIENT_SECRET and self.GOOGLE_OAUTH_REDIRECT_URI
+        ):
+            raise ValueError(
+                "BOOKINGS_GOOGLE_CALENDAR_ENABLED requires GOOGLE_CLIENT_ID, "
+                "GOOGLE_CLIENT_SECRET and GOOGLE_OAUTH_REDIRECT_URI"
+            )
+        origin = urlsplit(self.GOOGLE_OAUTH_REDIRECT_URI)
+        if (
+            origin.scheme not in {"http", "https"}
+            or not origin.hostname
+            or (self.ENV == "prod" and origin.scheme != "https")
+        ):
+            raise ValueError(
+                "GOOGLE_OAUTH_REDIRECT_URI must be a web address (HTTPS in prod): the Bookings "
+                "calendar callback is derived from its origin"
+            )
+        return self
+
+    def bookings_calendar_redirect_uri(self) -> str | None:
+        """The Bookings calendar's OAuth callback: the console origin plus its own path."""
+        if not self.BOOKINGS_GOOGLE_CALENDAR_ENABLED or not self.GOOGLE_OAUTH_REDIRECT_URI:
+            return None
+        origin = urlsplit(self.GOOGLE_OAUTH_REDIRECT_URI)
+        return f"{origin.scheme}://{origin.netloc}/console/v1/bookings/calendar/callback"
+
+    @model_validator(mode="after")
     def _validate_kb_ingest(self) -> Settings:
         local = self.STORAGE_BACKEND == "local"
         if local and self.KB_INGEST_ENABLED and self.KB_UPLOAD_ROOT is None:
@@ -289,7 +331,7 @@ class Settings(BaseSettings):
             raise ValueError("KB_INGEST_ENABLED in prod requires TEI_ENDPOINT")
         return self
 
-    @field_validator("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", mode="before")
+    @field_validator("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", "TRAINING_UPLOAD_ROOT", mode="before")
     @classmethod
     def _blank_upload_root_is_unset(cls, value: object) -> object:
         # .env.example leaves these empty; Path("") would be the current folder.
@@ -319,19 +361,32 @@ class Settings(BaseSettings):
                 "STORAGE_BACKEND=s3 requires S3_BUCKET, S3_REGION, "
                 "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY"
             )
-        for name in ("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"):
+        for name in ("KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", "TRAINING_UPLOAD_ROOT"):
             if getattr(self, name) is not None:
                 raise ValueError(f"STORAGE_BACKEND=s3 conflicts with {name}; unset {name}")
         return self
 
     @model_validator(mode="after")
     def _validate_upload_roots(self) -> Settings:
-        # KB and HR both store <root>/<client_id>/<uuid>.<ext>, and each cleanup deletes the
-        # uuid-named files it does not know, so neither root may be, or sit inside, the other.
-        if self.KB_UPLOAD_ROOT is not None and self.HR_UPLOAD_ROOT is not None:
-            kb, hr = self.KB_UPLOAD_ROOT.resolve(), self.HR_UPLOAD_ROOT.resolve()
-            if kb == hr or kb.is_relative_to(hr) or hr.is_relative_to(kb):
-                raise ValueError("HR_UPLOAD_ROOT must not be, contain or sit inside KB_UPLOAD_ROOT")
+        # KB, HR and training all store <root>/<client_id>/<uuid>.<ext>, and each cleanup
+        # deletes the uuid-named files it does not know, so no root may be, or sit inside,
+        # another. Each pair is (later name, earlier name), named in the error in that order.
+        roots = {
+            "KB_UPLOAD_ROOT": self.KB_UPLOAD_ROOT,
+            "HR_UPLOAD_ROOT": self.HR_UPLOAD_ROOT,
+            "TRAINING_UPLOAD_ROOT": self.TRAINING_UPLOAD_ROOT,
+        }
+        for later, earlier in (
+            ("HR_UPLOAD_ROOT", "KB_UPLOAD_ROOT"),
+            ("TRAINING_UPLOAD_ROOT", "KB_UPLOAD_ROOT"),
+            ("TRAINING_UPLOAD_ROOT", "HR_UPLOAD_ROOT"),
+        ):
+            a, b = roots[later], roots[earlier]
+            if a is None or b is None:
+                continue
+            a, b = a.resolve(), b.resolve()
+            if a == b or a.is_relative_to(b) or b.is_relative_to(a):
+                raise ValueError(f"{later} must not be, contain or sit inside {earlier}")
         return self
 
     @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")

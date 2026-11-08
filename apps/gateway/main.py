@@ -24,6 +24,8 @@ from uuid import UUID
 import httpx
 import structlog
 from csa.bookings.api import build_bookings_router
+from csa.bookings.google.api import build_calendar_router
+from csa.bookings.google.factory import build_calendar_push
 from csa.channels.ingress import IngressError, TelegramIngress
 from csa.channels.marketplace.router import build_marketplace_router
 from csa.channels.whatsapp_ingress import WhatsAppIngress
@@ -63,7 +65,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0531"
+EXPECTED_SCHEMA_VERSION = "0541"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -147,6 +149,8 @@ def create_app() -> FastAPI:
         hr_http: httpx.AsyncClient | None = None
         email_http: httpx.AsyncClient | None = None
         workspace_http: httpx.AsyncClient | None = None
+        training_http: httpx.AsyncClient | None = None
+        calendar_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
@@ -192,9 +196,21 @@ def create_app() -> FastAPI:
                 app.state.identity_service = identity
                 # Disabled unless the flag and both relay secrets are set; then links are manual.
                 app.state.mailer = Mailer.from_settings(settings)
+                if settings.BOOKINGS_GOOGLE_CALENDAR_ENABLED:
+                    calendar_http = httpx.AsyncClient(trust_env=False)
+                    calendar_push = build_calendar_push(settings, pool, calendar_http)
+                    assert calendar_push is not None
+                    app.state.calendar_connections = calendar_push.connections
+                    app.state.calendar_push = calendar_push
                 hr = HrService(pool, session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS)
                 await hr.check_ready()
                 app.state.hr_service = hr
+                # The training library's one-click PDF summary; without it the summary POST
+                # answers training_assistant_unavailable.
+                training_http = httpx.AsyncClient()
+                app.state.training_model = GroqClient(
+                    settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, training_http
+                )
                 if settings.HR_ASSISTANT_ENABLED:
                     hr_http = httpx.AsyncClient()
                     app.state.hr_assistant = HrAssistant(
@@ -248,6 +264,10 @@ def create_app() -> FastAPI:
                     await email_http.aclose()
                 if workspace_http is not None:
                     await workspace_http.aclose()
+                if training_http is not None:
+                    await training_http.aclose()
+                if calendar_http is not None:
+                    await calendar_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:
@@ -426,6 +446,7 @@ def create_app() -> FastAPI:
             else ("hash-384" if settings.ENV != "prod" else None),
             kb_tei_configured=settings.TEI_ENDPOINT is not None,
             kb_store=stores.kb,
+            training_store=stores.training,
         )
     )
 
@@ -439,6 +460,7 @@ def create_app() -> FastAPI:
     # lane B (console): subscriptions router registers here
     app.include_router(build_subscriptions_router())
     app.include_router(build_bookings_router())
+    app.include_router(build_calendar_router())
     # --- end lane registrations ---
 
     instrument_fastapi(app)

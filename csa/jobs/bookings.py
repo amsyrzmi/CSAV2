@@ -2,12 +2,14 @@
 
 Reminders are two jobs. `run_reminder_queue` runs per company, as that company, and writes what
 is owed: one row in `booking_reminders` per recipient and start time, and for a customer on
-Telegram the message itself, in the same transaction. `run_reminder_mail` runs once for everyone
+Telegram the message itself, in the same transaction, one short transaction per booking.
+`run_reminder_mail` runs once for everyone
 and sends the queued email rows: the owner connection only lists which companies have some, and
 each row is then claimed, checked and settled in its own company's transaction, as `csa_app`. A row
 is claimed (`sending`) only when it has a send slot and committed before it is sent, so a worker
 that dies mid-send leaves that row `sending` and it is never sent twice: a lost reminder is the
-price of never sending one twice.
+price of never sending one twice. A later run settles such a row `failed` (`LOST_AFTER`), so a lost
+reminder shows as failed rather than staying out of sight.
 
 Logs carry categories only, never an address or a title.
 """
@@ -15,7 +17,8 @@ Logs carry categories only, never an address or a title.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import itertools
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -39,6 +42,15 @@ Audience = Literal["customer", "staff", "lapse"]
 # A lapse notice not sent within a day of the lapse is dropped, never sent late: by then "your
 # request wasn't confirmed in time" is old news, and the customer may well have asked again.
 LAPSE_NOTICE_LIFE = timedelta(hours=24)
+# An email row still `sending` this long after it was queued was claimed by a run that never
+# finished it, and is settled `failed`. Only a run holds rows `sending`, and the job's lock lets one
+# run at a time, so a row a run is sending is never swept: the age only says how soon one is shown.
+LOST_AFTER = timedelta(hours=1)
+MAIL_STATS = ("claimed", "sent", "failed", "dropped", "lost", "errors")
+# What a turn key did is kept this long, then removed: a message or a card retried later than
+# this is long settled (ingress gives up within minutes, checkpoints go after 14 days), and a cancel
+# question runs out within the hour.
+TURN_ACTION_LIFE = timedelta(days=30)
 
 
 # --- a reminder row -----------------------------------------------------------------------------
@@ -221,10 +233,11 @@ async def _remind(
     telegram: bool,
     now: datetime,
 ) -> tuple[int, int]:
-    """One booking's reminders. The booking is locked `FOR SHARE` before it is read, until the
-    company's run commits: a move or cancel already holding it is waited for and then read as it
-    stands, and one that comes after waits, so its own message follows the reminder. A reminder
-    for the old time can never land after the "moved" message."""
+    """One booking's reminders, in its own transaction. The booking is locked `FOR SHARE` before it
+    is read, until that transaction commits: a move or cancel already holding it is waited for and
+    then read as it stands, and one that comes after waits for this booking only, so its own
+    message follows the reminder. A reminder for the old time can never land after the "moved"
+    message."""
     locked = await db.q.fetch_one(
         "bookings/booking_share_lock.sql", {"client_id": client_id, "id": booking_id}, conn=conn
     )
@@ -248,7 +261,7 @@ async def _remind(
 
 
 async def run_reminder_queue(
-    conn: psycopg.AsyncConnection[Any],
+    app_pool: AsyncConnectionPool,
     client_id: UUID,
     clock: Clock,
     *,
@@ -260,36 +273,42 @@ async def run_reminder_queue(
     (made or moved inside the window) gets none, for anyone: its confirmation is enough
     (`service.late_for_reminder`).
 
-    Bookings are read a page of `batch_size` at a time until none is left, each in its own
-    savepoint, so one that cannot be queued does not stop the rest. Customers are reminded only
-    while the company's gates allow an automatic message (`customers_remindable`); staff and guests
-    always are. A pending booking is never reminded, and nothing is queued for a cancelled one.
+    Every transaction is the company's own, on `app_pool` (the runner hands this job the pool, not
+    one transaction: `Job.own_transactions`). The settings and gates are read once; then bookings
+    are read a page of `batch_size` at a time until none is left, and each is queued in its own
+    short transaction, so its share lock is held only while that booking is queued, one that
+    cannot be queued does not stop the rest, and what was queued stands when a run is cut off by
+    its timeout: the next run queues the rest. Customers are reminded only while the company's
+    gates allow an automatic message (`customers_remindable`); staff and guests always are. A
+    pending booking is never reminded, and nothing is queued for a cancelled one.
     """
     now = clock.now()
-    row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
-    minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+    async with tx(app_pool, str(client_id)) as conn:
+        row = await db.q.fetch_one("bookings/settings_get.sql", {"client_id": client_id}, conn=conn)
+        minutes = (row or setup.DEFAULT_SETTINGS)["reminder_minutes"]
+        facts = await notify.load_facts(conn, client_id)
+        customers = await customers_remindable(conn, client_id)
+        telegram = await telegram_reminders(conn, client_id)
     until = now + timedelta(minutes=minutes)
-    facts = await notify.load_facts(conn, client_id)
     zone = ZoneInfo(facts.timezone)
-    customers = await customers_remindable(conn, client_id)
-    telegram = await telegram_reminders(conn, client_id)
     bookings = queued = told = failed = 0
     after: dict[str, Any] = {"after_starts": None, "after_id": None}
     while True:
-        page = await db.q.fetch_all(
-            "bookings/reminders_due.sql",
-            {
-                "client_id": client_id,
-                "now": now,
-                "until": until,
-                "batch_size": batch_size,
-                **after,
-            },
-            conn=conn,
-        )
+        async with tx(app_pool, str(client_id)) as conn:
+            page = await db.q.fetch_all(
+                "bookings/reminders_due.sql",
+                {
+                    "client_id": client_id,
+                    "now": now,
+                    "until": until,
+                    "batch_size": batch_size,
+                    **after,
+                },
+                conn=conn,
+            )
         for row in page:
             try:
-                async with conn.transaction():
+                async with tx(app_pool, str(client_id)) as conn:
                     mails, messages = await _remind(
                         conn, client_id, row["id"], facts, zone, customers, telegram, now
                     )
@@ -308,6 +327,33 @@ async def run_reminder_queue(
             break
         after = {"after_starts": page[-1]["starts_at"], "after_id": page[-1]["id"]}
     return {"bookings": bookings, "queued": queued, "told": told, "failed": failed}
+
+
+# --- retention ----------------------------------------------------------------------------------
+
+
+async def run_turn_action_retention(
+    conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int = 1000
+) -> dict[str, Any]:
+    """Remove the `booking_turn_actions` rows older than `TURN_ACTION_LIFE` that are done with:
+    every book, change and cancel, and every cancel question that has run out. A batch of
+    `batch_size` rows at a time, each batch its own transaction, until none is left.
+
+    `conn` is the runner's owner connection, and this is the only thing that deletes these rows:
+    the app role can't, so a company's own transactions can never undo what a turn key did.
+    """
+    now = clock.now()
+    removed = 0
+    while True:
+        async with conn.transaction():
+            gone = await db.q.fetch_all(
+                "bookings/turn_actions_purge.sql",
+                {"before": now - TURN_ACTION_LIFE, "now": now, "batch_size": batch_size},
+                conn=conn,
+            )
+        removed += len(gone)
+        if len(gone) < batch_size:
+            return {"removed": removed}
 
 
 # --- sending the queued mail --------------------------------------------------------------------
@@ -452,6 +498,41 @@ async def _try_one(
     return status
 
 
+def _take_turns(
+    lists: Sequence[Sequence[tuple[UUID, UUID]]], limit: int
+) -> list[tuple[UUID, UUID]]:
+    """One row from each company in turn, up to `limit`: a company with many queued rows cannot
+    fill a batch while another waits."""
+    work = [one for turn in itertools.zip_longest(*lists) for one in turn if one is not None]
+    return work[:limit]
+
+
+async def _company_rows(
+    app_pool: AsyncConnectionPool,
+    client_id: UUID,
+    *,
+    lost: bool,
+    lost_before: datetime,
+    batch_size: int,
+) -> tuple[int, list[tuple[UUID, UUID]]]:
+    """In the company's own transaction: settle its lost rows `failed` (see `LOST_AFTER`), then
+    list up to `batch_size` of its queued rows. Returns `(rows found lost, queued rows)`."""
+    async with tx(app_pool, str(client_id)) as scoped:
+        swept = []
+        if lost:
+            swept = await db.q.fetch_all(
+                "bookings/reminders_lost.sql",
+                {"client_id": client_id, "lost_before": lost_before},
+                conn=scoped,
+            )
+        queued = await db.q.fetch_all(
+            "bookings/reminders_queued.sql",
+            {"client_id": client_id, "batch_size": batch_size},
+            conn=scoped,
+        )
+    return len(swept), [(client_id, row["id"]) for row in queued]
+
+
 async def run_reminder_mail(
     conn: psycopg.AsyncConnection[Any],
     app_pool: AsyncConnectionPool,
@@ -460,43 +541,68 @@ async def run_reminder_mail(
     *,
     batch_size: int = 100,
 ) -> dict[str, Any]:
-    """Send the queued email rows of every company. `conn` is the runner's owner connection and is
-    used only to list which companies have queued rows; everything else, for each company, runs
-    through that company's own transaction on `app_pool` (as `csa_app`, row security on).
+    """Send the queued email rows of every live company. `conn` is the runner's owner connection
+    and is used only to list which companies have rows to work on; everything else, for each
+    company, runs through that company's own transaction on `app_pool` (as `csa_app`, row
+    security on). A company that is not pilot or active is skipped, as every other job skips it,
+    and its rows stay `queued` until it is live again.
 
     With no mailer, or mail switched off, nothing is touched and the rows stay `queued`. Otherwise
-    up to `batch_size` rows are worked on, a few at a time (`notify.SIMULTANEOUS`). A row is claimed
-    as `sending` only when it has a send slot, in a short transaction that also checks it again
-    (still confirmed at the same start and not begun, the company's gates, the address as it is
-    now, the person still on the booking) and commits before the send. It is then settled `sent`,
-    `failed` or `dropped`. A failed send is not retried. A row left `sending` by a dead worker is
-    never sent, and a run cut short by its timeout leaves only the rows being sent that moment:
-    rows still waiting for a slot are still `queued`.
+    a company's rows left `sending` since before `LOST_AFTER` are settled `failed` and counted as
+    `lost`, and up to `batch_size` rows are worked on, taking one from each company in turn, a few
+    at a time (`notify.SIMULTANEOUS`). A row is claimed as `sending` only when it has a send slot,
+    in a short transaction that also checks it again (still confirmed at the same start and not
+    begun, the company's gates, the address as it is now, the person still on the booking) and
+    commits before the send. It is then settled `sent`, `failed` or `dropped`. A failed send is not
+    retried. A row whose claim fails is counted in `errors` and left as it was, for the next run,
+    and the other rows still go. A run cut short by its timeout leaves only the rows being sent
+    that moment `sending`: rows still waiting for a slot are still `queued`.
     """
-    stats = {"claimed": 0, "sent": 0, "failed": 0, "dropped": 0}
+    stats = {name: 0 for name in MAIL_STATS}
     if mailer is None or not mailer.enabled:
         return stats
+    lost_before = clock.now() - LOST_AFTER
     async with conn.transaction():
-        companies = await db.q.fetch_all("bookings/reminders_companies.sql", conn=conn)
-    work: list[tuple[UUID, UUID]] = []
+        companies = await db.q.fetch_all(
+            "bookings/reminders_companies.sql", {"lost_before": lost_before}, conn=conn
+        )
+    lists: list[list[tuple[UUID, UUID]]] = []
     for company in companies:
-        if len(work) >= batch_size:
-            break
-        async with tx(app_pool, str(company["client_id"])) as scoped:
-            queued = await db.q.fetch_all(
-                "bookings/reminders_queued.sql",
-                {"client_id": company["client_id"], "batch_size": batch_size - len(work)},
-                conn=scoped,
+        if len(lists) >= batch_size and not company["lost"]:
+            continue
+        try:
+            lost, queued = await _company_rows(
+                app_pool,
+                company["client_id"],
+                lost=company["lost"],
+                lost_before=lost_before,
+                batch_size=batch_size if len(lists) < batch_size else 0,
             )
-        work += [(company["client_id"], row["id"]) for row in queued]
+        except Exception as exc:
+            stats["errors"] += 1
+            logger.error("booking_reminder_list_failed", category=type(exc).__name__)
+            continue
+        stats["lost"] += lost
+        if queued:
+            lists.append(queued)
+    if stats["lost"]:
+        logger.warning("booking_reminder_mail_lost", count=stats["lost"])
     gate = asyncio.Semaphore(notify.SIMULTANEOUS)
 
     async def one(client_id: UUID, row_id: UUID) -> str | None:
         async with gate:
-            return await _try_one(app_pool, mailer, clock, client_id, row_id)
+            try:
+                return await _try_one(app_pool, mailer, clock, client_id, row_id)
+            except Exception as exc:
+                # The claim's transaction failed and rolled back: the row is as it was.
+                logger.error("booking_reminder_claim_failed", category=type(exc).__name__)
+                return "errors"
 
+    work = _take_turns(lists, batch_size)
     for status in await asyncio.gather(*(one(client_id, row_id) for client_id, row_id in work)):
-        if status is not None:
+        if status == "errors":
+            stats["errors"] += 1
+        elif status is not None:
             stats["claimed"] += 1
             stats[status] += 1
     return stats

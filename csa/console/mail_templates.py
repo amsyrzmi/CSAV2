@@ -172,9 +172,10 @@ def booking_mail(
     booking: BookingRecord,
     change: BookingChange,
     tz: str,
-    calendar: CalendarFile,
+    calendar: CalendarFile | None,
 ) -> OutgoingMail:
-    """A booking made, moved or cancelled by staff, with the calendar file attached.
+    """A booking made, moved or cancelled by staff, with the calendar file attached, or without
+    one for a person whose Google Calendar already holds it.
 
     The place and the Maps and Waze links come from the booking itself, and nothing here says who
     else is on it.
@@ -193,11 +194,18 @@ def booking_mail(
         ("When", f"{_span(booking.starts_at, booking.ends_at, tz)} ({tz})", None),
         *_place_rows(booking),
     ]
-    footer = (
-        "Open the attached calendar file to remove it from your calendar."
-        if change == "cancelled"
-        else "Open the attached calendar file to add it to your calendar."
-    )
+    if calendar is None:  # their Google Calendar holds it already
+        footer = (
+            "It has been removed from your Google Calendar."
+            if change == "cancelled"
+            else "It is on your Google Calendar."
+        )
+    else:
+        footer = (
+            "Open the attached calendar file to remove it from your calendar."
+            if change == "cancelled"
+            else "Open the attached calendar file to add it to your calendar."
+        )
     hello = f"Hello {name}," if name else "Hello,"
     text = (
         f"{hello}\n\n{headline}\n\n"

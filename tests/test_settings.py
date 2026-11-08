@@ -155,6 +155,41 @@ def test_blank_upload_roots_are_unset(blank: str) -> None:
     assert s.HR_UPLOAD_ROOT is None
 
 
+def test_training_root_blank_is_unset() -> None:
+    assert _settings().TRAINING_UPLOAD_ROOT is None
+    assert _settings(TRAINING_UPLOAD_ROOT="").TRAINING_UPLOAD_ROOT is None
+    assert _settings(TRAINING_UPLOAD_ROOT="   ").TRAINING_UPLOAD_ROOT is None
+
+
+def test_training_root_apart_from_kb_and_hr_roots_is_accepted() -> None:
+    s = _settings(
+        KB_UPLOAD_ROOT="/srv/kb-uploads",
+        HR_UPLOAD_ROOT="/srv/hr-uploads",
+        TRAINING_UPLOAD_ROOT="/srv/training-uploads",
+    )
+    assert str(s.TRAINING_UPLOAD_ROOT) == "/srv/training-uploads"
+    assert _settings(TRAINING_UPLOAD_ROOT="/srv/training-uploads").KB_UPLOAD_ROOT is None
+
+
+@pytest.mark.parametrize("other", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"])
+@pytest.mark.parametrize(
+    ("training", "root"),
+    [
+        ("/srv/uploads", "/srv/uploads"),
+        ("/srv/uploads", "/srv/uploads/"),
+        ("/srv/uploads", "/srv/kb/../uploads"),
+        ("/srv/uploads/training", "/srv/uploads"),
+        ("/srv/uploads", "/srv/uploads/training"),
+    ],
+)
+def test_training_root_must_not_overlap_kb_or_hr_root(training: str, root: str, other: str) -> None:
+    # Training files are <uuid>.pdf under <root>/<client_id>/ and its sweep deletes the
+    # uuid-named files it does not know, so a shared or nested root would let it delete the
+    # other store's files.
+    with pytest.raises(ValidationError, match="TRAINING_UPLOAD_ROOT must not be, contain or sit"):
+        _settings(TRAINING_UPLOAD_ROOT=training, **{other: root})
+
+
 _S3 = {
     "STORAGE_BACKEND": "s3",
     "S3_BUCKET": "synthetic-bucket",
@@ -193,10 +228,16 @@ def test_s3_backend_secrets_are_masked() -> None:
     assert s.S3_SECRET_ACCESS_KEY.get_secret_value() == "synthetic-secret"
 
 
-@pytest.mark.parametrize("root", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT"])
+@pytest.mark.parametrize("root", ["KB_UPLOAD_ROOT", "HR_UPLOAD_ROOT", "TRAINING_UPLOAD_ROOT"])
 def test_s3_backend_refuses_local_upload_roots(root: str) -> None:
     with pytest.raises(ValidationError, match=f"STORAGE_BACKEND=s3 conflicts with {root}"):
         _settings(**_S3, **{root: "/srv/uploads"})
+
+
+def test_s3_backend_refuses_training_root() -> None:
+    message = "STORAGE_BACKEND=s3 conflicts with TRAINING_UPLOAD_ROOT; unset TRAINING_UPLOAD_ROOT"
+    with pytest.raises(ValidationError, match=message):
+        _settings(**_S3, TRAINING_UPLOAD_ROOT="/srv/training-uploads")
 
 
 def test_s3_backend_ingest_does_not_need_kb_upload_root() -> None:
@@ -207,3 +248,51 @@ def test_s3_backend_ingest_does_not_need_kb_upload_root() -> None:
 def test_local_backend_ingest_still_needs_kb_upload_root() -> None:
     with pytest.raises(ValidationError, match="KB_INGEST_ENABLED requires KB_UPLOAD_ROOT"):
         _settings(KB_INGEST_ENABLED="true")
+
+
+_GOOGLE = {
+    "GOOGLE_CLIENT_ID": "synthetic-client.example.test",
+    "GOOGLE_CLIENT_SECRET": "synthetic-client-secret-value",
+    "GOOGLE_OAUTH_REDIRECT_URI": "https://console.example.test/console/v1/email/oauth/callback",
+}
+
+
+def test_the_booking_google_flags_default_off() -> None:
+    s = _settings()
+    assert s.BOOKINGS_GOOGLE_CALENDAR_ENABLED is False
+    assert s.BOOKINGS_GOOGLE_MEET_ENABLED is False
+
+
+def test_meet_without_the_calendar_is_refused() -> None:
+    with pytest.raises(ValidationError, match="BOOKINGS_GOOGLE_MEET_ENABLED requires"):
+        _settings(BOOKINGS_GOOGLE_MEET_ENABLED="true", **_GOOGLE)
+
+
+@pytest.mark.parametrize(
+    "missing", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI"]
+)
+def test_the_calendar_without_the_google_client_is_refused(missing: str) -> None:
+    env = {k: v for k, v in _GOOGLE.items() if k != missing}
+    with pytest.raises(ValidationError, match="BOOKINGS_GOOGLE_CALENDAR_ENABLED requires"):
+        _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **env)
+
+
+def test_the_calendar_and_meet_with_the_google_client_construct() -> None:
+    s = _settings(
+        BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", BOOKINGS_GOOGLE_MEET_ENABLED="true", **_GOOGLE
+    )
+    assert s.BOOKINGS_GOOGLE_CALENDAR_ENABLED and s.BOOKINGS_GOOGLE_MEET_ENABLED
+
+
+def test_the_calendar_callback_is_the_console_origin_plus_its_own_path() -> None:
+    s = _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **_GOOGLE)
+    assert s.bookings_calendar_redirect_uri() == (
+        "https://console.example.test/console/v1/bookings/calendar/callback"
+    )
+    assert _settings().bookings_calendar_redirect_uri() is None
+
+
+def test_the_calendar_origin_must_be_a_web_address() -> None:
+    env = {**_GOOGLE, "GOOGLE_OAUTH_REDIRECT_URI": "not-a-url"}
+    with pytest.raises(ValidationError, match="web address"):
+        _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **env)

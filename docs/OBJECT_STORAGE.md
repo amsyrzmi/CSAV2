@@ -1,7 +1,7 @@
 # Object storage (S3)
 
-Knowledge-base uploads and HR documents are stored through one interface with two backends:
-the local `*_UPLOAD_ROOT` folders (the default; dev, CI and current staging) or one S3 bucket.
+Knowledge-base uploads, HR documents and training library PDFs are stored through one interface
+with two backends: the local `*_UPLOAD_ROOT` folders (the default; dev, CI and current staging) or one S3 bucket.
 The database keeps only file names, so the backend is a deployment choice, not a data change.
 
 ## Settings
@@ -9,13 +9,14 @@ The database keeps only file names, so the backend is a deployment choice, not a
 | Setting | Meaning |
 | --- | --- |
 | `STORAGE_BACKEND` | `local` (default) or `s3`. |
+| `KB_UPLOAD_ROOT`, `HR_UPLOAD_ROOT`, `TRAINING_UPLOAD_ROOT` | Local backend only: the folder for each store. Unset means that store is not configured. None may be, contain or sit inside another. |
 | `S3_BUCKET` | Bucket name. |
 | `S3_REGION` | Bucket region, for example `ap-southeast-1`. |
 | `S3_ACCESS_KEY_ID` | Access key id of the application key. |
 | `S3_SECRET_ACCESS_KEY` | Secret access key of the application key. |
 
-With `STORAGE_BACKEND=s3` all four S3 values are required, and `KB_UPLOAD_ROOT` and
-`HR_UPLOAD_ROOT` must be unset. Anything else stops the process at startup; it never falls back
+With `STORAGE_BACKEND=s3` all four S3 values are required, and `KB_UPLOAD_ROOT`,
+`HR_UPLOAD_ROOT` and `TRAINING_UPLOAD_ROOT` must be unset. Anything else stops the process at startup; it never falls back
 to local disk. The gateway and the ingest worker also run the store's startup check and stop if
 the bucket is unreachable or the key is refused.
 
@@ -32,12 +33,14 @@ the keys in git, logs or chat, and rotate the key if one is ever pasted anywhere
 
 ## Layout
 
-Objects are stored as `kb/<client_id>/<name>` and `hr/<client_id>/<name>`, all with S3-managed
-encryption (SSE-S3). The local layout is `<root>/<client_id>/<name>`.
+Objects are stored as `kb/<client_id>/<name>`, `hr/<client_id>/<name>` and
+`training/<client_id>/<name>`, all with S3-managed encryption (SSE-S3). The local layout is
+`<root>/<client_id>/<name>`. No existing files need copying for `training/`: no training files
+existed before the store was added.
 
 ## IAM policy for the application key
 
-The application key can list only under `kb/` and `hr/`, read and write objects there, and
+The application key can list only under `kb/`, `hr/` and `training/`, read and write objects there, and
 write (never read or delete) under `backups/`. It has no permission on object versions, so a
 leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
 
@@ -50,13 +53,17 @@ leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::<bucket>",
-      "Condition": { "StringLike": { "s3:prefix": ["kb/*", "hr/*"] } }
+      "Condition": { "StringLike": { "s3:prefix": ["kb/*", "hr/*", "training/*"] } }
     },
     {
       "Sid": "ReadWriteDeleteFiles",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-      "Resource": ["arn:aws:s3:::<bucket>/kb/*", "arn:aws:s3:::<bucket>/hr/*"]
+      "Resource": [
+        "arn:aws:s3:::<bucket>/kb/*",
+        "arn:aws:s3:::<bucket>/hr/*",
+        "arn:aws:s3:::<bucket>/training/*"
+      ]
     },
     {
       "Sid": "BackupsPutOnly",
@@ -211,7 +218,7 @@ Run the smoke script inside the gateway container, so it uses the real applicati
 docker exec csa-prod-gateway-1 python -m scripts.storage_smoke
 ```
 
-It writes one small object per store, under a random tenant id in the `kb` and `hr` prefixes, and
+It writes one small object per store, under a random tenant id in the `kb`, `hr` and `training` prefixes, and
 checks the startup check, put and read, listing, streaming, delete, and reading a missing name, then
 removes them. It prints one `PASS` or `FAIL` line per check and never prints keys or contents.
 Exit code 0 means every check passed, 1 means a check failed, 2 means the settings are unusable.

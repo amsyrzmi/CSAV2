@@ -123,6 +123,7 @@ test("booking, calendar, availability and customer calls", async () => {
     await bookings.moveBooking(null, ID, { version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"] });
     await bookings.changeBooking(null, ID, "cancel", 3);
     await bookings.changeBooking(null, ID, "no-show", 3);
+    await bookings.retryMeet(null, ID);
   });
   assert.deepEqual(shape(requests), [
     ["GET", "/console/v1/bookings/calendar?from=2026-11-02T00%3A00%3A00Z&to=2026-11-09T00%3A00%3A00Z"],
@@ -136,6 +137,7 @@ test("booking, calendar, availability and customer calls", async () => {
     ["PATCH", `/console/v1/bookings/bookings/${ID}`],
     ["POST", `/console/v1/bookings/bookings/${ID}/cancel`],
     ["POST", `/console/v1/bookings/bookings/${ID}/no-show`],
+    ["POST", `/console/v1/bookings/bookings/${ID}/meet`],
   ]);
   assert.deepEqual(JSON.parse(requests[8][1].body), {
     version: 2, starts_at: "2026-11-06T02:00:00Z", acknowledged: ["closed_day"],
@@ -228,6 +230,33 @@ test("a setup refusal reads as a plain sentence, never the code", async () => {
     const status = code.startsWith("version") ? 409 : 422;
     await assert.rejects(
       capture(() => bookings.changePerson(null, ID, { version: 1 }), () => Response.json({ detail: code }, { status })),
+      (error) => error instanceof ApiError && error.code === code && expected.test(error.message),
+      code,
+    );
+  }
+});
+
+test("the Google Calendar calls go to the calendar routes, and its refusals are sentences", async () => {
+  const [, requests] = await capture(async () => {
+    await bookings.getCalendarStatus(null);
+    await bookings.startCalendarConnect(null);
+    await bookings.disconnectCalendar(null);
+    await bookings.getCalendarStatus(ID);
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/bookings/calendar/status"],
+    ["POST", "/console/v1/bookings/calendar/connect"],
+    ["POST", "/console/v1/bookings/calendar/disconnect"],
+    ["GET", `/console/v1/bookings/calendar/status?client_id=${ID}`],
+  ]);
+  const cases = [
+    ["person_required", /Ask an Admin to add you/],
+    ["not_connected", /isn't connected/],
+    ["calendar_unavailable", /switched on/],
+  ];
+  for (const [code, expected] of cases) {
+    await assert.rejects(
+      capture(() => bookings.startCalendarConnect(null), () => Response.json({ detail: code }, { status: 409 })),
       (error) => error instanceof ApiError && error.code === code && expected.test(error.message),
       code,
     );

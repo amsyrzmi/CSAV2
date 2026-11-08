@@ -109,6 +109,29 @@ test("Bookings carries Calendar, Booking types and People & rooms, Calendar on t
   assert.equal(entryForPath(links, "/portal/bookings/people-and-rooms")?.key, "bookings");
 });
 
+test("Training library follows its own package for every member role, after Bookings, with no sub-pages", () => {
+  for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
+    const alone = navigationFor({ ...staff, role }, active("training_library"));
+    const link = alone.find((l) => l.label === "Training library");
+    assert.equal(link?.key, "training_library", role);
+    assert.equal(link?.href, "/portal/training", role);
+    assert.equal(link?.children, undefined, role);
+    assert.ok(!alone.some((l) => l.label === "Customer inbox" || l.label === "People & HR"), "it needs no other package");
+  }
+  const withBookings = labels(staff, active("training_library", "bookings"));
+  assert.equal(withBookings.indexOf("Training library"), withBookings.indexOf("Bookings") + 1);
+  // HR's own Training tab is a different thing: the HR package alone never shows the library.
+  for (const packages of [[], active("hr", "bookings"), [{ key: "training_library", status: "suspended" }],
+    [{ key: "training_library", status: "requested" }], [{ key: "training_library", status: "available" }]]) {
+    assert.ok(!labels(staff, packages).includes("Training library"), JSON.stringify(packages));
+  }
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(admin.find((l) => l.key === "training_library")?.href, "/training");
+  const links = navigationFor(staff, active("training_library"));
+  assert.equal(entryForPath(links, "/portal/training/44444444-4444-4444-8444-444444444444")?.key, "training_library");
+  assert.equal(entryForPath(links, "/portal/trainingx"), null);
+});
+
 test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
@@ -157,11 +180,12 @@ test("business and knowledge entries carry their sub-pages in order", () => {
 });
 
 test("children never add a top-level key", () => {
-  const all = active("orders_products", "customer_support", "knowledge_base", "hr", "staff_email", "subscriptions", "bookings");
+  const all = active("orders_products", "customer_support", "knowledge_base", "hr", "staff_email", "subscriptions", "bookings", "training_library");
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  assert.equal(keys.size, 14);
+  // 15 since the Training library joined.
+  assert.equal(keys.size, 15);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
@@ -169,7 +193,7 @@ test("child literals are href-first so the contract regex never reads them", asy
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
     "activity", "bookings", "business", "email", "hr", "inbox", "knowledge_base", "members", "overview",
-    "password", "services", "subscriptions", "team", "tenants",
+    "password", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });
 

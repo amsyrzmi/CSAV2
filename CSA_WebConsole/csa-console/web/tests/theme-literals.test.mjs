@@ -74,6 +74,10 @@ const OWNED = [
   "components/console/WhatsAppPanel.tsx",
   "components/console/AssistantDock.tsx",
   "components/console/ProposalCard.tsx",
+  "components/console/training/",
+  "components/console/TrainingWorkspace.tsx",
+  "lib/training-form.ts",
+  "lib/training-viewer-logic.ts",
 ];
 
 /** OWNED directories allowed to hold no scanned file. None today. */

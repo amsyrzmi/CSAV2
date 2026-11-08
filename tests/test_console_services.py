@@ -806,6 +806,28 @@ async def test_bookings_activates_without_customer_support(sessions: SessionWorl
     assert rows == [{"package": "bookings", "status": "active"}]
 
 
+async def test_training_library_activates_without_customer_support(
+    sessions: SessionWorld,
+) -> None:
+    tenant = sessions.tenants[0]
+    # No backfill: a company has no row for the package until it is activated.
+    assert (
+        await sessions.q("SELECT package FROM console_service_packages WHERE client_id=%s", tenant)
+        == []
+    )
+    started = await sessions.mutate(
+        sessions.admin,
+        f"/console/v1/services/training_library/activate?client_id={tenant}",
+        {"reference": "synthetic-test"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["status"] == "active" and started.json()["requires"] == []
+    rows = await sessions.q(
+        "SELECT package, status FROM console_service_packages WHERE client_id=%s", tenant
+    )
+    assert rows == [{"package": "training_library", "status": "active"}]
+
+
 async def test_activating_bookings_moves_an_onboarding_company_to_pilot(
     sessions: SessionWorld,
 ) -> None:

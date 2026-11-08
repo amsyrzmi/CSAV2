@@ -492,6 +492,44 @@ async def test_sigterm_stops_the_worker_through_the_drain_and_the_pool_close() -
     assert events == ["http closed", "drain", "close app"]
 
 
+async def test_a_second_stop_signal_does_not_cut_the_drain_or_the_pool_close_short() -> None:
+    events: list[str] = []
+    deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]
+    draining = asyncio.Event()
+    release = asyncio.Event()
+
+    async def drain() -> None:
+        draining.set()
+        await release.wait()  # booking mail still on its way when the next signals come
+        events.append("drain")
+
+    deps._booking_agent.drain = drain  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        run_until_stopped(
+            asyncio.Event().wait(),
+            background=[],
+            llm_http=_Http(events),  # type: ignore[arg-type]
+            deps=deps,
+            pools=(_Pool("app", events),),
+        )
+    )
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(draining.wait(), 1)
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.05)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)
+    assert events == ["http closed", "drain", "close app"]
+
+
 async def test_a_drain_that_does_not_finish_is_cut_off_and_the_pools_still_close() -> None:
     events: list[str] = []
     deps = PostgresTurnDependencies(None)  # type: ignore[arg-type]

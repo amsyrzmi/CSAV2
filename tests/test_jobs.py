@@ -14,6 +14,7 @@ from csa.jobs.bookings import (
     run_pending_expiry,
     run_reminder_mail,
     run_reminder_queue,
+    run_turn_action_retention,
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
@@ -463,6 +464,23 @@ async def test_registry_runs_the_booking_reminders_every_five_minutes() -> None:
         assert send is not None and send.per_client is False
         assert send.every == timedelta(minutes=5) and send.timeout > 30
         assert send.fn is not run_reminder_mail  # the registry binds the mailer around it
+
+
+async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner() -> None:
+    job = build_default_registry().get("booking_turn_action_retention")
+    assert job is not None and job.fn is run_turn_action_retention
+    # The app role never deletes what a turn key did, so this runs once, as the owner.
+    assert job.per_client is False and job.every == timedelta(hours=24)
+
+
+async def test_registry_runs_the_calendar_reconcile_for_everyone_and_idles_without_a_push() -> None:
+    for registry in (build_default_registry(), build_default_registry(None, None, None)):
+        job = registry.get("booking_calendar_reconcile")
+        # One run for everyone, as the owner, with room for slow calls to Google.
+        assert job is not None and job.per_client is False
+        assert job.every == timedelta(minutes=5) and job.timeout > 30
+        idle = await job.fn(None, FakeClock(datetime(2031, 1, 1, tzinfo=UTC)), batch_size=10)  # type: ignore[call-arg, arg-type]
+        assert idle["due"] == 0 and idle["synced"] == 0
 
 
 async def test_job_runner_due_and_heartbeat_health(

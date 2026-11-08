@@ -47,9 +47,16 @@ const hrPathsCode = ts.transpileModule(
 ).outputText;
 const hrPathsExports = {};
 new Function("exports", hrPathsCode)(hrPathsExports);
+const trainingViewCode = ts.transpileModule(
+  await readFile(new URL("../lib/training-view.ts", import.meta.url), "utf8"),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+).outputText;
+const trainingViewExports = {};
+new Function("exports", trainingViewCode)(trainingViewExports);
 const proxyExports = {};
 new Function("require", "exports", proxyCode)(
-  (name) => (name === "./lib/hr-paths" ? hrPathsExports : require(name)),
+  (name) => (name === "./lib/hr-paths" ? hrPathsExports
+    : name === "./lib/training-view" ? trainingViewExports : require(name)),
   proxyExports,
 );
 const { NextRequest } = require("next/server");
@@ -71,6 +78,22 @@ test("Subscriptions pages are adopted but require a session cookie", () => {
     assert.equal(proxyExports.proxy(new NextRequest(url, {
       headers: { Cookie: "csa_session=synthetic" },
     })).status, 200, route);
+  }
+});
+
+test("Training library pages are adopted but require a session cookie; other paths under them are not", () => {
+  const item = "44444444-4444-4444-8444-444444444444";
+  for (const route of ["/training", "/portal/training", `/training/${item}`, `/portal/training/${item}`]) {
+    const url = `https://console.example.test${route}`;
+    assert.equal(proxyExports.proxy(new NextRequest(url)).status, 307, route);
+    assert.equal(proxyExports.proxy(new NextRequest(url, {
+      headers: { Cookie: "csa_session=synthetic" },
+    })).status, 200, route);
+  }
+  for (const route of ["/training/new", `/portal/training/${item}/edit`, "/trainings"]) {
+    assert.equal(proxyExports.proxy(new NextRequest(`https://console.example.test${route}`, {
+      headers: { Cookie: "csa_session=synthetic" },
+    })).status, 404, route);
   }
 });
 

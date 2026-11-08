@@ -449,6 +449,9 @@ class BookingOut(Contract):
     # withdrawn). Moving or cancelling the booking withdraws that request. Null on a private
     # meeting the viewer is not part of.
     pending_change_id: UUID | None = None
+    # A confirmed online booking still to come with no meeting link, while Meet links are on: staff
+    # can ask Google again or paste a link. False on everything else, and with Meet links off.
+    meet_missing: bool = False
 
 
 class BookingSlotOut(Contract):

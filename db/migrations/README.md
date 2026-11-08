@@ -16,12 +16,19 @@ Reserved ranges (client growth program, 2026-10-27):
   holds and the leave read function in 0510; the team-members read for setup in 0511; the bot's
   columns, the settings and reminders tables and the `booking_pending` event in 0512). Ranges kept
   by the settings: `reminder_minutes` 15 to 10080, `pending_hours` 1 to 168, `customer_limit` 1 to
-  50 (checked by the API and by the table).
+  50 (checked by the API and by the table). Stage 2 (Google Calendar) adds 0513: a person's
+  connection, the PKCE states of connecting, and the ledger of what Google holds for each booking
+  (`booking_calendar_connections`, `booking_calendar_oauth_states`, `booking_calendar_events`).
+  Tables only, so it can arrive on a database already past 0531; the highest version stays 0531.
 - `0520`–`0529`: HR people (People & HR project 1).
 - `0531`: Bookings assistant action, placed after 0530 because these two constraints were last
   redefined in 0521 (`console_proposals_kind_check` and `console_workspace_turns_action_check` also
   allow `booking_action`). It reads each constraint's current list and adds to it, so it keeps
   whatever other tracks allow.
+- `0540`–`0549`: training library. 0540 adds the `training_library` tab to
+  `console_workspace_turns_page_key_check`, reading the live list as 0531 does; 0541 adds
+  `training_items` (tenant isolated, `csa_app` only) and `training_is_hr_owner()`, the
+  no-argument definer check that reads `app.client_id` and `app.hr_user_id`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

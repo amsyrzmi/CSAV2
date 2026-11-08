@@ -70,7 +70,11 @@ from scripts.staging_rollout import (
 from scripts.staging_roster import ROSTER_PATH, Roster, RosterError, load_roster
 
 DATABASE = "csa_staging"
-UPLOAD_VOLUMES = ("csa-staging_staging-uploads", "csa-staging_staging-hr-uploads")
+UPLOAD_VOLUMES = (
+    "csa-staging_staging-uploads",
+    "csa-staging_staging-hr-uploads",
+    "csa-staging_staging-training-uploads",
+)
 CONFIRM_PHRASE = "wipe csa-staging"
 DROP_DATABASE_SQL = "DROP DATABASE IF EXISTS csa_staging WITH (FORCE)"
 CREATE_DATABASE_SQL = "CREATE DATABASE csa_staging OWNER csa"

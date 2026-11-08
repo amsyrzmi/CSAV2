@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -45,6 +45,9 @@ from csa.console.mailer import CalendarFile, Mailer
 from csa.core import db
 from csa.core.tenancy import tx
 
+if TYPE_CHECKING:
+    from csa.bookings.google.push import CalendarPush
+
 logger = structlog.get_logger(__name__)
 
 # "declined" is a cancellation for the people on the booking and a plain "not confirmed" for a
@@ -55,6 +58,8 @@ SIMULTANEOUS = 8  # sends at once, so a slow relay holds up a booking with many 
 # Seconds the staff member waits for all of one booking's mail, under any proxy's read timeout.
 # Past it, sends not yet started are dropped; one already in flight cannot be taken back.
 SEND_LIMIT = 15.0
+# How long a staff or assistant booking waits for Google before its mail goes; the job finishes it.
+CALENDAR_PUSH_TIMEOUT = 8.0
 _EMAIL = TypeAdapter(Email)
 
 
@@ -64,6 +69,9 @@ class Outcome:
 
     email: EmailSummary
     customer_told: bool | None
+    # The booking as it is once the Google push has run (it may have a Meet link and a newer
+    # version); None when the push changed nothing or did not run.
+    booking: BookingRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,8 @@ class MailFacts:
     brand: str
     timezone: str
     account_emails: Mapping[UUID, str]  # console account id to its address
+    # People whose Google event already holds this booking: their mail carries no calendar file.
+    calendar_people: frozenset[UUID] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,7 @@ class Recipient:
     address: str
     name: str | None
     customer: bool = False
+    on_google: bool = False  # their Google event holds the booking: no calendar file
 
 
 async def load_facts(conn: Conn, client_id: UUID) -> MailFacts:
@@ -181,10 +192,10 @@ def recipients(
     anyone else."""
     found: dict[str, Recipient] = {}
 
-    def add(address: object, name: str | None, *, who: bool = False) -> None:
+    def add(address: object, name: str | None, *, who: bool = False, google: bool = False) -> None:
         clean = _clean(address) if address else None
         if clean is not None:
-            found.setdefault(clean.casefold(), Recipient(clean, name, who))
+            found.setdefault(clean.casefold(), Recipient(clean, name, who, google))
 
     asker = booking.customer
     mail_customer = not never_confirmed(booking) if customer is None else customer
@@ -200,7 +211,8 @@ def recipients(
     for person in booking.people:
         own = _clean(person.email) if person.email else None
         account = facts.account_emails.get(person.user_id) if person.user_id else None
-        add(own or account, person.display_name)
+        on_google = person.person_id in facts.calendar_people
+        add(own or account, person.display_name, google=on_google)
     for guest in booking.guests:
         add(guest.email, guest.name)
     return list(found.values())
@@ -238,11 +250,15 @@ async def _deliver(
                 "cancelled" if change == "declined" else change
             )
             method: Literal["REQUEST", "CANCEL"] = "CANCEL" if shown == "cancelled" else "REQUEST"
-            file = CalendarFile(
-                method,
-                ics.invitation(
-                    booking, mailer.sender, method, attendee=one.address, attendee_name=one.name
-                ),
+            file = (
+                None
+                if one.on_google
+                else CalendarFile(
+                    method,
+                    ics.invitation(
+                        booking, mailer.sender, method, attendee=one.address, attendee_name=one.name
+                    ),
+                )
             )
             mail = booking_mail(
                 to=one.address,
@@ -316,6 +332,7 @@ async def notify_after_commit(
     by_chat: bool = False,
     original: BookingRecord | None = None,
     invite: bool = True,
+    calendar: CalendarPush | None = None,
 ) -> Outcome:
     """Read the company's facts in a new transaction, then notify.
 
@@ -324,6 +341,7 @@ async def notify_after_commit(
     category only.
     """
     unknown = _told(customer_owed(booking, owed), by_chat)
+    sent = booking  # as it was handed in: the push may return a newer one
     try:
         try:
             async with tx(pool, str(booking.client_id)) as conn:
@@ -331,7 +349,12 @@ async def notify_after_commit(
         except Exception:
             logger.warning("bookings_mail_failed", category="facts_unavailable")
             return Outcome("failed", unknown)
-        return await notify(
+        if calendar is not None and calendar.available and change != "declined":
+            # The people's Google events first, so mail to one whose calendar now holds the
+            # booking carries no file (it would add a second event). The push never raises.
+            booking = await calendar(booking, timeout=CALENDAR_PUSH_TIMEOUT) or booking
+            facts = replace(facts, calendar_people=await _calendar_people(pool, booking, change))
+        outcome = await notify(
             mailer,
             booking,
             change,
@@ -341,6 +364,37 @@ async def notify_after_commit(
             original=original,
             invite=invite,
         )
+        return replace(outcome, booking=booking if booking is not sent else None)
     except Exception:
         logger.warning("bookings_mail_failed", category="unexpected")
         return Outcome("failed", unknown)
+
+
+async def _calendar_people(
+    pool: AsyncConnectionPool, booking: BookingRecord, change: Change
+) -> frozenset[UUID]:
+    """The people whose mail carries no calendar file, once the push has run.
+
+    For a new booking or a move: those whose Google event now holds this version of it (a file
+    would add a second event). Who was left without one is stored, so a cancellation can tell
+    who was ever sent a file. For a cancellation: those who never were, since there is no event
+    of ours for the file to remove. Never raises: on a failure everyone gets the file, as before.
+    """
+    ids = {"client_id": booking.client_id, "booking_id": booking.id}
+    try:
+        async with tx(pool, str(booking.client_id)) as conn:
+            rows = await db.q.fetch_all("bookings/google_ledger_people.sql", ids, conn=conn)
+            if change == "cancelled":
+                return frozenset(r["person_id"] for r in rows if r["file_free"])
+            free = frozenset(
+                r["person_id"]
+                for r in rows
+                if r["status"] == "synced" and r["synced_version"] == booking.version
+            )
+            await db.q.execute(
+                "bookings/google_event_file_mark.sql", {**ids, "omitted": list(free)}, conn=conn
+            )
+            return free
+    except Exception:
+        logger.warning("bookings_mail_failed", category="calendar_people")
+        return frozenset()
