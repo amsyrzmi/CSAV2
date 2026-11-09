@@ -111,6 +111,7 @@ from csa.workspace.planner import (
     page_hint,
 )
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
+from csa.workspace.routing import Needs, route_facts
 from csa.workspace.rules import ADDRESS as _ADDRESS
 from csa.workspace.rules import (
     BLANK_QUERY,
@@ -1063,6 +1064,17 @@ async def _my_employee(
     )
 
 
+def word_rule_needs(body: str) -> Needs:
+    """The word rules' answer to which fact reads this message needs (the routing fallback)."""
+    return Needs(
+        manager=bool(_MANAGER_WORDS.search(body)),
+        mail=bool(_MAIL_WORDS.search(body)),
+        team=bool(_TEAM_WORDS.search(body)),
+        training=bool(_TRAINING_WORDS.search(body)),
+        people=bool(_PEOPLE_WORDS.search(body)),
+    )
+
+
 async def planner_facts(
     request: Request,
     actor: ConsoleActor,
@@ -1088,20 +1100,27 @@ async def planner_facts(
     history = _prior_turns(rows, turn.body)
     previous = _split_stored(rows[0]["result"])[1] if rows else None
     offered = history[-1].offered_options if history else []
+    needs = await route_facts(
+        getattr(request.app.state, "routing_decider", None),
+        turn.body,
+        fallback=word_rule_needs(turn.body),
+        trace_id=turn.request_key,
+        client_id=client_id,
+    )
     manager = None
-    if _MANAGER_WORDS.search(turn.body):
+    if needs.manager:
         manager = await _my_manager(request, actor, client_id, packages)
     threads = None
-    if _MAIL_WORDS.search(turn.body):
+    if needs.mail:
         threads = await _mailbox_threads(request, actor, client_id, packages)
     team = None
-    if _TEAM_WORDS.search(turn.body):
+    if needs.team:
         team = _team_fact(await _my_team(request, actor, client_id, packages))
     employee = None
-    if _TRAINING_WORDS.search(turn.body):
+    if needs.training:
         employee = await _my_employee(request, actor, client_id, packages)
     people = None
-    if _PEOPLE_WORDS.search(turn.body):
+    if needs.people:
         people = await hr_people.people_access(request, actor, client_id, packages)
     # Whatever the words and the tab: a company with Bookings open always gives the model its
     # clock (one time-zone read), so no phrasing is wrongly told that bookings are unavailable.
