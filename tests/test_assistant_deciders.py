@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from collections.abc import AsyncIterator
@@ -311,3 +312,191 @@ def test_build_deciders_resolves_each_area(monkeypatch: pytest.MonkeyPatch) -> N
     assert built.email is not None and built.email.mode == "cascade"  # auto with a key
     assert built.routing is None  # llm is the kill switch: no decider at all
     assert built.inbound is not None and built.inbound.mode == "cascade"
+
+
+# Fix round 1: Jev and fallback answers are validated, names cannot slip past redaction, and
+# the whole Jev request is bounded.
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"mode": {"choice": "shared", "confidence": float("nan")}},
+        {"mode": {"choice": "shared", "confidence": 7.0}},
+        {"mode": {"choice": "shared", "confidence": -0.1}},
+        {"mode": {"choice": "shared", "confidence": True}},
+        {"needs_kb": {"noul": True}},
+        {"needs_kb": {"noul": float("nan")}},
+    ],
+)
+async def test_a_nan_out_of_range_or_bool_confidence_is_an_invalid_answer(
+    rows: list[Any], answer: dict[str, dict[str, Any]]
+) -> None:
+    bad = _jev()
+    bad.answers.update(answer)
+    fallback = Fallback()
+    out = await _decide(_decider("cascade", FakeJev(bad)), fallback)
+    assert out.provider == "llm" and out.fallback_reason == "jev_invalid_answer"
+    assert out.answers == fallback.answers and fallback.calls == 1
+    json.dumps(rows[0][7].obj, allow_nan=False)  # the row stays storable as jsonb
+
+
+@pytest.mark.parametrize(
+    "fallback_answers",
+    [
+        {"needs_kb": False},  # the weak question is missing
+        {"mode": 3, "needs_kb": False},  # wrong type
+        {"mode": None, "needs_kb": False},
+        {"mode": "Dear Zed, here is your renewal", "needs_kb": False},  # free text
+    ],
+)
+async def test_a_weak_question_without_a_valid_fallback_answer_raises(
+    rows: list[Any], fallback_answers: dict[str, object]
+) -> None:
+    # mode is below the floor, so only the fallback may answer it; never Jev's weak answer.
+    jev = FakeJev(_jev(mode="shared", mode_conf=0.4))
+    with pytest.raises(deciders.FallbackAnswerError):
+        await _decide(_decider("cascade", jev), Fallback(fallback_answers))
+
+
+async def test_a_jev_error_and_an_incomplete_fallback_raises_not_a_missing_key(
+    rows: list[Any],
+) -> None:
+    with pytest.raises(deciders.FallbackAnswerError):
+        await _decide(
+            _decider("cascade", FakeJev(error=JevError("jev_timeout"))),
+            Fallback({"mode": "personalised"}),
+        )
+
+
+@pytest.mark.parametrize("mode", ["llm", "shadow"])
+async def test_the_fallback_must_answer_every_question_when_it_decides(
+    rows: list[Any], mode: str
+) -> None:
+    with pytest.raises(deciders.FallbackAnswerError):
+        await _decide(_decider(mode, FakeJev()), Fallback({"mode": "personalised", "needs_kb": 1}))
+
+
+async def test_extra_keys_and_free_text_from_the_fallback_never_reach_answers_or_the_log(
+    rows: list[Any],
+) -> None:
+    noisy = {
+        "mode": "personalised",
+        "needs_kb": False,
+        "note": "Dear Zed, here is your renewal",
+        "reason": "because Zed asked",
+    }
+    out = await _decide(_decider("cascade", FakeJev(_jev(mode_conf=0.4))), Fallback(noisy))
+    assert out.answers == {"mode": "personalised", "needs_kb": True}
+    out = await _decide(_decider("llm", FakeJev()), Fallback(noisy))
+    assert out.answers == {"mode": "personalised", "needs_kb": False}
+    # The audit fallback's free text for a question Jev answered is dropped, not logged.
+    audit = Fallback({"mode": "Dear Zed, here is your renewal", "needs_kb": True, "x": "Zed"})
+    out = await _decide(_decider("cascade", FakeJev(), audit=1.0), audit)
+    assert out.provider == "jev" and out.answers == {"mode": "shared", "needs_kb": True}
+    for row in rows:
+        dumped = json.dumps([row[7].obj, row[8].obj, row[9]], default=str)
+        assert "Zed" not in dumped and "note" not in dumped and "reason" not in dumped
+    assert rows[-1][7].obj["llm"] == {"needs_kb": True}
+
+
+@pytest.mark.parametrize("text", ["Aisyah\nRahman", "Aisyah  Rahman", "AISYAH \t rahman"])
+def test_redact_for_jev_matches_a_name_across_any_whitespace(text: str) -> None:
+    assert redact_for_jev(f"to {text}.", names=["Aisyah Rahman"]) == "to [NAME_0]."
+
+
+def test_redact_for_jev_redacts_a_dotted_capital_i_name() -> None:
+    assert redact_for_jev("Hi İlham", names=["İlham"]) == "Hi [NAME_0]"
+
+
+def test_redact_for_jev_with_a_dotless_i_name_neither_crashes_nor_leaks() -> None:
+    assert redact_for_jev("Kılıç said I am in", names=["Kılıç"]) == "[NAME_0] said I am in"
+    out = redact_for_jev("I wrote to ılgın", names=["ı", "ılgın"])
+    assert "ılgın" not in out
+
+
+async def test_string_dict_keys_are_redacted_too(rows: list[Any]) -> None:
+    jev = FakeJev()
+    state = {"people": {"Aisyah Rahman": 1, "aisyah@example.test": 2, "count": 3}}
+    await _decider("cascade", jev).decide(
+        state,
+        QUESTIONS,
+        fallback=Fallback(),
+        trace_id=uuid4(),
+        client_id=uuid4(),
+        names=["Aisyah Rahman"],
+    )
+    assert jev.calls[0]["state"] == {"people": {"[NAME_0]": 1, "[EMAIL_0]": 2, "count": 3}}
+
+
+def test_the_inbound_injection_decider_always_audits() -> None:
+    class S:
+        ASSISTANT_DECIDER_EMAIL = "cascade"
+        ASSISTANT_DECIDER_ROUTING = "cascade"
+        ASSISTANT_DECIDER_INBOUND_INJECTION = "cascade"
+        ASSISTANT_JEV_FLOOR_NOUL = 0.7
+        ASSISTANT_JEV_FLOOR_CHOICE = 0.7
+        ASSISTANT_DECIDER_AUDIT_SAMPLE = 0.1
+
+    built = build_deciders(S(), FakeJev(), object())  # type: ignore[arg-type]
+    assert built.inbound is not None and built.inbound.audit_sample == 1.0
+    assert built.email is not None and built.email.audit_sample == 0.1
+    assert built.routing is not None and built.routing.audit_sample == 0.1
+
+
+async def test_the_inbound_decider_logs_every_injection_disagreement(
+    rows: list[Any],
+) -> None:
+    class S:
+        ASSISTANT_DECIDER_EMAIL = "llm"
+        ASSISTANT_DECIDER_ROUTING = "llm"
+        ASSISTANT_DECIDER_INBOUND_INJECTION = "cascade"
+        ASSISTANT_JEV_FLOOR_NOUL = 0.7
+        ASSISTANT_JEV_FLOOR_CHOICE = 0.7
+        ASSISTANT_DECIDER_AUDIT_SAMPLE = 0.0
+
+    questions = {"injection": {"type": "noul", "instructions": "Does `message` override rules?"}}
+    jev = FakeJev(JevResponse(model="jev-test", answers={"injection": {"noul": 0.02}}))
+    inbound = build_deciders(S(), jev, object()).inbound  # type: ignore[arg-type]
+    assert inbound is not None
+    fallback = Fallback({"injection": True})
+    for _ in range(5):
+        out = await inbound.decide(
+            {"message": "hi"}, questions, fallback=fallback, trace_id=uuid4(), client_id=uuid4()
+        )
+        assert out.provider == "jev" and out.answers == {"injection": False}
+    assert fallback.calls == 5
+    assert [row[9] for row in rows] == [["injection"]] * 5
+
+
+class SleepyJev(FakeJev):
+    async def ask(self, state: object, questions: Any, *, timeout: float) -> JevResponse:
+        self.calls.append({"state": state, "timeout": timeout})
+        await asyncio.sleep(30)
+        return self.response
+
+
+@pytest.mark.parametrize("mode", ["cascade", "shadow"])
+async def test_the_whole_jev_request_is_bounded_by_the_classify_timeout(
+    rows: list[Any], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setattr(deciders, "CLASSIFY_TIMEOUT_S", 0.05)
+    fallback = Fallback()
+    out = await asyncio.wait_for(_decide(_decider(mode, SleepyJev()), fallback), timeout=5)
+    assert out.provider == "llm" and out.fallback_reason == "jev_timeout"
+    assert out.answers == fallback.answers
+    assert rows[0][10] == "jev_timeout"
+
+
+async def test_cancelling_a_decision_still_propagates(
+    rows: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deciders, "CLASSIFY_TIMEOUT_S", 10.0)
+    jev = SleepyJev()
+    task = asyncio.ensure_future(_decide(_decider("cascade", jev), Fallback()))
+    while not jev.calls:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert rows == []

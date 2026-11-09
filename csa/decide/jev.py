@@ -69,19 +69,27 @@ def redact_for_jev(text: str, *, names: Sequence[str] = ()) -> str:
     whole word, longest first) becomes ``[NAME_n]``, n being its place in ``names`` so the same
     person has the same number in every string of one call. Names typed in free text that the
     caller did not pass are not detected, the same standard as the customer classifier today.
+    A name's words match across any run of whitespace (a wrapped line, a double space). Each
+    name is its own named group and a match maps back to its number by that group, never by
+    re-casefolding the matched text (that differs for letters such as ``İ`` and ``ı``).
     """
     redacted = redact(text)
-    unique: dict[str, int] = {}
+    unique: dict[str, tuple[int, list[str]]] = {}
     for name in names:
-        key = " ".join(name.split()).casefold()
+        words = name.split()
+        key = " ".join(words).casefold()
         if key and key not in unique:
-            unique[key] = len(unique)
+            unique[key] = (len(unique), words)
     if not unique:
         return redacted
-    pattern = "|".join(re.escape(key) for key in sorted(unique, key=len, reverse=True))
+    gap = r"\s+"
+    ordered = sorted(unique.values(), key=lambda entry: len(" ".join(entry[1])), reverse=True)
+    pattern = "|".join(
+        f"(?P<n{n}>{gap.join(re.escape(word) for word in words)})" for n, words in ordered
+    )
     return re.sub(
         rf"(?<!\w)(?:{pattern})(?!\w)",
-        lambda match: f"[NAME_{unique[' '.join(match.group().split()).casefold()]}]",
+        lambda match: f"[NAME_{str(match.lastgroup)[1:]}]",
         redacted,
         flags=re.IGNORECASE,
     )
