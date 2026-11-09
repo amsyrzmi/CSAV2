@@ -264,6 +264,35 @@ def test_untrusted_facts_cannot_close_the_prompt_wrapper() -> None:
     assert prompt.endswith("<message>\nReply to Aina's email\n</message>")
 
 
+def test_facts_json_never_carries_the_stored_group_or_days() -> None:
+    """``resume_group`` and ``resume_days`` are for the server's check only: the planner's facts
+    JSON holds the count and never the group it was counted on."""
+    from csa.workspace.planner import PriorTurn
+
+    turn = PriorTurn(
+        message="Draft the reminder to everyone due for renewal in 30 days",
+        action="email_batch",
+        result="proposal",
+        proposal_kind="plan",
+        resume_offset=2,
+        resume_group="renewing_soon",
+        resume_days=30,
+    )
+    facts = PlannerFacts(
+        role=Role.TENANT_STAFF,
+        packages=[],
+        page_context=None,
+        record_summary=None,
+        language="en",
+        history=[turn],
+    )
+    prompt = planner_prompt("The rest please", facts)
+    data = json.loads(prompt[len("<facts>") : prompt.index("</facts>")])
+    assert data["history"][0]["resume_offset"] == 2
+    assert not {"resume_group", "resume_days"} & set(data["history"][0])
+    assert turn.resume_group == "renewing_soon" and turn.resume_days == 30  # kept for the server
+
+
 def test_planner_output_rejects_legacy_actions() -> None:
     with pytest.raises(ValidationError):
         PlannerOutput.model_validate_json(

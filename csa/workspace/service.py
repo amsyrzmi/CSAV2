@@ -2089,34 +2089,61 @@ _REDACTED_ADDRESS = re.compile(r"\[EMAIL_\d+\]")
 
 
 def _from_page_one(
-    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, latest: PriorTurn
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, chain: list[PriorTurn]
 ) -> bool:
-    """Every named recipient of a resumed page is one of page one's (the latest batch turn's).
+    """Every named recipient of a resumed page is one of page one's (one of the group's pages).
 
     On a resumed page named people only seed the dedupe set: they are never emailed or counted.
     So one this turn's words add (a new person next to "the rest") would be dropped without a
     word, and one nobody wrote would hide a group member: both are refused, as a new recipient
-    needs its own request. A name must be in the latest batch turn's stored words. That message
-    is stored redacted, so a typed address cannot be matched there: it passes only when this
-    turn's words do not hold it and the stored words hold at least as many typed addresses.
+    needs its own request. A name must be in the stored words of a turn of ``chain``
+    (``_batch_chain``: page three's latest turn is page two's "the rest", page one is further
+    back). Those messages are stored redacted, so a typed address cannot be matched there: it
+    passes only when this turn's words do not hold it and one of those turns holds at least as
+    many typed addresses.
     """
-    stored = _stored_words(latest.message)
+    stored = [_stored_words(turn.message) for turn in chain]
     typed_now = _requested_addresses(message, facts)
     addresses = [
         spec.value.strip().lower() for spec in proposal.recipients if spec.kind == "address"
     ]
-    if len(addresses) > len(set(_REDACTED_ADDRESS.findall(stored))):
+    typed_then = max((len(set(_REDACTED_ADDRESS.findall(words))) for words in stored), default=0)
+    if len(addresses) > typed_then:
         return False
     if any(address in typed_now for address in addresses):
         return False
     names = [spec.value for spec in proposal.recipients if spec.kind in ("employee", "customer")]
-    return all(_has_phrase(name, stored) for name in names)
+    return all(any(_has_phrase(name, words) for words in stored) for name in names)
 
 
-def _latest_batch(facts: PlannerFacts) -> PriorTurn | None:
-    """The thread's latest email_batch or plan turn: the only one "the rest" continues."""
-    batches = (turn for turn in reversed(facts.history) if turn.action in ("email_batch", "plan"))
-    return next(batches, None)
+_BATCH_ACTIONS = ("email_batch", "plan")
+
+
+def _batch_chain(facts: PlannerFacts) -> list[PriorTurn]:
+    """The latest batch or plan turn (the only one "the rest" continues), then the turns right
+    before it that are its group's earlier pages, newest first.
+
+    The walk back goes through batch/plan turns that stored their count on the same group and
+    days, and stops at the first other turn (or with no stored group: older rows). It sees only
+    the history window (``HISTORY_TURNS``): a page one beyond it is not seen, so its names
+    cannot be traced and are refused (fails closed); names are never stored to widen it.
+    """
+    history = list(facts.history)
+    index = next(
+        (i for i in reversed(range(len(history))) if history[i].action in _BATCH_ACTIONS), None
+    )
+    if index is None:
+        return []
+    latest = history[index]
+    chain = [latest]
+    if latest.resume_group is None:
+        return chain
+    counted_on = (latest.resume_group, latest.resume_days)
+    for turn in reversed(history[:index]):
+        if turn.action not in _BATCH_ACTIONS or (turn.resume_group, turn.resume_days) != counted_on:
+            break
+        chain.append(turn)
+    return chain
 
 
 def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> EmailBatchProposal:
@@ -2131,12 +2158,13 @@ def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) ->
     """
     if proposal.offset or not any(spec.kind == "group" for spec in proposal.recipients):
         return proposal
-    latest = _latest_batch(facts)
+    chain = _batch_chain(facts)
+    latest = chain[0] if chain else None
     if latest is None or latest.resume_offset is None:
         return proposal
     if not REST_WORDS.search(_own_text(message, facts)):
         return proposal
-    if not _from_page_one(proposal, message, facts, latest):
+    if not _from_page_one(proposal, message, facts, chain):
         # This turn names someone page one did not: continued, they would never be emailed;
         # started again, page one would repeat. So the turn is refused here (M7), before any
         # offset is put in: a new recipient needs its own request.
@@ -2153,13 +2181,13 @@ def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts
     option they clicked (``_named_by_user``), and a group only when their own words name it
     (``GROUP_WORDS``). A resumed page's offset must be the resume count of the thread's latest
     batch or plan turn, so a page already offered is never drafted again, and its recipients are
-    checked against that turn (``_check_resumed``).
+    checked against that turn and its group's earlier pages (``_check_resumed``).
     """
     if proposal.offset:
-        latest = _latest_batch(facts)
-        if latest is None or latest.resume_offset != proposal.offset:
+        chain = _batch_chain(facts)
+        if not chain or chain[0].resume_offset != proposal.offset:
             return "batch_resume_unknown"
-        _check_resumed(proposal, message, facts, latest)
+        _check_resumed(proposal, message, facts, chain)
         return None
     allowed = _requested_addresses(message, facts)
     own = _own_text(message, facts)
@@ -2176,29 +2204,32 @@ def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts
 
 
 def _check_resumed(
-    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, latest: PriorTurn
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, chain: list[PriorTurn]
 ) -> None:
-    """A resumed page's recipients, against the user's words and the latest batch turn (M7).
+    """A resumed page's recipients, against the user's words and the group's pages (M7).
 
-    Its group's words are in this turn's own words or that turn's stored words (a bare "the
-    rest" turn passes through the stored group's words, a group the user never said does not),
-    and it is the group, and days, the resume count was taken on when the row stored them: the
-    count is a position in that group only. Its named recipients are page one's
-    (``_from_page_one``).
+    ``chain[0]`` is the latest batch turn. When it stored the group, and days, its count was
+    taken on, the page's group must be that one (the count is a position in that group only),
+    and that is enough: the group was traced to the user's words on the page that stored it,
+    so a bare "the rest" passes on every page. A row with no stored group (older rows) needs
+    the group's words in this turn's own words or that turn's stored words. Its named
+    recipients are page one's (``_from_page_one`` over the chain).
     """
+    latest = chain[0]
     own, stored = _own_text(message, facts), _stored_words(latest.message)
     groups = [spec for spec in proposal.recipients if spec.kind == "group" and spec.group]
     if not groups:
         raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
     for spec in groups:
         group = spec.group or ""
+        days = spec.days if group == "renewing_soon" else None
+        if latest.resume_group is not None:
+            if (group, days) != (latest.resume_group, latest.resume_days):
+                raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+            continue  # the stored group, verified on the page that stored the count
         if not (GROUP_WORDS[group].search(own) or GROUP_WORDS[group].search(stored)):
             raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
-        days = spec.days if group == "renewing_soon" else None
-        counted_on = (latest.resume_group, latest.resume_days)
-        if latest.resume_group is not None and (group, days) != counted_on:
-            raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
-    if not _from_page_one(proposal, message, facts, latest):
+    if not _from_page_one(proposal, message, facts, chain):
         raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
 
 

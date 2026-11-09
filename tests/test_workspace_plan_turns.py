@@ -883,3 +883,150 @@ async def _turn_with(
 ) -> httpx.Response:
     model.reply(reply)
     return await _turn(w, browser, thread, body, "email")
+
+
+# ------------------------------- fix round 3: "the rest" keeps working on every page of a group
+
+REST_PLEASE = "The rest please"
+
+
+def _copied(batch: dict[str, Any]) -> Any:
+    """The planner repeats page one's batch with the latest history turn's resume count."""
+    return lambda facts: {**batch, "offset": facts["history"][-1]["resume_offset"]}
+
+
+async def _chain_world(
+    planned: tuple[SessionWorld, Any], monkeypatch: pytest.MonkeyPatch, *, page: int, size: int
+) -> tuple[SessionWorld, Any, Any, list[str], str]:
+    """Pages of ``page``, two employees and ``size`` active subscribers."""
+    w, model = planned
+    monkeypatch.setattr(email_batch, "MAX_LIMIT", page)
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    members = await _ordered_subscribers(w, size)
+    return w, model, browser, members, await _thread(w, browser)
+
+
+async def _all_drafted(w: SessionWorld) -> list[str]:
+    rows = await w.q("SELECT to_addresses FROM email_drafts")
+    return sorted(address for row in rows for address in row["to_addresses"])
+
+
+async def _latest_resume(w: SessionWorld) -> int | None:
+    rows = await w.q("SELECT result FROM console_workspace_turns ORDER BY id DESC LIMIT 1")
+    return rows[0]["result"].get("resume_offset")  # type: ignore[no-any-return]
+
+
+AINA_AND_SUBSCRIBERS = _batch(*_named(AINA), SUBSCRIBERS)
+AINA_BODY = "Draft the reminder to Aina Example and all active subscribers"
+
+
+async def _two_pages(
+    w: SessionWorld, model: Any, browser: Any, thread: str, members: list[str]
+) -> int:
+    """Pages one and two of Aina and the active subscribers (pages of 2); returns page two's
+    resume count."""
+    assert (await _page_one(w, model, browser, thread, AINA_AND_SUBSCRIBERS, AINA_BODY))[
+        "resume_offset"
+    ] == 1
+    model.respond(_copied(AINA_AND_SUBSCRIBERS))
+    second = _card(await _turn(w, browser, thread, "Now the rest please", "email"))
+    assert await _recipients(w, await _steps(w, second["id"])) == members[1:3]
+    assert second["card"]["summary"].endswith(REST)
+    resume = await _latest_resume(w)
+    assert resume == 3
+    return resume
+
+
+async def test_the_rest_works_on_page_three_and_nobody_is_drafted_twice(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five subscribers and Aina in pages of 2: three pages. Page three's message is page two's
+    "the rest", whose words name no group and no Aina: the stored group and the chain of the
+    group's pages carry them."""
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=5)
+    await _two_pages(w, model, browser, thread, members)
+    model.respond(_copied(AINA_AND_SUBSCRIBERS))
+    third = _card(await _turn(w, browser, thread, REST_PLEASE, "email"))
+    assert await _recipients(w, await _steps(w, third["id"])) == members[3:]
+    assert not third["card"]["summary"].endswith(REST)  # the group is done
+    assert await _latest_resume(w) is None
+    # Every person once across the three pages; Aina (named on page one) only on page one.
+    assert await _all_drafted(w) == sorted([AINA[1], *members])
+
+
+async def test_page_three_continues_when_the_planner_forgets_the_offset(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pages of 3: Aina, a typed address and five subscribers. Pages two and three forget the
+    offset; page one's people and address trace to page one across the chain."""
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=3, size=5)
+    batch = _batch(*_named(AINA), {"kind": "address", "value": TYPED}, SUBSCRIBERS)
+    body = f"Draft the reminder to Aina Example, {TYPED} and all active subscribers"
+    assert (await _page_one(w, model, browser, thread, batch, body))["resume_offset"] == 1
+    model.reply({**batch, "offset": 0})
+    second = _card(await _turn(w, browser, thread, "Now the rest please", "email"))
+    assert await _recipients(w, await _steps(w, second["id"])) == members[1:4]
+    assert await _latest_resume(w) == 4
+    model.reply({**batch, "offset": 0})
+    third = _card(await _turn(w, browser, thread, "Tolong draf selebihnya", "email"))
+    assert await _recipients(w, await _steps(w, third["id"])) == members[4:]
+    assert await _all_drafted(w) == sorted([AINA[1], TYPED, *members])
+
+
+async def test_page_three_with_a_different_group_is_refused(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=5)
+    resume = await _two_pages(w, model, browser, thread, members)
+    other = _batch(*_named(AINA), RENEWING, offset=resume)
+    await _refused(w, model, browser, thread, other, REST_PLEASE)
+    third = _card(
+        await _turn_with(
+            w, model, browser, thread, {**AINA_AND_SUBSCRIBERS, "offset": resume}, REST_PLEASE
+        )
+    )
+    assert await _recipients(w, await _steps(w, third["id"])) == members[3:]
+
+
+async def test_page_three_with_a_person_no_page_named_is_refused(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=5)
+    resume = await _two_pages(w, model, browser, thread, members)
+    # Bakar alone: a second name would be over the page of 2 (the split answer, not M7).
+    added = _batch(*_named(BAKAR), SUBSCRIBERS, offset=resume)
+    await _refused(w, model, browser, thread, added, REST_PLEASE)
+    await _refused(w, model, browser, thread, added, "The rest please, and Bakar Example too")
+    forgot = _batch(*_named(BAKAR), SUBSCRIBERS)
+    await _refused(w, model, browser, thread, forgot, REST_PLEASE)
+    third = _card(
+        await _turn_with(
+            w, model, browser, thread, {**AINA_AND_SUBSCRIBERS, "offset": resume}, REST_PLEASE
+        )
+    )
+    assert await _recipients(w, await _steps(w, third["id"])) == members[3:]
+
+
+async def test_a_chain_past_the_history_window_refuses_names_but_continues_the_group(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A history of two turns: on page four page one is out of sight, so Aina cannot be traced
+    (fails closed), while a group-only "the rest" still continues through the stored group."""
+    monkeypatch.setattr("csa.workspace.service.HISTORY_TURNS", 2)
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=7)
+    await _two_pages(w, model, browser, thread, members)
+    model.respond(_copied(AINA_AND_SUBSCRIBERS))  # page one is still in sight on page three
+    third = _card(await _turn(w, browser, thread, REST_PLEASE, "email"))
+    assert await _recipients(w, await _steps(w, third["id"])) == members[3:5]
+    resume = await _latest_resume(w)
+    assert resume == 5
+    named = {**AINA_AND_SUBSCRIBERS, "offset": resume}
+    await _refused(w, model, browser, thread, named, REST_PLEASE)
+    fourth = _card(
+        await _turn_with(w, model, browser, thread, _batch(SUBSCRIBERS, offset=resume), REST_PLEASE)
+    )
+    assert await _recipients(w, await _steps(w, fourth["id"])) == members[5:]
+    assert await _all_drafted(w) == sorted([AINA[1], *members])
