@@ -85,6 +85,7 @@ NOT_INCLUDED_REASONS = (
     "duplicate",
     "over_limit",
     "draft_failed",
+    "draft_deadline",
 )
 MAX_LIMIT = 20  # the hourly send ceiling (EmailService.remaining_sends)
 _CANDIDATES = 2  # two matches already make a name ambiguous; never fetch more than needed
@@ -428,6 +429,10 @@ async def decide_email(
 # ------------------------------------------------------------------ drafting and checks
 
 DRAFT_CONCURRENCY = 4
+BATCH_DEADLINE_SECONDS: float = 60
+"""How long ``build_batch_steps`` drafts before it stops waiting: a draft not finished by then
+is cancelled (never written) and counted ``draft_deadline``. It keeps the turn's request well
+inside the gateway's time, as ``PLAN_DEADLINE_SECONDS`` does for the confirm."""
 KB_FACTS_TIMEOUT_S = 3.0
 REVIEW_TIMEOUT_S = 10.0
 FIGURE = "[STAFF: confirm this figure]"
@@ -665,11 +670,31 @@ def _name(recipient: BatchRecipient) -> str | None:
 
 
 def _failure(errors: Sequence[BaseException]) -> HTTPException:
-    """The refusal when no recipient could be drafted: the first error, content-free."""
-    first = errors[0]
+    """The refusal when no recipient could be drafted: the first error, content-free (a batch
+    that ran out of time has none: that is a model failure too)."""
+    first = errors[0] if errors else None
     if isinstance(first, EmailPolicyError):
         return email_http_error(first)
     return HTTPException(503, "email_model_unavailable")
+
+
+async def _until[T](
+    cut_off: float, calls: Sequence[Awaitable[T]]
+) -> list[T | BaseException | None]:
+    """Each call's result or error, in order, or None for one still running at ``cut_off``
+    (it is cancelled, so it writes nothing more). If the caller is cancelled, so are they."""
+    tasks: list[asyncio.Future[T]] = [asyncio.ensure_future(call) for call in calls]
+    if not tasks:
+        return []
+    loop = asyncio.get_running_loop()
+    pending: set[asyncio.Future[T]] = set(tasks)
+    try:
+        _, pending = await asyncio.wait(tasks, timeout=max(cut_off - loop.time(), 0))
+    finally:
+        for task in pending:
+            task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    return [None if task in pending else (task.exception() or task.result()) for task in tasks]
 
 
 async def build_batch_steps(
@@ -693,7 +718,9 @@ async def build_batch_steps(
     model call, knowledge base facts only: a customer's own facts never go into a text others
     receive) and saves it once per recipient; personalised mode drafts each recipient on their
     own. A recipient whose draft fails is counted ``draft_failed``; if every one fails, the first
-    refusal is raised. The mailbox must be connected (``remaining_sends`` refuses otherwise).
+    refusal is raised. Drafting stops at ``BATCH_DEADLINE_SECONDS``: a draft still being written
+    then is cancelled and counted ``draft_deadline`` (none in time is a 503 model failure). The
+    mailbox must be connected (``remaining_sends`` refuses otherwise).
 
     A step may send only when ``decision.send`` AND the send rule on ``authored_text``
     (``asks_to_send(authored_text, proposal.send)``) both allow it: the module enforces the rule
@@ -704,6 +731,8 @@ async def build_batch_steps(
     idempotency keys and as a figure source, never for the send decision.
     """
     card_language: Language = language or ("ms" if proposal.language == "ms" else "en")
+    loop = asyncio.get_running_loop()
+    cut_off = loop.time() + BATCH_DEADLINE_SECONDS
     pool = request.app.state.pool
     await require_package(pool, client_id, frozenset({"staff_email"}))
     service = _email_service(request)
@@ -758,20 +787,21 @@ async def build_batch_steps(
                 writing=writing(_audience(recipient), _name(recipient), facts),
             )
 
-    outcomes: list[DraftOut | BaseException]
+    outcomes: list[DraftOut | BaseException | None]
     if decision.mode == "shared":
         facts = await knowledge()
         try:
-            first = await service.compose_batch(
-                session,
-                _key(turn, thread_id, 0),
-                to_address=recipients[0].address,
-                subject=proposal.subject,
-                instructions=brief,
-                language=proposal.language,
-                facts=facts,
-                writing=writing("shared", None, facts),
-            )
+            async with asyncio.timeout_at(cut_off):
+                first = await service.compose_batch(
+                    session,
+                    _key(turn, thread_id, 0),
+                    to_address=recipients[0].address,
+                    subject=proposal.subject,
+                    instructions=brief,
+                    language=proposal.language,
+                    facts=facts,
+                    writing=writing("shared", None, facts),
+                )
         except (EmailPolicyError, CompletionError, TimeoutError) as exc:
             raise _failure([exc]) from None
 
@@ -786,20 +816,17 @@ async def build_batch_steps(
                     facts=facts,
                 )
 
-        rest = await asyncio.gather(
-            *(copy(i, r) for i, r in enumerate(recipients) if i > 0), return_exceptions=True
-        )
+        rest = await _until(cut_off, [copy(i, r) for i, r in enumerate(recipients) if i > 0])
         outcomes = [first, *rest]
     else:
-        outcomes = list(
-            await asyncio.gather(
-                *(personal(i, r) for i, r in enumerate(recipients)), return_exceptions=True
-            )
-        )
+        outcomes = await _until(cut_off, [personal(i, r) for i, r in enumerate(recipients)])
     drafts: list[DraftOut] = []
     errors: list[BaseException] = []
+    late = 0
     for outcome in outcomes:
-        if isinstance(outcome, EmailPolicyError | CompletionError | TimeoutError):
+        if outcome is None:
+            late += 1
+        elif isinstance(outcome, EmailPolicyError | CompletionError | TimeoutError):
             errors.append(outcome)
         elif isinstance(outcome, BaseException):
             raise outcome
@@ -809,6 +836,8 @@ async def build_batch_steps(
         raise _failure(errors)
     if errors:
         not_included["draft_failed"] = not_included.get("draft_failed", 0) + len(errors)
+    if late:
+        not_included["draft_deadline"] = not_included.get("draft_deadline", 0) + late
 
     kinds: list[PlanStepKind] = []
     sending = over = needs_input = 0

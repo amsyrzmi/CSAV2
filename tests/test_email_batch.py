@@ -42,6 +42,7 @@ from csa.workspace.email_batch import (
 from csa.workspace.executors import build_proposal_registry
 from csa.workspace.plan import plan_payload
 from csa.workspace.rules import asks_to_send
+from fastapi import HTTPException
 
 from tests.conftest import requires_docker
 from tests.test_email_batch_recipients import _actor, _customer, _package, _subscription
@@ -964,3 +965,30 @@ def test_the_batch_model_defaults_to_the_email_model() -> None:
 
 
 _ = ConsoleActor  # imported for type readers of _actor
+
+
+@requires_docker
+async def test_drafts_past_the_batch_deadline_are_counted_and_never_waited_for(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrency 4, one second a draft: four finish, the two started after them are cut at
+    the deadline and counted ``draft_deadline``; their drafts are never written."""
+    model = BatchModel(delay=1.0)
+    await _ready(world, monkeypatch, model)
+    await _customers(world, 6)
+    monkeypatch.setattr(email_batch, "BATCH_DEADLINE_SECONDS", 1.5)
+    steps = await _build(world, await _expanded(world, GROUP), SEND_ALL)
+    assert len(steps.steps) == 4
+    assert steps.not_included == {"draft_deadline": 2}
+    assert (await world.q("SELECT count(*) n FROM email_drafts"))[0]["n"] == 4
+    # Nothing drafted in time at all: the turn is refused as a model failure, not a 500.
+    monkeypatch.setattr(email_batch, "BATCH_DEADLINE_SECONDS", 0.3)
+    with pytest.raises(HTTPException) as refused:
+        await _build(world, await _expanded(world, GROUP), SEND_ALL)
+    assert (refused.value.status_code, refused.value.detail) == (503, "email_model_unavailable")
+    shared = EmailDecision(mode="shared", sources=frozenset(), send=False)
+    with pytest.raises(HTTPException) as cut:
+        await _build(world, await _expanded(world, GROUP), shared)
+    assert (cut.value.status_code, cut.value.detail) == (503, "email_model_unavailable")
+    assert (await world.q("SELECT count(*) n FROM email_drafts"))[0]["n"] == 4

@@ -3221,3 +3221,55 @@ async def test_the_turn_completes_on_the_word_rules_when_jev_errors(planned, bod
     rows = await _routing_rows(w, key)
     assert len(rows) == 1 and rows[0]["client_id"] == UUID(w.tenants[0])
     assert rows[0]["provider"] == "llm" and rows[0]["fallback_reason"] is not None
+
+
+# --------------------------------------------------------------------------- email_batch and plan
+
+
+def _new_section() -> str:
+    """The prompt's email_batch and plan bullets, from "- email_batch:" to the next bullet."""
+    start = SYSTEM_PROMPT.index("- email_batch:")
+    end = SYSTEM_PROMPT.index("\n- ", SYSTEM_PROMPT.index("- plan:"))
+    return SYSTEM_PROMPT[start:end]
+
+
+def test_planner_prompt_describes_email_batch_and_plan_in_one_short_section() -> None:
+    assert SYSTEM_PROMPT.count("- email_batch:") == 1 and SYSTEM_PROMPT.count("- plan:") == 1
+    section = " ".join(_new_section().split())
+    assert section.index("- email_batch:") < section.index("- plan:")
+    # Recipients: named people, typed addresses, customers or ONE fixed group.
+    for kind in ('"employee"', '"customer"', '"address"', '"group"'):
+        assert kind in section, kind
+    assert "ONE" in section and "active_subscribers" in section and "renewing_soon" in section
+    assert '"shared"' in section and '"personalised"' in section
+    assert "use_knowledge_base" in section
+    assert 'For "the rest" of a group, repeat the earlier email_batch with offset' in section
+    assert "resume_offset" in section
+    assert "booking_action, training_submit, inbox_decision or email_batch" in section
+    assert len(section) < 1300  # one short section (the lesson of #86)
+    schema = json.dumps(PlannerOutput.model_json_schema())
+    assert '"email_batch"' in schema and '"plan"' in schema and "use_knowledge_base" in schema
+
+
+def test_the_new_section_repeats_no_existing_rule() -> None:
+    """#86: a second bullet restating a rule moved an unrelated case. The #85/#86 wording stays
+    exactly once and the new section restates none of it."""
+    pinned = (
+        "when booking_action is allowed (bookings present and can_change true), propose "
+        "booking_action as soon as the user clearly asks for it",
+        "Never ask your own clarification about booking details and never invent times or options",
+        "an absent people_access does not mean the user lacks access",
+        "Propose hr_person_add, hr_person_update or hr_person_leave only when people_access is "
+        '"hr"',
+        "For email_compose, email_reply and email_team, write the subject and the wording "
+        "yourself from the request. Never ask a clarification for the subject or the wording.",
+        "- send (on email_compose, email_reply and email_team): true when the user asks to send",
+        "Never put my_team ids in recipient_employee_id, cc or bcc.",
+    )
+    flat = " ".join(SYSTEM_PROMPT.split())
+    for line in pinned:
+        assert flat.count(line) == 1, line
+    section = " ".join(_new_section().split())
+    for phrase in ("can_change", "people_access", "clarification", "Never", "never", "confirm"):
+        assert phrase not in section, phrase
+    assert "whether or not people_access is present" not in SYSTEM_PROMPT

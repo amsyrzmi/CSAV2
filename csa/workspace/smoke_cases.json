@@ -960,5 +960,141 @@
         "booking_action"
       ]
     }
+  },
+  {
+    "id": "email_batch-en-1",
+    "language": "en",
+    "message": "Send the same email to Aina Rahman, Danial Hakim and Mei Ling Tan, each on their own: the office closes at 5pm on Friday",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": true,
+      "recipients": 3,
+      "fields": {
+        "mode": "shared"
+      }
+    }
+  },
+  {
+    "id": "email_batch-ms-1",
+    "language": "ms",
+    "message": "Tolong hantar emel yang sama kepada Aina Rahman, Danial Hakim dan Mei Ling Tan, seorang satu: pejabat tutup pukul 5 petang hari Jumaat",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": true,
+      "recipients": 3,
+      "fields": {
+        "mode": "shared"
+      }
+    }
+  },
+  {
+    "id": "email_batch_group-en-1",
+    "language": "en",
+    "message": "Draft an email to all our active subscribers reminding each of them of their own renewal date",
+    "facts": {
+      "preset": "staff_subscriptions"
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": false,
+      "group": "active_subscribers",
+      "fields": {
+        "mode": "personalised"
+      }
+    }
+  },
+  {
+    "id": "email_batch_group-ms-1",
+    "language": "ms",
+    "message": "Tolong draf emel kepada semua pelanggan aktif kita untuk ingatkan tarikh pembaharuan langganan mereka sendiri",
+    "facts": {
+      "preset": "staff_subscriptions"
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": false,
+      "group": "active_subscribers",
+      "fields": {
+        "mode": "personalised"
+      }
+    }
+  },
+  {
+    "id": "plan_bookings-en-1",
+    "language": "en",
+    "message": "Book Room A tomorrow at 3 pm with Aina and Room B on Friday at 10 am with Danial",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "plan"
+      ],
+      "not_actions": [
+        "booking_action",
+        "clarification"
+      ],
+      "steps": [
+        "booking_action",
+        "booking_action"
+      ],
+      "step_fields": {
+        "change": "book"
+      }
+    }
+  },
+  {
+    "id": "plan_bookings-ms-1",
+    "language": "ms",
+    "message": "Tolong tempah bilik A esok pukul 3 petang dengan Aina dan bilik B hari Jumaat pukul 10 pagi dengan Danial",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "plan"
+      ],
+      "not_actions": [
+        "booking_action",
+        "clarification"
+      ],
+      "steps": [
+        "booking_action",
+        "booking_action"
+      ],
+      "step_fields": {
+        "change": "book"
+      }
+    }
   }
 ]

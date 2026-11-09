@@ -49,11 +49,13 @@ from csa.workspace.contracts import (
     AnswerProposal,
     ClarificationProposal,
     DirectoryLookupProposal,
+    EmailBatchProposal,
     EmailComposeProposal,
     EmailReplyProposal,
     EmailTeamProposal,
     NavigateProposal,
     PageContext,
+    PlanProposal,
     TabKey,
     WorkspaceProposal,
 )
@@ -85,6 +87,7 @@ from csa.workspace.service import (
     _TEAM_WORDS,
     _TRAINING_WORDS,
     _asked_to_send,
+    _check_batch,
     _clarification,
     _corrected_plan,
     _named_recipient_check,
@@ -113,6 +116,8 @@ ActionName = Literal[
     "people_query",
     "hr_person_open",
     "booking_action",
+    "email_batch",
+    "plan",
 ]
 Preset = Literal[
     "staff_basic",
@@ -123,6 +128,7 @@ Preset = Literal[
     "staff_hr_inactive",
     "staff_bookings",
     "staff_bookings_view",
+    "staff_subscriptions",
 ]
 
 
@@ -157,6 +163,12 @@ class Expect(_Strict):
     fields: dict[str, str] = Field(default_factory=dict)
     # An answer must carry each of these typed reads (for example booking_availability).
     reads: list[str] = Field(default_factory=list)
+    # An email_batch must have this many recipient specs, or exactly this one group.
+    recipients: int | None = Field(default=None, ge=1)
+    group: Literal["active_subscribers", "renewing_soon"] | None = None
+    # A plan's steps must be these actions (any order), each with these attributes.
+    steps: list[ActionName] = Field(default_factory=list)
+    step_fields: dict[str, str] = Field(default_factory=dict)
 
 
 class SmokeCase(_Strict):
@@ -222,6 +234,7 @@ class _Preset:
     employee: EmployeeFact
     people_access: Literal["hr", "directory", "self"] | None = None
     can_change_bookings: bool | None = None  # None: no booking facts (the tab is not offered)
+    extra_packages: tuple[str, ...] = ()  # active besides _PACKAGES (Subscriptions for groups)
 
 
 _MANAGER = ManagerFact(employee_id=MANAGER_ID, reason=None)
@@ -247,6 +260,15 @@ PRESETS: dict[str, _Preset] = {
     "staff_bookings_view": _Preset(
         "active", _MANAGER, None, _NOT_APPROVER, _LINKED, "directory", can_change_bookings=False
     ),
+    "staff_subscriptions": _Preset(
+        "active",
+        _MANAGER,
+        None,
+        _NOT_APPROVER,
+        _LINKED,
+        "directory",
+        extra_packages=("subscriptions",),
+    ),
     "staff_hr_inactive": _Preset(
         "suspended",
         ManagerFact(employee_id=None, reason="package_inactive"),
@@ -266,7 +288,7 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
     message = case.message
     packages = [
         PackageState(key=key, status=preset.hr_status if key == "hr" else "active")
-        for key in _PACKAGES
+        for key in (*_PACKAGES, *preset.extra_packages)
     ]
     return PlannerFacts(
         role=case.facts.role or Role.TENANT_STAFF,
@@ -375,6 +397,11 @@ def _resolver(
                 if proposal.thread_id not in synced:
                     raise PlannerInvalidOutput(UNKNOWN_THREAD)
                 _named_recipient_check(proposal, message, facts)
+            elif isinstance(proposal, EmailBatchProposal | PlanProposal):
+                steps = [proposal] if isinstance(proposal, EmailBatchProposal) else proposal.steps
+                for step in steps:
+                    if isinstance(step, EmailBatchProposal):
+                        _check_batch(step, message, facts)  # a typed address the user wrote
         except PlannerInvalidOutput as exc:
             call.refusal = exc.reason or CONTRACT_INVALID
             raise
@@ -458,7 +485,7 @@ async def run_case(
         # The server drops these options; one offered at all means the prompt drifted.
         if any(is_placeholder(option) for option in proposal.options):
             failed.append("placeholder_options")
-    email_plan = (EmailComposeProposal, EmailReplyProposal, EmailTeamProposal)
+    email_plan = (EmailComposeProposal, EmailReplyProposal, EmailTeamProposal, EmailBatchProposal)
     if expect.send is not None and isinstance(proposal, email_plan):
         if _asked_to_send(proposal, case.message, facts) != expect.send:
             failed.append("send")
@@ -466,6 +493,22 @@ async def run_case(
         address = (proposal.recipient_address or "").strip().lower()
         if address != expect.recipient.lower() and "recipient" not in failed:
             failed.append("recipient")
+    if isinstance(proposal, EmailBatchProposal):
+        if expect.recipients is not None and len(proposal.recipients) != expect.recipients:
+            failed.append("recipients")
+        groups = [spec.group for spec in proposal.recipients if spec.kind == "group"]
+        if expect.group is not None and groups != [expect.group]:
+            failed.append("group")
+    if expect.steps:
+        planned_steps = proposal.steps if isinstance(proposal, PlanProposal) else []
+        if sorted(step.action for step in planned_steps) != sorted(expect.steps):
+            failed.append("steps")
+        elif any(
+            str(getattr(step, name, None) or "").casefold() != value.casefold()
+            for step in planned_steps
+            for name, value in expect.step_fields.items()
+        ):
+            failed.append("step_fields")
     if expect.draft_valid and not failed:
         if isinstance(proposal, EmailComposeProposal | EmailTeamProposal):
             if not await _draft_is_valid(email, proposal):

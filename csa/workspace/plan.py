@@ -149,6 +149,62 @@ _PLAN_TEXT: dict[Language, dict[str, str]] = {
 }
 
 
+# Why a step or a recipient was left off a plan card: counts and these reasons only, never who.
+_LEFT_OUT: dict[Language, dict[str, str]] = {
+    "en": {
+        "head": " Not included: {count} ({reasons}).",
+        "needs_details": "needs more details",
+        "unavailable": "could not be prepared",
+        "not_found": "not found",
+        "ambiguous": "more than one match",
+        "no_email": "no email address",
+        "duplicate": "listed twice",
+        "over_limit": "over the limit of 20",
+        "draft_failed": "draft failed",
+        "draft_deadline": "not drafted in time",
+        "rest": ' Say "the rest" to email the next ones.',
+    },
+    "ms": {
+        "head": " Tidak disertakan: {count} ({reasons}).",
+        "needs_details": "perlukan butiran lanjut",
+        "unavailable": "tidak dapat disediakan",
+        "not_found": "tidak dijumpai",
+        "ambiguous": "lebih daripada satu padanan",
+        "no_email": "tiada alamat e-mel",
+        "duplicate": "disenaraikan dua kali",
+        "over_limit": "melebihi had 20",
+        "draft_failed": "draf gagal",
+        "draft_deadline": "tidak sempat didraf",
+        "rest": ' Katakan "selebihnya" untuk e-mel yang seterusnya.',
+    },
+}
+
+
+def left_out_note(counts: Mapping[str, int], language: Language) -> str:
+    """The summary's count line, for example ``Not included: 3 (2 not found, 1 no email
+    address).``, or an empty string when nothing was left out.
+
+    Unknown reason codes read as "could not be prepared"; the text never names anyone.
+    """
+    text = _LEFT_OUT[language]
+    kept = {reason: n for reason, n in counts.items() if n > 0}
+    if not kept:
+        return ""
+    reasons = ", ".join(f"{n} {text.get(r, text['unavailable'])}" for r, n in kept.items())
+    return text["head"].format(count=sum(kept.values()), reasons=reasons)
+
+
+def card_notes(
+    notes: Sequence[str], counts: Mapping[str, int], *, more: bool, language: Language
+) -> str:
+    """What a plan card's summary adds: the batch's count-only notes ("sending 12, saving 8 as
+    drafts"), what was left out, and how to ask for the rest of a group."""
+    added = f" {'; '.join(notes)}." if notes else ""
+    if added:
+        added = f" {added[1].upper()}{added[2:]}"
+    return added + left_out_note(counts, language) + (_LEFT_OUT[language]["rest"] if more else "")
+
+
 def step_id(plan_id: UUID, index: int) -> UUID:
     """The proposal id step ``index`` runs under; the child's idempotency keys derive from it."""
     return uuid5(plan_id, f"step:{index}")

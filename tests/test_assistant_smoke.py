@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,9 @@ FEATURES = (
     "booking_move",
     "booking_cancel",
     "booking_free",
+    "email_batch",
+    "email_batch_group",
+    "plan_bookings",
 )
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
@@ -163,6 +167,25 @@ class ScriptedModel:
             }
         if action == "inbox_summary":
             return {"action": "inbox_summary"}
+        if action == "email_batch":
+            group = case.expect.group
+            if group is not None:
+                days = {"days": 30} if group == "renewing_soon" else {}
+                recipients = [{"kind": "group", "group": group, **days}]
+            else:
+                count = case.expect.recipients or 2
+                recipients = [{"kind": "employee", "value": SCRIPTED_TEXT} for _ in range(count)]
+            return {
+                "action": "email_batch",
+                "recipients": recipients,
+                "subject": SCRIPTED_SUBJECT,
+                "instructions": SCRIPTED_TEXT,
+                "send": send,
+                **case.expect.fields,
+            }
+        if action == "plan":
+            steps = [{"action": step, **case.expect.step_fields} for step in case.expect.steps]
+            return {"action": "plan", "steps": steps}
         if action == "training_submit":
             return {
                 "action": "training_submit",
@@ -550,3 +573,101 @@ def test_smoke_checks_the_expected_reads(capsys: pytest.CaptureFixture[str]) -> 
     assert f"PASS {case.id} action=answer" in capsys.readouterr().out
     assert smoke.main(["--case", case.id], client=ScriptedModel(frozenset({case.id}))) == 1
     assert f"FAIL {case.id} action=answer reads" in capsys.readouterr().out
+
+
+BATCH_CASES = ("email_batch-en-1", "email_batch-ms-1", "email_batch_group-en-1")
+PLAN_CASES = ("plan_bookings-en-1", "plan_bookings-ms-1")
+
+
+def test_batch_and_plan_cases_are_smoke_cases_with_their_expectations() -> None:
+    """The batch and plan cases (English and Malay) name what a PASS checks."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in (*BATCH_CASES, "email_batch_group-ms-1"):
+        case = cases[case_id]
+        assert case.expect.actions == ["email_batch"], case_id
+        assert "email_compose" in case.expect.not_actions, case_id
+        assert case.expect.fields.get("mode") in ("shared", "personalised"), case_id
+        assert case.expect.send is not None, case_id
+    for case_id in ("email_batch-en-1", "email_batch-ms-1"):
+        assert cases[case_id].expect.recipients == 3 and cases[case_id].expect.group is None
+        assert cases[case_id].expect.send is True
+    for case_id in ("email_batch_group-en-1", "email_batch_group-ms-1"):
+        case = cases[case_id]
+        assert case.expect.group == "active_subscribers" and case.expect.send is False
+        # Groups are subscription customers: the preset has the Subscriptions service on.
+        assert case.facts.preset == "staff_subscriptions"
+        keys = {p.key for p in smoke.build_facts(case).packages if p.status == "active"}
+        assert "subscriptions" in keys
+    for case_id in PLAN_CASES:
+        case = cases[case_id]
+        assert case.expect.actions == ["plan"] and case.facts.preset == "staff_bookings"
+        assert case.expect.steps == ["booking_action", "booking_action"]
+        assert case.expect.step_fields == {"change": "book"}
+    # Subscriptions stays off in every other preset (navigate-ms-2 expects it locked).
+    for case in cases.values():
+        if case.facts.preset != "staff_subscriptions":
+            keys = {p.key for p in smoke.build_facts(case).packages}
+            assert "subscriptions" not in keys, case.id
+
+
+def test_smoke_checks_batch_recipients_group_send_and_plan_steps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A wrong recipient count, group, send or plan step fails its field, never printed."""
+    for case_id in (*BATCH_CASES, *PLAN_CASES):
+        assert smoke.main(["--case", case_id], client=ScriptedModel()) == 0
+        assert f"PASS {case_id}" in capsys.readouterr().out
+
+    class Wrong(ScriptedModel):
+        def __init__(self, change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+            super().__init__()
+            self.change = change
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return self.change(super()._proposal(case))
+
+    def one_person(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "recipients": p["recipients"][:1]}
+
+    def renewing(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "recipients": [{"kind": "group", "group": "renewing_soon", "days": 7}]}
+
+    def one_step(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "steps": p["steps"][:1]}
+
+    def moves(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "steps": [{**step, "change": "move"} for step in p["steps"]]}
+
+    def no_send(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "send": False}
+
+    for case_id, change, field in (
+        ("email_batch-en-1", one_person, "recipients"),
+        ("email_batch_group-en-1", renewing, "group"),
+        ("plan_bookings-en-1", one_step, "steps"),
+        ("plan_bookings-ms-1", moves, "step_fields"),
+    ):
+        assert smoke.main(["--case", case_id], client=Wrong(change)) == 1
+        out = capsys.readouterr().out
+        assert field in out.split(), (case_id, out)
+        _assert_content_free(out)
+    # "Send" is in the words: a plan send of false still gives a send (the server's rule).
+    assert smoke.main(["--case", "email_batch-en-1"], client=Wrong(no_send)) == 0
+    capsys.readouterr()
+
+
+def test_smoke_refuses_an_unrequested_batch_address(capsys: pytest.CaptureFixture[str]) -> None:
+    """A typed-address recipient the message never wrote is refused like on email_compose."""
+
+    class Unrequested(ScriptedModel):
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            if proposal["action"] != "email_batch":
+                return proposal
+            extra = {"kind": "address", "value": UNREQUESTED_ADDRESS}
+            return {**proposal, "recipients": [*proposal["recipients"], extra]}
+
+    assert smoke.main(["--case", "email_batch-en-1"], client=Unrequested()) == 1
+    out = capsys.readouterr().out
+    assert "FAIL email_batch-en-1 action=email_batch recipient" in out
+    assert UNREQUESTED_ADDRESS not in out
