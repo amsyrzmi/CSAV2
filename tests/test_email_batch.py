@@ -967,6 +967,11 @@ def test_the_batch_model_defaults_to_the_email_model() -> None:
 _ = ConsoleActor  # imported for type readers of _actor
 
 
+async def _draft_total(w: World) -> int:
+    rows = await w.q("SELECT count(*) n FROM email_drafts WHERE client_id=%s", (w.tenant,))
+    return int(rows[0]["n"])
+
+
 @requires_docker
 async def test_drafts_past_the_batch_deadline_are_counted_and_never_waited_for(
     world: World,  # noqa: F811
@@ -981,7 +986,7 @@ async def test_drafts_past_the_batch_deadline_are_counted_and_never_waited_for(
     steps = await _build(world, await _expanded(world, GROUP), SEND_ALL)
     assert len(steps.steps) == 4
     assert steps.not_included == {"draft_deadline": 2}
-    assert (await world.q("SELECT count(*) n FROM email_drafts"))[0]["n"] == 4
+    assert (await _draft_total(world)) == 4
     # Nothing drafted in time at all: the turn is refused as a model failure, not a 500.
     monkeypatch.setattr(email_batch, "BATCH_DEADLINE_SECONDS", 0.3)
     with pytest.raises(HTTPException) as refused:
@@ -991,4 +996,4 @@ async def test_drafts_past_the_batch_deadline_are_counted_and_never_waited_for(
     with pytest.raises(HTTPException) as cut:
         await _build(world, await _expanded(world, GROUP), shared)
     assert (cut.value.status_code, cut.value.detail) == (503, "email_model_unavailable")
-    assert (await world.q("SELECT count(*) n FROM email_drafts"))[0]["n"] == 4
+    assert (await _draft_total(world)) == 4

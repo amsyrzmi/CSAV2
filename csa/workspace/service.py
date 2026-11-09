@@ -2018,11 +2018,16 @@ def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts
     the answer's text key for an ``offset`` the thread never stored (else None).
 
     Names and groups are found by the server. A resumed page reads the group only, so its
-    repeated named specs are not checked again; its offset must be a stored resume count.
+    repeated named specs are not checked again; its offset must be the resume count of the
+    thread's latest batch or plan turn, so a page already offered is never drafted again.
     """
     if proposal.offset:
-        stored = {turn.resume_offset for turn in facts.history}
-        return None if proposal.offset in stored else "batch_resume_unknown"
+        latest = next(
+            (turn for turn in reversed(facts.history) if turn.action in ("email_batch", "plan")),
+            None,
+        )
+        resumes = latest is not None and latest.resume_offset == proposal.offset
+        return None if resumes else "batch_resume_unknown"
     allowed = _requested_addresses(message, facts)
     for spec in proposal.recipients:
         if spec.kind == "address" and spec.value.strip().lower() not in allowed:

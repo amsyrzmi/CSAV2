@@ -244,11 +244,12 @@ async def test_the_rest_resumes_after_the_stored_count_and_never_repeats_anyone(
     assert "resume_offset" not in (await w.q(
         "SELECT result FROM console_workspace_turns ORDER BY id DESC LIMIT 1"
     ))[0]["result"]  # fmt: skip
-    # An offset the thread never stored is not followed: no new draft.
+    # The page already offered is never drafted again, nor an offset the thread never stored.
     drafts = await _draft_count(w)
-    model.reply({**batch, "offset": 7})
-    refused = _answer(await _turn(w, browser, thread, "And the rest again", "email"))
-    assert refused == RESUME_UNKNOWN
+    for offset in (1, 7):
+        model.reply({**batch, "offset": offset})
+        refused = _answer(await _turn(w, browser, thread, "And the rest again", "email"))
+        assert refused == RESUME_UNKNOWN
     assert await _draft_count(w) == drafts
 
 
