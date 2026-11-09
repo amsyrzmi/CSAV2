@@ -347,3 +347,125 @@ async def test_remaining_sends_counts_the_hourly_window(
     for _ in range(20):
         await mark("sent", 1)
     assert await service.remaining_sends(session) == 0  # never negative
+
+
+async def _group_of(w: World, size: int) -> list[str]:
+    """``size`` active subscribers, their addresses in the order the group pages them (by id)."""
+    ids: dict[UUID, str] = {}
+    for number in range(size):
+        contact = await _customer(w, f"Member {number}", f"member{number}@example.test")
+        await _subscription(w, contact)
+        ids[contact] = f"member{number}@example.test"
+    return [ids[key] for key in sorted(ids)]
+
+
+async def test_named_person_is_not_expanded_again_on_a_group_page_two(
+    world: World,  # noqa: F811
+) -> None:
+    await _package(world, world.tenant, "subscriptions")
+    await _employee(world, "aisyah@example.test", "Nur Aisyah")
+    ordered = await _group_of(world, 5)
+    specs = [
+        _spec("employee", "Nur Aisyah"),
+        _spec("address", "walkin@example.test"),
+        _spec("group", group="active_subscribers"),
+    ]
+    first = await _expand(world, specs, offset=0, limit=3)
+    # Named and typed specs first; the group fills the one place left.
+    assert _addresses(first) == ["aisyah@example.test", "walkin@example.test", ordered[0]]
+    assert first.not_included == {"over_limit": 4}
+    # Page two (one group member offered so far) holds group members only: nobody named is
+    # offered again and nobody counts as a duplicate.
+    second = await _expand(world, specs, offset=1, limit=3)
+    assert _addresses(second) == ordered[1:4]
+    assert second.not_included == {"over_limit": 1}
+
+
+async def test_limit_is_an_overall_cap_and_the_rest_is_counted(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    ordered = await _group_of(world, 3)
+    people = [_spec("address", f"person{n:02d}@example.test") for n in range(40)]
+    everyone = await _expand(world, [*people, _spec("group", group="active_subscribers")])
+    assert _addresses(everyone) == [f"person{n:02d}@example.test" for n in range(20)]
+    assert everyone.not_included == {"over_limit": 20 + 3}  # 20 people past the cap, 3 members
+
+    some = [_spec("address", f"some{n}@example.test") for n in range(3)]
+    mixed = await _expand(
+        world, [*some, _spec("group", group="active_subscribers")], offset=0, limit=4
+    )
+    assert _addresses(mixed) == [f"some{n}@example.test" for n in range(3)] + ordered[:1]
+    assert mixed.not_included == {"over_limit": 2}
+    assert len(mixed.recipients) <= 4
+
+    full = await _expand(
+        world, [*some, _spec("group", group="active_subscribers")], offset=0, limit=3
+    )
+    # The group was seen but nothing fits: it is counted, not dropped.
+    assert len(full.recipients) == 3 and full.not_included == {"over_limit": 3}
+
+
+async def test_only_one_group_spec_is_allowed(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _package(world, world.tenant, "subscriptions")
+    await _group_of(world, 2)
+    paths = _spy_reads(monkeypatch)
+    with pytest.raises(HTTPException) as refused:
+        await _expand(
+            world,
+            [
+                _spec("group", group="active_subscribers"),
+                _spec("group", group="renewing_soon", days=7),
+            ],
+        )
+    assert refused.value.status_code == 422 and refused.value.detail == "email_batch_one_group"
+    assert paths == []
+
+
+def _spy_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    paths: list[str] = []
+    real_all, real_one = db.q.fetch_all, db.q.fetch_one
+
+    async def spy_all(path: str, *args: Any, **kwargs: Any) -> Any:
+        paths.append(path)
+        return await real_all(path, *args, **kwargs)
+
+    async def spy_one(path: str, *args: Any, **kwargs: Any) -> Any:
+        paths.append(path)
+        return await real_one(path, *args, **kwargs)
+
+    monkeypatch.setattr(db.q, "fetch_all", spy_all)
+    monkeypatch.setattr(db.q, "fetch_one", spy_one)
+    return paths
+
+
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, 21), (0, -1), (-1, 20), (-5, 0)])
+async def test_limit_and_offset_bounds_are_refused_before_any_read(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    offset: int,
+    limit: int,
+) -> None:
+    await _package(world, world.tenant, "subscriptions")
+    await _group_of(world, 2)
+    paths = _spy_reads(monkeypatch)
+    with pytest.raises(HTTPException) as refused:
+        await _expand(
+            world, [_spec("group", group="active_subscribers")], offset=offset, limit=limit
+        )
+    assert refused.value.status_code == 422 and refused.value.detail == "email_batch_limit_invalid"
+    assert paths == []
+
+
+async def test_group_offset_beyond_the_group_gives_nothing(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    await _employee(world, "aisyah@example.test", "Nur Aisyah")
+    await _group_of(world, 3)
+    beyond = await _expand(
+        world,
+        [_spec("employee", "Nur Aisyah"), _spec("group", group="active_subscribers")],
+        offset=50,
+        limit=20,
+    )
+    assert beyond.recipients == [] and beyond.not_included == {}

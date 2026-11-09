@@ -5,6 +5,13 @@ the same checks the one-recipient compose path applies: the HR package for direc
 Subscriptions package and its read rule for customers and groups, and ``check_address`` for typed
 addresses. Everyone it cannot write to is counted by reason, never named, so a card or a turn row
 holds counts only. ``BatchRecipient.label`` is for the assistant's own reply and is never stored.
+
+Paging contract. ``limit`` (1..20, the hourly send ceiling) is an OVERALL cap on ``recipients``:
+named people, typed addresses and customers come first in spec order, the one group fills what is
+left, and everyone beyond the cap is counted ``over_limit``. ``offset`` pages the GROUP only and
+means "skip this many group members already offered"; when ``offset > 0`` the non-group specs are
+not expanded again (they were on page one), so they add nothing and are not counted as duplicates.
+At most one group spec is allowed per request.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from csa.workspace.contracts import RecipientSpec
 from csa.workspace.directory import search_people
 
 NOT_INCLUDED_REASONS = ("no_email", "not_found", "ambiguous", "duplicate", "over_limit")
+MAX_LIMIT = 20  # the hourly send ceiling (EmailService.remaining_sends)
 _CANDIDATES = 2  # two matches already make a name ambiguous; never fetch more than needed
 
 
@@ -52,10 +60,12 @@ class Expanded:
 
 
 class _Collector:
-    """Adds recipients in order, counting duplicates (addresses compare case-insensitively)."""
+    """Adds recipients in order up to ``limit``, counting duplicates (addresses compare
+    case-insensitively) and anyone past the cap as ``over_limit``."""
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int) -> None:
         self.out = Expanded()
+        self.limit = limit
         self._seen: set[str] = set()
 
     def count(self, reason: str, how_many: int = 1) -> None:
@@ -66,6 +76,9 @@ class _Collector:
         folded = recipient.address.strip().lower()
         if folded in self._seen:
             self.count("duplicate")
+            return
+        if len(self.out.recipients) >= self.limit:
+            self.count("over_limit")
             return
         self._seen.add(folded)
         self.out.recipients.append(recipient)
@@ -142,20 +155,25 @@ async def _group(
     found: _Collector,
     *,
     offset: int,
-    limit: int,
 ) -> None:
+    room = found.limit - len(found.out.recipients)
+    # LIMIT 0 would return no row, hiding the group and its total: look at one row instead and
+    # add only what fits.
     rows = await db.q.fetch_all(
         "subscriptions/customers_by_group.sql",
         {
             "client_id": client_id,
             "group": spec.group,
             "days": spec.days or 0,
-            "limit": limit,
+            "limit": max(room, 1),
             "offset": offset,
         },
         conn=conn,
     )
-    for row in rows:
+    if not rows:
+        return
+    total, page = rows[0]["total"], rows[:room]
+    for row in page:
         address = row["email"].strip()
         found.add(
             BatchRecipient(
@@ -166,8 +184,7 @@ async def _group(
                 label=row["full_name"] or address,
             )
         )
-    if rows:
-        found.count("over_limit", rows[0]["total"] - offset - len(rows))
+    found.count("over_limit", total - offset - len(page))
 
 
 async def expand_recipients(
@@ -179,14 +196,23 @@ async def expand_recipients(
     offset: int,
     limit: int,
 ) -> Expanded:
-    """The people behind ``specs``, in spec order, each address once.
+    """The people behind ``specs``, in spec order, each address once, at most ``limit`` of them.
 
-    Every refusal (an inactive package, a role that may not read Subscriptions, a malformed typed
-    address) is raised before any row is read. A group is paged in the database by customer id:
-    ``offset``/``limit`` select its page and the people past it are counted as ``over_limit``;
-    named people and typed addresses are never paged. Give one group per request: each group
-    spec takes its own page.
+    Named people, typed addresses and customers come first; the one group fills what is left, and
+    everyone beyond ``limit`` is counted ``over_limit`` (for a group, the members the page fetch
+    saw past the cap). ``offset`` pages the group only: when it is above zero the non-group specs
+    are skipped, not expanded again and not counted as duplicates, because page one returned them.
+    A group is paged in the database by customer id. Every refusal is raised before any row is
+    read: ``limit`` outside 1..20 or a negative ``offset`` (422 ``email_batch_limit_invalid``),
+    more than one group spec (422 ``email_batch_one_group``), an inactive package, a role that may
+    not read Subscriptions, a malformed typed address.
     """
+    if not 1 <= limit <= MAX_LIMIT or offset < 0:
+        raise HTTPException(422, "email_batch_limit_invalid")
+    if sum(spec.kind == "group" for spec in specs) > 1:
+        raise HTTPException(422, "email_batch_one_group")
+    if offset > 0:
+        specs = [spec for spec in specs if spec.kind == "group"]  # the rest were on page one
     pool = request.app.state.pool
     typed = {id(spec): _typed(spec) for spec in specs if spec.kind == "address"}
     if any(spec.kind in ("customer", "group") for spec in specs):
@@ -195,9 +221,9 @@ async def expand_recipients(
     if any(spec.kind == "employee" for spec in specs):
         # Directory people need the hr package, as POST /email/compose does.
         await require_package(pool, client_id, frozenset({"hr"}))
-    found = _Collector()
+    found = _Collector(limit)
     async with tx(pool, str(client_id)) as conn:
-        for spec in specs:
+        for spec in sorted(specs, key=lambda spec: spec.kind == "group"):  # the group fills last
             if spec.kind == "address":
                 address = typed[id(spec)]
                 found.add(
@@ -214,5 +240,5 @@ async def expand_recipients(
             elif spec.kind == "customer":
                 await _customer(conn, client_id, spec, found)
             else:
-                await _group(conn, client_id, spec, found, offset=offset, limit=limit)
+                await _group(conn, client_id, spec, found, offset=offset)
     return found.out
