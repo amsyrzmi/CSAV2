@@ -27,7 +27,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, get_args
 from uuid import UUID, uuid5
 
@@ -36,6 +36,7 @@ from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from csa.console.contracts import ConsoleActor
+from csa.core.tenancy import tx
 from csa.workspace.contracts import (
     MAX_STEPS,
     CardField,
@@ -43,8 +44,15 @@ from csa.workspace.contracts import (
     PlanProposalPayload,
     PlanStep,
     ProposalKind,
+    ProposalOut,
 )
-from csa.workspace.registry import CardContent, ProposalError, ProposalExecutor, ProposalOrigin
+from csa.workspace.registry import (
+    CardContent,
+    ProposalError,
+    ProposalExecutor,
+    ProposalOrigin,
+    ProposalRegistry,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -112,6 +120,8 @@ _PLAN_TEXT: dict[Language, dict[str, str]] = {
         "changed_one": " 1 step has already changed and will be skipped.",
         "changed_many": " {count} steps have already changed and will be skipped.",
         "changed": "{title} (changed since you reviewed it)",
+        "left_out_one": " 1 step could not be retried and is left out.",
+        "left_out_many": " {count} steps could not be retried and are left out.",
         "step_email_send": "Send an email",
         "step_email_export": "Save an email to Gmail drafts",
         "step_booking_action": "Book, move or cancel a booking",
@@ -127,6 +137,8 @@ _PLAN_TEXT: dict[Language, dict[str, str]] = {
         "changed_one": " 1 langkah sudah berubah dan akan dilangkau.",
         "changed_many": " {count} langkah sudah berubah dan akan dilangkau.",
         "changed": "{title} (berubah sejak anda menyemaknya)",
+        "left_out_one": " 1 langkah tidak dapat dicuba semula dan ditinggalkan.",
+        "left_out_many": " {count} langkah tidak dapat dicuba semula dan ditinggalkan.",
         "step_email_send": "Hantar e-mel",
         "step_email_export": "Simpan e-mel ke draf Gmail",
         "step_booking_action": "Tempah, alih atau batalkan tempahan",
@@ -320,6 +332,43 @@ class PlanExecutor:
         )
         return content, plan_version(steps)
 
+    async def refresh(
+        self,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        steps: Sequence[PlanStep],
+        *,
+        language: Language = "en",
+    ) -> tuple[list[PlanStep], int]:
+        """Read each step's version again from its child's ``card``, as the assistant.
+
+        Returns the steps with their current versions, in order, and how many were left out
+        because their card now refuses (a draft already sent, a closed slot, a package switched
+        off). The stored versions are never reused.
+        """
+
+        def read(step: PlanStep) -> Callable[[], Awaitable[PlanStep | None]]:
+            async def one() -> PlanStep | None:
+                try:
+                    _, current = await self._children[step.kind].card(
+                        request,
+                        actor,
+                        client_id,
+                        dict(step.payload),
+                        origin="assistant",
+                        language=language,
+                    )
+                except HTTPException:
+                    return None
+                return step.model_copy(update={"version": current})
+
+            return one
+
+        read_back = await _bounded([read(step) for step in steps])
+        kept = [step for step in read_back if step is not None]
+        return kept, len(steps) - len(kept)
+
     async def _run_step(
         self,
         request: Request,
@@ -434,3 +483,83 @@ class PlanExecutor:
                 for index, (outcome, step) in enumerate(zip(final, steps, strict=True))
             ]
         }
+
+
+_RETRYABLE: frozenset[str] = frozenset({"failed", "not_run"})
+
+
+def _retry_indexes(result: Mapping[str, Any] | None, count: int) -> list[int]:
+    """The stored steps to try again: the receipt entries that failed or never ran.
+
+    ``done`` steps acted and ``skipped`` ones changed since the card, so neither is retried. A
+    ``failed``/``plan_deadline`` step may have acted: re-reading its card refuses it or moves its
+    version, and it is then left out and counted, not special-cased here.
+    """
+    entries = result.get("steps") if result else None
+    if not isinstance(entries, list):
+        return []
+    found = {
+        entry["index"]
+        for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("status") in _RETRYABLE
+        and isinstance(entry.get("index"), int)
+        and 0 <= entry["index"] < count
+    }
+    return sorted(found)
+
+
+async def retry_plan(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal_id: UUID,
+    registry: ProposalRegistry,
+) -> ProposalOut:
+    """Prepare a new plan from an executed plan's failed and not-run steps.
+
+    Owner and login session only (``proposal_session_mismatch``); 409 ``plan_not_executed`` for a
+    plan that has not run, and ``plan_nothing_to_retry`` when no failed or not-run step is left
+    to propose. The new plan is stored as the assistant's, bound to the caller's session and
+    tied to the same conversation, and confirmed on its own like any plan. No connection is held
+    while the children's cards are read.
+    """
+    pool = request.app.state.pool
+    async with tx(pool, str(client_id)) as conn:
+        old = await registry.owned(conn, actor, client_id, proposal_id)
+    if old.login_session_id != actor.session_id:
+        raise ProposalError("proposal_session_mismatch")
+    if old.kind != "plan":
+        raise HTTPException(409, "proposal_not_retryable")
+    if old.status != "executed":
+        raise HTTPException(409, "plan_not_executed")
+    stored = PlanProposalPayload.model_validate(old.payload).steps
+    wanted = [stored[index] for index in _retry_indexes(old.result, len(stored))]
+    if not wanted:
+        raise HTTPException(409, "plan_nothing_to_retry")
+    executor = registry.executor("plan")
+    if not isinstance(executor, PlanExecutor):
+        raise RuntimeError("the plan executor is not a PlanExecutor")
+    steps, left_out = await executor.refresh(
+        request, actor, client_id, wanted, language=old.language
+    )
+    if not steps:
+        raise HTTPException(409, "plan_nothing_to_retry")
+    prepared = await registry.prepare(
+        request,
+        actor,
+        client_id,
+        "plan",
+        plan_payload(steps),
+        origin="assistant",
+        language=old.language,
+    )
+    if left_out:
+        text = _PLAN_TEXT[old.language]
+        note = text["left_out_one" if left_out == 1 else "left_out_many"].format(count=left_out)
+        content = replace(prepared.content, summary=prepared.content.summary + note)
+        prepared = replace(prepared, content=content)
+    async with tx(pool, str(client_id)) as conn:
+        return await registry.insert(
+            conn, actor, client_id, prepared, thread_id=old.thread_id, origin="assistant"
+        )

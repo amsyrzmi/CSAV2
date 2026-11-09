@@ -821,6 +821,7 @@ payload or employee/contact identity mapping is stored.
 | `GET /workspace/proposals/{id}` | tenant query | The owner's proposal with its stored card and, once executed, its result |
 | `POST /workspace/proposals/{id}/confirm` | none, tenant query | 200 `ProposalOut` (see below) |
 | `POST /workspace/proposals/{id}/cancel` | none, tenant query | 200 `ProposalOut`; cancelling a requested proposal sets `cancelled` |
+| `POST /workspace/proposals/{id}/retry` | none, tenant query | 201 `ProposalOut`: a new `plan` from the failed and not-run steps of an executed plan (see Plans) |
 | `GET /workspace/people` | `q` (1..80), tenant query | Up to 10 people (see People) |
 | `GET /workspace/people/me` | tenant query | The caller's employee link and manager |
 
@@ -995,6 +996,28 @@ Audit actions carry the actor, tenant, proposal id and `{"kind": ...}` only:
 `workspace.proposal.created`, `workspace.proposal.confirmed`,
 `workspace.proposal.executed` and `workspace.proposal.cancelled`. A people search writes
 `workspace.people.lookup` with details `{"candidates": n}` only, never the query or a name.
+
+### Plans
+
+A `plan` proposal puts several allowed steps (`email_send`, `email_export`, `booking_action`,
+`inbox_decision`, `training_submit`, `hr_person`; at most 20, at most 10 of them not email)
+behind one card and one confirm. Only the assistant makes one (origin `assistant`):
+`POST /workspace/proposals` rejects the kind with 422 `plan_not_creatable`. The card holds a
+fixed title per step (an email step also carries its draft id as the row value) and counts, never
+an address, name, subject or body. Confirm runs each step on its own, up to four at a time, and
+returns `result.steps`: one entry per step with `index`, `kind`, `status` (`done`, `failed`,
+`skipped` for a step that changed since it was reviewed, or `not_run`), a `code` when it did not
+complete and the step's `receipt` when it did.
+
+`POST /workspace/proposals/{id}/retry` makes a new plan, stored as the assistant's and bound to
+the caller's login session (another session gets 403 `proposal_session_mismatch`; another user
+sees 404 `proposal_not_found`), from the executed plan's `failed` and `not_run` steps only. A
+`done` or `skipped` step is never retried. Each step's version is read again from its own
+card, so a step whose card now refuses (a draft already sent, a closed slot) is left out and
+counted on the new card's summary, never named. The answer is 201 with `Cache-Control:
+no-store`; the new plan is confirmed like any other. Refusals, all 409: `plan_not_executed` (the
+plan has not run), `plan_nothing_to_retry` (no failed or not-run step is left to propose),
+`proposal_not_retryable` (the proposal is not a plan).
 
 ### Gates
 

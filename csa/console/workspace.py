@@ -29,6 +29,7 @@ from csa.workspace.contracts import (
     WorkspaceTurnPage,
 )
 from csa.workspace.directory import my_people, search_people, throttle_lookup
+from csa.workspace.plan import retry_plan
 from csa.workspace.planner import PlannerError, WorkspacePlanner
 from csa.workspace.registry import ProposalActionRefused, ProposalRegistry
 from csa.workspace.service import (
@@ -339,6 +340,21 @@ def build_workspace_router() -> APIRouter:
         registry = _registry(request)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             result = await registry.cancel(conn, actor, client_id, proposal_id)
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
+    @router.post("/proposals/{proposal_id}/retry", response_model=ProposalOut, status_code=201)
+    async def retry_proposal(
+        proposal_id: UUID,
+        request: Request,
+        response: Response,
+        actor: Annotated[ConsoleActor, Depends(workspace_actor)],
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> ProposalOut:
+        _workspace_access(actor, client_id)
+        # A new assistant-origin plan from the failed and not-run steps of an executed one,
+        # owned by this login session; a tab never creates a plan any other way.
+        result = await retry_plan(request, actor, client_id, proposal_id, _registry(request))
         response.headers["Cache-Control"] = "no-store"
         return result
 

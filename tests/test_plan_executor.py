@@ -14,6 +14,7 @@ import typing
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from csa.console.contracts import ConsoleActor, Role
 from csa.workspace import contracts
@@ -39,8 +40,9 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from tests.conftest import requires_docker
-from tests.test_console_sessions import SessionWorld
-from tests.test_workspace_registry import _age_claim, _member_actor, _row
+from tests.test_console_sessions import MEMBER_PASSWORD, SessionWorld
+from tests.test_workspace_registry import _actor as _login_actor
+from tests.test_workspace_registry import _age_claim, _member_actor, _row, _session_id
 
 pytest_plugins = ["tests.test_console_sessions"]
 
@@ -770,3 +772,191 @@ async def test_a_lease_retaken_mid_plan_acts_once_per_step(sessions: SessionWorl
     assert stalled == retaken  # the stalled confirm finds the retaker's record and replays it
     assert (await _row(sessions, out.id))["status"] == "executed"
     assert _acts(children) == sorted((step_id(out.id, n) for n in range(3)), key=str)
+
+
+# ----------------------------------------------------------------------------- retry route
+
+PROPOSALS = "/console/v1/workspace/proposals"
+
+
+async def _executed_plan(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> tuple[httpx.AsyncClient, ConsoleActor, dict[str, FakeChild], ProposalRegistry, Any]:
+    """A plan run to its end as one login: done, failed, done, skipped, not_run, not_run."""
+    browser, me = await sessions.member(role="tenant_staff")
+    actor = _login_actor(me, await _session_id(sessions, me["user"]["id"]))
+    children = _children()
+    registry = _registry(children)
+    sessions.app.state.proposal_registry = registry
+    monkeypatch.setattr(plan_module, "PLAN_DEADLINE_SECONDS", 0.2)
+    for n in range(3):  # the first four steps fill every slot past the deadline
+        children["booking_action"].slow[n] = 0.6
+    children["hr_person"].slow[3] = 0.6
+    children["booking_action"].execute_error[1] = HTTPException(409, "booking_slot_taken")
+    children["hr_person"].current[3] = "v3-moved"  # the person changed since the card
+    payload = _payload(
+        _step("booking_action", 0),
+        _step("booking_action", 1),
+        _step("booking_action", 2),
+        _step("hr_person", 3),
+        _step("email_send", 4, draft_id=str(uuid4())),
+        _step("email_send", 5, draft_id=str(uuid4())),
+    )
+    plan = await _create_plan(sessions, registry, actor, payload)
+    done = await _confirm(sessions, registry, actor, plan.id)
+    statuses = [s["status"] for s in done.result["steps"]]
+    assert statuses == ["done", "failed", "done", "skipped", "not_run", "not_run"]
+    return browser, actor, children, registry, done
+
+
+def _retry_path(plan_id: Any) -> str:
+    return f"{PROPOSALS}/{plan_id}/retry"
+
+
+@requires_docker
+async def test_retry_prepares_a_new_plan_from_failed_and_not_run_steps_only(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser, actor, children, _, done = await _executed_plan(sessions, monkeypatch)
+    old_steps = (await _row(sessions, done.id))["payload"]["steps"]
+    # The failed step's record moved on since the plan was confirmed: its version is the
+    # card's now, never the stored one (a copied version would be skipped as drifted).
+    children["booking_action"].current[1] = "v1-fresh"
+    cards_before = sum(child.card_calls for child in children.values())
+    response = await sessions.mutate(browser, _retry_path(done.id))
+    assert response.status_code == 201, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    out = response.json()
+    assert out["kind"] == "plan" and out["status"] == "requested" and out["id"] != str(done.id)
+    assert sum(child.card_calls for child in children.values()) > cards_before
+    row = await _row(sessions, UUID(out["id"]))
+    assert row["origin"] == "assistant" and row["login_session_id"] == actor.session_id
+    assert row["payload"]["steps"] == [
+        {**old_steps[1], "version": "v1-fresh"},
+        old_steps[4],
+        old_steps[5],
+    ]
+    assert out["card"]["expected_version"] == _hash(["v1-fresh", "v4", "v5"])
+    card = out["card"]
+    assert card["title"] == "Confirm 3 steps"
+    assert [f["label"] for f in card["fields"]] == [
+        "Book, move or cancel a booking",
+        "Send an email",
+        "Send an email",
+    ]
+    assert [f["value"] for f in card["fields"]] == [
+        "",
+        old_steps[4]["payload"]["draft_id"],
+        old_steps[5]["payload"]["draft_id"],
+    ]
+    assert "left out" not in card["summary"]
+    for private in (NAME, ADDRESS, SUBJECT):
+        assert private not in json.dumps(out)
+    # The plan that was retried is untouched.
+    assert (await _row(sessions, done.id))["status"] == "executed"
+
+
+@requires_docker
+async def test_retry_leaves_out_and_counts_a_step_whose_card_now_refuses(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser, _, children, _, done = await _executed_plan(sessions, monkeypatch)
+    children["email_send"].card_error[4] = HTTPException(409, "draft_already_sent")
+    response = await sessions.mutate(browser, _retry_path(done.id))
+    assert response.status_code == 201, response.text
+    out = response.json()
+    row = await _row(sessions, UUID(out["id"]))
+    assert [step["payload"]["n"] for step in row["payload"]["steps"]] == [1, 5]
+    assert out["card"]["title"] == "Confirm 2 steps"
+    assert "1 step could not be retried and is left out." in out["card"]["summary"]
+    assert "draft_already_sent" not in json.dumps(out)
+
+
+@requires_docker
+async def test_retry_is_assistant_origin_and_session_bound(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser, _, _, _, done = await _executed_plan(sessions, monkeypatch)
+    me = (await browser.get("/console/v1/auth/me")).json()
+    second = await sessions.browser()
+    login = await sessions.mutate(
+        second,
+        "/console/v1/auth/login",
+        {"email": me["user"]["email"], "password": MEMBER_PASSWORD},
+    )
+    assert login.status_code == 200, login.text
+    refused = await sessions.mutate(second, _retry_path(done.id))
+    assert refused.status_code == 403 and refused.json()["detail"] == "proposal_session_mismatch"
+    assert await sessions.q("SELECT count(*) n FROM console_proposals WHERE kind='plan'") == [
+        {"n": 1}
+    ]
+    # Another user never sees the plan at all.
+    other, _ = await sessions.member(role="tenant_staff")
+    missing = await sessions.mutate(other, _retry_path(done.id))
+    assert missing.status_code == 404 and missing.json()["detail"] == "proposal_not_found"
+    # The owner's own session retries it, as the assistant.
+    created = await sessions.mutate(browser, _retry_path(done.id))
+    assert created.status_code == 201, created.text
+    row = await _row(sessions, UUID(created.json()["id"]))
+    assert row["origin"] == "assistant"
+
+
+@requires_docker
+async def test_retry_of_a_plan_with_nothing_to_retry_is_409(sessions: SessionWorld) -> None:
+    browser, me = await sessions.member(role="tenant_staff")
+    actor = _login_actor(me, await _session_id(sessions, me["user"]["id"]))
+    children = _children()
+    registry = _registry(children)
+    sessions.app.state.proposal_registry = registry
+    plan = await _create_plan(
+        sessions, registry, actor, _payload(_step("email_send", 0), _step("booking_action", 1))
+    )
+    done = await _confirm(sessions, registry, actor, plan.id)
+    assert [s["status"] for s in done.result["steps"]] == ["done", "done"]
+    response = await sessions.mutate(browser, _retry_path(plan.id))
+    assert response.status_code == 409 and response.json()["detail"] == "plan_nothing_to_retry"
+    assert await sessions.q("SELECT count(*) n FROM console_proposals WHERE kind='plan'") == [
+        {"n": 1}
+    ]
+
+
+@requires_docker
+async def test_retry_with_every_candidate_step_refused_is_409_and_stores_nothing(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser, _, children, _, done = await _executed_plan(sessions, monkeypatch)
+    children["booking_action"].card_error[1] = HTTPException(409, "booking_slot_taken")
+    children["email_send"].card_error[4] = HTTPException(409, "draft_already_sent")
+    children["email_send"].card_error[5] = HTTPException(409, "draft_already_sent")
+    response = await sessions.mutate(browser, _retry_path(done.id))
+    assert response.status_code == 409 and response.json()["detail"] == "plan_nothing_to_retry"
+    assert await sessions.q("SELECT count(*) n FROM console_proposals WHERE kind='plan'") == [
+        {"n": 1}
+    ]
+
+
+@requires_docker
+async def test_retry_of_a_plan_not_yet_executed_is_409(sessions: SessionWorld) -> None:
+    browser, me = await sessions.member(role="tenant_staff")
+    actor = _login_actor(me, await _session_id(sessions, me["user"]["id"]))
+    registry = _registry(_children())
+    sessions.app.state.proposal_registry = registry
+    plan = await _create_plan(sessions, registry, actor, _payload(_step("email_send", 0)))
+    response = await sessions.mutate(browser, _retry_path(plan.id))
+    assert response.status_code == 409 and response.json()["detail"] == "plan_not_executed"
+
+
+@requires_docker
+async def test_tab_still_cannot_create_a_plan_after_retry_exists(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser, _, _, _, done = await _executed_plan(sessions, monkeypatch)
+    assert (await sessions.mutate(browser, _retry_path(done.id))).status_code == 201
+    steps = (await _row(sessions, done.id))["payload"]["steps"]
+    refused = await sessions.mutate(
+        browser, PROPOSALS, {"kind": "plan", "payload": {"steps": steps}}
+    )
+    assert refused.status_code == 422 and refused.json()["detail"] == "plan_not_creatable"
+    assert await sessions.q("SELECT count(*) n FROM console_proposals WHERE kind='plan'") == [
+        {"n": 2}
+    ]

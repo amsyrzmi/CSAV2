@@ -141,6 +141,20 @@ class ProposalExecutor(Protocol):
 
 
 @dataclass(frozen=True)
+class OwnedProposal:
+    """A stored proposal as its owner reads it back, with what ``ProposalOut`` leaves out."""
+
+    id: UUID
+    kind: ProposalKind
+    status: str
+    payload: dict[str, Any]
+    result: dict[str, Any] | None
+    thread_id: UUID | None
+    login_session_id: UUID
+    language: Language
+
+
+@dataclass(frozen=True)
 class PreparedProposal:
     """Executor output for a proposal not yet stored; built with no connection held."""
 
@@ -170,6 +184,10 @@ class ProposalRegistry:
         if executor is None:
             raise LookupError(f"no proposal executor registered for kind {kind!r}")
         return executor
+
+    def executor(self, kind: str) -> ProposalExecutor:
+        """The executor registered for ``kind`` (``LookupError`` if none)."""
+        return self._executor(kind)
 
     async def prepare(
         self,
@@ -274,6 +292,24 @@ class ProposalRegistry:
     ) -> ProposalOut:
         await _expire_owned(conn, actor, client_id)
         return _out(await _locked(conn, actor, client_id, proposal_id))
+
+    async def owned(
+        self, conn: AsyncConnection[Any], actor: ConsoleActor, client_id: UUID, proposal_id: UUID
+    ) -> OwnedProposal:
+        """The owner's proposal with its payload, result and login session (never another
+        user's: ``proposal_not_found``). For a follow-up that starts from a stored proposal."""
+        await _expire_owned(conn, actor, client_id)
+        row = await _locked(conn, actor, client_id, proposal_id)
+        return OwnedProposal(
+            id=row["id"],
+            kind=row["kind"],
+            status=row["status"],
+            payload=row["payload"],
+            result=row["result"],
+            thread_id=row["thread_id"],
+            login_session_id=row["login_session_id"],
+            language=row["card"].get("language", "en"),
+        )
 
     async def confirm(
         self,
