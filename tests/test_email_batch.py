@@ -24,6 +24,7 @@ from csa.decide.deciders import Decider
 from csa.decide.grounding import unsupported_figures
 from csa.decide.jev import JevResponse
 from csa.email.models import DraftFact, DraftProposal, EmailPolicyError, EmailSession
+from csa.email.recipients import has_staff_placeholder
 from csa.email.service import EmailService
 from csa.workspace import email_batch
 from csa.workspace.contracts import EmailBatchProposal, RecipientSpec, WorkspaceTurnInput
@@ -238,6 +239,44 @@ def test_unsupported_figures_finds_numbers_and_links_missing_from_the_sources() 
     spans = unsupported_figures(text, sources)
     assert [text[a:b] for a, b in spans] == ["99", "https://example.test/up"]
     assert unsupported_figures("Thanks for staying with us.", []) == []
+
+
+def _no_placeholder_fragment(text: str) -> bool:
+    """Every ``[`` in ``text`` opens a whole ``[STAFF: ...]`` placeholder."""
+    return "[" not in re.sub(r"\[STAFF: [^\]]*\]", "", text)
+
+
+@pytest.mark.parametrize("end", [200, 199, 190, 180, 173])
+@pytest.mark.parametrize("figures", [1, 3, 9])
+def test_check_figures_never_cuts_a_placeholder_out_of_a_long_subject(
+    end: int, figures: int
+) -> None:
+    """A figure near the end of the 200-character limit: the subject keeps whole placeholders
+    (or none) and still needs staff input whenever a figure was replaced."""
+    numbers = " ".join(f"{n}{n}" for n in range(1, figures + 1))
+    head = "Renewal " + "b" * (end - len("Renewal ") - len(numbers) - 1) + " "
+    subject = (head + numbers + " ").ljust(200, "c") if end < 200 else head + numbers
+    assert len(subject) == 200
+    proposal = DraftProposal(subject=subject, body="Hello,\n\nSee you soon.")
+    checked = email_batch.check_figures(proposal, [])
+    assert len(checked.subject) <= 200
+    assert _no_placeholder_fragment(checked.subject)
+    assert not re.search(r"\d", checked.subject)
+    assert "[STAFF: confirm this figure]" in checked.subject
+    assert has_staff_placeholder(f"{checked.subject}\n{checked.body}")
+    assert "confirm this figure" in checked.needs_facts_from_staff
+
+
+def test_fitting_the_subject_never_cuts_a_checked_number_into_a_new_one() -> None:
+    """Shortening the words before a placeholder drops whole words: "RM 150" never ends up as
+    "RM 15", a figure the check never saw."""
+    tail = " RM 150 99"
+    subject = "Renewal " + "b" * (176 - len("Renewal ") - len(tail)) + tail
+    proposal = DraftProposal(subject=subject, body="Hello,\n\nSee you soon.")
+    checked = email_batch.check_figures(proposal, ["Your plan is RM 150 a month"])
+    assert len(checked.subject) <= 200
+    assert checked.subject.endswith("[STAFF: confirm this figure]")
+    assert set(re.findall(r"\d+", checked.subject)) <= {"150"}
 
 
 # --------------------------------------------------------------------------- the drafting world
@@ -500,6 +539,72 @@ async def test_decider_can_never_create_a_send_step(
     assert decision.send is False
     out = await _build(world, expanded, decision, proposal=proposal, turn=turn)
     assert [step.kind for step in out.steps] == ["email_export", "email_export"]
+
+
+@requires_docker
+async def test_a_forged_send_decision_with_a_negated_send_gives_only_exports(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The module enforces the send rule itself: a decision built with ``send=True`` cannot
+    turn "don't send, just draft it" into a send step, whatever the caller passed."""
+    await _ready(world, monkeypatch, BatchModel())
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    turn = _turn("don't send, just draft it")
+    out = await _build(world, expanded, SEND_ALL, proposal=_proposal(send=True), turn=turn)
+    assert [step.kind for step in out.steps] == ["email_export", "email_export"]
+    assert all(set(step.payload) == {"draft_id"} for step in out.steps)
+    assert not any("sending" in note for note in out.notes)
+
+
+@requires_docker
+async def test_a_send_decision_with_the_users_send_words_still_sends(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _ready(world, monkeypatch, BatchModel())
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    turn = _turn("send it to them")
+    proposal = _proposal(send=True)
+    assert asks_to_send(turn.body, proposal.send) is True
+    out = await _build(world, expanded, SEND_ALL, proposal=proposal, turn=turn)
+    assert [step.kind for step in out.steps] == ["email_send", "email_send"]
+
+
+@requires_docker
+async def test_the_planners_send_flag_without_a_send_word_gives_only_exports(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _ready(world, monkeypatch, BatchModel())
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    turn = _turn("Remind our active subscribers about the renewal")
+    out = await _build(world, expanded, SEND_ALL, proposal=_proposal(send=True), turn=turn)
+    assert [step.kind for step in out.steps] == ["email_export", "email_export"]
+    assert not any("sending" in note for note in out.notes)
+
+
+@requires_docker
+async def test_a_figure_at_the_end_of_a_long_subject_leaves_a_whole_placeholder(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tail = " RM 99"
+    subject = "Renewal notice " + "a" * (200 - len("Renewal notice ") - len(tail)) + tail
+    assert len(subject) == 200
+    await _ready(world, monkeypatch, BatchModel(extra={"subject": subject}))
+    await _customers(world, 1)
+    out = await _build(world, await _expanded(world, GROUP), SEND_ALL)
+    (row,) = await _drafts(world, out)
+    assert len(row["subject"]) <= 200
+    assert "99" not in row["subject"]
+    assert "[STAFF: confirm this figure]" in row["subject"]
+    assert _no_placeholder_fragment(row["subject"])
+    assert row["needs_staff_input"] is True
+    assert [step.kind for step in out.steps] == ["email_export"]
 
 
 @requires_docker

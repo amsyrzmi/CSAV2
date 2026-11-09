@@ -20,10 +20,12 @@ rule, so it can only LOWER a rule-approved send, never create one. The drafter w
 facts only (untrusted data in its prompt), in parallel (limit 4); every draft then has its
 numbers and links checked against the facts and the user's own words, and a draft that used facts
 gets a model review. Anything unsupported becomes a ``[STAFF: ...]`` placeholder, and a draft
-with a placeholder is an ``email_export`` step. Only the first steps the mailbox's hourly quota
-allows may be ``email_send``. Steps, ``not_included`` and ``notes`` hold draft ids and counts,
-never an address, name, subject or body: recipients and the facts each draft used live on the
-draft row, which only its owner reads.
+with a placeholder is an ``email_export`` step. ``build_batch_steps`` applies the send rule
+(``rules.asks_to_send`` on the turn's own words) again itself, so a decision built or wired
+wrongly cannot send; only the first steps the mailbox's hourly quota allows may be
+``email_send``. Steps, ``not_included`` and ``notes`` hold draft ids and counts, never an
+address, name, subject or body: recipients and the facts each draft used live on the draft row,
+which only its owner reads.
 """
 
 from __future__ import annotations
@@ -72,6 +74,7 @@ from csa.workspace.contracts import (
 from csa.workspace.directory import search_people
 from csa.workspace.draft_facts import kb_facts, subscription_facts
 from csa.workspace.registry import ProposalRegistry
+from csa.workspace.rules import asks_to_send
 
 logger = structlog.get_logger(__name__)
 
@@ -432,6 +435,7 @@ LINK = "[STAFF: confirm this link]"
 CLAIM = "[STAFF: check this claim]"
 UNREVIEWED = "[STAFF: check this draft against the facts]"
 _PLACEHOLDER = re.compile(r"\[staff:[^\]]*\]", re.IGNORECASE)
+SUBJECT_LIMIT = 200  # DraftProposal.subject's max_length
 _MIN_PHRASE = 4
 
 REVIEW_SYSTEM = (
@@ -499,16 +503,57 @@ def _placehold(text: str, sources: Sequence[str]) -> tuple[str, list[str]]:
     return text, needs
 
 
+def _fit(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters without ever cutting a ``[STAFF: ...]`` gap.
+
+    The words between the gaps are shortened from the end, a whole word at a time (a cut number
+    would be a figure nobody checked); if the gaps alone are too long, the gaps that fit are kept
+    whole and the words go. A gap is never left as a fragment ("[STAF"), which
+    ``has_staff_placeholder`` would miss, letting a broken subject be sent.
+    """
+    if len(text) <= limit:
+        return text
+    pieces: list[tuple[str, bool]] = []
+    at = 0
+    for match in _PLACEHOLDER.finditer(text):
+        pieces += [(text[at : match.start()], False), (match.group(), True)]
+        at = match.end()
+    pieces.append((text[at:], False))
+    excess = len(text) - limit
+    for i in reversed(range(len(pieces))):
+        piece, gap = pieces[i]
+        if gap or not excess:
+            continue
+        kept = piece[: max(len(piece) - excess, 0)]
+        if kept and not kept[-1].isspace() and not piece[len(kept)].isspace():
+            kept = re.sub(r"\S+$", "", kept)  # never half a word: "RM 150" never "RM 15"
+        pieces[i] = (kept, False)
+        excess = max(excess - (len(piece) - len(kept)), 0)
+    if not excess:
+        return "".join(piece for piece, _ in pieces).strip()
+    kept = ""
+    for gap in (piece for piece, is_gap in pieces if is_gap):
+        joined = f"{kept} {gap}".strip()
+        if len(joined) > limit:
+            break
+        kept = joined
+    return kept
+
+
 def check_figures(proposal: DraftProposal, sources: Sequence[str]) -> DraftProposal:
     """The number and link check: anything in neither the facts nor the user's own words
-    becomes a ``[STAFF: ...]`` placeholder, listed in ``needs_facts_from_staff``."""
-    subject, subject_needs = _placehold(proposal.subject, sources)
+    becomes a ``[STAFF: ...]`` placeholder, listed in ``needs_facts_from_staff``.
+
+    The subject is cut to its limit before the check and fitted after it without cutting a
+    placeholder, so a replaced figure always leaves a whole gap (and the draft needs input).
+    """
+    subject, subject_needs = _placehold(proposal.subject[:SUBJECT_LIMIT], sources)
     body, body_needs = _placehold(proposal.body, sources)
     if not subject_needs and not body_needs:
         return proposal
     return proposal.model_copy(
         update={
-            "subject": subject[:200],
+            "subject": _fit(subject, SUBJECT_LIMIT),
             "body": body,
             "needs_facts_from_staff": _with_needs(proposal, *subject_needs, *body_needs),
         }
@@ -629,6 +674,10 @@ async def build_batch_steps(
     receive) and saves it once per recipient; personalised mode drafts each recipient on their
     own. A recipient whose draft fails is counted ``draft_failed``; if every one fails, the first
     refusal is raised. The mailbox must be connected (``remaining_sends`` refuses otherwise).
+
+    A step may send only when ``decision.send`` AND the send rule on the turn's own words
+    (``asks_to_send(turn.body, proposal.send)``) both allow it: the module enforces the rule
+    itself, so a forged or mis-wired decision gives exports only.
     """
     card_language: Language = language or ("ms" if proposal.language == "ms" else "en")
     pool = request.app.state.pool
@@ -639,6 +688,7 @@ async def build_batch_steps(
         remaining = await service.remaining_sends(session)
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
+    send_allowed = decision.send and asks_to_send(turn.body, proposal.send)
     not_included = dict(expanded.not_included)
     recipients = expanded.recipients
     if not recipients:
@@ -741,12 +791,12 @@ async def build_batch_steps(
     for draft in drafts:
         if draft.needs_staff_input:
             needs_input += 1
-        if decision.send and not draft.needs_staff_input and sending < remaining:
+        if send_allowed and not draft.needs_staff_input and sending < remaining:
             kinds.append("email_send")
             sending += 1
         else:
             kinds.append("email_export")
-            if decision.send and not draft.needs_staff_input:
+            if send_allowed and not draft.needs_staff_input:
                 over += 1
 
     async def step(draft: DraftOut, kind: PlanStepKind) -> PlanStep:
@@ -773,7 +823,7 @@ async def build_batch_steps(
     text = _NOTES[card_language]
     notes: list[str] = []
     exports = len(steps) - sending
-    if decision.send and exports:
+    if send_allowed and exports:
         notes.append(text["split"].format(send=sending, export=exports))
     if over:
         notes.append(text["over"].format(count=over))
