@@ -271,6 +271,8 @@ def create_app() -> FastAPI:
                             str(settings.GROQ_CHAT_URL),
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
+                        # None unless the inbound injection area runs Jev (needs a key).
+                        inbound_decider=deciders.inbound,
                         # The assistant's batch drafter only, on its own client when a model is
                         # set; otherwise batch drafts use the Email tab's model above.
                         batch_model=(

@@ -33,6 +33,7 @@ from csa.core import crypto
 from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
+from csa.decide.deciders import Decider
 from csa.email.gmail import (
     TIMEOUT_SECONDS,
     FetchedThread,
@@ -42,6 +43,7 @@ from csa.email.gmail import (
     pkce_pair,
     trim_references,
 )
+from csa.email.inbound import inbound_injection, sender_display_name
 from csa.email.models import (
     MAX_ADDRESSES,
     AnalysisLanguage,
@@ -274,6 +276,7 @@ class EmailService:
         now: Callable[[], datetime] = _utc_now,
         sync_limit: int = 20,
         batch_model: JsonCompletionClient | None = None,
+        inbound_decider: Decider | None = None,
     ) -> None:
         if not 60 <= session_idle_seconds <= 86400:
             raise ValueError("email assistant requires the configured console session idle limit")
@@ -282,6 +285,8 @@ class EmailService:
         self.model = model
         # The assistant's batch drafter (ASSISTANT_DRAFT_MODEL); the Email tab never uses it.
         self.batch_model = batch_model or model
+        # The inbound injection check before a reply is drafted (None leaves replies as they were).
+        self.inbound_decider = inbound_decider
         self.session_idle_seconds = session_idle_seconds
         self.now = now
         self.sync_limit = max(1, min(sync_limit, 50))
@@ -1224,6 +1229,14 @@ class EmailService:
             await self._session(conn, session)
         if row["latest_body"] is None:
             raise EmailPolicyError("thread_body_unavailable")
+        if await inbound_injection(
+            self.inbound_decider,
+            row["latest_body"],
+            sender_name=sender_display_name(row["sender"]),
+            trace_id=key,
+            client_id=session.tenant_id,
+        ):
+            raise EmailPolicyError("inbound_email_blocked")
         threading = await self._threading(session, mailbox, row)
         target = _reply_target(threading, mailbox["address"] or "")
         to, cc_list, bcc_list = self._recipient_lists([target], cc_addresses, bcc_addresses)
