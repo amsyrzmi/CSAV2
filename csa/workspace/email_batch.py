@@ -21,11 +21,11 @@ facts only (untrusted data in its prompt), in parallel (limit 4); every draft th
 numbers and links checked against the facts and the user's own words, and a draft that used facts
 gets a model review. Anything unsupported becomes a ``[STAFF: ...]`` placeholder, and a draft
 with a placeholder is an ``email_export`` step. ``build_batch_steps`` applies the send rule
-(``rules.asks_to_send`` on the turn's own words) again itself, so a decision built or wired
-wrongly cannot send; only the first steps the mailbox's hourly quota allows may be
-``email_send``. Steps, ``not_included`` and ``notes`` hold draft ids and counts, never an
-address, name, subject or body: recipients and the facts each draft used live on the draft row,
-which only its owner reads.
+(``rules.asks_to_send`` on the user's own words, passed in as ``authored_text``) again itself,
+so a decision built or wired wrongly cannot send; only the first steps the mailbox's hourly
+quota allows may be ``email_send``. Steps, ``not_included`` and ``notes`` hold draft ids and
+counts, never an address, name, subject or body: recipients and the facts each draft used live
+on the draft row, which only its owner reads.
 """
 
 from __future__ import annotations
@@ -434,7 +434,9 @@ FIGURE = "[STAFF: confirm this figure]"
 LINK = "[STAFF: confirm this link]"
 CLAIM = "[STAFF: check this claim]"
 UNREVIEWED = "[STAFF: check this draft against the facts]"
+CUT_SUBJECT = "[STAFF: finish this subject]"
 _PLACEHOLDER = re.compile(r"\[staff:[^\]]*\]", re.IGNORECASE)
+_CUT_GAP = re.compile(r"\s*\[[^\]]*$")  # an unclosed "[" at the end: "[", "[ST", "[STAFF: the"
 SUBJECT_LIMIT = 200  # DraftProposal.subject's max_length
 _MIN_PHRASE = 4
 
@@ -503,6 +505,17 @@ def _placehold(text: str, sources: Sequence[str]) -> tuple[str, list[str]]:
     return text, needs
 
 
+def _mend(subject: str) -> tuple[str, list[str]]:
+    """``subject`` without a gap cut before its closing bracket at the end, plus one whole
+    placeholder in its place. ``DraftProposal`` cuts a model's subject at 200 characters, which
+    can leave "[ST" (``has_staff_placeholder`` misses anything before the colon) or a gap with
+    no end; either way the subject is broken and needs staff input."""
+    match = _CUT_GAP.search(subject)
+    if match is None:
+        return subject, []
+    return f"{subject[: match.start()]} {CUT_SUBJECT}".strip(), ["finish this subject"]
+
+
 def _fit(text: str, limit: int) -> str:
     """``text`` cut to ``limit`` characters without ever cutting a ``[STAFF: ...]`` gap.
 
@@ -545,17 +558,23 @@ def check_figures(proposal: DraftProposal, sources: Sequence[str]) -> DraftPropo
     becomes a ``[STAFF: ...]`` placeholder, listed in ``needs_facts_from_staff``.
 
     The subject is cut to its limit before the check and fitted after it without cutting a
-    placeholder, so a replaced figure always leaves a whole gap (and the draft needs input).
+    placeholder, so a replaced figure always leaves a whole gap (and the draft needs input). A
+    gap the validator already cut at the subject's end is replaced by a whole one first (before
+    the figure check, so a number inside the fragment is not checked as text). The body needs
+    no such mend: ``DraftProposal`` refuses a long body instead of cutting it.
     """
-    subject, subject_needs = _placehold(proposal.subject[:SUBJECT_LIMIT], sources)
+    subject, cut_needs = _mend(proposal.subject[:SUBJECT_LIMIT])
+    subject, subject_needs = _placehold(subject, sources)
     body, body_needs = _placehold(proposal.body, sources)
-    if not subject_needs and not body_needs:
+    if not cut_needs and not subject_needs and not body_needs:
         return proposal
     return proposal.model_copy(
         update={
             "subject": _fit(subject, SUBJECT_LIMIT),
             "body": body,
-            "needs_facts_from_staff": _with_needs(proposal, *subject_needs, *body_needs),
+            "needs_facts_from_staff": _with_needs(
+                proposal, *cut_needs, *subject_needs, *body_needs
+            ),
         }
     )
 
@@ -664,6 +683,7 @@ async def build_batch_steps(
     registry: ProposalRegistry,
     decision: EmailDecision,
     *,
+    authored_text: str,
     language: Language | None = None,
 ) -> BatchSteps:
     """Draft for every expanded recipient and turn each draft into a plan step.
@@ -675,9 +695,13 @@ async def build_batch_steps(
     own. A recipient whose draft fails is counted ``draft_failed``; if every one fails, the first
     refusal is raised. The mailbox must be connected (``remaining_sends`` refuses otherwise).
 
-    A step may send only when ``decision.send`` AND the send rule on the turn's own words
-    (``asks_to_send(turn.body, proposal.send)``) both allow it: the module enforces the rule
-    itself, so a forged or mis-wired decision gives exports only.
+    A step may send only when ``decision.send`` AND the send rule on ``authored_text``
+    (``asks_to_send(authored_text, proposal.send)``) both allow it: the module enforces the rule
+    itself, so a forged or mis-wired decision gives exports only. ``authored_text`` must be the
+    user's own words (the service's ``_authored``/``own_words`` parts, joined), NEVER the folded
+    ``turn.body``: on a console answer turn that body holds the planner-written question and
+    option values, which must neither create nor veto a send. ``turn`` is used only for the
+    idempotency keys and as a figure source, never for the send decision.
     """
     card_language: Language = language or ("ms" if proposal.language == "ms" else "en")
     pool = request.app.state.pool
@@ -688,7 +712,7 @@ async def build_batch_steps(
         remaining = await service.remaining_sends(session)
     except EmailPolicyError as exc:
         raise email_http_error(exc) from None
-    send_allowed = decision.send and asks_to_send(turn.body, proposal.send)
+    send_allowed = decision.send and asks_to_send(authored_text, proposal.send)
     not_included = dict(expanded.not_included)
     recipients = expanded.recipients
     if not recipients:

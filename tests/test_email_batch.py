@@ -279,6 +279,33 @@ def test_fitting_the_subject_never_cuts_a_checked_number_into_a_new_one() -> Non
     assert set(re.findall(r"\d+", checked.subject)) <= {"150"}
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "a" * 196 + " [STAFF: confirm the date]",  # cut by the validator to "... [ST"
+        "Renewal reminder [",
+        "Renewal reminder [S",
+        "Renewal reminder [STAFF",
+        "Renewal reminder [STAFF:",
+        "Renewal reminder [STAFF: confirm the",
+        "Renewal reminder [STAFF: confirm the 5",
+    ],
+)
+def test_check_figures_never_leaves_a_cut_placeholder_at_the_subject_end(subject: str) -> None:
+    """A gap cut before its closing bracket (``DraftProposal`` cuts at 200) is dropped and one
+    whole placeholder takes its place, so the draft needs staff input and is never sent."""
+    proposal = DraftProposal(subject=subject, body="Hello,\n\nSee you soon.")
+    checked = email_batch.check_figures(proposal, [])
+    assert len(checked.subject) <= 200
+    assert not re.search(r"\[[^\]]*$", checked.subject)
+    whole = r"\[STAFF: [^\[\]]*\]"  # no bracket inside: "[STAFF: the [STAFF: ...]" is broken
+    assert len(re.findall(whole, checked.subject)) == 1
+    assert "[" not in re.sub(whole, "", checked.subject)
+    assert not re.search(r"\d", checked.subject)
+    assert has_staff_placeholder(f"{checked.subject}\n{checked.body}")
+    assert checked.needs_facts_from_staff
+
+
 # --------------------------------------------------------------------------- the drafting world
 
 
@@ -382,18 +409,28 @@ async def _build(
     proposal: EmailBatchProposal | None = None,
     turn: Any = None,
     thread_id: UUID | None = None,
+    authored: str | None = None,
 ) -> BatchSteps:
+    """``authored`` is the user's own words; for a plain typed turn that is its body."""
+    turn = turn or _turn()
     return await build_batch_steps(
         _request(w),
         _actor(w),
         w.tenant,
         thread_id or uuid4(),
-        turn or _turn(),
+        turn,
         proposal or _proposal(),
         expanded,
         build_proposal_registry(),
         decision,
+        authored_text=turn.body if authored is None else authored,
     )
+
+
+def _answer_turn(typed: str, question: str, first: str) -> Any:
+    """A console answer turn as the service folds it: the typed answer, then the planner's
+    question and the first request. Only ``typed`` and ``first`` are the user's own words."""
+    return _turn(f"{typed}\n(Answer to \u201c{question}\u201d for: {first})")
 
 
 async def _drafts(w: World, steps: BatchSteps) -> list[dict[str, Any]]:
@@ -551,8 +588,11 @@ async def test_a_forged_send_decision_with_a_negated_send_gives_only_exports(
     await _ready(world, monkeypatch, BatchModel())
     await _customers(world, 2)
     expanded = await _expanded(world, GROUP)
-    turn = _turn("don't send, just draft it")
-    out = await _build(world, expanded, SEND_ALL, proposal=_proposal(send=True), turn=turn)
+    typed = "don't send, just draft it"
+    turn = _answer_turn(typed, "Should I send these now?", "Remind our subscribers")
+    out = await _build(
+        world, expanded, SEND_ALL, proposal=_proposal(send=True), turn=turn, authored=typed
+    )
     assert [step.kind for step in out.steps] == ["email_export", "email_export"]
     assert all(set(step.payload) == {"draft_id"} for step in out.steps)
     assert not any("sending" in note for note in out.notes)
@@ -585,6 +625,64 @@ async def test_the_planners_send_flag_without_a_send_word_gives_only_exports(
     out = await _build(world, expanded, SEND_ALL, proposal=_proposal(send=True), turn=turn)
     assert [step.kind for step in out.steps] == ["email_export", "email_export"]
     assert not any("sending" in note for note in out.notes)
+
+
+@requires_docker
+async def test_the_planners_question_on_an_answer_turn_cannot_create_a_send(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The folded body holds the planner's question ("send ... to?"); the user typed only who.
+    The send rule reads the user's own words, so a forged send decision gives exports only."""
+    await _ready(world, monkeypatch, BatchModel())
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    typed = "all active subscribers"
+    turn = _answer_turn(typed, "Who should I send the renewal reminder to?", "Remind them")
+    proposal = _proposal(send=True)
+    assert asks_to_send(turn.body, proposal.send) is True  # the folded body would send
+    out = await _build(world, expanded, SEND_ALL, proposal=proposal, turn=turn, authored=typed)
+    assert [step.kind for step in out.steps] == ["email_export", "email_export"]
+    assert all(set(step.payload) == {"draft_id"} for step in out.steps)
+    assert not any("sending" in note for note in out.notes)
+
+
+@requires_docker
+async def test_the_planners_question_cannot_veto_a_clear_typed_send(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The word "drafts" in the planner's question must not lower the user's own "send"."""
+    await _ready(world, monkeypatch, BatchModel())
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    typed = "Yes, send them now"
+    turn = _answer_turn(typed, "Shall I send them or keep them as drafts?", "Remind them")
+    proposal = _proposal(send=True)
+    assert asks_to_send(turn.body, proposal.send) is False  # the folded body would not
+    out = await _build(world, expanded, SEND_ALL, proposal=proposal, turn=turn, authored=typed)
+    assert [step.kind for step in out.steps] == ["email_send", "email_send"]
+
+
+@requires_docker
+async def test_a_placeholder_the_validator_cut_leaves_a_whole_one_and_an_export(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model's own gap straddles character 200; ``DraftProposal`` cuts it to "[ST", which
+    ``has_staff_placeholder`` misses. The stored subject holds a whole gap and is an export."""
+    subject = "a" * 196 + " [STAFF: confirm the date]"
+    assert DraftProposal(subject=subject, body="x").subject.endswith(" [ST")
+    await _ready(world, monkeypatch, BatchModel(extra={"subject": subject}))
+    await _customers(world, 1)
+    out = await _build(world, await _expanded(world, GROUP), SEND_ALL)
+    (row,) = await _drafts(world, out)
+    assert len(row["subject"]) <= 200
+    assert not re.search(r"\[[^\]]*$", row["subject"])
+    assert _no_placeholder_fragment(row["subject"])
+    assert has_staff_placeholder(row["subject"])
+    assert row["needs_staff_input"] is True
+    assert [step.kind for step in out.steps] == ["email_export"]
 
 
 @requires_docker
