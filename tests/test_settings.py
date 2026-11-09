@@ -328,3 +328,10 @@ def test_assistant_jev_fractions_are_bounded(name: str) -> None:
         _settings(**{name: "1.5"})
     with pytest.raises(ValidationError):
         _settings(**{name: "-0.1"})
+
+
+def test_assistant_draft_model_defaults_to_the_same_model() -> None:
+    assert _settings().ASSISTANT_DRAFT_MODEL is None
+    assert _settings(ASSISTANT_DRAFT_MODEL="synthetic/drafter").ASSISTANT_DRAFT_MODEL == (
+        "synthetic/drafter"
+    )

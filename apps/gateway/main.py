@@ -271,6 +271,18 @@ def create_app() -> FastAPI:
                             str(settings.GROQ_CHAT_URL),
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
+                        # The assistant's batch drafter only, on its own client when a model is
+                        # set; otherwise batch drafts use the Email tab's model above.
+                        batch_model=(
+                            GroqClient(
+                                settings.GROQ_API_KEY.get_secret_value(),
+                                settings.ASSISTANT_DRAFT_MODEL,
+                                email_http,  # closed with the email client at shutdown
+                                str(settings.GROQ_CHAT_URL),
+                            )
+                            if settings.ASSISTANT_DRAFT_MODEL
+                            else None
+                        ),
                     )
                     await email.check_ready()
                     app.state.email_service = email

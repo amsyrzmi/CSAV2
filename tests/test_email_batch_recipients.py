@@ -469,3 +469,22 @@ async def test_group_offset_beyond_the_group_gives_nothing(world: World) -> None
         limit=20,
     )
     assert beyond.recipients == [] and beyond.not_included == {}
+
+
+async def test_group_rows_fetched_counts_the_group_page_only(world: World) -> None:  # noqa: F811
+    """The resume number for "the rest": group rows the page took, duplicates included."""
+    await _package(world, world.tenant, "subscriptions")
+    for i in range(4):
+        contact = await _customer(world, f"Group Member {i}", f"member{i}@example.test")
+        await _subscription(world, contact)
+    named = await _customer(world, "Named Person", "named@example.test")
+    await _subscription(world, named)
+    group = _spec("group", group="active_subscribers")
+    only_named = await _expand(world, [_spec("customer", "Named Person")])
+    assert only_named.group_rows_fetched == 0
+    page = await _expand(world, [_spec("customer", "Named Person"), group], limit=3)
+    # One named customer, then two group slots; the named one may sit in the group page too.
+    assert len(page.recipients) <= 3
+    assert page.group_rows_fetched == 2
+    rest = await _expand(world, [group], offset=page.group_rows_fetched, limit=20)
+    assert rest.group_rows_fetched == 3

@@ -375,7 +375,9 @@ class RecipientSpec(_Contract):
 class EmailBatchProposal(_Contract):
     """One email to several people; the server expands it into one draft step per recipient.
 
-    ``send`` is only the planner's reading of the user's wish: the send rule decides.
+    ``send`` is only the planner's reading of the user's wish: the send rule decides. ``mode``
+    (one shared text or one draft per person) and ``use_knowledge_base`` are the planner's hints
+    for the email decider's fallback; without a mode the decider defaults to personalised.
     """
 
     action: Literal["email_batch"]
@@ -385,6 +387,8 @@ class EmailBatchProposal(_Contract):
     language: Literal["auto", "en", "ms"] = "auto"
     send: bool = False
     offset: int = Field(default=0, ge=0)
+    mode: Literal["shared", "personalised"] | None = None
+    use_knowledge_base: bool = False
 
 
 PlannerStep = Annotated[

@@ -132,3 +132,13 @@ def test_a_plan_cannot_hold_a_plan_or_an_unlisted_action() -> None:
             PlannerOutput.model_validate({"proposal": {"action": "plan", "steps": [step]}})
     with pytest.raises(ValidationError):
         PlannerOutput.model_validate({"proposal": {"action": "plan", "steps": []}})
+
+
+def test_email_batch_mode_and_knowledge_base_are_optional_planner_hints() -> None:
+    plain = EmailBatchProposal.model_validate(_batch())
+    assert plain.mode is None and plain.use_knowledge_base is False
+    shared = EmailBatchProposal.model_validate(_batch(mode="shared", use_knowledge_base=True))
+    assert shared.mode == "shared" and shared.use_knowledge_base is True
+    assert EmailBatchProposal.model_validate(_batch(mode="personalised")).mode == "personalised"
+    with pytest.raises(ValidationError):
+        EmailBatchProposal.model_validate(_batch(mode="both"))

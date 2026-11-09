@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     ASSISTANT_JEV_FLOOR_NOUL: float = Field(default=0.7, ge=0.0, le=1.0)
     ASSISTANT_JEV_FLOOR_CHOICE: float = Field(default=0.7, ge=0.0, le=1.0)
     ASSISTANT_DECIDER_AUDIT_SAMPLE: float = Field(default=0.10, ge=0.0, le=1.0)
+    # The drafter for the assistant's batch email only, through its own client; None (or empty)
+    # means GROQ_MODEL. The Email tab's drafts always use GROQ_MODEL.
+    ASSISTANT_DRAFT_MODEL: str | None = None
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
     # E5-family models (e.g. intfloat/multilingual-e5-small) expect these prefixes.

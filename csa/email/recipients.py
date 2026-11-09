@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import NamedTuple
 
@@ -76,3 +77,12 @@ def dedupe(
 def has_staff_placeholder(body: str) -> bool:
     """True when the draft still holds a `[STAFF: ...]` gap that a person must fill."""
     return STAFF_PLACEHOLDER in body.lower()
+
+
+_PLACEHOLDER_TEXT = re.compile(r"\[staff:\s*([^\]]*)\]", re.IGNORECASE)
+
+
+def staff_placeholders(body: str, limit: int = 5) -> list[str]:
+    """The text inside each `[STAFF: ...]` gap, in order, each once, at most ``limit``."""
+    found = [match.strip()[:200] for match in _PLACEHOLDER_TEXT.findall(body) if match.strip()]
+    return list(dict.fromkeys(found))[:limit]
