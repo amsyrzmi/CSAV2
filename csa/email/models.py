@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Literal, get_args
 from uuid import UUID
 
@@ -50,6 +51,19 @@ def check_address(value: str) -> str:
     if len(value) > MAX_ADDRESS_CHARS:
         raise ValueError("address too long")
     return validate_mailbox_address(value)
+
+
+@dataclass(frozen=True)
+class DraftFact:
+    """One fact a batch draft may state: plain data with an id, never an instruction.
+
+    ``source`` is ``subscription:<id>`` or ``kb:<title>``. The text carries only what the source
+    says; a knowledge base passage is untrusted data and is not sanitised.
+    """
+
+    id: str
+    text: str
+    source: str
 
 
 def is_employee_ref(value: str) -> bool:

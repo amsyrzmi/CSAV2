@@ -23,6 +23,7 @@ from uuid import UUID
 
 import httpx
 import structlog
+from csa.agents.kb.embedder import DefaultKbEmbedder, KbEmbedder, KbEmbeddingError
 from csa.bookings.api import build_bookings_router
 from csa.bookings.google.api import build_calendar_router
 from csa.bookings.google.factory import build_calendar_push
@@ -40,7 +41,7 @@ from csa.console.tiktok_connect import build_tiktok_connect
 from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
-from csa.core.settings import get_settings
+from csa.core.settings import Settings, get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
 from csa.decide.deciders import build_deciders
 from csa.decide.groq import GroqClient
@@ -83,6 +84,16 @@ def shipped_versions() -> set[str]:
     guarded ``0130_reencrypt_credentials.py`` is a ``*.py`` file and is excluded.
     """
     return {version for version, _ in discover_migrations()}
+
+
+def _kb_embedder(settings: Settings) -> KbEmbedder | None:
+    """The embedder the worker uses (TEI when ``TEI_ENDPOINT`` is set, the hash embedder in dev
+    and ci). None when prod has no TEI: the knowledge base source for drafts is then left off."""
+    try:
+        return DefaultKbEmbedder.from_settings(settings)
+    except KbEmbeddingError:
+        logger.warning("kb_embedder_unavailable", code="tei_endpoint_missing")
+        return None
 
 
 async def check_readiness(pool: AsyncConnectionPool) -> tuple[bool, str]:
@@ -159,6 +170,8 @@ def create_app() -> FastAPI:
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # Read-only knowledge base search for batch drafts; None leaves that source off.
+            app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on
             # the LLM or rule and nothing errors.
             jev_client: JevClient | None = None
