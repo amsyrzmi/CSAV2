@@ -11,11 +11,14 @@ rejects the kind. The card holds step titles and counts only (plus each email st
 which the console opens through the draft's own preview); never an address, name, subject or
 body, because ``console_proposals`` is readable across the tenant.
 
-Confirm is per step. ``execute`` re-checks each step on its own: a gate refusal fails it, and
-a step whose card now refuses or reports another version is skipped as ``changed``. Step ``i``
-runs under ``step_id(plan_id, i)``, so a replayed plan replays its finished steps inside the
-owning services instead of acting twice. Steps run ``CONCURRENCY`` at a time under one
-``PLAN_DEADLINE_SECONDS`` deadline, inside the registry's two-minute claim lease.
+Confirm is per step. ``execute`` runs each step's gate (a refusal fails the step) and then the
+child's own ``execute`` under ``step_id(plan_id, i)``, never its ``card``: the owning services
+replay a known key before any version check, so a step an earlier, interrupted run finished
+replays as done, while a step whose record moved is refused by the service itself. Only the
+refusals in ``DRIFT_CODES`` mean "changed since you reviewed it" (``skipped``); every other
+refusal is ``failed`` with its code. Steps run ``CONCURRENCY`` at a time; none starts after
+``PLAN_DEADLINE_SECONDS``, and ``PLAN_BACKSTOP_SECONDS`` (inside the registry's two-minute
+claim lease) cuts off a step still running only as a last resort.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from csa.workspace.contracts import (
     PlanStep,
     ProposalKind,
 )
-from csa.workspace.registry import CardContent, ProposalExecutor, ProposalOrigin
+from csa.workspace.registry import CardContent, ProposalError, ProposalExecutor, ProposalOrigin
 
 logger = structlog.get_logger(__name__)
 
@@ -51,8 +54,42 @@ can never disagree. Never ``plan`` and never ``subscription_action``."""
 EMAIL_KINDS = frozenset({"email_send", "email_export"})
 MAX_NON_EMAIL_STEPS = 10
 PLAN_DEADLINE_SECONDS: float = 90
-"""Steps not started by then are ``not_run``; well inside the two-minute claim lease."""
+"""The cut-off for starting steps: one not started by then is ``not_run``. A step already
+running is left to finish (a Gmail send has its own ``SEND_DEADLINE_SECONDS``, 25)."""
+PLAN_BACKSTOP_SECONDS: float = 115
+"""Last resort, below the two-minute claim lease: a step still running then is cancelled and
+recorded ``failed``/``plan_deadline`` (it may have acted). 90 + 25 fits under it."""
 CONCURRENCY = 4
+
+DRIFT_CODES: frozenset[str] = frozenset(
+    {
+        # email_send: the draft was edited after the card (send_draft's version check).
+        "draft_changed",
+        # email_send, email_export: the draft was sent under another key.
+        "draft_already_sent",
+        # email_send, email_export: another send of the draft holds its claim.
+        "draft_already_sending",
+        # email_send, email_export: the draft was saved to Gmail drafts meanwhile.
+        "draft_already_exported",
+        # booking_action: the booking changed, the rules now need acknowledging, or other
+        # people were picked; hr_person: the person changed (person_changed).
+        "proposal_stale",
+        # booking_action: someone took the time since the card.
+        "slot_taken",
+        # training_submit: the request moved past the version the card read.
+        "stale_version",
+    }
+)
+"""The child refusals at execute that mean the record moved since the card: the step is
+``skipped`` as ``changed``. Any other refusal (a disconnected mailbox, a package switched
+off, the send limit, ``send_outcome_unknown``) is ``failed`` with its code."""
+
+_INBOX_NOT_APPLIED: dict[str, str | None] = {
+    "already_handled": None,  # a colleague decided the held reply: changed
+    "expired": "reply_approval_expired",
+    "not_found": "reply_approval_not_found",
+}
+"""``decide_approval`` answers with an outcome, not a refusal, when it did not act."""
 
 StepStatus = Literal["done", "failed", "skipped", "not_run"]
 
@@ -143,6 +180,17 @@ _CUT_OFF = _Outcome("failed", "plan_deadline")
 
 def _failed(exc: HTTPException) -> _Outcome:
     return _Outcome("failed", _detail(exc), refusal=exc)
+
+
+def _refused(exc: HTTPException) -> _Outcome:
+    return _CHANGED if _detail(exc) in DRIFT_CODES else _failed(exc)
+
+
+def _finished(kind: str, receipt: dict[str, Any]) -> _Outcome:
+    if kind == "inbox_decision" and receipt.get("outcome") in _INBOX_NOT_APPLIED:
+        code = _INBOX_NOT_APPLIED[receipt["outcome"]]
+        return _CHANGED if code is None else _Outcome("failed", code)
+    return _Outcome("done", receipt=receipt)
 
 
 async def _bounded[T](calls: Sequence[Callable[[], Awaitable[T]]]) -> list[T]:
@@ -277,17 +325,10 @@ class PlanExecutor:
     ) -> _Outcome:
         if gate_refusal is not None:
             return _failed(gate_refusal)
-        child = self._children[step.kind]
+        # No child card here: after a lease retake, a step the dead run finished has a card
+        # that refuses (the draft is sent), while its execute replays the receipt by key.
         try:
-            try:
-                _, current = await child.card(
-                    request, actor, client_id, dict(step.payload), origin=origin
-                )
-            except HTTPException:
-                return _CHANGED  # a draft edited, a slot taken, a reply decided elsewhere
-            if current != step.version:
-                return _CHANGED
-            receipt = await child.execute(
+            receipt = await self._children[step.kind].execute(
                 request,
                 actor,
                 client_id,
@@ -297,12 +338,12 @@ class PlanExecutor:
                 origin=origin,
             )
         except HTTPException as exc:
-            return _failed(exc)
+            return _refused(exc)
         except Exception:
             # The owning service's transaction rolled back; record it and let the rest run.
             logger.exception("workspace.plan.step_failed", kind=step.kind)
             return _Outcome("failed", "step_failed")
-        return _Outcome("done", receipt=receipt)
+        return _finished(step.kind, receipt)
 
     async def execute(
         self,
@@ -317,17 +358,25 @@ class PlanExecutor:
     ) -> dict[str, Any]:
         """Run every step on its own and return the per-step receipt.
 
-        Raises only when every step failed with one identical refusal (the package switched
-        off, say), so the registry releases the claim and nothing was done.
+        Raises when every step failed with one identical refusal (the package switched off, a
+        mailbox disconnected), and ``proposal_stale`` when every step drifted, so the registry
+        releases the claim. A refusal means the owning service acted on nothing, with one
+        exception: ``send_outcome_unknown`` comes after Gmail may have sent. The one-send
+        guarantee still holds then, because the draft stays ``sending``: the step's replay
+        answers the same refusal and the next card refuses the draft.
         """
         steps = await self._steps(request, actor, client_id, payload, origin)
         outcomes: list[_Outcome | None] = [None] * len(steps)
         started = [False] * len(steps)
         semaphore = asyncio.Semaphore(CONCURRENCY)
         refusals: dict[str, HTTPException] = {}
+        loop = asyncio.get_running_loop()
+        cut_off = loop.time() + PLAN_DEADLINE_SECONDS
 
         async def run(index: int, step: PlanStep) -> None:
             async with semaphore:
+                if loop.time() >= cut_off:
+                    return  # never started: not_run
                 started[index] = True
                 outcomes[index] = await self._run_step(
                     request,
@@ -339,9 +388,11 @@ class PlanExecutor:
                     gate_refusal=refusals.get(step.kind),
                 )
 
-        deadline = asyncio.timeout(PLAN_DEADLINE_SECONDS)
+        # The backstop cancels what is still running; CancelledError from anywhere else (the
+        # request going away) is never caught.
+        backstop = asyncio.timeout(PLAN_BACKSTOP_SECONDS)
         try:
-            async with deadline:
+            async with backstop:
                 for kind in _distinct(steps):
                     try:
                         await self._children[kind].gate(request, actor, client_id, origin=origin)
@@ -351,9 +402,9 @@ class PlanExecutor:
                     for index, step in enumerate(steps):
                         group.create_task(run(index, step))
         except TimeoutError:
-            if not deadline.expired():
+            if not backstop.expired():
                 raise
-        # A step cut off by the deadline was started (it may have acted): it is failed, not
+        # A step cut off by the backstop was started (it may have acted): it is failed, not
         # not_run, so nothing reads it as untouched.
         final = [
             outcome or (_CUT_OFF if begun else _NOT_RUN)
@@ -366,6 +417,8 @@ class PlanExecutor:
             for o in final
         ):
             raise first
+        if all(o == _CHANGED for o in final):
+            raise ProposalError("proposal_stale")  # every step drifted: the plan is stale
         return {
             "steps": [
                 outcome.entry(index, step.kind)

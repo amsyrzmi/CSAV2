@@ -49,15 +49,31 @@ CLIENT = uuid4()
 NAME, ADDRESS, SUBJECT = "Ada Synthetic", "ada@example.test", "Quarterly figures"
 
 
+# The refusal each fake raises at execute when its record moved since the card, as the real
+# executor does (an inbox decision instead answers ``already_handled``, as decide_approval does).
+DRIFT_REFUSAL = {
+    "email_send": "draft_changed",
+    "email_export": "draft_already_sent",
+    "booking_action": "proposal_stale",
+    "training_submit": "stale_version",
+    "hr_person": "proposal_stale",
+}
+
+
 class FakeChild:
-    """A child executor whose card carries a name and an address, and whose execute is
-    idempotent per proposal id, as the real services are."""
+    """A child executor that behaves like the owning services.
+
+    Its card carries a name and an address. ``execute`` replays a known proposal id first, then
+    refuses a record that moved since the card, then acts: the act is counted in ``acts`` (one
+    entry per real effect, replays excluded) and moves the record, so its card then refuses (a
+    draft that was sent, a reply that was decided) as the real cards do.
+    """
 
     kind: ProposalKind
 
     def __init__(self, kind: str) -> None:
         self.kind = typing.cast(ProposalKind, kind)
-        self.current: dict[int, str | None] = {}  # step n -> version the card reports now
+        self.current: dict[int, str | None] = {}  # step n -> version the record has now
         self.card_error: dict[int, Exception] = {}
         self.gate_error: Exception | None = None
         self.execute_error: dict[int, Exception] = {}
@@ -65,7 +81,10 @@ class FakeChild:
         self.park: asyncio.Event | None = None  # the first execute waits on it
         self.parked = asyncio.Event()
         self.calls: list[tuple[int, UUID, str | None, str]] = []
-        self.effects: dict[UUID, dict[str, Any]] = {}
+        self.card_calls = 0
+        self.receipts: dict[UUID, dict[str, Any]] = {}  # the service's replay store, by key
+        self.acts: list[UUID] = []  # one entry per real effect
+        self.cancelled: list[int] = []
 
     async def gate(
         self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
@@ -83,6 +102,7 @@ class FakeChild:
         origin: ProposalOrigin,
         language: Language = "en",
     ) -> tuple[CardContent, str | None]:
+        self.card_calls += 1
         await self.gate(request, actor, client_id, origin=origin)
         n = int(payload["n"])
         if n in self.card_error:
@@ -113,10 +133,28 @@ class FakeChild:
             self.parked.set()
             await park.wait()
         if n in self.slow:
-            await asyncio.sleep(self.slow[n])
+            try:
+                await asyncio.sleep(self.slow[n])
+            except asyncio.CancelledError:
+                self.cancelled.append(n)
+                raise
+        if proposal_id in self.receipts:  # replay by key, before any version check
+            return self.receipts[proposal_id]
         if n in self.execute_error:
             raise self.execute_error[n]
-        return self.effects.setdefault(proposal_id, {"n": n, "effect": len(self.effects) + 1})
+        if self.current.get(n, f"v{n}") != expected_version:
+            if self.kind == "inbox_decision":
+                return {"outcome": "already_handled", "status": "approved", "queued": False}
+            raise ProposalActionRefused(409, {"detail": DRIFT_REFUSAL[self.kind]})
+        self.acts.append(proposal_id)
+        receipt = {"n": n, "effect": len(self.acts)}
+        if self.kind == "inbox_decision":
+            receipt = {"outcome": "applied", "status": "approved", "queued": True}
+        self.receipts[proposal_id] = receipt
+        # The record moved: its card now refuses, as a sent draft's or a decided reply's does.
+        self.current[n] = f"v{n}-done"
+        self.card_error[n] = ProposalActionRefused(409, {"detail": "draft_already_sent"})
+        return receipt
 
 
 def _children() -> dict[str, FakeChild]:
@@ -301,12 +339,32 @@ async def test_execute_runs_steps_in_order_with_derived_ids() -> None:
             "index": n,
             "kind": kind,
             "status": "done",
-            "receipt": children[kind].effects[step_id(plan_id, n)],
+            "receipt": children[kind].receipts[step_id(plan_id, n)],
         }
         for n, kind in enumerate(kinds)
     ]
     calls = sorted(call for child in children.values() for call in child.calls)
     assert calls == [(n, step_id(plan_id, n), f"v{n}", "assistant") for n in range(len(kinds))]
+
+
+async def test_execute_does_not_run_the_child_cards() -> None:
+    """The child's execute checks drift itself (it replays by key first), so a step the plan
+    already finished is never judged by a card that now refuses it."""
+    children = _children()
+    payload = _payload(_step("email_send", 0), _step("inbox_decision", 1))
+    executor = PlanExecutor(children)
+    _, version = await _card(executor, payload)
+    assert children["email_send"].card_calls == 1
+    await executor.execute(
+        _request(),
+        _actor(),
+        CLIENT,
+        payload,
+        proposal_id=uuid4(),
+        expected_version=version,
+        origin="assistant",
+    )
+    assert children["email_send"].card_calls == 1 and children["inbox_decision"].card_calls == 1
 
 
 async def test_a_failing_step_is_recorded_and_the_rest_run() -> None:
@@ -324,7 +382,7 @@ async def test_a_failing_step_is_recorded_and_the_rest_run() -> None:
     assert [s["status"] for s in steps] == ["done", "failed", "failed", "done"]
     assert steps[1]["code"] == "booking_slot_taken" and "receipt" not in steps[1]
     assert steps[2]["code"] == "step_failed"
-    assert len(children["email_send"].effects) == 2
+    assert len(children["email_send"].acts) == 2
 
 
 async def test_every_step_failing_with_the_same_refusal_raises_it() -> None:
@@ -369,11 +427,17 @@ async def test_every_step_failing_with_the_same_refusal_raises_it() -> None:
 
 async def test_a_drifted_step_is_skipped_not_failed() -> None:
     children = _children()
-    payload = _payload(_step("email_send", 0), _step("inbox_decision", 1), _step("email_send", 2))
+    payload = _payload(
+        _step("email_send", 0),
+        _step("inbox_decision", 1),
+        _step("email_send", 2),
+        _step("booking_action", 3),
+    )
     executor = PlanExecutor(children)
     _, version = await _card(executor, payload)
-    children["inbox_decision"].current[1] = "v-decided-by-a-colleague"
-    children["email_send"].card_error[2] = ProposalActionRefused(409, {"detail": "draft_changed"})
+    children["inbox_decision"].current[1] = "v-decided-by-a-colleague"  # already_handled
+    children["email_send"].current[2] = "v-edited"  # draft_changed
+    children["booking_action"].current[3] = "v-moved"  # proposal_stale
     receipt = await executor.execute(
         _request(),
         _actor(),
@@ -385,16 +449,128 @@ async def test_a_drifted_step_is_skipped_not_failed() -> None:
     )
     skipped = {"index": 1, "kind": "inbox_decision", "status": "skipped", "code": "changed"}
     assert receipt["steps"][1] == skipped
-    assert receipt["steps"][2]["status"] == "skipped" and receipt["steps"][2]["code"] == "changed"
-    assert receipt["steps"][0]["status"] == "done"
-    assert children["inbox_decision"].calls == [] and len(children["email_send"].calls) == 1
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("done", None),
+        ("skipped", "changed"),
+        ("skipped", "changed"),
+        ("skipped", "changed"),
+    ]
+    assert children["inbox_decision"].acts == [] and len(children["email_send"].acts) == 1
+    assert children["booking_action"].acts == []
+
+
+# The child refusals that mean "changed since you reviewed it"; every other one is a failure.
+DRIFT = (
+    "draft_changed",
+    "draft_already_sent",
+    "draft_already_sending",
+    "draft_already_exported",
+    "proposal_stale",
+    "slot_taken",
+    "stale_version",
+)
+
+
+def test_drift_codes_are_one_named_set() -> None:
+    assert frozenset(DRIFT) == plan_module.DRIFT_CODES
+
+
+@pytest.mark.parametrize("code", DRIFT)
+async def test_each_drift_refusal_is_changed(code: str) -> None:
+    children = _children()
+    children["email_send"].execute_error[0] = ProposalActionRefused(409, {"detail": code})
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("skipped", "changed"),
+        ("done", None),
+    ]
+
+
+async def test_a_real_refusal_is_failed_with_its_code_not_changed() -> None:
+    children = _children()
+    children["email_send"].execute_error[0] = ProposalActionRefused(
+        409, {"detail": "mailbox_not_connected"}
+    )
+    children["email_export"].execute_error[1] = HTTPException(503, "email_assistant_not_configured")
+    children["booking_action"].execute_error[2] = HTTPException(403, "package_inactive")
+    payload = _payload(_step("email_send", 0), _step("email_export", 1), _step("booking_action", 2))
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("failed", "mailbox_not_connected"),
+        ("failed", "email_assistant_not_configured"),
+        ("failed", "package_inactive"),
+    ]
+    # A disconnected mailbox refuses every email step the same way: the plan raises it, so the
+    # registry releases the claim instead of recording every step skipped.
+    children = _children()
+    refusal = ProposalActionRefused(409, {"detail": "mailbox_reauthorization_required"})
+    children["email_send"].execute_error = {0: refusal, 1: refusal}
+    with pytest.raises(ProposalActionRefused) as same:
+        await _execute(
+            PlanExecutor(children),
+            _payload(_step("email_send", 0), _step("email_send", 1)),
+            uuid4(),
+        )
+    assert same.value.detail == "mailbox_reauthorization_required"
+
+
+async def test_an_inbox_reply_that_expired_or_vanished_is_failed() -> None:
+    children = _children()
+    plan_id = uuid4()
+    payload = _payload(_step("inbox_decision", 0), _step("inbox_decision", 1))
+    executor = PlanExecutor(children)
+    _, version = await _card(executor, payload)
+    for n, outcome in ((0, "expired"), (1, "not_found")):
+        children["inbox_decision"].receipts[step_id(plan_id, n)] = {"outcome": outcome}
+    receipt = await executor.execute(
+        _request(),
+        _actor(),
+        CLIENT,
+        payload,
+        proposal_id=plan_id,
+        expected_version=version,
+        origin="assistant",
+    )
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("failed", "reply_approval_expired"),
+        ("failed", "reply_approval_not_found"),
+    ]
+
+
+async def test_a_plan_where_every_step_drifted_is_stale() -> None:
+    children = _children()
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    executor = PlanExecutor(children)
+    _, version = await _card(executor, payload)
+    children["email_send"].current[0] = "v-edited"
+    children["booking_action"].current[1] = "v-moved"
+    with pytest.raises(ProposalError) as stale:
+        await executor.execute(
+            _request(),
+            _actor(),
+            CLIENT,
+            payload,
+            proposal_id=uuid4(),
+            expected_version=version,
+            origin="assistant",
+        )
+    assert stale.value.detail == "proposal_stale"
+    # One step left to act is not a stale plan.
+    children = _children()
+    children["email_send"].current[0] = "v-edited"
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert [s["status"] for s in receipt["steps"]] == ["skipped", "done"]
 
 
 async def test_steps_past_the_deadline_are_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The deadline stops new steps; a step already running (a Gmail send) finishes."""
+    assert plan_module.PLAN_DEADLINE_SECONDS == 90
+    assert plan_module.PLAN_DEADLINE_SECONDS < plan_module.PLAN_BACKSTOP_SECONDS < 120
     monkeypatch.setattr(plan_module, "PLAN_DEADLINE_SECONDS", 0.2)
     children = _children()
     for n in range(4):  # fill every slot past the deadline
-        children["booking_action"].slow[n] = 30
+        children["booking_action"].slow[n] = 0.6
     payload = _payload(
         *[_step("booking_action", n) for n in range(4)],
         _step("email_send", 4),
@@ -404,9 +580,48 @@ async def test_steps_past_the_deadline_are_not_run(monkeypatch: pytest.MonkeyPat
     receipt = await _execute(PlanExecutor(children), payload, uuid4())
     assert time.monotonic() - started < 5
     statuses = [(s["status"], s.get("code")) for s in receipt["steps"]]
-    # Started steps were cut off by the deadline; the rest were never claimed.
-    assert statuses == [("failed", "plan_deadline")] * 4 + [("not_run", None)] * 2
-    assert children["email_send"].calls == [] and children["email_send"].effects == {}
+    # Started steps ran to the end; the rest were never started.
+    assert statuses == [("done", None)] * 4 + [("not_run", None)] * 2
+    assert children["booking_action"].cancelled == []
+    assert len(children["booking_action"].acts) == 4
+    assert children["email_send"].calls == [] and children["email_send"].acts == []
+
+
+async def test_the_backstop_cancels_a_step_still_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plan_module, "PLAN_DEADLINE_SECONDS", 0.1)
+    monkeypatch.setattr(plan_module, "PLAN_BACKSTOP_SECONDS", 0.4)
+    children = _children()
+    children["booking_action"].slow = {0: 30, 1: 0.25, 2: 0.25, 3: 0.25}
+    payload = _payload(
+        *[_step("booking_action", n) for n in range(4)],
+        _step("email_send", 4),
+        _step("email_send", 5),
+    )
+    started = time.monotonic()
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert time.monotonic() - started < 5
+    statuses = [(s["status"], s.get("code")) for s in receipt["steps"]]
+    # Step 0 outlived the backstop and was cancelled as a last resort (it may have acted), steps
+    # 1 to 3 finished past the deadline, and the steps that got a slot only after the deadline
+    # were never started.
+    assert (
+        statuses == [("failed", "plan_deadline")] + [("done", None)] * 3 + [("not_run", None)] * 2
+    )
+    assert children["booking_action"].cancelled == [0]
+    assert children["email_send"].calls == []
+
+
+async def test_a_cancelled_plan_is_never_swallowed() -> None:
+    children = _children()
+    children["booking_action"].slow[0] = 30
+    executor = PlanExecutor(children)
+    payload = _payload(_step("booking_action", 0), _step("email_send", 1))
+    task = asyncio.create_task(_execute(executor, payload, uuid4()))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert children["booking_action"].cancelled == [0]
 
 
 async def test_replaying_execute_replays_finished_steps() -> None:
@@ -417,8 +632,31 @@ async def test_replaying_execute_replays_finished_steps() -> None:
     first = await _execute(executor, payload, plan_id)
     again = await _execute(executor, payload, plan_id)
     assert again == first
+    assert [s["status"] for s in again["steps"]] == ["done", "failed", "done"]
     assert len(children["email_send"].calls) == 4  # each step ran twice under its own id...
-    assert set(children["email_send"].effects) == {step_id(plan_id, 0), step_id(plan_id, 2)}
+    # ...and acted once: the sent drafts' cards refuse now, the replays still read done.
+    assert children["email_send"].acts == [step_id(plan_id, 0), step_id(plan_id, 2)]
+
+
+async def test_a_run_cut_short_is_finished_by_the_next() -> None:
+    """A confirm that dies mid-plan: the next run replays what it finished, as done, and runs
+    the rest. Nothing is reported skipped because its own earlier run moved the record."""
+    children = _children()
+    children["booking_action"].slow[1] = 30
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1), _step("email_send", 2))
+    executor, plan_id = PlanExecutor(children), uuid4()
+    dead = asyncio.create_task(_execute(executor, payload, plan_id))
+    while len(children["email_send"].acts) < 2:
+        await asyncio.sleep(0.01)
+    dead.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await dead
+    children["booking_action"].slow.clear()
+    receipt = await _execute(executor, payload, plan_id)
+    assert [s["status"] for s in receipt["steps"]] == ["done", "done", "done"]
+    assert receipt["steps"][0]["receipt"] == children["email_send"].receipts[step_id(plan_id, 0)]
+    assert children["email_send"].acts == [step_id(plan_id, 0), step_id(plan_id, 2)]
+    assert children["booking_action"].acts == [step_id(plan_id, 1)]
 
 
 # --------------------------------------------------------------------- inside the registry
@@ -447,8 +685,9 @@ async def _confirm(sessions: SessionWorld, registry: ProposalRegistry, actor, pi
     return await registry.confirm(sessions.pool, _request(), actor, UUID(sessions.tenants[0]), pid)
 
 
-def _effects(children: dict[str, FakeChild]) -> list[UUID]:
-    return sorted((pid for child in children.values() for pid in child.effects), key=str)
+def _acts(children: dict[str, FakeChild]) -> list[UUID]:
+    """Every real effect, one entry each: a step that acted twice shows up twice."""
+    return sorted((pid for child in children.values() for pid in child.acts), key=str)
 
 
 @requires_docker
@@ -473,27 +712,31 @@ async def test_concurrent_confirms_run_each_step_once(sessions: SessionWorld) ->
     assert len(children["email_send"].calls) == 2 and len(children["booking_action"].calls) == 1
     assert (await _confirm(sessions, registry, actor, out.id)) == done
     assert len(children["email_send"].calls) == 2 and len(children["booking_action"].calls) == 1
-    assert _effects(children) == sorted((step_id(out.id, n) for n in range(3)), key=str)
+    assert _acts(children) == sorted((step_id(out.id, n) for n in range(3)), key=str)
 
 
 @requires_docker
 async def test_a_lease_retaken_mid_plan_acts_once_per_step(sessions: SessionWorld) -> None:
     """The first confirm stalls inside a step until its lease goes stale and a second confirm
-    retakes it: the steps run again under the same ids, so each acts once."""
+    retakes it. The steps the first run finished replay as done (their records moved, so their
+    cards now refuse), the stalled one runs, and each step acts once."""
     actor, _ = await _member_actor(sessions)
     children = _children()
     registry = _registry(children)
-    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1), _step("email_send", 2))
     out = await _create_plan(sessions, registry, actor, payload)
     release = asyncio.Event()
-    children["email_send"].park = release
+    children["email_send"].park = release  # step 0 stalls before it acts
     first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
     await asyncio.wait_for(children["email_send"].parked.wait(), 10)
+    while len(_acts(children)) < 2:  # steps 1 and 2 finish in the first run
+        await asyncio.sleep(0.01)
     await _age_claim(sessions, out.id)
     retaken = await _confirm(sessions, registry, actor, out.id)
     assert retaken.status == "executed"
+    assert [s["status"] for s in retaken.result["steps"]] == ["done", "done", "done"]
     release.set()
     stalled = await asyncio.wait_for(first, 10)
     assert stalled == retaken  # the stalled confirm finds the retaker's record and replays it
     assert (await _row(sessions, out.id))["status"] == "executed"
-    assert _effects(children) == sorted((step_id(out.id, n) for n in range(2)), key=str)
+    assert _acts(children) == sorted((step_id(out.id, n) for n in range(3)), key=str)
