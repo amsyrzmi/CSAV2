@@ -113,14 +113,33 @@ async def _tenant_zone(conn: Any, client_id: UUID) -> ZoneInfo | None:
 
 
 def _subscription_fact(row: dict[str, Any], zone: ZoneInfo | None) -> DraftFact:
-    """Plan name, status, renewal date and price as the subscription stores them."""
-    parts = [f"Plan: {row['plan_name'] or row['plan']}", f"Status: {row['status']}"]
+    """Plan name, status, renewal date and price, saying what the Subscriptions tab says.
+
+    A date is shown only where the subscription's state gives it a meaning: ``Renews on`` for an
+    active subscription that carries on, ``Ends on`` when it is set to cancel at period end,
+    ``Resumes on`` for a paused one with a resume date, and nothing for a cancelled one (its
+    stored renewal date is left over from before). A scheduled plan change is added with its date.
+    """
+
+    def day(value: datetime) -> str:
+        return (value.astimezone(zone) if zone else value).date().isoformat()
+
+    status = row["status"]
+    parts = [f"Plan: {row['plan_name'] or row['plan']}", f"Status: {status}"]
     renews: datetime | None = row["renews_at"]
-    if renews is not None:
-        parts.append(f"Renews on: {(renews.astimezone(zone) if zone else renews).date()}")
+    if status == "active" and renews is not None:
+        label = "Ends on" if row["cancel_at_period_end"] else "Renews on"
+        parts.append(f"{label}: {day(renews)}")
+    elif status == "paused" and row["resume_at"] is not None:
+        parts.append(f"Resumes on: {row['resume_at'].isoformat()}")
+    if status != "cancelled" and row["pending_plan"] is not None:
+        change = f"Plan change: {row['pending_plan_name'] or row['pending_plan']}"
+        if row["pending_effective_at"] is not None:
+            change += f" from {day(row['pending_effective_at'])}"
+        parts.append(change)
     price: Decimal | None = row["price"]
     if price is not None:
-        parts.append(f"Price: {price:f} {row['currency']}".rstrip())
+        parts.append(f"Price: {price:f} {row['currency'] or ''}".rstrip())
     return DraftFact(
         id=f"subscription_{row['id']}",
         text="; ".join(parts)[:MAX_FACT_CHARS],

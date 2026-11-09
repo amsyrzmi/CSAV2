@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from csa.agents.kb.embedder import DefaultKbEmbedder, KbEmbeddingError
@@ -72,16 +74,41 @@ async def _customer(w: World, name: str, tenant: UUID | None = None) -> UUID:
 
 
 async def _subscription(
-    w: World, contact: UUID, *, plan: str = "basic", tenant: UUID | None = None
+    w: World,
+    contact: UUID,
+    *,
+    plan: str = "basic",
+    tenant: UUID | None = None,
+    status: str = "active",
+    currency: str | None = "MYR",
+    **columns: Any,
 ) -> UUID:
+    """A subscription renewing in nine days; ``columns`` set further columns (flags, dates)."""
     sid = uuid4()
     now = datetime.now(UTC)
     await w.q(
         "INSERT INTO subscriptions(id,client_id,contact_id,plan,status,price,currency,"
-        "started_at,renews_at) VALUES (%s,%s,%s,%s,'active',49.90,'MYR',%s,%s)",
-        (sid, tenant or w.tenant, contact, plan, now - timedelta(days=30), now + timedelta(days=9)),
+        "started_at,renews_at) VALUES (%s,%s,%s,%s,%s,49.90,%s,%s,%s)",
+        (
+            sid,
+            tenant or w.tenant,
+            contact,
+            plan,
+            status,
+            currency,
+            now - timedelta(days=30),
+            now + timedelta(days=9),
+        ),
     )
+    for column, value in columns.items():  # test-controlled names, never user input
+        await w.q(f"UPDATE subscriptions SET {column} = %s WHERE id = %s", (value, sid))
     return sid
+
+
+def _day_in(days: int) -> str:
+    """The ISO date ``days`` ahead on the tenant's calendar (clients.timezone defaults to KL)."""
+    local = (datetime.now(UTC) + timedelta(days=days)).astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+    return local.date().isoformat()
 
 
 async def _document(w: World, tenant: UUID, title: str, content: str) -> None:
@@ -126,14 +153,98 @@ async def w_plan(w: World, code: str, name: str) -> None:
     )
 
 
-async def test_role_without_subscriptions_read_gets_no_facts_and_no_error(
+async def test_actor_from_another_tenant_gets_no_facts_and_no_error(
     world: World,  # noqa: F811
 ) -> None:
     await _package(world, world.tenant, "subscriptions")
     customer = await _customer(world, "Aina Customer")
     await _subscription(world, customer)
-    outsider = _actor(world, tenant=world.other_tenant)  # may not read this tenant's data
+    outsider = _actor(world, tenant=world.other_tenant)  # not a member of this tenant
     assert await subscription_facts(_request(world), outsider, world.tenant, customer) == []
+
+
+async def test_read_only_member_of_the_tenant_gets_facts(world: World) -> None:  # noqa: F811
+    """Membership is the only role rule, as the Subscriptions tab applies it."""
+    await _package(world, world.tenant, "subscriptions")
+    customer = await _customer(world, "Aina Customer")
+    await _subscription(world, customer)
+    reader = _actor(world, role=Role.READ_ONLY)
+    facts = await subscription_facts(_request(world), reader, world.tenant, customer)
+    assert len(facts) == 1 and "Status: active" in facts[0].text
+
+
+async def _only_fact(w: World, customer: UUID) -> str:
+    facts = await subscription_facts(_request(w), _actor(w), w.tenant, customer)
+    assert len(facts) == 1
+    return facts[0].text
+
+
+async def test_cancelled_subscription_does_not_say_renews_on(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    customer = await _customer(world, "Aina Customer")
+    await _subscription(world, customer, status="cancelled")
+    text = await _only_fact(world, customer)
+    assert "Status: cancelled" in text
+    assert "Renews" not in text and "Ends on" not in text
+
+
+async def test_period_end_cancel_says_ends_on_not_renews_on(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    customer = await _customer(world, "Aina Customer")
+    await _subscription(world, customer, cancel_at_period_end=True)
+    text = await _only_fact(world, customer)
+    assert "Status: active" in text
+    assert f"Ends on: {_day_in(9)}" in text
+    assert "Renews" not in text
+
+
+async def test_paused_subscription_does_not_say_renews_on(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    customer = await _customer(world, "Aina Customer")
+    await _subscription(world, customer, status="paused")
+    text = await _only_fact(world, customer)
+    assert "Status: paused" in text and "Renews" not in text and "Resumes" not in text
+    dated = await _customer(world, "Hana Customer")
+    resume = (datetime.now(UTC) + timedelta(days=20)).date()
+    await _subscription(world, dated, status="paused", resume_at=resume)
+    text = await _only_fact(world, dated)
+    assert f"Resumes on: {resume.isoformat()}" in text and "Renews" not in text
+
+
+async def test_pending_plan_change_is_included_with_its_date(world: World) -> None:  # noqa: F811
+    await _package(world, world.tenant, "subscriptions")
+    await w_plan(world, "basic", "Kopi Bulanan")
+    await w_plan(world, "plus", "Kopi Plus")
+    customer = await _customer(world, "Aina Customer")
+    await _subscription(
+        world,
+        customer,
+        pending_plan="plus",
+        pending_effective_at=datetime.now(UTC) + timedelta(days=9),
+    )
+    text = await _only_fact(world, customer)
+    assert "Renews on" in text
+    assert f"Plan change: Kopi Plus from {_day_in(9)}" in text
+
+
+async def test_null_currency_does_not_print_none() -> None:
+    """The column is NOT NULL today; the formatter still must not print a missing currency."""
+    row = {
+        "id": uuid4(),
+        "plan": "basic",
+        "plan_name": None,
+        "status": "active",
+        "price": Decimal("49.90"),
+        "currency": None,
+        "renews_at": None,
+        "cancel_at_period_end": False,
+        "resume_at": None,
+        "pending_plan": None,
+        "pending_plan_name": None,
+        "pending_effective_at": None,
+    }
+    text = draft_facts._subscription_fact(row, None).text
+    assert "Price: 49.90" in text and "None" not in text
 
 
 async def test_package_off_gets_no_facts(world: World) -> None:  # noqa: F811
@@ -143,8 +254,22 @@ async def test_package_off_gets_no_facts(world: World) -> None:  # noqa: F811
     assert await subscription_facts(request, actor, world.tenant, customer) == []
     await _package(world, world.tenant, "subscriptions", status="suspended")
     assert await subscription_facts(request, actor, world.tenant, customer) == []
+
+
+async def test_kb_package_gate_is_the_only_difference(world: World) -> None:  # noqa: F811
+    hours = "Synthetic shop opening hours are nine to five on weekdays."
+    await _document(world, world.tenant, "Opening hours", hours)
+    request = _request(world)
+    assert await kb_facts(request, world.tenant, hours) == []  # package absent
     await _package(world, world.tenant, "knowledge_base", status="requested")
-    assert await kb_facts(request, world.tenant, "opening hours") == []
+    assert await kb_facts(request, world.tenant, hours) == []  # package requested
+    await world.q(
+        "UPDATE console_service_packages SET status = 'active' "
+        "WHERE client_id = %s AND package = 'knowledge_base'",
+        (world.tenant,),
+    )
+    facts = await kb_facts(request, world.tenant, hours)  # same document, package active
+    assert [fact.source for fact in facts] == ["kb:Opening hours"]
 
 
 async def test_other_tenants_customer_gives_no_facts(world: World) -> None:  # noqa: F811
