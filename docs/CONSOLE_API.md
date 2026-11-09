@@ -2039,13 +2039,13 @@ Activation does not flip the HR module switches or the email inner switch; the H
 A new company starts with no replies to customers. Its tenant admin turns them on here, with no help from FourStacks.
 
 - Behind the `customer_support` gate, which accepts `active` and `suspended`.
-- `GET /console/v1/services/customer-replies`, for any member or platform admin, returns `{mode, brand_name, can_manage, warnings}`.
+- `GET /console/v1/services/customer-replies`, for any member or platform admin, returns `{mode, brand_name, persona_name, brand_tone, intro_line, can_manage, warnings}`. The three persona fields are `null` while unset, and the customer bot then uses its default voice.
 - `mode` is `off`, `approve` or `auto`, which are the deployment modes `shadow`, `suggest` and `auto`. It reads `config.policy.deployment_mode`, as the turn gate does, so it reports what the bot does.
 - `warnings` holds any of: `replies_off`; `no_knowledge` (the `knowledge_base` add-on is active and no active document has chunks); `base_only` (no add-on is active, so most questions go to staff).
-- `PUT /console/v1/services/customer-replies`, for a tenant admin or platform admin, with CSRF, takes `{mode, brand_name}`. `brand_name` is trimmed, at most 120 characters, a single line; if omitted, the stored one stays.
+- `PUT /console/v1/services/customer-replies`, for a tenant admin or platform admin, with CSRF, takes `{mode, brand_name}` and, optionally, `persona_name` (at most 60 characters), `brand_tone` (200) and `intro_line` (300, the greeting, which cannot contain a digit, a link or `@`: the bot may only state what it can check against its facts, so a number in the greeting would fail that check on every hello). Each is trimmed and a single line with no control characters; `brand_name` is at most 120. Left out or `null`, the stored value stays; for the three persona fields an empty string clears the field back to the default. They set the bot's wording only: the default support guide and the facts-only rule always apply. The persona name and tone are also used when the Email assistant drafts a customer reply for staff (it signs the draft with the persona name).
 - Refusals: 422 `brand_name_required` for `approve` or `auto` with no name, stored or sent; 409 `package_suspended` while Customer support is suspended; 403 `tenant administrator required`.
 - Saving `approve` also sets `approval_ttl_minutes` to 1440.
-- A real change writes one `console_audit` row, `tenant.customer_replies_set`, with before and after. A repeat writes none.
+- A real change writes one `console_audit` row, `tenant.customer_replies_set`, with before and after (the three persona fields appear only when one of them changed). A repeat writes none.
 - A company still `onboarding` moves to `pilot` when Customer support is activated, or on a save, with one `tenant.status_changed` row. Background jobs visit only `pilot` and `active` companies, so its knowledge base files process before it goes live. Other statuses don't change.
 
 ## Capabilities and specialised tabs (LG13)

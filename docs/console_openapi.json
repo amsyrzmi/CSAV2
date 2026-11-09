@@ -5186,6 +5186,28 @@
             ],
             "title": "Brand Name"
           },
+          "brand_tone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Tone"
+          },
+          "intro_line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intro Line"
+          },
           "mode": {
             "enum": [
               "off",
@@ -5194,6 +5216,17 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "persona_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Persona Name"
           }
         },
         "required": [
@@ -5216,9 +5249,31 @@
             ],
             "title": "Brand Name"
           },
+          "brand_tone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Tone"
+          },
           "can_manage": {
             "title": "Can Manage",
             "type": "boolean"
+          },
+          "intro_line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intro Line"
           },
           "mode": {
             "enum": [
@@ -5228,6 +5283,17 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "persona_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Persona Name"
           },
           "warnings": {
             "items": {
@@ -5240,6 +5306,9 @@
         "required": [
           "mode",
           "brand_name",
+          "persona_name",
+          "brand_tone",
+          "intro_line",
           "can_manage",
           "warnings"
         ],

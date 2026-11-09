@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -25,6 +26,14 @@ _TO_MODE: dict[str, Mode] = {"shadow": "off", "suggest": "approve", "auto": "aut
 _UNSET_DEPLOYMENT = "auto"
 _ADDONS = frozenset(p.key for p in PACKAGES if p.kind == "addon")
 MAX_BRAND_NAME = 120
+MAX_PERSONA_NAME = 60
+MAX_BRAND_TONE = 200
+MAX_INTRO_LINE = 300
+# The customer bot's voice: wording only, on top of the default guide it can never turn off.
+_PERSONA_FIELDS = ("persona_name", "brand_tone", "intro_line")
+# The greeting is said word for word on every hello, and the reply checker only lets the bot state
+# what it can ground in the facts, so a number or a link in it would fail that check every time.
+_GREETING_CLAIM = re.compile(r"\d|https?://|www\.|@", re.IGNORECASE)
 # The longest the gate's Policy allows: a small business reviews drafts the next day.
 APPROVAL_TTL_MINUTES = 1440
 
@@ -34,6 +43,9 @@ class CustomerRepliesOut(BaseModel):
 
     mode: Mode
     brand_name: str | None
+    persona_name: str | None
+    brand_tone: str | None
+    intro_line: str | None
     can_manage: bool
     warnings: list[str]
 
@@ -43,17 +55,49 @@ class CustomerRepliesIn(BaseModel):
 
     mode: Mode
     brand_name: str | None = Field(default=None)
+    # Left out or null: unchanged. An empty string: back to the default.
+    persona_name: str | None = Field(default=None)
+    brand_tone: str | None = Field(default=None)
+    intro_line: str | None = Field(default=None)
 
     @field_validator("brand_name")
     @classmethod
     def clean_brand_name(cls, value: str | None) -> str | None:
-        # The name goes into the bot's prompt, so no line breaks or control characters.
         if value is None:
             return None
-        cleaned = value.replace("\u00a0", " ").strip()
-        if len(cleaned) > MAX_BRAND_NAME or any(not c.isprintable() for c in cleaned):
-            raise ValueError("brand name must be a single line of at most 120 characters")
-        return cleaned or None
+        return _one_line(value, MAX_BRAND_NAME, "brand name") or None
+
+    @field_validator("persona_name")
+    @classmethod
+    def clean_persona_name(cls, value: str | None) -> str | None:
+        return None if value is None else _one_line(value, MAX_PERSONA_NAME, "persona name")
+
+    @field_validator("brand_tone")
+    @classmethod
+    def clean_brand_tone(cls, value: str | None) -> str | None:
+        return None if value is None else _one_line(value, MAX_BRAND_TONE, "tone")
+
+    @field_validator("intro_line")
+    @classmethod
+    def clean_intro_line(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = _one_line(value, MAX_INTRO_LINE, "greeting")
+        if _GREETING_CLAIM.search(cleaned):
+            raise ValueError("greeting cannot contain numbers or links")
+        return cleaned
+
+
+def _one_line(value: str, limit: int, what: str) -> str:
+    """These go into the bot's prompt, so no line breaks or control characters."""
+    cleaned = value.replace("\u00a0", " ").strip()
+    if len(cleaned) > limit or any(not c.isprintable() for c in cleaned):
+        raise ValueError(f"{what} must be a single line of at most {limit} characters")
+    return cleaned
+
+
+def _persona_of(row: dict[str, Any]) -> dict[str, str | None]:
+    return {name: row[name] or None for name in _PERSONA_FIELDS}
 
 
 def _mode(row: dict[str, Any]) -> Mode:
@@ -122,6 +166,7 @@ async def read_replies(
     return CustomerRepliesOut(
         mode=mode,
         brand_name=row["brand_name"],
+        **_persona_of(row),
         can_manage=_can_manage(actor, client_id),
         warnings=warnings,
     )
@@ -143,8 +188,17 @@ async def save_replies(
         brand = body.brand_name if body.brand_name is not None else before_brand
         if body.mode != "off" and not brand:
             raise HTTPException(422, "brand_name_required")
+        before_persona = _persona_of(row)
+        after_persona = {
+            name: before_persona[name]
+            if getattr(body, name) is None
+            else getattr(body, name) or None
+            for name in _PERSONA_FIELDS
+        }
+        core_changed = (body.mode, brand) != (before_mode, before_brand)
+        persona_changed = after_persona != before_persona
         await promote_to_pilot(conn, client_id, actor.user_id)
-        if (body.mode, brand) != (before_mode, before_brand):
+        if core_changed:
             await set_deployment_mode(conn, client_id, _TO_DEPLOYMENT[body.mode])
             if body.mode == "approve":
                 await db.q.execute(
@@ -155,6 +209,23 @@ async def save_replies(
             await db.q.execute(
                 "console/customer_replies_brand_set.sql", (brand, client_id), conn=conn
             )
+        if persona_changed:
+            persona = {
+                key: after_persona[name]
+                for key, name in (("name", "persona_name"), ("intro_line", "intro_line"))
+                if after_persona[name]
+            }
+            await db.q.execute(
+                "console/customer_replies_persona_set.sql",
+                (after_persona["brand_tone"], Jsonb(persona), client_id),
+                conn=conn,
+            )
+        if core_changed or persona_changed:
+            before = {"mode": before_mode, "brand_name": before_brand}
+            after = {"mode": body.mode, "brand_name": brand}
+            if persona_changed:
+                before |= before_persona
+                after |= after_persona
             await db.q.execute(
                 "console/audit.sql",
                 (
@@ -162,12 +233,7 @@ async def save_replies(
                     client_id,
                     "tenant.customer_replies_set",
                     str(client_id),
-                    Jsonb(
-                        {
-                            "before": {"mode": before_mode, "brand_name": before_brand},
-                            "after": {"mode": body.mode, "brand_name": brand},
-                        }
-                    ),
+                    Jsonb({"before": before, "after": after}),
                 ),
                 conn=conn,
             )

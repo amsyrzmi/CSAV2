@@ -1,9 +1,18 @@
 import { api, ApiError } from "./api";
 
 export type ReplyMode = "off" | "approve" | "auto";
+/** The customer bot's voice: wording only, on top of a default guide that always applies. */
+export interface PersonaFields {
+  persona_name: string;
+  brand_tone: string;
+  intro_line: string;
+}
 export interface CustomerReplies {
   mode: ReplyMode;
   brand_name: string | null;
+  persona_name: string | null;
+  brand_tone: string | null;
+  intro_line: string | null;
   can_manage: boolean;
   warnings: string[];
 }
@@ -37,8 +46,40 @@ export function readReplies(clientId: string | null, signal?: AbortSignal) {
   return api<CustomerReplies>(path(clientId), { signal });
 }
 
-export function saveReplies(clientId: string | null, body: { mode: ReplyMode; brand_name: string }) {
+export function saveReplies(
+  clientId: string | null,
+  body: { mode: ReplyMode; brand_name: string } & Partial<PersonaFields>,
+) {
   return api<CustomerReplies>(path(clientId), { method: "PUT", body: JSON.stringify(body) });
+}
+
+const PERSONA_KEYS: (keyof PersonaFields)[] = ["persona_name", "brand_tone", "intro_line"];
+
+/**
+ * Only the persona fields the Admin changed: a field left alone is left out of the save, so the
+ * server keeps it, and a cleared one is sent as an empty string (back to the default). A read
+ * that predates a field (undefined) counts as empty.
+ */
+export function changedPersona(
+  read: Partial<Record<keyof PersonaFields, string | null | undefined>>,
+  edited: PersonaFields,
+): Partial<PersonaFields> {
+  const changed: Partial<PersonaFields> = {};
+  for (const key of PERSONA_KEYS) {
+    const next = edited[key].trim();
+    if (next !== (read[key] ?? "").trim()) changed[key] = next;
+  }
+  return changed;
+}
+
+const GREETING_PROBLEM = /\d|https?:\/\/|www\.|@/i;
+
+/**
+ * A greeting is said word for word on every hello, and the bot may only state what it can check
+ * against your knowledge, so a number or a link would fail that check each time.
+ */
+export function greetingProblem(text: string): string | null {
+  return GREETING_PROBLEM.test(text) ? "Keep the greeting to a welcome: no numbers or links." : null;
 }
 
 /** Why Save is off, or null when it can go. Off never needs a name. */
@@ -64,7 +105,7 @@ export function refusalText(code: string): string | null {
 export function saveErrorText(cause: unknown): string {
   if (cause instanceof ApiError) {
     if (cause.status === 422 && !refusalText(cause.code)) {
-      return "Use one line of at most 120 characters for the brand name.";
+      return "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300 with no numbers or links.";
     }
     return refusalText(cause.code) ?? cause.message;
   }

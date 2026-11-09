@@ -3089,3 +3089,37 @@ async def test_malay_inbox_decision_card_translates_the_shown_decision_only(plan
     assert labels == {"Keputusan": "Lulus", "Balasan": draft[:500]}  # the reply is not translated
     stored = await w.q("SELECT payload FROM console_proposals")
     assert stored[0]["payload"]["decision"] == "approve"
+
+
+def test_planner_prompt_says_opening_a_profile_never_depends_on_people_access() -> None:
+    assert "an absent people_access does not mean the user lacks access" in SYSTEM_PROMPT
+    assert (
+        "Propose hr_person_open and people_query whenever the user asks to open a profile or to "
+        "list people, whether or not people_access is present"
+    ) in SYSTEM_PROMPT
+
+
+def test_planner_prompt_has_the_model_write_the_training_objective() -> None:
+    assert "a new request with BOTH a title and a learning_objective" in SYSTEM_PROMPT
+    assert (
+        "write the learning_objective yourself in one sentence from their words"
+    ) in SYSTEM_PROMPT
+    assert "never give one of the two alone" in SYSTEM_PROMPT
+    assert "or a new title and learning_objective." not in SYSTEM_PROMPT
+
+
+def test_planner_prompt_never_asks_its_own_booking_questions() -> None:
+    assert (
+        "propose booking_action as soon as the user clearly asks for it, even when the day, "
+        "time or booking is missing"
+    ) in SYSTEM_PROMPT
+    assert (
+        "Never ask your own clarification about booking details and never invent times or options"
+    ) in SYSTEM_PROMPT
+
+
+def test_planner_booking_rule_keeps_the_can_change_gate() -> None:
+    assert (
+        "when booking_action is allowed (bookings present and can_change true), propose "
+        "booking_action as soon as the user clearly asks for it"
+    ) in SYSTEM_PROMPT
