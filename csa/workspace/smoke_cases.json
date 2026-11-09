@@ -1050,6 +1050,62 @@
     }
   },
   {
+    "id": "email_batch_rest-en-1",
+    "language": "en",
+    "message": "Now send the same reminder to the rest of them please",
+    "facts": {
+      "preset": "staff_subscriptions",
+      "history": [
+        {
+          "message": "Send a reminder to all active subscribers about the new opening hours",
+          "action": "email_batch",
+          "result": "proposal",
+          "proposal_kind": "plan",
+          "resume_offset": 20
+        }
+      ]
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": true,
+      "group": "active_subscribers"
+    }
+  },
+  {
+    "id": "email_batch_rest-ms-1",
+    "language": "ms",
+    "message": "Tolong hantar peringatan yang sama kepada selebihnya pula",
+    "facts": {
+      "preset": "staff_subscriptions",
+      "history": [
+        {
+          "message": "Hantar peringatan kepada semua pelanggan aktif tentang waktu buka yang baru",
+          "action": "email_batch",
+          "result": "proposal",
+          "proposal_kind": "plan",
+          "resume_offset": 20
+        }
+      ]
+    },
+    "expect": {
+      "actions": [
+        "email_batch"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team"
+      ],
+      "send": true,
+      "group": "active_subscribers"
+    }
+  },
+  {
     "id": "plan_bookings-en-1",
     "language": "en",
     "message": "Book Room A tomorrow at 3 pm with Aina and Room B on Friday at 10 am with Danial",

@@ -45,6 +45,7 @@ FEATURES = (
     "booking_free",
     "email_batch",
     "email_batch_group",
+    "email_batch_rest",
     "plan_bookings",
 )
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
@@ -52,6 +53,7 @@ SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
 SCRIPTED_TEXT = "SCRIPTED-TEXT-55d0"
 UNREQUESTED_ADDRESS = "scripted.person@example.com"  # in no case message
+BATCH_NAMES = ("Aina Rahman", "Danial Hakim", "Mei Ling Tan")  # synthetic, in the batch cases
 
 
 def _feature(case_id: str) -> str:
@@ -173,8 +175,11 @@ class ScriptedModel:
                 days = {"days": 30} if group == "renewing_soon" else {}
                 recipients = [{"kind": "group", "group": group, **days}]
             else:
+                # The names as the message writes them: a name the user never wrote is refused.
                 count = case.expect.recipients or 2
-                recipients = [{"kind": "employee", "value": SCRIPTED_TEXT} for _ in range(count)]
+                names = [name for name in BATCH_NAMES if name in case.message][:count]
+                assert len(names) == count, case.id
+                recipients = [{"kind": "employee", "value": name} for name in names]
             return {
                 "action": "email_batch",
                 "recipients": recipients,
@@ -671,3 +676,71 @@ def test_smoke_refuses_an_unrequested_batch_address(capsys: pytest.CaptureFixtur
     out = capsys.readouterr().out
     assert "FAIL email_batch-en-1 action=email_batch recipient" in out
     assert UNREQUESTED_ADDRESS not in out
+
+
+REST_CASES = ("email_batch_rest-en-1", "email_batch_rest-ms-1")
+
+
+def test_the_rest_cases_carry_a_batch_turn_with_a_resume_count() -> None:
+    """ "The rest" is a history case: the earlier batch turn holds the stored resume count."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in REST_CASES:
+        case = cases[case_id]
+        assert case.expect.actions == ["email_batch"] and case.expect.group == "active_subscribers"
+        history = smoke.build_facts(case).history
+        assert [(turn.action, turn.resume_offset) for turn in history] == [("email_batch", 20)]
+
+
+def test_smoke_resumes_the_rest_from_the_stored_count_and_fails_an_unknown_offset(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A model that forgets the offset still gets the next page (the server's rest-word rule);
+    one that writes an offset the thread never stored fails ``offset``."""
+    for case_id in REST_CASES:
+        assert smoke.main(["--case", case_id], client=ScriptedModel()) == 0
+        assert f"PASS {case_id} action=email_batch" in capsys.readouterr().out
+
+    class Offset(ScriptedModel):
+        def __init__(self, offset: int) -> None:
+            super().__init__()
+            self.offset = offset
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return {**super()._proposal(case), "offset": self.offset}
+
+    assert smoke.main(["--case", REST_CASES[0]], client=Offset(20)) == 0
+    assert f"PASS {REST_CASES[0]}" in capsys.readouterr().out
+    assert smoke.main(["--case", REST_CASES[0]], client=Offset(7)) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {REST_CASES[0]} action=email_batch offset" in out
+    _assert_content_free(out)
+
+
+def test_smoke_refuses_a_group_or_name_the_message_never_wrote(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The planner alone cannot add a group or a name: refused twice, the recipient fallback."""
+
+    class Added(ScriptedModel):
+        def __init__(self, extra: dict[str, Any]) -> None:
+            super().__init__()
+            self.extra = extra
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            return {**proposal, "recipients": [*proposal["recipients"], self.extra]}
+
+    for extra in (
+        {"kind": "group", "group": "active_subscribers"},
+        {"kind": "customer", "value": "Scripted Customer"},
+    ):
+        assert smoke.main(["--case", "email_batch-en-1"], client=Added(extra)) == 1
+        out = capsys.readouterr().out
+        # The recipient refusal itself ("recipient"), not a wrong count ("recipients").
+        assert out.splitlines()[0].split()[:4] == [
+            "FAIL",
+            "email_batch-en-1",
+            "action=email_batch",
+            "recipient",
+        ], out
+        assert "Scripted Customer" not in out

@@ -381,6 +381,30 @@ async def test_named_person_is_not_expanded_again_on_a_group_page_two(
     assert second.not_included == {"over_limit": 1}
 
 
+async def test_page_two_never_offers_a_named_customer_or_typed_address_again(
+    world: World,  # noqa: F811
+) -> None:
+    """Page one's named customer and typed address are group members on page two: they seed the
+    duplicate check (reads only) and are counted ``duplicate``, never offered again."""
+    await _package(world, world.tenant, "subscriptions")
+    ordered = await _group_of(world, 4)
+    named = "Member " + ordered[3].removeprefix("member").split("@")[0]
+    specs = [
+        _spec("customer", named),
+        _spec("address", ordered[2]),
+        _spec("customer", "Nobody Known"),
+        _spec("group", group="active_subscribers"),
+    ]
+    first = await _expand(world, specs, offset=0, limit=3)
+    assert _addresses(first) == [ordered[3], ordered[2], ordered[0]]
+    assert first.not_included == {"not_found": 1, "over_limit": 3}
+    second = await _expand(world, specs, offset=first.group_rows_fetched, limit=3)
+    assert _addresses(second) == [ordered[1]]
+    # Seeds add nobody and count nothing themselves (no second "not found").
+    assert second.not_included == {"duplicate": 2}
+    assert second.group_rows_fetched == 3
+
+
 async def test_limit_is_an_overall_cap_and_the_rest_is_counted(world: World) -> None:  # noqa: F811
     await _package(world, world.tenant, "subscriptions")
     ordered = await _group_of(world, 3)

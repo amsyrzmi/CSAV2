@@ -1438,14 +1438,24 @@ def _authored(message: str, facts: PlannerFacts) -> list[str]:
     address the planner offered as an option) is taken as a click: the user writes it in a new
     request instead.
     """
+    return _parts(message, facts)[0]
+
+
+def _parts(message: str, facts: PlannerFacts) -> tuple[list[str], list[str]]:
+    """``(authored, picked)``: the parts ``_authored`` counts, and the parts that are option
+    values the user clicked (the typed text equal to a value the latest card offered, a folded
+    answer equal to a value any earlier card offered). The question is in neither."""
     typed, first, answers = _answer_parts(message)
     latest = facts.history[-1].offered_options if facts.history else []
     offered = [value for turn in facts.history for value in turn.offered_options]
-    parts = [] if _picked(typed, latest) else [typed]
+    authored: list[str] = []
+    picked: list[str] = []
+    (picked if _picked(typed, latest) else authored).append(typed)
     if first and _sent_before(first, facts):
-        parts.append(first)
-    parts.extend(answer for answer in answers if not _picked(answer, offered))
-    return parts
+        authored.append(first)
+    for answer in answers:
+        (picked if _picked(answer, offered) else authored).append(answer)
+    return authored, picked
 
 
 def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
@@ -2013,24 +2023,85 @@ def _over_the_caps(steps: Sequence[PlannerStep]) -> str | None:
     return None
 
 
-def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> str | None:
-    """Refuse a typed address the user did not write (``_check_recipients``'s rule), and return
-    the answer's text key for an ``offset`` the thread never stored (else None).
+# The words that let a batch email use a fixed group of customers: the planner may add a group
+# only when the user's own words name one, in English or Malay ("pelanggan" and "langganan" are
+# the Malay subscriber words). renewing_soon also takes the words of its own group (renewal, due).
+_SUBSCRIBER_WORDS = r"subscri\w*|pelanggan|langganan|melanggan"
+GROUP_WORDS: dict[str, re.Pattern[str]] = {
+    "active_subscribers": re.compile(rf"\b(?:{_SUBSCRIBER_WORDS})\b", re.IGNORECASE),
+    "renewing_soon": re.compile(
+        rf"\b(?:{_SUBSCRIBER_WORDS}|renew\w*|due|habis tempoh|pembaharuan)\b", re.IGNORECASE
+    ),
+}
+# "The rest" of a group, in English and Malay (see _resumed).
+REST_WORDS = re.compile(
+    r"\b(?:rest|remaining|others|more|selebihnya|baki|yang lain|lagi)\b", re.IGNORECASE
+)
 
-    Names and groups are found by the server. A resumed page reads the group only, so its
-    repeated named specs are not checked again; its offset must be the resume count of the
-    thread's latest batch or plan turn, so a page already offered is never drafted again.
+
+def _named_by_user(value: str, message: str, facts: PlannerFacts) -> bool:
+    """A batch recipient's name is the user's: it appears, as a whole phrase and case ignored,
+    in their own words (``_own_text``) or in an option value they clicked (``_parts``). Never
+    in the planner's folded question, which neither counts."""
+    words = value.split()
+    if not words:
+        return False
+    phrase = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.I)
+    _, picked = _parts(message, facts)
+    return any(phrase.search(text) for text in (_own_text(message, facts), *picked))
+
+
+def _latest_batch(facts: PlannerFacts) -> PriorTurn | None:
+    """The thread's latest email_batch or plan turn: the only one "the rest" continues."""
+    batches = (turn for turn in reversed(facts.history) if turn.action in ("email_batch", "plan"))
+    return next(batches, None)
+
+
+def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> EmailBatchProposal:
+    """The batch with the stored resume offset when the planner forgot to copy it.
+
+    "The rest" depends on the planner writing ``offset``; a planner that writes 0 would re-run
+    page one (the named people and the first group page) under new idempotency keys. So a group
+    batch at offset 0 continues from the stored count instead, when the thread's latest batch
+    turn holds one and the user's own words ask for the rest (``REST_WORDS``): it continues,
+    never repeats. Anything else is returned unchanged.
+    """
+    if proposal.offset or not any(spec.kind == "group" for spec in proposal.recipients):
+        return proposal
+    latest = _latest_batch(facts)
+    if latest is None or latest.resume_offset is None:
+        return proposal
+    if not REST_WORDS.search(_own_text(message, facts)):
+        return proposal
+    return proposal.model_copy(update={"offset": latest.resume_offset})
+
+
+def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> str | None:
+    """Refuse a recipient the user did not ask for, and return the answer's text key for an
+    ``offset`` the thread never stored (else None).
+
+    Every recipient must be traced to the user (``RECIPIENT_NOT_REQUESTED``, the M7 correction):
+    a typed address they wrote (``_check_recipients``'s rule), a name in their own words or an
+    option they clicked (``_named_by_user``), and a group only when their own words name it
+    (``GROUP_WORDS``). A resumed page reads the group only (named specs just keep page one's
+    people from being drafted again), so its specs are not checked again; its offset must be
+    the resume count of the thread's latest batch or plan turn, so a page already offered is
+    never drafted again.
     """
     if proposal.offset:
-        latest = next(
-            (turn for turn in reversed(facts.history) if turn.action in ("email_batch", "plan")),
-            None,
-        )
+        latest = _latest_batch(facts)
         resumes = latest is not None and latest.resume_offset == proposal.offset
         return None if resumes else "batch_resume_unknown"
     allowed = _requested_addresses(message, facts)
+    own = _own_text(message, facts)
     for spec in proposal.recipients:
-        if spec.kind == "address" and spec.value.strip().lower() not in allowed:
+        if spec.kind == "address":
+            traced = spec.value.strip().lower() in allowed
+        elif spec.kind == "group":
+            traced = spec.group is not None and bool(GROUP_WORDS[spec.group].search(own))
+        else:
+            traced = _named_by_user(spec.value, message, facts)
+        if not traced:
             raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
     return None
 
@@ -2190,6 +2261,10 @@ async def _plan(
     batch that found nobody, a count-only answer: never an empty plan.
     """
     text = _TEXT[facts.language]
+    steps = [
+        _resumed(step, turn.body, facts) if isinstance(step, EmailBatchProposal) else step
+        for step in steps
+    ]
     stop = _over_the_caps(steps)
     for step in steps:
         if stop is None and isinstance(step, EmailBatchProposal):
@@ -2198,22 +2273,37 @@ async def _plan(
         return _Planned(result=AnswerResult(action="answer", markdown=text[stop]))
     found = _Found()
     others = sum(not isinstance(step, EmailBatchProposal) for step in steps)
-    for step in steps:
+    # The other steps resolve first and the batch last, so no draft is written for a plan a
+    # later step's server error ends; the card keeps the planner's order.
+    order = sorted(range(len(steps)), key=lambda i: isinstance(steps[i], EmailBatchProposal))
+    resolved: dict[int, list[PlanStep]] = {}
+    for index in order:
+        step, before = steps[index], len(found.steps)
         if isinstance(step, EmailBatchProposal):
-            await _batch_step(
-                request,
-                actor,
-                client_id,
-                thread_id,
-                turn,
-                step,
-                facts,
-                registry,
-                found,
-                room=MAX_STEPS - others,
-            )
+            try:
+                await _batch_step(
+                    request,
+                    actor,
+                    client_id,
+                    thread_id,
+                    turn,
+                    step,
+                    facts,
+                    registry,
+                    found,
+                    room=MAX_STEPS - others,
+                )
+            except HTTPException as exc:
+                # Beside steps that resolved, a batch that cannot be prepared (a package or role
+                # refusal, a conflict, every draft failed) is left off and counted, as a booking
+                # is; on its own it is the turn's refusal.
+                if not found.steps or (exc.status_code >= 500 and exc.status_code != 503):
+                    raise
+                found.refuse("unavailable", exc)
         else:
             await _plan_step(request, actor, client_id, turn, step, facts, registry, found)
+        resolved[index] = found.steps[before:]
+    found.steps = [planned for index in range(len(steps)) for planned in resolved[index]]
     if not found.steps:
         if isinstance(found.refusal, HTTPException):
             raise found.refusal

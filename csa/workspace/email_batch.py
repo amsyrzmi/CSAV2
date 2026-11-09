@@ -119,19 +119,26 @@ class Expanded:
 
 class _Collector:
     """Adds recipients in order up to ``limit``, counting duplicates (addresses compare
-    case-insensitively) and anyone past the cap as ``over_limit``."""
+    case-insensitively) and anyone past the cap as ``over_limit``.
+
+    While ``seeding`` (a group's page two), an added recipient only marks the address as seen:
+    nobody is added and nothing is counted, so page one's people are never drafted again."""
 
     def __init__(self, limit: int) -> None:
         self.out = Expanded()
         self.limit = limit
+        self.seeding = False
         self._seen: set[str] = set()
 
     def count(self, reason: str, how_many: int = 1) -> None:
-        if how_many > 0:
+        if how_many > 0 and not self.seeding:
             self.out.not_included[reason] = self.out.not_included.get(reason, 0) + how_many
 
     def add(self, recipient: BatchRecipient) -> None:
         folded = recipient.address.strip().lower()
+        if self.seeding:
+            self._seen.add(folded)
+            return
         if folded in self._seen:
             self.count("duplicate")
             return
@@ -260,7 +267,8 @@ async def expand_recipients(
     Named people, typed addresses and customers come first; the one group fills what is left, and
     everyone beyond ``limit`` is counted ``over_limit`` (for a group, the members the page fetch
     saw past the cap). ``offset`` pages the group only: when it is above zero the non-group specs
-    are skipped, not expanded again and not counted as duplicates, because page one returned them.
+    are read only to seed the duplicate check (page one returned them), so none is offered or
+    counted again and a group member page one named or typed is counted ``duplicate``.
     A group is paged in the database by customer id. Every refusal is raised before any row is
     read: ``limit`` outside 1..20 or a negative ``offset`` (422 ``email_batch_limit_invalid``),
     more than one group spec (422 ``email_batch_one_group``), an inactive package, a role that may
@@ -270,8 +278,6 @@ async def expand_recipients(
         raise HTTPException(422, "email_batch_limit_invalid")
     if sum(spec.kind == "group" for spec in specs) > 1:
         raise HTTPException(422, "email_batch_one_group")
-    if offset > 0:
-        specs = [spec for spec in specs if spec.kind == "group"]  # the rest were on page one
     pool = request.app.state.pool
     typed = {id(spec): _typed(spec) for spec in specs if spec.kind == "address"}
     if any(spec.kind in ("customer", "group") for spec in specs):
@@ -283,6 +289,8 @@ async def expand_recipients(
     found = _Collector(limit)
     async with tx(pool, str(client_id)) as conn:
         for spec in sorted(specs, key=lambda spec: spec.kind == "group"):  # the group fills last
+            # Page two: page one's named people and typed addresses are reads only (seeds).
+            found.seeding = offset > 0 and spec.kind != "group"
             if spec.kind == "address":
                 address = typed[id(spec)]
                 found.add(

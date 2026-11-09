@@ -67,6 +67,7 @@ from csa.workspace.planner import (
     PlannerFacts,
     PlannerInvalidOutput,
     PlannerUnavailable,
+    PriorTurn,
     TeamFact,
     TeamMemberFact,
     WorkspacePlanner,
@@ -92,6 +93,7 @@ from csa.workspace.service import (
     _corrected_plan,
     _named_recipient_check,
     _Planned,
+    _resumed,
 )
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -137,11 +139,13 @@ class _Strict(BaseModel):
 
 
 class CaseFacts(_Strict):
-    """A preset's synthetic facts, with optional overrides of the role and the open tab."""
+    """A preset's synthetic facts, with optional overrides of the role and the open tab, and
+    the thread's earlier turns (for example a batch turn's ``resume_offset`` for "the rest")."""
 
     preset: Preset
     role: Role | None = None
     page_tab: TabKey | None = None
+    history: list[PriorTurn] = Field(default_factory=list)
 
 
 class Expect(_Strict):
@@ -302,6 +306,7 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
         my_employee=preset.employee if _TRAINING_WORDS.search(message) else None,
         people_access=preset.people_access if _PEOPLE_WORDS.search(message) else None,
         bookings=_booking_facts(preset),
+        history=list(case.facts.history),
     )
 
 
@@ -352,6 +357,7 @@ class _Call:
     proposal: WorkspaceProposal | None = None
     refusal: str | None = None
     locked: bool = False
+    stop: str | None = None  # the server's answer instead of the card (a batch offset unknown)
 
 
 class _RecordingPlanner(WorkspacePlanner):
@@ -401,7 +407,9 @@ def _resolver(
                 steps = [proposal] if isinstance(proposal, EmailBatchProposal) else proposal.steps
                 for step in steps:
                     if isinstance(step, EmailBatchProposal):
-                        _check_batch(step, message, facts)  # a typed address the user wrote
+                        # Recipients traced to the user's words; "the rest" from the stored count.
+                        resumed = _resumed(step, message, facts)
+                        call.stop = call.stop or _check_batch(resumed, message, facts)
         except PlannerInvalidOutput as exc:
             call.refusal = exc.reason or CONTRACT_INVALID
             raise
@@ -493,6 +501,8 @@ async def run_case(
         address = (proposal.recipient_address or "").strip().lower()
         if address != expect.recipient.lower() and "recipient" not in failed:
             failed.append("recipient")
+    if isinstance(proposal, EmailBatchProposal | PlanProposal) and last.stop is not None:
+        failed.append("offset")  # "the rest" from an offset the thread never stored
     if isinstance(proposal, EmailBatchProposal):
         if expect.recipients is not None and len(proposal.recipients) != expect.recipients:
             failed.append("recipients")

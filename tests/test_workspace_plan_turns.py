@@ -16,8 +16,10 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from csa.bookings import executor as booking_executor
 from csa.bookings.api import build_bookings_router
 from csa.workspace import email_batch
+from fastapi import HTTPException
 
 from tests.conftest import requires_docker
 from tests.test_bookings_api import soon_tuesday
@@ -65,8 +67,10 @@ async def _employee(w: SessionWorld, person: tuple[str, str]) -> None:
     )  # fmt: skip
 
 
-async def _subscriber(w: SessionWorld, name: str, address: str) -> None:
-    contact, now = uuid4(), datetime.now(UTC)
+async def _subscriber(
+    w: SessionWorld, name: str, address: str, contact: UUID | None = None
+) -> None:
+    contact, now = contact or uuid4(), datetime.now(UTC)
     await w.q(
         "INSERT INTO contacts(id,client_id,full_name,email) VALUES (%s,%s,%s,%s)",
         contact, w.tenants[0], name, address,
@@ -169,12 +173,14 @@ async def test_a_send_word_gives_send_steps_and_no_send_word_only_exports(planne
     thread = await _thread(w, browser)
     # The planner says no send; the user's own word "Send" decides (the owner's rule).
     model.reply(_batch(*_named(AINA, BAKAR), send=False))
-    sent = _card(await _turn(w, browser, thread, "Send the notice to Aina and Bakar", "email"))
+    body = "Send the notice to Aina Example and Bakar Example"
+    sent = _card(await _turn(w, browser, thread, body, "email"))
     assert [s["kind"] for s in await _steps(w, sent["id"])] == ["email_send"] * 2
     assert [f["label"] for f in sent["card"]["fields"]] == ["Send an email"] * 2
     # The planner says send; without a send word in the user's words it stays a draft.
     model.reply(_batch(*_named(AINA, BAKAR), send=True))
-    kept = _card(await _turn(w, browser, thread, "Prepare the notice for Aina and Bakar", "email"))
+    body = "Prepare the notice for Aina Example and Bakar Example"
+    kept = _card(await _turn(w, browser, thread, body, "email"))
     assert [s["kind"] for s in await _steps(w, kept["id"])] == ["email_export"] * 2
 
 
@@ -486,3 +492,216 @@ async def test_a_plan_mixes_a_booking_and_an_email_batch(planned, team) -> None:
     steps = await _steps(w, proposal["id"])
     assert [s["kind"] for s in steps] == ["booking_action", "email_send", "email_send"]
     assert proposal["card"]["title"] == "Confirm 3 steps"
+
+
+# ------------------------------------------- fix round 1: recipients tied to the user's words
+
+RECIPIENT_FALLBACK = "I couldn't work out who to send that to. Type their email address."
+
+
+async def test_a_group_the_user_never_named_is_refused(planned) -> None:
+    """The planner alone cannot add a group of customers: no group word, no group (M7)."""
+    w, model = planned
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    drafter = _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    await _subscriber(w, "Subscriber Example", "subscriber@example.test")
+    thread = await _thread(w, browser)
+    added = _batch(*_named(AINA, BAKAR), {"kind": "group", "group": "active_subscribers"})
+    model.reply(added)
+    model.reply(added)
+    body = "Email the notice to Aina Example and Bakar Example"
+    turn = await _turn(w, browser, thread, body, "email")
+    assert turn.status_code == 201, turn.text
+    result = turn.json()["result"]
+    assert result["action"] == "clarification" and result["question"] == RECIPIENT_FALLBACK
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+    assert drafter.calls == []
+    # The user's own group word lets the same group through.
+    model.reply(added)
+    named = "Email the notice to Aina Example, Bakar Example and all our subscribers"
+    assert len(await _steps(w, _card(await _turn(w, browser, thread, named, "email"))["id"])) == 3
+
+
+async def test_a_customer_name_the_user_never_wrote_is_refused(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await _subscriber(w, "Dora Customer", "dora@example.test")
+    thread = await _thread(w, browser)
+    added = _batch(*_named(AINA), {"kind": "customer", "value": "Dora Customer"})
+    model.reply(added)
+    model.reply(added)
+    turn = await _turn(w, browser, thread, "Email the notice to Aina Example and the team", "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"]["question"] == RECIPIENT_FALLBACK
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+
+
+async def test_a_name_in_the_users_words_passes_in_any_case(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await _subscriber(w, "Dora Customer", "dora@example.test")
+    thread = await _thread(w, browser)
+    model.reply(_batch(*_named(AINA), {"kind": "customer", "value": "Dora Customer"}))
+    body = "send the notice to aina example and DORA CUSTOMER"
+    steps = await _steps(w, _card(await _turn(w, browser, thread, body, "email"))["id"])
+    assert await _recipients(w, steps) == [AINA[1], "dora@example.test"]
+
+
+async def test_a_name_only_in_the_planners_question_is_refused_and_a_clicked_one_passes(
+    planned,
+) -> None:
+    """On an answer turn the folded question is the planner's text: a name only there is not the
+    user's. A name the user picked from the options offered is."""
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    thread = await _thread(w, browser)
+    first = "Prepare the office notice email for my two colleagues"
+    question = "Should I write to Aina Example and Bakar Example?"
+    model.reply({"action": "clarification", "question": question})
+    asked = await _turn(w, browser, thread, first, "email")
+    assert asked.json()["result"]["action"] == "clarification"
+    named = _batch(*_named(AINA, BAKAR))
+    model.reply(named)
+    model.reply(named)
+    answer = f"Yes please\n(Answer to “{question}” for: {first})"
+    turn = await _turn(w, browser, thread, answer, "email")
+    assert turn.status_code == 201, turn.text
+    assert turn.json()["result"]["question"] == RECIPIENT_FALLBACK
+    assert await _draft_count(w) == 0 and await _proposal_count(w) == 0
+    # A name the user clicked among the options offered is theirs.
+    pick = "Who should get the notice?"
+    options = [{"label": AINA[0], "value": AINA[0]}, {"label": BAKAR[0], "value": BAKAR[0]}]
+    model.reply({"action": "clarification", "question": pick, "options": options})
+    await _turn(w, browser, thread, first, "email")
+    model.reply(_batch(*_named(AINA)))
+    clicked = f"{AINA[0]}\n(Answer to “{pick}” for: {first})"
+    steps = await _steps(w, _card(await _turn(w, browser, thread, clicked, "email"))["id"])
+    assert await _recipients(w, steps) == [AINA[1]]
+
+
+# ------------------------------------------- fix round 1: a batch refusal in a mixed plan
+
+
+async def test_booking_and_batch_without_the_email_package_keeps_the_booking(planned, team) -> None:
+    w, model = planned
+    await make_person(team, "Aina Salleh")
+    drafter = _clean_drafter(w)
+    thread = await _thread(w, team.staff)
+    model.reply({"action": "plan", "steps": [_batch(*_named(AINA)), _book(people=["Aina"])]})
+    body = "Send the notice to Aina Example and book Aina at 3"
+    proposal = _card(await _turn(w, team.staff, thread, body, "bookings"))
+    assert proposal["card"]["title"] == "Confirm 1 step"
+    assert proposal["card"]["summary"].endswith(" Not included: 1 (1 could not be prepared).")
+    assert [s["kind"] for s in await _steps(w, proposal["id"])] == ["booking_action"]
+    assert await _draft_count(w) == 0 and drafter.calls == []
+
+
+async def test_a_batch_listed_first_writes_no_draft_when_a_later_booking_fails(
+    planned, team, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    drafter = _clean_drafter(w)
+    await _employee(w, AINA)
+    await make_person(team, "Aina Salleh")
+
+    async def broken(*_: Any, **__: Any) -> Any:
+        raise HTTPException(503, "bookings_unavailable")
+
+    monkeypatch.setattr(booking_executor, "resolve", broken)
+    thread = await _thread(w, browser)
+    model.reply({"action": "plan", "steps": [_batch(*_named(AINA)), _book(people=["Aina"])]})
+    body = "Send the notice to Aina Example and book Aina at 3"
+    failed = await _turn(w, browser, thread, body, "bookings")
+    assert failed.status_code == 503, failed.text
+    assert await _draft_count(w) == 0 and drafter.calls == []
+    assert await _proposal_count(w) == 0
+
+
+async def test_a_mixed_plan_keeps_the_planners_step_order(planned, team) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await make_person(team, "Aina Salleh")
+    thread = await _thread(w, browser)
+    model.reply({"action": "plan", "steps": [_batch(*_named(AINA)), _book(people=["Aina"])]})
+    body = "Send the notice to Aina Example and book Aina at 3"
+    proposal = _card(await _turn(w, browser, thread, body, "bookings"))
+    kinds = [s["kind"] for s in await _steps(w, proposal["id"])]
+    assert kinds == ["email_send", "booking_action"]
+
+
+# ------------------------------------------- fix round 1: "the rest" never repeats anyone
+
+
+async def _ordered_subscribers(w: SessionWorld, size: int) -> list[str]:
+    """Subscribers ``Subscriber Example 0..size-1`` whose ids sort in that order (the group's
+    page order), returning their addresses in that order."""
+    ids = sorted(uuid4() for _ in range(size))
+    addresses = [f"subscriber{i}@example.test" for i in range(size)]
+    for i, (contact, address) in enumerate(zip(ids, addresses, strict=True)):
+        await _subscriber(w, f"Subscriber Example {i}", address, contact)
+    return addresses
+
+
+async def test_page_two_never_drafts_a_named_customer_or_typed_address_again(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model = planned
+    monkeypatch.setattr(email_batch, "MAX_LIMIT", 3)
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    _clean_drafter(w)
+    members = await _ordered_subscribers(w, 4)
+    thread = await _thread(w, browser)
+    batch = _batch(
+        {"kind": "customer", "value": "Subscriber Example 3"},
+        {"kind": "address", "value": members[2]},
+        {"kind": "group", "group": "active_subscribers"},
+        send=True,
+    )
+    model.reply(batch)
+    body = f"Send the renewal notice to Subscriber Example 3, {members[2]} and all subscribers"
+    first = _card(await _turn(w, browser, thread, body, "email"))
+    page_one = await _recipients(w, await _steps(w, first["id"]))
+    assert page_one == [members[3], members[2], members[0]]
+    model.respond(lambda facts: {**batch, "offset": facts["history"][-1]["resume_offset"]})
+    second = _card(await _turn(w, browser, thread, "Send the rest please", "email"))
+    page_two = await _recipients(w, await _steps(w, second["id"]))
+    assert page_two == [members[1]]  # members 2 and 3 were named on page one
+    assert "Not included: 2 (2 listed twice)." in second["card"]["summary"]
+
+
+async def test_the_rest_continues_when_the_planner_forgets_the_offset(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model = planned
+    monkeypatch.setattr(email_batch, "MAX_LIMIT", 2)
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    members = await _ordered_subscribers(w, 3)
+    thread = await _thread(w, browser)
+    batch = _batch(*_named(AINA), {"kind": "group", "group": "active_subscribers"})
+    model.reply(batch)
+    body = "Draft the renewal notice to Aina Example and all active subscribers"
+    first = _card(await _turn(w, browser, thread, body, "email"))
+    assert await _recipients(w, await _steps(w, first["id"])) == [AINA[1], members[0]]
+    model.reply({**batch, "offset": 0})  # the model forgot the stored resume count
+    second = _card(await _turn(w, browser, thread, "Now the rest please", "email"))
+    assert await _recipients(w, await _steps(w, second["id"])) == members[1:]
+    # In Malay too: "selebihnya" continues from the stored count, never page one again.
+    model.reply(batch)
+    await _turn(w, browser, thread, body, "email")
+    model.reply({**batch, "offset": 0})
+    rest = _card(await _turn(w, browser, thread, "Tolong draf selebihnya", "email"))
+    assert await _recipients(w, await _steps(w, rest["id"])) == members[1:]
