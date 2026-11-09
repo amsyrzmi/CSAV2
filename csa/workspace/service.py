@@ -165,7 +165,8 @@ def _split_stored(value: Any) -> tuple[WorkspaceActionResult, Language]:
     stored = dict(value) if isinstance(value, dict) else value
     language: Any = stored.pop("language", "en") if isinstance(stored, dict) else "en"
     if isinstance(stored, dict):
-        stored.pop("resume_offset", None)  # see _resume_of
+        for key in RESUME_KEYS:  # see _resume_of
+            stored.pop(key, None)
     result = _RESULT.validate_json(json.dumps(stored, allow_nan=False))
     return result, language if language in ("en", "ms") else "en"
 
@@ -175,6 +176,19 @@ def _resume_of(value: Any) -> int | None:
     result (a count of group rows already offered; never an address), or None."""
     found = value.get("resume_offset") if isinstance(value, dict) else None
     return found if type(found) is int and found > 0 else None
+
+
+RESUME_KEYS = ("resume_offset", "resume_group", "resume_days")
+
+
+def _resume_group_of(value: Any) -> tuple[str | None, int | None]:
+    """The group (an enum) and days (renewing_soon only) the stored resume count was taken on,
+    as the turn row stored them beside it; (None, None) for a row without them."""
+    found = value if isinstance(value, dict) else {}
+    group, days = found.get("resume_group"), found.get("resume_days")
+    if group not in ("active_subscribers", "renewing_soon"):
+        return None, None
+    return group, days if type(days) is int and 1 <= days <= 365 else None
 
 
 class WorkspaceConflict(ValueError):
@@ -446,13 +460,17 @@ async def _insert_turn(
     language: Language,
     stored: WorkspaceActionResult | None = None,
     resume_offset: int | None = None,
+    resume_group: str | None = None,
+    resume_days: int | None = None,
 ) -> WorkspaceTurnOut:
     """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private.
 
     The turn's language is saved beside the result and returned with it; a batch email with
-    more of its group to go saves ``resume_offset`` beside it too (see ``_resume_of``).
+    more of its group to go saves ``resume_offset`` beside it too (see ``_resume_of``), with the
+    group and days it was counted on (``_resume_group_of``): an enum and a number, never who.
     """
-    resume = {"resume_offset": resume_offset} if resume_offset else {}
+    found = (resume_offset, resume_group, resume_days) if resume_offset else ()
+    resume = {k: v for k, v in zip(RESUME_KEYS, found, strict=False) if v is not None}
     body = redact(turn.body)
     if not body.strip() or len(body) > 8000:
         raise ValueError("workspace text could not be safely persisted")
@@ -958,6 +976,7 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
         if isinstance(result, ProposalResult):
             item["proposal_kind"] = result.proposal.kind
             item["resume_offset"] = _resume_of(row["result"])
+            item["resume_group"], item["resume_days"] = _resume_group_of(row["result"])
         elif isinstance(result, DirectoryResult):
             offered = [person.employee_id for person in result.candidates]
             item["offered_employee_ids"] = offered
@@ -1208,6 +1227,8 @@ class _Planned:
     summary: AttentionPage | None = None
     stored: WorkspaceActionResult | None = None  # the row's copy when it differs from result
     resume_offset: int | None = None  # a batch's next group page, stored beside the result
+    resume_group: str | None = None  # the group (and days) that count was taken on
+    resume_days: int | None = None
 
 
 def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[str, Any]:
@@ -2043,12 +2064,53 @@ def _named_by_user(value: str, message: str, facts: PlannerFacts) -> bool:
     """A batch recipient's name is the user's: it appears, as a whole phrase and case ignored,
     in their own words (``_own_text``) or in an option value they clicked (``_parts``). Never
     in the planner's folded question, which neither counts."""
+    _, picked = _parts(message, facts)
+    return any(_has_phrase(value, text) for text in (_own_text(message, facts), *picked))
+
+
+def _has_phrase(value: str, text: str) -> bool:
+    """``value`` appears in ``text`` as a whole phrase, case and spacing ignored."""
     words = value.split()
     if not words:
         return False
     phrase = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.I)
-    _, picked = _parts(message, facts)
-    return any(phrase.search(text) for text in (_own_text(message, facts), *picked))
+    return bool(phrase.search(text))
+
+
+def _stored_words(message: str) -> str:
+    """A stored turn's own words: its typed text, first request and folded answers, never the
+    planner question an answer turn repeats (``_answer_parts``). Stored redacted, so an address
+    there is an ``[EMAIL_n]`` placeholder; names and group words are kept."""
+    typed, first, answers = _answer_parts(message)
+    return "\n".join([typed, first, *answers])
+
+
+_REDACTED_ADDRESS = re.compile(r"\[EMAIL_\d+\]")
+
+
+def _from_page_one(
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, latest: PriorTurn
+) -> bool:
+    """Every named recipient of a resumed page is one of page one's (the latest batch turn's).
+
+    On a resumed page named people only seed the dedupe set: they are never emailed or counted.
+    So one this turn's words add (a new person next to "the rest") would be dropped without a
+    word, and one nobody wrote would hide a group member: both are refused, as a new recipient
+    needs its own request. A name must be in the latest batch turn's stored words. That message
+    is stored redacted, so a typed address cannot be matched there: it passes only when this
+    turn's words do not hold it and the stored words hold at least as many typed addresses.
+    """
+    stored = _stored_words(latest.message)
+    typed_now = _requested_addresses(message, facts)
+    addresses = [
+        spec.value.strip().lower() for spec in proposal.recipients if spec.kind == "address"
+    ]
+    if len(addresses) > len(set(_REDACTED_ADDRESS.findall(stored))):
+        return False
+    if any(address in typed_now for address in addresses):
+        return False
+    names = [spec.value for spec in proposal.recipients if spec.kind in ("employee", "customer")]
+    return all(_has_phrase(name, stored) for name in names)
 
 
 def _latest_batch(facts: PlannerFacts) -> PriorTurn | None:
@@ -2064,7 +2126,8 @@ def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) ->
     page one (the named people and the first group page) under new idempotency keys. So a group
     batch at offset 0 continues from the stored count instead, when the thread's latest batch
     turn holds one and the user's own words ask for the rest (``REST_WORDS``): it continues,
-    never repeats. Anything else is returned unchanged.
+    never repeats. Only when every named recipient is one of page one's (``_from_page_one``);
+    otherwise it raises ``RECIPIENT_NOT_REQUESTED``. Anything else is returned unchanged.
     """
     if proposal.offset or not any(spec.kind == "group" for spec in proposal.recipients):
         return proposal
@@ -2073,6 +2136,11 @@ def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) ->
         return proposal
     if not REST_WORDS.search(_own_text(message, facts)):
         return proposal
+    if not _from_page_one(proposal, message, facts, latest):
+        # This turn names someone page one did not: continued, they would never be emailed;
+        # started again, page one would repeat. So the turn is refused here (M7), before any
+        # offset is put in: a new recipient needs its own request.
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
     return proposal.model_copy(update={"offset": latest.resume_offset})
 
 
@@ -2083,15 +2151,16 @@ def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts
     Every recipient must be traced to the user (``RECIPIENT_NOT_REQUESTED``, the M7 correction):
     a typed address they wrote (``_check_recipients``'s rule), a name in their own words or an
     option they clicked (``_named_by_user``), and a group only when their own words name it
-    (``GROUP_WORDS``). A resumed page reads the group only (named specs just keep page one's
-    people from being drafted again), so its specs are not checked again; its offset must be
-    the resume count of the thread's latest batch or plan turn, so a page already offered is
-    never drafted again.
+    (``GROUP_WORDS``). A resumed page's offset must be the resume count of the thread's latest
+    batch or plan turn, so a page already offered is never drafted again, and its recipients are
+    checked against that turn (``_check_resumed``).
     """
     if proposal.offset:
         latest = _latest_batch(facts)
-        resumes = latest is not None and latest.resume_offset == proposal.offset
-        return None if resumes else "batch_resume_unknown"
+        if latest is None or latest.resume_offset != proposal.offset:
+            return "batch_resume_unknown"
+        _check_resumed(proposal, message, facts, latest)
+        return None
     allowed = _requested_addresses(message, facts)
     own = _own_text(message, facts)
     for spec in proposal.recipients:
@@ -2106,6 +2175,33 @@ def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts
     return None
 
 
+def _check_resumed(
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, latest: PriorTurn
+) -> None:
+    """A resumed page's recipients, against the user's words and the latest batch turn (M7).
+
+    Its group's words are in this turn's own words or that turn's stored words (a bare "the
+    rest" turn passes through the stored group's words, a group the user never said does not),
+    and it is the group, and days, the resume count was taken on when the row stored them: the
+    count is a position in that group only. Its named recipients are page one's
+    (``_from_page_one``).
+    """
+    own, stored = _own_text(message, facts), _stored_words(latest.message)
+    groups = [spec for spec in proposal.recipients if spec.kind == "group" and spec.group]
+    if not groups:
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    for spec in groups:
+        group = spec.group or ""
+        if not (GROUP_WORDS[group].search(own) or GROUP_WORDS[group].search(stored)):
+            raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+        days = spec.days if group == "renewing_soon" else None
+        counted_on = (latest.resume_group, latest.resume_days)
+        if latest.resume_group is not None and (group, days) != counted_on:
+            raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    if not _from_page_one(proposal, message, facts, latest):
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+
+
 @dataclass
 class _Found:
     """A plan being resolved: its steps, the counts left out by reason, the batch's count-only
@@ -2115,6 +2211,8 @@ class _Found:
     left_out: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     resume_offset: int | None = None
+    resume_group: str | None = None
+    resume_days: int | None = None
     refusal: AnswerProposal | ClarificationProposal | HTTPException | None = None
 
     def count(self, counts: dict[str, int]) -> None:
@@ -2238,10 +2336,13 @@ async def _batch_step(
     found.steps.extend(built.steps)
     found.count(built.not_included)
     found.notes.extend(built.notes)
-    grouped = any(spec.kind == "group" for spec in proposal.recipients)
-    if grouped and expanded.not_included.get("over_limit", 0) and expanded.group_rows_fetched:
-        # "The rest" starts after every group row this page took (duplicates used slots too).
+    group = next((spec for spec in proposal.recipients if spec.kind == "group"), None)
+    if group and expanded.not_included.get("over_limit", 0) and expanded.group_rows_fetched:
+        # "The rest" starts after every group row this page took (duplicates used slots too),
+        # in this group only: its kind and days are stored beside the count (_check_resumed).
         found.resume_offset = proposal.offset + expanded.group_rows_fetched
+        found.resume_group = group.group
+        found.resume_days = group.days if group.group == "renewing_soon" else None
 
 
 async def _plan(
@@ -2323,7 +2424,12 @@ async def _plan(
     more = found.resume_offset is not None
     notes = card_notes(found.notes, found.left_out, more=more, language=facts.language)
     content = replace(prepared.content, summary=prepared.content.summary + notes)
-    return _Planned(prepared=replace(prepared, content=content), resume_offset=found.resume_offset)
+    return _Planned(
+        prepared=replace(prepared, content=content),
+        resume_offset=found.resume_offset,
+        resume_group=found.resume_group,
+        resume_days=found.resume_days,
+    )
 
 
 async def _answer(
@@ -2493,4 +2599,6 @@ async def create_planned_turn(
             language=facts.language,
             stored=stored,
             resume_offset=planned.resume_offset,
+            resume_group=planned.resume_group,
+            resume_days=planned.resume_days,
         )

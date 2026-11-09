@@ -113,6 +113,12 @@ class PriorTurn(_Contract):
     offered_options: list[str] = Field(default_factory=list)
     chosen: str | None = None
     resume_offset: int | None = Field(default=None, ge=1)
+    # The group and days that count was taken on, for the server's check only (never shown to
+    # the planner): an enum and a number.
+    resume_group: Literal["active_subscribers", "renewing_soon"] | None = Field(
+        default=None, exclude=True
+    )
+    resume_days: int | None = Field(default=None, ge=1, le=365, exclude=True)
 
 
 class ManagerFact(_Contract):

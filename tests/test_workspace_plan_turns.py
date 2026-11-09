@@ -705,3 +705,181 @@ async def test_the_rest_continues_when_the_planner_forgets_the_offset(
     model.reply({**batch, "offset": 0})
     rest = _card(await _turn(w, browser, thread, "Tolong draf selebihnya", "email"))
     assert await _recipients(w, await _steps(w, rest["id"])) == members[1:]
+
+
+# ------------------------------------- fix round 2: a resumed page ties recipients to the user
+
+GENERAL_FALLBACK = "I couldn't work that out. Try rephrasing or say what you want to do."
+RENEWING = {"kind": "group", "group": "renewing_soon", "days": 30}
+SUBSCRIBERS = {"kind": "group", "group": "active_subscribers"}
+
+
+async def _resume_world(
+    planned: tuple[SessionWorld, Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[SessionWorld, Any, Any, BatchModel, list[str], str]:
+    """Pages of 2, two employees and three subscribers renewing within 30 days."""
+    w, model = planned
+    monkeypatch.setattr(email_batch, "MAX_LIMIT", 2)
+    browser = await _mail_ready(w, "hr", "subscriptions")
+    drafter = _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    members = await _ordered_subscribers(w, 3)
+    return w, model, browser, drafter, members, await _thread(w, browser)
+
+
+async def _page_one(
+    w: SessionWorld, model: Any, browser: Any, thread: str, batch: dict[str, Any], body: str
+) -> dict[str, Any]:
+    """Page one of a group batch; returns the stored turn row's result (it holds the resume)."""
+    model.reply(batch)
+    assert _card(await _turn(w, browser, thread, body, "email"))["card"]["summary"].endswith(REST)
+    rows = await w.q("SELECT result FROM console_workspace_turns ORDER BY id DESC LIMIT 1")
+    return rows[0]["result"]  # type: ignore[no-any-return]
+
+
+async def _refused(
+    w: SessionWorld, model: Any, browser: Any, thread: str, reply: dict[str, Any], body: str
+) -> dict[str, Any]:
+    """The planner writes ``reply``, and the same again after the M7 correction: no card, no
+    draft and so nothing sent."""
+    drafts, proposals = await _draft_count(w), await _proposal_count(w)
+    model.reply(reply)
+    model.reply(reply)
+    turn = await _turn(w, browser, thread, body, "email")
+    assert turn.status_code == 201, turn.text
+    assert model.replies == []  # the corrected plan was asked for too (M7)
+    assert await _draft_count(w) == drafts and await _proposal_count(w) == proposals
+    result = turn.json()["result"]
+    assert result["action"] in ("answer", "clarification"), result
+    return result  # type: ignore[no-any-return]
+
+
+async def test_a_new_name_and_the_others_after_a_renewal_batch_is_refused(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review's example: "the others" with a stored count, a person page one never had and
+    a group the user never said. Before, Aina was only a seed (never emailed) and the server
+    paged subscribers it was never asked for."""
+    w, model, browser, drafter, _, thread = await _resume_world(planned, monkeypatch)
+    body = "Send the renewal reminder to everyone due for renewal in 30 days"
+    resume = (await _page_one(w, model, browser, thread, _batch(RENEWING, send=True), body))[
+        "resume_offset"
+    ]
+    calls = len(drafter.calls)
+    example = "Send the notice to Aina Example and the others"
+    for offset in (0, resume):  # the planner forgot the stored count, or copied it
+        added = _batch(*_named(AINA), SUBSCRIBERS, send=True, offset=offset)
+        result = await _refused(w, model, browser, thread, added, example)
+        assert result["markdown"] == GENERAL_FALLBACK  # "Send ..." is not about email (M7)
+    assert len(drafter.calls) == calls
+
+
+async def test_a_bare_rest_turn_continues_with_the_stored_group(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model, browser, _, members, thread = await _resume_world(planned, monkeypatch)
+    body = "Draft the renewal reminder to everyone due for renewal in 30 days"
+    stored = await _page_one(w, model, browser, thread, _batch(RENEWING), body)
+    # The group it was counted on is stored beside the count: an enum and a number, nobody.
+    assert {k: stored[k] for k in ("resume_offset", "resume_group", "resume_days")} == {
+        "resume_offset": 2,
+        "resume_group": "renewing_soon",
+        "resume_days": 30,
+    }
+    model.respond(lambda facts: _batch(RENEWING, offset=facts["history"][-1]["resume_offset"]))
+    rest = _card(await _turn(w, browser, thread, "Now the rest please", "email"))
+    assert await _recipients(w, await _steps(w, rest["id"])) == members[2:]
+    last = await w.q("SELECT result FROM console_workspace_turns ORDER BY id DESC LIMIT 1")
+    assert not {"resume_offset", "resume_group", "resume_days"} & set(last[0]["result"])
+    # In Malay, with the offset forgotten: "selebihnya" continues the same stored group.
+    await _page_one(w, model, browser, thread, _batch(RENEWING), body)
+    model.reply(_batch(RENEWING, offset=0))
+    rest = _card(await _turn(w, browser, thread, "Tolong draf selebihnya", "email"))
+    assert await _recipients(w, await _steps(w, rest["id"])) == members[2:]
+
+
+async def test_a_different_group_on_a_resumed_page_is_refused(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resume count was counted on one group: it never pages another, even when the stored
+    message's words would fit both ("subscribers renewing")."""
+    w, model, browser, _, members, thread = await _resume_world(planned, monkeypatch)
+    body = "Draft the reminder to all subscribers renewing in the next 30 days"
+    resume = (await _page_one(w, model, browser, thread, _batch(RENEWING), body))["resume_offset"]
+    rest = "Now the rest please"
+    for group in (SUBSCRIBERS, {**RENEWING, "days": 60}):
+        await _refused(w, model, browser, thread, _batch(group, offset=resume), rest)
+    proposal = _card(
+        await _turn_with(w, model, browser, thread, _batch(RENEWING, offset=resume), rest)
+    )
+    assert await _recipients(w, await _steps(w, proposal["id"])) == members[2:]
+
+
+async def test_a_group_word_on_a_resumed_page_comes_from_the_user_or_the_stored_message(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row stored without the group (older rows): the group's words must be in this turn's
+    words or the latest batch's stored message."""
+    w, model, browser, _, members, thread = await _resume_world(planned, monkeypatch)
+    body = "Draft the reminder to everyone due for renewal in 30 days"
+    resume = (await _page_one(w, model, browser, thread, _batch(RENEWING), body))["resume_offset"]
+    await w.q(
+        "UPDATE console_workspace_turns SET result = result - 'resume_group' - 'resume_days'"
+        " WHERE id = (SELECT max(id) FROM console_workspace_turns)"
+    )
+    rest = "Now the rest please"
+    await _refused(w, model, browser, thread, _batch(SUBSCRIBERS, offset=resume), rest)
+    proposal = _card(
+        await _turn_with(w, model, browser, thread, _batch(RENEWING, offset=resume), rest)
+    )
+    assert await _recipients(w, await _steps(w, proposal["id"])) == members[2:]
+
+
+async def test_a_name_on_a_resumed_page_must_be_in_the_latest_batchs_message(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a resumed page a named person is only a seed and would never be emailed, so a person
+    this turn names (or nobody named) is refused: a new recipient needs its own request."""
+    w, model, browser, _, _, thread = await _resume_world(planned, monkeypatch)
+    body = "Draft the reminder to all active subscribers"
+    resume = (await _page_one(w, model, browser, thread, _batch(SUBSCRIBERS), body))[
+        "resume_offset"
+    ]
+    copied = "Now the rest please, and Bakar Example too"
+    await _refused(
+        w, model, browser, thread, _batch(*_named(BAKAR), SUBSCRIBERS, offset=resume), copied
+    )
+    nobody = "Now the rest please"
+    await _refused(
+        w, model, browser, thread, _batch(*_named(BAKAR), SUBSCRIBERS, offset=resume), nobody
+    )
+    typed = f"Now the rest please, and {TYPED} too"
+    address = {"kind": "address", "value": TYPED}
+    await _refused(w, model, browser, thread, _batch(address, SUBSCRIBERS, offset=resume), typed)
+    # The planner forgot the count: never continued as a seed, never page one again either.
+    forgot = "Draft it to Bakar Example and the remaining subscribers"
+    await _refused(w, model, browser, thread, _batch(*_named(BAKAR), SUBSCRIBERS), forgot)
+
+
+async def test_a_name_in_the_latest_batchs_message_passes_as_a_seed_only(
+    planned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w, model, browser, _, members, thread = await _resume_world(planned, monkeypatch)
+    batch = _batch(*_named(AINA), SUBSCRIBERS)
+    body = "Draft the reminder to Aina Example and all active subscribers"
+    resume = (await _page_one(w, model, browser, thread, batch, body))["resume_offset"]
+    assert resume == 1
+    proposal = _card(
+        await _turn_with(
+            w, model, browser, thread, {**batch, "offset": resume}, "Now the rest please"
+        )
+    )
+    assert await _recipients(w, await _steps(w, proposal["id"])) == members[1:]  # Aina: a seed
+
+
+async def _turn_with(
+    w: SessionWorld, model: Any, browser: Any, thread: str, reply: dict[str, Any], body: str
+) -> httpx.Response:
+    model.reply(reply)
+    return await _turn(w, browser, thread, body, "email")
