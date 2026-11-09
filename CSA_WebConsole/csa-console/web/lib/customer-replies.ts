@@ -72,6 +72,16 @@ export function changedPersona(
   return changed;
 }
 
+const GREETING_PROBLEM = /\d|https?:\/\/|www\.|@/i;
+
+/**
+ * A greeting is said word for word on every hello, and the bot may only state what it can check
+ * against your knowledge, so a number or a link would fail that check each time.
+ */
+export function greetingProblem(text: string): string | null {
+  return GREETING_PROBLEM.test(text) ? "Keep the greeting to a welcome: no numbers or links." : null;
+}
+
 /** Why Save is off, or null when it can go. Off never needs a name. */
 export function saveBlockedReason(mode: ReplyMode, brandName: string): string | null {
   return mode !== "off" && !brandName.trim() ? "Add your brand name first." : null;
@@ -95,7 +105,7 @@ export function refusalText(code: string): string | null {
 export function saveErrorText(cause: unknown): string {
   if (cause instanceof ApiError) {
     if (cause.status === 422 && !refusalText(cause.code)) {
-      return "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300.";
+      return "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300 with no numbers or links.";
     }
     return refusalText(cause.code) ?? cause.message;
   }

@@ -57,7 +57,7 @@ test("the refusals have sentences", () => {
   assert.ok(replies.refusalText("package_suspended").includes("suspended"));
   assert.equal(replies.refusalText("something_else"), null);
   assert.equal(replies.saveErrorText(new api.ApiError(422, "Request failed (422)")),
-    "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300.");
+    "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300 with no numbers or links.");
   assert.equal(replies.saveErrorText(new api.ApiError(422, "brand_name_required")),
     "Add your brand name before turning replies on.");
 });
@@ -73,4 +73,12 @@ test("only the persona fields an Admin changed are sent", () => {
     replies.changedPersona({}, { persona_name: "Aina", brand_tone: "calm", intro_line: "Hi" }),
     { persona_name: "Aina", brand_tone: "calm", intro_line: "Hi" },
   );
+});
+
+test("a greeting with a number or a link is held back before saving", () => {
+  assert.equal(replies.greetingProblem("Hi, I'm Aina from Team Synthetic"), null);
+  assert.equal(replies.greetingProblem(""), null);
+  for (const text of ["Open 9am to 6pm", "see https://x.example", "see www.x.example", "me@x.example"]) {
+    assert.equal(replies.greetingProblem(text), "Keep the greeting to a welcome: no numbers or links.");
+  }
 });

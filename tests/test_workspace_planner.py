@@ -3116,3 +3116,10 @@ def test_planner_prompt_never_asks_its_own_booking_questions() -> None:
     assert (
         "Never ask your own clarification about booking details and never invent times or options"
     ) in SYSTEM_PROMPT
+
+
+def test_planner_booking_rule_keeps_the_can_change_gate() -> None:
+    assert (
+        "when booking_action is allowed (bookings present and can_change true), propose "
+        "booking_action as soon as the user clearly asks for it"
+    ) in SYSTEM_PROMPT

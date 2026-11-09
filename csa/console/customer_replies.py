@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -30,6 +31,9 @@ MAX_BRAND_TONE = 200
 MAX_INTRO_LINE = 300
 # The customer bot's voice: wording only, on top of the default guide it can never turn off.
 _PERSONA_FIELDS = ("persona_name", "brand_tone", "intro_line")
+# The greeting is said word for word on every hello, and the reply checker only lets the bot state
+# what it can ground in the facts, so a number or a link in it would fail that check every time.
+_GREETING_CLAIM = re.compile(r"\d|https?://|www\.|@", re.IGNORECASE)
 # The longest the gate's Policy allows: a small business reviews drafts the next day.
 APPROVAL_TTL_MINUTES = 1440
 
@@ -76,7 +80,12 @@ class CustomerRepliesIn(BaseModel):
     @field_validator("intro_line")
     @classmethod
     def clean_intro_line(cls, value: str | None) -> str | None:
-        return None if value is None else _one_line(value, MAX_INTRO_LINE, "greeting")
+        if value is None:
+            return None
+        cleaned = _one_line(value, MAX_INTRO_LINE, "greeting")
+        if _GREETING_CLAIM.search(cleaned):
+            raise ValueError("greeting cannot contain numbers or links")
+        return cleaned
 
 
 def _one_line(value: str, limit: int, what: str) -> str:

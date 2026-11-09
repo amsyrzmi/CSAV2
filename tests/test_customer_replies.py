@@ -490,3 +490,23 @@ async def test_members_read_the_persona_but_cannot_write_it(sessions) -> None:
         )
         assert refused.status_code == 403, role
     assert (await persona(sessions, tenant))["name"] == "Aina"
+
+
+@pytest.mark.parametrize(
+    "greeting",
+    [
+        "Hi, we are open 9am to 6pm",
+        "Visit https://kedai.example for more",
+        "Visit www.kedai.example for more",
+        "Mail us at hello@kedai.example",
+    ],
+)
+async def test_a_greeting_cannot_state_numbers_or_links(sessions, greeting: str) -> None:
+    """The bot only states facts it can ground; a greeting with a number or link would fail the
+    grounding check on every greeting."""
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    response = await save(sessions, tenant, mode=mode, intro_line=greeting)
+    assert response.status_code == 422, (greeting, response.text)
+    assert (await persona(sessions, tenant))["intro_line"] is None

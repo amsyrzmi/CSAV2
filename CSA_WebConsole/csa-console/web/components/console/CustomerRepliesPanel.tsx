@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   changedPersona,
+  greetingProblem,
   MODE_CHOICES,
   panelWarnings,
   readReplies,
@@ -20,11 +21,11 @@ const PERSONA_INPUTS: {
   key: keyof PersonaFields; label: string; hint: string; testId: string; max: number;
 }[] = [
   { key: "persona_name", label: "Persona name", testId: "persona-name", max: 60,
-    hint: "The name your bot signs with. Leave empty to use your brand name." },
+    hint: "The name your bot signs with, also used when the assistant drafts customer emails. Leave empty to use your brand name." },
   { key: "brand_tone", label: "Tone", testId: "tone", max: 200,
-    hint: "Default: brief, warm and plain. For example: friendly and calm." },
+    hint: "Default: brief, warm and plain. Also used in drafted customer emails. For example: friendly and calm." },
   { key: "intro_line", label: "Greeting", testId: "greeting", max: 300,
-    hint: "Said when a customer greets the bot or asks who they are talking to." },
+    hint: "Said when a customer greets the bot or asks who they are talking to. No numbers or links." },
 ];
 
 /** The brand name, the bot's voice and whether it answers customers. Only administrators can change them. */
@@ -56,7 +57,7 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
     return () => controller.abort();
   }, [tenantId]);
 
-  const blocked = saveBlockedReason(mode, brandName);
+  const blocked = saveBlockedReason(mode, brandName) ?? greetingProblem(persona.intro_line);
   async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

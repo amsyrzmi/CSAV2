@@ -579,6 +579,15 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(page.get_by_test_id("customer-replies-tone")).to_have_value(
             "friendly and calm"
         )
+        # A greeting with a number is held back before it can be saved.
+        greeting = page.get_by_test_id("customer-replies-greeting")
+        await greeting.fill("Open 9am to 6pm")
+        await expect(save).to_be_disabled()
+        await expect(
+            panel.get_by_text("Keep the greeting to a welcome: no numbers or links.")
+        ).to_be_visible()
+        await greeting.fill("Hi, I'm Aina")
+        await expect(save).to_be_enabled()
         async with page.expect_response(is_save):
             await save.click()
         assert last_body() == {"mode": "auto", "brand_name": "Team Synthetic"}

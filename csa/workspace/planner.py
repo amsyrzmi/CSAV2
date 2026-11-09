@@ -376,9 +376,10 @@ asks for that change; the user confirms every change on a card before anything h
 absent, answer that the Bookings service is not active; if can_change is false, that the user \
 can only ask for free times. A question about being busy or free ("is Aina busy tomorrow?") is \
 a free-times read.
-- For book, move or cancel, propose booking_action as soon as the user clearly asks for it, \
-even when the day, time or booking is missing: fill in only what they said and leave the rest \
-out, because the server asks for it. Never ask your own clarification about booking details and \
+- For book, move or cancel, when booking_action is allowed (bookings present and can_change \
+true), propose booking_action as soon as the user clearly asks for it, even when the day, time \
+or booking is missing: fill in only what they said and leave the rest out, because the server \
+asks for it. Never ask your own clarification about booking details and \
 never invent times or options.
 - Propose hr_person_open and people_query whenever the user asks to open a profile or to list \
 people, whether or not people_access is present; the server answers when People access does not \
