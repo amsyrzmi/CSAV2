@@ -3094,9 +3094,12 @@ async def test_malay_inbox_decision_card_translates_the_shown_decision_only(plan
 def test_planner_prompt_says_opening_a_profile_never_depends_on_people_access() -> None:
     assert "an absent people_access does not mean the user lacks access" in SYSTEM_PROMPT
     assert (
-        "Propose hr_person_open and people_query whenever the user asks to open a profile or to "
-        "list people, whether or not people_access is present"
+        "opening a profile (hr_person_open) and listing people (people_query) never depend on it"
     ) in SYSTEM_PROMPT
+    # A second bullet saying the same thing in the booking section pulled the Malay "change
+    # Siti's manager" request to a made-up "done" answer (hr_update-ms-1 fell from 20/20 to
+    # 7/15 on the staging model). The people_access line alone fixes hr_open.
+    assert "whether or not people_access is present" not in SYSTEM_PROMPT
 
 
 def test_planner_prompt_has_the_model_write_the_training_objective() -> None:
