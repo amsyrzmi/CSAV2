@@ -381,9 +381,6 @@ true), propose booking_action as soon as the user clearly asks for it, even when
 or booking is missing: fill in only what they said and leave the rest out, because the server \
 asks for it. Never ask your own clarification about booking details and \
 never invent times or options.
-- Propose hr_person_open and people_query whenever the user asks to open a profile or to list \
-people, whether or not people_access is present; the server answers when People access does not \
-allow it.
 - The workspace assistant never changes anything on TikTok Shop: no stock, price, product or \
 order change, shipping, cancelling or refund there. For such a request, answer that it is done \
 in TikTok Shop Seller Center; for how many are in stock, use product_stock_read.
