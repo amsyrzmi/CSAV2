@@ -11861,7 +11861,8 @@
               "inbox_decision",
               "subscription_action",
               "hr_person",
-              "booking_action"
+              "booking_action",
+              "plan"
             ],
             "title": "Kind",
             "type": "string"
@@ -11930,7 +11931,8 @@
               "inbox_decision",
               "subscription_action",
               "hr_person",
-              "booking_action"
+              "booking_action",
+              "plan"
             ],
             "title": "Kind",
             "type": "string"
@@ -32712,7 +32714,8 @@
                       "inbox_decision",
                       "subscription_action",
                       "hr_person",
-                      "booking_action"
+                      "booking_action",
+                      "plan"
                     ],
                     "title": "Kind",
                     "type": "string"

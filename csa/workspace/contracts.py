@@ -348,6 +348,87 @@ class BookingActionProposal(_Contract):
     about: PersonText | None = None
 
 
+class RecipientSpec(_Contract):
+    """One recipient of a batch email, as the user named it; the server finds the person.
+
+    ``employee`` and ``customer`` hold a name, ``address`` a typed address, and ``group`` a fixed
+    group (``group`` set; ``renewing_soon`` also needs ``days``) with ``value`` left empty.
+    """
+
+    kind: Literal["employee", "address", "customer", "group"]
+    value: str = Field(default="", max_length=254)
+    group: Literal["active_subscribers", "renewing_soon"] | None = None
+    days: int | None = Field(default=None, ge=1, le=365)
+
+    @model_validator(mode="after")
+    def complete(self) -> RecipientSpec:
+        if self.kind == "group":
+            if self.group is None:
+                raise ValueError("a group recipient needs a group")
+            if self.group == "renewing_soon" and self.days is None:
+                raise ValueError("renewing_soon needs days")
+        elif not self.value.strip():
+            raise ValueError("a recipient needs a value")
+        return self
+
+
+class EmailBatchProposal(_Contract):
+    """One email to several people; the server expands it into one draft step per recipient.
+
+    ``send`` is only the planner's reading of the user's wish: the send rule decides.
+    """
+
+    action: Literal["email_batch"]
+    recipients: list[RecipientSpec] = Field(min_length=1, max_length=40)
+    subject: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(default="", max_length=1000)
+    language: Literal["auto", "en", "ms"] = "auto"
+    send: bool = False
+    offset: int = Field(default=0, ge=0)
+
+
+PlannerStep = Annotated[
+    Union[  # noqa: UP007 - Annotated discriminated union of named members
+        BookingActionProposal,
+        TrainingSubmitProposal,
+        InboxDecisionProposal,
+        EmailBatchProposal,
+    ],
+    Field(discriminator="action"),
+]
+
+
+class PlanProposal(_Contract):
+    """Several actions behind one card and one confirm; the steps are what the planner chose."""
+
+    action: Literal["plan"]
+    steps: list[PlannerStep] = Field(min_length=1, max_length=20)
+
+
+PlanStepKind = Literal[
+    "email_send",
+    "email_export",
+    "booking_action",
+    "inbox_decision",
+    "training_submit",
+    "hr_person",
+]
+
+
+class PlanStep(_Contract):
+    """One stored step of a plan card: the child proposal's kind and payload, never a plan."""
+
+    kind: PlanStepKind
+    payload: dict[str, object]
+    version: str | None = None
+
+
+class PlanProposalPayload(_Contract):
+    """The whole stored payload of a plan card."""
+
+    steps: list[PlanStep] = Field(min_length=1, max_length=20)
+
+
 WorkspaceProposal = Annotated[
     Union[  # noqa: UP007 - Annotated discriminated union of named members
         AnswerProposal,
@@ -366,6 +447,8 @@ WorkspaceProposal = Annotated[
         PeopleQueryProposal,
         HrPersonOpenProposal,
         BookingActionProposal,
+        EmailBatchProposal,
+        PlanProposal,
         GuidanceProposal,
         OrderReadProposal,
         ProductStockReadProposal,
@@ -382,6 +465,7 @@ ProposalKind = Literal[
     "subscription_action",
     "hr_person",
     "booking_action",
+    "plan",
 ]
 
 

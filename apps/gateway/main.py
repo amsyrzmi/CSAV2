@@ -65,7 +65,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0541"
+EXPECTED_SCHEMA_VERSION = "0542"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
