@@ -330,3 +330,163 @@ async def test_a_hand_edited_policy_reads_as_off_and_can_be_saved_over(
         saved = await save(sessions, tenant, mode="auto", brand_name="Team Synthetic")
         assert saved.status_code == 200, saved.text
         assert (await company(sessions, tenant))["policy_mode"] == "auto"
+
+
+# --- persona: name, tone and greeting an Admin sets for the customer bot ------------------------
+async def persona(sessions: SessionWorld, tenant: str) -> dict[str, Any]:
+    rows = await sessions.q(
+        "SELECT brand_tone, config->'persona'->>'name' AS name,"
+        " config->'persona'->>'intro_line' AS intro_line, config FROM clients WHERE id=%s",
+        tenant,
+    )
+    return rows[0]
+
+
+async def current_mode(sessions: SessionWorld, tenant: str) -> str:
+    return (await sessions.admin.get(url(tenant))).json()["mode"]
+
+
+async def test_new_company_reads_persona_as_unset(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    body = (await sessions.admin.get(url(tenant))).json()
+    assert body["persona_name"] is None
+    assert body["brand_tone"] is None
+    assert body["intro_line"] is None
+
+
+async def test_save_sets_the_persona_and_read_returns_it(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    response = await save(
+        sessions,
+        tenant,
+        mode="approve",
+        brand_name="Team Synthetic",
+        persona_name="Aina",
+        brand_tone="friendly and calm",
+        intro_line="Hi, I'm Aina from Team Synthetic",
+    )
+    assert response.status_code == 200, response.text
+    out = response.json()
+    assert (out["persona_name"], out["brand_tone"], out["intro_line"]) == (
+        "Aina",
+        "friendly and calm",
+        "Hi, I'm Aina from Team Synthetic",
+    )
+    row = await persona(sessions, tenant)
+    assert (row["name"], row["brand_tone"], row["intro_line"]) == (
+        "Aina",
+        "friendly and calm",
+        "Hi, I'm Aina from Team Synthetic",
+    )
+    async with tx(sessions.pool, tenant) as conn:
+        brand = await db.q.fetch_one("turn/get_client_brand.sql", (UUID(tenant),), conn=conn)
+    assert brand is not None
+    assert brand["brand_tone"] == "friendly and calm"
+    assert brand["persona"] == {"name": "Aina", "intro_line": "Hi, I'm Aina from Team Synthetic"}
+
+
+async def test_persona_only_save_persists_and_audits_once(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    response = await save(sessions, tenant, mode=mode, persona_name="Aina")
+    assert response.status_code == 200, response.text
+    assert (await persona(sessions, tenant))["name"] == "Aina"
+    rows = await audits(sessions, tenant, "tenant.customer_replies_set")
+    assert len(rows) == 1
+    assert rows[0]["details"]["before"]["persona_name"] is None
+    assert rows[0]["details"]["after"]["persona_name"] == "Aina"
+    await save(sessions, tenant, mode=mode, persona_name="Aina")
+    assert len(await audits(sessions, tenant, "tenant.customer_replies_set")) == 1
+
+
+async def test_empty_string_clears_one_persona_field_and_none_leaves_the_rest(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    await save(
+        sessions,
+        tenant,
+        mode=mode,
+        persona_name="Aina",
+        brand_tone="friendly and calm",
+        intro_line="Hi, I'm Aina",
+    )
+    await save(sessions, tenant, mode=mode, persona_name="")
+    row = await persona(sessions, tenant)
+    assert (row["name"], row["brand_tone"], row["intro_line"]) == (
+        None,
+        "friendly and calm",
+        "Hi, I'm Aina",
+    )
+    await save(sessions, tenant, mode=mode)
+    await save(sessions, tenant, mode=mode, brand_tone=None, intro_line=None)
+    row = await persona(sessions, tenant)
+    assert (row["brand_tone"], row["intro_line"]) == ("friendly and calm", "Hi, I'm Aina")
+    await save(sessions, tenant, mode=mode, brand_tone="", intro_line="")
+    row = await persona(sessions, tenant)
+    assert (row["brand_tone"], row["intro_line"]) == (None, None)
+
+
+async def test_persona_changes_keep_every_other_config_key(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    await save(sessions, tenant, mode=mode, brand_name="Team Synthetic")
+    before = (await persona(sessions, tenant))["config"]
+    await save(sessions, tenant, mode=mode, persona_name="Aina", intro_line="Hi")
+    await save(sessions, tenant, mode=mode, persona_name="", intro_line="")
+    after = (await persona(sessions, tenant))["config"]
+    assert {k: v for k, v in after.items() if k != "persona"} == {
+        k: v for k, v in before.items() if k != "persona"
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("persona_name", "A" * 61),
+        ("brand_tone", "A" * 201),
+        ("intro_line", "A" * 301),
+        ("persona_name", "A\nB"),
+        ("brand_tone", "A\x00B"),
+        ("intro_line", "A\tB"),
+    ],
+)
+async def test_persona_bounds_and_control_characters(sessions, field: str, value: str) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    response = await save(sessions, tenant, mode=mode, **{field: value})
+    assert response.status_code == 422, (field, response.text)
+    assert (await persona(sessions, tenant))["config"].get("persona") is None
+
+
+async def test_persona_accepts_malay_and_emoji_and_trims_a_pasted_space(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    response = await save(
+        sessions, tenant, mode=mode, intro_line=" Selamat datang, saya Aisyah 😊 "
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["intro_line"] == "Selamat datang, saya Aisyah 😊"
+    assert (await persona(sessions, tenant))["intro_line"] == "Selamat datang, saya Aisyah 😊"
+
+
+async def test_members_read_the_persona_but_cannot_write_it(sessions) -> None:
+    tenant = sessions.tenants[0]
+    await activate(sessions, tenant, "customer_support")
+    mode = await current_mode(sessions, tenant)
+    await save(sessions, tenant, mode=mode, persona_name="Aina")
+    for role in ("tenant_staff", "read_only"):
+        browser, _ = await sessions.member(role=role)
+        read = await browser.get(PATH)
+        assert read.status_code == 200 and read.json()["persona_name"] == "Aina"
+        refused = await sessions.mutate(
+            browser, PATH, {"mode": mode, "persona_name": "Hacked"}, method="PUT"
+        )
+        assert refused.status_code == 403, role
+    assert (await persona(sessions, tenant))["name"] == "Aina"
