@@ -179,6 +179,8 @@ const sentences: Record<Language, Record<string, string>> = {
     provider_unreachable: "We couldn't reach Gmail. Wait a minute and try again.",
     permission_denied: "You don't have access to email here. Ask an administrator to give you access.",
     email_model_unavailable: "The email assistant couldn't write that right now. Try again in a moment.",
+    inbound_email_blocked:
+      "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.",
     draft_rejected: "The draft was rejected: check the recipient and remove line breaks from the subject.",
     draft_already_exported: "This draft was already saved to Gmail and can no longer be edited here.",
     thread_body_unavailable: "This thread has no readable text to analyse.",
@@ -209,6 +211,8 @@ const sentences: Record<Language, Record<string, string>> = {
     provider_unreachable: "Kami tidak dapat menghubungi Gmail. Tunggu seminit dan cuba lagi.",
     permission_denied: "Anda tiada akses e-mel di sini. Minta pentadbir memberi anda akses.",
     email_model_unavailable: "Email assistant tidak dapat menulisnya sekarang. Cuba lagi sebentar lagi.",
+    inbound_email_blocked:
+      "E-mel ini nampak seperti cuba memberi arahan kepada pembantu, jadi tiada balasan dibuat. Baca sendiri dan balas dengan tangan.",
     draft_rejected: "Draf ditolak: semak penerima dan buang pemisah baris daripada subjek.",
     draft_already_exported: "Draf ini sudah disimpan ke Gmail dan tidak boleh disunting lagi di sini.",
     thread_body_unavailable: "Perbualan ini tiada teks yang boleh dibaca untuk dianalisis.",

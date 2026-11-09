@@ -179,3 +179,14 @@ test("every booking summary key has English and Malay", () => {
   }
   assert.equal(copy.PANEL.en.summary_booking_not_told, "Customer wasn't told.");
 });
+
+test("a blocked reply shows its reason on the dock in English and Malay", () => {
+  const en = "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.";
+  const ms = "E-mel ini nampak seperti cuba memberi arahan kepada pembantu, jadi tiada balasan dibuat. Baca sendiri dan balas dengan tangan.";
+  // The bare code (api.ts did not explain it) still reads as the sentence, never the code.
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422), "en"), en);
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422, en), "en"), en);
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422, en), "ms"), ms);
+  assert.notEqual(ms, FALLBACK);
+  assert.equal(copy.MS_ERRORS.inbound_email_blocked, undefined, "its Malay line lives in the email table");
+});

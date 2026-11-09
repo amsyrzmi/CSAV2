@@ -26,6 +26,8 @@ const explained: Record<string, string> = {
   // Assistant and HR failures that have no card of their own.
   planner_invalid_output: "The assistant couldn't produce a usable answer. Try again or rephrase.",
   email_model_unavailable: "The email assistant couldn't write that right now. Try again in a moment.",
+  inbound_email_blocked:
+    "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.",
   hr_model_unavailable: "The HR assistant couldn't answer right now. Try again in a moment.",
   email_timeout_check_saved_state:
     "The email request took too long. Check your drafts and the Email assistant tab before trying again.",

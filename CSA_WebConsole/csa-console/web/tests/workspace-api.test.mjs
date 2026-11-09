@@ -104,6 +104,7 @@ const M3_CODES = [
   "email_timeout_check_saved_state", "hr_agent_timeout_check_saved_state", "training_not_draft",
   "stale_version", "invalid_transition", "csrf_required", "no_employee_link",
   "hr_training_not_permitted", "reply_approval_not_found", "reply approval not found",
+  "inbound_email_blocked",
 ];
 
 test("every reachable assistant error code shows a plain sentence, not the code", async () => {
@@ -115,6 +116,12 @@ test("every reachable assistant error code shows a plain sentence, not the code"
   reply = () => new Response(JSON.stringify({ detail: "no_employee_link" }), { status: 409 });
   await assert.rejects(client.confirmProposal("p1"), (e) => e.message ===
     "Your login isn't linked to an employee record, so you can't submit training requests. Ask your HR owner to link it.");
+});
+
+test("a blocked reply (422) explains why in api.ts's English sentence", async () => {
+  reply = () => new Response(JSON.stringify({ detail: "inbound_email_blocked" }), { status: 422 });
+  await assert.rejects(client.confirmProposal("p1"), (e) => e instanceof ApiError && e.code === "inbound_email_blocked" && e.message ===
+    "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.");
 });
 
 test("a non-JSON server error says something went wrong, not the status", async () => {
