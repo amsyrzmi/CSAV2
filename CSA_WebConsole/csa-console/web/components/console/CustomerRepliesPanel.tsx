@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  changedPersona,
   MODE_CHOICES,
   panelWarnings,
   readReplies,
@@ -9,14 +10,28 @@ import {
   saveErrorText,
   saveReplies,
   type CustomerReplies,
+  type PersonaFields,
   type ReplyMode,
 } from "@/lib/customer-replies";
 import { action, field, Notice, Panel } from "./ui";
 
-/** The brand name and whether the bot answers customers. Only administrators can change them. */
+/** Persona inputs: the label, a hint about the default, and a test id suffix. */
+const PERSONA_INPUTS: {
+  key: keyof PersonaFields; label: string; hint: string; testId: string; max: number;
+}[] = [
+  { key: "persona_name", label: "Persona name", testId: "persona-name", max: 60,
+    hint: "The name your bot signs with. Leave empty to use your brand name." },
+  { key: "brand_tone", label: "Tone", testId: "tone", max: 200,
+    hint: "Default: brief, warm and plain. For example: friendly and calm." },
+  { key: "intro_line", label: "Greeting", testId: "greeting", max: 300,
+    hint: "Said when a customer greets the bot or asks who they are talking to." },
+];
+
+/** The brand name, the bot's voice and whether it answers customers. Only administrators can change them. */
 export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) {
   const [replies, setReplies] = useState<CustomerReplies | null>(null);
   const [brandName, setBrandName] = useState("");
+  const [persona, setPersona] = useState<PersonaFields>({ persona_name: "", brand_tone: "", intro_line: "" });
   const [mode, setMode] = useState<ReplyMode>("off");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -25,6 +40,12 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
   function show(value: CustomerReplies) {
     setReplies(value);
     setBrandName(value.brand_name ?? "");
+    // A read from an older server has no persona fields: they read as empty.
+    setPersona({
+      persona_name: value.persona_name ?? "",
+      brand_tone: value.brand_tone ?? "",
+      intro_line: value.intro_line ?? "",
+    });
     setMode(value.mode);
   }
   useEffect(() => {
@@ -42,7 +63,11 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
     setError("");
     setSaved(false);
     try {
-      show(await saveReplies(tenantId, { mode, brand_name: brandName.trim() }));
+      show(await saveReplies(tenantId, {
+        mode,
+        brand_name: brandName.trim(),
+        ...(replies ? changedPersona(replies, persona) : {}),
+      }));
       setSaved(true);
     } catch (cause) {
       setError(saveErrorText(cause));
@@ -65,6 +90,14 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
                   data-testid="customer-replies-brand"
                   onChange={(event) => setBrandName(event.target.value)} />
               </label>
+              {PERSONA_INPUTS.map((input) => (
+                <label key={input.key} className="block text-sm">{input.label}
+                  <input className={`mt-1 ${field}`} value={persona[input.key]} maxLength={input.max}
+                    data-testid={`customer-replies-${input.testId}`}
+                    onChange={(event) => setPersona({ ...persona, [input.key]: event.target.value })} />
+                  <span className="mt-1 block text-ink-500">{input.hint}</span>
+                </label>
+              ))}
               <fieldset className="space-y-2 text-sm">
                 <legend className="mb-1">Replies</legend>
                 {MODE_CHOICES.map((choice) => (
@@ -84,6 +117,11 @@ export function CustomerRepliesPanel({ tenantId }: { tenantId: string | null }) 
           ) : (
             <div className="space-y-1 text-sm" data-testid="customer-replies-state">
               <p>Brand name: {replies.brand_name ?? "Not set"}</p>
+              {PERSONA_INPUTS.map((input) => (
+                <p key={input.key} data-testid={`customer-replies-state-${input.testId}`}>
+                  {input.label}: {replies[input.key] || "Not set"}
+                </p>
+              ))}
               <p>Replies: {current?.label}</p>
               <p>Ask your admin to change this.</p>
             </div>

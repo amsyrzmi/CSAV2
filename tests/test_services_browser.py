@@ -261,6 +261,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
     replies: dict[str, Any] = {
         "mode": "off",
         "brand_name": None,
+        "persona_name": None,
+        "brand_tone": None,
+        "intro_line": None,
         "can_manage": True,
         "warnings": ["replies_off", "base_only"],
     }
@@ -323,6 +326,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 status, data = 422, {"detail": "brand_name_required"}
             else:
                 replies.update(mode=body["mode"], brand_name=body["brand_name"], warnings=[])
+                persona = ("persona_name", "brand_tone", "intro_line")
+                replies.update({key: body[key] or None for key in persona if key in body})
                 data = replies
         elif path in {"inbox/conversations", "inbox/approvals"}:
             if {"key": "customer_support", "status": "active"} in upstream.packages:
@@ -550,6 +555,38 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             "body": {"mode": "auto", "brand_name": "Team Synthetic"},
         }
 
+        # (i2) The bot's voice: a save sends only the persona fields the Admin changed.
+        def is_save(response: Any) -> bool:
+            return response.request.method == "PUT" and "customer-replies" in response.url
+
+        def last_body() -> dict[str, Any]:
+            return [c for c in calls if c["path"] == "services/customer-replies" and c["body"]][-1][
+                "body"
+            ]
+
+        await page.get_by_test_id("customer-replies-persona-name").fill("Aina")
+        await page.get_by_test_id("customer-replies-tone").fill(" friendly and calm ")
+        await page.get_by_test_id("customer-replies-greeting").fill("Hi, I'm Aina")
+        async with page.expect_response(is_save):
+            await save.click()
+        assert last_body() == {
+            "mode": "auto",
+            "brand_name": "Team Synthetic",
+            "persona_name": "Aina",
+            "brand_tone": "friendly and calm",
+            "intro_line": "Hi, I'm Aina",
+        }
+        await expect(page.get_by_test_id("customer-replies-tone")).to_have_value(
+            "friendly and calm"
+        )
+        async with page.expect_response(is_save):
+            await save.click()
+        assert last_body() == {"mode": "auto", "brand_name": "Team Synthetic"}
+        await page.get_by_test_id("customer-replies-greeting").fill("")
+        async with page.expect_response(is_save):
+            await save.click()
+        assert last_body() == {"mode": "auto", "brand_name": "Team Synthetic", "intro_line": ""}
+
         # (j) Replies on: no banner, with no new sign-in.
         await page.goto(f"{base}/portal")
         await expect(chat_heading).to_be_visible(timeout=WAIT)
@@ -566,6 +603,12 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         state = page.get_by_test_id("customer-replies-state")
         await expect(state).to_contain_text("Ask your admin to change this.", timeout=WAIT)
         await expect(page.get_by_test_id("customer-replies-save")).to_have_count(0)
+        for key, text in (
+            ("persona-name", "Persona name: Aina"),
+            ("tone", "Tone: friendly and calm"),
+            ("greeting", "Greeting: Not set"),
+        ):
+            await expect(page.get_by_test_id(f"customer-replies-state-{key}")).to_have_text(text)
 
         # (l) A refused or failed read shows no banner and no error, and the page still works.
         replies_status["read"] = 500

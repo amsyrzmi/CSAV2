@@ -57,7 +57,20 @@ test("the refusals have sentences", () => {
   assert.ok(replies.refusalText("package_suspended").includes("suspended"));
   assert.equal(replies.refusalText("something_else"), null);
   assert.equal(replies.saveErrorText(new api.ApiError(422, "Request failed (422)")),
-    "Use one line of at most 120 characters for the brand name.");
+    "One line each: brand name up to 120 characters, persona name 60, tone 200, greeting 300.");
   assert.equal(replies.saveErrorText(new api.ApiError(422, "brand_name_required")),
     "Add your brand name before turning replies on.");
+});
+
+test("only the persona fields an Admin changed are sent", () => {
+  const read = { persona_name: "Aina", brand_tone: null, intro_line: undefined };
+  const blank = { persona_name: "Aina", brand_tone: "", intro_line: "" };
+  assert.deepEqual(replies.changedPersona(read, blank), {});
+  assert.deepEqual(replies.changedPersona(read, { ...blank, persona_name: " Aina " }), {});
+  assert.deepEqual(replies.changedPersona(read, { ...blank, brand_tone: " calm " }), { brand_tone: "calm" });
+  assert.deepEqual(replies.changedPersona(read, { ...blank, persona_name: "" }), { persona_name: "" });
+  assert.deepEqual(
+    replies.changedPersona({}, { persona_name: "Aina", brand_tone: "calm", intro_line: "Hi" }),
+    { persona_name: "Aina", brand_tone: "calm", intro_line: "Hi" },
+  );
 });
