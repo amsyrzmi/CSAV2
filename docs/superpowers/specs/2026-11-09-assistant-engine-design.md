@@ -12,7 +12,7 @@ The workspace assistant should do what staff do, faster than staff do it. Today 
 - Batch email: several recipients from one prompt; the same message to all, or one personalised draft per recipient, decided per request.
 - Several bookings from one prompt.
 - Email drafts may use facts from Subscriptions and the Knowledge base, only what the user's role may read.
-- One shared Jev client and decision interface, used in `shadow` for: the email decisions, the staff assistant's routing (which facts reach the planner), the customer-message classifier (already built, not wired), and an injection check on inbound email before a reply is drafted. Nothing changes behaviour until a switch is flipped per area (owner: "leverage Jev appropriately for the entire system").
+- One shared Jev client and decision interface, **live from day one** (owner's decision) in `cascade` for: the email decisions, the staff assistant's routing (which facts reach the planner), the customer-message classifier (already built, not wired) and an injection check on inbound email before a reply is drafted (owner: "leverage Jev appropriately for the entire system", "Jev live from day one"). Live is guarded: a confidence floor per question, the LLM or server rule as the fallback, a sampled audit, a kill switch per area, and an evaluation that must pass before the defaults ship (see Jev, shared setup).
 - Per-step results, size caps, and the existing safety rules unchanged: session-bound, single use, expiry, version-bound, idempotent, re-gated at confirm.
 
 ## Non-goals
@@ -21,7 +21,7 @@ The workspace assistant should do what staff do, faster than staff do it. Today 
 - Bulk inbox approvals (**call**, a cut from the idea list): the planner sees held replies only for the open conversation, so "approve everything held" needs a new cross-inbox fact, trigger words and a cap, and edges towards arbitrary audiences. Later.
 - A different planner model. A different drafter model only as an opt-in setting (below).
 - Arbitrary audience queries. Only the groups listed below; anything else gets a clarification.
-- Marketing mail (**call**): batch mail to customers is for service messages to people who already have a subscription (renewal, billing, plan changes, answers from the knowledge base).
+- Marketing mail (**call**): the owner approved batch mail to customers from the staff member's own Gmail; the design reads that as service messages to people who already have a subscription (renewal, billing, plan changes, answers from the knowledge base), not promotional mail.
 - Overview and dock redesign, avatar, removing the sandbox chat (PR 3). PR 2 only teaches the existing card to show a plan.
 - Scheduled sends, recurring bookings, undo.
 
@@ -52,7 +52,7 @@ The workspace assistant should do what staff do, faster than staff do it. Today 
 
 **Engine shape.** A: one generic `plan` proposal holding steps of existing kinds (chosen; owner: "I would want A", read as A with dependent bundles later). B: multi-item fields on each existing proposal: quicker per feature, but three list-on-a-card shapes, no mixed plans, three renderings in PR 3. C: loop over several confirmed turns: one tap per step, fails the goal.
 
-**Decision layer.** LLM only: free, works today, one model deciding and writing. Jev only: answers typed questions with probabilities and never writes, suits decisions, not live today. Both behind one interface (chosen; owner: "I'll follow your recommended flow", key available): the LLM decider is default and the fallback; Jev runs in `shadow` (both answer, disagreements logged) and `cascade` (Jev decides at or above the question's floor, else the LLM). **Jev live from day one vs the data deciding per area is an open question to the owner; until answered the design assumes shadow first.**
+**Decision layer.** LLM only: free, works today, one model deciding and writing. Jev only: answers typed questions with probabilities and never writes, suits decisions, not live today. Both behind one interface (chosen; owner: "I'll follow your recommended flow", key available): Jev decides at or above the question's confidence floor and the LLM (or the server rule) decides otherwise, so Jev is `cascade` by default. **Owner chose Jev live from day one over shadow-first.** The risk that choice accepts is that Jev's accuracy on this system's English and Malay staff phrasing is unmeasured; the design answers it with conservative floors, an evaluation gate before the defaults ship, a sampled audit while live, and per-area kill switches, not with a shadow period.
 
 **Model.** Keep the planner and drafter model: this week's failures were prompt fragility, not capability, and a larger model adds latency to every call of a batch. `ASSISTANT_DRAFT_MODEL` (default: the same model) selects the drafter for assistant batch drafting only, through its own client instance; the Email tab's drafts are unchanged (**call**).
 
@@ -84,7 +84,11 @@ The workspace assistant should do what staff do, faster than staff do it. Today 
 ### Jev, shared setup
 
 - One `JevClient` created at startup when `TYPESAFE_API_KEY` is set and handed to both the customer path (its existing `jev` parameter) and the new staff decider. No key: no client, everything on the LLM, no error.
-- `EmailDecider` / staff `RoutingDecider` interface with `LlmDecider` (default) and `JevDecider`. Settings: global `ASSISTANT_DECIDER` = `llm` (default) | `shadow` | `cascade`, per area (`email`, `routing`, `inbound_injection`), startup refuses a Jev mode without a key. Customer messages keep their per-tenant `policy.decide_mode`.
+- `EmailDecider` / staff `RoutingDecider` interface with `LlmDecider` (fallback) and `JevDecider`. Settings: global `ASSISTANT_DECIDER_<AREA>` = `cascade` (default when the key is set) | `shadow` | `llm`, per area (`EMAIL`, `ROUTING`, `INBOUND_INJECTION`). With no key every area runs `llm` and nothing errors; a Jev mode set with no key is a startup refusal. `llm` is the kill switch and takes effect on restart of the gateway.
+- Customer messages keep their per-tenant `policy.decide_mode`; its default changes from `llm` to `cascade` when the Jev client exists, and a tenant can still be set back to `llm` (the existing `force_decide_mode` runbook action). This is the one change that reaches live customers, so it is the last thing the rollout turns on and has its own check (below).
+- **Confidence floors** start conservative (0.7 for each `noul` question, 0.7 for each `choice`), are settings, and are tuned from the evaluation and the audit.
+- **Sampled audit while live (call):** for a fixed share of requests (default 10 percent, a setting) the LLM or rule also answers and the difference is logged, so drift is visible without a shadow period. Disagreements on the injection question, the only safety decision, are always logged.
+- **Injection (call):** a Jev "injection" answer at or above its floor on an inbound customer email blocks drafting a reply and tells the user why; the LLM never overrides a Jev "yes". A Jev "no" does not remove the drafter's own untrusted-data instruction.
 - Questions: routing as `noul` for each fact group (people, training, bookings, mail, team, manager, stock) plus language `choice` (en, ms, other); email as `choice` for mode and `noul` per source; inbound email as the existing `injection` question. Each question has its own confidence floor.
 - Logging: typed answers, the LLM or rule answer beside them, and which differed; never message text. Only redacted text is sent to Jev (the redaction the customer path uses; staff text can contain names and addresses).
 - Jev never extracts names, dates or times, never writes text, never decides permissions or a send.
@@ -102,5 +106,6 @@ Exact schema and column names; where the draft-side columns and the decision log
 - Plan executor: order, per-step receipt, idempotent replay, a failing step, all-fail raise, a drifted step skipped, deadline `not_run`, cap, kinds allowlist, tab cannot create or retry, no names on any card or turn row.
 - Planner pins and new smoke cases (several-person email shared and personalised, bookings batch, English and Malay); the full smoke after every prompt change.
 - Drafting: a draft with subscription facts states only supplied figures; a missing fact becomes a placeholder; a placeholder draft becomes an export step; quota split.
-- Deciders: no key, Jev error, low confidence, shadow logging with no message text, the decider can never produce a send card.
+- Deciders: no key, Jev error, low confidence, sampled audit and logging with no message text, the decider can never produce a send card.
+- **Evaluation gate before the live defaults ship (owner runs it; the key is theirs):** a labelled set built from the smoke cases for staff routing and the email decisions (English and Malay), plus the existing decision eval for customer messages (`csa/evals/decisions.py`). Each question must meet its agreement with the labels or the floor is raised, or that question stays `llm`. The result goes in the PR body. Rollout order: staff areas first, the customer classifier last, with the audit log checked after each.
 - Measured, not promised: time from prompt to card for 1, 5 and 10 recipients on staging.
