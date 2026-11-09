@@ -12,7 +12,9 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from csa.console.contracts import Role
+from csa.decide.deciders import Decider
 from csa.decide.groq import GroqError
+from csa.decide.jev import JevError
 from csa.workspace.planner import (
     SYSTEM_PROMPT,
     MailboxThreadFact,
@@ -34,6 +36,7 @@ from tests.test_workspace_registry import (  # noqa: F401 - fixture import
     _hr_member,
     proposals_app,
 )
+from tests.test_workspace_routing import FakeJev, _jev
 
 pytest_plugins = ["tests.test_console_sessions"]
 
@@ -3126,3 +3129,95 @@ def test_planner_booking_rule_keeps_the_can_change_gate() -> None:
         "when booking_action is allowed (bookings present and can_change true), propose "
         "booking_action as soon as the user clearly asks for it"
     ) in SYSTEM_PROMPT
+
+
+def _routing_decider(w: SessionWorld, jev: FakeJev) -> Decider:
+    """The real decider on the real pool; only Jev is a fake. The app reads it from app.state."""
+    decider = Decider(
+        "routing",
+        "cascade",
+        jev,  # type: ignore[arg-type]
+        w.app.state.pool,
+        floors={"noul": 0.7, "choice": 0.7},
+        audit_sample=0.0,
+    )
+    w.app.state.routing_decider = decider
+    return decider
+
+
+async def _routing_rows(w: SessionWorld, key: UUID) -> list[dict[str, Any]]:
+    """The turn's routing rows, found by its request_key (the log is shared by the session)."""
+    return await w.q(
+        "SELECT client_id, trace_id, node, mode, provider, fallback_reason FROM decision_log"
+        " WHERE node = 'assistant_routing' AND trace_id = %s ORDER BY id",
+        key,
+    )
+
+
+@requires_docker
+async def test_routing_decider_adds_people_access_without_a_trigger_word(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    body = "who looks after the paperwork when somebody joins?"  # no word rule matches this
+
+    model.reply({"action": "answer", "markdown": "Ok."})
+    plain_key = uuid4()
+    plain = await _turn(w, browser, thread, body, "overview", key=str(plain_key))
+    assert plain.status_code == 201, plain.text
+    assert model.facts().get("people_access") is None  # no decider: today's word rules only
+    assert await _routing_rows(w, plain_key) == []
+
+    jev = FakeJev(_jev(people=0.93))
+    _routing_decider(w, jev)
+    key = uuid4()
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, body, "overview", key=str(key))
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1
+    assert model.facts().get("people_access") is not None
+    rows = await _routing_rows(w, key)
+    assert len(rows) == 1  # found by the turn's request_key, so trace_id carries it
+    assert rows[0]["client_id"] == UUID(w.tenants[0])
+    assert (rows[0]["mode"], rows[0]["provider"], rows[0]["fallback_reason"]) == (
+        "cascade",
+        "jev",
+        None,
+    )
+
+
+@requires_docker
+async def test_a_confident_jev_no_still_reads_what_the_word_rules_read(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    _routing_decider(w, FakeJev(_jev()))  # a confident no on every group
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, "add Ali to Sales", "overview")
+    assert turn.status_code == 201, turn.text
+    assert model.facts().get("people_access") is not None
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Tolong tambah pekerja baru ke jabatan jualan",  # Malay
+        "eh boss, can add new staff to the team or not lah",  # Manglish
+    ],
+)
+async def test_the_turn_completes_on_the_word_rules_when_jev_errors(planned, body: str) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    jev = FakeJev(error=JevError("jev_http_503"))
+    _routing_decider(w, jev)
+    key = uuid4()
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, body, "overview", key=str(key))
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1
+    assert model.facts().get("people_access") is not None  # the word rule read it
+    rows = await _routing_rows(w, key)
+    assert len(rows) == 1 and rows[0]["client_id"] == UUID(w.tenants[0])
+    assert rows[0]["provider"] == "llm" and rows[0]["fallback_reason"] is not None

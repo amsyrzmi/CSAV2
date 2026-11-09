@@ -116,6 +116,25 @@ async def test_each_group_is_judged_on_its_own() -> None:
     assert not (needs.manager or needs.team or needs.people)
 
 
+async def test_a_confident_jev_no_never_removes_a_word_rule_read() -> None:
+    # "add Ali to Sales": the word rule reads People access; a wrong confident no must not drop it.
+    body = "add Ali to Sales"
+    rule = word_rule_needs(body)
+    assert rule.people
+    jev = FakeJev(_jev())  # every group a confident no (0.02)
+    needs = await _route(_decider(jev), body)
+    assert needs.people is True
+    assert needs == rule  # a confident no everywhere adds nothing and removes nothing
+
+
+async def test_jev_only_adds_reads_on_every_group() -> None:
+    body = "reply to my manager about the training course"  # words: manager, mail, training, people
+    rule = word_rule_needs(body)
+    assert rule == Needs(manager=True, mail=True, team=False, training=True, people=True)
+    needs = await _route(_decider(FakeJev(_jev(team=0.95))), body)  # no for the four, yes for team
+    assert needs == Needs(manager=True, mail=True, team=True, training=True, people=True)
+
+
 @pytest.mark.parametrize(
     "body",
     [
