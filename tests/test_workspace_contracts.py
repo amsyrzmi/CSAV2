@@ -739,9 +739,8 @@ def test_no_workspace_proposal_can_write_to_tiktok() -> None:
     actions = _union_actions(WorkspaceProposal)
     kinds = set(get_args(ProposalKind))
     executors = set(build_proposal_registry()._executors)
-    # The plan kind (0542) gets its executor in the engine's later task; until then it is a kind
-    # with no executor, and a plan only ever holds other kinds, never a shop one.
-    assert planned <= actions and kinds - {"plan"} == executors - {"plan"}
+    # A plan only ever holds other kinds (csa.workspace.plan.STEP_KINDS), never a shop one.
+    assert planned <= actions and kinds == executors
     shop_words = re.compile(r"tiktok|marketplace|shop|product|stock|listing|inventory|order")
     every = actions | kinds | executors
     # The only actions about a shop are the two reads; no confirm card touches a shop at all.

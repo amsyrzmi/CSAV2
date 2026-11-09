@@ -1,0 +1,499 @@
+"""The plan executor: several existing proposals behind one card and one confirm.
+
+Most cases drive ``PlanExecutor`` directly with fake child executors; the two race cases run
+it inside a real ``ProposalRegistry`` on Docker Postgres.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import time
+import typing
+from typing import Any
+from uuid import UUID, uuid4
+
+import pytest
+from csa.console.contracts import ConsoleActor, Role
+from csa.workspace import contracts
+from csa.workspace import plan as plan_module
+from csa.workspace.contracts import CardField, Language, PlanStep, ProposalKind
+from csa.workspace.plan import (
+    MAX_NON_EMAIL_STEPS,
+    MAX_STEPS,
+    STEP_KINDS,
+    PlanExecutor,
+    plan_payload,
+    step_id,
+)
+from csa.workspace.registry import (
+    CardContent,
+    ProposalActionRefused,
+    ProposalError,
+    ProposalOrigin,
+    ProposalRegistry,
+)
+from fastapi import HTTPException
+from pydantic import ValidationError
+from starlette.requests import Request
+
+from tests.conftest import requires_docker
+from tests.test_console_sessions import SessionWorld
+from tests.test_workspace_registry import _age_claim, _member_actor, _row
+
+pytest_plugins = ["tests.test_console_sessions"]
+
+CLIENT = uuid4()
+# Synthetic personal data the fake children put on their own cards: a plan card never shows it.
+NAME, ADDRESS, SUBJECT = "Ada Synthetic", "ada@example.test", "Quarterly figures"
+
+
+class FakeChild:
+    """A child executor whose card carries a name and an address, and whose execute is
+    idempotent per proposal id, as the real services are."""
+
+    kind: ProposalKind
+
+    def __init__(self, kind: str) -> None:
+        self.kind = typing.cast(ProposalKind, kind)
+        self.current: dict[int, str | None] = {}  # step n -> version the card reports now
+        self.card_error: dict[int, Exception] = {}
+        self.gate_error: Exception | None = None
+        self.execute_error: dict[int, Exception] = {}
+        self.slow: dict[int, float] = {}
+        self.park: asyncio.Event | None = None  # the first execute waits on it
+        self.parked = asyncio.Event()
+        self.calls: list[tuple[int, UUID, str | None, str]] = []
+        self.effects: dict[UUID, dict[str, Any]] = {}
+
+    async def gate(
+        self, request: Request, actor: ConsoleActor, client_id: UUID, *, origin: ProposalOrigin
+    ) -> None:
+        if self.gate_error is not None:
+            raise self.gate_error
+
+    async def card(
+        self,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        payload: dict[str, Any],
+        *,
+        origin: ProposalOrigin,
+        language: Language = "en",
+    ) -> tuple[CardContent, str | None]:
+        await self.gate(request, actor, client_id, origin=origin)
+        n = int(payload["n"])
+        if n in self.card_error:
+            raise self.card_error[n]
+        content = CardContent(
+            title=f"Email {NAME} <{ADDRESS}>",
+            summary=f"About {SUBJECT}",
+            fields=[CardField(label="To", value=ADDRESS)],
+            language=language,
+        )
+        return content, self.current.get(n, f"v{n}")
+
+    async def execute(
+        self,
+        request: Request,
+        actor: ConsoleActor,
+        client_id: UUID,
+        payload: dict[str, Any],
+        *,
+        proposal_id: UUID,
+        expected_version: str | None,
+        origin: ProposalOrigin,
+    ) -> dict[str, Any]:
+        n = int(payload["n"])
+        self.calls.append((n, proposal_id, expected_version, origin))
+        if self.park is not None:
+            park, self.park = self.park, None
+            self.parked.set()
+            await park.wait()
+        if n in self.slow:
+            await asyncio.sleep(self.slow[n])
+        if n in self.execute_error:
+            raise self.execute_error[n]
+        return self.effects.setdefault(proposal_id, {"n": n, "effect": len(self.effects) + 1})
+
+
+def _children() -> dict[str, FakeChild]:
+    return {kind: FakeChild(kind) for kind in sorted(STEP_KINDS)}
+
+
+def _step(kind: str, n: int, **extra: Any) -> dict[str, Any]:
+    return {"kind": kind, "payload": {"n": n, **extra}, "version": f"v{n}"}
+
+
+def _payload(*steps: dict[str, Any]) -> dict[str, Any]:
+    return {"steps": list(steps)}
+
+
+def _request() -> Request:
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+
+
+def _actor() -> ConsoleActor:
+    return ConsoleActor(
+        user_id=uuid4(),
+        email="staff@example.test",
+        display_name="Synthetic Staff",
+        platform_admin=False,
+        must_change_password=False,
+        session_id=uuid4(),
+        client_id=CLIENT,
+        role=Role.TENANT_STAFF,
+        memberships=[],
+        csrf_hash="synthetic",
+    )
+
+
+async def _card(
+    executor: PlanExecutor, payload: dict[str, Any], *, origin: ProposalOrigin = "assistant"
+) -> tuple[CardContent, str | None]:
+    return await executor.card(_request(), _actor(), CLIENT, payload, origin=origin)
+
+
+async def _execute(
+    executor: PlanExecutor,
+    payload: dict[str, Any],
+    plan_id: UUID,
+    *,
+    origin: ProposalOrigin = "assistant",
+) -> dict[str, Any]:
+    _, version = await _card(executor, payload)
+    return await executor.execute(
+        _request(),
+        _actor(),
+        CLIENT,
+        payload,
+        proposal_id=plan_id,
+        expected_version=version,
+        origin=origin,
+    )
+
+
+def _hash(versions: list[str | None]) -> str:
+    return hashlib.sha256(json.dumps(versions, separators=(",", ":")).encode()).hexdigest()
+
+
+async def test_card_lists_one_row_per_step_with_no_addresses() -> None:
+    children = _children()
+    draft = str(uuid4())
+    payload = _payload(
+        _step("email_send", 0, draft_id=draft),
+        _step("booking_action", 1),
+        _step("hr_person", 2),
+        _step("email_export", 3, draft_id=draft),
+    )
+    content, _ = await _card(PlanExecutor(children), payload)
+    assert len(content.fields) == 4
+    # An email row carries its draft id so the console opens it through the existing preview.
+    assert [f.value for f in content.fields] == [draft, "", "", draft]
+    assert "4" in content.title
+    shown = json.dumps([content.title, content.summary, [f.model_dump() for f in content.fields]])
+    for needle in (NAME, ADDRESS, SUBJECT, "Ada", "example.test"):
+        assert needle not in shown
+    malay, _ = await PlanExecutor(children).card(
+        _request(), _actor(), CLIENT, payload, origin="assistant", language="ms"
+    )
+    assert malay.language == "ms" and len(malay.fields) == 4
+    assert malay.title != content.title
+
+
+async def test_plan_version_is_hash_of_stored_step_versions() -> None:
+    children = _children()
+    steps = [_step("booking_action", 0), _step("training_submit", 1), _step("email_export", 2)]
+    steps[1]["version"] = children["training_submit"].current[1] = None  # a new request
+    payload = _payload(*steps)
+    content, version = await _card(PlanExecutor(children), payload)
+    assert version == _hash(["v0", None, "v2"])
+    assert not any("changed" in f.label for f in content.fields)
+    # A step that moved, or whose card now refuses, shows as changed; the plan version is still
+    # the stored one, so the registry's own version check at confirm passes.
+    children["booking_action"].current[0] = "v-moved"
+    children["email_export"].card_error[2] = ProposalActionRefused(409, {"detail": "draft_changed"})
+    changed, again = await _card(PlanExecutor(children), payload)
+    assert again == version
+    assert ["changed" in f.label for f in changed.fields] == [True, False, True]
+    assert "2" in changed.summary
+
+
+async def test_tab_origin_is_refused() -> None:
+    executor = PlanExecutor(_children())
+    payload = _payload(_step("booking_action", 0))
+    for call in (
+        _card(executor, payload, origin="tab"),
+        executor.gate(_request(), _actor(), CLIENT, origin="tab"),
+        executor.execute(
+            _request(),
+            _actor(),
+            CLIENT,
+            payload,
+            proposal_id=uuid4(),
+            expected_version=None,
+            origin="tab",
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await call
+        assert exc.value.status_code == 403 and exc.value.detail == "plan_assistant_only"
+    await executor.gate(_request(), _actor(), CLIENT, origin="assistant")
+
+
+async def test_kinds_outside_the_allowlist_are_refused() -> None:
+    assert STEP_KINDS == frozenset(typing.get_args(PlanStep.model_fields["kind"].annotation))
+    assert STEP_KINDS == {
+        "email_send",
+        "email_export",
+        "booking_action",
+        "inbox_decision",
+        "training_submit",
+        "hr_person",
+    }
+    children = _children()
+    executor = PlanExecutor(children)
+    for kind in ("plan", "subscription_action", "email_batch", "nonsense"):
+        with pytest.raises(HTTPException) as exc:
+            await _card(executor, _payload(_step("booking_action", 0), _step(kind, 1)))
+        assert exc.value.status_code == 422 and exc.value.detail == "plan_step_not_allowed"
+    with pytest.raises(HTTPException) as bad:
+        await _card(executor, {"steps": "nope"})
+    assert bad.value.status_code == 422
+    assert all(not child.calls for child in children.values())
+    # Every allowed kind needs its executor; other kinds the registry holds are left out.
+    with pytest.raises(ValueError, match="hr_person"):
+        PlanExecutor({k: v for k, v in children.items() if k != "hr_person"})
+    PlanExecutor({**children, "subscription_action": FakeChild("subscription_action")})
+
+
+async def test_caps_twenty_steps_and_ten_non_email() -> None:
+    assert MAX_STEPS == contracts.MAX_STEPS == 20 and MAX_NON_EMAIL_STEPS == 10
+    executor = PlanExecutor(_children())
+    emails = [_step("email_export", n) for n in range(MAX_STEPS)]
+    await _card(executor, _payload(*emails))
+    with pytest.raises(HTTPException) as many:
+        await _card(executor, _payload(*emails, _step("email_send", 20)))
+    assert many.value.status_code == 422 and many.value.detail == "plan_too_many_steps"
+    bookings = [_step("booking_action", n) for n in range(MAX_NON_EMAIL_STEPS)]
+    await _card(executor, _payload(*bookings, *emails[:10]))
+    with pytest.raises(HTTPException) as actions:
+        await _card(executor, _payload(*bookings, _step("inbox_decision", 10)))
+    assert actions.value.status_code == 422 and actions.value.detail == "plan_too_many_steps"
+    with pytest.raises(ValidationError):
+        plan_payload([PlanStep.model_validate(_step("email_export", n)) for n in range(21)])
+    assert plan_payload([PlanStep.model_validate(_step("email_export", 0))]) == {
+        "steps": [{"kind": "email_export", "payload": {"n": 0}, "version": "v0"}]
+    }
+
+
+async def test_execute_runs_steps_in_order_with_derived_ids() -> None:
+    children = _children()
+    kinds = ["email_send", "booking_action", "email_send", "training_submit", "email_export"]
+    payload = _payload(*[_step(kind, n) for n, kind in enumerate(kinds)])
+    plan_id = uuid4()
+    receipt = await _execute(PlanExecutor(children), payload, plan_id)
+    assert step_id(plan_id, 3) == plan_module.uuid5(plan_id, "step:3")
+    assert receipt["steps"] == [
+        {
+            "index": n,
+            "kind": kind,
+            "status": "done",
+            "receipt": children[kind].effects[step_id(plan_id, n)],
+        }
+        for n, kind in enumerate(kinds)
+    ]
+    calls = sorted(call for child in children.values() for call in child.calls)
+    assert calls == [(n, step_id(plan_id, n), f"v{n}", "assistant") for n in range(len(kinds))]
+
+
+async def test_a_failing_step_is_recorded_and_the_rest_run() -> None:
+    children = _children()
+    children["booking_action"].execute_error[1] = HTTPException(409, "booking_slot_taken")
+    children["training_submit"].execute_error[2] = RuntimeError("synthetic crash")
+    payload = _payload(
+        _step("email_send", 0),
+        _step("booking_action", 1),
+        _step("training_submit", 2),
+        _step("email_send", 3),
+    )
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    steps = receipt["steps"]
+    assert [s["status"] for s in steps] == ["done", "failed", "failed", "done"]
+    assert steps[1]["code"] == "booking_slot_taken" and "receipt" not in steps[1]
+    assert steps[2]["code"] == "step_failed"
+    assert len(children["email_send"].effects) == 2
+
+
+async def test_every_step_failing_with_the_same_refusal_raises_it() -> None:
+    children = _children()
+    for child in children.values():
+        child.gate_error = HTTPException(403, "package_inactive")
+    executor = PlanExecutor(children)
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    with pytest.raises(HTTPException) as exc:
+        await executor.execute(
+            _request(),
+            _actor(),
+            CLIENT,
+            payload,
+            proposal_id=uuid4(),
+            expected_version=_hash(["v0", "v1"]),
+            origin="assistant",
+        )
+    assert exc.value.status_code == 403 and exc.value.detail == "package_inactive"
+    assert all(not child.calls for child in children.values())
+    # Different refusals are a receipt, not a raise.
+    children = _children()
+    refusal = ProposalActionRefused(429, {"detail": "send_limit_reached", "retry_after": 60})
+    children["email_send"].execute_error[0] = refusal
+    children["booking_action"].execute_error[1] = HTTPException(409, "booking_slot_taken")
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert [(s["status"], s["code"]) for s in receipt["steps"]] == [
+        ("failed", "send_limit_reached"),
+        ("failed", "booking_slot_taken"),
+    ]
+    # The same refusal from every step's execute raises it, body and all.
+    children = _children()
+    children["email_send"].execute_error = {0: refusal, 1: refusal}
+    with pytest.raises(ProposalActionRefused) as same:
+        await _execute(
+            PlanExecutor(children),
+            _payload(_step("email_send", 0), _step("email_send", 1)),
+            uuid4(),
+        )
+    assert same.value.content == {"detail": "send_limit_reached", "retry_after": 60}
+
+
+async def test_a_drifted_step_is_skipped_not_failed() -> None:
+    children = _children()
+    payload = _payload(_step("email_send", 0), _step("inbox_decision", 1), _step("email_send", 2))
+    executor = PlanExecutor(children)
+    _, version = await _card(executor, payload)
+    children["inbox_decision"].current[1] = "v-decided-by-a-colleague"
+    children["email_send"].card_error[2] = ProposalActionRefused(409, {"detail": "draft_changed"})
+    receipt = await executor.execute(
+        _request(),
+        _actor(),
+        CLIENT,
+        payload,
+        proposal_id=uuid4(),
+        expected_version=version,
+        origin="assistant",
+    )
+    skipped = {"index": 1, "kind": "inbox_decision", "status": "skipped", "code": "changed"}
+    assert receipt["steps"][1] == skipped
+    assert receipt["steps"][2]["status"] == "skipped" and receipt["steps"][2]["code"] == "changed"
+    assert receipt["steps"][0]["status"] == "done"
+    assert children["inbox_decision"].calls == [] and len(children["email_send"].calls) == 1
+
+
+async def test_steps_past_the_deadline_are_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plan_module, "PLAN_DEADLINE_SECONDS", 0.2)
+    children = _children()
+    for n in range(4):  # fill every slot past the deadline
+        children["booking_action"].slow[n] = 30
+    payload = _payload(
+        *[_step("booking_action", n) for n in range(4)],
+        _step("email_send", 4),
+        _step("email_send", 5),
+    )
+    started = time.monotonic()
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert time.monotonic() - started < 5
+    statuses = [(s["status"], s.get("code")) for s in receipt["steps"]]
+    # Started steps were cut off by the deadline; the rest were never claimed.
+    assert statuses == [("failed", "plan_deadline")] * 4 + [("not_run", None)] * 2
+    assert children["email_send"].calls == [] and children["email_send"].effects == {}
+
+
+async def test_replaying_execute_replays_finished_steps() -> None:
+    children = _children()
+    children["booking_action"].execute_error[1] = HTTPException(409, "booking_slot_taken")
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1), _step("email_send", 2))
+    executor, plan_id = PlanExecutor(children), uuid4()
+    first = await _execute(executor, payload, plan_id)
+    again = await _execute(executor, payload, plan_id)
+    assert again == first
+    assert len(children["email_send"].calls) == 4  # each step ran twice under its own id...
+    assert set(children["email_send"].effects) == {step_id(plan_id, 0), step_id(plan_id, 2)}
+
+
+# --------------------------------------------------------------------- inside the registry
+
+
+def _registry(children: dict[str, FakeChild]) -> ProposalRegistry:
+    return ProposalRegistry({"plan": PlanExecutor(children)})
+
+
+async def _create_plan(
+    sessions: SessionWorld, registry: ProposalRegistry, actor: ConsoleActor, payload: dict
+) -> Any:
+    return await registry.create(
+        sessions.pool,
+        _request(),
+        actor,
+        UUID(sessions.tenants[0]),
+        "plan",
+        payload,
+        thread_id=None,
+        origin="assistant",
+    )
+
+
+async def _confirm(sessions: SessionWorld, registry: ProposalRegistry, actor, pid) -> Any:
+    return await registry.confirm(sessions.pool, _request(), actor, UUID(sessions.tenants[0]), pid)
+
+
+def _effects(children: dict[str, FakeChild]) -> list[UUID]:
+    return sorted((pid for child in children.values() for pid in child.effects), key=str)
+
+
+@requires_docker
+async def test_concurrent_confirms_run_each_step_once(sessions: SessionWorld) -> None:
+    actor, _ = await _member_actor(sessions)
+    children = _children()
+    registry = _registry(children)
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1), _step("email_send", 2))
+    out = await _create_plan(sessions, registry, actor, payload)
+    assert out.status == "requested" and out.card.expected_version == _hash(["v0", "v1", "v2"])
+    release = asyncio.Event()
+    children["email_send"].park = release
+    first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    await asyncio.wait_for(children["email_send"].parked.wait(), 10)
+    with pytest.raises(ProposalError) as loser:
+        await _confirm(sessions, registry, actor, out.id)  # a second tab, while steps run
+    assert loser.value.detail == "proposal_consumed"
+    release.set()
+    done = await asyncio.wait_for(first, 10)
+    assert done.status == "executed"
+    assert [s["status"] for s in done.result["steps"]] == ["done", "done", "done"]
+    assert len(children["email_send"].calls) == 2 and len(children["booking_action"].calls) == 1
+    assert (await _confirm(sessions, registry, actor, out.id)) == done
+    assert len(children["email_send"].calls) == 2 and len(children["booking_action"].calls) == 1
+    assert _effects(children) == sorted((step_id(out.id, n) for n in range(3)), key=str)
+
+
+@requires_docker
+async def test_a_lease_retaken_mid_plan_acts_once_per_step(sessions: SessionWorld) -> None:
+    """The first confirm stalls inside a step until its lease goes stale and a second confirm
+    retakes it: the steps run again under the same ids, so each acts once."""
+    actor, _ = await _member_actor(sessions)
+    children = _children()
+    registry = _registry(children)
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    out = await _create_plan(sessions, registry, actor, payload)
+    release = asyncio.Event()
+    children["email_send"].park = release
+    first = asyncio.create_task(_confirm(sessions, registry, actor, out.id))
+    await asyncio.wait_for(children["email_send"].parked.wait(), 10)
+    await _age_claim(sessions, out.id)
+    retaken = await _confirm(sessions, registry, actor, out.id)
+    assert retaken.status == "executed"
+    release.set()
+    stalled = await asyncio.wait_for(first, 10)
+    assert stalled == retaken  # the stalled confirm finds the retaker's record and replays it
+    assert (await _row(sessions, out.id))["status"] == "executed"
+    assert _effects(children) == sorted((step_id(out.id, n) for n in range(2)), key=str)

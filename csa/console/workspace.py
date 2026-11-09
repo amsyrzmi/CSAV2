@@ -271,6 +271,9 @@ def build_workspace_router() -> APIRouter:
     ) -> ProposalOut:
         _workspace_access(actor, client_id)
         body = await _payload(request, ProposalCreate)
+        if body.kind == "plan":
+            # Only the assistant makes a plan, from its own turn (PlanExecutor refuses a tab).
+            raise HTTPException(422, "plan_not_creatable")
         registry = _registry(request)
         # The kind's executor gates the package and validates the payload before any row.
         result = await registry.create(

@@ -48,10 +48,12 @@ from csa.workspace.contracts import (
     ProposalKind,
     TrainingSubmitProposal,
 )
+from csa.workspace.plan import PlanExecutor
 from csa.workspace.registry import (
     CardContent,
     ProposalActionRefused,
     ProposalError,
+    ProposalExecutor,
     ProposalOrigin,
     ProposalRegistry,
 )
@@ -707,14 +709,15 @@ def build_proposal_registry() -> ProposalRegistry:
     from csa.bookings.executor import BookingActionExecutor
     from csa.workspace.hr_people import HrPersonExecutor
 
-    return ProposalRegistry(
-        {
-            "training_submit": TrainingSubmitExecutor(),
-            "email_export": EmailExportExecutor(),
-            "email_send": EmailSendExecutor(),
-            "inbox_decision": InboxDecisionExecutor(),
-            "subscription_action": SubscriptionActionExecutor(),
-            "hr_person": HrPersonExecutor(),
-            "booking_action": BookingActionExecutor(),
-        }
-    )
+    executors: dict[ProposalKind, ProposalExecutor] = {
+        "training_submit": TrainingSubmitExecutor(),
+        "email_export": EmailExportExecutor(),
+        "email_send": EmailSendExecutor(),
+        "inbox_decision": InboxDecisionExecutor(),
+        "subscription_action": SubscriptionActionExecutor(),
+        "hr_person": HrPersonExecutor(),
+        "booking_action": BookingActionExecutor(),
+    }
+    # A plan's steps run through these same executors, called directly, not through the registry.
+    plan = PlanExecutor({kind: executor for kind, executor in executors.items()})
+    return ProposalRegistry({**executors, "plan": plan})

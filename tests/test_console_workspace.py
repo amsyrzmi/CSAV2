@@ -929,3 +929,14 @@ async def test_stock_read_asks_which_product_and_refuses_without_a_shop(
     assert locked["action"] == "answer"
     assert locked["markdown"].startswith("The Business management tab needs the ")
     assert calls == []
+
+
+async def test_post_proposals_rejects_plan_with_422(proposals_app) -> None:  # noqa: F811
+    """Only the assistant makes a plan: the direct create route never stores one."""
+    w, _ = proposals_app
+    browser, _ = await w.member(role="tenant_staff")
+    step = {"kind": "email_export", "payload": {"draft_id": str(uuid4())}, "version": None}
+    refused = await w.mutate(browser, PROPOSALS, {"kind": "plan", "payload": {"steps": [step]}})
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == "plan_not_creatable"
+    assert await w.q("SELECT count(*) n FROM console_proposals WHERE kind='plan'") == [{"n": 0}]

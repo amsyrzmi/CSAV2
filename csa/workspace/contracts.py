@@ -398,11 +398,15 @@ PlannerStep = Annotated[
 ]
 
 
+MAX_STEPS = 20
+"""Most steps in one plan, as the planner proposes it and as the plan card stores it."""
+
+
 class PlanProposal(_Contract):
     """Several actions behind one card and one confirm; the steps are what the planner chose."""
 
     action: Literal["plan"]
-    steps: list[PlannerStep] = Field(min_length=1, max_length=20)
+    steps: list[PlannerStep] = Field(min_length=1, max_length=MAX_STEPS)
 
 
 PlanStepKind = Literal[
@@ -426,7 +430,7 @@ class PlanStep(_Contract):
 class PlanProposalPayload(_Contract):
     """The whole stored payload of a plan card."""
 
-    steps: list[PlanStep] = Field(min_length=1, max_length=20)
+    steps: list[PlanStep] = Field(min_length=1, max_length=MAX_STEPS)
 
 
 WorkspaceProposal = Annotated[
