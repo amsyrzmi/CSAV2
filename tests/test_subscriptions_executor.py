@@ -449,6 +449,49 @@ async def test_concurrent_confirms_execute_once(sessions: SessionWorld) -> None:
     assert (await row(w, second))["version"] == 2
 
 
+async def test_a_confirm_that_loses_the_race_replays_the_receipt_not_a_state_error(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second confirm checks the card after the first has already paused the subscription.
+
+    Without the recheck that card check fails ``action_not_allowed`` (422) because the
+    subscription is no longer active; the proposal was consumed, so the answer is its receipt.
+    """
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await subscribe(w, staff)
+    created = await propose(w, staff, sub, {"action": "pause"})
+    assert created.status_code == 201, created.text
+    proposal = created.json()["id"]
+
+    original = SubscriptionActionExecutor.card
+    calls = 0
+    parked, release = asyncio.Event(), asyncio.Event()
+
+    async def card(self: SubscriptionActionExecutor, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # the loser: held until the winner has executed and committed
+            parked.set()
+            await release.wait()
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SubscriptionActionExecutor, "card", card)
+    tasks = {asyncio.create_task(confirm(w, staff, proposal)) for _ in range(2)}
+    await asyncio.wait_for(parked.wait(), 30)
+    done, pending = await asyncio.wait(tasks, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+    assert len(done) == 1 and len(pending) == 1
+    release.set()
+    winner, loser = next(iter(done)).result(), await next(iter(pending))
+
+    assert winner.status_code == 200, winner.text
+    assert loser.status_code == 200, loser.text
+    assert loser.json() == winner.json()
+    assert len(await events(w, proposal)) == 1
+    assert (await row(w, sub))["version"] == 2
+
+
 async def test_read_only_cannot_create_action_and_reader_sees_no_proposals(
     sessions: SessionWorld,
 ) -> None:

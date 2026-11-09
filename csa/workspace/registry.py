@@ -317,7 +317,18 @@ class ProposalRegistry:
         origin: ProposalOrigin = row["origin"]
         seen_status, seen_token = row["status"], row["claim_token"]
         if seen_status == "requested":
-            _, version = await executor.card(request, actor, client_id, payload, origin=origin)
+            try:
+                _, version = await executor.card(request, actor, client_id, payload, origin=origin)
+            except HTTPException:
+                # Another confirm may have executed the proposal since the check above, which
+                # makes the card fail against the new state: answer as the check above does.
+                async with tx(pool, client) as conn:
+                    current = await _locked(conn, actor, client_id, proposal_id)
+                if current["status"] == "executed":
+                    return _out(current)
+                if current["status"] != seen_status or current["claim_token"] != seen_token:
+                    raise ProposalError("proposal_consumed") from None
+                raise
             if version != row["expected_version"]:
                 raise ProposalError("proposal_stale")
         else:

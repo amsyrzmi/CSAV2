@@ -695,9 +695,15 @@ async def test_a_company_without_customer_support_gets_the_small_home(console: C
         nav = page.get_by_role("navigation", name="Main navigation")
         await expect(nav.get_by_role("link", name="People & HR")).to_be_visible()
         await expect(nav.get_by_role("link", name="Assistant activity")).to_have_count(0)
-        await page.wait_for_timeout(500)
         # One packages read serves the page and the strip; nothing customer-facing is asked for.
-        # `next dev` mounts effects twice, so the rail's single HR read is the yardstick.
+        # `next dev` mounts effects twice, so the rail's single HR read is the yardstick. The two
+        # reads arrive independently, so wait until their counts meet (a fixed wait failed under
+        # load with one read still in flight), then check they stay equal.
+        for _ in range(100):
+            if len(api.paths("services/active")) == len(api.paths("hr/context")):
+                break
+            await page.wait_for_timeout(100)
+        await page.wait_for_timeout(300)
         assert len(api.paths("services/active")) == len(api.paths("hr/context")), api.requests
         assert not [p for _, p in api.requests if p.startswith(("chat/", "inbox/"))]
         assert not api.paths("services/customer-replies"), api.requests
