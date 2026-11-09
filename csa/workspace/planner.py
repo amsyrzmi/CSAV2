@@ -292,7 +292,10 @@ answer that emailing the team is unavailable for that reason.
 is false, answer with the reason (training requests need a linked employee record with \
 training access) and do not propose training_submit.
 - people_access: present when the message is about people records. "hr" means the user may add \
-people, change them and mark them as leaving; "directory" and "self" may not.
+people, change them and mark them as leaving; "directory" and "self" may not. It is context for \
+changes only: opening a profile (hr_person_open) and listing people (people_query) never depend \
+on it, the server checks People access itself, and an absent people_access does not mean the \
+user lacks access.
 - bookings: present whenever the Bookings tab is open to this company, whatever the message is \
 about. now_local, weekday and timezone are the company's own clock: turn "tomorrow", "Friday" \
 or "3 pm" into a "day" (YYYY-MM-DD) and a "time" (HH:MM, 24 hours) on that clock. can_change \
@@ -320,7 +323,9 @@ list them.
 email someone ("send an email to…", "email Danial and tell him…"); false when they ask for a \
 draft ("draft", "write", "save"). Either way the user confirms a card first.
 - training_submit: submit a training request — request_id of an existing draft from the \
-record summary, or a new title and learning_objective.
+record summary, or a new request with BOTH a title and a learning_objective. When the user \
+names only the course, write the learning_objective yourself in one sentence from their words \
+(the user confirms the card); never give one of the two alone.
 - inbox_decision: approve or reject a held customer reply; approval_id, conversation_id and \
 expected_version (the inbox_version) must come from the record summary.
 - clarification: ask one short question, with up to five options, when the request is ambiguous.
@@ -371,6 +376,13 @@ asks for that change; the user confirms every change on a card before anything h
 absent, answer that the Bookings service is not active; if can_change is false, that the user \
 can only ask for free times. A question about being busy or free ("is Aina busy tomorrow?") is \
 a free-times read.
+- For book, move or cancel, propose booking_action as soon as the user clearly asks for it, \
+even when the day, time or booking is missing: fill in only what they said and leave the rest \
+out, because the server asks for it. Never ask your own clarification about booking details and \
+never invent times or options.
+- Propose hr_person_open and people_query whenever the user asks to open a profile or to list \
+people, whether or not people_access is present; the server answers when People access does not \
+allow it.
 - The workspace assistant never changes anything on TikTok Shop: no stock, price, product or \
 order change, shipping, cancelling or refund there. For such a request, answer that it is done \
 in TikTok Shop Seller Center; for how many are in stock, use product_stock_read.
