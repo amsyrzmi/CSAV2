@@ -296,3 +296,35 @@ def test_the_calendar_origin_must_be_a_web_address() -> None:
     env = {**_GOOGLE, "GOOGLE_OAUTH_REDIRECT_URI": "not-a-url"}
     with pytest.raises(ValidationError, match="web address"):
         _settings(BOOKINGS_GOOGLE_CALENDAR_ENABLED="true", **env)
+
+
+def test_assistant_decider_defaults() -> None:
+    s = _settings()
+    assert s.ASSISTANT_DECIDER_EMAIL == "auto"
+    assert s.ASSISTANT_DECIDER_ROUTING == "auto"
+    assert s.ASSISTANT_DECIDER_INBOUND_INJECTION == "auto"
+    assert s.ASSISTANT_JEV_FLOOR_NOUL == 0.7
+    assert s.ASSISTANT_JEV_FLOOR_CHOICE == 0.7
+    assert s.ASSISTANT_DECIDER_AUDIT_SAMPLE == 0.10
+
+
+@pytest.mark.parametrize("area", ["EMAIL", "ROUTING", "INBOUND_INJECTION"])
+@pytest.mark.parametrize("mode", ["shadow", "cascade"])
+def test_explicit_cascade_without_a_key_refuses_startup(area: str, mode: str) -> None:
+    with pytest.raises(ValidationError, match="TYPESAFE_API_KEY"):
+        _settings(**{f"ASSISTANT_DECIDER_{area}": mode})
+    # With a key the same mode is accepted; auto and llm never need one.
+    assert _settings(**{f"ASSISTANT_DECIDER_{area}": mode}, TYPESAFE_API_KEY="k")
+    assert _settings(**{f"ASSISTANT_DECIDER_{area}": "llm"})
+    assert _settings(**{f"ASSISTANT_DECIDER_{area}": "auto"})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ASSISTANT_JEV_FLOOR_NOUL", "ASSISTANT_JEV_FLOOR_CHOICE", "ASSISTANT_DECIDER_AUDIT_SAMPLE"],
+)
+def test_assistant_jev_fractions_are_bounded(name: str) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**{name: "1.5"})
+    with pytest.raises(ValidationError):
+        _settings(**{name: "-0.1"})

@@ -8,8 +8,9 @@ Only redacted text is ever sent.
 
 from __future__ import annotations
 
+import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 import httpx
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from csa.contracts.envelope import Envelope
 from csa.contracts.plan import Intent
 from csa.contracts.state import Context, Signals
+from csa.core.pii import redact
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +60,31 @@ SENTIMENT_LEVELS = [
     "Frustrated or disappointed",
     "Angry or abusive",
 ]
+
+
+def redact_for_jev(text: str, *, names: Sequence[str] = ()) -> str:
+    """The text Jev may see: ``pii.redact`` (addresses, phone and card numbers), then each name.
+
+    ``names`` are the people the caller already knows are in the text; each (case-insensitive,
+    whole word, longest first) becomes ``[NAME_n]``, n being its place in ``names`` so the same
+    person has the same number in every string of one call. Names typed in free text that the
+    caller did not pass are not detected, the same standard as the customer classifier today.
+    """
+    redacted = redact(text)
+    unique: dict[str, int] = {}
+    for name in names:
+        key = " ".join(name.split()).casefold()
+        if key and key not in unique:
+            unique[key] = len(unique)
+    if not unique:
+        return redacted
+    pattern = "|".join(re.escape(key) for key in sorted(unique, key=len, reverse=True))
+    return re.sub(
+        rf"(?<!\w)(?:{pattern})(?!\w)",
+        lambda match: f"[NAME_{unique[' '.join(match.group().split()).casefold()]}]",
+        redacted,
+        flags=re.IGNORECASE,
+    )
 
 
 class JevError(Exception):

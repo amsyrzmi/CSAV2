@@ -42,7 +42,9 @@ from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
+from csa.decide.deciders import build_deciders
 from csa.decide.groq import GroqClient
+from csa.decide.jev import JevClient
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
 from csa.email.service import EmailService
@@ -151,11 +153,23 @@ def create_app() -> FastAPI:
         workspace_http: httpx.AsyncClient | None = None
         training_http: httpx.AsyncClient | None = None
         calendar_http: httpx.AsyncClient | None = None
+        jev_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # One Jev client for every decider, only with a key; without one every area runs on
+            # the LLM or rule and nothing errors.
+            jev_client: JevClient | None = None
+            if settings.TYPESAFE_API_KEY is not None:
+                jev_http = httpx.AsyncClient()
+                jev_client = JevClient(settings.TYPESAFE_API_KEY.get_secret_value(), jev_http)
+            deciders = build_deciders(settings, jev_client, pool)
+            app.state.jev_client = jev_client
+            app.state.email_decider = deciders.email
+            app.state.routing_decider = deciders.routing
+            app.state.inbound_decider = deciders.inbound
             # TikTok Shop connect routes; they answer tiktok_unavailable while TikTok is off.
             # The first-sync queue and Disconnect are the real csa.marketplace functions.
             app.state.tiktok_connect = build_tiktok_connect(settings, pool)
@@ -276,6 +290,8 @@ def create_app() -> FastAPI:
                     await training_http.aclose()
                 if calendar_http is not None:
                     await calendar_http.aclose()
+                if jev_http is not None:
+                    await jev_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:

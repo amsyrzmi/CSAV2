@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     # The name the gateway gives in EHLO; the container's own hostname is not a real FQDN.
     SMTP_EHLO_HOSTNAME: str = "fourstacks.my"
     TYPESAFE_API_KEY: SecretStr | None = None
+    # Jev beside the LLM or rule for the staff assistant's quick typed decisions, per area.
+    # auto is cascade when TYPESAFE_API_KEY is set and llm otherwise; llm is the kill switch.
+    ASSISTANT_DECIDER_EMAIL: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_DECIDER_ROUTING: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_DECIDER_INBOUND_INJECTION: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_JEV_FLOOR_NOUL: float = Field(default=0.7, ge=0.0, le=1.0)
+    ASSISTANT_JEV_FLOOR_CHOICE: float = Field(default=0.7, ge=0.0, le=1.0)
+    ASSISTANT_DECIDER_AUDIT_SAMPLE: float = Field(default=0.10, ge=0.0, le=1.0)
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
     # E5-family models (e.g. intfloat/multilingual-e5-small) expect these prefixes.
@@ -268,6 +276,19 @@ class Settings(BaseSettings):
         if self.VOICE_STT_ENDPOINT is not None and self.ENV == "prod":
             if self.VOICE_STT_ENDPOINT.scheme != "https":
                 raise ValueError("VOICE_STT_ENDPOINT in prod requires HTTPS")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_assistant_deciders(self) -> Settings:
+        if self.TYPESAFE_API_KEY is not None:
+            return self
+        for name in (
+            "ASSISTANT_DECIDER_EMAIL",
+            "ASSISTANT_DECIDER_ROUTING",
+            "ASSISTANT_DECIDER_INBOUND_INJECTION",
+        ):
+            if getattr(self, name) in {"shadow", "cascade"}:
+                raise ValueError(f"{name}={getattr(self, name)} requires TYPESAFE_API_KEY")
         return self
 
     @model_validator(mode="after")
