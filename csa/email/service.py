@@ -1926,6 +1926,20 @@ class EmailService:
             raise RuntimeError("email send count returned no row")
         return row
 
+    async def remaining_sends(self, session: EmailSession) -> int:
+        """Sends left in the caller's mailbox this rolling hour, never below zero.
+
+        A mailbox that is not connected raises the compose path's ``mailbox_not_connected``
+        (and a disabled assistant its ``assistant_disabled``), so callers get one refusal.
+        """
+        async with tx(self.pool, str(session.tenant_id)) as conn:
+            await self._session(conn, session)
+            await self._require_enabled(conn, session)
+            mailbox = await self._mailbox(conn, session, connected=True)
+            recent = await self._recent_sends(conn, session, mailbox)
+            await self._session(conn, session)
+        return max(0, SEND_LIMIT_PER_HOUR - recent["sends"])
+
     async def _send_replayed(
         self, conn: AsyncConnection, session: EmailSession, mailbox: dict[str, Any], key: UUID
     ) -> SendResult:
