@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from pydantic import Field, SecretStr
 
 from csa.channels.whatsapp import WhatsAppAdapter, WhatsAppVerifyError
+from csa.console import telegram_connect as tc
 from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
 from csa.console.kb_uploads import audit
@@ -44,6 +45,17 @@ class WhatsAppNumberOut(Contract):
     connected_at: datetime | None
 
 
+class TelegramConnectIn(Contract):
+    # The token travels only in this body; the shape and the proof with Telegram are the service's.
+    bot_token: SecretStr = Field(min_length=20, max_length=200)
+    staff_chat_id: str | None = Field(default=None, min_length=1, max_length=24)
+    replace_webhook: bool = False
+
+
+class TelegramStaffChatIn(Contract):
+    chat_id: str = Field(min_length=1, max_length=24)
+
+
 async def session_only(request: Request) -> None:
     """Human console sessions only; the machine token never reaches channel settings."""
     if request.headers.get("authorization"):
@@ -61,6 +73,14 @@ def require_member(request: Request, client_id: UUID, *, write: bool) -> Console
         raise HTTPException(403, "tenant is not authorized")
     if write and actor.role != Role.TENANT_ADMIN:
         raise HTTPException(403, "a company administrator is required to change WhatsApp")
+    return actor
+
+
+def require_platform_admin(request: Request, client_id: UUID) -> ConsoleActor:
+    """Reading is for any member of the company; setting up a bot is for the platform team."""
+    actor = require_member(request, client_id, write=False)
+    if not actor.platform_admin:
+        raise HTTPException(403, "platform_admin_only")
     return actor
 
 
@@ -183,6 +203,83 @@ def build_channels_router() -> APIRouter:
                     "channels.whatsapp.disconnected",
                     str(row["credential_id"]),
                 )
+        return Response(status_code=204)
+
+    @router.get("/telegram", response_model=tc.TelegramStatus)
+    async def telegram_status(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> tc.TelegramStatus:
+        require_member(request, client_id, write=False)
+        return await tc.get_status(request.app.state.pool, client_id)
+
+    @router.put("/telegram", response_model=tc.TelegramStatus)
+    async def telegram_connect(
+        request: Request, payload: TelegramConnectIn, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> tc.TelegramStatus:
+        actor = require_platform_admin(request, client_id)
+        pool = request.app.state.pool
+        http = getattr(request.app.state, "telegram_http", None)
+        try:
+            status = await tc.connect(
+                pool,
+                actor,
+                client_id,
+                payload.bot_token.get_secret_value(),
+                replace_webhook=payload.replace_webhook,
+                http_client=http,
+            )
+            if payload.staff_chat_id is not None:
+                status = await tc.set_staff_chat(
+                    pool, actor, client_id, payload.staff_chat_id, http_client=http
+                )
+        except tc.TelegramConnectError as exc:
+            raise HTTPException(exc.status, exc.code) from None
+        return status
+
+    @router.put("/telegram/staff-chat", response_model=tc.TelegramStatus)
+    async def telegram_staff_chat(
+        request: Request, payload: TelegramStaffChatIn, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> tc.TelegramStatus:
+        actor = require_platform_admin(request, client_id)
+        try:
+            return await tc.set_staff_chat(
+                request.app.state.pool,
+                actor,
+                client_id,
+                payload.chat_id,
+                http_client=getattr(request.app.state, "telegram_http", None),
+            )
+        except tc.TelegramConnectError as exc:
+            raise HTTPException(exc.status, exc.code) from None
+
+    @router.post("/telegram/check", response_model=tc.TelegramCheck)
+    async def telegram_check(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> tc.TelegramCheck:
+        require_platform_admin(request, client_id)
+        try:
+            return await tc.check(
+                request.app.state.pool,
+                client_id,
+                http_client=getattr(request.app.state, "telegram_http", None),
+            )
+        except tc.TelegramConnectError as exc:
+            raise HTTPException(exc.status, exc.code) from None
+
+    @router.delete("/telegram", status_code=204)
+    async def telegram_disconnect(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> Response:
+        actor = require_platform_admin(request, client_id)
+        try:
+            await tc.disconnect(
+                request.app.state.pool,
+                actor,
+                client_id,
+                http_client=getattr(request.app.state, "telegram_http", None),
+            )
+        except tc.TelegramConnectError as exc:
+            raise HTTPException(exc.status, exc.code) from None
         return Response(status_code=204)
 
     return router

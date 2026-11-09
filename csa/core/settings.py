@@ -145,6 +145,9 @@ class Settings(BaseSettings):
     WHATSAPP_GRAPH_BASE_URL: HttpUrl = HttpUrl("https://graph.facebook.com/v21.0")
     # Public origin Meta calls for /channels/whatsapp when it differs from the console's.
     WHATSAPP_CALLBACK_BASE_URL: HttpUrl | None = None
+    # Public hooks origin Telegram is told to call (`/hooks/<id>`); falls back to the WhatsApp one.
+    # Never PUBLIC_BASE_URL: that is the console origin and does not forward /hooks/*.
+    HOOKS_PUBLIC_BASE_URL: HttpUrl | None = None
 
     PUBLIC_BASE_URL: HttpUrl
 
@@ -414,6 +417,12 @@ class Settings(BaseSettings):
     def whatsapp_enabled(self) -> bool:
         """True when the WhatsApp ingress secrets are configured."""
         return self.WHATSAPP_APP_SECRET is not None and self.WHATSAPP_VERIFY_TOKEN is not None
+
+    @property
+    def hooks_origin(self) -> str | None:
+        """The public origin that forwards /hooks/* to the gateway, or None when not configured."""
+        origin = self.HOOKS_PUBLIC_BASE_URL or self.WHATSAPP_CALLBACK_BASE_URL
+        return None if origin is None else str(origin).rstrip("/")
 
     @field_validator("TIKTOK_APP_KEY", "TIKTOK_APP_SECRET", "TIKTOK_SERVICE_ID", mode="before")
     @classmethod

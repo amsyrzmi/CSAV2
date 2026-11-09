@@ -72,6 +72,51 @@ class _TelegramBooleanResponse(BaseModel):
     result: bool | None = None
 
 
+class TelegramBotProfile(BaseModel):
+    """Who a bot token belongs to, as Telegram's getMe reports it."""
+
+    bot_id: int
+    username: str | None
+
+
+class TelegramWebhookInfo(BaseModel):
+    """The webhook Telegram holds for a bot; an empty url means none."""
+
+    url: str
+    pending_update_count: int
+    last_error_message: str | None
+
+
+class _TelegramMe(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    is_bot: bool
+    username: str | None = None
+
+
+class _TelegramMeResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool
+    result: _TelegramMe | None = None
+
+
+class _TelegramWebhookInfoResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = ""
+    pending_update_count: int = 0
+    last_error_message: str | None = None
+
+
+class _TelegramWebhookInfoResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool
+    result: _TelegramWebhookInfoResult | None = None
+
+
 class TelegramDeliveryReceipt(BaseModel):
     """The non-secret receipt persisted by the delivery worker."""
 
@@ -147,6 +192,71 @@ class TelegramAdapter:
             raise TelegramPollingError("telegram_invalid_response") from exc
         if not body.ok or body.result is not True:
             raise TelegramPollingError("telegram_api_rejected")
+
+    @staticmethod
+    async def get_me(
+        bot_token: str,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> TelegramBotProfile:
+        """Prove the token is a live bot's and return its id and username."""
+        response = await _telegram_api_post(bot_token, "getMe", {}, http_client=http_client)
+        try:
+            body = _TelegramMeResponse.model_validate(response)
+        except ValidationError:
+            raise TelegramPollingError("telegram_invalid_response") from None
+        if not body.ok or body.result is None or not body.result.is_bot:
+            raise TelegramPollingError("telegram_api_rejected")
+        return TelegramBotProfile(bot_id=body.result.id, username=body.result.username)
+
+    @staticmethod
+    async def set_webhook(
+        bot_token: str,
+        *,
+        url: str,
+        secret_token: str,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        """Point the bot at `url`; Telegram sends `secret_token` back on every update."""
+        response = await _telegram_api_post(
+            bot_token,
+            "setWebhook",
+            {
+                "url": url,
+                "secret_token": secret_token,
+                "allowed_updates": ["message", "callback_query"],
+                "drop_pending_updates": False,
+            },
+            http_client=http_client,
+        )
+        try:
+            body = _TelegramBooleanResponse.model_validate(response)
+        except ValidationError:
+            raise TelegramPollingError("telegram_invalid_response") from None
+        if not body.ok or body.result is not True:
+            raise TelegramPollingError("telegram_api_rejected")
+
+    @staticmethod
+    async def get_webhook_info(
+        bot_token: str,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> TelegramWebhookInfo:
+        """The webhook Telegram holds for this bot, with its pending count and last error."""
+        response = await _telegram_api_post(
+            bot_token, "getWebhookInfo", {}, http_client=http_client
+        )
+        try:
+            body = _TelegramWebhookInfoResponse.model_validate(response)
+        except ValidationError:
+            raise TelegramPollingError("telegram_invalid_response") from None
+        if not body.ok or body.result is None:
+            raise TelegramPollingError("telegram_api_rejected")
+        return TelegramWebhookInfo(
+            url=body.result.url,
+            pending_update_count=body.result.pending_update_count,
+            last_error_message=body.result.last_error_message,
+        )
 
     @staticmethod
     async def get_updates(

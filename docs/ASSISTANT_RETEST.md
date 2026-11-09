@@ -177,6 +177,18 @@ The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) t
 | Ask for a Meet link again | An online booking whose details say "No Meet link yet." | "Try again" makes the link (the page says "Meet link added.") or says "Google didn't make a link this time. Try again later." and stays open. No email and no chat message goes out for a link added later | manual |
 | A link you typed is kept | An online meeting booked with a pasted link | No Meet link is made and the pasted link stays on the booking and in everyone's calendar event | manual |
 
+## Telegram bot (platform team)
+
+| Step | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Connect a company's bot | A platform admin on Services for one company with Customer support active; a real test bot from BotFather; the staging hooks address set | Pasting the token and pressing Connect says the bot is connected with `@username`; the token field is empty afterwards; messaging the bot on Telegram creates a conversation in that company's Inbox | manual |
+| Set the staff chat | The bot added to a staff group; the group's ID | "Send test message" posts a message in the group and the panel says the staff chat is set. A made-up ID is refused with a sentence, not a code, and changes nothing | manual |
+| An escalation reaches the staff chat | A customer asks the bot for something that escalates | The staff group gets the alert with its buttons; tapping a button works | manual |
+| Replace the token | In BotFather, make a new token for the same bot | "Replace token" with the new token succeeds; the old token no longer works; messages still arrive | manual |
+| One bot, one company | Connect the same bot to a second company | Refused: the bot is already connected to another company. The message does not name that company | manual |
+| Disconnect | The panel's "Disconnect bot" | After the confirm the bot is silent: customers get no reply and the Inbox gets nothing; staff alerts stop; the same bot can now be connected to another company | manual |
+| A company member sees no token field | A tenant admin of the same company | The panel shows the status and "Ask the platform team to change this"; no form | manual |
+
 ## Bookings in the assistant
 
 The dock finds free times and books, moves or cancels through a card (nothing changes until Confirm),

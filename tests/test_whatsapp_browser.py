@@ -179,6 +179,16 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = [make_service("customer_support", "Customer Support", "base", "active")]
         elif path == "channels/whatsapp" and request.method == "GET":
             data = state["number"]
+        elif path == "channels/telegram" and request.method == "GET":
+            data = {
+                "connected": False,
+                "bot_id": None,
+                "bot_username": None,
+                "webhook_registered": False,
+                "connected_at": None,
+                "staff_chat": None,
+                "hooks_ready": True,
+            }
         elif path == "channels/whatsapp" and request.method == "PUT":
             body = request.post_data_json
             puts.append({"csrf": request.headers.get("x-csrf-token"), "body": body})

@@ -32,6 +32,57 @@ export const connectWhatsAppNumber = (tenantId: string | null, body: WhatsAppNum
 export const disconnectWhatsAppNumber = (tenantId: string | null) =>
   del(path(tenantId));
 
+export interface TelegramStaffChat {
+  address: string;
+  verified: boolean;
+}
+export interface TelegramStatus {
+  connected: boolean;
+  bot_id: string | null;
+  bot_username: string | null;
+  webhook_registered: boolean;
+  connected_at: string | null;
+  staff_chat: TelegramStaffChat | null;
+  hooks_ready: boolean;
+}
+export interface TelegramCheck {
+  webhook_url_matches: boolean;
+  pending_update_count: number;
+  last_error: string | null;
+}
+export interface TelegramConnectInput {
+  bot_token: string;
+  staff_chat_id?: string;
+  replace_webhook?: boolean;
+}
+
+function telegramPath(tenantId: string | null, suffix = "") {
+  const query = tenantId ? `?client_id=${encodeURIComponent(tenantId)}` : "";
+  return `/console/v1/channels/telegram${suffix}${query}`;
+}
+
+export const getTelegram = (tenantId: string | null) =>
+  api<TelegramStatus>(telegramPath(tenantId));
+/**
+ * The bot token travels only in this request body; the server never returns it. Telegram
+ * accepts the token before anything is stored. Only a platform admin can call this.
+ */
+export const connectTelegram = (tenantId: string | null, input: TelegramConnectInput) => {
+  const body: TelegramConnectInput = { bot_token: input.bot_token };
+  if (input.staff_chat_id) body.staff_chat_id = input.staff_chat_id;
+  if (input.replace_webhook) body.replace_webhook = true;
+  return api<TelegramStatus>(telegramPath(tenantId), { method: "PUT", body: JSON.stringify(body) });
+};
+/** The bot sends a test message to the chat first; only a delivered message saves it. */
+export const setTelegramStaffChat = (tenantId: string | null, chatId: string) =>
+  api<TelegramStatus>(telegramPath(tenantId, "/staff-chat"), {
+    method: "PUT", body: JSON.stringify({ chat_id: chatId }),
+  });
+export const checkTelegram = (tenantId: string | null) =>
+  api<TelegramCheck>(telegramPath(tenantId, "/check"), { method: "POST" });
+export const disconnectTelegram = (tenantId: string | null) =>
+  del(telegramPath(tenantId));
+
 /** Delivery fields the inbox carries for each message. */
 export interface DeliveryState {
   delivery_status: string | null;

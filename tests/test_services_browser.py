@@ -349,6 +349,20 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 }
             else:
                 status, data = 403, {"detail": "package_inactive"}
+        elif path == "channels/telegram" and request.method == "GET":
+            # The Services Telegram card; gated on Customer Support like the WhatsApp one.
+            if {"key": "customer_support", "status": "active"} in upstream.packages:
+                data = {
+                    "connected": False,
+                    "bot_id": None,
+                    "bot_username": None,
+                    "webhook_registered": False,
+                    "connected_at": None,
+                    "staff_chat": None,
+                    "hooks_ready": True,
+                }
+            else:
+                status, data = 403, {"detail": "package_inactive"}
         else:
             unexpected.append(f"{request.method} {path}?{query}")
             status, data = 500, {"detail": "unexpected synthetic call"}
