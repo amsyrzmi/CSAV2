@@ -1574,8 +1574,20 @@ class EmailService:
                 Receipt(operation="draft.delete", resource_id=str(draft_id), status="deleted"),
             )
 
-    async def export_draft(self, session: EmailSession, draft_id: UUID, key: UUID) -> DraftOut:
-        """Create the draft inside the user's own Gmail drafts folder. Nothing is sent."""
+    async def export_draft(
+        self,
+        session: EmailSession,
+        draft_id: UUID,
+        key: UUID,
+        *,
+        expected_version: str | None = None,
+    ) -> DraftOut:
+        """Create the draft inside the user's own Gmail drafts folder. Nothing is sent.
+
+        ``expected_version`` is the ``draft_version`` an export card read. It is compared after
+        the replay (and after an earlier export, which answers as a replay) and before Gmail is
+        called; an edit since refuses with ``draft_changed``. The export route passes none.
+        """
         self._require_write(session)
         fingerprint = _fingerprint("draft.export", {"id": str(draft_id)})
         async with tx(self.pool, str(session.tenant_id)) as conn:
@@ -1592,6 +1604,10 @@ class EmailService:
                 out = await self._draft_out(conn, session, mailbox, current)
                 await self._session(conn, session)
                 return out
+            if expected_version is not None and current["status"] == "draft":
+                reviewed = await self._draft_out(conn, session, mailbox, current)
+                if draft_version(reviewed) != expected_version:
+                    raise EmailPolicyError("draft_changed")
             await self._session(conn, session)
         if current["status"] != "draft":
             raise self._locked(current["status"])

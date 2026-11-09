@@ -49,12 +49,15 @@ CLIENT = uuid4()
 NAME, ADDRESS, SUBJECT = "Ada Synthetic", "ada@example.test", "Quarterly figures"
 
 
-# The refusal each fake raises at execute when its record moved since the card, as the real
-# executor does (an inbox decision instead answers ``already_handled``, as decide_approval does).
+# The refusal each real executor's execute raises, after its key replay, when the record moved
+# since the card: every step kind checks its version in the owning service (send_draft and
+# export_draft against the draft version, decide_approval against the conversation's
+# inbox_version, the booking, HR and training services against their own versions).
 DRIFT_REFUSAL = {
     "email_send": "draft_changed",
-    "email_export": "draft_already_sent",
+    "email_export": "draft_changed",
     "booking_action": "proposal_stale",
+    "inbox_decision": "proposal_stale",
     "training_submit": "stale_version",
     "hr_person": "proposal_stale",
 }
@@ -143,8 +146,6 @@ class FakeChild:
         if n in self.execute_error:
             raise self.execute_error[n]
         if self.current.get(n, f"v{n}") != expected_version:
-            if self.kind == "inbox_decision":
-                return {"outcome": "already_handled", "status": "approved", "queued": False}
             raise ProposalActionRefused(409, {"detail": DRIFT_REFUSAL[self.kind]})
         self.acts.append(proposal_id)
         receipt = {"n": n, "effect": len(self.acts)}
@@ -435,7 +436,7 @@ async def test_a_drifted_step_is_skipped_not_failed() -> None:
     )
     executor = PlanExecutor(children)
     _, version = await _card(executor, payload)
-    children["inbox_decision"].current[1] = "v-decided-by-a-colleague"  # already_handled
+    children["inbox_decision"].current[1] = "v-customer-wrote-again"  # proposal_stale
     children["email_send"].current[2] = "v-edited"  # draft_changed
     children["booking_action"].current[3] = "v-moved"  # proposal_stale
     receipt = await executor.execute(
@@ -463,7 +464,6 @@ async def test_a_drifted_step_is_skipped_not_failed() -> None:
 DRIFT = (
     "draft_changed",
     "draft_already_sent",
-    "draft_already_sending",
     "draft_already_exported",
     "proposal_stale",
     "slot_taken",
@@ -485,6 +485,31 @@ async def test_each_drift_refusal_is_changed(code: str) -> None:
         ("skipped", "changed"),
         ("done", None),
     ]
+
+
+async def test_draft_already_sending_is_failed_not_changed() -> None:
+    """Under the step's own key it means this plan's earlier attempt is still sending, or died
+    mid-send (the mail may have gone out); under another key, another send holds the draft.
+    Neither is "changed since you reviewed it"."""
+    children = _children()
+    sending = ProposalActionRefused(409, {"detail": "draft_already_sending"})
+    children["email_send"].execute_error[0] = sending
+    payload = _payload(_step("email_send", 0), _step("booking_action", 1))
+    receipt = await _execute(PlanExecutor(children), payload, uuid4())
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("failed", "draft_already_sending"),
+        ("done", None),
+    ]
+    # Every step answering it raises that refusal (one identical refusal), not proposal_stale.
+    children = _children()
+    children["email_send"].execute_error = {0: sending, 1: sending}
+    with pytest.raises(ProposalActionRefused) as same:
+        await _execute(
+            PlanExecutor(children),
+            _payload(_step("email_send", 0), _step("email_send", 1)),
+            uuid4(),
+        )
+    assert same.value.detail == "draft_already_sending"
 
 
 async def test_a_real_refusal_is_failed_with_its_code_not_changed() -> None:
@@ -523,6 +548,10 @@ async def test_an_inbox_reply_that_expired_or_vanished_is_failed() -> None:
     _, version = await _card(executor, payload)
     for n, outcome in ((0, "expired"), (1, "not_found")):
         children["inbox_decision"].receipts[step_id(plan_id, n)] = {"outcome": outcome}
+    # A colleague decided the held reply with no version move: decide_approval answers it.
+    payload["steps"].append(_step("inbox_decision", 2))
+    _, version = await _card(executor, payload)
+    children["inbox_decision"].receipts[step_id(plan_id, 2)] = {"outcome": "already_handled"}
     receipt = await executor.execute(
         _request(),
         _actor(),
@@ -535,6 +564,7 @@ async def test_an_inbox_reply_that_expired_or_vanished_is_failed() -> None:
     assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
         ("failed", "reply_approval_expired"),
         ("failed", "reply_approval_not_found"),
+        ("skipped", "changed"),
     ]
 
 

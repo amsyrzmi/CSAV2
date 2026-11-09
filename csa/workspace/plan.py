@@ -67,8 +67,9 @@ DRIFT_CODES: frozenset[str] = frozenset(
         "draft_changed",
         # email_send, email_export: the draft was sent under another key.
         "draft_already_sent",
-        # email_send, email_export: another send of the draft holds its claim.
-        "draft_already_sending",
+        # draft_already_sending is NOT here: under the step's own key it means this plan's
+        # earlier attempt is still sending or died mid-send (the mail may have gone out), so
+        # it is failed with its code, never "changed since you reviewed it".
         # email_send, email_export: the draft was saved to Gmail drafts meanwhile.
         "draft_already_exported",
         # booking_action: the booking changed, the rules now need acknowledging, or other
@@ -82,7 +83,14 @@ DRIFT_CODES: frozenset[str] = frozenset(
 )
 """The child refusals at execute that mean the record moved since the card: the step is
 ``skipped`` as ``changed``. Any other refusal (a disconnected mailbox, a package switched
-off, the send limit, ``send_outcome_unknown``) is ``failed`` with its code."""
+off, the send limit, ``draft_already_sending``, ``send_outcome_unknown``) is ``failed`` with
+its code.
+
+Every step kind's execute compares the stored version in its owning service, after its key
+replay: ``send_draft`` and ``export_draft`` (``draft_changed``), ``decide_approval``
+(``proposal_stale`` on the conversation's ``inbox_version``), and the booking, HR and
+training services. The plan card cannot do it for them: its version is the hash of the
+stored versions, so the registry's own check at confirm always passes."""
 
 _INBOX_NOT_APPLIED: dict[str, str | None] = {
     "already_handled": None,  # a colleague decided the held reply: changed
@@ -326,7 +334,8 @@ class PlanExecutor:
         if gate_refusal is not None:
             return _failed(gate_refusal)
         # No child card here: after a lease retake, a step the dead run finished has a card
-        # that refuses (the draft is sent), while its execute replays the receipt by key.
+        # that refuses (the draft is sent), while its execute replays the receipt by key. The
+        # drift check is the child's: each service compares expected_version after its replay.
         try:
             receipt = await self._children[step.kind].execute(
                 request,

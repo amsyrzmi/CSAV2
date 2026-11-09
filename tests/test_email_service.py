@@ -31,7 +31,14 @@ from csa.email import gmail as gmail_module
 from csa.email import service as email_service
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
-from csa.email.models import DraftOut, DraftProposal, ThreadAnalysis, draft_version
+from csa.email.models import (
+    DraftOut,
+    DraftProposal,
+    EmailPolicyError,
+    EmailSession,
+    ThreadAnalysis,
+    draft_version,
+)
 from csa.email.service import EmailService
 from fastapi import FastAPI
 from psycopg import sql
@@ -1074,6 +1081,47 @@ async def test_stale_version_is_409(world: World, monkeypatch: pytest.MonkeyPatc
     assert refused.status_code == 409 and refused.json()["detail"] == "draft_changed"
     assert world.gmail.sends == []
     assert (await _send(world, edited.json())).status_code == 200
+
+
+async def test_export_checks_the_draft_version_after_its_replay(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan's export step passes the version its card read (the plan card binds only the
+    stored versions): an edit since then refuses with draft_changed and nothing reaches Gmail.
+    A key that already exported replays; the export route passes no version, as before."""
+    await _enable_and_connect(world, monkeypatch)
+    draft = await _draft(world, await _insert_draft(world, to=["boss@example.test"]))
+    stale = _version(draft)
+    edited = await world.call(
+        "staff",
+        "PUT",
+        f"{DRAFTS}/{draft['id']}",
+        {"to": ["boss@example.test"], "cc": ["ops@example.test"], "subject": "Stock", "body": "x"},
+    )
+    assert edited.status_code == 200, edited.text
+    service: EmailService = world.app.state.email_service
+    session = EmailSession(
+        session_id=world.sessions["staff"],
+        subject_id=world.users["staff"],
+        tenant_id=world.tenant,
+        role="tenant_staff",
+        token_hash=SecretStr(digest(world.tokens["staff"])),
+        csrf_hash=SecretStr(digest(world.csrf["staff"])),
+    )
+    draft_id = UUID(draft["id"])
+    with pytest.raises(EmailPolicyError) as changed:
+        await service.export_draft(session, draft_id, uuid4(), expected_version=stale)
+    assert changed.value.code == "draft_changed"
+    assert await _status(world, draft_id) == "draft"
+    assert not any(m == "POST" and p.endswith("/drafts") for m, p, _ in world.gmail.requests)
+    world.gmail.expected_thread_id, world.gmail.expected_to = None, "boss@example.test"
+    key = uuid4()
+    current = _version(edited.json())
+    exported = await service.export_draft(session, draft_id, key, expected_version=current)
+    assert exported.status == "exported"
+    replayed = await service.export_draft(session, draft_id, key, expected_version=stale)
+    assert replayed.status == "exported"
+    assert sum(1 for m, p, _ in world.gmail.requests if m == "POST" and p.endswith("/drafts")) == 1
 
 
 async def test_recipient_lists_are_capped_at_twenty_after_dedupe(

@@ -15,6 +15,7 @@ import httpx
 import psycopg
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
+from csa.console.inbox import decide_approval
 from csa.core import crypto
 from csa.core.tenancy import tx
 from csa.decide.groq import GroqClient
@@ -1297,6 +1298,103 @@ async def test_inbox_decision_after_conversation_moved_is_stale(proposals_app) -
         w, browser, "inbox_decision", _decision(approval, conversation_id, version)
     )
     assert mismatch.status_code == 409 and mismatch.json()["detail"] == "proposal_stale"
+
+
+async def _inbox_version(w: SessionWorld, conversation_id: str) -> int:
+    rows = await w.q("SELECT inbox_version FROM conversations WHERE id=%s", conversation_id)
+    return rows[0]["inbox_version"]
+
+
+async def test_decide_approval_checks_the_conversation_version_after_its_replay(
+    proposals_app,
+) -> None:
+    """The service itself compares inbox_version, so a plan step (whose plan card binds only the
+    stored versions) never approves a held reply after the customer wrote again. A key that
+    already decided replays though the version moved; no expected version is the Inbox route."""
+    w, _ = proposals_app
+    approval, conversation_id, version = await _held_approval(w)
+    actor, _ = await _member_actor(w)
+    client_id = UUID(w.tenants[0])
+
+    async def decide(key: UUID, expected: str | None, target: int = approval) -> Any:
+        async with tx(w.app.state.pool, w.tenants[0]) as conn:
+            return await decide_approval(
+                conn, client_id, actor, target, "approve", None, key, expected_version=expected
+            )
+
+    await w.q("UPDATE conversations SET inbox_version=inbox_version+1 WHERE id=%s", conversation_id)
+    with pytest.raises(ProposalError) as stale:
+        await decide(uuid4(), str(version))
+    assert stale.value.status_code == 409 and stale.value.detail == "proposal_stale"
+    assert await w.q("SELECT status FROM approvals WHERE id=%s", approval) == [
+        {"status": "pending"}
+    ]
+    key = uuid4()
+    done = await decide(key, str(await _inbox_version(w, conversation_id)))
+    assert done.outcome == "applied"
+    await w.q("UPDATE conversations SET inbox_version=inbox_version+1 WHERE id=%s", conversation_id)
+    assert await decide(key, str(version)) == done  # replayed by key, not refused
+    decided = await w.q(
+        "SELECT count(*) n FROM console_audit WHERE action='inbox.reply_decided' AND target_id=%s",
+        str(approval),
+    )
+    assert decided[0]["n"] == 1
+    # The Inbox route passes no version: a moved conversation still decides, as before.
+    env, other_conversation = await seed(w)
+    other = await held(w, env)
+    await w.q(
+        "UPDATE conversations SET inbox_version=inbox_version+1 WHERE id=%s", other_conversation
+    )
+    assert (await decide(uuid4(), None, other)).outcome == "applied"
+
+
+async def test_a_plan_inbox_step_whose_conversation_moved_is_changed_and_not_approved(
+    proposals_app,
+) -> None:
+    """The real inbox executor inside a plan: the plan card's version is the stored hash, so the
+    registry's check at confirm cannot see the move; the step's own service check does."""
+    w, _ = proposals_app
+    moved, moved_conversation, moved_version = await _held_approval(w)
+    env, kept_conversation = await seed(w)
+    kept = await held(w, env)
+    kept_version = await _inbox_version(w, kept_conversation)
+    actor, _ = await _member_actor(w)
+    client_id = UUID(w.tenants[0])
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": [], "app": w.app})
+    plan = w.app.state.proposal_registry._executors["plan"]
+    payload = {
+        "steps": [
+            {
+                "kind": "inbox_decision",
+                "payload": _decision(moved, moved_conversation, moved_version),
+                "version": str(moved_version),
+            },
+            {
+                "kind": "inbox_decision",
+                "payload": _decision(kept, kept_conversation, kept_version),
+                "version": str(kept_version),
+            },
+        ]
+    }
+    _, version = await plan.card(request, actor, client_id, payload, origin="assistant")
+    await w.q(
+        "UPDATE conversations SET inbox_version=inbox_version+1 WHERE id=%s", moved_conversation
+    )
+    receipt = await plan.execute(
+        request,
+        actor,
+        client_id,
+        payload,
+        proposal_id=uuid4(),
+        expected_version=version,
+        origin="assistant",
+    )
+    assert [(s["status"], s.get("code")) for s in receipt["steps"]] == [
+        ("skipped", "changed"),
+        ("done", None),
+    ]
+    assert await w.q("SELECT status FROM approvals WHERE id=%s", moved) == [{"status": "pending"}]
+    assert await w.q("SELECT status FROM approvals WHERE id=%s", kept) == [{"status": "approved"}]
 
 
 async def test_inbox_decision_for_an_unknown_approval_has_a_stable_code(proposals_app) -> None:
