@@ -6,12 +6,13 @@
     {
       "say": "Can I speak to a human please?",
       "cassette": {
-        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false}
+        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
+        "ComposeOut": {"reply": "I've passed this to a team member who will get back to you shortly."}
       },
       "expect": {
         "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
         "outbound_count": 1, "reply_contains": ["team member"],
-        "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"],
+        "llm_not_called": ["PlanOut", "ReviewOut"],
         "escalations": 1, "human_muted": true, "ticket_statuses": ["open"]
       }
     },

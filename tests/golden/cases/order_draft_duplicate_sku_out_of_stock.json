@@ -11,7 +11,7 @@
       "Classification": {"intent": "order", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.95}},
       "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "create_draft", "items": [{"sku": "A1", "qty": 2}, {"sku": "A1", "qty": 2}]}}], "reply_strategy": "auto_reply"},
       "StepOut": {"done": true},
-      "ComposeOut": {"reply": "Some items don't have enough stock for that quantity."},
+      "ComposeOut": {"reply": "Some items don't have enough stock for that quantity, so I've passed this to a team member who will get back to you shortly."},
       "ReviewOut": {"ok": true}
     },
     "expect": {

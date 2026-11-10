@@ -78,7 +78,11 @@ def test_agent_failure_lowers_confidence_and_triggers_partial_result_review() ->
     assert _decide(policy, _state(failed=True))[0] == "approve"
     review = {"always_review_if": ["partial_result"]}
     assert _decide(review, _state(failed=True)) == ("approve", "always_review:partial_result")
-    assert _decide({"always_review_if": ["requires_human"]}, _state(handoff=True))[0] == "approve"
+    # A required handoff is a system reply now (owner decision a): the flag no longer holds it.
+    assert _decide({"always_review_if": ["requires_human"]}, _state(handoff=True)) == (
+        "send",
+        "system_reply",
+    )
 
 
 def _web(state: TurnState) -> TurnState:
@@ -103,7 +107,7 @@ def test_the_sandbox_still_follows_review_rules() -> None:
         assert _decide(threshold, _web(_state(confidence=0.6)))[0] == "approve"
         assert _decide(threshold, _web(_state(confidence=0.7)))[0] == "send"
         flagged = {"deployment_mode": mode, "always_review_if": ["requires_human"]}
-        assert _decide(flagged, _web(_state(handoff=True)))[0] == "approve"
+        assert _decide(flagged, _web(_state(handoff=True))) == ("send", "system_reply")
         unverified = _web(_state()).model_copy(update={"verified": False})
         assert _decide({"deployment_mode": mode}, unverified) == (
             "approve",
@@ -153,11 +157,31 @@ def test_shadow_mode_still_holds_the_handoff_for_a_switched_off_service() -> Non
     assert _decide({"deployment_mode": "shadow"}, state) == ("reject", "shadow_mode")
 
 
-def test_other_handoffs_still_wait_in_suggest_mode() -> None:
-    assert _decide({"deployment_mode": "suggest"}, _state(handoff=True)) == (
-        "approve",
-        "suggest_mode",
-    )
+@pytest.mark.parametrize(
+    "reason", ["human_requested", "angry_customer", "agent_failure", "plan_escalated", "r"]
+)
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"deployment_mode": "suggest"},
+        {"auto_send": {"default": False}},
+        {"never_auto": ["product_info"]},
+        {"always_review_if": ["requires_human"]},
+        {"auto_send": {"by_intent": {"product_info": 0.99}}},
+    ],
+)
+def test_gate_sends_every_required_handoff_even_in_suggest_mode(policy: dict, reason: str) -> None:
+    state = _state().model_copy(update={"handoff": Handoff(required=True, reason=reason)})
+    assert _decide(policy, state) == ("send", "system_reply")
+    # A handoff that is not required (switched off for the company) follows the usual rules.
+    off = _state().model_copy(update={"handoff": Handoff(required=False, reason=f"{reason}:x")})
+    assert _decide({"deployment_mode": "suggest"}, off) == ("approve", "suggest_mode")
+
+
+def test_gate_still_rejects_handoff_in_shadow_mode() -> None:
+    for reason in ("human_requested", "angry_customer", "plan_escalated"):
+        state = _state().model_copy(update={"handoff": Handoff(required=True, reason=reason)})
+        assert _decide({"deployment_mode": "shadow"}, state) == ("reject", "shadow_mode")
 
 
 def test_has_attachment_review_is_a_per_client_policy_choice() -> None:

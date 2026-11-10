@@ -1,7 +1,7 @@
 {
   "id": "semantic_fail_safe",
   "matrix": "Safety: semantic checking rejects both drafts",
-  "description": "Two unsupported drafts result in one persisted safe reply and escalation.",
+  "description": "Two unsupported drafts result in one persisted holding reply (it promises no person) and a fail-safe escalation record.",
   "turns": [{
     "say": "where is my order",
     "cassette": {
@@ -12,7 +12,7 @@
     },
     "expect": {
       "route": "plan_args", "agents": [], "outbound_count": 1,
-      "reply_contains": ["team member"], "reply_excludes": ["has shipped"],
+      "reply_contains": ["something went wrong on our side"], "reply_excludes": ["has shipped", "team member"],
       "llm_calls": {"ComposeOut": 2, "ReviewOut": 2}, "escalations": 1
     }
   }]

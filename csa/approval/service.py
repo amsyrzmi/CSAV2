@@ -23,10 +23,10 @@ from csa.core.tenancy import tx
 from csa.decide.grounding import ungrounded
 from csa.notify.notifier import notify
 from csa.staff.ownership import automation_allowed, lock_conversation, replies_off
+from csa.turn.texts import followup_text, resolve_language
 
 logger = structlog.get_logger(__name__)
 
-FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 _PREVIEW_CHARS = 800
 
 MAX_EDIT_CHARS = 2000
@@ -272,7 +272,13 @@ async def _settle(
             raise ValueError("edited_text_required")
         text = edited_text
     else:
-        text = approval["draft"] if send_draft else FALLBACK_TEXT
+        # Staff really are following up here. The contact's stored locale, else the draft's.
+        # contacts.locale defaults to 'en', so a stored 'en' is treated as unknown.
+        locale = approval.get("locale") or ""
+        language = resolve_language(
+            None, locale if locale not in ("", "en") else "", approval["draft"]
+        )
+        text = approval["draft"] if send_draft else followup_text(language)
     decided = await db.q.fetch_one(
         "approval/decide_approval.sql",
         (outcome, actor, text, client_id, approval["id"]),

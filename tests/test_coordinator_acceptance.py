@@ -379,7 +379,7 @@ class ScriptedModel:
         if schema is ReviewOut:
             return ReviewOut(ok=True)
         if schema is ComposeOut:
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             return ComposeOut(
                 reply=" ".join(f["text"] for f in facts), used_fact_ids=[f["id"] for f in facts]
             )
@@ -722,7 +722,7 @@ class ContextualModel:
         if schema is ReviewOut:
             return ReviewOut(ok=True)
         if schema is ComposeOut:
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             if not facts:
                 return ComposeOut(reply="Which service and time do you mean?")
             return ComposeOut(
@@ -839,7 +839,8 @@ async def test_a_company_without_bookings_is_planned_exactly_as_before(shop: Sho
     model = ContextualModel()
     deps, state, _ = await message_in_chat(shop, contact, chat, model, "What's free on Tuesday?")
     (prompt,) = model.plan_prompts
-    assert "recent_messages" not in prompt and '"booking":' not in prompt
+    # Every company's planner now sees the earlier messages, but none of the booking context.
+    assert "an earlier message" in prompt and '"booking":' not in prompt
     assert json.loads(prompt.split("\n")[0])["context"].keys() == {
         "summary",
         "has_active_orders",
@@ -874,7 +875,7 @@ class ComposingModel(ScriptedModel):
         if schema is ComposeOut:
             self.composed += 1
             self.systems.append(system)
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             reply = self.write([f["text"] for f in facts])
             return ComposeOut(reply=reply, used_fact_ids=[f["id"] for f in facts])
         if schema is ReviewOut and self.review is not None:
@@ -1122,11 +1123,32 @@ def truthful_reply(facts: list[str]) -> str:
 async def test_a_booking_is_told_when_the_primary_is_down_and_only_the_backup_composes(
     shop: Shop,
 ) -> None:
-    """The outage the backup composer exists for: the review, which always uses the primary, is
-    down too. The customer must still hear about the booking, and no escalation opens."""
+    """The outage the backup composer exists for: the primary can neither compose nor review. The
+    review falls back to the second client like every other call, so the backup's own reply,
+    reviewed by the backup, reaches the customer, and no escalation opens."""
     kind = await a_type(shop)
     primary = ComposingModel(haircut(kind), down, review=review_down)
     backup = ComposingModel(haircut(kind), truthful_reply)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=primary, fallback=backup)
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed"
+    assert deps.fallbacks == [], deps.fallbacks
+    reply = deps.emitted[0].body
+    assert reply == truthful_reply(facts_of(state)) and reply.startswith("Your haircut is booked.")
+    assert SLOT_TEXT in reply
+    assert state.verified is True
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_as_the_facts_say_it_when_the_backup_cannot_review_either(
+    shop: Shop,
+) -> None:
+    """The primary is down and the backup composes but cannot review: no client can review the
+    draft, so the customer hears the booking as the facts say it, and no escalation opens."""
+    kind = await a_type(shop)
+    primary = ComposingModel(haircut(kind), down, review=review_down)
+    backup = ComposingModel(haircut(kind), truthful_reply, review=review_down)
     deps, state, _ = await booking_turn(shop, haircut(kind), model=primary, fallback=backup)
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"

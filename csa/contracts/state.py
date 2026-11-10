@@ -14,6 +14,9 @@ from csa.contracts.plan import Intent, Plan, Task
 
 RECENT_MESSAGES = 6
 RECENT_CHARS = 300
+# What every customer conversation carries (Context.recent): more messages, each clipped shorter.
+RECENT_WINDOW = 20
+RECENT_TEXT_CHARS = 200
 
 
 class BookingType(ContractModel):
@@ -66,6 +69,9 @@ class Context(ContractModel):
     clarify_count: int = Field(default=0, ge=0)
     flags: dict[str, bool] = Field(default_factory=dict)
     booking: BookingContext | None = None
+    # The last messages of this conversation, oldest first, before the one being answered. Redacted
+    # text, which the customer controls, so untrusted like the message itself.
+    recent: list[RecentMessage] = Field(default_factory=list, max_length=RECENT_WINDOW)
 
 
 class GuardResult(ContractModel):
@@ -93,6 +99,9 @@ class Draft(ContractModel):
     language: str = Field(min_length=2, max_length=16)
     fact_ids: list[str] = Field(default_factory=list, max_length=100)
     composer: Literal["primary", "fallback", "template"] | None = None
+    # The reply that tells the customer a person has been told: it is checked where it is written
+    # (`_compose`), and `emit` delivers it while the conversation is muted for that person.
+    handoff: bool = False
 
 
 class Verification(ContractModel):

@@ -1,7 +1,7 @@
 {
   "id": "semantic_timeout",
   "matrix": "Resilience: semantic checker timeout",
-  "description": "Checker failure is not treated as success: fail-safe persists a reply and escalation.",
+  "description": "A checker failure degrades to the deterministic grounding check for the turn (design G5): the grounded draft is sent, with no fail-safe and no escalation.",
   "turns": [{
     "say": "where is my order",
     "cassette": {
@@ -11,9 +11,9 @@
       "ReviewOut": {"error": "groq_timeout"}
     },
     "expect": {
-      "route": "plan_args", "agents": [], "outbound_count": 1,
-      "reply_contains": ["team member"],
-      "llm_calls": {"ComposeOut": 1, "ReviewOut": 1}, "escalations": 1
+      "route": "plan_args", "agents": [], "gate": "send", "outbound_count": 1,
+      "reply_contains": ["No active orders were found for you."], "reply_excludes": ["team member"],
+      "llm_calls": {"ComposeOut": 1, "ReviewOut": 1}, "escalations": 0
     }
   }]
 }

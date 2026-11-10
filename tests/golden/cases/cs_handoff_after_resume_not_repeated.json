@@ -1,0 +1,60 @@
+{
+  "id": "cs_handoff_after_resume_not_repeated",
+  "matrix": "Customer service: a handoff after staff resumed the AI is not repeated word for word",
+  "description": "Synthetic Plan Kecil tenant. A person is asked for and the handoff is sent on its own authority; staff resume the AI and the next answer is told a team member already knows; a second request for a person sends a new handoff that does not repeat the first one.",
+  "seed": {
+    "knowledge": [
+      {"title": "Plan Kecil data plans", "content": "Data plans: Plan Kecil RM15 a month with 5GB. Plan Sederhana RM35 a month with 20GB. Plan Besar RM50 a month with unlimited data."}
+    ]
+  },
+  "turns": [
+    {
+      "say": "Can I talk to a person please?",
+      "cassette": {
+        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
+        "ComposeOut": {"reply": "Sure, I've let our team know and someone will reply in this chat."}
+      },
+      "expect": {
+        "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["I've let our team know"],
+        "llm_not_called": ["PlanOut", "ReviewOut"],
+        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "handoff_sent": true, "human_muted": true, "escalations": 1
+      }
+    },
+    {
+      "say": "How much is Plan Sederhana?",
+      "resume_ai": true,
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "Data plans: Plan Kecil RM15 a month with 5GB. Plan Sederhana RM35 a month with 20GB. Plan Besar RM50 a month with unlimited data.", "threshold": 0.8}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Plan Sederhana is RM35 a month with 20GB."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+        "reply_contains": ["RM35"],
+        "compose_sees": ["A team member has already been told", "I've let our team know and someone will reply in this chat."],
+        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "handoff_sent": false, "human_muted": false, "escalations": 0
+      }
+    },
+    {
+      "say": "I still want to talk to a person",
+      "cassette": {
+        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
+        "ComposeOut": {"reply": "Of course, the team already has your chat and will answer here."}
+      },
+      "expect": {
+        "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["the team already has your chat"],
+        "reply_excludes": ["Sure, I've let our team know and someone will reply in this chat."],
+        "compose_sees": ["A team member was already told earlier", "I've let our team know and someone will reply in this chat."],
+        "llm_not_called": ["PlanOut", "ReviewOut"],
+        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "handoff_sent": true, "human_muted": true, "escalations": 1
+      }
+    }
+  ]
+}

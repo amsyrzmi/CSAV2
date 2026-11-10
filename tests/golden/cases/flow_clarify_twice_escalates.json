@@ -22,12 +22,13 @@
       "say": "still unclear",
       "cassette": {
         "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
-        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"}
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "ComposeOut": {"reply": "I've passed this to a team member who will get back to you shortly."}
       },
       "expect": {
         "route": "clarify", "agents": ["escalation_agent"], "gate": "send",
         "outbound_count": 1, "reply_contains": ["team member"],
-        "llm_not_called": ["ComposeOut", "ReviewOut"],
+        "llm_not_called": ["ReviewOut"],
         "escalations": 1
       }
     }

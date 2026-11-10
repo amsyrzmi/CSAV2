@@ -1,0 +1,48 @@
+{
+  "brand": {"brand_name": "Plan Kecil", "brand_tone": null, "persona_name": "Aina"},
+  "facts": [
+    "Plan Kecil data plans: Plan Kecil RM15 a month with 5GB, Plan Sederhana RM35 a month with 20GB, Plan Besar RM50 a month with unlimited data.",
+    "Any plan can be changed once a month at no charge from the account page on example.test.",
+    "Plan Kecil sells SIM cards: each of the three data plans is a SIM card plan, and the SIM card is the plan. There are no other products.",
+    "Customers sign up for a plan on the sign-up page on example.test."
+  ],
+  "conversations": [
+    {
+      "id": "ms-plans",
+      "language": "ms",
+      "messages": [
+        "hi, nak tanya plan data apa yang ada?",
+        "boleh cerita satu-satu?",
+        "ok yang lagi satu?",
+        "yang last tu?",
+        "saya selalu travel, tengok youtube banyak",
+        "boleh tukar plan nanti x?",
+        "ok terima kasih"
+      ]
+    },
+    {
+      "id": "ms-owner-style",
+      "language": "ms",
+      "messages": [
+        "korg ada jual apa",
+        "ada simkad apa eh",
+        "mana yang saya patut ambik eh",
+        "saya cam tak pastila",
+        "korg jual produk apa lagi?",
+        "nak bayar cenne eh"
+      ]
+    },
+    {
+      "id": "en-plans",
+      "language": "en",
+      "messages": [
+        "hi, what data plans do you have?",
+        "can you go through them one by one?",
+        "and the next one?",
+        "I travel a lot and watch a lot of YouTube",
+        "can I change plans later?",
+        "thanks!"
+      ]
+    }
+  ]
+}

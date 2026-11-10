@@ -46,8 +46,10 @@ logger = structlog.get_logger(__name__)
 _NODE_TIMEOUTS = {
     "load_ctx": 2.0,
     "guard": 3.0,
-    "signals": 8.0,
-    "plan_args": 8.0,
+    # Room for a full primary attempt plus a full second-client attempt. signals: cascade mode
+    # runs Jev (2 s) first, then classify 5 s + 5 s = 12 s. plan_args: plan 7 s + 7 s = 14 s.
+    "signals": 13.0,
+    "plan_args": 15.0,
     "compose": 10.0,
     "spoke": 20.0,
     "observe": 6.0,

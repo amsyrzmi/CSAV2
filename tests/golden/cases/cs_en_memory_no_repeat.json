@@ -1,0 +1,53 @@
+{
+  "id": "cs_en_memory_no_repeat",
+  "matrix": "Customer service: English conversation memory without repeating the plan list",
+  "description": "Synthetic Plan Kecil tenant, English twin of cs_ms_memory_no_repeat: the second compose sees the first reply and the first message, and the second reply builds on them instead of listing the plans again.",
+  "seed": {
+    "knowledge": [
+      {"title": "Plan Kecil data plans", "content": "Data plans: Plan Kecil RM15 a month with 5GB. Plan Sederhana RM35 a month with 20GB. Plan Besar RM50 a month with unlimited data."}
+    ]
+  },
+  "turns": [
+    {
+      "say": "What data plans do you have?",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "Data plans: Plan Kecil RM15 a month with 5GB. Plan Sederhana RM35 a month with 20GB. Plan Besar RM50 a month with unlimited data.", "threshold": 0.8}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "We have three plans: Plan Kecil RM15 with 5GB, Plan Sederhana RM35 with 20GB and Plan Besar RM50 with unlimited data. What do you mostly use data for?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+        "reply_contains": ["Plan Kecil RM15", "Plan Besar RM50"],
+        "compose_sees": ["name at most three at a time"],
+        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "agent_errors": [], "kb_gaps": 0, "escalations": 0
+      }
+    },
+    {
+      "say": "I travel a lot and watch a lot of YouTube",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.9}},
+        "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "Data plans: Plan Kecil RM15 a month with 5GB. Plan Sederhana RM35 a month with 20GB. Plan Besar RM50 a month with unlimited data.", "threshold": 0.8}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Since you travel often and stream YouTube, Plan Besar RM50 with unlimited data fits best. Would you like to know how to sign up?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+        "reply_contains": ["Plan Besar RM50"],
+        "reply_excludes": ["We have three plans"],
+        "compose_sees": [
+          "We have three plans: Plan Kecil RM15 with 5GB, Plan Sederhana RM35 with 20GB and Plan Besar RM50 with unlimited data. What do you mostly use data for?",
+          "What data plans do you have?",
+          "<recent_messages>",
+          "Do not repeat what an earlier assistant message already said"
+        ],
+        "model_never_sees": ["Malay register"],
+        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "agent_errors": [], "kb_gaps": 0, "escalations": 0
+      }
+    }
+  ]
+}

@@ -46,12 +46,14 @@ from csa.contracts.facts import AgentResult, Fact
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.registry import CapabilityRegistry
 from csa.contracts.state import (
+    RECENT_WINDOW,
     BookingContext,
     Context,
     Draft,
     GateVerdict,
     GuardResult,
     OutboundMessage,
+    RecentMessage,
     Signals,
     TurnState,
     Verification,
@@ -59,25 +61,38 @@ from csa.contracts.state import (
 from csa.core import db
 from csa.core.pii import real_email, redact, redact_with_values
 from csa.core.tenancy import tx
-from csa.decide.completion import JsonCompletionClient
+from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.decide.jev import JevProvider
-from csa.decide.llm import ClientBrand, LLMProvider
+from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
 from csa.graph.policy.plan_rules import tiktok_stock_fallback
+from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
+from csa.turn.texts import (
+    clip_message,
+    handoff_template,
+    handoff_text_ok,
+    holding_text,
+    resolve_language,
+)
 
 logger = structlog.get_logger(__name__)
+
+# How long the handoff reply (brand read and model call) may take before the template is sent.
+# Under the 10 s compose node timeout, so a slow model never sends a handoff turn to fail_safe.
+HANDOFF_COMPOSE_BUDGET_S = 6.0
 
 # The booking read's own share of the context node's 2 s: longer and the customer is planned for
 # without it, as every other company is.
 BOOKING_CONTEXT_BUDGET_S = 1.0
+# The earlier messages and the handoff flag have their own second, for the same reason: a read
+# that overruns is left out, the turn is not failed.
+RECENT_BUDGET_S = 1.0
 # The reply of a turn that wrote a booking is composed and checked inside this, a little under the
 # graph's 10 s node limit (which would cancel it without a word): past it the facts are sent.
 BOOKING_COMPOSE_BUDGET_S = 9.0
-FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
-HANDOFF_TEXT = "I've passed this to a team member who will get back to you shortly."
 SANDBOX_SCOPE_TEXT = (
     "Sandbox assistant can only answer knowledge and product-information questions. "
     "Customer records, business actions and staff escalation are unavailable."
@@ -198,6 +213,18 @@ def build_llm_provider(
     )
 
 
+async def _handoff_recent(
+    conn: psycopg.AsyncConnection[Any], client_id: UUID, conversation_id: UUID
+) -> bool:
+    """True when a person was really asked to take this chat over in the last 24 hours."""
+    row = await db.q.fetch_one(
+        "turn/recent_handoff.sql",
+        {"client_id": client_id, "conversation_id": conversation_id},
+        conn=conn,
+    )
+    return bool(row and row["handoff_recent"])
+
+
 class PostgresTurnDependencies:
     """Implements ``CoordinatorDependencies`` against the tenant-scoped app pool."""
 
@@ -267,13 +294,69 @@ class PostgresTurnDependencies:
             )
         if row is None:
             raise RuntimeError("conversation_not_found")
+        # Side by side: each read has its own budget and never raises (both degrade to empty), so
+        # together they stay inside the node's limit, which one after the other they need not.
+        (recent, handoff_recent, memory_off), booking = await asyncio.gather(
+            self._recent_messages(envelope, conversation_id),
+            self._booking_context(envelope, conversation_id),
+        )
+        flags = {"human_muted": bool(row["human_muted"]), "handoff_recent": handoff_recent}
+        if memory_off:
+            # The reply writers and the review then see no earlier message, not even a booking
+            # context's own (`_memory_messages`); the classifier and planner keep those.
+            flags["memory_off"] = True
         return Context(
             summary=row["summary"],
             clarify_count=row["clarify_count"],
             active_order_ids=row["active_order_ids"],
-            flags={"human_muted": bool(row["human_muted"])},
-            booking=await self._booking_context(envelope, conversation_id),
+            flags=flags,
+            booking=booking,
+            recent=recent,
         )
+
+    async def _recent_messages(
+        self, envelope: Envelope, conversation_id: UUID
+    ) -> tuple[list[RecentMessage], bool, bool]:
+        """The chat's earlier messages (oldest first), whether a person was lately asked in, and
+        whether the company switched memory off.
+
+        For every company and channel, unless the company switched `conversation_memory` off, in
+        which case neither is read. Its own budget, and any failure leaves all three empty (memory
+        then counts as on, with nothing to show): this must never fail the turn.
+        """
+        try:
+            async with asyncio.timeout(RECENT_BUDGET_S):
+                policy = await self._policy(envelope.client_id)
+                if not policy.conversation_memory:
+                    return [], False, True
+                async with tx(self._pool, str(envelope.client_id)) as conn:
+                    rows = await db.q.fetch_all(
+                        "turn/recent_messages.sql",
+                        {
+                            "client_id": envelope.client_id,
+                            "conversation_id": conversation_id,
+                            "trace_id": envelope.trace_id,
+                            "limit": RECENT_WINDOW,
+                        },
+                        conn=conn,
+                    )
+                    recent = [
+                        RecentMessage(
+                            author="customer" if row["direction"] == "inbound" else "assistant",
+                            text=clip_message(row["redacted_body"].strip()),
+                        )
+                        for row in rows
+                    ]
+                    handoff = await _handoff_recent(conn, envelope.client_id, conversation_id)
+                return recent, handoff, False
+        except Exception as exc:  # including TimeoutError
+            logger.warning(
+                "turn_context_degraded",
+                category="recent_messages_failed",
+                error_type=type(exc).__name__,
+                trace_id=str(envelope.trace_id),
+            )
+            return [], False, False
 
     async def _booking_context(
         self, envelope: Envelope, conversation_id: UUID
@@ -471,11 +554,11 @@ class PostgresTurnDependencies:
                 language=state.envelope.message.language,
                 composer="template",
             )
+        if (state.handoff is not None and state.handoff.required) or (
+            state.plan is not None and state.plan.reply_strategy == "escalate"
+        ):
+            return await self._handoff_draft(state)
         language = state.envelope.message.language
-        if state.handoff is not None and state.handoff.required:
-            return Draft(text=HANDOFF_TEXT, language=language)
-        if state.plan is not None and state.plan.reply_strategy == "escalate":
-            return Draft(text=HANDOFF_TEXT, language=language)
         brand = await self._client_brand(state.envelope.client_id)
         if (
             state.envelope.callback is not None
@@ -499,6 +582,48 @@ class PostgresTurnDependencies:
         body = state.envelope.message.body_redacted.strip()
         text = f"Echo: {body}"[:4096] if body else "Echo: message received."
         return Draft(text=text, language=language)
+
+    async def _handoff_draft(self, state: TurnState) -> Draft:
+        """The reply that tells the customer a person has been told: written by the model where
+        that is safe (`_handoff_may_be_written`) and it passes the light check, else the localized
+        template. The check runs here, once; `verify` skips a handoff draft."""
+        signal = state.signals.answers.get("language") if state.signals else None
+        message = state.envelope.message
+        language = resolve_language(
+            signal if isinstance(signal, str) else None, message.language, message.body_redacted
+        )
+        if self._llm is not None and _handoff_may_be_written(state):
+            # Slow or failing, the brand read or the model must never fail the compose node: by
+            # now the conversation is muted, so a turn sent to fail_safe would tell the customer
+            # nothing. Any error (CancelledError is not an Exception) falls to the template.
+            try:
+                async with asyncio.timeout(HANDOFF_COMPOSE_BUDGET_S):
+                    brand = await self._client_brand(state.envelope.client_id)
+                    text = await self._llm.compose_handoff(state, brand)
+            except Exception as error:
+                logger.warning(
+                    "handoff_reply_replaced_by_template",
+                    trace_id=str(state.envelope.trace_id),
+                    error_type=type(error).__name__,
+                )
+                text = None
+            # Only what the assistant itself said earlier grounds a figure here. This reply is not
+            # reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed back
+            # reads as a promise; the facts are not shown to the handoff writer at all.
+            sources = [
+                m.text for m in _memory_messages(state.ctx or Context()) if m.author == "assistant"
+            ]
+            if text and handoff_text_ok(text, sources):
+                return Draft(text=text, language=language, handoff=True, composer="primary")
+            if text:
+                logger.info(
+                    "handoff_reply_replaced_by_template",
+                    trace_id=str(state.envelope.trace_id),
+                    chars=len(text),
+                )
+        return Draft(
+            text=handoff_template(language), language=language, handoff=True, composer="template"
+        )
 
     async def _keep_a_written_booking(self, state: TurnState, draft: Draft) -> Draft:
         """A turn that wrote a booking must tell the customer what was written.
@@ -535,10 +660,11 @@ class PostgresTurnDependencies:
     async def verify(self, state: TurnState) -> Verification:
         if state.draft is None:
             return Verification(ok=False, issues=["empty_draft"])
-        # Handoff text and button-tap acknowledgements are system text, not model claims.
+        # A handoff reply was checked where it was written (`_handoff_draft`); button-tap
+        # acknowledgements are system text, not model claims.
         if (
             self._llm is None
-            or state.draft.text == HANDOFF_TEXT
+            or state.draft.handoff
             or state.envelope.callback
             or (state.envelope.channel == Channel.WEB and state.draft.text == SANDBOX_SCOPE_TEXT)
         ):
@@ -551,7 +677,17 @@ class PostgresTurnDependencies:
         if not booking_write_facts(state):
             if not (await self._policy(state.envelope.client_id)).semantic_verify:
                 return grounded
-            return await self._llm.review(state)
+            try:
+                return await self._llm.review(state)
+            # Advisory: the deterministic check has already passed. Only a provider that cannot
+            # answer degrades it; any other error is a fault and fails the turn as one.
+            except (CompletionError, TimeoutError) as exc:
+                logger.warning(
+                    "semantic_review_degraded",
+                    error_type=type(exc).__name__,
+                    trace_id=str(state.envelope.trace_id),
+                )
+                return grounded
         if state.regen_count >= 1:
             # A booking turn's retry was already reviewed when it was composed (`_passes`), or it
             # is the facts. A second, different answer from the model must not overturn it.
@@ -646,8 +782,14 @@ class PostgresTurnDependencies:
             raise RuntimeError("hold_draft_missing")
         envelope = state.envelope
         async with tx(self._pool, str(envelope.client_id)) as conn:
+            # A held handoff reply is kept for staff: the escalation agent has already muted the
+            # conversation, which would otherwise drop it without a word.
             if not await automation_allowed(
-                conn, envelope.client_id, _require_conversation(envelope), envelope.trace_id
+                conn,
+                envelope.client_id,
+                _require_conversation(envelope),
+                envelope.trace_id,
+                handoff=state.draft.handoff,
             ):
                 return
             if envelope.channel == Channel.WEB:
@@ -684,14 +826,18 @@ class PostgresTurnDependencies:
 
     async def emit(self, state: TurnState) -> None:
         envelope = state.envelope
+        draft = state.draft
         async with tx(self._pool, str(envelope.client_id)) as conn:
             for message in state.outbound:
-                await _insert_outbound(
-                    conn,
-                    envelope,
-                    message,
-                    handoff=envelope.channel != Channel.WEB and message.body == HANDOFF_TEXT,
+                # The draft says it is the handoff reply; only the message that carries its text
+                # is sent on the handoff's authority (never on the web sandbox).
+                handoff = (
+                    envelope.channel != Channel.WEB
+                    and draft is not None
+                    and draft.handoff
+                    and message.body == draft.text
                 )
+                await _insert_outbound(conn, envelope, message, handoff=handoff)
 
     async def finalize(self, state: TurnState) -> None:
         conversation_id = _require_conversation(state.envelope)
@@ -732,7 +878,12 @@ class PostgresTurnDependencies:
                 "Sandbox assistant could not complete this turn. No business action or "
                 "staff escalation was performed."
                 if envelope.channel == Channel.WEB
-                else FALLBACK_TEXT
+                # Promises nothing a person will do: the escalations row below notifies no one.
+                else holding_text(
+                    resolve_language(
+                        None, envelope.message.language, envelope.message.body_redacted
+                    )
+                )
             ),
             idempotency_key=f"{envelope.trace_id}:fallback",
         )
@@ -781,6 +932,35 @@ def _resolve_order_number(task: Task, envelope: Envelope) -> Task:
     if not _PLAIN_ORDER_NUMBER.match(digits):
         return task
     return task.model_copy(update={"input": {**task.input, "order_number": digits}})
+
+
+# Routes whose handoff reply is always the template: the guard or the legal-word rule blocked the
+# message, there was no transcript, or the language is one the bot does not write.
+_TEMPLATE_HANDOFF_ROUTES = frozenset(
+    {"hard_escalate", "guard_blocked", "voice_failed", "unsupported_language"}
+)
+_WRITTEN_HANDOFF_REASONS = frozenset({"human_requested", "angry_customer", "agent_failure"})
+
+
+def _handoff_may_be_written(state: TurnState) -> bool:
+    """Whether the model may write this turn's handoff reply (plan ruling R3).
+
+    Never on a button tap, on an injection turn, on a message with a legal or police word, or for
+    a reason other than asking for a person, anger, an agent failure or an escalating plan. An
+    escalating plan is written only off the hard routes; a person asked for, or anger, also
+    reaches ``hard_escalate`` (from the classifier), and is written unless the guard or the
+    route's own rules (voice, language) blocked the message.
+    """
+    if state.envelope.callback is not None or state.handoff is None:
+        return False
+    if state.signals is not None and state.signals.answers.get("injection") is True:
+        return False
+    if has_hard_escalate_words(state.envelope.message.body_raw):
+        return False
+    reason = state.handoff.reason
+    if reason in _WRITTEN_HANDOFF_REASONS:
+        return state.route not in _TEMPLATE_HANDOFF_ROUTES - {"hard_escalate"}
+    return reason == "plan_escalated" and state.route not in _TEMPLATE_HANDOFF_ROUTES
 
 
 def _require_conversation(envelope: Envelope) -> UUID:
