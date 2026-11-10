@@ -25,8 +25,9 @@ Backend (`csa/console/kb_uploads.py`, `csa/agents/kb/`, `db/sql/kb/`):
   `POST /kb/storage/reconcile` is the manual sweep and does not touch job rows.
 - All delete routes sit behind the `enabled` dependency (409 when the knowledge agent is off) although
   the screen blames "adding".
-- `requeue_stale_ingest_jobs.sql` runs only from `claim()` and only for tenants that pass the claim
-  capability check, so with the agent off a queued job reads "Reading" forever.
+- The worker's `run_once` visits every pilot or active tenant and `claim()` requeues stale
+  `processing` jobs before it checks the capability, so a stale job is already requeued. With the
+  agent off it then sits `queued`, unclaimed, and reads "Reading" forever.
 
 Console (`CSA_WebConsole/csa-console/web/lib/knowledge-view.ts`, `components/console/knowledge/*`):
 
@@ -92,26 +93,31 @@ Data (migration 0550; read the live constraint with `pg_get_constraintdef` and a
   `partial` job whose files are all soft-deleted, and on every `queued` or `processing` job whose
   `locked_at` is older than the stale limit and whose files are all deleted.
 
-API (all under the existing KB router, same package gate, writer role, audit entry on every action):
+API (the job routes sit in `csa/console/router.py` next to `GET /kb/ingest-jobs`, with that router's
+package gate; the file and document routes stay in `csa/console/kb_uploads.py`; writer role and an
+audit entry on every action):
 
 - `POST /kb/ingest-jobs/{id}/dismiss`: sets `dismissed_at` for a finished job (`failed`, `partial`,
   `cancelled`, `done`); 409 for a running job.
 - `POST /kb/ingest-jobs/{id}/retry`: only for `failed` or `partial` jobs whose files still exist;
   re-queues from the stored bytes (no new upload), resets `attempts`, clears `error`; 409 with a
   reason code `original_removed` otherwise.
-- `POST /kb/ingest-jobs/{id}/cancel`: for `queued` or `processing`, releases the lock and sets
-  `cancelled`.
+- `POST /kb/ingest-jobs/{id}/cancel`: for `queued` jobs only (release the lock, set `cancelled`). A
+  job a worker is already reading cannot be cancelled by the Admin; it finishes, fails or is requeued
+  by the existing reaper.
 - `POST /kb/ingest-jobs/dismiss-failed`: dismisses every `failed`, `partial` and `cancelled` job of
   the tenant; returns the count.
 - `remove_file` and `delete_document` close every job that lists the file in `files[].file_id`: a job
   whose files are all deleted becomes `cancelled` and dismissed; a job with other live files keeps
   them and gets a per-file note in `meta.results`.
 - The delete routes no longer depend on the `enabled` check (they only remove); upload and retry still
-  do. `cleanup_after_remove` returns whether the sweep succeeded; a failure is reported in the
-  response (`storage_cleanup: "pending"`) and left for the existing reconcile, instead of swallowed.
-- The stale-job reaper runs from the worker's periodic job for all tenants, independent of the
-  capability check; a job that cannot run because the agent is off is left queued and shown as
-  "Paused: the knowledge assistant is switched off" rather than "Reading".
+  do. `cleanup_after_remove` returns whether the sweep succeeded; the two delete routes change from 204
+  to 200 with a small body (`{"storage_cleanup": "done" | "pending"}`), updated in the console, the
+  API doc and the OpenAPI file in the same pull request; a pending sweep is left for the existing
+  reconcile, instead of being swallowed.
+- A job left `queued` because the knowledge assistant is off is shown as "Paused: the knowledge
+  assistant is switched off" rather than "Reading", and the Admin can cancel it (the requeue of stale
+  `processing` jobs already works and stays as it is).
 
 Console:
 
@@ -152,3 +158,21 @@ the reaper.
 1. A dismissed job keeps its row for audit (approach B), not hard-deleted.
 2. Delete stays available when the knowledge assistant is switched off.
 3. The migration cleans existing stuck cards on every tenant without asking each Admin.
+
+## 9. Builder check (2026-11-10): calls made by the designer
+
+Change any of these on request; none needs the owner.
+
+- **Delete while a worker is reading the job:** `remove_file` and `delete_document` mark the job
+  `cancelled` in their transaction. The worker's finish and release only update rows still
+  `processing`, so its result is ignored, and the existing ingestion fence (`check_ingestion`, hash
+  tombstone) stops it from storing a document for a removed source. The plan adds a test for exactly
+  this race (job processing, file removed, worker finishes).
+- **Retry:** resets `created_at` and `attempts` and clears `error`, so the tombstone fence compares
+  against the new time. A job that failed because its content was deleted after it was queued is not
+  retryable (`original_removed`); the card says so and offers Remove only.
+- **"The original is still stored":** decided per file by `file_id` (live row in `kb_upload_files`).
+  A `files[]` entry with no `file_id` (path only, used by the development ingest script) is treated as
+  live for retry, checked against the object store, and is never cancelled by the migration backfill.
+- **Retry of a `partial` job** re-runs only the files whose result failed; per-file results are merged
+  into `meta.results` instead of overwritten (the plan changes the finish SQL accordingly).

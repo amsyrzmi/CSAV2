@@ -2,7 +2,7 @@
 
 Status: design for the owner's approval, 2026-11-10. Pull request 2 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`), and PR B of `2026-11-10-customer-bot-conversation-design.md`.
-Migrations 0560 to 0569 reserved, probably none needed.
+Migrations 0560 to 0569 (0560 adds the staff note column).
 
 ## 1. Intent
 
@@ -24,7 +24,12 @@ staff assistant; the customer bot never answers them.
   require a `subscription_id` UUID (`staged/models.py` `SubscriptionInput`). The turn context carries no
   subscription data, so the planner cannot fill the UUID and falls back to a clarifying question. A
   read-only loop (`coordinator.py`) means a draft request can only arrive on the next turn.
-- The plans read does not select `plans.features`. Read results go to the composer as one raw JSON fact.
+- The plans read (`subscription_plans.sql`) does not select `plans.features`. Read results go to the
+  composer as one raw JSON fact. `list` already returns the contact's subscriptions but without the
+  pending plan or `cancel_at_period_end`.
+- The chat's contact is already available server-side (`AgentContext.contact_id` from the envelope,
+  `deps.py`), and `status` and the `request_*` actions already filter on it; only the validator
+  (`models.py` `SubscriptionInput`) forces the UUID.
 - There is no planner or classifier rule for subscriptions (compare the booking rules in
   `csa/decide/llm.py`).
 - `subscriptions.contact_id` links a subscription to the customer's contact, which is exactly what the
@@ -33,7 +38,7 @@ staff assistant; the customer bot never answers them.
   `EcommerceAgent.stock_check` reads TikTok listings only as a fallback after a local search finds
   nothing (`plan_rules.py` `local_stock_first`, `tiktok_stock_fallback`); the model cannot plan it.
   Order status by TikTok order number works and shows status and tracking only.
-- Escalation (`plan_rules.py`, `routing.py`, `handoff.py`): a second clarifying question becomes an
+- Escalation (`plan_rules.py`, `routing.py`, `csa/graph/policy/handoff.py`): a second clarifying question becomes an
   escalation; any plan validation error escalates; the handoff carries no note for staff.
 
 ## 3. Goals, non-goals, anti-goals
@@ -86,8 +91,9 @@ Chosen: B.
 
 Subscriptions
 
-- New action `mine` on `SubscriptionAgent`: reads the contact's subscriptions (not cancelled, plus a
-  just-cancelled one for the current period), joined to `plans` for name, price, interval and
+- New action `mine` on `SubscriptionAgent` (a wider `list` plus the plans join): reads the contact's
+  subscriptions that are active or paused, plus one that is cancelled with `cancel_at_period_end` and a
+  `renews_at` still in the future (shown as "ends on <date>"), joined to `plans` for name, price, interval and
   `features`; returns one fact per subscription with exact figures and dates (renew date, pending plan
   and effective date, cancel-at-period-end). The contact comes from the turn context, not from the
   plan arguments. `plans` selects `features`; plan facts are one per plan, not raw JSON.
@@ -102,7 +108,8 @@ Subscriptions
 
 Products
 
-- One plannable `product_availability` read (the model may plan it, unlike `stock_check` today) that
+- One plannable `product_availability` read (the model may plan it, unlike `stock_check` today; it
+  replaces the two plan rewrites `local_stock_first` and `tiktok_stock_fallback`) that
   runs the local catalogue search and the marketplace listing read and returns separate facts, each
   naming its source. A product only on TikTok is answered from TikTok (live read, existing fence and
   rate limit); one in both shows both numbers. Only products counted as sellable are described as
@@ -113,13 +120,22 @@ Escalation ladder (`plan_rules.py`, `handoff.py`, `llm.py`)
 
 - Separate "must escalate now" (angry, wants a person, legal or police words, injection, unsupported
   language) from "could not answer". Only the second goes through the ladder.
-- Ladder: attempt 1 and 2, a clarifying question that uses the conversation memory (never repeats a
-  question already asked); then a partial answer from what is known plus one targeted question; then
-  handoff. The count persists in the existing `clarify_count`.
+- Ladder: the existing `conversations.clarify_count` becomes an "unresolved turns" counter. At 0 and 1
+  the bot asks a clarifying question that uses the conversation memory (never repeats one already
+  asked); at 2 it gives a partial answer from what is known plus one targeted question (a new
+  strategy, `partial_answer`, which increments the counter like `ask_clarifying` instead of
+  resetting it, so `finalize` in `csa/turn/deps.py` and `validate_plan` change together); at 3 it
+  hands off. Any resolved turn resets the counter. Unknown or unmatched intents (the `clarify` route)
+  enter the ladder too.
 - The handoff carries a context note for staff (one or two sentences: what the customer wanted, what
-  was answered, what is missing), stored with the escalation, shown in the inbox thread; never sent to
-  the customer. Generated by the model under the same digits-and-links grounding as the handoff text.
-- Missing facts are recorded as `kb_gaps` rows (existing table), de-duplicated per question.
+  was answered, what is missing), never sent to the customer. The model writes it in the same call as
+  the handoff text (`compose_handoff`), and the escalation row, which the `handoff` node writes before
+  compose, is updated with it afterwards. Migration 0560 adds `escalations.note`; the inbox detail
+  query joins it and the thread shows one line. The Telegram staff notification keeps carrying the
+  reason only.
+- Missing facts are recorded as `kb_gaps` rows (existing table). Because `record_gap.sql` de-duplicates
+  on a hash of the lowercased query, the gap is recorded under a short normalised topic phrase the
+  model returns with the handoff, not the customer's raw wording.
 
 Prompt and rule changes follow the PR A pattern: English rules with Malay examples (glossary and
 register unchanged), full golden run, replay conversations extended.
@@ -154,3 +170,14 @@ clarifications if the golden runs show a better fit; where the staff note appear
 
 The owner's own task for this pull request: the telco example company's knowledge base needs the facts
 for how to sign up, how to pay, which plan suits whom, and what follows a handoff.
+
+## 9. Builder check (2026-11-10): calls made by the designer
+
+- **How a subscription is tied to a chat:** staff create a subscription for an existing contact (a
+  person who has already messaged) in the console, so `subscriptions.contact_id` is already the chat's
+  contact. A person who writes from a second channel is a second contact; staff link that contact too.
+  The bot says "I can't find a subscription linked to this chat" for no match, which reveals nothing
+  about other identities. The web sandbox keeps its fixed scope text.
+- **The `SubscriptionInput` validator** is changed so `status` and the `request_*` actions work without
+  a UUID when the contact has exactly one live subscription, and still require one when it has several
+  (the bot asks which plan by name).

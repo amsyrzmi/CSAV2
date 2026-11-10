@@ -17,15 +17,17 @@ The console is the Next.js app in `CSA_WebConsole/csa-console/web`. Each page ex
 - **TikTok Shop** (per company, Admin, needs the `marketplaces` package): `/business/stores`,
   `components/console/business/StoreConnections.tsx`. Status `GET /console/v1/business/stores`;
   `POST .../stores/tiktok/connect`, callback `GET .../stores/tiktok/callback` (303 back with `?tiktok=`
-  and `?reason=`, read in `lib/tiktok-connect.ts`), `POST .../stores/{id}/disconnect`.
+  and `?reason=`, read in `lib/tiktok-connect.ts`; a platform admin returns to `/business/stores` with
+  `client_id`, a tenant Admin to `/portal/business/stores`, per `csa/console/tiktok_connect.py`), `POST .../stores/{id}/disconnect`.
 - **Google Calendar** (per member, needs `bookings`): the Bookings calendar tab
   (`bookings/GoogleCalendarPanel.tsx`) and an Admin status view on People & rooms
   (`GoogleCalendarPeople`). API wrappers `lib/bookings-api.ts`; routes under
   `/console/v1/bookings/calendar/` (status, connect, callback, disconnect). Returns with `?calendar=`
-  or `?calendar_error=`. States `not_connected`, `connected`, `needs_reconnect`.
+  or `?calendar_error=`, always to `/portal/bookings` (`BOOKINGS_PAGE` in `csa/bookings/google/api.py`). States `not_connected`, `connected`, `needs_reconnect`.
 - **Gmail** (per member): the Email page (`email/StatusBar.tsx`); `lib/email-api.ts`; routes
   `/console/v1/email/` (context, mailbox/connect, oauth/callback, mailbox/disconnect). States
-  `pending`, `connected`, `revoked`. Returns with `?notice=`.
+  `pending`, `connected`, `revoked`. Returns to `/email` or `/portal/email` (chosen by whether the
+  request carried a `client_id`) with `connected=1` or `error=<code>`.
 - Telegram and WhatsApp are set up by a platform admin on Services (`ServicesWorkspace.tsx`).
 - Settings has only audit, clients and team.
 
@@ -71,17 +73,20 @@ Chosen: B. An aggregate endpoint can be added later if the tab's three calls pro
 
 ## 5. Design
 
-- Route `app/(admin)/services/connections/page.tsx` and its portal twin, a navigation child in
-  `lib/navigation.ts` in the style of `businessPages`, visible to every member (the **You** group) and
-  with the **Your business** group enabled for Admins only. Name and position are confirmed in the plan;
-  the owner's words were "a tab".
+- A new top-level navigation entry **Connections** (a new `NavKey` in `lib/navigation.ts`, route
+  `app/(admin)/connections/page.tsx` and the portal twin `app/portal/connections/page.tsx`), not a
+  child of Services (Services is the platform admin's Telegram and WhatsApp setup). The entry is
+  visible to every member; the **Your business** group is enabled for Admins only.
 - Shared `ConnectionCard` (status dot, sentence, action, last activity) in `components/console/`, built
   from the existing UI building blocks; `StoreConnections`, `GoogleCalendarPanel` and the Gmail
   `StatusBar` connect controls become thin users of it, so their states and error sentences are not
   rewritten.
-- Callbacks: the backend redirect targets for the TikTok, Calendar and Gmail callbacks change to the
-  tab's path, keeping the query parameter names so `lib/tiktok-connect.ts` and the existing readers
-  keep working. The old page paths still work for a bookmarked return.
+- Callbacks: each of the three callbacks keeps its own mechanism and only its return page changes, to
+  the tab: a platform admin returns to `/connections?client_id=...` (TikTok only), everyone else to
+  `/portal/connections`. Query parameter names and values stay as they are today (`tiktok` and
+  `reason`; `calendar` and `calendar_error`; `connected=1` and `error=<code>` for Gmail) so the
+  existing readers keep working. The Google redirect URIs registered with Google do not change (they
+  are the callbacks, not the return pages). The old page paths still work for a bookmarked return.
 - Google presentation: one **Google** card with two rows (Calendar, Gmail), each with its own status
   and button for now. The later single connection replaces the two buttons with one; no other part of
   the tab changes.
@@ -106,3 +111,15 @@ the old pages show their one-line status.
 1. The tab holds TikTok Shop and Google only; Telegram and WhatsApp stay on Services.
 2. The old pages keep a status line and a link, not duplicate controls.
 3. The tab is visible to every member, with the business group Admin-only.
+
+## 9. Builder check (2026-11-10): calls made by the designer
+
+- **Platform admins** see only **Your business** (for the selected company) on the tab. Google
+  Calendar and Gmail are personal connections and Calendar's connect already refuses a platform admin
+  (`actor.client_id` must equal the company); the **You** group is hidden for them, not a bug to fix.
+- **Gates on cards:** TikTok needs the `marketplaces` package and an Admin; Calendar needs `bookings`
+  and a tenant Admin or staff role; Gmail needs `staff_email` and a role that is not read-only. A card
+  whose package is off shows the "Included in ..." sentence; a read-only member sees the card with the
+  button disabled and "Your role can't connect this".
+- **Old pages keep every current state**, including the Admin view of the team's Google connections on
+  People & rooms; they gain only the one-line status and the link, and lose the connect controls.
