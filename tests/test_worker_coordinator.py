@@ -26,7 +26,8 @@ from csa.contracts.state import (
 from csa.core import db
 from csa.graph.coordinator import build_runtime
 from csa.graph.saver import build_checkpoint_pool, build_saver
-from csa.turn.deps import FALLBACK_TEXT, PostgresTurnDependencies, _supported_locale
+from csa.turn.deps import PostgresTurnDependencies, _supported_locale
+from csa.turn.texts import holding_text
 from structlog.testing import capture_logs
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -355,7 +356,7 @@ async def test_forced_exception_ends_in_fail_safe_with_outbound_and_escalation(
     try:
         assert await pools[3].process_once() is True
         result = _counts(owner_dsn, client_id)
-        assert result["outbound"] == [FALLBACK_TEXT]
+        assert result["outbound"] == [holding_text("en")]
         assert result["deliveries"] == 1
         assert len(result["escalations"]) == 1
         assert result["escalations"][0] == f"fail_safe:{_code(stage)}:RuntimeError"

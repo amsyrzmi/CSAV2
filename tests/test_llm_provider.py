@@ -1203,13 +1203,24 @@ async def test_a_retry_the_compose_step_already_passed_is_not_overturned_by_a_se
     assert (await deps.verify(wrong)).ok is False  # grounding still holds
 
 
-async def test_a_review_that_cannot_run_still_fails_every_other_turn_as_it_did() -> None:
+async def test_review_error_degrades_to_grounding() -> None:
+    # Every turn other than a booking write: a review that cannot run leaves the deterministic
+    # check's answer (design section 5), as with semantic_verify off.
+    from csa.contracts.state import Verification
+
     deps = _deps_with(_review_down_else("Yes, A1 is MYR 10.50."), review=True)
     state = _booking_turn_state(
         agent="order_agent", action="status", draft="All set for 3:30 pm.", regen=0
     )
-    with pytest.raises(CompletionError):
-        await deps.verify(state)
+    with capture_logs() as events:
+        assert await deps.verify(state) == Verification(ok=True)
+    degraded = [e for e in events if e["event"] == "semantic_review_degraded"]
+    assert len(degraded) == 1 and degraded[0]["error_type"] == "GroqError"
+    assert "All set for" not in json.dumps(degraded[0], default=str)
+    wrong = _booking_turn_state(
+        agent="order_agent", action="status", draft="All set for 5:45 pm.", regen=0
+    )
+    assert (await deps.verify(wrong)).ok is False  # grounding still holds
 
 
 async def test_a_retry_whose_review_cannot_run_is_replaced_by_the_facts() -> None:
@@ -2006,3 +2017,106 @@ async def test_compose_handoff_leaves_room_for_reasoning_tokens() -> None:
     # Reasoning tokens count toward max_completion_tokens: 300 could cut the JSON short.
     _, body = await _handoff_request(None)
     assert body["max_completion_tokens"] == 600
+
+
+# --- provider failure: the second configured client (Task 6, ruling R1) ---------------------
+
+
+class _FakeClient:
+    """A JSON client that answers `answer` or raises `error`, and records each call."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        answer: dict[str, Any] | None = None,
+        error: CompletionError | None = None,
+    ) -> None:
+        self.model = model
+        self.answer = answer
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def json_completion(
+        self,
+        schema: Any,
+        *,
+        system: str,
+        user: str,
+        timeout: float,
+        max_tokens: int = 1500,
+    ) -> Any:
+        self.calls.append({"schema": schema, "system": system, "user": user, "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+        return schema.model_validate(self.answer)
+
+
+_PLAN_OUT = {
+    "tasks": [{"agent": "order_agent", "input": {"action": "status"}}],
+    "reply_strategy": "auto_reply",
+}
+
+
+async def test_classify_falls_back_to_the_second_client() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    fallback = _FakeClient("fallback-model", answer=CLASSIFY)
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    signals = await provider.classify(make_envelope("where is my order"), Context())
+    assert signals.intent == Intent.ORDER
+    assert signals.capability_scores == {"order_agent": 0.9}
+    assert len(primary.calls) == 1 and len(fallback.calls) == 1
+    # The same request, once: same prompts, same budget.
+    assert fallback.calls[0] == primary.calls[0]
+
+
+async def test_classify_without_second_client_raises() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_http_503"))
+    provider = build_llm_provider(primary)
+    with pytest.raises(GroqError) as err:
+        await provider.classify(make_envelope("where is my order"), Context())
+    assert err.value.code == "groq_http_503"
+    assert len(primary.calls) == 1
+
+
+async def test_plan_falls_back_and_logs_error_code() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_invalid_output"))
+    fallback = _FakeClient("fallback-model", answer=_PLAN_OUT)
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    with capture_logs() as events:
+        plan = await provider.plan(
+            make_envelope("status of my order please"), Context(), make_signals(Intent.ORDER)
+        )
+    assert [t.agent for t in plan.tasks] == ["order_agent"]
+    assert len(fallback.calls) == 1
+    failed = [e for e in events if e["event"] == "llm_call_failed"]
+    assert len(failed) == 1
+    assert failed[0]["schema"] == "PlanOut"
+    assert failed[0]["error_code"] == "groq_invalid_output"
+    assert failed[0]["provider"] == "primary"
+    # Never the prompt text.
+    logged = json.dumps(failed[0], default=str)
+    assert "status of my order please" not in logged
+    assert primary.calls[0]["system"] not in logged
+
+
+async def test_both_clients_failing_raises_the_second_error() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    fallback = _FakeClient("fallback-model", error=CompletionError("gemini_http_503"))
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    with pytest.raises(CompletionError) as err:
+        await provider.plan(make_envelope("status"), Context(), make_signals(Intent.ORDER))
+    assert err.value.code == "gemini_http_503"
+    with pytest.raises(CompletionError) as err:
+        await provider.classify(make_envelope("status"), Context())
+    assert err.value.code == "gemini_http_503"
+    assert len(primary.calls) == 2 and len(fallback.calls) == 2
+
+
+async def test_next_step_does_not_use_the_second_client() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    fallback = _FakeClient("fallback-model", answer={"done": True, "tasks": []})
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    with pytest.raises(GroqError):
+        await provider.next_step(TurnState(envelope=make_envelope("status")))
+    assert fallback.calls == []

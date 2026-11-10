@@ -70,7 +70,13 @@ from csa.graph.policy.plan_rules import tiktok_stock_fallback
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
-from csa.turn.texts import clip_message, handoff_template, handoff_text_ok, resolve_language
+from csa.turn.texts import (
+    clip_message,
+    handoff_template,
+    handoff_text_ok,
+    holding_text,
+    resolve_language,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -87,7 +93,6 @@ RECENT_BUDGET_S = 1.0
 # The reply of a turn that wrote a booking is composed and checked inside this, a little under the
 # graph's 10 s node limit (which would cancel it without a word): past it the facts are sent.
 BOOKING_COMPOSE_BUDGET_S = 9.0
-FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
 SANDBOX_SCOPE_TEXT = (
     "Sandbox assistant can only answer knowledge and product-information questions. "
     "Customer records, business actions and staff escalation are unavailable."
@@ -660,7 +665,15 @@ class PostgresTurnDependencies:
         if not booking_write_facts(state):
             if not (await self._policy(state.envelope.client_id)).semantic_verify:
                 return grounded
-            return await self._llm.review(state)
+            try:
+                return await self._llm.review(state)
+            except Exception as exc:  # advisory: the deterministic check has already passed
+                logger.warning(
+                    "semantic_review_degraded",
+                    error_type=type(exc).__name__,
+                    trace_id=str(state.envelope.trace_id),
+                )
+                return grounded
         if state.regen_count >= 1:
             # A booking turn's retry was already reviewed when it was composed (`_passes`), or it
             # is the facts. A second, different answer from the model must not overturn it.
@@ -851,7 +864,12 @@ class PostgresTurnDependencies:
                 "Sandbox assistant could not complete this turn. No business action or "
                 "staff escalation was performed."
                 if envelope.channel == Channel.WEB
-                else FALLBACK_TEXT
+                # Promises nothing a person will do: the escalations row below notifies no one.
+                else holding_text(
+                    resolve_language(
+                        None, envelope.message.language, envelope.message.body_redacted
+                    )
+                )
             ),
             idempotency_key=f"{envelope.trace_id}:fallback",
         )

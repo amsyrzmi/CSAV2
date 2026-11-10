@@ -417,6 +417,36 @@ async def test_rejected_reply_sends_only_the_safe_fallback(world: World, owner_p
     assert world.q("SELECT status FROM approvals WHERE id=%s", approval_id) == [("rejected",)]
 
 
+async def test_approval_fallback_is_localized(world: World, owner_pool: Any) -> None:  # noqa: F811
+    """A rejected or expired reply is replaced by the follow-up text in the contact's locale."""
+    from csa.approval.service import expire_due
+    from csa.turn.texts import followup_text
+
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE contacts SET locale='ms' WHERE id=%s", (world.contact_id,))
+    approval_id, endpoint_id, buttons = await _held_buttons(world, owner_pool)
+    assert (await _tap_reply(world, endpoint_id, buttons["Reject"])).startswith("Rejected.")
+    assert world.q("SELECT body FROM messages WHERE client_id=%s", world.client_id) == [
+        (followup_text("ms"),)
+    ]
+    assert world.q("SELECT final_text FROM approvals WHERE id=%s", approval_id) == [
+        (followup_text("ms"),)
+    ]
+
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE contacts SET locale='zh' WHERE id=%s", (world.contact_id,))
+    expiring = await _hold(world, endpoint_id)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id=%s",
+            (expiring,),
+        )
+    assert await expire_due(owner_pool, world.pool) == 1
+    assert world.q("SELECT final_text FROM approvals WHERE id=%s", expiring) == [
+        (followup_text("zh"),)
+    ]
+
+
 async def test_expired_approvals_are_settled_by_the_sweeper(world: World, owner_pool: Any) -> None:  # noqa: F811
     from csa.approval.service import expire_due
 

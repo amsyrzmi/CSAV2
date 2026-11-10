@@ -24,7 +24,7 @@ from csa.contracts.state import (
     TurnState,
     Verification,
 )
-from csa.decide.completion import CompletionError, JsonCompletionClient
+from csa.decide.completion import CompletionError, JsonCompletionClient, T
 from csa.decide.grounding import ungrounded
 from csa.turn.texts import resolve_language
 
@@ -337,6 +337,27 @@ class LLMProvider:
     def version(self) -> str:
         return f"groq:{self._client.model}"
 
+    async def _json(self, schema: type[T], *, system: str, user: str, timeout: float) -> T:
+        """One JSON call on the primary client, then once on the second client after a provider
+        error, when one is configured (plan ruling R1: the primary client already retried itself).
+        With no second client the first error is raised; when both fail, the second one."""
+        try:
+            return await self._client.json_completion(
+                schema, system=system, user=user, timeout=timeout
+            )
+        except CompletionError as error:
+            if self._compose_fallback is None:
+                raise
+            logger.warning(
+                "llm_call_failed",
+                schema=schema.__name__,
+                error_code=error.code,
+                provider="primary",
+            )
+        return await self._compose_fallback.json_completion(
+            schema, system=system, user=user, timeout=timeout
+        )
+
     @staticmethod
     def _context_block(envelope: Envelope, ctx: Context) -> dict[str, Any]:
         block: dict[str, Any] = {
@@ -369,9 +390,7 @@ class LLMProvider:
             + _recent_block(ctx)
             + f"\n<message>{envelope.message.body_redacted}</message>"
         )
-        out = await self._client.json_completion(
-            Classification, system=system, user=user, timeout=CLASSIFY_TIMEOUT_S
-        )
+        out = await self._json(Classification, system=system, user=user, timeout=CLASSIFY_TIMEOUT_S)
         scores = {
             name: max(0.0, min(1.0, score))
             for name, score in out.needs.items()
@@ -433,9 +452,7 @@ class LLMProvider:
             + _recent_block(ctx)
             + f"\n<message>{envelope.message.body_redacted}</message>"
         )
-        out = await self._client.json_completion(
-            PlanOut, system=system, user=user, timeout=PLAN_TIMEOUT_S
-        )
+        out = await self._json(PlanOut, system=system, user=user, timeout=PLAN_TIMEOUT_S)
         tasks: list[Task] = []
         for index, planned in enumerate(out.tasks):
             task = self._validated_task(index, planned)
