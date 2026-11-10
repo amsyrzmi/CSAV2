@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from email.utils import parseaddr
 from typing import Any, Literal
@@ -52,8 +52,9 @@ from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
 from csa.hr.service import HrService
-from csa.workspace import hr_people, stock
+from csa.workspace import email_batch, hr_people, stock
 from csa.workspace.contracts import (
+    MAX_STEPS,
     MAX_WORK_TTL,
     AnswerProposal,
     AnswerResult,
@@ -64,6 +65,7 @@ from csa.workspace.contracts import (
     ClarificationResult,
     DirectoryLookupProposal,
     DirectoryResult,
+    EmailBatchProposal,
     EmailComposeProposal,
     EmailReplyProposal,
     EmailTeamProposal,
@@ -78,6 +80,9 @@ from csa.workspace.contracts import (
     OrderPageHint,
     OrderReadProposal,
     OrderReadResult,
+    PlannerStep,
+    PlanProposal,
+    PlanStep,
     ProductStockReadProposal,
     ProposalResult,
     RecordRef,
@@ -96,6 +101,7 @@ from csa.workspace.contracts import (
 )
 from csa.workspace.directory import MyTeam, my_people, my_team, search_people, throttle_lookup
 from csa.workspace.executors import NEW_TRAINING_GRANTS
+from csa.workspace.plan import MAX_NON_EMAIL_STEPS, card_notes, left_out_note, plan_payload
 from csa.workspace.planner import (
     BookingFacts,
     EmployeeFact,
@@ -111,6 +117,7 @@ from csa.workspace.planner import (
     page_hint,
 )
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
+from csa.workspace.routing import Needs, route_facts
 from csa.workspace.rules import ADDRESS as _ADDRESS
 from csa.workspace.rules import (
     BLANK_QUERY,
@@ -157,8 +164,31 @@ def _split_stored(value: Any) -> tuple[WorkspaceActionResult, Language]:
     """
     stored = dict(value) if isinstance(value, dict) else value
     language: Any = stored.pop("language", "en") if isinstance(stored, dict) else "en"
+    if isinstance(stored, dict):
+        for key in RESUME_KEYS:  # see _resume_of
+            stored.pop(key, None)
     result = _RESULT.validate_json(json.dumps(stored, allow_nan=False))
     return result, language if language in ("en", "ms") else "en"
+
+
+def _resume_of(value: Any) -> int | None:
+    """Where "the rest" of a batch email's group starts, as the turn row stored it beside the
+    result (a count of group rows already offered; never an address), or None."""
+    found = value.get("resume_offset") if isinstance(value, dict) else None
+    return found if type(found) is int and found > 0 else None
+
+
+RESUME_KEYS = ("resume_offset", "resume_group", "resume_days")
+
+
+def _resume_group_of(value: Any) -> tuple[str | None, int | None]:
+    """The group (an enum) and days (renewing_soon only) the stored resume count was taken on,
+    as the turn row stored them beside it; (None, None) for a row without them."""
+    found = value if isinstance(value, dict) else {}
+    group, days = found.get("resume_group"), found.get("resume_days")
+    if group not in ("active_subscribers", "renewing_soon"):
+        return None, None
+    return group, days if type(days) is int and 1 <= days <= 365 else None
 
 
 class WorkspaceConflict(ValueError):
@@ -429,11 +459,18 @@ async def _insert_turn(
     result: WorkspaceActionResult,
     language: Language,
     stored: WorkspaceActionResult | None = None,
+    resume_offset: int | None = None,
+    resume_group: str | None = None,
+    resume_days: int | None = None,
 ) -> WorkspaceTurnOut:
     """Store the turn; ``stored`` replaces ``result`` in the row when the answer is private.
 
-    The turn's language is saved beside the result and returned with it.
+    The turn's language is saved beside the result and returned with it; a batch email with
+    more of its group to go saves ``resume_offset`` beside it too (see ``_resume_of``), with the
+    group and days it was counted on (``_resume_group_of``): an enum and a number, never who.
     """
+    found = (resume_offset, resume_group, resume_days) if resume_offset else ()
+    resume = {k: v for k, v in zip(RESUME_KEYS, found, strict=False) if v is not None}
     body = redact(turn.body)
     if not body.strip() or len(body) > 8000:
         raise ValueError("workspace text could not be safely persisted")
@@ -450,7 +487,7 @@ async def _insert_turn(
             action,
             page,
             resource_id,
-            Jsonb({**(stored or result).model_dump(mode="json"), "language": language}),
+            Jsonb({**(stored or result).model_dump(mode="json"), "language": language, **resume}),
         ),
         conn=conn,
     )
@@ -633,6 +670,15 @@ _TEXT: dict[str, dict[str, str]] = {
         "not_synced": "not synced yet",
         "variant": "variant",
         "variants": "variants",
+        # Plans and batch email (counts only, never who).
+        "plan_split": "That is more than one request can do: at most 20 steps, 10 of them "
+        "bookings, training or inbox decisions, and 20 email recipients. Split it into smaller "
+        "requests.",
+        "plan_one_batch": "I can write one batch of emails per request. Ask for the other emails "
+        "separately.",
+        "batch_nobody": "I couldn't find anyone to email.",
+        "batch_resume_unknown": "I couldn't find the earlier email to continue. Ask again for "
+        "the whole group.",
     },
     "ms": {
         "locked": "Tab {tab} memerlukan perkhidmatan {packages}, yang tidak aktif untuk "
@@ -763,6 +809,14 @@ _TEXT: dict[str, dict[str, str]] = {
         "not_synced": "belum disegerakkan",
         "variant": "varian",
         "variants": "varian",
+        "plan_split": "Itu lebih daripada yang boleh dibuat dalam satu permintaan: paling banyak "
+        "20 langkah, 10 daripadanya tempahan, latihan atau keputusan peti masuk, dan 20 penerima "
+        "e-mel. Pecahkan kepada permintaan yang lebih kecil.",
+        "plan_one_batch": "Saya boleh menulis satu kumpulan e-mel bagi setiap permintaan. Minta "
+        "e-mel yang lain secara berasingan.",
+        "batch_nobody": "Saya tidak menjumpai sesiapa untuk dihantar e-mel.",
+        "batch_resume_unknown": "Saya tidak menjumpai e-mel sebelum ini untuk diteruskan. Minta "
+        "semula untuk seluruh kumpulan.",
     },
 }
 
@@ -921,6 +975,8 @@ def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
         }
         if isinstance(result, ProposalResult):
             item["proposal_kind"] = result.proposal.kind
+            item["resume_offset"] = _resume_of(row["result"])
+            item["resume_group"], item["resume_days"] = _resume_group_of(row["result"])
         elif isinstance(result, DirectoryResult):
             offered = [person.employee_id for person in result.candidates]
             item["offered_employee_ids"] = offered
@@ -1063,6 +1119,17 @@ async def _my_employee(
     )
 
 
+def word_rule_needs(body: str) -> Needs:
+    """The word rules' answer to which fact reads this message needs (the routing fallback)."""
+    return Needs(
+        manager=bool(_MANAGER_WORDS.search(body)),
+        mail=bool(_MAIL_WORDS.search(body)),
+        team=bool(_TEAM_WORDS.search(body)),
+        training=bool(_TRAINING_WORDS.search(body)),
+        people=bool(_PEOPLE_WORDS.search(body)),
+    )
+
+
 async def planner_facts(
     request: Request,
     actor: ConsoleActor,
@@ -1088,20 +1155,27 @@ async def planner_facts(
     history = _prior_turns(rows, turn.body)
     previous = _split_stored(rows[0]["result"])[1] if rows else None
     offered = history[-1].offered_options if history else []
+    needs = await route_facts(
+        getattr(request.app.state, "routing_decider", None),
+        turn.body,
+        fallback=word_rule_needs(turn.body),
+        trace_id=turn.request_key,
+        client_id=client_id,
+    )
     manager = None
-    if _MANAGER_WORDS.search(turn.body):
+    if needs.manager:
         manager = await _my_manager(request, actor, client_id, packages)
     threads = None
-    if _MAIL_WORDS.search(turn.body):
+    if needs.mail:
         threads = await _mailbox_threads(request, actor, client_id, packages)
     team = None
-    if _TEAM_WORDS.search(turn.body):
+    if needs.team:
         team = _team_fact(await _my_team(request, actor, client_id, packages))
     employee = None
-    if _TRAINING_WORDS.search(turn.body):
+    if needs.training:
         employee = await _my_employee(request, actor, client_id, packages)
     people = None
-    if _PEOPLE_WORDS.search(turn.body):
+    if needs.people:
         people = await hr_people.people_access(request, actor, client_id, packages)
     # Whatever the words and the tab: a company with Bookings open always gives the model its
     # clock (one time-zone read), so no phrasing is wrongly told that bookings are unavailable.
@@ -1152,6 +1226,9 @@ class _Planned:
     answer: AnswerProposal | None = None
     summary: AttentionPage | None = None
     stored: WorkspaceActionResult | None = None  # the row's copy when it differs from result
+    resume_offset: int | None = None  # a batch's next group page, stored beside the result
+    resume_group: str | None = None  # the group (and days) that count was taken on
+    resume_days: int | None = None
 
 
 def _payload(proposal: TrainingSubmitProposal | InboxDecisionProposal) -> dict[str, Any]:
@@ -1382,14 +1459,24 @@ def _authored(message: str, facts: PlannerFacts) -> list[str]:
     address the planner offered as an option) is taken as a click: the user writes it in a new
     request instead.
     """
+    return _parts(message, facts)[0]
+
+
+def _parts(message: str, facts: PlannerFacts) -> tuple[list[str], list[str]]:
+    """``(authored, picked)``: the parts ``_authored`` counts, and the parts that are option
+    values the user clicked (the typed text equal to a value the latest card offered, a folded
+    answer equal to a value any earlier card offered). The question is in neither."""
     typed, first, answers = _answer_parts(message)
     latest = facts.history[-1].offered_options if facts.history else []
     offered = [value for turn in facts.history for value in turn.offered_options]
-    parts = [] if _picked(typed, latest) else [typed]
+    authored: list[str] = []
+    picked: list[str] = []
+    (picked if _picked(typed, latest) else authored).append(typed)
     if first and _sent_before(first, facts):
-        parts.append(first)
-    parts.extend(answer for answer in answers if not _picked(answer, offered))
-    return parts
+        authored.append(first)
+    for answer in answers:
+        (picked if _picked(answer, offered) else authored).append(answer)
+    return authored, picked
 
 
 def _requested_addresses(message: str, facts: PlannerFacts) -> set[str]:
@@ -1446,8 +1533,15 @@ def _check_recipients(
             raise PlannerInvalidOutput()
 
 
+def _own_text(message: str, facts: PlannerFacts) -> str:
+    """The user's own words in this message, joined: the parts ``_authored`` counts, minus any
+    part equal to a value an earlier card offered. Never the folded planner question."""
+    offered = [value for turn in facts.history for value in turn.offered_options]
+    return "\n".join(part for part in _authored(message, facts) if not _picked(part, offered))
+
+
 def _asked_to_send(
-    proposal: EmailComposeProposal | EmailReplyProposal | EmailTeamProposal,
+    proposal: EmailComposeProposal | EmailReplyProposal | EmailTeamProposal | EmailBatchProposal,
     message: str,
     facts: PlannerFacts,
 ) -> bool:
@@ -1459,9 +1553,7 @@ def _asked_to_send(
     offered does not count either, so typing an older card's "send it now" fails closed. The
     user confirms either card.
     """
-    offered = [value for turn in facts.history for value in turn.offered_options]
-    text = "\n".join(part for part in _authored(message, facts) if not _picked(part, offered))
-    return asks_to_send(text, proposal.send)
+    return asks_to_send(_own_text(message, facts), proposal.send)
 
 
 async def _draft_card(
@@ -1870,6 +1962,9 @@ async def _resolve(
                 request, actor, client_id, turn, proposal, facts, registry, _TEXT[facts.language]
             )
         )
+    if isinstance(proposal, EmailBatchProposal | PlanProposal):
+        steps = [proposal] if isinstance(proposal, EmailBatchProposal) else proposal.steps
+        return await _plan(request, actor, client_id, thread_id, turn, steps, facts, registry)
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
 
 
@@ -1916,6 +2011,461 @@ def _people_planned(resolved: hr_people.Resolved | booking_executor.Resolved) ->
         live, stored = _clarification(resolved)
         return _Planned(result=live, stored=stored)
     return _Planned(result=resolved)
+
+
+# ----------------------------------------------------------------- plans and batch email
+#
+# The planner's ``email_batch`` and ``plan`` both become one plan card (csa/workspace/plan.py).
+# The caps and the recipient rule run before anything is read or written. Each step is resolved
+# by the resolver its single action uses; a step that cannot be prepared (an ambiguous person, a
+# closed slot, a missing package) is left off and counted by reason, never named. A batch email
+# is expanded, decided and drafted by csa/workspace/email_batch.py; only the counts, the steps'
+# draft ids and a resume count for "the rest" of a group reach the card and the turn row.
+
+
+def _over_the_caps(steps: Sequence[PlannerStep]) -> str | None:
+    """The answer's text key when the steps are more than one plan may hold, else None.
+
+    One email batch at most; at most ``MAX_NON_EMAIL_STEPS`` other steps; a batch's named
+    recipients (people, addresses, customers) must fit one page of ``email_batch.MAX_LIMIT``
+    and the plan's ``MAX_STEPS`` beside the other steps, with room left for a group's members.
+    """
+    batches = [step for step in steps if isinstance(step, EmailBatchProposal)]
+    others = len(steps) - len(batches)
+    if len(batches) > 1:
+        return "plan_one_batch"
+    if others > MAX_NON_EMAIL_STEPS:
+        return "plan_split"
+    for batch in batches:
+        room = min(email_batch.MAX_LIMIT, MAX_STEPS - others)
+        named = sum(spec.kind != "group" for spec in batch.recipients)
+        if named > room or (named < len(batch.recipients) and named >= room):
+            return "plan_split"
+    return None
+
+
+# The words that let a batch email use a fixed group of customers: the planner may add a group
+# only when the user's own words name one, in English or Malay ("pelanggan" and "langganan" are
+# the Malay subscriber words). renewing_soon also takes the words of its own group (renewal, due).
+_SUBSCRIBER_WORDS = r"subscri\w*|pelanggan|langganan|melanggan"
+GROUP_WORDS: dict[str, re.Pattern[str]] = {
+    "active_subscribers": re.compile(rf"\b(?:{_SUBSCRIBER_WORDS})\b", re.IGNORECASE),
+    "renewing_soon": re.compile(
+        rf"\b(?:{_SUBSCRIBER_WORDS}|renew\w*|due|habis tempoh|pembaharuan)\b", re.IGNORECASE
+    ),
+}
+# "The rest" of a group, in English and Malay (see _resumed): "the rest of them" and "yang
+# selebihnya" match through rest and selebihnya. Never the everyday "more" or "lagi": a fresh
+# request for the same group ("send more details", "jangan hantar lagi") would skip page one.
+REST_WORDS = re.compile(r"\b(?:rest|remaining|others|selebihnya|baki|yang lain)\b", re.IGNORECASE)
+
+
+def _named_by_user(value: str, message: str, facts: PlannerFacts) -> bool:
+    """A batch recipient's name is the user's: it appears, as a whole phrase and case ignored,
+    in their own words (``_own_text``) or in an option value they clicked (``_parts``). Never
+    in the planner's folded question, which neither counts."""
+    _, picked = _parts(message, facts)
+    return any(_has_phrase(value, text) for text in (_own_text(message, facts), *picked))
+
+
+def _has_phrase(value: str, text: str) -> bool:
+    """``value`` appears in ``text`` as a whole phrase, case and spacing ignored."""
+    words = value.split()
+    if not words:
+        return False
+    phrase = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.I)
+    return bool(phrase.search(text))
+
+
+def _stored_words(message: str) -> str:
+    """A stored turn's own words: its typed text, first request and folded answers, never the
+    planner question an answer turn repeats (``_answer_parts``). Stored redacted, so an address
+    there is an ``[EMAIL_n]`` placeholder; names and group words are kept."""
+    typed, first, answers = _answer_parts(message)
+    return "\n".join([typed, first, *answers])
+
+
+_REDACTED_ADDRESS = re.compile(r"\[EMAIL_\d+\]")
+
+
+def _from_page_one(
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, chain: list[PriorTurn]
+) -> bool:
+    """Every named recipient of a resumed page is one of page one's (one of the group's pages).
+
+    On a resumed page named people only seed the dedupe set: they are never emailed or counted.
+    So one this turn's words add (a new person next to "the rest") would be dropped without a
+    word, and one nobody wrote would hide a group member: both are refused, as a new recipient
+    needs its own request. A name must be in the stored words of a turn of ``chain``
+    (``_batch_chain``: page three's latest turn is page two's "the rest", page one is further
+    back). Those messages are stored redacted, so a typed address cannot be matched there: it
+    passes only when this turn's words do not hold it and one of those turns holds at least as
+    many typed addresses.
+    """
+    stored = [_stored_words(turn.message) for turn in chain]
+    typed_now = _requested_addresses(message, facts)
+    addresses = [
+        spec.value.strip().lower() for spec in proposal.recipients if spec.kind == "address"
+    ]
+    typed_then = max((len(set(_REDACTED_ADDRESS.findall(words))) for words in stored), default=0)
+    if len(addresses) > typed_then:
+        return False
+    if any(address in typed_now for address in addresses):
+        return False
+    names = [spec.value for spec in proposal.recipients if spec.kind in ("employee", "customer")]
+    return all(any(_has_phrase(name, words) for words in stored) for name in names)
+
+
+_BATCH_ACTIONS = ("email_batch", "plan")
+
+
+def _batch_chain(facts: PlannerFacts) -> list[PriorTurn]:
+    """The latest batch or plan turn (the only one "the rest" continues), then the turns right
+    before it that are its group's earlier pages, newest first.
+
+    The walk back goes through batch/plan turns that stored their count on the same group and
+    days, and stops at the first other turn (or with no stored group: older rows). It sees only
+    the history window (``HISTORY_TURNS``): a page one beyond it is not seen, so its names
+    cannot be traced and are refused (fails closed); names are never stored to widen it.
+    """
+    history = list(facts.history)
+    index = next(
+        (i for i in reversed(range(len(history))) if history[i].action in _BATCH_ACTIONS), None
+    )
+    if index is None:
+        return []
+    latest = history[index]
+    chain = [latest]
+    if latest.resume_group is None:
+        return chain
+    counted_on = (latest.resume_group, latest.resume_days)
+    for turn in reversed(history[:index]):
+        if turn.action not in _BATCH_ACTIONS or (turn.resume_group, turn.resume_days) != counted_on:
+            break
+        chain.append(turn)
+    return chain
+
+
+def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> EmailBatchProposal:
+    """The batch with the stored resume offset when the planner forgot to copy it.
+
+    "The rest" depends on the planner writing ``offset``; a planner that writes 0 would re-run
+    page one (the named people and the first group page) under new idempotency keys. So a group
+    batch at offset 0 continues from the stored count instead, when the thread's latest batch
+    turn holds one and the user's own words ask for the rest (``REST_WORDS``): it continues,
+    never repeats. Only when every named recipient is one of page one's (``_from_page_one``);
+    otherwise it raises ``RECIPIENT_NOT_REQUESTED``. Anything else is returned unchanged.
+    """
+    if proposal.offset or not any(spec.kind == "group" for spec in proposal.recipients):
+        return proposal
+    chain = _batch_chain(facts)
+    latest = chain[0] if chain else None
+    if latest is None or latest.resume_offset is None:
+        return proposal
+    if not REST_WORDS.search(_own_text(message, facts)):
+        return proposal
+    if not _from_page_one(proposal, message, facts, chain):
+        # This turn names someone page one did not: continued, they would never be emailed;
+        # started again, page one would repeat. So the turn is refused here (M7), before any
+        # offset is put in: a new recipient needs its own request.
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    return proposal.model_copy(update={"offset": latest.resume_offset})
+
+
+def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> str | None:
+    """Refuse a recipient the user did not ask for, and return the answer's text key for an
+    ``offset`` the thread never stored (else None).
+
+    Every recipient must be traced to the user (``RECIPIENT_NOT_REQUESTED``, the M7 correction):
+    a typed address they wrote (``_check_recipients``'s rule), a name in their own words or an
+    option they clicked (``_named_by_user``), and a group only when their own words name it
+    (``GROUP_WORDS``). A resumed page's offset must be the resume count of the thread's latest
+    batch or plan turn, so a page already offered is never drafted again, and its recipients are
+    checked against that turn and its group's earlier pages (``_check_resumed``).
+    """
+    if proposal.offset:
+        chain = _batch_chain(facts)
+        if not chain or chain[0].resume_offset != proposal.offset:
+            return "batch_resume_unknown"
+        _check_resumed(proposal, message, facts, chain)
+        return None
+    allowed = _requested_addresses(message, facts)
+    own = _own_text(message, facts)
+    for spec in proposal.recipients:
+        if spec.kind == "address":
+            traced = spec.value.strip().lower() in allowed
+        elif spec.kind == "group":
+            traced = spec.group is not None and bool(GROUP_WORDS[spec.group].search(own))
+        else:
+            traced = _named_by_user(spec.value, message, facts)
+        if not traced:
+            raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    return None
+
+
+def _check_resumed(
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts, chain: list[PriorTurn]
+) -> None:
+    """A resumed page's recipients, against the user's words and the group's pages (M7).
+
+    ``chain[0]`` is the latest batch turn. When it stored the group, and days, its count was
+    taken on, the page's group must be that one (the count is a position in that group only),
+    and that is enough: the group was traced to the user's words on the page that stored it,
+    so a bare "the rest" passes on every page. A row with no stored group (older rows) needs
+    the group's words in this turn's own words or that turn's stored words. Its named
+    recipients are page one's (``_from_page_one`` over the chain).
+    """
+    latest = chain[0]
+    own, stored = _own_text(message, facts), _stored_words(latest.message)
+    groups = [spec for spec in proposal.recipients if spec.kind == "group" and spec.group]
+    if not groups:
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    for spec in groups:
+        group = spec.group or ""
+        days = spec.days if group == "renewing_soon" else None
+        if latest.resume_group is not None:
+            if (group, days) != (latest.resume_group, latest.resume_days):
+                raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+            continue  # the stored group, verified on the page that stored the count
+        if not (GROUP_WORDS[group].search(own) or GROUP_WORDS[group].search(stored)):
+            raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+    if not _from_page_one(proposal, message, facts, chain):
+        raise PlannerInvalidOutput(RECIPIENT_NOT_REQUESTED)
+
+
+@dataclass
+class _Found:
+    """A plan being resolved: its steps, the counts left out by reason, the batch's count-only
+    notes, the resume count, and the first step's own refusal (the answer when none resolved)."""
+
+    steps: list[PlanStep] = field(default_factory=list)
+    left_out: dict[str, int] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    continued: int = 0
+    resume_offset: int | None = None
+    resume_group: str | None = None
+    resume_days: int | None = None
+    refusal: AnswerProposal | ClarificationProposal | HTTPException | None = None
+
+    def count(self, counts: dict[str, int]) -> None:
+        for reason, how_many in counts.items():
+            self.left_out[reason] = self.left_out.get(reason, 0) + how_many
+
+    def refuse(
+        self,
+        reason: str,
+        refusal: AnswerProposal | ClarificationProposal | HTTPException,
+    ) -> None:
+        self.count({reason: 1})
+        self.refusal = self.refusal or refusal
+
+
+def _as_step(prepared: PreparedProposal) -> PlanStep:
+    return PlanStep(
+        kind=prepared.kind,  # type: ignore[arg-type] - the step kinds' own cards
+        payload=prepared.payload,
+        version=prepared.version,
+    )
+
+
+async def _plan_step(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    turn: WorkspaceTurnInput,
+    step: BookingActionProposal | TrainingSubmitProposal | InboxDecisionProposal,
+    facts: PlannerFacts,
+    registry: ProposalRegistry,
+    found: _Found,
+) -> None:
+    """One booking, training or inbox step, resolved and gated as its single action is."""
+    if isinstance(step, BookingActionProposal):
+        text = _TEXT[facts.language]
+        resolved = await booking_executor.resolve(
+            request, actor, client_id, turn, step, facts, registry, text
+        )
+        if isinstance(resolved, PreparedProposal):
+            found.steps.append(_as_step(resolved))
+        else:
+            asks = isinstance(resolved, ClarificationProposal)
+            found.refuse("needs_details" if asks else "unavailable", resolved)
+        return
+    try:
+        prepared = await registry.prepare(
+            request,
+            actor,
+            client_id,
+            step.action,
+            _payload(step),
+            origin="assistant",
+            language=facts.language,
+        )
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
+        found.refuse("unavailable", exc)
+        return
+    found.steps.append(_as_step(prepared))
+
+
+async def _batch_step(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
+    proposal: EmailBatchProposal,
+    facts: PlannerFacts,
+    registry: ProposalRegistry,
+    found: _Found,
+    *,
+    room: int,
+) -> None:
+    """Expand, decide and draft one email batch into ``found``; ``room`` caps its recipients.
+
+    The email package and a connected mailbox are required before anything is read, so no
+    model call is made and no draft is written without them. Recipients come only from the
+    server's expansion, as the actor in the actor's own route tenant. A send step comes only
+    from the send rule on the user's own words (``_own_text``), never the folded body.
+    """
+    service = _email_service(request)
+    await require_package(request.app.state.pool, client_id, frozenset({"staff_email"}))
+    await _require_connected(service, email_session_from(request, actor, client_id, mutation=True))
+    expanded = await email_batch.expand_recipients(
+        request,
+        actor,
+        client_id,
+        list(proposal.recipients),
+        offset=proposal.offset,
+        limit=min(email_batch.MAX_LIMIT, room),
+    )
+    if not expanded.recipients:
+        found.count(expanded.not_included)
+        return
+    own = _own_text(turn.body, facts)
+    decision = await email_batch.decide_email(
+        getattr(request.app.state, "email_decider", None),
+        email_batch.batch_state(own, proposal),
+        rule_send=_asked_to_send(proposal, turn.body, facts),
+        proposal=proposal,
+        recipients=expanded.recipients,
+        trace_id=turn.request_key,
+        client_id=client_id,
+    )
+    built = await email_batch.build_batch_steps(
+        request,
+        actor,
+        client_id,
+        thread_id,
+        turn,
+        proposal,
+        expanded,
+        registry,
+        decision,
+        authored_text=own,
+        language=facts.language,
+    )
+    found.steps.extend(built.steps)
+    if built.steps:
+        found.continued = proposal.offset  # the card says a page continues (a count only)
+    found.count(built.not_included)
+    found.notes.extend(built.notes)
+    group = next((spec for spec in proposal.recipients if spec.kind == "group"), None)
+    if group and expanded.not_included.get("over_limit", 0) and expanded.group_rows_fetched:
+        # "The rest" starts after every group row this page took (duplicates used slots too),
+        # in this group only: its kind and days are stored beside the count (_check_resumed).
+        found.resume_offset = proposal.offset + expanded.group_rows_fetched
+        found.resume_group = group.group
+        found.resume_days = group.days if group.group == "renewing_soon" else None
+
+
+async def _plan(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    thread_id: UUID,
+    turn: WorkspaceTurnInput,
+    steps: Sequence[PlannerStep],
+    facts: PlannerFacts,
+    registry: ProposalRegistry,
+) -> _Planned:
+    """One plan card for an ``email_batch`` (its steps alone) or a ``plan``.
+
+    Over the caps is a plain answer asking to split, before any read or write. When no step
+    resolves, the turn is the first step's own question or answer (or its refusal), or, for a
+    batch that found nobody, a count-only answer: never an empty plan.
+    """
+    text = _TEXT[facts.language]
+    steps = [
+        _resumed(step, turn.body, facts) if isinstance(step, EmailBatchProposal) else step
+        for step in steps
+    ]
+    stop = _over_the_caps(steps)
+    for step in steps:
+        if stop is None and isinstance(step, EmailBatchProposal):
+            stop = _check_batch(step, turn.body, facts)
+    if stop is not None:
+        return _Planned(result=AnswerResult(action="answer", markdown=text[stop]))
+    found = _Found()
+    others = sum(not isinstance(step, EmailBatchProposal) for step in steps)
+    # The other steps resolve first and the batch last, so no draft is written for a plan a
+    # later step's server error ends; the card keeps the planner's order.
+    order = sorted(range(len(steps)), key=lambda i: isinstance(steps[i], EmailBatchProposal))
+    resolved: dict[int, list[PlanStep]] = {}
+    for index in order:
+        step, before = steps[index], len(found.steps)
+        if isinstance(step, EmailBatchProposal):
+            try:
+                await _batch_step(
+                    request,
+                    actor,
+                    client_id,
+                    thread_id,
+                    turn,
+                    step,
+                    facts,
+                    registry,
+                    found,
+                    room=MAX_STEPS - others,
+                )
+            except HTTPException as exc:
+                # Beside steps that resolved, a batch that cannot be prepared (a package or role
+                # refusal, a conflict, every draft failed) is left off and counted, as a booking
+                # is; on its own it is the turn's refusal.
+                if not found.steps or (exc.status_code >= 500 and exc.status_code != 503):
+                    raise
+                found.refuse("unavailable", exc)
+        else:
+            await _plan_step(request, actor, client_id, turn, step, facts, registry, found)
+        resolved[index] = found.steps[before:]
+    found.steps = [planned for index in range(len(steps)) for planned in resolved[index]]
+    if not found.steps:
+        if isinstance(found.refusal, HTTPException):
+            raise found.refusal
+        if found.refusal is not None:
+            return _people_planned(found.refusal)
+        nobody = text["batch_nobody"] + left_out_note(found.left_out, facts.language)
+        return _Planned(result=AnswerResult(action="answer", markdown=nobody))
+    prepared = await registry.prepare(
+        request,
+        actor,
+        client_id,
+        "plan",
+        plan_payload(found.steps),
+        origin="assistant",
+        language=facts.language,
+    )
+    more = found.resume_offset is not None
+    notes = card_notes(
+        found.notes, found.left_out, more=more, continued=found.continued, language=facts.language
+    )
+    content = replace(prepared.content, summary=prepared.content.summary + notes)
+    return _Planned(
+        prepared=replace(prepared, content=content),
+        resume_offset=found.resume_offset,
+        resume_group=found.resume_group,
+        resume_days=found.resume_days,
+    )
 
 
 async def _answer(
@@ -2084,4 +2634,7 @@ async def create_planned_turn(
             result=result,
             language=facts.language,
             stored=stored,
+            resume_offset=planned.resume_offset,
+            resume_group=planned.resume_group,
+            resume_days=planned.resume_days,
         )

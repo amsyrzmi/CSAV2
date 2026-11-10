@@ -17,14 +17,16 @@ import shutil
 import socket
 import subprocess
 import threading
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
 import pytest
+import pytest_asyncio
 from csa.email.models import DraftOut, RecipientOut
 from csa.workspace.contracts import (
     CardField,
@@ -41,7 +43,8 @@ from csa.workspace.contracts import (
 )
 from playwright.async_api import Page, async_playwright, expect
 
-pytestmark = pytest.mark.asyncio
+# One `next dev` and one Chromium serve every case in this file, so they share a module loop.
+pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "CSA_WebConsole/csa-console/web"
@@ -64,6 +67,7 @@ ABANDONED_PROPOSAL = UUID("55555555-5555-4555-8555-555555555553")
 SIDEBAR_PROPOSAL = UUID("55555555-5555-4555-8555-555555555554")
 RESET_PROPOSAL = UUID("55555555-5555-4555-8555-555555555555")
 EMAIL_DRAFT = UUID("66666666-6666-4666-8666-666666666661")
+PLAN_DRAFT = UUID("66666666-6666-4666-8666-666666666662")
 PACKAGES = [
     {"key": "customer_support", "status": "active"},
     {"key": "hr", "status": "active"},
@@ -150,6 +154,8 @@ def proposal(
     fields: list[tuple[str, str]],
     status: str = "requested",
     result: dict[str, object] | None = None,
+    summary: str | None = None,
+    language: Literal["en", "ms"] = "en",
 ) -> ProposalOut:
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=10)
@@ -162,10 +168,11 @@ def proposal(
                 proposal_id=proposal_id,
                 kind=kind,
                 title=title,
-                summary=f"Synthetic {title.lower()}.",
+                summary=summary or f"Synthetic {title.lower()}.",
                 fields=[CardField(label=label, value=value) for label, value in fields],
                 expires_at=expires,
                 expected_version=None,
+                language=language,
             ),
             "result": result,
             "created_at": now,
@@ -275,7 +282,9 @@ def settled(proposal_id: str, action: str) -> ProposalOut | None:
     return None
 
 
-async def test_workspace_assistant_dock_end_to_end(tmp_path: Path) -> None:
+@contextlib.asynccontextmanager
+async def dock_stack(tmp_path: Path) -> AsyncIterator[tuple[str, Upstream, Any]]:
+    """The staged console behind a stub upstream, and one Chromium: `(base, upstream, browser)`."""
     node = shutil.which("node")
     assert node, "Node is required for browser workspace acceptance"
     assert (WEB / "node_modules/next/dist/bin/next").is_file(), (
@@ -333,7 +342,7 @@ async def test_workspace_assistant_dock_end_to_end(tmp_path: Path) -> None:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
                 try:
-                    await exercise(browser, f"http://127.0.0.1:{port}", upstream, tmp_path)
+                    yield f"http://127.0.0.1:{port}", upstream, browser
                 finally:
                     await browser.close()
         finally:
@@ -344,6 +353,21 @@ async def test_workspace_assistant_dock_end_to_end(tmp_path: Path) -> None:
                 process.kill()
                 process.wait(timeout=5)
             log.close()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def stack(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[tuple[str, Upstream, Any]]:
+    async with dock_stack(tmp_path_factory.mktemp("dock")) as shared:
+        yield shared
+
+
+async def test_workspace_assistant_dock_end_to_end(
+    stack: tuple[str, Upstream, Any], tmp_path: Path
+) -> None:
+    base, upstream, browser = stack
+    await exercise(browser, base, upstream, tmp_path)
 
 
 async def say(page: Page, text: str) -> None:
@@ -646,3 +670,478 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         with contextlib.suppress(Exception):  # Preserve the original failure if Chromium crashed.
             await context.tracing.stop(path=tmp_path / "workspace-trace.zip")
         await context.close()
+
+
+# --- Plan cards (assistant engine): one card, one confirm, a badge per step, a retry ----------
+
+
+def plan_id(number: int) -> UUID:
+    return UUID(f"77777777-7777-4777-8777-77777777777{number}")
+
+
+EN_ROWS = [
+    ("Send an email", str(EMAIL_DRAFT)),
+    ("Send an email", str(PLAN_DRAFT)),
+    ("Book, move or cancel a booking", ""),
+    ("Decide a held reply", ""),
+]
+MS_ROWS = [
+    ("Hantar e-mel", str(EMAIL_DRAFT)),
+    ("Hantar e-mel", str(PLAN_DRAFT)),
+    ("Tempah, alih atau batalkan tempahan", ""),
+    ("Putuskan balasan yang ditahan", ""),
+]
+PLAN_SUMMARY = (
+    "Each step is checked again when you select Confirm. Sending 2 emails. "
+    "Not included: 1 (1 no email address)."
+)
+STEP_KINDS = ["email_send", "email_send", "booking_action", "inbox_decision", "hr_person"]
+
+
+def plan_card(
+    number: int,
+    rows: list[tuple[str, str]],
+    *,
+    status: str = "requested",
+    outcome: Sequence[tuple[str, str | None]] | None = None,
+    language: Literal["en", "ms"] = "en",
+) -> ProposalOut:
+    """A plan card as the server sends it: step titles, draft ids, and (once run) the receipt."""
+    result: dict[str, object] | None = None
+    if outcome is not None:
+        result = {
+            "steps": [
+                {
+                    "index": index,
+                    "kind": STEP_KINDS[index],
+                    "status": step_status,
+                    **({"code": code} if code else {}),
+                    **({"receipt": {"outcome": "sent"}} if step_status == "done" else {}),
+                }
+                for index, (step_status, code) in enumerate(outcome)
+            ]
+        }
+    title = f"Confirm {len(rows)} steps" if language == "en" else f"Sahkan {len(rows)} langkah"
+    return proposal(
+        plan_id(number),
+        "plan",
+        title,
+        rows,
+        status=status,
+        result=result,
+        summary=PLAN_SUMMARY if language == "en" else None,
+        language=language,
+    )
+
+
+class PlanApi:
+    """The stubbed console for plan cases: scripted turns and decisions, every call recorded."""
+
+    def __init__(
+        self,
+        upstream: Upstream,
+        turns: dict[str, ProposalOut],
+        decisions: dict[tuple[UUID, str], list[tuple[int, Any]]],
+    ) -> None:
+        self.upstream = upstream
+        self.scripted = turns
+        self.decisions = decisions
+        self.calls: list[dict[str, Any]] = []
+        self.unexpected: list[str] = []
+        self.turns: list[dict[str, Any]] = []
+        self.turns_path = f"workspace/conversations/{THREAD}/turns"
+        self.decided = re.compile(r"workspace/proposals/([0-9a-f-]+)/(confirm|cancel|retry)")
+
+    def posts(self, suffix: str) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["method"] == "POST" and c["path"].endswith(suffix)]
+
+    def drafts_read(self) -> list[str]:
+        return [c["path"] for c in self.calls if c["path"].startswith("email/drafts/")]
+
+    async def route(self, request_route: Any) -> None:
+        request = request_route.request
+        path, _, query = request.url.split("/console/v1/")[1].partition("?")
+        body: Any = request.post_data_json if request.method == "POST" else None
+        self.calls.append(
+            {
+                "method": request.method,
+                "path": path,
+                "query": query,
+                "csrf": request.headers.get("x-csrf-token"),
+                "body": body,
+            }
+        )
+        status, data = 200, None
+        now = datetime.now(UTC)
+        decided = self.decided.fullmatch(path)
+        if path == "auth/csrf":
+            data = {"csrf_token": CSRF}
+        elif path == "services/customer-replies":
+            data = {"mode": "auto", "brand_name": "Synthetic", "can_manage": True, "warnings": []}
+        elif path in {"inbox/conversations", "inbox/approvals"}:
+            data = EMPTY_PAGE
+        elif path == "hr/context":
+            # The shell asks for the member's HR context on every page.
+            data = {
+                "employee": {"tenant_id": TENANT, "employee_id": str(ALI_B)},
+                "client_owner": False,
+                "private_areas": [],
+                "actions": ["training.read"],
+                "switches": ["own_requests"],
+                "workflows": [],
+                "hr_duties": False,
+            }
+        elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
+            data = email_draft()
+        elif path == "workspace/conversations" and request.method == "GET":
+            data = EMPTY_PAGE
+        elif path == "workspace/conversations" and request.method == "POST":
+            data = WorkspaceThreadOut(id=THREAD, sequence=1, created_at=now).model_dump(mode="json")
+        elif path == self.turns_path and request.method == "GET":
+            data = {"items": self.turns, "next_cursor": None}
+        elif path == self.turns_path and request.method == "POST" and body["body"] in self.scripted:
+            turn = WorkspaceTurnOut(
+                id=len(self.turns) + 1,
+                request_key=UUID(body["request_key"]),
+                body=body["body"],
+                result=ProposalResult(action="proposal", proposal=self.scripted[body["body"]]),
+                created_at=now,
+            )
+            data = turn.model_dump(mode="json")
+            self.turns.append(data)
+        elif (
+            decided
+            and request.method == "POST"
+            and (queue := self.decisions.get((UUID(decided[1]), decided[2])))
+        ):
+            status, answer = queue.pop(0) if len(queue) > 1 else queue[0]
+            data = answer.model_dump(mode="json") if isinstance(answer, ProposalOut) else answer
+        else:
+            self.unexpected.append(f"{request.method} {path}?{query}")
+            status, data = 404, {"detail": "unexpected synthetic call"}
+        await request_route.fulfill(status=status, json=data)
+
+
+@contextlib.asynccontextmanager
+async def plan_dock(
+    stack: tuple[str, Upstream, Any],
+    tmp_path: Path,
+    turns: dict[str, ProposalOut],
+    decisions: dict[tuple[UUID, str], list[tuple[int, Any]]],
+) -> AsyncIterator[tuple[Page, PlanApi]]:
+    """A tenant admin on the Inbox with the dock open and a scripted planner."""
+    base, upstream, browser = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    context = await browser.new_context()
+    context.set_default_navigation_timeout(WAIT)
+    await context.add_cookies([{"name": "csa_session", "value": "synthetic-session", "url": base}])
+    page = await context.new_page()
+    diagnostics: list[str] = []
+    page.on("crash", lambda: diagnostics.append("Chromium page crashed"))
+    page.on("pageerror", lambda error: diagnostics.append(str(error)))
+    page.on("console", lambda message: diagnostics.append(f"{message.type}: {message.text}"))
+    api = PlanApi(upstream, turns, decisions)
+    try:
+        await page.route("**/console/v1/**", api.route)
+        await page.goto(f"{base}/portal/inbox")
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await expect(page.get_by_test_id("assistant-panel")).to_be_visible()
+        yield page, api
+        assert not api.unexpected, api.unexpected
+        assert not upstream.unexpected, upstream.unexpected
+    except Exception as exc:
+        exc.add_note(f"Browser diagnostics: {diagnostics}")
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            await context.close()
+
+
+async def test_plan_card_shows_one_row_per_step_and_confirms_once(
+    stack: tuple[str, Upstream, Any], tmp_path: Path
+) -> None:
+    plan = plan_card(1, EN_ROWS)
+    ran = plan_card(1, EN_ROWS, status="executed", outcome=[("done", None)] * 4)
+    async with plan_dock(
+        stack, tmp_path, {"run the plan": plan}, {(plan_id(1), "confirm"): [(200, ran)]}
+    ) as (page, api):
+        await say(page, "run the plan")
+        card = page.get_by_test_id("proposal-card")
+        await expect(card).to_have_count(1, timeout=WAIT)
+        await expect(card.locator("h3")).to_have_text("Confirm 4 steps")
+        # The server's count-only notes are shown as given.
+        await expect(card).to_contain_text(PLAN_SUMMARY)
+        rows = card.get_by_test_id("plan-step")
+        await expect(rows).to_have_count(4)
+        for index, (label, _) in enumerate(EN_ROWS):
+            await expect(rows.nth(index)).to_contain_text(label)
+        # Only the email steps carry a draft; nothing is a result yet; nothing is fetched.
+        await expect(card.get_by_test_id("plan-step-email")).to_have_count(2)
+        await expect(rows.nth(2).get_by_test_id("plan-step-email")).to_have_count(0)
+        await expect(card.get_by_test_id("plan-step-status")).to_have_count(0)
+        await expect(card.get_by_test_id("plan-retry")).to_have_count(0)
+        await expect(card).not_to_contain_text("example.test")
+        await expect(card).not_to_contain_text(str(EMAIL_DRAFT))
+        assert api.drafts_read() == []
+        confirm = card.get_by_test_id("proposal-confirm")
+        await expect(confirm).to_have_text("Confirm")
+        await expect(card.get_by_test_id("proposal-cancel")).to_have_text("Cancel")
+        await confirm.click()
+        await expect(card.get_by_test_id("proposal-outcome")).to_have_text("Result: 4 done.")
+        # One confirm for the whole plan, with CSRF, and nothing per step.
+        assert [(c["path"], c["query"], c["csrf"]) for c in api.posts("/confirm")] == [
+            (f"workspace/proposals/{plan_id(1)}/confirm", f"client_id={TENANT}", CSRF)
+        ]
+        assert not api.posts("/cancel") and not api.posts("/retry")
+        await expect(confirm).to_have_count(0)
+        await expect(card.get_by_test_id("plan-retry")).to_have_count(0)
+
+
+async def test_executed_plan_shows_a_badge_per_step(
+    stack: tuple[str, Upstream, Any], tmp_path: Path
+) -> None:
+    rows = [*EN_ROWS, ("Change a person in People", "")]
+    outcome: list[tuple[str, str | None]] = [
+        ("done", None),
+        ("failed", "mailbox_not_connected"),
+        ("skipped", "changed"),
+        ("not_run", None),
+        ("failed", "weird_new_refusal"),
+    ]
+    plan = plan_card(2, rows)
+    ran = plan_card(2, rows, status="executed", outcome=outcome)
+    async with plan_dock(
+        stack, tmp_path, {"run the plan": plan}, {(plan_id(2), "confirm"): [(200, ran)]}
+    ) as (page, api):
+        await say(page, "run the plan")
+        card = page.get_by_test_id("proposal-card")
+        await expect(card.get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        await card.get_by_test_id("proposal-confirm").click()
+        steps = card.get_by_test_id("plan-step")
+        await expect(steps).to_have_count(5, timeout=WAIT)
+        for index, (badge, state) in enumerate(
+            [
+                ("Done", "done"),
+                ("Failed", "failed"),
+                ("Skipped", "skipped"),
+                ("Not run", "not_run"),
+                ("Failed", "failed"),
+            ]
+        ):
+            await expect(steps.nth(index).get_by_test_id("plan-step-status")).to_have_text(badge)
+            await expect(steps.nth(index)).to_have_attribute("data-status", state)
+        reasons = [
+            None,
+            "Connect your Gmail on the Email assistant tab first.",
+            "It changed since you reviewed it.",
+            "It was never started.",
+            "This step could not be completed.",
+        ]
+        for index, reason in enumerate(reasons):
+            shown = steps.nth(index).get_by_test_id("plan-step-reason")
+            if reason is None:
+                await expect(shown).to_have_count(0)
+            else:
+                await expect(shown).to_have_text(reason)
+        # A raw refusal code is never shown, known or not.
+        await expect(card).not_to_contain_text("weird_new_refusal")
+        await expect(card).not_to_contain_text("mailbox_not_connected")
+        await expect(card.get_by_test_id("proposal-outcome")).to_have_text(
+            "Result: 1 done, 2 failed, 1 skipped, 1 not run."
+        )
+
+
+async def test_retry_button_appears_only_for_failed_or_not_run_steps_and_opens_a_new_card(
+    stack: tuple[str, Upstream, Any], tmp_path: Path
+) -> None:
+    rows = EN_ROWS[2:]
+    all_done = plan_card(
+        3, rows, status="executed", outcome=[("done", None), ("skipped", "changed")]
+    )
+    mixed = plan_card(
+        4,
+        EN_ROWS[:3],
+        status="executed",
+        outcome=[("done", None), ("failed", "provider_unreachable"), ("not_run", None)],
+    )
+    retry_card = plan_card(5, EN_ROWS[:2])
+    cancelled = plan_card(5, EN_ROWS[:2], status="cancelled")
+    async with plan_dock(
+        stack,
+        tmp_path,
+        {"run plan a": plan_card(3, rows), "run plan b": plan_card(4, EN_ROWS[:3])},
+        {
+            (plan_id(3), "confirm"): [(200, all_done)],
+            (plan_id(4), "confirm"): [(200, mixed)],
+            (plan_id(4), "retry"): [
+                (409, {"detail": "plan_nothing_to_retry"}),
+                (201, retry_card),
+            ],
+            (plan_id(5), "cancel"): [(200, cancelled)],
+        },
+    ) as (page, api):
+        card = page.get_by_test_id("proposal-card")
+        retry = page.get_by_test_id("plan-retry")
+
+        # Every step done or changed since the card: nothing to retry.
+        await say(page, "run plan a")
+        await expect(card.nth(0).get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        await card.nth(0).get_by_test_id("proposal-confirm").click()
+        await expect(card.nth(0).get_by_test_id("proposal-outcome")).to_have_text(
+            "Result: 1 done, 1 skipped."
+        )
+        await expect(retry).to_have_count(0)
+
+        # A failed or not-run step offers Retry on that card only.
+        await say(page, "run plan b")
+        await expect(card.nth(1).get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        await card.nth(1).get_by_test_id("proposal-confirm").click()
+        await expect(retry).to_have_count(1, timeout=WAIT)
+        await expect(card.nth(1).get_by_test_id("plan-retry")).to_have_text("Retry these")
+
+        # A refusal is a sentence on the card, and Retry stays available.
+        await retry.click()
+        await expect(card.nth(1)).to_contain_text(
+            "Nothing is left to retry. The other steps were done, or have changed since you "
+            "reviewed them."
+        )
+        await expect(card).to_have_count(2)
+        await expect(retry).to_be_enabled()
+
+        # The new requested plan opens below the old card, bound to the old plan's retry route.
+        await retry.click()
+        await expect(card).to_have_count(3, timeout=WAIT)
+        fresh = card.nth(2)
+        await expect(fresh.locator("h3")).to_have_text("Confirm 2 steps")
+        await expect(fresh.get_by_test_id("proposal-confirm")).to_be_visible()
+        await expect(fresh.get_by_test_id("proposal-cancel")).to_be_visible()
+        await expect(retry).to_have_count(0)
+        assert [(c["path"], c["query"], c["csrf"]) for c in api.posts("/retry")] == [
+            (f"workspace/proposals/{plan_id(4)}/retry", f"client_id={TENANT}", CSRF)
+        ] * 2
+
+        # The dock tracks the retry card (no turn holds it), so leaving withdraws it too.
+        cancel_route = re.compile(rf"/workspace/proposals/{plan_id(5)}/cancel")
+        async with page.expect_request(cancel_route):
+            await page.get_by_role("button", name="New conversation").click()
+        await expect(card).to_have_count(0, timeout=WAIT)
+        assert [c["path"] for c in api.posts("/cancel")] == [
+            f"workspace/proposals/{plan_id(5)}/cancel"
+        ]
+
+
+async def test_email_step_opens_its_draft_through_the_existing_preview(
+    stack: tuple[str, Upstream, Any], tmp_path: Path
+) -> None:
+    rows = [EN_ROWS[0], EN_ROWS[1], EN_ROWS[3]]
+    async with plan_dock(stack, tmp_path, {"run the plan": plan_card(6, rows)}, {}) as (page, api):
+        await say(page, "run the plan")
+        card = page.get_by_test_id("proposal-card")
+        await expect(card).to_have_count(1, timeout=WAIT)
+        steps = card.get_by_test_id("plan-step")
+        await expect(steps).to_have_count(3)
+        # The plan can hold many drafts; none is read until its row is opened.
+        assert api.drafts_read() == []
+        first = steps.nth(0)
+        toggle = first.get_by_test_id("plan-step-email")
+        await expect(toggle).to_have_text("Show email")
+        await toggle.click()
+        recipients = first.get_by_test_id("plan-step-email-recipients")
+        await expect(recipients).to_contain_text("ali.bakar@example.test", timeout=WAIT)
+        await expect(first).to_contain_text("Roster update")
+        await expect(first.get_by_test_id("plan-step-email-body")).to_contain_text(
+            "The new roster starts on Monday."
+        )
+        await expect(toggle).to_have_text("Hide email")
+        await expect(toggle).to_have_attribute("aria-expanded", "true")
+        read = [c for c in api.calls if c["path"] == f"email/drafts/{EMAIL_DRAFT}"]
+        assert [(c["method"], c["query"]) for c in read] == [("GET", f"client_id={TENANT}")]
+        # Only that row opened; the other email step and the non-email step show nothing.
+        await expect(steps.nth(1).get_by_test_id("plan-step-email-recipients")).to_have_count(0)
+        assert api.drafts_read() == [f"email/drafts/{EMAIL_DRAFT}"]
+        await expect(steps.nth(2).get_by_test_id("plan-step-email")).to_have_count(0)
+        # Hiding and showing again reuses the draft already read.
+        await toggle.click()
+        await expect(recipients).to_have_count(0)
+        await toggle.click()
+        await expect(recipients).to_contain_text("ali.bakar@example.test")
+        assert api.drafts_read() == [f"email/drafts/{EMAIL_DRAFT}"]
+        # Nothing but the owner's own preview names an address.
+        await expect(steps.nth(1)).not_to_contain_text("example.test")
+        await expect(card.locator("h3")).not_to_contain_text("example.test")
+
+
+async def test_malay_plan_card_text(stack: tuple[str, Upstream, Any], tmp_path: Path) -> None:
+    rows = [*MS_ROWS]
+    outcome: list[tuple[str, str | None]] = [
+        ("done", None),
+        ("failed", "mailbox_not_connected"),
+        ("not_run", None),
+        ("failed", "weird_new_refusal"),
+    ]
+    plan = plan_card(7, rows, language="ms")
+    ran = plan_card(7, rows, status="executed", outcome=outcome, language="ms")
+    fresh = plan_card(8, MS_ROWS[:2], language="ms")
+    fresh_ran = plan_card(
+        8, MS_ROWS[:2], status="executed", outcome=[("done", None)] * 2, language="ms"
+    )
+    async with plan_dock(
+        stack,
+        tmp_path,
+        {"jalankan pelan": plan},
+        {
+            (plan_id(7), "confirm"): [(200, ran)],
+            (plan_id(7), "retry"): [(409, {"detail": "plan_nothing_to_retry"}), (201, fresh)],
+            (plan_id(8), "confirm"): [(200, fresh_ran)],
+        },
+    ) as (page, api):
+        await say(page, "jalankan pelan")
+        card = page.get_by_test_id("proposal-card")
+        await expect(card).to_have_count(1, timeout=WAIT)
+        await expect(card.locator("h3")).to_have_text("Sahkan 4 langkah")
+        await expect(card.get_by_test_id("plan-step").nth(2)).to_contain_text(
+            "Tempah, alih atau batalkan tempahan"
+        )
+        await expect(card.get_by_test_id("plan-step-email").first).to_have_text("Tunjuk e-mel")
+        await expect(card.get_by_test_id("proposal-confirm")).to_have_text("Sahkan")
+        await expect(card.get_by_test_id("proposal-cancel")).to_have_text("Batal")
+        await card.get_by_test_id("proposal-confirm").click()
+        steps = card.get_by_test_id("plan-step")
+        for index, badge in enumerate(["Selesai", "Gagal", "Tidak dijalankan", "Gagal"]):
+            await expect(steps.nth(index).get_by_test_id("plan-step-status")).to_have_text(
+                badge, timeout=WAIT
+            )
+        await expect(steps.nth(1).get_by_test_id("plan-step-reason")).to_have_text(
+            "Sambungkan Gmail anda di tab Email assistant dahulu."
+        )
+        await expect(steps.nth(2).get_by_test_id("plan-step-reason")).to_have_text(
+            "Ia tidak pernah dimulakan."
+        )
+        await expect(steps.nth(3).get_by_test_id("plan-step-reason")).to_have_text(
+            "Langkah ini tidak dapat diselesaikan."
+        )
+        await expect(card).not_to_contain_text("weird_new_refusal")
+        await expect(card.get_by_test_id("proposal-outcome")).to_have_text(
+            "Keputusan: 1 selesai, 2 gagal, 1 tidak dijalankan."
+        )
+        retry = card.get_by_test_id("plan-retry")
+        await expect(retry).to_have_text("Cuba semula ini")
+        await retry.click()
+        await expect(card).to_contain_text(
+            "Tiada lagi yang boleh dicuba semula. Langkah lain sudah selesai atau telah berubah "
+            "sejak anda menyemaknya."
+        )
+        await retry.click()
+        await expect(card).to_have_count(2, timeout=WAIT)
+        again = card.nth(1)
+        await expect(again.locator("h3")).to_have_text("Sahkan 2 langkah")
+        await expect(again.get_by_test_id("proposal-confirm")).to_have_text("Sahkan")
+        await again.get_by_test_id("proposal-confirm").click()
+        await expect(again.get_by_test_id("proposal-outcome")).to_have_text(
+            "Keputusan: 2 selesai.", timeout=WAIT
+        )
+        await expect(page.get_by_test_id("plan-retry")).to_have_count(0)
+        assert [c["path"] for c in api.posts("/confirm")] == [
+            f"workspace/proposals/{plan_id(7)}/confirm",
+            f"workspace/proposals/{plan_id(8)}/confirm",
+        ]

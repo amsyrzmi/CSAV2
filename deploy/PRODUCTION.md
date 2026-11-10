@@ -337,7 +337,9 @@ e. The host file `/srv/csa-prod/host.env`, readable by `ubuntu`. It holds what t
    database image instead of the registry default. The only other keys allowed are the
    `CSA_PROD_*` tuning keys in "Tuning without a code change" below. The six switches belong in
    `deploy/production-rollout.env` (a reviewed PR), and `CSA_PROD_GROQ_CHAT_URL` is never
-   accepted. `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
+   accepted. The optional Jev switches (`CSA_STAGING_JEV_SECRET`, `CSA_STAGING_ASSISTANT_DECIDER_*`,
+   `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT`, `CSA_STAGING_JEV_FLOOR_*`) may be added to
+   `deploy/production-rollout.env` by a reviewed PR too; none is set today. `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
 
 f. The backup script, **only after step e**: the repository's `deploy/production/backup.sh` reads
    the bucket and region from `host.env`, so if it replaced the installed copy first, the

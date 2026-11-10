@@ -30,6 +30,10 @@ Reserved ranges (client growth program, 2026-10-27):
   `console_workspace_turns_page_key_check`, reading the live list as 0531 does; 0541 adds
   `training_items` (tenant isolated, `csa_app` only) and `training_is_hr_owner()`, the
   no-argument definer check that reads `app.client_id` and `app.hr_user_id`.
+- `0542`: assistant engine. `console_proposals_kind_check` also allows `plan`,
+  `console_workspace_turns_action_check` also allows `plan` and `email_batch` (both read from the
+  live list as 0531 does), and `email_drafts.facts_used` (`jsonb`) holds the facts a drafted email
+  used, readable by the draft's owner and never on a card.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

@@ -104,6 +104,8 @@ const M3_CODES = [
   "email_timeout_check_saved_state", "hr_agent_timeout_check_saved_state", "training_not_draft",
   "stale_version", "invalid_transition", "csrf_required", "no_employee_link",
   "hr_training_not_permitted", "reply_approval_not_found", "reply approval not found",
+  "inbound_email_blocked",
+  "plan_nothing_to_retry", "plan_not_executed", "proposal_not_retryable",
 ];
 
 test("every reachable assistant error code shows a plain sentence, not the code", async () => {
@@ -115,6 +117,12 @@ test("every reachable assistant error code shows a plain sentence, not the code"
   reply = () => new Response(JSON.stringify({ detail: "no_employee_link" }), { status: 409 });
   await assert.rejects(client.confirmProposal("p1"), (e) => e.message ===
     "Your login isn't linked to an employee record, so you can't submit training requests. Ask your HR owner to link it.");
+});
+
+test("a blocked reply (422) explains why in api.ts's English sentence", async () => {
+  reply = () => new Response(JSON.stringify({ detail: "inbound_email_blocked" }), { status: 422 });
+  await assert.rejects(client.confirmProposal("p1"), (e) => e instanceof ApiError && e.code === "inbound_email_blocked" && e.message ===
+    "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.");
 });
 
 test("a non-JSON server error says something went wrong, not the status", async () => {
@@ -132,4 +140,31 @@ test("a turn always carries a tab: no context becomes the overview", () => {
   assert.deepEqual(client.turnPageContext(null), { tab: "overview" });
   const ctx = { tab: "hr", section: "training", record: { kind: "employee", id: "e1" } };
   assert.equal(client.turnPageContext(ctx), ctx);
+});
+
+test("retry posts to the retry route with CSRF and returns the new card", async () => {
+  const card = { id: "p2", kind: "plan", status: "requested", result: null };
+  reply = () => new Response(JSON.stringify(card), { status: 201 });
+  const out = await client.retryProposal("p 1");
+  assert.equal(last().url, "/console/v1/workspace/proposals/p%201/retry");
+  assert.equal(last().method, "POST");
+  assert.equal(last().headers.get("X-CSRF-Token"), "tok");
+  assert.equal(last().body, undefined);
+  assert.deepEqual(out, card);
+  await client.retryProposal("p1", undefined, "tenant /one");
+  assert.equal(last().url, "/console/v1/workspace/proposals/p1/retry?client_id=tenant+%2Fone");
+});
+
+test("the retry refusals flow through ApiError.code with a plain sentence", async () => {
+  const sentences = {
+    plan_nothing_to_retry: "Nothing is left to retry. The other steps were done, or have changed since you reviewed them.",
+    plan_not_executed: "This plan hasn't run yet, so there is nothing to retry.",
+    proposal_not_retryable: "Only a plan from the assistant can be retried.",
+  };
+  for (const [code, sentence] of Object.entries(sentences)) {
+    reply = () => new Response(JSON.stringify({ detail: code }), { status: 409 });
+    await assert.rejects(client.retryProposal("p1"), (e) => e instanceof ApiError && e.code === code && e.message === sentence);
+  }
+  reply = () => new Response(JSON.stringify({ detail: "proposal_session_mismatch" }), { status: 403 });
+  await assert.rejects(client.retryProposal("p1"), (e) => e instanceof ApiError && e.status === 403 && e.code === "proposal_session_mismatch" && e.message !== e.code);
 });

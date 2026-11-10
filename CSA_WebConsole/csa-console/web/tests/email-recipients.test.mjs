@@ -211,3 +211,11 @@ test("an email card never shows the Subject and Draft placeholders, with or with
   // Other cards keep every field, even one that happens to be labelled Subject.
   assert.deepEqual(email.cardFieldsFor(card, false), card.fields);
 });
+
+test("inbound_email_blocked says why no reply was drafted, in English and Malay, with no email text", () => {
+  const en = email.emailErrorSentence({ code: "inbound_email_blocked" });
+  const ms = email.emailErrorSentence({ code: "inbound_email_blocked" }, "ms");
+  assert.equal(en, "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.");
+  assert.equal(ms, "E-mel ini nampak seperti cuba memberi arahan kepada pembantu, jadi tiada balasan dibuat. Baca sendiri dan balas dengan tangan.");
+  assert.ok(email.EMAIL_ERROR_CODES.includes("inbound_email_blocked"));
+});

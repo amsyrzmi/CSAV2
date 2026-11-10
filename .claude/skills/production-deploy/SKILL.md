@@ -74,4 +74,5 @@ Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the re
 - Run compose, docker, migrate or the rollout script on the instance by hand.
 - Read, print or copy secrets, `/srv/csa-prod/host.env` values, role ARNs, the instance id or the
   bucket name. The repository is public.
-- Change a production switch except by a pull request to `deploy/production-rollout.env`.
+- Change a production switch except by a pull request to `deploy/production-rollout.env` (the
+  optional Jev switches, none set today, are added the same way).

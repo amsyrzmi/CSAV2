@@ -29,8 +29,8 @@ Goals
 - A tenant admin switches HR features on and off per member with plain-language
   switches, on top of the existing grant model.
 - Every label, description and error a staff member sees reads in plain words.
-- Platform admins exist on `muhammad.amsyar@fourstacks.my` and
-  `danial@fourstacks.my` (more later); the Gmail account becomes break-glass.
+- Platform admins exist on `owner@example.com` and
+  `danial.hakim@example.com` (more later); the Gmail account becomes break-glass.
 - Production runs on AWS in Malaysia for a cost in the low hundreds of US dollars
   a month, with a known step to a larger shape.
 
@@ -448,7 +448,7 @@ switch (follow the writing guide).
 ### O1. fourstacks.my administrators and Google Workspace
 
 1. After W0 reaches staging: run `admin-add-approved` for
-   `muhammad.amsyar@fourstacks.my` and `danial@fourstacks.my` (approver
+   `owner@example.com` and `danial.hakim@example.com` (approver
    `mamsyar1404@gmail.com`), sign in once each, change the password. Then
    demote nothing yet; the Gmail account is break-glass and is reviewed in a
    month.

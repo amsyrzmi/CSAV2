@@ -12,7 +12,9 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from csa.console.contracts import Role
+from csa.decide.deciders import Decider
 from csa.decide.groq import GroqError
+from csa.decide.jev import JevError
 from csa.workspace.planner import (
     SYSTEM_PROMPT,
     MailboxThreadFact,
@@ -34,6 +36,7 @@ from tests.test_workspace_registry import (  # noqa: F401 - fixture import
     _hr_member,
     proposals_app,
 )
+from tests.test_workspace_routing import FakeJev, _jev
 
 pytest_plugins = ["tests.test_console_sessions"]
 
@@ -199,7 +202,7 @@ def test_own_words_drops_folds_picks_and_colleague_picks() -> None:
 
 
 def test_turn_language_carries() -> None:
-    assert turn_language("danial@fourstacks.my", [], "ms") == "ms"
+    assert turn_language("danial.hakim@example.com", [], "ms") == "ms"
     assert turn_language("ok", [], None) == "en"
     assert turn_language("send it to danial please", [], "ms") == "en"
     assert turn_language("danial@x.my", ["danial@x.my"], "ms") == "ms"
@@ -213,7 +216,7 @@ def test_detect_language_recognises_malay() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("hantar emel kat danial@fourstacks.my pasal mesyuarat esok", "ms"),
+        ("hantar emel kat danial.hakim@example.com pasal mesyuarat esok", "ms"),
         ("emel aina.rahman.binti.ali@company.example.com.my tentang cuti", "ms"),
         ("buka tab HR", "ms"),
         ("tolong hantar emel kepada nur.aina.binti.ahmad@syarikat-contoh.com.my", "ms"),
@@ -223,7 +226,7 @@ def test_detect_language_recognises_malay() -> None:
         ("can you open HR", "en"),
         ("yes", "en"),
         ("ok", None),
-        ("danial@fourstacks.my", None),
+        ("danial.hakim@example.com", None),
         ("Danial Hakim", None),
         ("Find Ada", None),
         ("", None),
@@ -259,6 +262,35 @@ def test_untrusted_facts_cannot_close_the_prompt_wrapper() -> None:
     assert data["mailbox_threads"][0]["subject"] == hostile
     assert data["mailbox_threads"][0]["sender_name"] == "Mallory <x>"
     assert prompt.endswith("<message>\nReply to Aina's email\n</message>")
+
+
+def test_facts_json_never_carries_the_stored_group_or_days() -> None:
+    """``resume_group`` and ``resume_days`` are for the server's check only: the planner's facts
+    JSON holds the count and never the group it was counted on."""
+    from csa.workspace.planner import PriorTurn
+
+    turn = PriorTurn(
+        message="Draft the reminder to everyone due for renewal in 30 days",
+        action="email_batch",
+        result="proposal",
+        proposal_kind="plan",
+        resume_offset=2,
+        resume_group="renewing_soon",
+        resume_days=30,
+    )
+    facts = PlannerFacts(
+        role=Role.TENANT_STAFF,
+        packages=[],
+        page_context=None,
+        record_summary=None,
+        language="en",
+        history=[turn],
+    )
+    prompt = planner_prompt("The rest please", facts)
+    data = json.loads(prompt[len("<facts>") : prompt.index("</facts>")])
+    assert data["history"][0]["resume_offset"] == 2
+    assert not {"resume_group", "resume_days"} & set(data["history"][0])
+    assert turn.resume_group == "renewing_soon" and turn.resume_days == 30  # kept for the server
 
 
 def test_planner_output_rejects_legacy_actions() -> None:
@@ -2902,7 +2934,7 @@ async def test_malay_conversation_stays_malay_after_a_typed_address(planned) -> 
     asked = await _turn(w, browser, thread, "tolong hantar emel kepada Danial", "email")
     assert asked.status_code == 201, asked.text
     model.reply({"action": "answer", "markdown": "Baik."})
-    typed = await _turn(w, browser, thread, "danial@fourstacks.my", "email")
+    typed = await _turn(w, browser, thread, "danial.hakim@example.com", "email")
     assert typed.status_code == 201, typed.text
     assert asked.json()["language"] == "ms" and typed.json()["language"] == "ms"
     assert model.facts(0)["language"] == "ms" and model.facts(1)["language"] == "ms"
@@ -3126,3 +3158,147 @@ def test_planner_booking_rule_keeps_the_can_change_gate() -> None:
         "when booking_action is allowed (bookings present and can_change true), propose "
         "booking_action as soon as the user clearly asks for it"
     ) in SYSTEM_PROMPT
+
+
+def _routing_decider(w: SessionWorld, jev: FakeJev) -> Decider:
+    """The real decider on the real pool; only Jev is a fake. The app reads it from app.state."""
+    decider = Decider(
+        "routing",
+        "cascade",
+        jev,  # type: ignore[arg-type]
+        w.app.state.pool,
+        floors={"noul": 0.7, "choice": 0.7},
+        audit_sample=0.0,
+    )
+    w.app.state.routing_decider = decider
+    return decider
+
+
+async def _routing_rows(w: SessionWorld, key: UUID) -> list[dict[str, Any]]:
+    """The turn's routing rows, found by its request_key (the log is shared by the session)."""
+    return await w.q(
+        "SELECT client_id, trace_id, node, mode, provider, fallback_reason FROM decision_log"
+        " WHERE node = 'assistant_routing' AND trace_id = %s ORDER BY id",
+        key,
+    )
+
+
+@requires_docker
+async def test_routing_decider_adds_people_access_without_a_trigger_word(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    body = "who looks after the paperwork when somebody joins?"  # no word rule matches this
+
+    model.reply({"action": "answer", "markdown": "Ok."})
+    plain_key = uuid4()
+    plain = await _turn(w, browser, thread, body, "overview", key=str(plain_key))
+    assert plain.status_code == 201, plain.text
+    assert model.facts().get("people_access") is None  # no decider: today's word rules only
+    assert await _routing_rows(w, plain_key) == []
+
+    jev = FakeJev(_jev(people=0.93))
+    _routing_decider(w, jev)
+    key = uuid4()
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, body, "overview", key=str(key))
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1
+    assert model.facts().get("people_access") is not None
+    rows = await _routing_rows(w, key)
+    assert len(rows) == 1  # found by the turn's request_key, so trace_id carries it
+    assert rows[0]["client_id"] == UUID(w.tenants[0])
+    assert (rows[0]["mode"], rows[0]["provider"], rows[0]["fallback_reason"]) == (
+        "cascade",
+        "jev",
+        None,
+    )
+
+
+@requires_docker
+async def test_a_confident_jev_no_still_reads_what_the_word_rules_read(planned) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    _routing_decider(w, FakeJev(_jev()))  # a confident no on every group
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, "add Ali to Sales", "overview")
+    assert turn.status_code == 201, turn.text
+    assert model.facts().get("people_access") is not None
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Tolong tambah pekerja baru ke jabatan jualan",  # Malay
+        "eh boss, can add new staff to the team or not lah",  # Manglish
+    ],
+)
+async def test_the_turn_completes_on_the_word_rules_when_jev_errors(planned, body: str) -> None:
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    jev = FakeJev(error=JevError("jev_http_503"))
+    _routing_decider(w, jev)
+    key = uuid4()
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, body, "overview", key=str(key))
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1
+    assert model.facts().get("people_access") is not None  # the word rule read it
+    rows = await _routing_rows(w, key)
+    assert len(rows) == 1 and rows[0]["client_id"] == UUID(w.tenants[0])
+    assert rows[0]["provider"] == "llm" and rows[0]["fallback_reason"] is not None
+
+
+# --------------------------------------------------------------------------- email_batch and plan
+
+
+def _new_section() -> str:
+    """The prompt's email_batch and plan bullets, from "- email_batch:" to the next bullet."""
+    start = SYSTEM_PROMPT.index("- email_batch:")
+    end = SYSTEM_PROMPT.index("\n- ", SYSTEM_PROMPT.index("- plan:"))
+    return SYSTEM_PROMPT[start:end]
+
+
+def test_planner_prompt_describes_email_batch_and_plan_in_one_short_section() -> None:
+    assert SYSTEM_PROMPT.count("- email_batch:") == 1 and SYSTEM_PROMPT.count("- plan:") == 1
+    section = " ".join(_new_section().split())
+    assert section.index("- email_batch:") < section.index("- plan:")
+    # Recipients: named people, typed addresses, customers or ONE fixed group.
+    for kind in ('"employee"', '"customer"', '"address"', '"group"'):
+        assert kind in section, kind
+    assert "ONE" in section and "active_subscribers" in section and "renewing_soon" in section
+    assert '"shared"' in section and '"personalised"' in section
+    assert "use_knowledge_base" in section
+    assert 'For "the rest" of a group, repeat the earlier email_batch with offset' in section
+    assert "resume_offset" in section
+    assert "booking_action, training_submit, inbox_decision or email_batch" in section
+    assert len(section) < 1300  # one short section (the lesson of #86)
+    schema = json.dumps(PlannerOutput.model_json_schema())
+    assert '"email_batch"' in schema and '"plan"' in schema and "use_knowledge_base" in schema
+
+
+def test_the_new_section_repeats_no_existing_rule() -> None:
+    """#86: a second bullet restating a rule moved an unrelated case. The #85/#86 wording stays
+    exactly once and the new section restates none of it."""
+    pinned = (
+        "when booking_action is allowed (bookings present and can_change true), propose "
+        "booking_action as soon as the user clearly asks for it",
+        "Never ask your own clarification about booking details and never invent times or options",
+        "an absent people_access does not mean the user lacks access",
+        "Propose hr_person_add, hr_person_update or hr_person_leave only when people_access is "
+        '"hr"',
+        "For email_compose, email_reply and email_team, write the subject and the wording "
+        "yourself from the request. Never ask a clarification for the subject or the wording.",
+        "- send (on email_compose, email_reply and email_team): true when the user asks to send",
+        "Never put my_team ids in recipient_employee_id, cc or bcc.",
+    )
+    flat = " ".join(SYSTEM_PROMPT.split())
+    for line in pinned:
+        assert flat.count(line) == 1, line
+    section = " ".join(_new_section().split())
+    for phrase in ("can_change", "people_access", "clarification", "Never", "never", "confirm"):
+        assert phrase not in section, phrase
+    assert "whether or not people_access is present" not in SYSTEM_PROMPT

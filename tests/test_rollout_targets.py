@@ -186,6 +186,76 @@ def test_production_env_file_loads() -> None:
     assert not any(marker in text for marker in ("http", "://", ".fourstacks"))
 
 
+# --- the optional Jev switches, for every target -----------------------------------------------
+
+
+def production_flags_with(tmp_path: Path, *lines: str) -> Path:
+    """The real production switch file plus ``lines``."""
+    text = (sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8")
+    path = tmp_path / "production-rollout.env"
+    path.write_text(text + "".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return path
+
+
+def test_jev_switches_are_in_no_target_key_set() -> None:
+    for target in (STAGING, PRODUCTION):
+        for keys in (target.required_keys, target.host_required_keys, target.host_override_keys):
+            assert not keys & sr.OPTIONAL_FLAG_KEYS
+
+
+def test_production_flags_accept_a_valid_jev_switch(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=llm")
+    flags = sr.load_flags(path, PRODUCTION)
+    assert flags["CSA_STAGING_ASSISTANT_DECIDER_EMAIL"] == "llm"
+    assert flags.keys() == SIX_SWITCHES | {"CSA_STAGING_ASSISTANT_DECIDER_EMAIL"}
+
+
+def test_production_flags_refuse_an_invalid_jev_value(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=always")
+    with pytest.raises(sr.RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.message.endswith(
+        "CSA_STAGING_ASSISTANT_DECIDER_EMAIL must be one of auto, llm, shadow, cascade"
+    )
+    assert "always" not in caught.value.message
+
+
+def test_production_flags_refuse_shadow_without_the_jev_key(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=shadow")
+    with pytest.raises(sr.RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.message == (
+        "production-rollout.env: CSA_STAGING_ASSISTANT_DECIDER_EMAIL=shadow needs "
+        "CSA_STAGING_JEV_SECRET=staging_jev_key"
+    )
+
+
+def test_staging_still_requires_its_eight_with_a_jev_switch_set(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, "CSA_STAGING_JEV_FLOOR_NOUL=0.8")
+    with pytest.raises(sr.RolloutError, match="is missing: CSA_STAGING_CONSOLE_ORIGIN, "):
+        sr.load_flags(path, STAGING)
+
+
+def test_host_file_refuses_a_jev_switch(tmp_path: Path) -> None:
+    host = tmp_path / "host.env"
+    host.write_text(HOST_TEXT + "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=llm\n", encoding="utf-8")
+    with pytest.raises(sr.RolloutError, match="unknown key CSA_STAGING_ASSISTANT_DECIDER_EMAIL"):
+        sr.load_host_values(dataclasses.replace(PRODUCTION, host_file=host))
+
+
+def test_production_jev_switch_reaches_compose(tmp_path: Path) -> None:
+    path = production_flags_with(
+        tmp_path,
+        "CSA_STAGING_JEV_SECRET=staging_jev_key",
+        "CSA_STAGING_ASSISTANT_DECIDER_ROUTING=cascade",
+    )
+    flags = sr.load_flags(path, PRODUCTION)
+    images = {"python": "p@sha256:aa", "frontend": "f@sha256:bb"}
+    env = sr.build_env(flags, images, docker_config=tmp_path / "dc", target=PRODUCTION)
+    assert env["CSA_STAGING_JEV_SECRET"] == "staging_jev_key"
+    assert env["CSA_STAGING_ASSISTANT_DECIDER_ROUTING"] == "cascade"
+
+
 # --- --target on the command line ---------------------------------------------------------------
 
 

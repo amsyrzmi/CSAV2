@@ -47,6 +47,41 @@ SERVICE_APP = {
 STOP_SERVICES = STAGING.stop_services
 FLAGS_FILE = STAGING.flags_file
 FLAG_KEYS = STAGING.required_keys
+# Allowed in the flags file but not required, so a file without them still loads. Unset, compose
+# uses the default written in the staging compose files. Each value must be one of its allowed
+# values: a typo fails loudly here instead of reaching a service's environment.
+DECIDER_MODES = ("auto", "llm", "shadow", "cascade")
+OPTIONAL_FLAG_VALUES: dict[str, tuple[str, ...]] = {
+    # Names the secret mapped to TYPESAFE_API_KEY (gateway and worker); unset it is the disabled
+    # placeholder, so every Jev area runs on the LLM or rule. Only the two Jev secrets: any other
+    # declared secret (a DSN, the Groq key) would be sent to the external Jev API as its token.
+    "CSA_STAGING_JEV_SECRET": ("staging_disabled_jev_key", "staging_jev_key"),
+    # The staff assistant's deciders (gateway ASSISTANT_DECIDER_*), unset auto. llm is the
+    # per-area kill switch.
+    "CSA_STAGING_ASSISTANT_DECIDER_EMAIL": DECIDER_MODES,
+    "CSA_STAGING_ASSISTANT_DECIDER_ROUTING": DECIDER_MODES,
+    "CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION": DECIDER_MODES,
+    # The customer classifier's mode for a company with no stored decide_mode (worker
+    # CUSTOMER_DECIDE_MODE_DEFAULT), unset llm. The rollout flips it last.
+    "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT": ("llm", "cascade"),
+}
+# The staff deciders' Jev confidence floors per question type (gateway ASSISTANT_JEV_FLOOR_*),
+# unset 0.7: a plain decimal from 0.5 to 1.0, at most three places.
+FLOOR_FLAG_KEYS = frozenset({"CSA_STAGING_JEV_FLOOR_NOUL", "CSA_STAGING_JEV_FLOOR_CHOICE"})
+FLOOR_RE = re.compile(r"0\.[5-9][0-9]{0,2}|1(?:\.0{1,3})?")  # whole value: is_floor
+OPTIONAL_FLAG_KEYS = frozenset(OPTIONAL_FLAG_VALUES) | FLOOR_FLAG_KEYS
+
+
+def is_floor(value: str) -> bool:
+    """``value`` is a Jev floor switch value: ``FLOOR_RE`` over the whole value (fullmatch, as
+    ``$`` would also accept a trailing newline)."""
+    return FLOOR_RE.fullmatch(value) is not None
+
+
+# Switch values that only mean something with the real Jev key: the gateway refuses to start with
+# a decider at shadow or cascade and no key, and the customer cascade without a key is llm.
+JEV_KEY_ON = ("CSA_STAGING_JEV_SECRET", "staging_jev_key")
+NEEDS_JEV_KEY = frozenset({"shadow", "cascade"})
 CHECKS_DIR = REPO_ROOT / "deploy" / "rollout_checks"
 MIGRATION_APPROVAL = STAGING.migration_approval
 READY_PROBE = (
@@ -161,7 +196,8 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise RolloutError("flags", f"cannot read {path.name}") from error
-    allowed = target.required_keys | target.optional_keys
+    # The Jev switches are optional for every target; their values are checked below.
+    known_keys = target.required_keys | target.optional_keys | OPTIONAL_FLAG_KEYS
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -170,14 +206,33 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
         key = key.strip()
         if not separator:
             raise RolloutError("flags", f"{path.name} line {number} has no '='")
-        if key not in allowed:
+        if key not in known_keys:
             raise RolloutError("flags", f"{path.name} line {number}: unknown key {key}")
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
-        flags[key] = value.strip()
+        value = value.strip()
+        allowed = OPTIONAL_FLAG_VALUES.get(key)
+        if allowed is not None and value not in allowed:
+            # The value is not echoed: the file is not secret, but a bad line may still be a typo
+            # of something that is.
+            raise RolloutError(
+                "flags", f"{path.name} line {number}: {key} must be one of {', '.join(allowed)}"
+            )
+        if key in FLOOR_FLAG_KEYS and not is_floor(value):
+            raise RolloutError(
+                "flags", f"{path.name} line {number}: {key} must be a decimal from 0.5 to 1.0"
+            )
+        flags[key] = value
     missing = sorted(target.required_keys - flags.keys())
     if missing:
         raise RolloutError("flags", f"{path.name} is missing: {', '.join(missing)}")
+    if flags.get(JEV_KEY_ON[0]) != JEV_KEY_ON[1]:
+        for key in sorted(OPTIONAL_FLAG_VALUES):
+            if flags.get(key) in NEEDS_JEV_KEY:
+                raise RolloutError(
+                    "flags",
+                    f"{path.name}: {key}={flags[key]} needs {JEV_KEY_ON[0]}={JEV_KEY_ON[1]}",
+                )
     return flags
 
 

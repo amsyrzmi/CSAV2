@@ -36,6 +36,7 @@ from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.staff.ownership import lock_conversation
+from csa.workspace.registry import ProposalError
 
 
 class InboxLastMessage(Contract):
@@ -265,8 +266,16 @@ async def decide_approval(
     decision: Literal["approve", "reject", "edit"],
     text: str | None,
     request_key: UUID,
+    *,
+    expected_version: str | None = None,
 ) -> InboxResult:
-    """Decide a held reply on the caller's tenant transaction; replays per request key."""
+    """Decide a held reply on the caller's tenant transaction; replays per request key.
+
+    ``expected_version`` is the conversation's ``inbox_version`` a workspace card read. It is
+    compared after the replay (a key that already decided replays even if the customer wrote
+    since) and before acting, under the conversation lock ``transition_reply`` takes anyway;
+    a move refuses with ``proposal_stale``, as the card does. The Inbox route passes none.
+    """
     payload = ReplyDecision(request_key=request_key, decision=decision, text=text)
     fingerprint, old = await replay(conn, client_id, actor, payload, f"approval:{approval_id}")
     if old is not None:
@@ -274,6 +283,10 @@ async def decide_approval(
     reference = await db.q.fetch_one("inbox/get_approval.sql", (client_id, approval_id), conn=conn)
     if reference is None:
         raise HTTPException(404, "reply approval not found")
+    if expected_version is not None:
+        current = await conversation(conn, client_id, reference["conversation_id"], lock=True)
+        if str(current.inbox_version) != expected_version:
+            raise ProposalError("proposal_stale")
     try:
         result: ReplyDecisionResult = await transition_reply(
             conn,

@@ -73,6 +73,8 @@ const LISTED = [
   "person_inactive", "resource_inactive", "type_inactive", "nobody_to_book", "no_room_available",
   "people_required", "times_invalid", "bookings changes require staff or an administrator",
   "person_not_found", "resource_not_found", "type_not_found", "contact_not_found",
+  // Plan retry refusals.
+  "plan_nothing_to_retry", "plan_not_executed", "proposal_not_retryable",
 ];
 // One home per sentence: these three live in the email table, so MS_ERRORS must not copy them.
 const EMAIL_OWNED = ["mailbox_not_connected", "email_model_unavailable", "recipients_invalid"];
@@ -178,4 +180,47 @@ test("every booking summary key has English and Malay", () => {
     assert.notEqual(copy.PANEL.en[name], copy.PANEL.ms[name], name);
   }
   assert.equal(copy.PANEL.en.summary_booking_not_told, "Customer wasn't told.");
+});
+
+test("a blocked reply shows its reason on the dock in English and Malay", () => {
+  const en = "This email looks like it tries to give the assistant instructions, so no reply was drafted. Read it yourself and reply by hand.";
+  const ms = "E-mel ini nampak seperti cuba memberi arahan kepada pembantu, jadi tiada balasan dibuat. Baca sendiri dan balas dengan tangan.";
+  // The bare code (api.ts did not explain it) still reads as the sentence, never the code.
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422), "en"), en);
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422, en), "en"), en);
+  assert.equal(copy.errorLine(apiError("inbound_email_blocked", 422, en), "ms"), ms);
+  assert.notEqual(ms, FALLBACK);
+  assert.equal(copy.MS_ERRORS.inbound_email_blocked, undefined, "its Malay line lives in the email table");
+});
+
+test("the plan card's copy is exact in English and Malay", () => {
+  const exact = {
+    plan_step_done: ["Done", "Selesai"],
+    plan_step_failed: ["Failed", "Gagal"],
+    plan_step_skipped: ["Skipped", "Dilangkau"],
+    plan_step_not_run: ["Not run", "Tidak dijalankan"],
+    plan_retry: ["Retry these", "Cuba semula ini"],
+    plan_retrying: ["Preparing…", "Menyediakan…"],
+    plan_show_email: ["Show email", "Tunjuk e-mel"],
+    plan_hide_email: ["Hide email", "Sembunyikan e-mel"],
+    plan_steps_label: ["Steps", "Langkah"],
+    plan_reason_changed: ["It changed since you reviewed it.", "Ia berubah sejak anda menyemaknya."],
+    plan_reason_deadline: [
+      "It ran out of time and may have finished. Check before doing it again.",
+      "Ia kehabisan masa dan mungkin sudah selesai. Semak dahulu sebelum mengulanginya.",
+    ],
+    plan_reason_not_run: ["It was never started.", "Ia tidak pernah dimulakan."],
+    plan_reason_limit: ["The hourly limit of 20 emails was reached.", "Had 20 e-mel sejam telah dicapai."],
+    plan_reason_generic: ["This step could not be completed.", "Langkah ini tidak dapat diselesaikan."],
+    summary_plan: ["Result: {parts}.", "Keputusan: {parts}."],
+    summary_plan_none: ["The plan has finished.", "Pelan telah selesai."],
+    plan_count_done: ["{count} done", "{count} selesai"],
+    plan_count_failed: ["{count} failed", "{count} gagal"],
+    plan_count_skipped: ["{count} skipped", "{count} dilangkau"],
+    plan_count_not_run: ["{count} not run", "{count} tidak dijalankan"],
+  };
+  for (const [key, [en, ms]] of Object.entries(exact)) {
+    assert.equal(copy.PANEL.en[key], en, key);
+    assert.equal(copy.PANEL.ms[key], ms, key);
+  }
 });

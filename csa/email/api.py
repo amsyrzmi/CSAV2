@@ -79,7 +79,7 @@ def email_http_error(exc: EmailPolicyError | GmailError) -> HTTPException:
         status = 401
     elif code in {"permission_denied", "csrf_required"}:
         status = 403
-    elif code in {"recipient_unresolved", "recipients_invalid"}:
+    elif code in {"recipient_unresolved", "recipients_invalid", "inbound_email_blocked"}:
         status = 422
     elif code == "resource_unavailable":
         status = 404

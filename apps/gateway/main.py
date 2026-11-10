@@ -23,6 +23,7 @@ from uuid import UUID
 
 import httpx
 import structlog
+from csa.agents.kb.embedder import DefaultKbEmbedder, KbEmbedder, KbEmbeddingError
 from csa.bookings.api import build_bookings_router
 from csa.bookings.google.api import build_calendar_router
 from csa.bookings.google.factory import build_calendar_push
@@ -40,9 +41,11 @@ from csa.console.tiktok_connect import build_tiktok_connect
 from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
-from csa.core.settings import get_settings
+from csa.core.settings import Settings, get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
+from csa.decide.deciders import build_deciders
 from csa.decide.groq import GroqClient
+from csa.decide.jev import JevClient
 from csa.email.api import build_email_router
 from csa.email.gmail import GmailClient
 from csa.email.service import EmailService
@@ -65,7 +68,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0541"
+EXPECTED_SCHEMA_VERSION = "0542"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -81,6 +84,16 @@ def shipped_versions() -> set[str]:
     guarded ``0130_reencrypt_credentials.py`` is a ``*.py`` file and is excluded.
     """
     return {version for version, _ in discover_migrations()}
+
+
+def _kb_embedder(settings: Settings) -> KbEmbedder | None:
+    """The embedder the worker uses (TEI when ``TEI_ENDPOINT`` is set, the hash embedder in dev
+    and ci). None when prod has no TEI: the knowledge base source for drafts is then left off."""
+    try:
+        return DefaultKbEmbedder.from_settings(settings)
+    except KbEmbeddingError:
+        logger.warning("kb_embedder_unavailable", code="tei_endpoint_missing")
+        return None
 
 
 async def check_readiness(pool: AsyncConnectionPool) -> tuple[bool, str]:
@@ -151,11 +164,25 @@ def create_app() -> FastAPI:
         workspace_http: httpx.AsyncClient | None = None
         training_http: httpx.AsyncClient | None = None
         calendar_http: httpx.AsyncClient | None = None
+        jev_http: httpx.AsyncClient | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # Read-only knowledge base search for batch drafts; None leaves that source off.
+            app.state.kb_embedder = _kb_embedder(settings)
+            # One Jev client for every decider, only with a key; without one every area runs on
+            # the LLM or rule and nothing errors.
+            jev_client: JevClient | None = None
+            if settings.TYPESAFE_API_KEY is not None:
+                jev_http = httpx.AsyncClient()
+                jev_client = JevClient(settings.TYPESAFE_API_KEY.get_secret_value(), jev_http)
+            deciders = build_deciders(settings, jev_client, pool)
+            app.state.jev_client = jev_client
+            app.state.email_decider = deciders.email
+            app.state.routing_decider = deciders.routing
+            app.state.inbound_decider = deciders.inbound
             # TikTok Shop connect routes; they answer tiktok_unavailable while TikTok is off.
             # The first-sync queue and Disconnect are the real csa.marketplace functions.
             app.state.tiktok_connect = build_tiktok_connect(settings, pool)
@@ -244,6 +271,20 @@ def create_app() -> FastAPI:
                             str(settings.GROQ_CHAT_URL),
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
+                        # None unless the inbound injection area runs Jev (needs a key).
+                        inbound_decider=deciders.inbound,
+                        # The assistant's batch drafter only, on its own client when a model is
+                        # set; otherwise batch drafts use the Email tab's model above.
+                        batch_model=(
+                            GroqClient(
+                                settings.GROQ_API_KEY.get_secret_value(),
+                                settings.ASSISTANT_DRAFT_MODEL,
+                                email_http,  # closed with the email client at shutdown
+                                str(settings.GROQ_CHAT_URL),
+                            )
+                            if settings.ASSISTANT_DRAFT_MODEL
+                            else None
+                        ),
                     )
                     await email.check_ready()
                     app.state.email_service = email
@@ -276,6 +317,8 @@ def create_app() -> FastAPI:
                     await training_http.aclose()
                 if calendar_http is not None:
                     await calendar_http.aclose()
+                if jev_http is not None:
+                    await jev_http.aclose()
             finally:
                 try:
                     if identity_pool is not None:
