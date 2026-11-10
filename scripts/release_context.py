@@ -22,6 +22,8 @@ def materialize(source: Path, destination: Path) -> None:
         Path("csa/evals/data/decision_cases.json"),
         # Read by the owner's smoke run inside the gateway image (scripts/assistant_smoke.py).
         Path("csa/workspace/smoke_cases.json"),
+        # Read by the owner's replay inside the gateway image (scripts/customer_bot_replay.py).
+        Path("scripts/customer_bot_replay_cases.json"),
     ]
     for directory, suffix in (
         ("apps", ".py"),
