@@ -3,9 +3,12 @@
 # successful `staging` deployment), sends the read-only plan to the instance and shows it in the
 # job summary. `apply` waits for the `production` environment approval, then sends exactly the
 # SHA, migrations and host settings digest that plan printed; the rollout on the instance refuses
-# if either has changed. AWS access is a short-lived OIDC role session. The role ARN, region and
-# instance id are repository variables; a missing one stops the run before any AWS call. The
-# runner scripts always come from a checkout of main, never from the commit being deployed.
+# if either has changed. AWS access is a short-lived OIDC role session, and each job has its own
+# role: the plan role can send only the plan document, which has the action fixed to plan, so the
+# reviewer-less `production-plan` environment can never apply. The role ARNs and the instance id
+# are environment secrets (masked in the public logs), the region a repository variable; a missing
+# one stops the run before any AWS call. Both jobs run only for main, and the runner scripts always
+# come from a checkout of main, never from the commit being deployed.
 name: deploy-production
 
 on:
@@ -26,6 +29,7 @@ concurrency:
 
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment: production-plan
     timeout-minutes: 45
@@ -38,16 +42,16 @@ jobs:
       migrations: ${{ steps.parse.outputs.migrations }}
       host_digest: ${{ steps.parse.outputs.host_digest }}
     env:
-      ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+      ROLE_ARN: ${{ secrets.PROD_PLAN_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
-      INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
+      INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
     steps:
       - name: Require the deploy variables
         run: |
           set -euo pipefail
-          [ -n "${ROLE_ARN:-}" ] || { echo "repository variable PROD_DEPLOY_ROLE_ARN is not set" >&2; exit 1; }
+          [ -n "${ROLE_ARN:-}" ] || { echo "secret PROD_PLAN_ROLE_ARN is not set on the production-plan environment" >&2; exit 1; }
           [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
-          [ -n "${INSTANCE_ID:-}" ] || { echo "repository variable PROD_INSTANCE_ID is not set" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "secret PROD_INSTANCE_ID is not set on the production-plan environment" >&2; exit 1; }
 
       - name: Resolve the commit to deploy
         id: target
@@ -96,7 +100,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.PROD_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.PROD_DEPLOY_REGION }}
           role-session-name: deploy-production-plan
           mask-aws-account-id: true
@@ -128,6 +132,7 @@ jobs:
 
   apply:
     needs: plan
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 45
@@ -136,16 +141,16 @@ jobs:
       deployments: read
       id-token: write
     env:
-      ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+      ROLE_ARN: ${{ secrets.PROD_APPLY_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
-      INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
+      INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
     steps:
       - name: Require the deploy variables
         run: |
           set -euo pipefail
-          [ -n "${ROLE_ARN:-}" ] || { echo "repository variable PROD_DEPLOY_ROLE_ARN is not set" >&2; exit 1; }
+          [ -n "${ROLE_ARN:-}" ] || { echo "secret PROD_APPLY_ROLE_ARN is not set on the production environment" >&2; exit 1; }
           [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
-          [ -n "${INSTANCE_ID:-}" ] || { echo "repository variable PROD_INSTANCE_ID is not set" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "secret PROD_INSTANCE_ID is not set on the production environment" >&2; exit 1; }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,7 +159,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.PROD_APPLY_ROLE_ARN }}
           aws-region: ${{ vars.PROD_DEPLOY_REGION }}
           role-session-name: deploy-production-apply
           mask-aws-account-id: true

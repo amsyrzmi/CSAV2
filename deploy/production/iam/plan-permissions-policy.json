@@ -2,21 +2,18 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "SendTheDeployDocumentToTheProductionInstance",
+      "Sid": "SendThePlanDocumentToTheProductionInstance",
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:<region>:<account-id>:document/csa-production-deploy",
+        "arn:aws:ssm:<region>:<account-id>:document/csa-production-plan",
         "arn:aws:ssm:<region>:<account-id>:managed-instance/<managed-instance-id>"
       ]
     },
     {
       "Sid": "ReadCommandResults",
       "Effect": "Allow",
-      "Action": [
-        "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations"
-      ],
+      "Action": "ssm:GetCommandInvocation",
       "Resource": "*"
     }
   ]

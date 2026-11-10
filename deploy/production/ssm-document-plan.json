@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Production deploy, read-only plan: runs the root-owned csa-prod-deploy entry script as the ubuntu user with the action fixed to plan. Published in AWS as csa-production-plan.",
+  "parameters": {
+    "sha": {
+      "type": "String",
+      "description": "Full 40 character lowercase commit sha on main.",
+      "allowedPattern": "^[0-9a-f]{40}$"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "1800",
+        "runCommand": [
+          "set -eu",
+          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy plan \"{{ sha }}\" \"\" \"\""
+        ]
+      }
+    }
+  ]
+}

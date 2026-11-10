@@ -1,7 +1,9 @@
 #!/bin/bash
-# Send the csa-production-deploy Systems Manager document to the production instance, wait for the
+# Send a production deploy Systems Manager document to the production instance, wait for the
 # command to finish and print its output. The deploy-production workflow runs it from main:
 #   ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]
+# Each action has its own document with the action fixed inside it: plan sends csa-production-plan
+# with the sha only, apply sends csa-production-apply with the sha, migrations and host digest.
 # Needs AWS_REGION and INSTANCE_ID; AWS credentials come from the environment and are never printed.
 # Exit: 0 when the command succeeded, 124 when it was still running after the last poll, 64 for a
 # refused argument or setting (nothing is sent), 1 for anything else.
@@ -11,7 +13,6 @@ set -euo pipefail
 export LC_ALL=C
 export AWS_PAGER=""
 
-DOCUMENT="csa-production-deploy"
 : "${SSM_POLL_SECONDS:=5}"
 : "${SSM_MAX_POLLS:=420}"
 # send-command returns before the invocation exists, so the first polls may not find it yet.
@@ -50,19 +51,21 @@ digest="${4-}"
 valid '^(plan|apply)$' "$action" || die "action must be plan or apply"
 valid '^[0-9a-f]{40}$' "$sha" || die "sha must be 40 lowercase hex characters"
 valid '^([0-9]{4}(,[0-9]{4})*)?$' "$migrations" || die "migrations must be comma-separated four-digit numbers"
+# The document's parameters go as one JSON map built by jq, empty values included: no value is
+# ever spliced into a command string.
 if [[ "$action" == "apply" ]]; then
     valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
+    document="csa-production-apply"
+    parameters="$(jq -cn --arg sha "$sha" --arg migrations "$migrations" --arg digest "$digest" \
+        '{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]}')"
 else
+    [[ -z "$migrations" ]] || die "plan takes no migrations"
     [[ -z "$digest" ]] || die "plan takes no host digest"
+    document="csa-production-plan"
+    parameters="$(jq -cn --arg sha "$sha" '{sha: [$sha]}')"
 fi
 
-# Every parameter is sent, empty ones included, as one JSON map built by jq: no value is ever
-# spliced into a command string.
-parameters="$(jq -cn --arg action "$action" --arg sha "$sha" --arg migrations "$migrations" \
-    --arg digest "$digest" \
-    '{action: [$action], sha: [$sha], migrations: [$migrations], hostDigest: [$digest]}')"
-
-sent="$(aws ssm send-command --region "$AWS_REGION" --document-name "$DOCUMENT" \
+sent="$(aws ssm send-command --region "$AWS_REGION" --document-name "$document" \
     --instance-ids "$INSTANCE_ID" --parameters "$parameters" \
     --timeout-seconds "$DELIVERY_TIMEOUT" --output json)" || fail "send-command failed"
 command_id="$(jq -r '.Command.CommandId // empty' <<< "$sent")" ||

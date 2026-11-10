@@ -19,6 +19,7 @@ import subprocess
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scripts import staging_rollout as sr
@@ -27,28 +28,28 @@ from scripts.rollout_targets import STAGING
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_DIR = ROOT / "deploy" / "production"
 ENTRY = PRODUCTION_DIR / "deploy_entry.sh"
-DOCUMENT = PRODUCTION_DIR / "ssm-document.json"
+PLAN_DOCUMENT = PRODUCTION_DIR / "ssm-document-plan.json"
+APPLY_DOCUMENT = PRODUCTION_DIR / "ssm-document-apply.json"
 REQUIREMENTS = PRODUCTION_DIR / "requirements.txt"
 SSM_RUN = PRODUCTION_DIR / "ssm_run.sh"
 PARSE_PLAN = PRODUCTION_DIR / "parse_plan.sh"
-TRUST_POLICY = PRODUCTION_DIR / "iam" / "trust-policy.json"
-PERMISSIONS_POLICY = PRODUCTION_DIR / "iam" / "permissions-policy.json"
+IAM_DIR = PRODUCTION_DIR / "iam"
+PLAN_TRUST = IAM_DIR / "plan-trust-policy.json"
+APPLY_TRUST = IAM_DIR / "apply-trust-policy.json"
+PLAN_PERMISSIONS = IAM_DIR / "plan-permissions-policy.json"
+APPLY_PERMISSIONS = IAM_DIR / "apply-permissions-policy.json"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 MIGRATIONS = "0486,0487"
 DIGEST = "0123456789ab"
 
+# The entry script's arguments, in order; the two Systems Manager documents each fix the action.
 PARAMETERS = ("action", "sha", "migrations", "hostDigest")
-EXPECTED_PATTERNS = {
-    "action": "^(plan|apply)$",
-    "sha": "^[0-9a-f]{40}$",
-    "migrations": "^([0-9]{4}(,[0-9]{4})*)?$",
-    "hostDigest": "^([0-9a-f]{12})?$",
-}
 
-# One table of values that must be refused, keyed by Systems Manager parameter name. The entry
-# script tests and the document pattern tests both read it, so the two layers cannot drift apart.
+# One table of values that must be refused, keyed by argument (and Systems Manager parameter)
+# name. The entry script, ssm_run.sh and the document pattern tests all read it, so the layers
+# cannot drift apart.
 BAD_VALUES: dict[str, list[str]] = {
     "action": ["destroy", "plan ; id", ""],
     "sha": [
@@ -67,7 +68,7 @@ BAD_VALUES: dict[str, list[str]] = {
     "migrations": ["0486;id", "0486,", "abc", "04861", "048\u0666"],
     "hostDigest": [DIGEST[:-1], DIGEST + "0", DIGEST.upper(), "$(id)", DIGEST[:-1] + "\u0661"],
 }
-# Refusals that only the entry script can make: the digest is required for apply and empty for plan.
+# Refusals beyond the per-value patterns: the digest is required for apply and empty for plan.
 ENTRY_ONLY_BAD_ARGUMENTS = [
     pytest.param(["apply", SHA, "", ""], id="apply-without-digest"),
     pytest.param(["plan", SHA, "", DIGEST], id="plan-with-digest"),
@@ -395,63 +396,97 @@ def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
         assert re.search(rf'^: "\$\{{{name}:=[^}}]+\}}"$', text, re.MULTILINE)
 
 
-def _document() -> dict[str, object]:
-    return json.loads(DOCUMENT.read_text())
+# Each action has its own document, so the plan role can never send an apply.
+DOCUMENTS = {"plan": PLAN_DOCUMENT, "apply": APPLY_DOCUMENT}
+DOCUMENT_NAMES = {"plan": "csa-production-plan", "apply": "csa-production-apply"}
+DOCUMENT_PATTERNS = {
+    "plan": {"sha": "^[0-9a-f]{40}$"},
+    "apply": {
+        "sha": "^[0-9a-f]{40}$",
+        "migrations": "^([0-9]{4}(,[0-9]{4})*)?$",
+        "hostDigest": "^[0-9a-f]{12}$",
+    },
+}
+ENTRY_COMMAND = "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy "
+DOCUMENT_COMMANDS = {
+    "plan": ENTRY_COMMAND + 'plan "{{ sha }}" "" ""',
+    "apply": ENTRY_COMMAND + 'apply "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"',
+}
 
 
-def test_document_parameters_have_the_exact_patterns_and_the_one_command() -> None:
-    document = _document()
+def _document(kind: str) -> dict[str, Any]:
+    return json.loads(DOCUMENTS[kind].read_text())
 
+
+@pytest.mark.parametrize("kind", ["plan", "apply"])
+def test_document_parameters_have_the_exact_patterns_and_the_one_command(kind: str) -> None:
+    document = _document(kind)
+
+    assert set(document) == {"schemaVersion", "description", "parameters", "mainSteps"}
     assert document["schemaVersion"] == "2.2"
+    assert f"Published in AWS as {DOCUMENT_NAMES[kind]}." in document["description"]
     parameters = document["parameters"]
-    assert isinstance(parameters, dict)
-    assert list(parameters) == list(PARAMETERS)
-    for name, pattern in EXPECTED_PATTERNS.items():
+    assert list(parameters) == list(DOCUMENT_PATTERNS[kind])
+    for name, pattern in DOCUMENT_PATTERNS[kind].items():
         assert parameters[name]["type"] == "String"
         assert parameters[name]["description"]
         assert parameters[name]["allowedPattern"] == pattern
-    assert parameters["migrations"]["default"] == ""
-    assert parameters["hostDigest"]["default"] == ""
-    assert "default" not in parameters["action"]
-    assert "default" not in parameters["sha"]
+    defaults = {name: spec["default"] for name, spec in parameters.items() if "default" in spec}
+    assert defaults == ({"migrations": ""} if kind == "apply" else {})
 
-    steps = document["mainSteps"]
-    assert isinstance(steps, list)
-    assert len(steps) == 1
-    step = steps[0]
+    (step,) = document["mainSteps"]
     assert step["action"] == "aws:runShellScript"
     assert step["name"] == "deploy"
     assert step["inputs"]["timeoutSeconds"] == "1800"
     commands = step["inputs"]["runCommand"]
-    assert commands == [
-        "set -eu",
-        "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy "
-        '"{{ action }}" "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"',
-    ]
+    assert commands == ["set -eu", DOCUMENT_COMMANDS[kind]]
 
     command = commands[1]
     placeholders = re.findall(r"\{\{[^}]*\}\}", command)
     names = [re.fullmatch(r"\{\{ (\w+) \}\}", item) for item in placeholders]
     assert all(names)
-    assert [match.group(1) for match in names if match] == list(PARAMETERS)
+    assert [match.group(1) for match in names if match] == list(DOCUMENT_PATTERNS[kind])
     assert len(re.findall(r'"\{\{ \w+ \}\}"', command)) == len(placeholders)
     # Nothing else in the document may smuggle in a placeholder or another command.
-    assert document["description"]
     assert "{{" not in json.dumps({k: v for k, v in document.items() if k != "mainSteps"})
 
 
-def test_document_patterns_reject_injection() -> None:
-    parameters = _document()["parameters"]
-    assert isinstance(parameters, dict)
+def test_each_document_fixes_its_action_literally() -> None:
+    plan = _document("plan")
+    assert not {"action", "migrations", "hostDigest"} & set(plan["parameters"])
+    plan_command = plan["mainSteps"][0]["inputs"]["runCommand"][1]
+    assert plan_command.startswith(ENTRY_COMMAND + "plan ")
+    assert "apply" not in json.dumps(plan)
+    assert "{{ action" not in plan_command
 
-    for name, values in BAD_VALUES.items():
+    apply = _document("apply")
+    assert "action" not in apply["parameters"]
+    apply_command = apply["mainSteps"][0]["inputs"]["runCommand"][1]
+    assert apply_command.startswith(ENTRY_COMMAND + "apply ")
+    assert "{{ action" not in apply_command
+
+
+def test_the_single_deploy_document_and_shared_role_files_are_gone() -> None:
+    assert not (PRODUCTION_DIR / "ssm-document.json").exists()
+    assert not (IAM_DIR / "trust-policy.json").exists()
+    assert not (IAM_DIR / "permissions-policy.json").exists()
+    assert sorted(path.name for path in IAM_DIR.iterdir()) == sorted(
+        path.name for path in (PLAN_TRUST, APPLY_TRUST, PLAN_PERMISSIONS, APPLY_PERMISSIONS)
+    )
+
+
+@pytest.mark.parametrize("kind", ["plan", "apply"])
+def test_document_patterns_reject_injection(kind: str) -> None:
+    parameters = _document(kind)["parameters"]
+
+    for name in parameters:
         pattern = parameters[name]["allowedPattern"]
-        for value in values:
+        for value in BAD_VALUES[name]:
             assert re.fullmatch(pattern, value) is None, (name, value)
-    for name, value in DEFAULTS.items():
-        assert re.fullmatch(parameters[name]["allowedPattern"], value), (name, value)
-    assert re.fullmatch(parameters["migrations"]["allowedPattern"], "")
-    assert re.fullmatch(parameters["hostDigest"]["allowedPattern"], "")
+        assert re.fullmatch(pattern, DEFAULTS[name]), name
+    if kind == "apply":
+        assert re.fullmatch(parameters["migrations"]["allowedPattern"], "")
+        assert re.fullmatch(parameters["hostDigest"]["allowedPattern"], "") is None
 
 
 def test_requirements_pin_matches_pyproject() -> None:
@@ -487,14 +522,14 @@ SSM_ENV = {
 }
 
 
-def _send_argv(parameters: str) -> list[str]:
+def _send_argv(document: str, parameters: str) -> list[str]:
     return [
         "ssm",
         "send-command",
         "--region",
         REGION,
         "--document-name",
-        "csa-production-deploy",
+        document,
         "--instance-ids",
         INSTANCE,
         "--parameters",
@@ -554,8 +589,13 @@ def test_ssm_run_refuses_malformed_settings(harness: Harness, name: str, value: 
     assert harness.calls() == []
 
 
+# The plan document carries no migrations, so ssm_run.sh refuses them too (the entry script ignores
+# them for plan).
+SSM_ONLY_BAD_ARGUMENTS = [pytest.param(["plan", SHA, MIGRATIONS, ""], id="plan-with-migrations")]
+
+
 @pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("args", _bad_argument_vectors())
+@pytest.mark.parametrize("args", _bad_argument_vectors() + SSM_ONLY_BAD_ARGUMENTS)
 def test_ssm_run_rejects_bad_arguments(harness: Harness, args: list[str], locale: str) -> None:
     result = harness.ssm(args, LC_ALL=locale, LANG=locale)
 
@@ -576,13 +616,8 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
 
     assert result.returncode == code, result.stderr
     send, poll = harness.aws_calls()
-    assert send == _send_argv(send[9])
-    assert json.loads(send[9]) == {
-        "action": ["apply"],
-        "sha": [SHA],
-        "migrations": [MIGRATIONS],
-        "hostDigest": [DIGEST],
-    }
+    assert send == _send_argv("csa-production-apply", send[9])
+    assert json.loads(send[9]) == {"sha": [SHA], "migrations": [MIGRATIONS], "hostDigest": [DIGEST]}
     assert poll == POLL_ARGV
     assert result.stdout == b"remote output\n"
     assert b"remote stderr\n" in result.stderr
@@ -593,7 +628,18 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
         assert credential.encode() not in result.stdout + result.stderr
 
 
-def test_ssm_run_plan_sends_the_empty_parameters_and_prints_the_output_verbatim(
+def test_ssm_run_apply_without_migrations_still_sends_all_three_parameters(
+    harness: Harness,
+) -> None:
+    result = harness.ssm(["apply", SHA, "", DIGEST])
+
+    assert result.returncode == 0, result.stderr
+    send, _poll = harness.aws_calls()
+    assert send == _send_argv("csa-production-apply", send[9])
+    assert json.loads(send[9]) == {"sha": [SHA], "migrations": [""], "hostDigest": [DIGEST]}
+
+
+def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbatim(
     harness: Harness,
 ) -> None:
     remote = "Target SHA: x\n  indented   line\n\nno final newline"
@@ -601,12 +647,8 @@ def test_ssm_run_plan_sends_the_empty_parameters_and_prints_the_output_verbatim(
 
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
-    assert json.loads(send[9]) == {
-        "action": ["plan"],
-        "sha": [SHA],
-        "migrations": [""],
-        "hostDigest": [""],
-    }
+    assert send == _send_argv("csa-production-plan", send[9])
+    assert json.loads(send[9]) == {"sha": [SHA]}
     assert result.stdout == remote.encode()
 
 
@@ -870,16 +912,38 @@ def test_parse_plan_refuses_bad_arguments(harness: Harness, args: list[str]) -> 
 
 AUD = "token.actions.githubusercontent.com:aud"
 SUB = "token.actions.githubusercontent.com:sub"
-DOCUMENT_ARN = "arn:aws:ssm:<region>:<account-id>:document/csa-production-deploy"
 INSTANCE_ARN = "arn:aws:ssm:<region>:<account-id>:managed-instance/<managed-instance-id>"
+ROLES = {
+    "plan": (PLAN_TRUST, PLAN_PERMISSIONS, "repo:amsyrzmi/CSAV2:environment:production-plan"),
+    "apply": (APPLY_TRUST, APPLY_PERMISSIONS, "repo:amsyrzmi/CSAV2:environment:production"),
+}
 
 
 def _as_list(value: str | list[str]) -> list[str]:
     return value if isinstance(value, list) else [value]
 
 
-def test_trust_policy_is_scoped_to_this_repo_and_the_two_environments() -> None:
-    policy = json.loads(TRUST_POLICY.read_text())
+def _policy(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def _trust_allows(policy: dict[str, Any], claims: dict[str, str]) -> bool:
+    """Whether a token with these claims may assume the role (``StringEquals`` only, as used)."""
+    for statement in policy["Statement"]:
+        conditions = statement["Condition"]
+        if set(conditions) != {"StringEquals"}:
+            return False
+        if all(
+            claims.get(key) in _as_list(want) for key, want in conditions["StringEquals"].items()
+        ):
+            return statement["Effect"] == "Allow"
+    return False
+
+
+@pytest.mark.parametrize("kind", ["plan", "apply"])
+def test_trust_policy_is_scoped_to_this_repo_and_one_environment(kind: str) -> None:
+    trust, _permissions, sub = ROLES[kind]
+    policy = _policy(trust)
 
     assert set(policy) == {"Version", "Statement"}
     assert policy["Version"] == "2012-10-17"
@@ -888,21 +952,37 @@ def test_trust_policy_is_scoped_to_this_repo_and_the_two_environments() -> None:
     assert statement["Effect"] == "Allow"
     assert statement["Principal"] == {"Federated": "<oidc-provider-arn>"}
     assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
-    assert statement["Condition"] == {
-        "StringEquals": {
-            AUD: "sts.amazonaws.com",
-            SUB: [
-                "repo:amsyrzmi/CSAV2:environment:production",
-                "repo:amsyrzmi/CSAV2:environment:production-plan",
-            ],
-        }
-    }
+    assert statement["Condition"] == {"StringEquals": {AUD: "sts.amazonaws.com", SUB: sub}}
     assert "*" not in json.dumps(statement["Condition"])
     assert "*" not in json.dumps(statement["Principal"])
 
 
-def test_permissions_policy_has_only_the_allowed_actions() -> None:
-    policy = json.loads(PERMISSIONS_POLICY.read_text())
+def test_each_trust_policy_admits_only_its_own_environment() -> None:
+    plan, apply = _policy(PLAN_TRUST), _policy(APPLY_TRUST)
+    plan_sub, apply_sub = ROLES["plan"][2], ROLES["apply"][2]
+
+    def token(sub: str) -> dict[str, str]:
+        return {AUD: "sts.amazonaws.com", SUB: sub}
+
+    assert _trust_allows(plan, token(plan_sub))
+    assert not _trust_allows(plan, token(apply_sub))
+    assert _trust_allows(apply, token(apply_sub))
+    assert not _trust_allows(apply, token(plan_sub))
+    for policy in (plan, apply):
+        for sub in (
+            "repo:amsyrzmi/CSAV2:ref:refs/heads/main",
+            "repo:amsyrzmi/CSAV2:pull_request",
+            "repo:someone/CSAV2:environment:production",
+        ):
+            assert not _trust_allows(policy, token(sub)), sub
+        assert not _trust_allows(policy, {SUB: plan_sub, AUD: "other"})
+
+
+@pytest.mark.parametrize("kind", ["plan", "apply"])
+def test_permissions_policy_has_only_the_allowed_actions(kind: str) -> None:
+    _trust, permissions, _sub = ROLES[kind]
+    policy = _policy(permissions)
+    document_arn = f"arn:aws:ssm:<region>:<account-id>:document/{DOCUMENT_NAMES[kind]}"
 
     assert set(policy) == {"Version", "Statement"}
     assert policy["Version"] == "2012-10-17"
@@ -911,28 +991,43 @@ def test_permissions_policy_has_only_the_allowed_actions() -> None:
         assert set(statement) <= {"Sid", "Effect", "Action", "Resource"}
         assert statement["Effect"] == "Allow"
     actions = [action for statement in statements for action in _as_list(statement["Action"])]
-    assert sorted(actions) == [
-        "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations",
-        "ssm:SendCommand",
-    ]
+    assert sorted(actions) == ["ssm:GetCommandInvocation", "ssm:SendCommand"]
 
     (send,) = [s for s in statements if "ssm:SendCommand" in _as_list(s["Action"])]
     assert _as_list(send["Action"]) == ["ssm:SendCommand"]
-    assert sorted(_as_list(send["Resource"])) == sorted([DOCUMENT_ARN, INSTANCE_ARN])
+    assert sorted(_as_list(send["Resource"])) == sorted([document_arn, INSTANCE_ARN])
     assert "*" not in json.dumps(send)
 
-    # The two read actions support no resource-level scoping (the service authorization
-    # reference lists no resource type for them), so they can only be granted on "*".
+    # GetCommandInvocation supports no resource-level scoping (the service authorization
+    # reference lists no resource type for it), so it can only be granted on "*".
     (read,) = [s for s in statements if s is not send]
-    assert sorted(_as_list(read["Action"])) == [
-        "ssm:GetCommandInvocation",
-        "ssm:ListCommandInvocations",
-    ]
+    assert _as_list(read["Action"]) == ["ssm:GetCommandInvocation"]
     assert read["Resource"] == "*"
 
 
-NEW_FILES = (SSM_RUN, PARSE_PLAN, TRUST_POLICY, PERMISSIONS_POLICY, WORKFLOW)
+def test_each_permissions_policy_names_only_its_own_document() -> None:
+    plan_text, apply_text = PLAN_PERMISSIONS.read_text(), APPLY_PERMISSIONS.read_text()
+
+    assert "document/csa-production-plan" in plan_text
+    assert "csa-production-apply" not in plan_text
+    assert "document/csa-production-apply" in apply_text
+    assert "csa-production-plan" not in apply_text
+    for text in (plan_text, apply_text):
+        assert "csa-production-deploy" not in text
+        assert text.count(":document/") == 1
+
+
+NEW_FILES = (
+    SSM_RUN,
+    PARSE_PLAN,
+    PLAN_DOCUMENT,
+    APPLY_DOCUMENT,
+    PLAN_TRUST,
+    APPLY_TRUST,
+    PLAN_PERMISSIONS,
+    APPLY_PERMISSIONS,
+    WORKFLOW,
+)
 
 
 @pytest.mark.parametrize("path", NEW_FILES, ids=lambda path: path.name)
@@ -1045,6 +1140,7 @@ def test_workflow_triggers_permissions_and_pinning() -> None:
     for name, body in jobs.items():
         assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS, name
         assert "    runs-on: ubuntu-24.04\n" in body
+        assert "    if: github.ref == 'refs/heads/main'\n" in body, name
     assert "    environment: production-plan\n" in jobs["plan"]
     assert "needs:" not in jobs["plan"]
     assert "    environment: production\n" in jobs["apply"]
@@ -1077,6 +1173,11 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
     }
     assert set(_children(text, "    outputs:")) == outputs
     for line in text.splitlines():
+        # Secrets reach a step only through env: or an action's with: input.
+        if "secrets." in line:
+            assert re.fullmatch(
+                r"(?:[A-Z][A-Z_]*|role-to-assume): \$\{\{ secrets\.[A-Z_]+ \}\}", line.strip()
+            ), line
         if re.search(r"\$\{\{\s*(?:inputs|needs|steps)\.", line):
             stripped = line.strip()
             assert stripped in outputs or re.fullmatch(
@@ -1099,19 +1200,25 @@ def _variables_env(**overrides: str | None) -> dict[str, str]:
     return env
 
 
+# Each job's role ARN secret lives on its own environment; the instance id secret on both.
+ROLE_SECRETS = {"plan": "PROD_PLAN_ROLE_ARN", "apply": "PROD_APPLY_ROLE_ARN"}
+
+
 @pytest.mark.parametrize("job", ["plan", "apply"])
 def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) -> None:
     text = _workflow()
-    for variable in ("PROD_DEPLOY_ROLE_ARN", "PROD_DEPLOY_REGION", "PROD_INSTANCE_ID"):
-        assert f"${{{{ vars.{variable} }}}}" in text
-    env = _children("  job:\n" + _jobs()[job], "    env:")
-    assert env == [
-        "ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}",
+    body = _jobs()[job]
+    role, other_role = ROLE_SECRETS[job], ROLE_SECRETS["apply" if job == "plan" else "plan"]
+    assert _children("  job:\n" + body, "    env:") == [
+        f"ROLE_ARN: ${{{{ secrets.{role} }}}}",
         "AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}",
-        "INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}",
+        "INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}",
     ]
+    assert other_role not in body
+    for gone in ("vars.PROD_DEPLOY_ROLE_ARN", "vars.PROD_INSTANCE_ID", "PROD_DEPLOY_ROLE_ARN"):
+        assert gone not in text
     (configure,) = [step for step in _steps(job) if "configure-aws-credentials@" in step]
-    assert "role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}" in configure
+    assert f"role-to-assume: ${{{{ secrets.{role} }}}}" in configure
     assert "aws-region: ${{ vars.PROD_DEPLOY_REGION }}" in configure
     assert "mask-aws-account-id: true" in configure
     assert _steps(job)[0].startswith("name: Require the deploy variables\n")
@@ -1119,7 +1226,7 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
     name = "Require the deploy variables"
     assert _run_step(job, name, _variables_env(), tmp_path).returncode == 0
     for variable, setting in [
-        ("ROLE_ARN", "PROD_DEPLOY_ROLE_ARN"),
+        ("ROLE_ARN", role),
         ("AWS_REGION", "PROD_DEPLOY_REGION"),
         ("INSTANCE_ID", "PROD_INSTANCE_ID"),
     ]:
