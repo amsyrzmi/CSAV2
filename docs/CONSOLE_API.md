@@ -1580,12 +1580,6 @@ Ordered timeline steps. Poll for live updates by passing the largest `id` you ha
 |---|---|---|
 | load_ctx, guard | context loaded, safety check | – |
 | signals | configured classifier judged the message | `intent`, `provider` (`llm`, `jev` or callback `policy`) |
-
-The classifier is the LLM unless the company's policy stores a `decide_mode`, or it stores none and the
-worker's `CUSTOMER_DECIDE_MODE_DEFAULT` is `cascade` with a Jev key present; the `provider` key then
-says which answered. The staff assistant's own Jev decisions (batch email, routing, the inbound
-injection check) are not turns and add no timeline nodes; they are `decision_log` rows with a node
-named `assistant_email`, `assistant_routing` or `assistant_inbound_injection` (docs/RUNBOOK.md).
 | route | policy chose a path | `route` |
 | fast_plan / plan_args | plan made | `intent`, `strategy`, `confidence`, `tasks` |
 | run_spoke | an agent ran (`agent` set) | `task_id`, `ok`, `agent_status`, `error_code`, `requires_human` |
@@ -1596,6 +1590,12 @@ named `assistant_email`, `assistant_routing` or `assistant_inbound_injection` (d
 | gate | policy verdict | `decision`, `reason`, `risk` |
 | hold / emit | reply held for staff / queued to send | `messages` |
 | finalize / fail_safe | turn closed / safe fallback used | `error` |
+
+The classifier is the LLM unless the company's policy stores a `decide_mode`, or it stores none and the
+worker's `CUSTOMER_DECIDE_MODE_DEFAULT` is `cascade` with a Jev key present; the `provider` key then
+says which answered. The staff assistant's own Jev decisions (batch email, routing, the inbound
+injection check) are not turns and add no timeline nodes; they are `decision_log` rows with a node
+named `assistant_email`, `assistant_routing` or `assistant_inbound_injection` (docs/RUNBOOK.md).
 
 **Agent loop.** After the first agents run, `observe` may start another round of read-only lookups
 (for example product details after a search). Follow-up `run_spoke` events have task ids `s<step>-<n>-<agent>`,
