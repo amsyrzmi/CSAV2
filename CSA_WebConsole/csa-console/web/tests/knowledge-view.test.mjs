@@ -336,6 +336,10 @@ test("attentionNote for each of the three states", () => {
     attentionNote(job("j3", "partial")),
     "Some of this file couldn't be read. The rest is in your assistant.",
   );
+  assert.equal(
+    attentionNote(job("j4", "partial", { original_stored: false })),
+    "The original was removed, so this can't be tried again. Remove it.",
+  );
 });
 
 test("jobActions table for every status and original_stored combination", () => {
@@ -352,6 +356,16 @@ test("jobActions table for every status and original_stored combination", () => 
       jobActions(job("j", status, { original_stored: stored })),
       { canRetry, canRemove, canCancel },
       `${status} original_stored=${stored}`,
+    );
+  }
+});
+
+test("a failed or partial sheet job cannot be tried again, only removed", () => {
+  for (const status of ["failed", "partial"]) {
+    assert.deepEqual(
+      jobActions(job("j", status, { source: "sheet", original_stored: true })),
+      { canRetry: false, canRemove: true, canCancel: false },
+      status,
     );
   }
 });

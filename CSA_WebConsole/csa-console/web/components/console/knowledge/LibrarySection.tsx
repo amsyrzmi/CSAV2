@@ -132,8 +132,13 @@ export default function LibrarySection({
       const target = confirm;
       await run(async () => {
         const result = await del<Removed>(path(`kb/${target.type}/${target.id}`));
-        const done = target.linked ? "Deleted. Your assistant no longer uses this file." : "Deleted. The stored file is gone.";
-        return result?.storage_cleanup === "pending" ? `${done} ${SWEEP_PENDING}` : done;
+        const pending = result?.storage_cleanup === "pending";
+        if (target.linked) {
+          const done = "Deleted. Your assistant no longer uses this file.";
+          return pending ? `${done} ${SWEEP_PENDING}` : done;
+        }
+        // "The stored file is gone" would contradict a sweep that is still to finish.
+        return pending ? `Deleted. ${SWEEP_PENDING}` : "Deleted. The stored file is gone.";
       });
     }
   }
@@ -141,7 +146,7 @@ export default function LibrarySection({
   async function retryJob(id: string) {
     await run(async () => {
       await post(path(`kb/ingest-jobs/${id}/retry`));
-      return "Trying again. It is back in the queue.";
+      return "Trying again. It will be read shortly.";
     });
   }
 

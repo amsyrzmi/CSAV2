@@ -142,19 +142,18 @@ export function couldNotReadText(attempts: number): string {
 
 /** The plain note on a card that needs attention. The exact server line stays in Technical details. */
 export function attentionNote(job: KbJob): string {
+  if (!job.original_stored) return "The original was removed, so this can't be tried again. Remove it.";
   if (job.status === "partial") return "Some of this file couldn't be read. The rest is in your assistant.";
-  return job.original_stored
-    ? "We couldn't read this file. You can try again or remove it."
-    : "The original was removed, so this can't be tried again. Remove it.";
+  return "We couldn't read this file. You can try again or remove it.";
 }
 
 export type JobActions = { canRetry: boolean; canRemove: boolean; canCancel: boolean };
 
-/** What a job's card offers: Try again only while the original is stored, Remove once it has ended, Cancel while it waits. */
+/** What a job's card offers: Try again only for an upload whose original is stored, Remove once it has ended, Cancel while it waits. */
 export function jobActions(job: KbJob): JobActions {
   const ended = job.status === "failed" || job.status === "partial";
   return {
-    canRetry: ended && job.original_stored,
+    canRetry: ended && job.original_stored && job.source === "upload",
     canRemove: ended || job.status === "cancelled",
     canCancel: job.status === "queued",
   };
