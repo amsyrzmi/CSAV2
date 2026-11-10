@@ -5,6 +5,7 @@ staff when held.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Callable
@@ -233,6 +234,48 @@ async def test_sandbox_handoff_keeps_sandbox_text_and_flag_off() -> None:
     draft = await _deps(model)._compose(_handoff(channel=Channel.WEB))
     assert draft.text == deps.SANDBOX_SCOPE_TEXT
     assert draft.handoff is False and model.calls == []
+
+
+# --- a slow or failing handoff reply never fails the turn -------------------------------------
+
+
+async def test_compose_handoff_template_when_the_model_is_slower_than_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(deps, "HANDOFF_COMPOSE_BUDGET_S", 0.05, raising=False)
+    made = _deps(Recorder())
+
+    async def slow(_state: TurnState, _brand: object) -> str:
+        await asyncio.sleep(1.0)
+        return "Sorry about that. A team member will reply in this chat."
+
+    made._llm.compose_handoff = slow  # type: ignore[union-attr, method-assign]
+    draft = await made._compose(_handoff())
+    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+
+
+async def test_compose_handoff_template_when_the_model_raises() -> None:
+    made = _deps(Recorder())
+
+    async def broken(_state: TurnState, _brand: object) -> str:
+        raise RuntimeError("transport went away")
+
+    made._llm.compose_handoff = broken  # type: ignore[union-attr, method-assign]
+    draft = await made._compose(_handoff())
+    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+
+
+async def test_compose_handoff_template_when_the_brand_read_fails() -> None:
+    model = Recorder()
+    made = _deps(model)
+
+    async def no_brand(_client_id: UUID) -> object:
+        raise RuntimeError("database is down")
+
+    made._client_brand = no_brand  # type: ignore[method-assign]
+    draft = await made._compose(_handoff())
+    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert model.calls == []
 
 
 # --- verify: a handoff draft was checked where it was written ---------------------------------

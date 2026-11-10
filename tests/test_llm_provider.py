@@ -1974,3 +1974,35 @@ async def test_compose_handoff_returns_none_on_a_model_error_without_a_fallback_
     provider = _provider(down, compose_fallback=gemini)
     assert await provider.compose_handoff(_handoff_state(), None) is None
     assert calls["primary"] >= 1 and fallback_calls["n"] == 0  # no failover chain
+
+
+_HANDOFF_ALREADY_TOLD_TEXT = (
+    "A team member was already told earlier in this conversation: acknowledge briefly, vary the "
+    "wording, and do not repeat the earlier handoff message."
+)
+
+
+async def _handoff_request(ctx: Context | None) -> tuple[str, dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return _ok({"reply": "A team member will reply here.", "used_fact_ids": []})(request)
+
+    await _provider(handler).compose_handoff(_handoff_state("en", ctx), None)
+    (body,) = seen
+    return body["messages"][0]["content"], body
+
+
+async def test_compose_handoff_says_a_person_was_already_told_only_when_flagged() -> None:
+    for ctx in (None, Context(), Context(flags={"handoff_recent": False})):
+        system, _ = await _handoff_request(ctx)
+        assert _HANDOFF_ALREADY_TOLD_TEXT not in system
+    system, _ = await _handoff_request(Context(flags={"handoff_recent": True}))
+    assert _HANDOFF_ALREADY_TOLD_TEXT in system
+
+
+async def test_compose_handoff_leaves_room_for_reasoning_tokens() -> None:
+    # Reasoning tokens count toward max_completion_tokens: 300 could cut the JSON short.
+    _, body = await _handoff_request(None)
+    assert body["max_completion_tokens"] == 600

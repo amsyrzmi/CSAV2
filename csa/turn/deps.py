@@ -74,6 +74,10 @@ from csa.turn.texts import clip_message, handoff_template, handoff_text_ok, reso
 
 logger = structlog.get_logger(__name__)
 
+# How long the handoff reply (brand read and model call) may take before the template is sent.
+# Under the 10 s compose node timeout, so a slow model never sends a handoff turn to fail_safe.
+HANDOFF_COMPOSE_BUDGET_S = 6.0
+
 # The booking read's own share of the context node's 2 s: longer and the customer is planned for
 # without it, as every other company is.
 BOOKING_CONTEXT_BUDGET_S = 1.0
@@ -573,8 +577,20 @@ class PostgresTurnDependencies:
             signal if isinstance(signal, str) else None, message.language, message.body_redacted
         )
         if self._llm is not None and _handoff_may_be_written(state):
-            brand = await self._client_brand(state.envelope.client_id)
-            text = await self._llm.compose_handoff(state, brand)
+            # Slow or failing, the brand read or the model must never fail the compose node: by
+            # now the conversation is muted, so a turn sent to fail_safe would tell the customer
+            # nothing. Any error (CancelledError is not an Exception) falls to the template.
+            try:
+                async with asyncio.timeout(HANDOFF_COMPOSE_BUDGET_S):
+                    brand = await self._client_brand(state.envelope.client_id)
+                    text = await self._llm.compose_handoff(state, brand)
+            except Exception as error:
+                logger.warning(
+                    "handoff_reply_replaced_by_template",
+                    trace_id=str(state.envelope.trace_id),
+                    error_type=type(error).__name__,
+                )
+                text = None
             sources = [
                 *(m.text for m in _recent_messages(state.ctx or Context())),
                 message.body_redacted,
