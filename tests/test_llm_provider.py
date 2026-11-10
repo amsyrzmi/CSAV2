@@ -2120,3 +2120,102 @@ async def test_next_step_does_not_use_the_second_client() -> None:
     with pytest.raises(GroqError):
         await provider.next_step(TurnState(envelope=make_envelope("status")))
     assert fallback.calls == []
+
+
+# --- Gemini JSON mode for schemas it cannot express (Task 6, fix round 1) -------------------
+
+
+def _gemini_capturing(text: str, bodies: list[dict[str, Any]]) -> GeminiClient:
+    """A real GeminiClient over a mock transport that answers `text` and records each body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    return GeminiClient(
+        "google-test-key", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "answer"),
+    [("Classification", CLASSIFY), ("PlanOut", _PLAN_OUT)],
+)
+async def test_gemini_sends_json_mode_without_schema_it_cannot_express(
+    schema_name: str, answer: dict[str, Any]
+) -> None:
+    from csa.decide import llm
+
+    schema = getattr(llm, schema_name)
+    bodies: list[dict[str, Any]] = []
+    client = _gemini_capturing(json.dumps(answer), bodies)
+    out = await client.json_completion(schema, system="s", user="u", timeout=5.0)
+    assert isinstance(out, schema)
+    assert len(bodies) == 1
+    config = bodies[0]["generationConfig"]
+    assert config["responseMimeType"] == "application/json"
+    assert "responseSchema" not in config
+    assert "responseJsonSchema" not in config
+    assert config["temperature"] == 0
+    assert config["maxOutputTokens"] == 1500
+
+
+async def test_gemini_still_sends_the_structured_schema_for_compose() -> None:
+    from csa.decide.llm import ComposeOut
+
+    bodies: list[dict[str, Any]] = []
+    client = _gemini_capturing('{"reply":"Hi","used_fact_ids":[]}', bodies)
+    out = await client.json_completion(ComposeOut, system="s", user="u", timeout=5.0)
+    assert out.reply == "Hi"
+    assert bodies[0]["generationConfig"] == {
+        "temperature": 0,
+        "maxOutputTokens": 1500,
+        "responseMimeType": "application/json",
+        "responseSchema": {
+            "type": "OBJECT",
+            "properties": {
+                "reply": {"type": "STRING"},
+                "used_fact_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
+            },
+            "required": ["reply"],
+        },
+    }
+
+
+@pytest.mark.parametrize("schema_name", ["Classification", "PlanOut"])
+async def test_gemini_json_mode_invalid_text_is_invalid_output(schema_name: str) -> None:
+    from csa.decide import llm
+
+    client = _gemini_capturing("not json at all", [])
+    with pytest.raises(CompletionError) as caught:
+        await client.json_completion(getattr(llm, schema_name), system="s", user="u", timeout=5.0)
+    assert caught.value.code == "gemini_invalid_output"
+
+
+async def test_classify_and_plan_reach_a_real_gemini_fallback() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        system = body["systemInstruction"]["parts"][0]["text"]
+        answer = CLASSIFY if len(bodies) == 1 else _PLAN_OUT
+        assert system
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": json.dumps(answer)}]}}]},
+        )
+
+    gemini = GeminiClient(
+        "google-test-key", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    provider = build_llm_provider(primary, compose_fallback=gemini)
+    signals = await provider.classify(make_envelope("where is my order"), Context())
+    assert signals.intent == Intent.ORDER
+    assert signals.capability_scores == {"order_agent": 0.9}
+    plan = await provider.plan(make_envelope("where is my order"), Context(), signals)
+    assert isinstance(plan, Plan)
+    assert [t.agent for t in plan.tasks] == ["order_agent"]
+    assert len(primary.calls) == 2 and len(bodies) == 2
+    assert all("responseSchema" not in b["generationConfig"] for b in bodies)

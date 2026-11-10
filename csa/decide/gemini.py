@@ -19,6 +19,7 @@ _MIN_ATTEMPT_S = 0.5
 _RETRYABLE = {429, 500, 502, 503, 504}
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 T = TypeVar("T", bound=BaseModel)
+_UNSUPPORTED_SCHEMA = "gemini_unsupported_schema"
 
 
 class GeminiClient:
@@ -38,15 +39,23 @@ class GeminiClient:
         timeout: float,
         max_tokens: int = 1500,
     ) -> T:
+        generation_config: dict[str, Any] = {
+            "temperature": 0,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+        }
+        try:
+            generation_config["responseSchema"] = _response_schema(schema.model_json_schema())
+        except CompletionError as exc:
+            if exc.code != _UNSUPPORTED_SCHEMA:
+                raise
+            # Gemini structured output cannot express this schema ($ref, nested models).
+            # Send plain JSON mode instead; the prompt names the keys and the reply is
+            # still validated against the full schema below.
         body: dict[str, Any] = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-                "responseSchema": _response_schema(schema.model_json_schema()),
-            },
+            "generationConfig": generation_config,
         }
         started = time.monotonic()
         deadline = started + timeout
@@ -94,11 +103,11 @@ def _response_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Keep Pydantic's schema to the subset supported by Gemini structured output."""
     properties = schema.get("properties", {})
     if not isinstance(properties, dict):
-        raise CompletionError("gemini_unsupported_schema")
+        raise CompletionError(_UNSUPPORTED_SCHEMA)
     converted_properties: dict[str, Any] = {}
     for name, definition in properties.items():
         if not isinstance(definition, dict):
-            raise CompletionError("gemini_unsupported_schema")
+            raise CompletionError(_UNSUPPORTED_SCHEMA)
         converted_properties[name] = _property_schema(definition)
     output: dict[str, Any] = {
         "type": "OBJECT",
@@ -115,10 +124,10 @@ def _property_schema(schema: dict[str, Any]) -> dict[str, Any]:
     if kind == "array":
         item = schema.get("items")
         if not isinstance(item, dict):
-            raise CompletionError("gemini_unsupported_schema")
+            raise CompletionError(_UNSUPPORTED_SCHEMA)
         return {"type": "ARRAY", "items": _property_schema(item)}
     if kind not in {"string", "number", "integer", "boolean", "object"}:
-        raise CompletionError("gemini_unsupported_schema")
+        raise CompletionError(_UNSUPPORTED_SCHEMA)
     output: dict[str, Any] = {"type": kind.upper()}
     enum = schema.get("enum")
     if isinstance(enum, list):

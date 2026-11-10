@@ -332,7 +332,12 @@ async def test_escalation_alert_has_resume_button_that_releases_the_ai(
     assert await tap("999") == "Already handled."
 
 
-async def _hold(world: World, endpoint_id: uuid.UUID, ttl_minutes: int = 30) -> int:  # noqa: F811
+async def _hold(  # noqa: F811
+    world: World,  # noqa: F811
+    endpoint_id: uuid.UUID,
+    ttl_minutes: int = 30,
+    draft: str = "Your refund is on the way.",
+) -> int:
     from datetime import timedelta
 
     from csa.approval.service import hold_reply
@@ -351,7 +356,7 @@ async def _hold(world: World, endpoint_id: uuid.UUID, ttl_minutes: int = 30) -> 
             client_id=world.client_id,
             conversation_id=world.conversation_id,
             trace_id=trace_id,
-            draft="Your refund is on the way.",
+            draft=draft,
             reason="never_auto:refund_returns",
             risk=0.1,
             ui={},
@@ -359,14 +364,18 @@ async def _hold(world: World, endpoint_id: uuid.UUID, ttl_minutes: int = 30) -> 
         )
 
 
-async def _held_buttons(world: World, owner_pool: Any) -> tuple[int, uuid.UUID, dict[str, str]]:  # noqa: F811
+async def _held_buttons(  # noqa: F811
+    world: World,  # noqa: F811
+    owner_pool: Any,
+    draft: str = "Your refund is on the way.",
+) -> tuple[int, uuid.UUID, dict[str, str]]:
     endpoint_id = _seed_endpoint(world)
     _seed_target(world)
-    approval_id = await _hold(world, endpoint_id)
+    approval_id = await _hold(world, endpoint_id, draft=draft)
     sent: list[dict[str, Any]] = []
     assert await _sender(world, owner_pool, sent).process_once()
     assert "AI reply needs approval" in sent[0]["text"]
-    assert "Your refund is on the way." in sent[0]["text"]
+    assert draft in sent[0]["text"]
     return approval_id, endpoint_id, _tap_ids(sent)
 
 
@@ -443,6 +452,53 @@ async def test_approval_fallback_is_localized(world: World, owner_pool: Any) -> 
         )
     assert await expire_due(owner_pool, world.pool) == 1
     assert world.q("SELECT final_text FROM approvals WHERE id=%s", expiring) == [
+        (followup_text("zh"),)
+    ]
+
+
+_MALAY_DRAFT = "Boleh, saya tak pasti lagi tapi kami nak semak dulu ya."
+
+
+async def test_approval_followup_reads_the_draft_when_the_locale_is_the_default(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+) -> None:
+    """A stored locale of `en` is the column default, so the held draft decides the language."""
+    from csa.approval.service import expire_due
+    from csa.turn.texts import followup_text
+
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE contacts SET locale='en' WHERE id=%s", (world.contact_id,))
+    approval_id, endpoint_id, buttons = await _held_buttons(world, owner_pool, draft=_MALAY_DRAFT)
+    assert (await _tap_reply(world, endpoint_id, buttons["Reject"])).startswith("Rejected.")
+    assert world.q("SELECT body FROM messages WHERE client_id=%s", world.client_id) == [
+        (followup_text("ms"),)
+    ]
+    assert world.q("SELECT final_text FROM approvals WHERE id=%s", approval_id) == [
+        (followup_text("ms"),)
+    ]
+
+    english = await _hold(world, endpoint_id)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id=%s",
+            (english,),
+        )
+    assert await expire_due(owner_pool, world.pool) == 1
+    assert world.q("SELECT final_text FROM approvals WHERE id=%s", english) == [
+        (followup_text("en"),)
+    ]
+
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE contacts SET locale='zh' WHERE id=%s", (world.contact_id,))
+    chinese = await _hold(world, endpoint_id, draft=_MALAY_DRAFT)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = now() - interval '1 minute' WHERE id=%s",
+            (chinese,),
+        )
+    assert await expire_due(owner_pool, world.pool) == 1
+    assert world.q("SELECT final_text FROM approvals WHERE id=%s", chinese) == [
         (followup_text("zh"),)
     ]
 

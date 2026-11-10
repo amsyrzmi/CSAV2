@@ -273,7 +273,11 @@ async def _settle(
         text = edited_text
     else:
         # Staff really are following up here. The contact's stored locale, else the draft's.
-        language = resolve_language(None, approval.get("locale") or "", approval["draft"])
+        # contacts.locale defaults to 'en', so a stored 'en' is treated as unknown.
+        locale = approval.get("locale") or ""
+        language = resolve_language(
+            None, locale if locale not in ("", "en") else "", approval["draft"]
+        )
         text = approval["draft"] if send_draft else followup_text(language)
     decided = await db.q.fetch_one(
         "approval/decide_approval.sql",
