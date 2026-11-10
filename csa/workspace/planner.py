@@ -366,15 +366,18 @@ booking_id only when the user picked one from offered options. A move also gives
 (and day, when it changes). Leave out what the user did not say; the server asks for it. Use a \
 name as the user wrote it, or an id only from offered options.
 - To answer "when is Aina free tomorrow?" use answer with reads ["booking_availability"] and \
-availability: person or room (one of them, a name), day, and minutes when the user says how long. \
-Write the markdown as one short lead-in; the server lists the free times.
+availability. availability holds only person or room (one of them, a name), day (YYYY-MM-DD) \
+and minutes when the user says how long; it has no time. Write the markdown as one short \
+lead-in; the server lists the day's free times.
 - email_batch: one email to two or more people, each sent as a separate message (my_team stays \
 email_team). recipients: {{"kind": "employee", "value": a colleague's name}}, {{"kind": \
 "customer", "value": a customer's name}}, {{"kind": "address", "value": a typed address}}, or \
 ONE {{"kind": "group", "group": "active_subscribers"}} or {{"kind": "group", "group": \
-"renewing_soon", "days": N}}; the server finds each person. mode is "shared" when everyone gets \
-the same text and "personalised" when each email uses the person's own details; \
-use_knowledge_base is true when the email needs the business's policies or product information. \
+"renewing_soon", "days": N}}; the server finds each person. Always set mode: "shared" when \
+everyone gets the same text ("send the same email to Farah, Imran and Wei: the lift is closed on \
+Monday"; separate messages alone are still "shared"), "personalised" when each email uses the \
+person's own details ("remind each subscriber of their own renewal date"); use_knowledge_base \
+is true when the email needs the business's policies or product information. \
 For "the rest" of a group, repeat the earlier email_batch with offset set to that history turn's \
 resume_offset. subject, instructions and send as for email_compose.
 - plan: two or more changes in one request (for example two bookings): steps holds one \

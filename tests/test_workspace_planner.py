@@ -3302,3 +3302,181 @@ def test_the_new_section_repeats_no_existing_rule() -> None:
     for phrase in ("can_change", "people_access", "clarification", "Never", "never", "confirm"):
         assert phrase not in section, phrase
     assert "whether or not people_access is present" not in SYSTEM_PROMPT
+
+
+# --------------------------------------------------------------------------- batch mode
+
+
+def _batch_facts() -> PlannerFacts:
+    return PlannerFacts(
+        role=Role.TENANT_STAFF, packages=[], page_context=None, record_summary=None, language="en"
+    )
+
+
+def _batch_proposal(**fields: Any) -> Any:
+    from csa.workspace.contracts import EmailBatchProposal
+
+    return EmailBatchProposal.model_validate(
+        {
+            "action": "email_batch",
+            "recipients": [
+                {"kind": "employee", "value": "Farah"},
+                {"kind": "employee", "value": "Imran"},
+            ],
+            "subject": "Car park",
+            **fields,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("words", "mode"),
+    [
+        (
+            "Send the same email to Farah and Imran, each on their own: the car park closes",
+            "shared",
+        ),
+        ("Send the same message to Farah and Imran", "shared"),
+        ("Hantar emel yang sama kepada Farah dan Imran, seorang satu", "shared"),
+        ("Tolong hantar mesej yang sama kepada semua", "shared"),
+        # A personal detail wins over "same": each gets their own text.
+        ("Send the same email to every subscriber with their own renewal date", "personalised"),
+        ("Hantar emel yang sama dengan tarikh pembaharuan mereka sendiri", "personalised"),
+        ("Send the same email, personalised for each of them", "personalised"),
+        # Nothing explicit: the decider's old default.
+        ("Email Farah and Imran that the car park closes at 5pm", "personalised"),
+        ("Remind each subscriber of their own renewal date", "personalised"),
+        ("Draf emel kepada semua pelanggan aktif", "personalised"),
+    ],
+)
+def test_batch_mode_words_give_shared_only_for_an_explicit_same_text(words: str, mode: str) -> None:
+    from csa.workspace.rules import batch_mode
+
+    assert batch_mode(words) == mode
+
+
+def test_a_batch_without_mode_takes_its_mode_from_the_users_own_words() -> None:
+    """The planner left mode out: the server never silently defaults "the same email" to
+    personalised; anything less explicit stays personalised."""
+    from csa.workspace.service import _ready_batch
+
+    facts = _batch_facts()
+    same = "Send the same email to Farah and Imran: the car park closes at 5pm"
+    assert _ready_batch(_batch_proposal(), same, facts).mode == "shared"
+    plain = "Email Farah and Imran that the car park closes at 5pm"
+    assert _ready_batch(_batch_proposal(), plain, facts).mode == "personalised"
+
+
+def test_a_planner_mode_is_kept_whatever_the_words() -> None:
+    """Only a missing mode is filled in; the planner's own choice is never overridden."""
+    from csa.workspace.service import _ready_batch
+
+    facts = _batch_facts()
+    same = "Send the same email to Farah and Imran: the car park closes at 5pm"
+    kept = _ready_batch(_batch_proposal(mode="personalised"), same, facts)
+    assert kept.mode == "personalised"
+    plain = "Email Farah and Imran that the car park closes at 5pm"
+    assert _ready_batch(_batch_proposal(mode="shared"), plain, facts).mode == "shared"
+
+
+def test_a_batch_mode_reads_only_the_users_own_words() -> None:
+    """A clicked option ("the same email") is not the user's words: it cannot make a batch
+    shared (``_own_text``, as for the send rule)."""
+    from csa.workspace.planner import PriorTurn
+    from csa.workspace.service import _ready_batch
+
+    clicked = "Send the same email to everyone"
+    asked = PriorTurn(
+        message="Email Farah and Imran about the car park",
+        action="clarification",
+        result="clarification",
+        question="Which one?",
+        offered_options=[clicked],
+    )
+    facts = _batch_facts().model_copy(update={"history": [asked]})
+    assert _ready_batch(_batch_proposal(), clicked, facts).mode == "personalised"
+
+
+def test_planner_prompt_asks_for_the_batch_mode_with_examples() -> None:
+    """The model left mode out of "send the same email" batches: the prompt now asks for it
+    every time, with one example of each value (synthetic, not the smoke wording)."""
+    section = " ".join(_new_section().split())
+    assert 'Always set mode: "shared" when everyone gets the same text' in section
+    assert 'separate messages alone are still "shared"' in section
+    assert '"personalised" when each email uses the person\'s own details' in section
+    assert "their own renewal date" in section
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "Aina Rahman" not in flat and "Mei Ling" not in flat  # no smoke-case wording
+
+
+def test_planner_prompt_states_the_availability_shape() -> None:
+    """booking_book-en-2: a viewer asking to book at a time is answered with free times; the
+    availability read has no time, so the prompt says what it holds."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert (
+        "availability holds only person or room (one of them, a name), day (YYYY-MM-DD) and "
+        "minutes when the user says how long; it has no time. Write the markdown as one short "
+        "lead-in; the server lists the day's free times."
+    ) in flat
+
+
+def test_the_contract_note_names_the_availability_rule() -> None:
+    """The one correction after a contract_invalid plan names the availability rule, the
+    only answer field a validator checks."""
+    from csa.workspace.rules import CONTRACT_INVALID, CORRECTION_NOTES
+
+    note = CORRECTION_NOTES[CONTRACT_INVALID]
+    assert (
+        "for answer, set availability (one of person or room, and day; no time) with the "
+        "booking_availability read and only with it"
+    ) in note
+
+
+async def test_an_availability_with_a_time_is_replanned_with_the_availability_note() -> None:
+    """The likely first reply to booking_book-en-2 (a free-times read carrying the booking's
+    time) breaks the contract; the re-plan carries the note and its answer stands."""
+    from csa.workspace.rules import CONTRACT_INVALID, CORRECTION_NOTES
+
+    facts = _batch_facts()
+    model = ScriptedCompletion()
+    ask = {"room": "Room B", "day": "2026-11-06"}
+    model.reply(
+        {
+            "action": "answer",
+            "markdown": "You can only ask for free times.",
+            "reads": ["booking_availability"],
+            "availability": {**ask, "time": "14:00"},
+        }
+    )
+    model.reply(
+        {
+            "action": "answer",
+            "markdown": "You can only ask for free times.",
+            "reads": ["booking_availability"],
+            "availability": ask,
+        }
+    )
+    planned = await _plan(WorkspacePlanner(model), "Please book Room B tomorrow at 2 pm", facts)
+    assert planned.action == "answer" and planned.availability.room == "Room B"
+    assert len(model.calls) == 2
+    assert model.calls[1][2].endswith(
+        f"<correction>\n{CORRECTION_NOTES[CONTRACT_INVALID]}\n</correction>"
+    )
+    assert "availability" in CORRECTION_NOTES[CONTRACT_INVALID]
+
+
+def test_the_same_email_after_an_earlier_batch_stays_personalised() -> None:
+    """After a batch turn "the same reminder" means "like the earlier email", which may have
+    been written per person: a missing mode stays personalised there, on "the rest" too."""
+    from csa.workspace.planner import PriorTurn
+    from csa.workspace.service import _ready_batch
+
+    earlier = PriorTurn(
+        message="Remind every subscriber of their own renewal date",
+        action="email_batch",
+        result="proposal",
+        proposal_kind="plan",
+    )
+    facts = _batch_facts().model_copy(update={"history": [earlier]})
+    again = "Send the same email to Farah and Imran"
+    assert _ready_batch(_batch_proposal(), again, facts).mode == "personalised"

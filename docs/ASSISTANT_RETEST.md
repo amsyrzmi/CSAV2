@@ -55,7 +55,7 @@ expects, such as a job title searched in Malay instead of English; the query is 
 `draft` (the drafting call failed or its draft broke the contract), `recipients` and `group` (an
 email_batch with another number of recipients, or another group, than the case's), `steps` and
 `step_fields` (a plan whose steps are not the case's actions or values; never printed) or `model`
-(the provider failed after the first call). `replanned` means the one correction was used. The action is the model's own
+(the provider failed after the first call). `replanned` means the one correction was used. `mode_inferred` means an email_batch came without a `mode` and the server filled it in from the user's words ("the same email" is shared, anything else personalised), so the `fields` check saw the server's mode: a case that passes only with it means the prompt still drifts. The action is the model's own
 plan (`invalid_output` when there was none).
 
 Rows marked "manual" depend on staging state or on the console, so only a person can check them.

@@ -20,6 +20,7 @@ def source_tree(root: Path) -> Path:
         "csa/evals/data/decision_cases.json",
         "csa/workspace/smoke_cases.json",
         "scripts/__init__.py",
+        "scripts/customer_bot_replay_cases.json",
         "db/schema_baseline.sql",
         "db/migrations/0360_identity.sql",
         "db/sql/query.sql",
@@ -48,6 +49,8 @@ def test_context_excludes_environment_local_sql_caches_and_reference(tmp_path: P
         # The owner's smoke run (python -m scripts.assistant_smoke) reads it in the image.
         "csa/workspace/smoke_cases.json",
         "scripts/__init__.py",
+        # The owner's replay (python -m scripts.customer_bot_replay) reads it in the image.
+        "scripts/customer_bot_replay_cases.json",
         "db/schema_baseline.sql",
         "db/migrations/0360_identity.sql",
         "db/sql/query.sql",

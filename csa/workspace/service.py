@@ -13,6 +13,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
+import structlog
 from fastapi import HTTPException, Request
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
@@ -130,6 +131,7 @@ from csa.workspace.rules import (
     about_email,
     asks_for_content,
     asks_to_send,
+    batch_mode,
     is_placeholder,
     picks_thread_or_colleague,
     role_allows_tab,
@@ -137,6 +139,8 @@ from csa.workspace.rules import (
 )
 from csa.workspace.rules import TAB_GATES as _TAB_GATES
 from csa.workspace.rules import unlocked as _unlocked
+
+logger = structlog.get_logger(__name__)
 
 _RESULT = TypeAdapter(WorkspaceActionResult)
 # The turn row's action column has a CHECK list (last set by migration 0521). A migration in the
@@ -2172,6 +2176,30 @@ def _resumed(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) ->
     return proposal.model_copy(update={"offset": latest.resume_offset})
 
 
+def _ready_batch(
+    proposal: EmailBatchProposal, message: str, facts: PlannerFacts
+) -> EmailBatchProposal:
+    """The batch as the server drafts it: "the rest" from the stored count (``_resumed``), and
+    a mode when the planner left it out.
+
+    The email decider falls back to the planner's ``mode``, so a missing one is filled in here
+    from the user's own words (``_own_text``; ``rules.batch_mode``: "the same email" is shared,
+    anything less explicit personalised). A resumed page, or any turn after an earlier batch
+    turn, stays personalised: there "the same email" means "like the earlier one", which may have
+    been written per person. The planner's own mode is never changed. Only the mode is logged.
+    """
+    resumed = _resumed(proposal, message, facts)
+    if resumed.mode is not None:
+        return resumed
+    earlier = any(turn.action in _BATCH_ACTIONS for turn in facts.history)
+    if resumed.offset or earlier:
+        mode: Literal["shared", "personalised"] = "personalised"
+    else:
+        mode = batch_mode(_own_text(message, facts))
+    logger.info("workspace_batch_mode_inferred", mode=mode)
+    return resumed.model_copy(update={"mode": mode})
+
+
 def _check_batch(proposal: EmailBatchProposal, message: str, facts: PlannerFacts) -> str | None:
     """Refuse a recipient the user did not ask for, and return the answer's text key for an
     ``offset`` the thread never stored (else None).
@@ -2397,7 +2425,7 @@ async def _plan(
     """
     text = _TEXT[facts.language]
     steps = [
-        _resumed(step, turn.body, facts) if isinstance(step, EmailBatchProposal) else step
+        _ready_batch(step, turn.body, facts) if isinstance(step, EmailBatchProposal) else step
         for step in steps
     ]
     stop = _over_the_caps(steps)
