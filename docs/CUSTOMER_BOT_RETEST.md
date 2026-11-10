@@ -20,7 +20,7 @@ docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --langua
 - `--script PATH` replays another script file (default `scripts/customer_bot_replay_cases.json`),
   `--language en|ms|zh|ta` and `--conversation ID` pick conversations, `--dry-run` only checks the
   script file and calls no model.
-- The shipped script has two conversations: `ms-plans` (Malay) and `en-plans` (English).
+- The shipped script has three conversations: `ms-plans` (Malay), `ms-owner-style` (Malay, written the way real customers type: "korg ada jual apa", "nak bayar cenne eh") and `en-plans` (English). The last Malay message asks how to pay, which no fact answers: expect an honest "no exact information yet" with a team follow-up, not an invented method.
 - It prints each customer message and reply (synthetic text, on purpose), the classifier's intent,
   language and wants_human, the brand tone used, then per conversation the counts of the formal
   Malay markers (`anda`, `sila`, `pihak kami`, `menemukan`, `dimaklumkan`) and of sentences repeated
@@ -35,7 +35,7 @@ docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --langua
 
 | Check | Setup | Expected | Kind |
 | --- | --- | --- | --- |
-| Malay replay read-through | `--conversation ms-plans` on the shipped script | Exit 0. Read every reply: casual, natural Malay; no `anda`, `sila`, `pihak kami`, `menemukan` or `dimaklumkan`; no sentence said twice; a list is never longer than the cap; asking for a person is acknowledged once, in one or two short sentences | manual |
+| Malay replay read-through (run both Malay conversations) | `--conversation ms-plans`, then `--conversation ms-owner-style` on the shipped script | Exit 0. Read every reply: casual, natural Malay; no `anda`, `sila`, `pihak kami`, `menemukan` or `dimaklumkan`; no sentence said twice; a list is never longer than the cap; asking for a person is acknowledged once, in one or two short sentences | manual |
 | English twin | `--conversation en-plans` | Exit 0. Read every reply: the same facts as the Malay run, warm and plain, no repeated sentence, no list over the cap | manual |
 | Register with a professional tone | Console, Customer replies, Tone set to `professional` for the staging test company; then the replay (the script's brand tone can be changed in a copy passed with `--script`) or a real Telegram chat in Malay | The Malay stays casual: `professional` is not a request for formal Malay | manual |
 | Register with an explicit formal tone | The same, with Tone set to `formal Malay` | The Malay goes formal (`anda`, `sila` and so on are now allowed); setting the Tone back to empty returns it to casual | manual |
