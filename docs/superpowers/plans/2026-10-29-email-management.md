@@ -312,7 +312,7 @@
     2. **The staging record for PRs #50 and #51** (2026-10-29):
        - #50 (`66865b6`) wired the Google client and was rolled out by recreating the gateway.
        - #51 (`af89e81`) fixed the OAuth `iss` callback. It was published by `publish-staging-images` run 40917883873 as `csa-python@sha256:be9a1c700b1b2538197236aa94d17a5b67060ae4c92432e9b258a0ac845df4b0` and `csa-frontend@sha256:e9a7c300e4291753ee88be7341617d5e70f0999b94b90fea8c95cc1020d398ef`, and all four app services were recreated with both mail flags on.
-       - The owner connected `muhammad.amsyar@fourstacks.my` Gmail and synced.
+       - The owner connected `owner@example.com` Gmail and synced.
 
 **Steps**
 

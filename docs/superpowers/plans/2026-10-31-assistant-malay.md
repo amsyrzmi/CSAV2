@@ -78,7 +78,7 @@ Next.js console with TypeScript, node test runner (`tests/*.test.mjs`).
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("hantar emel kat danial@fourstacks.my pasal mesyuarat esok", "ms"),
+        ("hantar emel kat danial.hakim@example.com pasal mesyuarat esok", "ms"),
         ("emel aina.rahman.binti.ali@company.example.com.my tentang cuti", "ms"),
         ("buka tab HR", "ms"),
         ("tolong hantar emel kepada nur.aina.binti.ahmad@syarikat-contoh.com.my", "ms"),
@@ -88,7 +88,7 @@ Next.js console with TypeScript, node test runner (`tests/*.test.mjs`).
         ("can you open HR", "en"),
         ("yes", "en"),
         ("ok", None),
-        ("danial@fourstacks.my", None),
+        ("danial.hakim@example.com", None),
         ("Danial Hakim", None),
         ("", None),
     ],
@@ -169,7 +169,7 @@ Pure tests:
   - for a folded answer, `own_words` returns only the typed part;
   - `own_words("danial@x.my", ["danial@x.my"]) == ""`.
 - `test_turn_language_carries`, which asserts:
-  - `turn_language("danial@fourstacks.my", [], "ms") == "ms"`;
+  - `turn_language("danial.hakim@example.com", [], "ms") == "ms"`;
   - `turn_language("ok", [], None) == "en"`;
   - `turn_language("send it to danial please", [], "ms") == "en"`.
 
@@ -177,7 +177,7 @@ Docker tests (`planned` fixture, `_mail_ready`, `_thread`, `_turn`, `model.reply
 - `test_malay_conversation_stays_malay_after_a_typed_address`:
   1. a Malay turn (`"tolong hantar emel kepada Danial"`), answered with
      `{"action": "clarification", "question": "...", "options": []}`;
-  2. then a turn whose body is just `"danial@fourstacks.my"` (planner replies with an answer);
+  2. then a turn whose body is just `"danial.hakim@example.com"` (planner replies with an answer);
   3. assert both responses have `json()["language"] == "ms"`, and that the second planner
      call's facts carry `language == "ms"` (read through the scripted model's recorded
      prompts);
