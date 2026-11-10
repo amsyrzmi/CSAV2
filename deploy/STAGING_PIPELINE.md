@@ -937,6 +937,15 @@ owner's real app. Change the code in the one place named and record the answer i
 | 12 | Rate limits, and the page size limits (the code asks for at most 50 per page). | `page_size` bounds in `csa/agents/ecommerce/adapters/tiktok_shop.py`; the sync pacing (`page_delay_seconds`, `retry_backoff_seconds`) in `csa/marketplace/processor.py` |
 | 13 | Whether a shop that is not the owner's can authorize an unpublished app (12.9). | no code: procedure only |
 
+**Confirmed so far (2026-11-10, owner's published app and own shop, via Partner Center and `scripts.tiktok_probe`):**
+row 5, the numbers 1 (Order Status Change), 5 (Product Status Change) and 6 (Seller Deauthorization), and
+that 12 is Order Return Status Change, not deauthorization; row 8, a live product's status is
+`ACTIVATE`; row 2 in part, the connect worked with the placeholder scopes. A live product search sends
+`price.tax_exclusive_price` and no `price.sale_price` (fixed in `tiktok_models.py`; the price is
+pre-tax, check the product detail read before showing a customer price), an empty `seller_sku` and no
+`main_images` or `sales_attributes` for a simple product. The order probe returned an empty page (the
+shop had no orders in the 90-day window), so rows 7 and 9 stay open until an order exists.
+
 Until a row is confirmed, treat what it covers as unverified: the safe failure in every case is
 "nothing is shown or written", never a wrong write, because the code never writes to TikTok.
 
