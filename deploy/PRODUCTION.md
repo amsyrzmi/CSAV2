@@ -121,6 +121,7 @@ lines, or named another commit; `apply` does not run.
   commit. Roll it out to staging first. There is no bypass. If the staging rollout succeeded but
   printed `WARNING: staging is fine but the staged record was not written`, run its `Retry:` line
   on the home server: `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`.
+  It refuses a commit that is not on `origin/main` in that checkout.
 - `images for <sha7> are not published yet (<state>)`: approve the `staging-images` environment
   on the publish run, wait for it to finish, then start again.
 - `Stopped at confirm: host settings changed since plan; run plan again`: `/srv/csa-prod/host.env`

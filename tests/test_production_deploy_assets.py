@@ -408,9 +408,7 @@ def test_entry_runs_from_root_whatever_the_starting_directory(harness: Harness) 
     assert ["python-cwd", str(harness.checkout)] in harness.calls()
 
 
-needs_non_root = pytest.mark.skipif(
-    os.geteuid() == 0, reason="root ignores file permissions"
-)
+needs_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
 
 
 @needs_non_root
@@ -721,9 +719,7 @@ def test_ssm_run_apply_without_migrations_omits_the_parameter(harness: Harness) 
 
 
 @pytest.mark.parametrize("migrations", ["0486", MIGRATIONS])
-def test_ssm_run_apply_sends_a_non_empty_migrations_list(
-    harness: Harness, migrations: str
-) -> None:
+def test_ssm_run_apply_sends_a_non_empty_migrations_list(harness: Harness, migrations: str) -> None:
     result = harness.ssm(["apply", SHA, migrations, DIGEST])
 
     assert result.returncode == 0, result.stderr

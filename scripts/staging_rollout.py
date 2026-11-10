@@ -258,8 +258,9 @@ def load_host_values(target: Target) -> dict[str, str]:
         if not separator:
             raise RolloutError("flags", f"{name} line {number} has no '='")
         if key not in allowed:
-            # A key that is not even a name may be a pasted value: do not print it.
-            shown = f" {key}" if KEY_RE.match(key) else ""
+            # A key that is not one of ours may be a pasted value (a secret before the "=" can
+            # look like a name): print it only when it is a CSA_ name.
+            shown = f" {key}" if KEY_RE.match(key) and key.startswith("CSA_") else ""
             raise RolloutError("flags", f"{name} line {number}: unknown key{shown}")
         if key in values:
             raise RolloutError("flags", f"{name} line {number}: duplicate key {key}")
@@ -369,7 +370,7 @@ def target_sha(runner: Runner, repo: Path) -> str:
     """HEAD of a clean checkout that is already on origin/main. Never fetches."""
     head = runner.run(["git", "-C", str(repo), "rev-parse", "HEAD"])
     sha = head.stdout.strip()
-    if head.returncode != 0 or not SHA_RE.match(sha):
+    if head.returncode != 0 or not SHA_RE.fullmatch(sha):
         raise RolloutError("plan", "could not read HEAD of the checkout")
     status = runner.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"])
     if status.returncode != 0 or status.stdout.strip():
@@ -509,6 +510,8 @@ def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
 
     Fails closed: a gh failure or any answer not of the expected shape is a stop, never a pass.
     """
+    if not SHA_RE.fullmatch(sha):
+        raise RolloutError("gate", "not a full 40-character SHA")
     deployments = f"repos/{target.repo}/deployments"
     query = f"sha={sha}&environment={GATE_ENVIRONMENT}&per_page=100"
     listing = _gh_json(runner, ["gh", "api", f"{deployments}?{query}"], "gate")
@@ -555,6 +558,8 @@ def record_staged(runner: Runner, target: Target, sha: str) -> None:
 
     ``auto_inactive`` false keeps an older commit's success after a newer one is recorded.
     """
+    if not SHA_RE.fullmatch(sha):
+        raise RolloutError("gate", "not a full 40-character SHA")
     deployments = f"repos/{target.repo}/deployments"
     created = _gh_json(
         runner,
@@ -632,7 +637,7 @@ def _container_image(
         return None
     labels = data.get("labels")
     revision = labels.get(REVISION_LABEL) if isinstance(labels, dict) else None
-    if not isinstance(revision, str) or not SHA_RE.match(revision):
+    if not isinstance(revision, str) or not SHA_RE.fullmatch(revision):
         revision = None
     for entry in entries:
         if isinstance(entry, str) and entry.startswith(f"{target.image_owner}/"):
@@ -793,7 +798,7 @@ def build_plan(
     target: Target = STAGING,
     expected_host_digest: str | None = None,
 ) -> Plan:
-    if expected_sha is not None and not SHA_RE.match(expected_sha):
+    if expected_sha is not None and not SHA_RE.fullmatch(expected_sha):
         raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
     sha = target_sha(runner, repo)
     if expected_sha is not None and expected_sha != sha:
@@ -1485,16 +1490,38 @@ def apply(
 
 
 def record_staged_command(
-    runner: Runner, target: Target, sha: str, out: Callable[[str], None] = print
+    runner: Runner,
+    target: Target,
+    sha: str,
+    out: Callable[[str], None] = print,
+    *,
+    repo: Path | None = None,
 ) -> int:
-    """``record-staged``: write the staging record again after a failed write."""
+    """``record-staged``: write the staging record again after a failed write.
+
+    The sha is the operator's, so it must be on origin/main in the live checkout (as the
+    rollout it records was): a typo or another branch's commit is never recorded as staged.
+    """
+    repo = REPO_ROOT if repo is None else repo
     try:
         if target.name != GATE_ENVIRONMENT:
             raise RolloutError(
                 "gate", f"record-staged records staging rollouts only, not {target.name}"
             )
-        if not SHA_RE.match(sha):
+        if not SHA_RE.fullmatch(sha):
             raise RolloutError("gate", "--sha must be the full 40-character SHA")
+        argv = ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, "origin/main"]
+        outcome = runner.run(argv).returncode
+        if outcome == 1:
+            raise RolloutError(
+                "gate",
+                f"commit {sha[:7]} is not on origin/main; "
+                "record-staged records only commits on main",
+            )
+        if outcome != 0:
+            raise RolloutError(
+                "gate", f"could not check that {sha[:7]} is on origin/main (git exit {outcome})"
+            )
         record_staged(runner, target, sha)
     except RolloutError as error:
         _report_stop(error, out)
@@ -1553,7 +1580,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             parser.error(f"--host-digest is not used by --target {target.name}")
     runner = runner or SubprocessRunner(cwd=REPO_ROOT)
     if args.command == "record-staged":
-        return record_staged_command(runner, target, args.sha)
+        return record_staged_command(runner, target, args.sha, repo=REPO_ROOT)
     # Staging keeps its module-level directory (tests point it elsewhere).
     secret_dir = SECRET_DIR if target.name == "staging" else target.secret_dir
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))

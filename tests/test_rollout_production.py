@@ -382,6 +382,32 @@ def test_host_file_refuses_switches_groq_url_unknown_duplicate_and_malformed(
 
 
 @pytest.mark.parametrize(
+    ("line", "shown"),
+    [
+        ("CSA_PROD_NOPE=1", " CSA_PROD_NOPE"),
+        ("CSA_STAGING_ELSE=x", " CSA_STAGING_ELSE"),
+        # A secret pasted before the "=" can look like a NAME; only CSA_ keys are echoed.
+        ("GHPABCDEF0123456789SECRET=1", ""),
+        ("AKIAEXAMPLEKEY0000=x", ""),
+        ("not-a-name=secret-ish", ""),
+        ("CSA_lower=1", ""),
+    ],
+    ids=["csa-prod", "csa-staging", "token-like", "key-like", "not-a-name", "not-upper"],
+)
+def test_host_file_unknown_key_is_named_only_when_it_is_a_csa_key(
+    tmp_path: Path, line: str, shown: str
+) -> None:
+    host = tmp_path / "host.env"
+    host.write_text(HOST_TEXT + line + "\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_host_values(hosted(host))
+    assert (caught.value.step, caught.value.message) == (
+        "flags",
+        f"host.env line 5: unknown key{shown}",
+    )
+
+
+@pytest.mark.parametrize(
     "line",
     [
         'export CSA_STAGING_HOOKS_ORIGIN="probe-quoted-77"',

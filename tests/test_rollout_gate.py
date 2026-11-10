@@ -266,13 +266,37 @@ def test_record_staged_failure_is_a_gate_error(
     assert len(runner.calls) == posts
 
 
+def is_ancestor_check(argv: Sequence[str]) -> bool:
+    return argv[:2] == ["git", "-C"] and argv[3:] == [
+        "merge-base",
+        "--is-ancestor",
+        SHA,
+        "origin/main",
+    ]
+
+
+def on_main(answer: Completed | None = None) -> list[tuple[Predicate, Answer]]:
+    """record-staged's check that the operator's sha is on origin/main in the live checkout."""
+    return [(is_ancestor_check, answer or ok())]
+
+
 def test_record_staged_subcommand_and_its_refusal_for_production(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    runner = FakeRunner(record_rules())
+    runner = FakeRunner(on_main() + record_rules())
     assert sr.main(["record-staged", "--sha", SHA], runner=runner) == 0
     assert capsys.readouterr().out == "Recorded a1b2c3d as staged\n"
-    assert [json.loads(input or "") for _, _, input in runner.calls] == [
+    # The sha is checked against origin/main in the live checkout before anything is written.
+    assert runner.argvs[0] == [
+        "git",
+        "-C",
+        str(sr.REPO_ROOT),
+        "merge-base",
+        "--is-ancestor",
+        SHA,
+        "origin/main",
+    ]
+    assert [json.loads(input or "") for _, _, input in runner.calls[1:]] == [
         DEPLOYMENT_BODY,
         STATUS_BODY,
     ]
@@ -288,12 +312,74 @@ def test_record_staged_subcommand_and_its_refusal_for_production(
     assert lines == ["Stopped at gate: --sha must be the full 40-character SHA"]
     assert runner.calls == []
 
-    runner = FakeRunner(record_rules(created=fail(1, "HTTP 401: Bad credentials")))
+    runner = FakeRunner(on_main() + record_rules(created=fail(1, "HTTP 401: Bad credentials")))
     assert sr.main(["record-staged", "--sha", SHA], runner=runner) == 1
     assert capsys.readouterr().out == "Stopped at gate: gh failed: HTTP 401: Bad credentials\n"
 
     with pytest.raises(SystemExit):
         sr.main(["record-staged"], runner=FakeRunner([]))
+
+
+@pytest.mark.parametrize(
+    ("answer", "message"),
+    [
+        (
+            fail(1),
+            "commit a1b2c3d is not on origin/main; record-staged records only commits on main",
+        ),
+        (
+            fail(128, "fatal: Not a valid commit name"),
+            "could not check that a1b2c3d is on origin/main (git exit 128)",
+        ),
+    ],
+    ids=["not-on-main", "git-cannot-answer"],
+)
+def test_record_staged_refuses_a_sha_that_is_not_on_main(
+    tmp_path: Path, answer: Completed, message: str
+) -> None:
+    lines: list[str] = []
+    runner = FakeRunner(on_main(answer) + record_rules())
+    assert sr.record_staged_command(runner, STAGING, SHA, lines.append, repo=tmp_path) == 1
+    assert lines == [f"Stopped at gate: {message}"]
+    # Fail closed: nothing is written when git says no or cannot answer.
+    assert runner.argvs == [
+        ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", SHA, "origin/main"]
+    ]
+
+
+@pytest.mark.parametrize("bad", [SHA + "\n", SHA + "\r\n", " " + SHA, SHA.upper()])
+def test_record_staged_refuses_a_sha_with_a_trailing_newline_or_other_noise(bad: str) -> None:
+    lines: list[str] = []
+    runner = FakeRunner([])
+    assert sr.record_staged_command(runner, STAGING, bad, lines.append) == 1
+    assert lines == ["Stopped at gate: --sha must be the full 40-character SHA"]
+    assert runner.calls == []
+
+
+def test_main_record_staged_refuses_a_sha_argument_ending_in_a_newline(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner([])
+    assert sr.main(["record-staged", "--sha", SHA + "\n"], runner=runner) == 1
+    assert capsys.readouterr().out == "Stopped at gate: --sha must be the full 40-character SHA\n"
+    assert runner.calls == []
+
+
+def test_the_record_helpers_refuse_a_sha_ending_in_a_newline() -> None:
+    runner = FakeRunner([])
+    for helper in (sr.staged_record, sr.record_staged):
+        with pytest.raises(RolloutError) as caught:
+            helper(runner, STAGING, SHA + "\n")
+        assert caught.value.step == "gate"
+        assert caught.value.message == "not a full 40-character SHA"
+    assert runner.calls == []
+
+
+def test_sha_re_is_applied_as_a_full_match() -> None:
+    assert sr.SHA_RE.match(SHA + "\n")  # what the anchors alone let through
+    source = Path(sr.__file__).read_text(encoding="utf-8")
+    assert "SHA_RE.match(" not in source
+    assert "SHA_RE.search(" not in source
 
 
 # --- main records after a successful staging apply ----------------------------------------------
