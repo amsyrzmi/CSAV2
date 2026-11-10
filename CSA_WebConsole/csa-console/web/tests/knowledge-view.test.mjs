@@ -251,6 +251,7 @@ test("progressWord maps every job status", () => {
   assert.equal(progressWord("processing"), "Reading");
   assert.equal(progressWord("done"), "Ready");
   assert.equal(progressWord("partial"), "Partly read");
+  assert.equal(progressWord("cancelled"), "Removed");
   assert.equal(progressWord("failed"), "Could not be read");
   assert.equal(progressWord("something_new"), "Could not be read");
 });

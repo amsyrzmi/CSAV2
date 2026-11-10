@@ -18,6 +18,7 @@ const TONES: Record<ProgressWord, StatusTone> = {
   Ready: "success",
   "Partly read": "attention",
   "Could not be read": "attention",
+  Removed: "info",
 };
 
 type Upload = { jobId: string; names: string[]; message: string };
@@ -46,8 +47,15 @@ export default function AddSection({ query, canWrite }: { query: string; canWrit
   const loadAgents = agents.load;
 
   const jobRows = jobs.slot.data;
-  const wordOf = (upload: Upload): ProgressWord =>
-    progressWord(jobRows?.find((row) => row.id === upload.jobId)?.status ?? null);
+  // A removed job leaves the list (cancelled jobs are dismissed), so a job seen once and then missing is shown as removed.
+  const [seen, setSeen] = useState<ReadonlySet<string>>(new Set());
+  const fresh = (jobRows ?? []).filter((row) => !seen.has(row.id));
+  if (fresh.length) setSeen(new Set([...seen, ...fresh.map((row) => row.id)]));
+  const wordOf = (upload: Upload): ProgressWord => {
+    const row = jobRows?.find((entry) => entry.id === upload.jobId);
+    if (!row && jobRows && seen.has(upload.jobId)) return progressWord("cancelled");
+    return progressWord(row?.status ?? null);
+  };
   const waiting = uploads.some((upload) => ["Waiting", "Reading"].includes(wordOf(upload)));
   useEffect(() => {
     if (error) feedback.current?.scrollIntoView({ block: "nearest" });

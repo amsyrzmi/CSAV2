@@ -58,7 +58,7 @@ export function validateSelection(files: { name: string; size: number }[]): stri
   return bad ? SELECTION_MESSAGE : null;
 }
 
-export type ProgressWord = "Waiting" | "Reading" | "Ready" | "Partly read" | "Could not be read";
+export type ProgressWord = "Waiting" | "Reading" | "Ready" | "Partly read" | "Could not be read" | "Removed";
 
 /** One word for where an uploaded file is, from its job status (null while the job is not in the list yet). */
 export function progressWord(status: string | null): ProgressWord {
@@ -66,6 +66,7 @@ export function progressWord(status: string | null): ProgressWord {
   if (status === "processing") return "Reading";
   if (status === "done") return "Ready";
   if (status === "partial") return "Partly read";
+  if (status === "cancelled") return "Removed";
   return "Could not be read";
 }
 

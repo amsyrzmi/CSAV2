@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { del } from "@/lib/api";
+import { del, post } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
 import {
   atLimit, countText, formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, LIST_LIMITS, looseFiles, pausedReason,
@@ -18,7 +18,24 @@ import { agentStateOf, lockedSlot, useKbSlot, type Slot } from "./useKbSlot";
 const box =
   "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
-type Confirm = { type: "files" | "documents"; id: string; name: string };
+/** What the open confirmation will do. A "files" delete is `linked` when its source belongs to a document. */
+type Confirm =
+  | { type: "files" | "documents"; id: string; name: string; linked: boolean }
+  | { type: "dismiss"; id: string; name: string }
+  | { type: "clear" };
+
+type Removed = { storage_cleanup: "done" | "pending" };
+
+const SWEEP_PENDING = "We'll finish clearing the stored file shortly.";
+
+function confirmText(confirm: Confirm): string {
+  if (confirm.type === "dismiss") return "This takes the message off your list. Nothing your assistant knows changes.";
+  if (confirm.type === "clear") return "This takes every failed upload off your list. Nothing your assistant knows changes.";
+  if (!confirm.linked) {
+    return `Delete ${confirm.name}? This removes the uploaded file and closes any upload that was still waiting on it. An already-authorized download may finish.`;
+  }
+  return `Delete ${confirm.name}? Deleting a source with a linked document removes that document, its searchable chunks and every duplicate source linked to it. An already-authorized download may finish.`;
+}
 
 /**
  * What your assistant knows: the cards of everything added, with the original files behind them.
@@ -85,23 +102,71 @@ export default function LibrarySection({
   }, [error, message]);
   useEffect(() => { if (confirm) cancel.current?.focus(); }, [confirm]);
 
-  async function remove() {
-    if (!confirm) return;
+  /** Runs one action: clears the old feedback, reports a server error in the one Notice and reads the sources again. */
+  async function run(work: () => Promise<string>) {
     setBusy(true); setError(""); setMessage("");
     try {
-      await del(path(`kb/${confirm.type}/${confirm.id}`));
-      setConfirm(null); setMessage("Deleted. Your assistant no longer uses this file.");
+      const done = await work();
+      setConfirm(null); setMessage(done);
       reloadSources();
-    } catch (cause) { setError((cause as Error).message); }
-    finally { setBusy(false); }
+    } catch (cause) {
+      // A refused action (for example a job that moved on) means the list on screen is stale.
+      setError((cause as Error).message); setConfirm(null); reloadSources();
+    } finally { setBusy(false); }
+  }
+
+  async function confirmed() {
+    if (!confirm) return;
+    if (confirm.type === "dismiss") {
+      await run(async () => {
+        await post(path(`kb/ingest-jobs/${confirm.id}/dismiss`));
+        return "Removed from your list.";
+      });
+    } else if (confirm.type === "clear") {
+      await run(async () => {
+        const result = await post<{ dismissed: number }>(path("kb/ingest-jobs/dismiss-failed"));
+        const count = result?.dismissed ?? 0;
+        return count === 0 ? "Nothing was left to remove." : `Removed ${count} failed upload${count === 1 ? "" : "s"} from your list.`;
+      });
+    } else {
+      const target = confirm;
+      await run(async () => {
+        const result = await del<Removed>(path(`kb/${target.type}/${target.id}`));
+        const done = target.linked ? "Deleted. Your assistant no longer uses this file." : "Deleted. The stored file is gone.";
+        return result?.storage_cleanup === "pending" ? `${done} ${SWEEP_PENDING}` : done;
+      });
+    }
+  }
+
+  async function retryJob(id: string) {
+    await run(async () => {
+      await post(path(`kb/ingest-jobs/${id}/retry`));
+      return "Trying again. It is back in the queue.";
+    });
+  }
+
+  async function cancelJob(id: string) {
+    await run(async () => {
+      await post(path(`kb/ingest-jobs/${id}/cancel`));
+      return "Cancelled. Nothing was added.";
+    });
   }
 
   const actions: CardActions = {
     canWrite, writable, busy, pausedReason: pausedReason(agentState, writable), addHref,
+    agentOff: agent !== undefined && agent.capability?.active !== true,
     downloadHref: (id) => path(`kb/files/${id}/download`),
-    onDelete: (type, id, name) => setConfirm({ type, id, name }),
+    onDelete: (type, id, name) => askDelete(type, id, name),
+    onRetry: (id) => void retryJob(id),
+    onDismiss: (id, name) => setConfirm({ type: "dismiss", id, name }),
+    onCancel: (id) => void cancelJob(id),
   };
   const fileRows = files.slot.data ?? [];
+  // A source that feeds a document (or a document itself) keeps the wording about linked documents; a stray upload does not.
+  function askDelete(type: "files" | "documents", id: string, name: string) {
+    const linked = type === "documents" || fileRows.find((file) => file.id === id)?.document_id != null;
+    setConfirm({ type, id, name, linked });
+  }
   const sourceOf = (card: Card, kind: "document" | "job"): Source | null => {
     if (kind === "document") {
       const document = documents.slot.data?.find((row) => row.id === card.id);
@@ -136,11 +201,13 @@ export default function LibrarySection({
   if (locked) return <LockedNotice slot={locked} onRefresh={reloadAll} />;
 
   return <TechDetailsProvider><div className="space-y-6">
-    {confirm && <Panel title="Confirm deletion">
+    {confirm && <Panel title={confirm.type === "dismiss" || confirm.type === "clear" ? "Confirm removal" : "Confirm deletion"}>
       <div data-testid="kb-confirm">
-        <p>Delete {confirm.name}? Deleting a source with a linked document removes that document, its searchable chunks and every duplicate source linked to it. An already-authorized download may finish.</p>
+        <p>{confirmText(confirm)}</p>
         <div className="mt-4 flex gap-3">
-          <button className={action} disabled={busy || !writable} onClick={remove}>Confirm delete</button>
+          <button className={action} disabled={busy || !canWrite} onClick={() => void confirmed()}>
+            {confirm.type === "dismiss" ? "Remove" : confirm.type === "clear" ? "Clear all" : "Confirm delete"}
+          </button>
           <button ref={cancel} className={secondary} disabled={busy} onClick={() => setConfirm(null)}>Cancel</button>
         </div>
       </div>
@@ -166,7 +233,12 @@ export default function LibrarySection({
       </div>}
       {retry(jobs.slot, "jobs", "the files being read", jobs.load)}
       {groups.attention.length > 0 && <div data-testid="kb-attention" className="space-y-3">
-        <h3 className="font-semibold">Needs attention</h3>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="font-semibold">Needs attention</h3>
+          {canWrite && groups.attention.length > 1 && (
+            <button type="button" className={secondary} disabled={busy} onClick={() => setConfirm({ type: "clear" })}>Clear all that failed</button>
+          )}
+        </div>
         {cardList(groups.attention, "job")}
       </div>}
       {groups.reading.length > 0 && <div data-testid="kb-reading" className="space-y-3">
@@ -204,7 +276,7 @@ export default function LibrarySection({
               </TechnicalDetails>
               <div className="mt-2 flex flex-wrap gap-2">
                 <a className={secondary} href={path(`kb/files/${file.id}/download`)}>Download original</a>
-                {canWrite && <button className={secondary} disabled={busy || !writable} onClick={() => setConfirm({ type: "files", id: file.id, name: file.name })}>Delete source</button>}
+                {canWrite && <button className={secondary} disabled={busy} onClick={() => askDelete("files", file.id, file.name)}>Delete source</button>}
               </div>
             </article>)}</div>}
         </DetailsRow>
