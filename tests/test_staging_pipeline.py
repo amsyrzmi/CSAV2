@@ -714,3 +714,92 @@ def test_jev_key_reaches_the_gateway_and_worker_through_one_switch(tmp_path: Pat
     }
     assert wired["secrets"]["staging_jev_key"]["file"].endswith("pipeline/staging_jev_key")
     assert "staging_disabled_jev_key" not in wired["secrets"]
+
+
+
+# The optional staging switches (scripts/staging_rollout.py OPTIONAL_FLAG_KEYS) and where each
+# lands: compose variable -> (service, environment name, default).
+JEV_SWITCHES = {
+    "CSA_STAGING_ASSISTANT_DECIDER_EMAIL": ("gateway", "ASSISTANT_DECIDER_EMAIL", "auto"),
+    "CSA_STAGING_ASSISTANT_DECIDER_ROUTING": ("gateway", "ASSISTANT_DECIDER_ROUTING", "auto"),
+    "CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION": (
+        "gateway",
+        "ASSISTANT_DECIDER_INBOUND_INJECTION",
+        "auto",
+    ),
+    "CSA_STAGING_JEV_FLOOR_NOUL": ("gateway", "ASSISTANT_JEV_FLOOR_NOUL", "0.7"),
+    "CSA_STAGING_JEV_FLOOR_CHOICE": ("gateway", "ASSISTANT_JEV_FLOOR_CHOICE", "0.7"),
+    "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT": ("worker", "CUSTOMER_DECIDE_MODE_DEFAULT", "llm"),
+}
+JEV_ENV_NAMES = {name for _, name, _ in JEV_SWITCHES.values()}
+
+
+def test_the_jev_switches_cover_every_optional_rollout_flag_but_the_secret() -> None:
+    from scripts import staging_rollout
+
+    assert set(JEV_SWITCHES) == staging_rollout.OPTIONAL_FLAG_KEYS - {"CSA_STAGING_JEV_SECRET"}
+
+
+def test_the_jev_switch_defaults_are_the_settings_defaults(tmp_path: Path) -> None:
+    from csa.core.settings import Settings
+
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    for service, name, default in JEV_SWITCHES.values():
+        assert services[service]["environment"][name] == default, name
+        assert str(Settings.model_fields[name].default) == default, name
+    # Each lands only where it is read: the deciders in the gateway, the customer classifier in
+    # the worker; delivery and the frontend get none.
+    for service in ("gateway", "worker", "delivery", "frontend"):
+        expected = {name for s, name, _ in JEV_SWITCHES.values() if s == service}
+        assert set(services[service].get("environment", {})) & JEV_ENV_NAMES == expected, service
+
+
+def test_the_jev_switches_at_their_defaults_change_nothing(tmp_path: Path) -> None:
+    (tmp_path / "unset").mkdir()
+    (tmp_path / "explicit").mkdir()
+    unset = render(tmp_path / "unset", "staging-approved", "pipeline-approved")
+    explicit = render(
+        tmp_path / "explicit",
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={key: default for key, (_, _, default) in JEV_SWITCHES.items()},
+    )
+
+    def without_paths(config: dict) -> str:
+        return json.dumps(config, sort_keys=True).replace(str(tmp_path / "unset"), "").replace(
+            str(tmp_path / "explicit"), ""
+        )
+
+    assert without_paths(unset) == without_paths(explicit)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("CSA_STAGING_ASSISTANT_DECIDER_EMAIL", "llm"),
+        ("CSA_STAGING_ASSISTANT_DECIDER_EMAIL", "cascade"),
+        ("CSA_STAGING_ASSISTANT_DECIDER_ROUTING", "llm"),
+        ("CSA_STAGING_ASSISTANT_DECIDER_ROUTING", "shadow"),
+        ("CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION", "llm"),
+        ("CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION", "cascade"),
+        ("CSA_STAGING_JEV_FLOOR_NOUL", "0.85"),
+        ("CSA_STAGING_JEV_FLOOR_CHOICE", "0.9"),
+        ("CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT", "cascade"),
+    ],
+)
+def test_each_jev_switch_reaches_its_service_only(tmp_path: Path, key: str, value: str) -> None:
+    services = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={key: value, "CSA_STAGING_JEV_SECRET": "staging_jev_key"},
+    )["services"]
+    service, name, default = JEV_SWITCHES[key]
+    assert services[service]["environment"][name] == value
+    for other in ("gateway", "worker", "delivery", "frontend"):
+        if other != service:
+            assert name not in services[other].get("environment", {}), other
+    # The others keep their defaults.
+    for other_key, (other_service, other_name, other_default) in JEV_SWITCHES.items():
+        if other_key != key:
+            assert services[other_service]["environment"][other_name] == other_default

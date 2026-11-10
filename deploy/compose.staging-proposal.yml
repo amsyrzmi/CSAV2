@@ -41,6 +41,14 @@ services:
       PUBLIC_BASE_URL: ${CSA_STAGING_CONSOLE_ORIGIN:?separately approved staging HTTPS origin required}
       KB_UPLOAD_ROOT: /var/lib/csa/uploads
       KB_INGEST_ENABLED: "false"
+      # Jev decision layer switches (docs/RUNBOOK.md, Jev). Each area's decider: auto (cascade with
+      # a key, llm without), llm (the kill switch), shadow or cascade; and the confidence floors.
+      # The defaults are the settings' own, so leaving the switches unset changes nothing.
+      ASSISTANT_DECIDER_EMAIL: ${CSA_STAGING_ASSISTANT_DECIDER_EMAIL:-auto}
+      ASSISTANT_DECIDER_ROUTING: ${CSA_STAGING_ASSISTANT_DECIDER_ROUTING:-auto}
+      ASSISTANT_DECIDER_INBOUND_INJECTION: ${CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION:-auto}
+      ASSISTANT_JEV_FLOOR_NOUL: ${CSA_STAGING_JEV_FLOOR_NOUL:-0.7}
+      ASSISTANT_JEV_FLOOR_CHOICE: ${CSA_STAGING_JEV_FLOOR_CHOICE:-0.7}
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL

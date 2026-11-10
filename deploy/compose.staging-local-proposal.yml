@@ -47,6 +47,14 @@ services:
       # provider. Default off; the operator exports CSA_STAGING_WORKSPACE_ASSISTANT=true together
       # with CSA_STAGING_GATEWAY_MODEL_SECRET=staging_model_key (declared by the pipeline file).
       WORKSPACE_ASSISTANT_ENABLED: ${CSA_STAGING_WORKSPACE_ASSISTANT:-false}
+      # Jev decision layer switches (docs/RUNBOOK.md, Jev). Each area's decider: auto (cascade with
+      # a key, llm without), llm (the kill switch), shadow or cascade; and the confidence floors.
+      # The defaults are the settings' own, so leaving the switches unset changes nothing.
+      ASSISTANT_DECIDER_EMAIL: ${CSA_STAGING_ASSISTANT_DECIDER_EMAIL:-auto}
+      ASSISTANT_DECIDER_ROUTING: ${CSA_STAGING_ASSISTANT_DECIDER_ROUTING:-auto}
+      ASSISTANT_DECIDER_INBOUND_INJECTION: ${CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION:-auto}
+      ASSISTANT_JEV_FLOOR_NOUL: ${CSA_STAGING_JEV_FLOOR_NOUL:-0.7}
+      ASSISTANT_JEV_FLOOR_CHOICE: ${CSA_STAGING_JEV_FLOOR_CHOICE:-0.7}
     secrets:
       - source: staging_domain_dsn
         target: DATABASE_URL

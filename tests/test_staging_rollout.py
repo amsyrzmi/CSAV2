@@ -1637,7 +1637,15 @@ def test_load_flags_accepts_the_optional_jev_switch_but_does_not_need_it(tmp_pat
     )
     with pytest.raises(RolloutError, match="duplicate key CSA_STAGING_JEV_SECRET"):
         sr.load_flags(path)
-    assert sr.OPTIONAL_FLAG_KEYS == {"CSA_STAGING_JEV_SECRET"}
+    assert sr.OPTIONAL_FLAG_KEYS == {
+        "CSA_STAGING_JEV_SECRET",
+        "CSA_STAGING_ASSISTANT_DECIDER_EMAIL",
+        "CSA_STAGING_ASSISTANT_DECIDER_ROUTING",
+        "CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION",
+        "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT",
+        "CSA_STAGING_JEV_FLOOR_NOUL",
+        "CSA_STAGING_JEV_FLOOR_CHOICE",
+    }
     assert not sr.OPTIONAL_FLAG_KEYS & sr.FLAG_KEYS
 
 
@@ -1712,3 +1720,100 @@ def test_the_jev_secret_switch_refuses_any_other_secret(tmp_path: Path, value: s
     assert "CSA_STAGING_JEV_SECRET must be one of staging_disabled_jev_key, staging_jev_key" in (
         caught.value.message
     )
+
+
+DECIDER_SWITCHES = (
+    "CSA_STAGING_ASSISTANT_DECIDER_EMAIL",
+    "CSA_STAGING_ASSISTANT_DECIDER_ROUTING",
+    "CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION",
+)
+FLOOR_SWITCHES = ("CSA_STAGING_JEV_FLOOR_NOUL", "CSA_STAGING_JEV_FLOOR_CHOICE")
+WITH_KEY = "CSA_STAGING_JEV_SECRET=staging_jev_key\n"
+
+
+def _load(tmp_path: Path, extra: str) -> dict[str, str]:
+    path = tmp_path / "flags.env"
+    path.write_text(FLAGS_TEXT + extra)
+    return sr.load_flags(path)
+
+
+@pytest.mark.parametrize("key", DECIDER_SWITCHES)
+@pytest.mark.parametrize("value", ["auto", "llm", "shadow", "cascade"])
+def test_each_decider_switch_takes_a_decider_mode(tmp_path: Path, key: str, value: str) -> None:
+    assert _load(tmp_path, f"{key}={value}\n{WITH_KEY}")[key] == value
+
+
+@pytest.mark.parametrize("value", ["llm", "cascade"])
+def test_the_customer_default_switch_takes_llm_or_cascade(tmp_path: Path, value: str) -> None:
+    key = "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT"
+    assert _load(tmp_path, f"{key}={value}\n{WITH_KEY}")[key] == value
+
+
+@pytest.mark.parametrize("key", FLOOR_SWITCHES)
+@pytest.mark.parametrize("value", ["0.5", "0.7", "0.75", "0.85", "0.999", "1", "1.0"])
+def test_each_floor_switch_takes_a_decimal_from_half_to_one(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    assert _load(tmp_path, f"{key}={value}\n")[key] == value
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        *((key, bad) for key in DECIDER_SWITCHES for bad in ("", "jev", "Cascade", "cascade;x")),
+        ("CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT", "auto"),
+        ("CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT", "shadow"),
+        ("CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT", "jev"),
+        ("CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT", ""),
+        *(
+            (key, bad)
+            for key in FLOOR_SWITCHES
+            for bad in ("", "0.4", "0.49", "1.1", "2", "0", ".8", "0.8x", "8e-1", "nan", "-0.7")
+        ),
+    ],
+)
+def test_a_bad_optional_switch_value_fails_loudly(tmp_path: Path, key: str, value: str) -> None:
+    with pytest.raises(RolloutError) as caught:
+        _load(tmp_path, f"{key}={value}\n{WITH_KEY}")
+    assert caught.value.step == "flags"
+    assert f"{key} must be" in caught.value.message
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        *(f"{key}={mode}\n" for key in DECIDER_SWITCHES for mode in ("shadow", "cascade")),
+        "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=cascade\n",
+    ],
+)
+def test_a_jev_mode_needs_the_real_jev_key_switched_on(tmp_path: Path, line: str) -> None:
+    # The gateway refuses to start with shadow or cascade and no key, and the customer cascade
+    # without a key is silently llm: either way the flip would not do what the PR says.
+    for extra in (line, line + "CSA_STAGING_JEV_SECRET=staging_disabled_jev_key\n"):
+        with pytest.raises(RolloutError, match="needs CSA_STAGING_JEV_SECRET=staging_jev_key"):
+            _load(tmp_path, extra)
+    assert _load(tmp_path, line + WITH_KEY)
+
+
+@pytest.mark.parametrize("key", DECIDER_SWITCHES)
+def test_llm_and_auto_need_no_key(tmp_path: Path, key: str) -> None:
+    # llm is the per-area kill switch: it must work whatever the key switch says.
+    assert _load(tmp_path, f"{key}=llm\n")[key] == "llm"
+    assert _load(tmp_path, f"{key}=auto\n")[key] == "auto"
+    assert _load(tmp_path, "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=llm\n")
+
+
+def test_optional_switches_reach_the_compose_environment(tmp_path: Path) -> None:
+    flags = _load(
+        tmp_path,
+        "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=llm\nCSA_STAGING_JEV_FLOOR_NOUL=0.8\n",
+    )
+    env = sr.build_env(
+        flags,
+        {"python": PYTHON_REF, "frontend": FRONTEND_REF},
+        docker_config=tmp_path / "dc",
+        secret_dir=tmp_path / "secrets",
+    )
+    assert env["CSA_STAGING_ASSISTANT_DECIDER_EMAIL"] == "llm"
+    assert env["CSA_STAGING_JEV_FLOOR_NOUL"] == "0.8"
+    assert "CSA_STAGING_JEV_FLOOR_CHOICE" not in env  # unset: compose uses its own default
