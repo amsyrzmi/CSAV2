@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
-from scripts.rollout_targets import STAGING
+from scripts.rollout_targets import STAGING, Target
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
@@ -60,9 +60,8 @@ LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
 # One JSON object per running image: its repo digests and its labels (for the revision).
 RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
-RESTART_COMMAND = " ".join(
-    ["docker", "--host", SOCKET, "start", *(f"{PROJECT}-{service}-1" for service in STOP_SERVICES)]
-)
+LOCAL_ROLLBACK = "a local image with no registry digest, or not running"
+PRODUCTION_RUNBOOK = "deploy/PRODUCTION.md"
 READY_STATE = "services are up on the new images but /readyz is failing"
 RERUN_HINT = "Re-run plan, then apply, once the cause is fixed."
 
@@ -137,7 +136,7 @@ class SubprocessRunner:
         return Completed(result.returncode, result.stdout, result.stderr)
 
 
-def load_flags(path: Path) -> dict[str, str]:
+def load_flags(path: Path, *, target: Target = STAGING) -> dict[str, str]:
     """Read the non-secret switches: exactly the allowed keys, each once."""
     flags: dict[str, str] = {}
     try:
@@ -152,12 +151,12 @@ def load_flags(path: Path) -> dict[str, str]:
         key = key.strip()
         if not separator:
             raise RolloutError("flags", f"{path.name} line {number} has no '='")
-        if key not in FLAG_KEYS:
+        if key not in target.required_keys:
             raise RolloutError("flags", f"{path.name} line {number}: unknown key {key}")
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
         flags[key] = value.strip()
-    missing = sorted(FLAG_KEYS - flags.keys())
+    missing = sorted(target.required_keys - flags.keys())
     if missing:
         raise RolloutError("flags", f"{path.name} is missing: {', '.join(missing)}")
     return flags
@@ -167,24 +166,42 @@ def docker_base() -> list[str]:
     return ["docker", "--host", SOCKET]
 
 
-def compose_base() -> list[str]:
+def container_names(target: Target, env: Mapping[str, str], service: str) -> list[str]:
+    """Every container of ``service``: one, or the replica count the target allows env to set."""
+    count = 1
+    if service in target.replicas:
+        variable, count = target.replicas[service]
+        value = env.get(variable)
+        if value is not None:
+            if not value.isdecimal() or int(value) < 1:
+                raise RolloutError("flags", f"{variable} must be a positive integer, got {value!r}")
+            count = int(value)
+    return [f"{target.project}-{service}-{number}" for number in range(1, count + 1)]
+
+
+def restart_command(target: Target, env: Mapping[str, str]) -> str:
+    """The command that starts every stopped container again on the images it had."""
+    names = [
+        name for service in target.stop_services for name in container_names(target, env, service)
+    ]
+    return " ".join([*docker_base(), "start", *names])
+
+
+RESTART_COMMAND = restart_command(STAGING, {})
+
+
+def compose_base(*, target: Target = STAGING) -> list[str]:
+    files = [part for name in target.compose_files for part in ("--file", name)]
+    profiles = [part for name in target.profiles for part in ("--profile", name)]
     return [
         *docker_base(),
         "compose",
         "--env-file",
         "/dev/null",
         "--project-name",
-        PROJECT,
-        "--file",
-        "deploy/compose.staging-local-proposal.yml",
-        "--file",
-        "deploy/compose.staging-shared-caddy.yml",
-        "--file",
-        "deploy/compose.staging-pipeline.yml",
-        "--profile",
-        "staging-approved",
-        "--profile",
-        "pipeline-approved",
+        target.project,
+        *files,
+        *profiles,
     ]
 
 
@@ -193,7 +210,8 @@ def build_env(
     images: Mapping[str, str],
     *,
     docker_config: Path,
-    secret_dir: Path = SECRET_DIR,
+    secret_dir: Path | None = None,
+    target: Target = STAGING,
 ) -> dict[str, str]:
     """The whole environment for docker and compose; nothing else is inherited."""
     env = {name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ}
@@ -201,8 +219,8 @@ def build_env(
         "NO_LOCAL_ENV": "1",
         "ENV": "ci",
         "COMPOSE_PROFILES": "",
-        "CSA_STAGING_PROJECT": PROJECT,
-        "CSA_STAGING_SECRET_DIR": str(secret_dir),
+        "CSA_STAGING_PROJECT": target.project,
+        "CSA_STAGING_SECRET_DIR": str(target.secret_dir if secret_dir is None else secret_dir),
         "DOCKER_CONFIG": str(docker_config),
     }
     env |= {IMAGE_ENV[app]: images[app] for app in APPS}
@@ -274,7 +292,9 @@ def _version_tags(version: object) -> list[object]:
     return tags
 
 
-def published_images(runner: Runner, sha: str) -> dict[str, str] | None:
+def published_images(
+    runner: Runner, sha: str, *, target: Target = STAGING
+) -> dict[str, str] | None:
     """Digest refs for the version of each package tagged with the full SHA."""
     images: dict[str, str] = {}
     for app in APPS:
@@ -283,7 +303,7 @@ def published_images(runner: Runner, sha: str) -> dict[str, str] | None:
             [
                 "gh",
                 "api",
-                f"/users/amsyrzmi/packages/container/csa-{app}/versions?per_page=100",
+                f"/users/{target.package_owner}/packages/container/csa-{app}/versions?per_page=100",
             ],
         )
         if not isinstance(versions, list):
@@ -300,7 +320,7 @@ def published_images(runner: Runner, sha: str) -> dict[str, str] | None:
             raise RolloutError("plan", "gh returned an unexpected package listing")
         if not DIGEST_RE.match(name):
             raise RolloutError("plan", f"csa-{app} version for {sha[:7]} has a malformed digest")
-        images[app] = f"{GHCR_OWNER}/csa-{app}@{name}"
+        images[app] = f"{target.image_owner}/csa-{app}@{name}"
     return images
 
 
@@ -346,18 +366,27 @@ class RunningImage:
     revision: str | None
 
 
-def running_images(runner: Runner, env: Mapping[str, str]) -> dict[str, RunningImage | None]:
+def running_images(
+    runner: Runner, env: Mapping[str, str], *, target: Target = STAGING
+) -> dict[str, RunningImage | None]:
     """The image of each app container (running or stopped), or None when it cannot be read."""
     running: dict[str, RunningImage | None] = {}
-    for service in APP_SERVICES:
-        running[service] = _running_image(runner, env, service)
+    for service in target.app_services:
+        running[service] = _running_image(runner, env, service, target=target)
     return running
 
 
-def _running_image(runner: Runner, env: Mapping[str, str], service: str) -> RunningImage | None:
-    inspect = runner.run(
-        [*docker_base(), "inspect", "--format", "{{.Image}}", f"{PROJECT}-{service}-1"], env=env
-    )
+def _running_image(
+    runner: Runner, env: Mapping[str, str], service: str, *, target: Target = STAGING
+) -> RunningImage | None:
+    """The image of the service's first container: the rollback record reads replica 1."""
+    return _container_image(runner, env, container_names(target, env, service)[0], target)
+
+
+def _container_image(
+    runner: Runner, env: Mapping[str, str], name: str, target: Target
+) -> RunningImage | None:
+    inspect = runner.run([*docker_base(), "inspect", "--format", "{{.Image}}", name], env=env)
     image_id = inspect.stdout.strip()
     if inspect.returncode != 0 or not image_id:
         return None
@@ -378,23 +407,25 @@ def _running_image(runner: Runner, env: Mapping[str, str], service: str) -> Runn
     if not isinstance(revision, str) or not SHA_RE.match(revision):
         revision = None
     for entry in entries:
-        if isinstance(entry, str) and entry.startswith(f"{GHCR_OWNER}/"):
+        if isinstance(entry, str) and entry.startswith(f"{target.image_owner}/"):
             return RunningImage(entry, revision)
     return None
 
 
-def applied_versions(runner: Runner, env: Mapping[str, str]) -> list[str]:
+def applied_versions(
+    runner: Runner, env: Mapping[str, str], *, target: Target = STAGING
+) -> list[str]:
     result = runner.run(
         [
-            *compose_base(),
+            *compose_base(target=target),
             "exec",
             "-T",
-            "staging-db",
+            target.db_service,
             "psql",
             "-U",
-            "csa",
+            target.db_user,
             "-d",
-            "csa_staging",
+            target.db_name,
             "-tA",
             "-v",
             "ON_ERROR_STOP=1",
@@ -405,27 +436,39 @@ def applied_versions(runner: Runner, env: Mapping[str, str]) -> list[str]:
     )
     if result.returncode != 0:
         raise RolloutError(
-            "plan", f"could not read schema_migrations from staging (exit {result.returncode})"
+            "plan",
+            f"could not read schema_migrations from {target.name} (exit {result.returncode})",
         )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def pending_versions(checkout: Sequence[str], applied: Sequence[str]) -> list[str]:
+def pending_versions(
+    checkout: Sequence[str], applied: Sequence[str], *, target: Target = STAGING
+) -> list[str]:
     ahead = sorted(set(applied) - set(checkout))
     if ahead:
         raise RolloutError(
             "plan",
-            f"staging has migrations this checkout lacks: {', '.join(ahead)}; "
+            f"{target.name} has migrations this checkout lacks: {', '.join(ahead)}; "
             "update the checkout before rolling out",
         )
     done = set(applied)
     return [version for version in checkout if version not in done]
 
 
-def secret_paths(runner: Runner, env: Mapping[str, str]) -> dict[str, Path]:
+def secret_paths(
+    runner: Runner, env: Mapping[str, str], *, target: Target = STAGING
+) -> dict[str, Path]:
     """Secret name to the file compose will mount, from the rendered config."""
     result = runner.run(
-        [*compose_base(), "--profile", "migration-approved", "config", "--format", "json"],
+        [
+            *compose_base(target=target),
+            "--profile",
+            "migration-approved",
+            "config",
+            "--format",
+            "json",
+        ],
         env=env,
     )
     if result.returncode != 0:
@@ -468,16 +511,18 @@ class Plan:
     env: dict[str, str] = field(repr=False)  # non-secret flags and image refs for apply
 
 
-def plan_steps(pending: Sequence[str], checks: Sequence[str]) -> list[str]:
+def plan_steps(
+    pending: Sequence[str], checks: Sequence[str], *, target: Target = STAGING
+) -> list[str]:
     steps = ["pull and verify images"]
     if pending:
         steps += [
-            f"stop {', '.join(STOP_SERVICES)}",
+            f"stop {', '.join(target.stop_services)}",
             f"apply migrations {', '.join(pending)}",
             "confirm migrations recorded",
         ]
     steps += [
-        f"recreate {', '.join(APP_SERVICES)}",
+        f"recreate {', '.join(target.app_services)}",
         "check readiness",
         f"run checks: {', '.join(checks) if checks else 'none'}",
     ]
@@ -489,9 +534,10 @@ def build_plan(
     repo: Path,
     *,
     docker_config: Path,
-    secret_dir: Path = SECRET_DIR,
+    secret_dir: Path | None = None,
     checks_dir: Path = CHECKS_DIR,
     expected_sha: str | None = None,
+    target: Target = STAGING,
 ) -> Plan:
     if expected_sha is not None and not SHA_RE.match(expected_sha):
         raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
@@ -500,24 +546,28 @@ def build_plan(
         raise RolloutError(
             "confirm", f"HEAD changed since plan ({expected_sha[:7]} → {sha[:7]}); run plan again"
         )
-    images = published_images(runner, sha)
+    images = published_images(runner, sha, target=target)
     if images is None:
         raise RolloutError(
             "plan", f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})"
         )
-    flags = load_flags(repo / FLAGS_FILE)
-    env = build_env(flags, images, docker_config=docker_config, secret_dir=secret_dir)
+    flags = load_flags(repo / target.flags_file, target=target)
+    env = build_env(
+        flags, images, docker_config=docker_config, secret_dir=secret_dir, target=target
+    )
     # Secrets first: a host with a missing file lists it instead of failing on a staging read.
-    missing = missing_secrets(secret_paths(runner, env))
-    rollback = running_images(runner, env)
+    missing = missing_secrets(secret_paths(runner, env, target=target))
+    rollback = running_images(runner, env, target=target)
     # Migrations come from this module's checkout, so main always passes REPO_ROOT.
     try:
         checkout = [version for version, _ in discover_migrations()]
     except MigrationError as error:
         raise RolloutError("plan", str(error)) from error
-    pending = pending_versions(checkout, applied_versions(runner, env))
+    pending = pending_versions(
+        checkout, applied_versions(runner, env, target=target), target=target
+    )
     checks = [path.name for path in check_files(checks_dir)]
-    steps = plan_steps(pending, checks)
+    steps = plan_steps(pending, checks, target=target)
     return Plan(sha, images, rollback, pending, missing, checks, steps, env)
 
 
@@ -525,13 +575,14 @@ def _pending_line(pending: Sequence[str]) -> str:
     return f"Pending migrations: {', '.join(pending) if pending else 'none'}"
 
 
-def format_plan(plan: Plan) -> str:
+def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     lines = [f"Target SHA: {plan.sha}", "Images to deploy:"]
     lines += [f"  {app}: {plan.images[app]}" for app in APPS]
     lines.append("Rollback references (current containers):")
-    for service in APP_SERVICES:
+    unknown = f"unknown ({LOCAL_ROLLBACK})" if target.name != "staging" else "unknown (not running)"
+    for service in target.app_services:
         current = plan.rollback.get(service)
-        lines.append(f"  {service}: {current.ref if current else 'unknown (not running)'}")
+        lines.append(f"  {service}: {current.ref if current else unknown}")
     lines.append(_pending_line(plan.pending))
     if plan.missing:
         lines += [
@@ -601,6 +652,7 @@ class _Progress:
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
     rollback: Mapping[str, RunningImage | None] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict)  # names the replicas to restart
 
 
 def _join(names: Sequence[str]) -> str:
@@ -609,11 +661,11 @@ def _join(names: Sequence[str]) -> str:
 
 
 def _recorded(
-    runner: Runner, env: Mapping[str, str], pending: Sequence[str]
+    runner: Runner, env: Mapping[str, str], pending: Sequence[str], *, target: Target = STAGING
 ) -> tuple[list[str] | None, str]:
     """The planned versions schema_migrations records now, or None with why it is unknown."""
     try:
-        applied = applied_versions(runner, env)
+        applied = applied_versions(runner, env, target=target)
     except RolloutError as error:
         return None, error.message
     return [version for version in pending if version in applied], ""
@@ -643,21 +695,32 @@ def _migrate(
     pending: Sequence[str],
     out: Callable[[str], None],
     progress: _Progress,
+    *,
+    target: Target = STAGING,
 ) -> None:
-    out(f"Stopping {', '.join(STOP_SERVICES)}…")
+    out(f"Stopping {', '.join(target.stop_services)}…")
     progress.phase = "stopped"  # a failed stop may still have stopped some of them
     _run_step(
         runner,
-        [*compose_base(), "stop", *STOP_SERVICES],
+        [*compose_base(target=target), "stop", *target.stop_services],
         env,
         "stop",
         "compose stop",
         "some of gateway, frontend, worker and delivery may still be running; check compose ps",
     )
     out(f"Applying migrations {', '.join(pending)}…")
-    migrate_env = {**env, MIGRATION_APPROVAL[0]: MIGRATION_APPROVAL[1]}
+    approval, approved = target.migration_approval
+    migrate_env = {**env, approval: approved}
     result = runner.run(
-        [*compose_base(), "--profile", "migration-approved", "run", "--rm", "--no-deps", "migrate"],
+        [
+            *compose_base(target=target),
+            "--profile",
+            "migration-approved",
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrate",
+        ],
         env=migrate_env,
     )
     if result.stdout.strip():
@@ -665,14 +728,14 @@ def _migrate(
     out(f"migrate exit={result.returncode}")
     if result.returncode != 0:
         # Read what migrate left behind: it decides between restarting and fixing forward.
-        progress.recorded, _ = _recorded(runner, env, pending)
+        progress.recorded, _ = _recorded(runner, env, pending, target=target)
         raise RolloutError(
             "migrate",
             f"migrate exited {result.returncode}",
             _migrate_state(pending, progress.recorded),
         )
     out("Confirming migrations recorded…")
-    progress.recorded, why = _recorded(runner, env, pending)
+    progress.recorded, why = _recorded(runner, env, pending, target=target)
     state = _migrate_state(pending, progress.recorded)
     if progress.recorded is None:
         raise RolloutError("migrate", why, state)
@@ -683,10 +746,11 @@ def _migrate(
         )
 
 
-def _recreate_state(service: str, stopped: bool) -> str:
+def _recreate_state(service: str, stopped: bool, *, target: Target = STAGING) -> str:
     """What is down when ``service`` failed to come up on its new image."""
-    index = APP_SERVICES.index(service)
-    done, later = APP_SERVICES[:index], APP_SERVICES[index + 1 :]
+    services = target.app_services
+    index = services.index(service)
+    done, later = services[:index], services[index + 1 :]
     parts = []
     if done:
         parts.append(f"{_join(done)} {'is' if len(done) == 1 else 'are'} up on the new images")
@@ -712,11 +776,12 @@ def _recreate(
     out: Callable[[str], None],
     *,
     stopped: bool,
+    target: Target = STAGING,
 ) -> None:
-    state = _recreate_state(service, stopped)
+    state = _recreate_state(service, stopped, target=target)
     up = runner.run(
         [
-            *compose_base(),
+            *compose_base(target=target),
             "up",
             "--detach",
             "--wait",
@@ -733,27 +798,15 @@ def _recreate(
         return
     # A slow start on a loaded host reports unhealthy first and recovers; wait for it. Healthy
     # only counts when the container runs the planned image: a failed up can leave the old one.
+    # A replicated service counts only when every replica is healthy on the planned image.
     out(f"{service} reported unhealthy; waiting for it to become healthy")
+    names = container_names(target, env, service)
     waited = 0
     while True:
-        health = runner.run(
-            [
-                *docker_base(),
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                f"{PROJECT}-{service}-1",
-            ],
-            env=env,
-        )
-        if health.returncode != 0:
-            raise RolloutError(
-                f"recreate {service}", f"{service} container not found after up failed", state
-            )
-        if health.stdout.strip() == "healthy":
-            current = _running_image(runner, env, service)
-            if current is not None and current.ref == expected:
-                return
+        if all(
+            _on_new_image(runner, env, name, expected, service, state, target) for name in names
+        ):
+            return
         if waited >= HEALTH_WAIT:
             raise RolloutError(
                 f"recreate {service}",
@@ -764,8 +817,38 @@ def _recreate(
         waited += HEALTH_POLL
 
 
-def _await_ready(runner: Runner, env: Mapping[str, str], sleep: Callable[[float], None]) -> None:
-    argv = [*docker_base(), "exec", f"{PROJECT}-gateway-1", "python", "-c", READY_PROBE]
+def _on_new_image(
+    runner: Runner,
+    env: Mapping[str, str],
+    name: str,
+    expected: str,
+    service: str,
+    state: str,
+    target: Target,
+) -> bool:
+    """Whether container ``name`` is healthy and runs ``expected``; a missing one is a stop."""
+    health = runner.run(
+        [*docker_base(), "inspect", "--format", "{{.State.Health.Status}}", name], env=env
+    )
+    if health.returncode != 0:
+        raise RolloutError(
+            f"recreate {service}", f"{service} container not found after up failed", state
+        )
+    if health.stdout.strip() != "healthy":
+        return False
+    current = _container_image(runner, env, name, target)
+    return current is not None and current.ref == expected
+
+
+def _await_ready(
+    runner: Runner,
+    env: Mapping[str, str],
+    sleep: Callable[[float], None],
+    *,
+    target: Target = STAGING,
+) -> None:
+    gateway = container_names(target, env, "gateway")[0]
+    argv = [*docker_base(), "exec", gateway, "python", "-c", READY_PROBE]
     for attempt in range(READY_TRIES):
         if runner.run(argv, env=env).returncode == 0:
             return
@@ -780,6 +863,8 @@ def _run_checks(
     checks_dir: Path,
     out: Callable[[str], None],
     progress: _Progress,
+    *,
+    target: Target = STAGING,
 ) -> None:
     for path in check_files(checks_dir):
         out(f"Running check {path.name}…")
@@ -790,15 +875,15 @@ def _run_checks(
             raise RolloutError(f"check {path.name}", "cannot read the check file") from error
         result = runner.run(
             [
-                *compose_base(),
+                *compose_base(target=target),
                 "exec",
                 "-T",
-                "staging-db",
+                target.db_service,
                 "psql",
                 "-U",
-                "csa",
+                target.db_user,
                 "-d",
-                "csa_staging",
+                target.db_name,
                 "-tA",
                 "-v",
                 "ON_ERROR_STOP=1",
@@ -812,7 +897,7 @@ def _run_checks(
         if result.returncode == 0 and value == "0":
             out(f"check {path.name}: 0")
             continue
-        stopped = runner.run([*compose_base(), "stop", *STOP_SERVICES], env=env)
+        stopped = runner.run([*compose_base(target=target), "stop", *target.stop_services], env=env)
         printed = f"printed {value or 'nothing'}" if result.returncode == 0 else "psql failed"
         raise RolloutError(
             f"check {path.name}",
@@ -833,11 +918,22 @@ def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
 
 
 def _report_rollback(
-    rollback: Mapping[str, RunningImage | None], out: Callable[[str], None]
+    rollback: Mapping[str, RunningImage | None],
+    out: Callable[[str], None],
+    *,
+    target: Target = STAGING,
 ) -> None:
     """Image-only rollouts: the images to go back to and the commit that publishes them."""
     out("Rollback images:")
     known = [(service, image) for service, image in rollback.items() if image]
+    if not known and target.name != "staging":
+        # Before the first deploy from the registry the running images are local tags.
+        out(f"  none known ({LOCAL_ROLLBACK})")
+        out(
+            "The previous images are local, so plan and apply cannot bring them back; "
+            f"follow the manual rollback runbook in {PRODUCTION_RUNBOOK}."
+        )
+        return
     if not known:
         out("  none known (not running)")
         return
@@ -846,20 +942,22 @@ def _report_rollback(
     revisions = {image.revision for _, image in known}
     if len(revisions) == 1 and None not in revisions:
         out(
-            f"To roll back: git checkout {revisions.pop()} in {LIVE_CHECKOUT}, run plan and apply, "
-            "then git checkout main."
+            f"To roll back: git checkout {revisions.pop()} in {target.live_checkout}, run plan and "
+            "apply, then git checkout main."
         )
     else:
         out(
             "The rollback images do not share one known revision: pick one, git checkout it in "
-            f"{LIVE_CHECKOUT}, run plan and apply, then git checkout main."
+            f"{target.live_checkout}, run plan and apply, then git checkout main."
         )
 
 
-def _report_recovery(progress: _Progress, out: Callable[[str], None]) -> None:
+def _report_recovery(
+    progress: _Progress, out: Callable[[str], None], *, target: Target = STAGING
+) -> None:
     """Recovery lines for how far apply got; never a rollback once a migration is recorded."""
     if progress.phase == "unchanged":
-        out("Nothing on staging was changed.")
+        out(f"Nothing on {target.name} was changed.")
         return
     if progress.phase == "check_unread":
         out("The check did not run and the services were not stopped; fix the check file.")
@@ -874,7 +972,7 @@ def _report_recovery(progress: _Progress, out: Callable[[str], None]) -> None:
         out("The migration state is unknown: check schema_migrations before restarting.")
         planned = ", ".join(progress.pending)
         out(f"If none of {planned} is recorded, to bring the previous version back:")
-        out(RESTART_COMMAND)
+        out(restart_command(target, progress.env))
         out("If any is recorded, do not roll back; fix forward, then re-run plan and apply.")
         return
     if progress.recorded:
@@ -886,12 +984,12 @@ def _report_recovery(progress: _Progress, out: Callable[[str], None]) -> None:
         return
     if progress.phase == "stopped":
         out("To bring the previous version back:")
-        out(RESTART_COMMAND)
+        out(restart_command(target, progress.env))
         return
-    _report_rollback(progress.rollback, out)
+    _report_rollback(progress.rollback, out, target=target)
 
 
-def _print_target(plan: Plan, out: Callable[[str], None]) -> None:
+def _print_target(plan: Plan, out: Callable[[str], None], *, target: Target = STAGING) -> None:
     out(f"Target: {plan.sha}")
     for app in APPS:
         out(f"  {app}: {plan.images[app]}")
@@ -905,10 +1003,11 @@ def apply(
     *,
     sha: str,
     docker_config: Path,
-    secret_dir: Path = SECRET_DIR,
+    secret_dir: Path | None = None,
     checks_dir: Path = CHECKS_DIR,
     sleep: Callable[[float], None] = time.sleep,
     out: Callable[[str], None] = print,
+    target: Target = STAGING,
 ) -> int:
     progress = _Progress()
     try:
@@ -919,36 +1018,51 @@ def apply(
             secret_dir=secret_dir,
             checks_dir=checks_dir,
             expected_sha=sha,
+            target=target,
         )
         env = plan.env
         progress.pending = plan.pending
         progress.rollback = plan.rollback
+        progress.env = env
         if confirmed != plan.pending:
             raise RolloutError("confirm", "pending migrations changed since plan; run plan again")
         if plan.missing:
             raise RolloutError("preflight", f"missing secret files: {', '.join(plan.missing)}")
-        _print_target(plan, out)
+        _print_target(plan, out, target=target)
         out("Checking compose config…")
         _run_step(
-            runner, [*compose_base(), "config", "--quiet"], env, "config", "compose config --quiet"
+            runner,
+            [*compose_base(target=target), "config", "--quiet"],
+            env,
+            "config",
+            "compose config --quiet",
         )
         out("Pulling and verifying images…")
         for app in APPS:
             _verify_pull(runner, env, plan.images[app], plan.sha)
         if plan.pending:
-            _migrate(runner, env, plan.pending, out, progress)
+            _migrate(runner, env, plan.pending, out, progress, target=target)
         progress.phase = "recreating"
-        for service in APP_SERVICES:
+        for service in target.app_services:
             out(f"Recreating {service}…")
             expected = plan.images[SERVICE_APP[service]]
-            _recreate(runner, env, service, expected, sleep, out, stopped=bool(plan.pending))
+            _recreate(
+                runner,
+                env,
+                service,
+                expected,
+                sleep,
+                out,
+                stopped=bool(plan.pending),
+                target=target,
+            )
         progress.phase = "up"
         out("Checking readiness…")
-        _await_ready(runner, env, sleep)
+        _await_ready(runner, env, sleep, target=target)
         progress.phase = "checks"
-        _run_checks(runner, env, checks_dir, out, progress)
+        _run_checks(runner, env, checks_dir, out, progress, target=target)
         status = runner.run(
-            [*compose_base(), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
+            [*compose_base(target=target), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
         )
         if status.returncode == 0:
             out(status.stdout.rstrip())
@@ -958,7 +1072,7 @@ def apply(
         return 0
     except RolloutError as error:
         _report_stop(error, out)
-        _report_recovery(progress, out)
+        _report_recovery(progress, out, target=target)
         out(RERUN_HINT)
         return 1
 
