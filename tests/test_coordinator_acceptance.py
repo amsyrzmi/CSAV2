@@ -1123,11 +1123,32 @@ def truthful_reply(facts: list[str]) -> str:
 async def test_a_booking_is_told_when_the_primary_is_down_and_only_the_backup_composes(
     shop: Shop,
 ) -> None:
-    """The outage the backup composer exists for: the review, which always uses the primary, is
-    down too. The customer must still hear about the booking, and no escalation opens."""
+    """The outage the backup composer exists for: the primary can neither compose nor review. The
+    review falls back to the second client like every other call, so the backup's own reply,
+    reviewed by the backup, reaches the customer, and no escalation opens."""
     kind = await a_type(shop)
     primary = ComposingModel(haircut(kind), down, review=review_down)
     backup = ComposingModel(haircut(kind), truthful_reply)
+    deps, state, _ = await booking_turn(shop, haircut(kind), model=primary, fallback=backup)
+    (row,) = await shop.rows()
+    assert row["status"] == "confirmed"
+    assert deps.fallbacks == [], deps.fallbacks
+    reply = deps.emitted[0].body
+    assert reply == truthful_reply(facts_of(state)) and reply.startswith("Your haircut is booked.")
+    assert SLOT_TEXT in reply
+    assert state.verified is True
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_booking_is_told_as_the_facts_say_it_when_the_backup_cannot_review_either(
+    shop: Shop,
+) -> None:
+    """The primary is down and the backup composes but cannot review: no client can review the
+    draft, so the customer hears the booking as the facts say it, and no escalation opens."""
+    kind = await a_type(shop)
+    primary = ComposingModel(haircut(kind), down, review=review_down)
+    backup = ComposingModel(haircut(kind), truthful_reply, review=review_down)
     deps, state, _ = await booking_turn(shop, haircut(kind), model=primary, fallback=backup)
     (row,) = await shop.rows()
     assert row["status"] == "confirmed"
