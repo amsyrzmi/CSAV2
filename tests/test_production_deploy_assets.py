@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import subprocess
+import time
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
@@ -459,15 +460,18 @@ def _ssm_run_default(name: str) -> int:
 @pytest.mark.parametrize("kind", ["plan", "apply"])
 def test_document_timeout_outlasts_the_runner_and_fits_inside_the_job(kind: str) -> None:
     timeout = int(_document(kind)["mainSteps"][0]["inputs"]["timeoutSeconds"])
-    runner_wait = _ssm_run_default("SSM_MAX_POLLS") * _ssm_run_default("SSM_POLL_SECONDS")
+    # The runner's wait is bounded by elapsed time, not by a number of polls.
+    runner_wait = _ssm_run_default("SSM_MAX_SECONDS")
     job_minutes = [int(m) for m in re.findall(r"^\s+timeout-minutes: (\d+)$", _workflow(), re.M)]
 
     assert timeout == 2400
+    assert runner_wait == 2100
+    assert "SSM_MAX_POLLS" not in SSM_RUN.read_text()
     # A slow apply must not be killed while the runner still waits for it, and the job must
     # outlive the command.
     assert timeout > runner_wait
-    assert len(job_minutes) == 2
-    assert all(timeout < minutes * 60 for minutes in job_minutes)
+    assert job_minutes == [45, 45]
+    assert all(runner_wait < timeout < minutes * 60 for minutes in job_minutes)
 
 
 def test_each_document_fixes_its_action_literally() -> None:
@@ -596,8 +600,9 @@ def test_ssm_run_fails_closed_without_instance_or_region(
         ("INSTANCE_ID", INSTANCE + "\n"),
         ("AWS_REGION", "$(id)"),
         ("SSM_POLL_SECONDS", "five"),
-        ("SSM_MAX_POLLS", "0"),
-        ("SSM_MAX_POLLS", "-1"),
+        ("SSM_MAX_SECONDS", "0"),
+        ("SSM_MAX_SECONDS", "-1"),
+        ("SSM_MAX_SECONDS", "1.5"),
     ],
 )
 def test_ssm_run_refuses_malformed_settings(harness: Harness, name: str, value: str) -> None:
@@ -647,15 +652,31 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
         assert credential.encode() not in result.stdout + result.stderr
 
 
-def test_ssm_run_apply_without_migrations_still_sends_all_three_parameters(
-    harness: Harness,
-) -> None:
+def test_ssm_run_apply_without_migrations_omits_the_parameter(harness: Harness) -> None:
+    # The apply document defaults migrations to "", so an empty list is left out rather than
+    # sent as an explicit empty String; sha and hostDigest are always sent.
+    assert _document("apply")["parameters"]["migrations"]["default"] == ""
     result = harness.ssm(["apply", SHA, "", DIGEST])
 
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
     assert send == _send_argv("csa-production-apply", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA], "migrations": [""], "hostDigest": [DIGEST]}
+    assert json.loads(send[9]) == {"sha": [SHA], "hostDigest": [DIGEST]}
+
+
+@pytest.mark.parametrize("migrations", ["0486", MIGRATIONS])
+def test_ssm_run_apply_sends_a_non_empty_migrations_list(
+    harness: Harness, migrations: str
+) -> None:
+    result = harness.ssm(["apply", SHA, migrations, DIGEST])
+
+    assert result.returncode == 0, result.stderr
+    send, _poll = harness.aws_calls()
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "migrations": [migrations],
+        "hostDigest": [DIGEST],
+    }
 
 
 def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbatim(
@@ -672,13 +693,52 @@ def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbati
 
 
 def test_ssm_run_polls_through_inprogress_and_times_out(harness: Harness) -> None:
-    result = harness.ssm(["plan", SHA], STUB_STATUSES="InProgress", SSM_MAX_POLLS="3")
+    result = harness.ssm(["plan", SHA], STUB_STATUSES="InProgress", SSM_MAX_SECONDS="1")
 
     assert result.returncode == 124
-    assert [call[1] for call in harness.aws_calls()] == ["send-command"] + [
-        "get-command-invocation"
-    ] * 3
+    calls = [call[1] for call in harness.aws_calls()]
+    assert calls[0] == "send-command"
+    assert len(calls) > 1
+    assert set(calls[1:]) == {"get-command-invocation"}
+    assert b"still InProgress after" in result.stderr
     assert b"giving up" in result.stderr
+
+
+# A stub sleep that records the interval it was asked for and really waits $STUB_SLEEP_REAL
+# seconds instead: the clock the runner reads (bash's SECONDS) moves only with real time.
+SLEEP_STUB = r"""#!/bin/bash
+printf 'sleep\t%s\n' "$*" >> "$STUB_LOG"
+exec /bin/sleep "${STUB_SLEEP_REAL:-0}"
+"""
+
+
+def test_ssm_run_gives_up_by_elapsed_time_not_by_poll_count(harness: Harness) -> None:
+    harness._write_stub(harness.bin / "sleep", SLEEP_STUB)
+    polls: dict[str, int] = {}
+    for speed, real in (("slow", "0.7"), ("fast", "0")):
+        harness.log.unlink(missing_ok=True)
+        harness.polls.unlink(missing_ok=True)
+        started = time.monotonic()
+        result = harness.ssm(
+            ["plan", SHA],
+            STUB_STATUSES="InProgress",
+            SSM_POLL_SECONDS="5",
+            SSM_MAX_SECONDS="2",
+            STUB_SLEEP_REAL=real,
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 124, result.stderr
+        assert b"giving up" in result.stderr
+        # The ceiling is wall-clock time since the send (whole seconds, so up to one early).
+        assert elapsed >= 1
+        sleeps = [call for call in harness.calls() if call[0] == "sleep"]
+        assert sleeps and all(call == ["sleep", "5"] for call in sleeps)
+        polls[speed] = sum(1 for call in harness.aws_calls() if call[1] == "get-command-invocation")
+    # The same ceiling, a different number of polls: the bound is time, not a count. At 0.7 s a
+    # poll, two seconds allow a handful; instant polls run many more before the ceiling.
+    assert 1 <= polls["slow"] <= 6
+    assert polls["fast"] > polls["slow"]
 
 
 @pytest.mark.parametrize(
@@ -1824,6 +1884,9 @@ def test_production_doc_review_fixes() -> None:
     assert "`TimedOut`" in deploying
     assert "40 minutes" in deploying
     assert "30 minutes" not in text
+    # The runner's wait is 35 minutes of elapsed time since the send, not an estimate from polls.
+    assert "35 minutes (by the clock, not a count of polls)" in deploying
+    assert "about 35 minutes" not in text
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
     guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}"'
     assert guard in setup

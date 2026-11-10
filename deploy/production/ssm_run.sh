@@ -3,10 +3,11 @@
 # command to finish and print its output. The deploy-production workflow runs it from main:
 #   ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]
 # Each action has its own document with the action fixed inside it: plan sends csa-production-plan
-# with the sha only, apply sends csa-production-apply with the sha, migrations and host digest.
+# with the sha only, apply sends csa-production-apply with the sha, the host digest and, when any
+# are pending, the migrations (the document defaults them to empty).
 # Needs AWS_REGION and INSTANCE_ID; AWS credentials come from the environment and are never printed.
-# Exit: 0 when the command succeeded, 124 when it was still running after the last poll, 64 for a
-# refused argument or setting (nothing is sent), 1 for anything else.
+# Exit: 0 when the command succeeded, 124 when it was still running once SSM_MAX_SECONDS had passed
+# since the send, 64 for a refused argument or setting (nothing is sent), 1 for anything else.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -14,7 +15,10 @@ export LC_ALL=C
 export AWS_PAGER=""
 
 : "${SSM_POLL_SECONDS:=5}"
-: "${SSM_MAX_POLLS:=420}"
+# The wait is bounded by elapsed time, not by a number of polls (each poll also spends time in
+# get-command-invocation). It must stay shorter than the documents' timeoutSeconds (2400), which
+# must stay shorter than the workflow jobs' timeout-minutes (45).
+: "${SSM_MAX_SECONDS:=2100}"
 # send-command returns before the invocation exists, so the first polls may not find it yet.
 MISSING_POLLS=5
 # A command the instance has not picked up within this many seconds never runs.
@@ -38,7 +42,7 @@ valid() {
 valid '^[a-z0-9-]+$' "${AWS_REGION:-}" || die "AWS_REGION must be set to the AWS region"
 valid '^m?i-[0-9a-f]{8,17}$' "${INSTANCE_ID:-}" || die "INSTANCE_ID must be set to the instance id"
 valid '^[0-9]+$' "$SSM_POLL_SECONDS" || die "SSM_POLL_SECONDS must be a whole number of seconds"
-valid '^[1-9][0-9]*$' "$SSM_MAX_POLLS" || die "SSM_MAX_POLLS must be a positive whole number"
+valid '^[1-9][0-9]*$' "$SSM_MAX_SECONDS" || die "SSM_MAX_SECONDS must be a positive whole number of seconds"
 
 if [[ "$#" -lt 2 || "$#" -gt 4 ]]; then
     die "usage: ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]"
@@ -51,13 +55,15 @@ digest="${4-}"
 valid '^(plan|apply)$' "$action" || die "action must be plan or apply"
 valid '^[0-9a-f]{40}$' "$sha" || die "sha must be 40 lowercase hex characters"
 valid '^([0-9]{4}(,[0-9]{4})*)?$' "$migrations" || die "migrations must be comma-separated four-digit numbers"
-# The document's parameters go as one JSON map built by jq, empty values included: no value is
-# ever spliced into a command string.
+# The document's parameters go as one JSON map built by jq: no value is ever spliced into a
+# command string. Empty migrations are left out (the apply document defaults them to "").
 if [[ "$action" == "apply" ]]; then
     valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
     document="csa-production-apply"
+    filter='{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]}'
+    filter+=' | if $migrations == "" then del(.migrations) else . end'
     parameters="$(jq -cn --arg sha "$sha" --arg migrations "$migrations" --arg digest "$digest" \
-        '{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]}')"
+        "$filter")"
 else
     [[ -z "$migrations" ]] || die "plan takes no migrations"
     [[ -z "$digest" ]] || die "plan takes no host digest"
@@ -78,15 +84,15 @@ fi
 
 errors="$(mktemp)"
 trap 'rm -f -- "$errors"' EXIT
-polls=0
 missing=0
 status="not yet registered"
+# bash's SECONDS counts wall-clock seconds from this assignment.
+SECONDS=0
 while :; do
-    if ((polls >= SSM_MAX_POLLS)); then
-        echo "ssm_run: command $command_id is still $status after $polls polls; giving up" >&2
+    if ((SECONDS >= SSM_MAX_SECONDS)); then
+        echo "ssm_run: command $command_id is still $status after $SECONDS seconds; giving up" >&2
         exit 124
     fi
-    polls="$((polls + 1))"
     sleep "$SSM_POLL_SECONDS"
     if invocation="$(aws ssm get-command-invocation --region "$AWS_REGION" \
         --command-id "$command_id" --instance-id "$INSTANCE_ID" --output json 2> "$errors")"; then
