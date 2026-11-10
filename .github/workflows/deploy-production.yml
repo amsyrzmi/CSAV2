@@ -111,8 +111,14 @@ jobs:
         run: |
           set -euo pipefail
           status=0
+          # Instance output is data: no line of it (stdout, or the stderr ssm_run.sh passes on)
+          # may act as a workflow command. The trap resumes command processing however the
+          # step ends.
+          token="$(uuidgen)"
+          echo "::stop-commands::$token"
+          trap 'echo "::$token::"' EXIT
           deploy/production/ssm_run.sh plan "$SHA" > "$RUNNER_TEMP/plan.txt" || status="$?"
-          cat "$RUNNER_TEMP/plan.txt"
+          sed -e '$a\' "$RUNNER_TEMP/plan.txt" || true
           {
             echo "### Production plan for \`$SHA\`"
             echo
@@ -172,8 +178,14 @@ jobs:
         run: |
           set -euo pipefail
           status=0
+          # Instance output is data: no line of it (stdout, or the stderr ssm_run.sh passes on)
+          # may act as a workflow command. The trap resumes command processing however the
+          # step ends.
+          token="$(uuidgen)"
+          echo "::stop-commands::$token"
+          trap 'echo "::$token::"' EXIT
           deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" > "$RUNNER_TEMP/apply.txt" || status="$?"
-          cat "$RUNNER_TEMP/apply.txt"
+          sed -e '$a\' "$RUNNER_TEMP/apply.txt" || true
           {
             echo "### Production apply of \`$SHA\`"
             echo

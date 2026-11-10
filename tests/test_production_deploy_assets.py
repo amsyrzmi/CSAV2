@@ -1449,6 +1449,103 @@ def _workspace(harness: Harness) -> Path:
     return work
 
 
+TOKEN_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+
+def _unbracketed(stdout: bytes) -> str:
+    """The step's stdout inside its stop-commands bracket; the bracket must be whole and paired."""
+    text = stdout.decode()
+    match = re.fullmatch(rf"::stop-commands::({TOKEN_RE})\n(.*)::\1::\n", text, re.DOTALL)
+    assert match, text
+    # The resume line must start a line of its own, or the runner would not see it.
+    assert match.group(2) == "" or match.group(2).endswith("\n")
+    return match.group(2)
+
+
+# Every step that prints what the instance said, and the file that holds it.
+INSTANCE_OUTPUT_STEPS = {
+    "plan": ("Plan on the production instance", "plan.txt"),
+    "apply": ("Apply on the production instance", "apply.txt"),
+}
+
+
+@pytest.mark.parametrize("job", ["plan", "apply"])
+def test_workflow_brackets_instance_output_in_stop_commands(job: str) -> None:
+    name, file = INSTANCE_OUTPUT_STEPS[job]
+    (block,) = _run_blocks(_step(job, name))
+    lines = block.splitlines()
+
+    stop = lines.index('echo "::stop-commands::$token"')
+    assert lines[stop - 1] == 'token="$(uuidgen)"'
+    trap = lines.index("trap 'echo \"::$token::\"' EXIT")
+    send = next(i for i, line in enumerate(lines) if "deploy/production/ssm_run.sh" in line)
+    prints = [
+        i
+        for i, line in enumerate(lines)
+        if line.startswith(("sed ", "cat ", "echo ")) and f"$RUNNER_TEMP/{file}" in line
+    ]
+    summary = next(i for i, line in enumerate(lines) if "GITHUB_STEP_SUMMARY" in line)
+    # Commands stop before anything from the instance reaches the log (ssm_run.sh passes the
+    # instance's stderr through), and the trap resumes them on every exit path.
+    assert stop < trap < send
+    assert [lines[i] for i in prints] == [f"sed -e '$a\\' \"$RUNNER_TEMP/{file}\" || true"]
+    assert send < prints[0] < summary
+    # No other step prints the instance's output to the log; Read the plan only parses it.
+    for other_job in ("plan", "apply"):
+        for step in _steps(other_job):
+            if step.startswith(f"name: {INSTANCE_OUTPUT_STEPS[other_job][0]}\n"):
+                continue
+            assert "ssm_run.sh" not in step, step
+            for output in ("plan.txt", "apply.txt"):
+                assert output not in step or "parse_plan.sh" in step, step
+
+
+@pytest.mark.parametrize("job", ["plan", "apply"])
+@pytest.mark.parametrize("status", [0, 3])
+def test_workflow_instance_output_cannot_issue_workflow_commands(
+    harness: Harness, job: str, status: int
+) -> None:
+    work = _workspace(harness)
+    hostile = "::add-mask::x\n::error::injected\n::stop-commands::guess\nlast line, no newline"
+    env = harness.env(
+        SHA=SHA,
+        MIGRATIONS="",
+        HOST_DIGEST=DIGEST,
+        RUNNER_TEMP=str(harness.root),
+        GITHUB_STEP_SUMMARY=str(harness.root / "summary.md"),
+        STUB_SSM_OUTPUT=hostile,
+        STUB_SSM_STATUS=str(status),
+    )
+    result = _run_step(job, INSTANCE_OUTPUT_STEPS[job][0], env, work)
+
+    assert result.returncode == status
+    assert _unbracketed(result.stdout) == hostile + "\n"
+
+
+@pytest.mark.parametrize("job", ["plan", "apply"])
+def test_workflow_resumes_commands_when_the_output_file_is_missing(
+    harness: Harness, job: str
+) -> None:
+    work = _workspace(harness)
+    # A runner script that writes nothing at all: the print fails, the resume line still comes.
+    harness._write_stub(work / "deploy" / "production" / "ssm_run.sh", "#!/bin/bash\nexit 4\n")
+    name, file = INSTANCE_OUTPUT_STEPS[job]
+    block = _run_blocks(_step(job, name))[0].replace(f'> "$RUNNER_TEMP/{file}"', "")
+    env = harness.env(
+        SHA=SHA,
+        MIGRATIONS="",
+        HOST_DIGEST=DIGEST,
+        RUNNER_TEMP=str(harness.root),
+        GITHUB_STEP_SUMMARY=str(harness.root / "summary.md"),
+    )
+    result = subprocess.run(
+        ["bash", "-c", block], env=env, cwd=work, capture_output=True, timeout=30, check=False
+    )
+
+    assert result.returncode != 0
+    assert _unbracketed(result.stdout) == ""
+
+
 @pytest.mark.parametrize("status", [0, 1])
 def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
     harness: Harness, status: int
@@ -1468,7 +1565,7 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
 
     assert planned.returncode == status
     assert harness.calls() == [["ssm_run", "plan", SHA]]
-    assert planned.stdout.decode() == GOOD_PLAN.rstrip("\n")
+    assert _unbracketed(planned.stdout) == GOOD_PLAN
     assert summary.read_text() == (f"### Production plan for `{SHA}`\n\n````\n{GOOD_PLAN}````\n")
     if status:
         return
@@ -1495,7 +1592,7 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
 
     assert result.returncode == 3
     assert harness.calls() == [["ssm_run", "apply", SHA, migrations, DIGEST]]
-    assert result.stdout == b"applied\n"
+    assert _unbracketed(result.stdout) == "applied\n"
     assert summary.read_text() == f"### Production apply of `{SHA}`\n\n````\napplied\n````\n"
 
 
