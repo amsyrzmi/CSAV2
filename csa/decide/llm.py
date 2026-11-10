@@ -133,6 +133,99 @@ _BOOKING_COMPOSE_RULE = (
 _BOOKING_SOURCE = "booking_agent"
 _BOOKING_CHANGES = ("book", "reschedule", "cancel")
 
+# Compose-only rules. The list cap is said every turn; the others only when they apply, so a
+# first message with no history sees no change beyond the list cap.
+_LIST_RULE = (
+    "When you offer options (plans, products, times), name at most three at a time, then ask one "
+    "short question to narrow them down; never list the whole catalogue in one message."
+)
+_NO_REPEAT_RULE = (
+    "Do not repeat what an earlier assistant message already said. Acknowledge what the customer "
+    "just added, and build on it. If they ask the same thing again, answer shorter or "
+    "differently, and ask one new question rather than repeating the last one."
+)
+_HANDOFF_RECENT_RULE = (
+    "A team member has already been told about this conversation: do not say again that you will "
+    "pass it on or that someone will follow up, unless the customer asks for a person."
+)
+
+# Malay register, said only when the customer writes Malay. Everyday Malaysian Malay, not the
+# formal textbook kind and not street slang. The example figures are made up on purpose.
+_REGISTER_MS = (
+    "Malay register: write everyday Malaysian Malay, friendly and professional, casual but not "
+    'street. Say "saya" and "kami". Do not address the customer with "anda" and do not use '
+    '"awak": leave the pronoun out. Use lah, kan and ya sparingly. Write full words even when '
+    "the customer abbreviates (x, sy, nk, tlg). Never copy the customer's profanity: answer it "
+    'with one calm clause and move on. Match the customer\'s length. No "bro", "weh", '
+    '"lu" or "gua", and no heavy "lah". The tone the company set adjusts warmth only, and only '
+    'an explicit request for formal language ("formal Malay", "bahasa baku", "no slang") '
+    "switches this register off. This register never overrides the support guide or the "
+    "facts-only rule."
+)
+# (formal, casual): say the casual one.
+_MS_GLOSSARY: tuple[tuple[str, str], ...] = (
+    ("tidak", "tak"),
+    ("sudah", "dah"),
+    ("hendak", "nak"),
+    ("mahu", "nak"),
+    ("kerana", "sebab"),
+    ("menemukan", "jumpa (or cari)"),
+    ("sebentar lagi", "sekejap lagi"),
+    ("sebentar", "sekejap"),
+    ("sedikit", "sikit"),
+    ("bagaimana", "macam mana"),
+    ("mengapa", "kenapa"),
+    ("sila", "tolong (or boleh)"),
+    ("mohon", "tolong"),
+    ("anda", "(leave out)"),
+    ("pihak kami", "kami"),
+    ("dimaklumkan", "bagitahu"),
+    ("menghubungi", "hubungi"),
+    ("memerlukan", "perlu"),
+    ("hanya / sahaja", "je"),
+    ("juga", "pun"),
+    ("tetapi", "tapi"),
+    ("apakah", "apa (and end a question with ke)"),
+    ("berikut", "ni"),
+    ("ini", "ni"),
+    ("itu", "tu"),
+    ("begitu", "macam tu"),
+    ("tersedia", "ada"),
+    ("memeriksa", "semak"),
+    ("ahli pasukan", "team"),
+    ("maaf atas kesulitan", "maaf ya, menyusahkan"),
+)
+_MS_EXAMPLES: tuple[str, ...] = (
+    "Hai! Ada apa yang boleh saya tolong hari ni?",
+    "Boleh! Saya cerita satu-satu. Yang pertama, Plan Kecil RM15 dengan 5GB. Nak dengar yang "
+    "seterusnya?",
+    "Okay, kalau kerap travel dan banyak tengok YouTube, plan data besar lagi sesuai. Biasanya "
+    "sebulan tengok berapa jam lebih kurang?",
+    "Plan Sederhana RM35 sebulan, dapat 20GB. Nak saya terangkan apa lagi yang ada dalam tu?",
+    "Ada, stok masih ada. Nak ambil berapa?",
+    "Maaf, yang tu dah habis stok. Nak saya cadangkan yang lain?",
+    "Pesanan tu tengah dalam perjalanan. Ada apa-apa lagi yang nak saya semak?",
+    "Boleh. Tolong bagi nombor pesanan dulu ya, senang saya semak.",
+    "Pasal tu saya tak ada maklumat tepat lagi. Saya minta team semak dan balas dalam chat ni ya.",
+    "Maaf ya, saya faham ni menyusahkan. Saya cuba bantu, boleh ceritakan apa yang jadi?",
+    "Sama-sama! Kalau ada apa-apa lagi, bagitahu je.",
+    "Okay, terima kasih ya. Jumpa lagi!",
+)
+
+
+def _register_block(language: str, tone: str) -> str:
+    """The Malay register for a Malay turn, else nothing. The block speaks of "the tone the
+    company set" and does not repeat the tone text, so ``tone`` is only part of the call shape."""
+    if language != "ms":
+        return ""
+    glossary = ", ".join(f"{formal} -> {casual}" for formal, casual in _MS_GLOSSARY)
+    examples = "\n".join(_MS_EXAMPLES)
+    return (
+        f"{_REGISTER_MS} Say the casual word, not the formal one: {glossary}. "
+        "Example replies (the figures in them are made up: use only the facts you were given):\n"
+        f"{examples}\n"
+    )
+
 
 def _recent_messages(ctx: Context) -> list[RecentMessage]:
     """The earlier messages to show: the conversation's own, else a booking context's. One list."""
@@ -464,8 +557,11 @@ class LLMProvider:
             f"You write the customer-facing reply for {brand_name}. "
             f"Persona: {persona}. Tone: {tone}.{intro} "
             f"{_SUPPORT_GUIDE} "
-            f"{_data_rule(compose_ctx)} Use ONLY the provided facts for any business claim, price, "
-            "quantity, "
+            f"{_LIST_RULE} "
+            + (f"{_NO_REPEAT_RULE} " if _recent_messages(compose_ctx) else "")
+            + (f"{_HANDOFF_RECENT_RULE} " if compose_ctx.flags.get("handoff_recent") else "")
+            + f"{_data_rule(compose_ctx)} Use ONLY the provided facts for any business claim, "
+            "price, quantity, "
             "date, status or policy; never invent or round numbers. If no fact answers the "
             "question, say a team member will follow up. "
             + (
@@ -494,6 +590,7 @@ class LLMProvider:
                 else ""
             )
             + (_BOOKING_COMPOSE_RULE if any(f.source == _BOOKING_SOURCE for f in all_facts) else "")
+            + _register_block(language, tone)
             + "Reply language: "
             + (_LANGUAGES.get(language, "the same language as the customer message"))
             + '. Reply with JSON {"reply": str, "used_fact_ids": [str]}.'
