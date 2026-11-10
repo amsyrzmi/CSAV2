@@ -1755,6 +1755,14 @@ def test_each_floor_switch_takes_a_decimal_from_half_to_one(
     assert _load(tmp_path, f"{key}={value}\n")[key] == value
 
 
+@pytest.mark.parametrize("value", ["0.7\n", "1\n", "0.75\n\n", "0.7 "])
+def test_a_floor_value_is_the_whole_value_never_a_prefix(value: str) -> None:
+    """The floor pattern must cover the whole value: ``$`` alone would also accept a value with a
+    trailing newline (load_flags strips lines today; the check must not depend on it)."""
+    assert sr.is_floor(value.strip())
+    assert not sr.is_floor(value)
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [

@@ -76,8 +76,16 @@ OPTIONAL_FLAG_VALUES: dict[str, tuple[str, ...]] = {
 # The staff deciders' Jev confidence floors per question type (gateway ASSISTANT_JEV_FLOOR_*),
 # unset 0.7: a plain decimal from 0.5 to 1.0, at most three places.
 FLOOR_FLAG_KEYS = frozenset({"CSA_STAGING_JEV_FLOOR_NOUL", "CSA_STAGING_JEV_FLOOR_CHOICE"})
-FLOOR_RE = re.compile(r"^(0\.[5-9][0-9]{0,2}|1(\.0{1,3})?)$")
+FLOOR_RE = re.compile(r"0\.[5-9][0-9]{0,2}|1(?:\.0{1,3})?")  # whole value: is_floor
 OPTIONAL_FLAG_KEYS = frozenset(OPTIONAL_FLAG_VALUES) | FLOOR_FLAG_KEYS
+
+
+def is_floor(value: str) -> bool:
+    """``value`` is a Jev floor switch value: ``FLOOR_RE`` over the whole value (fullmatch, as
+    ``$`` would also accept a trailing newline)."""
+    return FLOOR_RE.fullmatch(value) is not None
+
+
 # Switch values that only mean something with the real Jev key: the gateway refuses to start with
 # a decider at shadow or cascade and no key, and the customer cascade without a key is llm.
 JEV_KEY_ON = ("CSA_STAGING_JEV_SECRET", "staging_jev_key")
@@ -201,7 +209,7 @@ def load_flags(path: Path) -> dict[str, str]:
             raise RolloutError(
                 "flags", f"{path.name} line {number}: {key} must be one of {', '.join(allowed)}"
             )
-        if key in FLOOR_FLAG_KEYS and not FLOOR_RE.match(value):
+        if key in FLOOR_FLAG_KEYS and not is_floor(value):
             raise RolloutError(
                 "flags", f"{path.name} line {number}: {key} must be a decimal from 0.5 to 1.0"
             )

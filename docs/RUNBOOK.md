@@ -359,10 +359,14 @@ that area: set it to `llm`.
 mounts it as a Compose secret named by `CSA_STAGING_JEV_SECRET` (default
 `staging_disabled_jev_key`, the same placeholder file as the disabled model key);
 `staging_secrets check` verifies the real file's owner and mode whenever it exists. To rotate the
-key: remove the old file (`rm /srv/csa-staging/secrets/pipeline/staging_jev_key`; the file is
-read-only but the directory is yours), run `scripts.staging_jev_key` again with the new key, then
-restart the gateway and worker so they mount and read the new file:
+key: remove the old file (`rm -f /srv/csa-staging/secrets/pipeline/staging_jev_key`; the file is
+mode 0400, so a plain `rm` stops to ask, but the directory is yours), run `scripts.staging_jev_key`
+again with the new key, then restart the gateway and worker so they mount and read the new file:
 `docker --host unix:///var/run/docker.sock restart csa-staging-gateway-1 csa-staging-worker-1`.
+Restarting (not recreating) the two containers should re-bind the new file, since a Compose file
+secret is a bind mount by path, but this is untried: after the first rotation, run the first
+`decision_log` query above and check that Jev answers again (provider `jev`, no new `jev_http_*`
+fallbacks) before relying on it.
 
 ## Gotchas
 
