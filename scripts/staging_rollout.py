@@ -29,34 +29,24 @@ from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
+from scripts.rollout_targets import STAGING
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
-SECRET_DIR = Path("/srv/csa-staging/secrets")
-PROJECT = "csa-staging"
-APP_SERVICES = ("gateway", "worker", "delivery", "frontend")  # recreate order
+SECRET_DIR = STAGING.secret_dir
+PROJECT = STAGING.project
+APP_SERVICES = STAGING.app_services  # recreate order
 SERVICE_APP = {
     "gateway": "python",
     "worker": "python",
     "delivery": "python",
     "frontend": "frontend",
 }
-STOP_SERVICES = ("gateway", "frontend", "worker", "delivery")
-FLAGS_FILE = "deploy/staging-rollout.env"
-FLAG_KEYS = frozenset(
-    {
-        "CSA_STAGING_CONSOLE_ORIGIN",
-        "CSA_STAGING_HOOKS_ORIGIN",
-        "CSA_STAGING_WORKSPACE_ASSISTANT",
-        "CSA_STAGING_GATEWAY_MODEL_SECRET",
-        "CSA_STAGING_INVITE_MAIL",
-        "CSA_STAGING_EMAIL_ASSISTANT",
-        "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR",
-        "CSA_STAGING_BOOKINGS_GOOGLE_MEET",
-    }
-)
+STOP_SERVICES = STAGING.stop_services
+FLAGS_FILE = STAGING.flags_file
+FLAG_KEYS = STAGING.required_keys
 CHECKS_DIR = REPO_ROOT / "deploy" / "rollout_checks"
-MIGRATION_APPROVAL = ("CSA_STAGING_MIGRATION_APPROVAL", "approved-isolated-staging")
+MIGRATION_APPROVAL = STAGING.migration_approval
 READY_PROBE = (
     "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)"
 )
@@ -66,7 +56,7 @@ HEALTH_POLL = 5
 HEALTH_WAIT = 300
 STOPPED_NAMES = "gateway, frontend, worker and delivery"
 ALL_STOPPED = f"{STOPPED_NAMES} are stopped"
-LIVE_CHECKOUT = "/home/amsyrzmi/CSAV2"
+LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
 # One JSON object per running image: its repo digests and its labels (for the revision).
 RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
@@ -76,7 +66,7 @@ RESTART_COMMAND = " ".join(
 READY_STATE = "services are up on the new images but /readyz is failing"
 RERUN_HINT = "Re-run plan, then apply, once the cause is fixed."
 
-GHCR_OWNER = "ghcr.io/amsyrzmi"
+GHCR_OWNER = STAGING.image_owner
 APPS = ("python", "frontend")
 IMAGE_ENV = {"python": "CSA_STAGING_PYTHON_IMAGE", "frontend": "CSA_STAGING_FRONTEND_IMAGE"}
 PUBLISH_WORKFLOW = "publish-staging-images.yml"
