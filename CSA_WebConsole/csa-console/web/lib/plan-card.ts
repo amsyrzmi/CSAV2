@@ -23,6 +23,11 @@ export function canRetry(steps: readonly PlanStepResult[]): boolean {
   return steps.some((step) => step.status === "failed" || step.status === "not_run");
 }
 
+/** A step cut off by the deadline was started and may have acted: its outcome is unknown, not a plain failure. */
+export function isUncertain(step: PlanStepResult): boolean {
+  return step.status === "failed" && step.code === "plan_deadline";
+}
+
 /** The short reason for a step that did not finish, or null for a step that did. */
 export function stepReason(step: PlanStepResult, language: Language): string | null {
   const say = (key: PanelKey) => panelText(language, key);

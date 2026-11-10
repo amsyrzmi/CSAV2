@@ -205,7 +205,10 @@ test("the plan card's copy is exact in English and Malay", () => {
     plan_hide_email: ["Hide email", "Sembunyikan e-mel"],
     plan_steps_label: ["Steps", "Langkah"],
     plan_reason_changed: ["It changed since you reviewed it.", "Ia berubah sejak anda menyemaknya."],
-    plan_reason_deadline: ["It ran out of time.", "Ia kehabisan masa."],
+    plan_reason_deadline: [
+      "It ran out of time and may have finished. Check before doing it again.",
+      "Ia kehabisan masa dan mungkin sudah selesai. Semak dahulu sebelum mengulanginya.",
+    ],
     plan_reason_not_run: ["It was never started.", "Ia tidak pernah dimulakan."],
     plan_reason_limit: ["The hourly limit of 20 emails was reached.", "Had 20 e-mel sejam telah dicapai."],
     plan_reason_generic: ["This step could not be completed.", "Langkah ini tidak dapat diselesaikan."],

@@ -28,8 +28,8 @@ test("a finished step has no reason; a changed or timed-out one says why, in bot
   assert.equal(plan.stepReason(step("done"), "en"), null);
   assert.equal(plan.stepReason(step("skipped", "changed"), "en"), "It changed since you reviewed it.");
   assert.equal(plan.stepReason(step("skipped", "changed"), "ms"), "Ia berubah sejak anda menyemaknya.");
-  assert.equal(plan.stepReason(step("failed", "plan_deadline"), "en"), "It ran out of time.");
-  assert.equal(plan.stepReason(step("failed", "plan_deadline"), "ms"), "Ia kehabisan masa.");
+  assert.equal(plan.stepReason(step("failed", "plan_deadline"), "en"), "It ran out of time and may have finished. Check before doing it again.");
+  assert.equal(plan.stepReason(step("failed", "plan_deadline"), "ms"), "Ia kehabisan masa dan mungkin sudah selesai. Semak dahulu sebelum mengulanginya.");
   assert.equal(plan.stepReason(step("not_run"), "en"), "It was never started.");
   assert.equal(plan.stepReason(step("not_run"), "ms"), "Ia tidak pernah dimulakan.");
 });
@@ -66,6 +66,13 @@ test("every badge has copy in both languages", () => {
     assert.equal(copy.panelText("en", plan.STEP_BADGE[status]), en[status]);
     assert.equal(copy.panelText("ms", plan.STEP_BADGE[status]), ms[status]);
   }
+});
+
+test("a deadline-cut step is marked uncertain, other failures are not", () => {
+  assert.equal(plan.isUncertain(step("failed", "plan_deadline")), true);
+  assert.equal(plan.isUncertain(step("failed", "send_refused")), false);
+  assert.equal(plan.isUncertain(step("skipped", "plan_deadline")), false);
+  assert.equal(plan.isUncertain(step("done")), false);
 });
 
 test("retry is offered only when a step failed or never ran", () => {

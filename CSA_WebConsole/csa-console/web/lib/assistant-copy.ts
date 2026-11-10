@@ -106,7 +106,8 @@ const en = {
   plan_retry: "Retry these",
   plan_retrying: "Preparing…",
   plan_reason_changed: "It changed since you reviewed it.",
-  plan_reason_deadline: "It ran out of time.",
+  plan_reason_deadline:
+    "It ran out of time and may have finished. Check before doing it again.",
   plan_reason_not_run: "It was never started.",
   plan_reason_limit: "The hourly limit of 20 emails was reached.",
   plan_reason_generic: "This step could not be completed.",
@@ -220,7 +221,8 @@ const ms: Record<PanelKey, string> = {
   plan_retry: "Cuba semula ini",
   plan_retrying: "Menyediakan…",
   plan_reason_changed: "Ia berubah sejak anda menyemaknya.",
-  plan_reason_deadline: "Ia kehabisan masa.",
+  plan_reason_deadline:
+    "Ia kehabisan masa dan mungkin sudah selesai. Semak dahulu sebelum mengulanginya.",
   plan_reason_not_run: "Ia tidak pernah dimulakan.",
   plan_reason_limit: "Had 20 e-mel sejam telah dicapai.",
   plan_reason_generic: "Langkah ini tidak dapat diselesaikan.",

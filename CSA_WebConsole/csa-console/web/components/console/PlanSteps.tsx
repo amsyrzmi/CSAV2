@@ -4,7 +4,7 @@ import { useState } from "react";
 import { languageOf, panelText, type Language } from "@/lib/assistant-copy";
 import { emailClient, type Draft } from "@/lib/email-api";
 import { emailErrorSentence } from "@/lib/email-recipients";
-import { STEP_BADGE, stepReason } from "@/lib/plan-card";
+import { STEP_BADGE, isUncertain, stepReason } from "@/lib/plan-card";
 import type { PlanStepResult, PlanStepStatus, ProposalCard } from "@/lib/workspace-api";
 import { EmailPreview } from "./EmailPreview";
 import { Notice, secondary } from "./ui";
@@ -96,7 +96,7 @@ function PlanStepRow({
           {step && (
             <span
               data-testid="plan-step-status"
-              className={`rounded px-1.5 py-0.5 text-xs font-medium ${BADGE_TONE[step.status]}`}
+              className={`rounded px-1.5 py-0.5 text-xs font-medium ${isUncertain(step) ? BADGE_TONE.skipped : BADGE_TONE[step.status]}`}
             >
               {panelText(language, STEP_BADGE[step.status])}
             </span>
