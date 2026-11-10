@@ -1,6 +1,6 @@
 # Customer bot: answers about subscriptions and products, then the escalation ladder
 
-Status: design for the owner's approval, 2026-11-10. Pull request 2 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 2 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`), and PR B of `2026-11-10-customer-bot-conversation-design.md`.
 Migrations 0560 to 0569 (0560 adds the staff note column).
 

@@ -1,6 +1,6 @@
 # Knowledge cleanup: remove, retry and clear, with friendly words
 
-Status: design for the owner's approval, 2026-11-10. Pull request 1 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 1 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`). Migrations 0550 to 0559.
 
 ## 1. Intent

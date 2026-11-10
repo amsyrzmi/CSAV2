@@ -1,6 +1,6 @@
 # Connections tab: TikTok Shop and Google in one place
 
-Status: design for the owner's approval, 2026-11-10. Pull request 3 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 3 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`). No migration.
 
 ## 1. Intent
