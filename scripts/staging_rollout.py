@@ -55,6 +55,15 @@ FLAG_KEYS = frozenset(
         "CSA_STAGING_BOOKINGS_GOOGLE_MEET",
     }
 )
+# Allowed in the flags file but not required, so a file without them still loads. Unset, compose
+# uses the default written in the staging compose files.
+OPTIONAL_FLAG_KEYS = frozenset(
+    {
+        # Names the secret mapped to TYPESAFE_API_KEY (gateway and worker); unset it is the
+        # disabled placeholder, so every Jev area runs on the LLM or rule.
+        "CSA_STAGING_JEV_SECRET",
+    }
+)
 CHECKS_DIR = REPO_ROOT / "deploy" / "rollout_checks"
 MIGRATION_APPROVAL = ("CSA_STAGING_MIGRATION_APPROVAL", "approved-isolated-staging")
 READY_PROBE = (
@@ -162,7 +171,7 @@ def load_flags(path: Path) -> dict[str, str]:
         key = key.strip()
         if not separator:
             raise RolloutError("flags", f"{path.name} line {number} has no '='")
-        if key not in FLAG_KEYS:
+        if key not in FLAG_KEYS | OPTIONAL_FLAG_KEYS:
             raise RolloutError("flags", f"{path.name} line {number}: unknown key {key}")
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")

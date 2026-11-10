@@ -12,7 +12,7 @@ import asyncio
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import psycopg
@@ -62,7 +62,7 @@ from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider
-from csa.decide.providers import DecisionRecord, classify_with
+from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
 from csa.graph.policy.plan_rules import tiktok_stock_fallback
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
@@ -222,10 +222,13 @@ class PostgresTurnDependencies:
         mailer: Mailer | None = None,
         *,
         marketplace_live: LiveReadAccess | None = None,
+        default_decide_mode: Literal["llm", "cascade"] = "llm",
     ) -> None:
         self._pool = app_pool
         self._llm = llm
         self._jev = jev
+        # CUSTOMER_DECIDE_MODE_DEFAULT: for a company with no decide_mode stored, with Jev only.
+        self._default_decide_mode: Literal["llm", "cascade"] = default_decide_mode
         # Booking mail goes out after a turn's transaction commits, from tasks this agent holds.
         # The worker keeps the one agent so it can `drain` it before it closes the pool.
         self._booking_agent = BookingAgent(mailer)
@@ -313,7 +316,7 @@ class PostgresTurnDependencies:
         if self._llm is not None and envelope.callback is None:
             policy = await self._policy(envelope.client_id)
             signals, record = await classify_with(
-                policy.decide_mode,
+                self._decide_mode(policy),
                 envelope,
                 context,
                 llm=self._llm,
@@ -564,6 +567,15 @@ class PostgresTurnDependencies:
                 trace_id=str(state.envelope.trace_id),
             )
             return Verification(ok=False, issues=["review_unavailable"])
+
+    def _decide_mode(self, policy: Policy) -> DecideMode:
+        """A stored decide_mode always wins (an explicit llm included); otherwise the default,
+        and that only while there is a Jev provider."""
+        if "decide_mode" in policy.model_fields_set:
+            return policy.decide_mode
+        if self._jev is None:
+            return "llm"
+        return self._default_decide_mode
 
     async def _log_decision(self, envelope: Envelope, record: DecisionRecord) -> None:
         async with tx(self._pool, str(envelope.client_id)) as conn:

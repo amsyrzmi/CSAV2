@@ -58,6 +58,12 @@ services:
         target: CREDENTIALS_KEY
       - source: ${CSA_STAGING_GATEWAY_MODEL_SECRET:-staging_disabled_model_key}
         target: GROQ_API_KEY
+      # Jev decision layer. The disabled placeholder reads as no key (every area runs on the LLM
+      # or rule); CSA_STAGING_JEV_SECRET=staging_jev_key (declared by the pipeline file) wires
+      # the real key once its file exists. Compose drops a declared secret nothing uses, so a
+      # missing real key file is no error while the switch is at its default.
+      - source: ${CSA_STAGING_JEV_SECRET:-staging_disabled_jev_key}
+        target: TYPESAFE_API_KEY
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
     networks: ["data", "app"]
     depends_on:
@@ -245,6 +251,10 @@ secrets:
   staging_credentials_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_credentials_key
   staging_disabled_model_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_disabled_model_key
+  # The same placeholder file as the model's: Settings reads its value as no Jev key, and a host
+  # that already has it needs no new file.
+  staging_disabled_jev_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/runtime/staging_disabled_model_key
   staging_tunnel_token:
     file: ${CSA_STAGING_SECRET_DIR:?absolute staging secret directory required}/connector/staging_tunnel_token

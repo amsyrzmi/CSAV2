@@ -1623,3 +1623,56 @@ def test_unreadable_check_file_says_services_are_still_up(
         RERUN,
     ]
     assert "Investigate what the check found" not in rig.text
+
+
+def test_load_flags_accepts_the_optional_jev_switch_but_does_not_need_it(tmp_path: Path) -> None:
+    path = tmp_path / "flags.env"
+    path.write_text(FLAGS_TEXT + "CSA_STAGING_JEV_SECRET=staging_jev_key\n")
+    assert sr.load_flags(path) == {**ALL_FLAGS, "CSA_STAGING_JEV_SECRET": "staging_jev_key"}
+    path.write_text(FLAGS_TEXT)  # the checked-in file has no such line
+    assert "CSA_STAGING_JEV_SECRET" not in sr.load_flags(path)
+    path.write_text(FLAGS_TEXT + "CSA_STAGING_JEV_SECRET=a\nCSA_STAGING_JEV_SECRET=b\n")
+    with pytest.raises(RolloutError, match="duplicate key CSA_STAGING_JEV_SECRET"):
+        sr.load_flags(path)
+    assert sr.OPTIONAL_FLAG_KEYS == {"CSA_STAGING_JEV_SECRET"}
+    assert not sr.OPTIONAL_FLAG_KEYS & sr.FLAG_KEYS
+
+
+def _jev_secret_paths(tmp_path: Path, extra: dict[str, str]) -> tuple[Path, dict[str, Path]]:
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secret_dir)
+    (secret_dir / "pipeline").mkdir(mode=0o700, exist_ok=True)
+    flags = sr.load_flags(sr.REPO_ROOT / "deploy" / "staging-rollout.env") | extra
+    env = sr.build_env(
+        flags,
+        {"python": PYTHON_REF, "frontend": FRONTEND_REF},
+        docker_config=tmp_path,
+        secret_dir=secret_dir,
+    )
+    env["HOME"] = _compose_env(secret_dir)["HOME"]
+    return secret_dir, sr.secret_paths(sr.SubprocessRunner(cwd=sr.REPO_ROOT), env)
+
+
+def test_a_rollout_with_no_jev_key_file_plans_cleanly(tmp_path: Path) -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is unavailable")
+    secret_dir, paths = _jev_secret_paths(tmp_path, {})
+    # The real key's file is declared but unused at the default, so compose leaves it out and
+    # plan has no reason to ask for it; the placeholder is a file every host already has.
+    assert "staging_jev_key" not in paths
+    assert paths["staging_disabled_jev_key"] == secret_dir / "runtime/staging_disabled_model_key"
+    assert paths["staging_disabled_jev_key"].exists()
+    assert not [name for name in sr.missing_secrets(paths) if "jev" in name]
+
+
+def test_the_jev_switch_makes_plan_ask_for_the_real_key_file(tmp_path: Path) -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is unavailable")
+    extra = {"CSA_STAGING_JEV_SECRET": "staging_jev_key"}
+    secret_dir, paths = _jev_secret_paths(tmp_path, extra)
+    assert paths["staging_jev_key"] == secret_dir / "pipeline/staging_jev_key"
+    assert "staging_disabled_jev_key" not in paths
+    assert "staging_jev_key" in sr.missing_secrets(paths)  # not written yet: plan stops (exit 2)
+    paths["staging_jev_key"].write_text("SYNTHETIC-ONLY")
+    assert "staging_jev_key" not in sr.missing_secrets(paths)

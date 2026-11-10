@@ -678,3 +678,39 @@ def test_the_checked_in_rollout_flags_turn_google_calendar_and_meet_on() -> None
     )
     assert flags["CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR"] == "true"
     assert flags["CSA_STAGING_BOOKINGS_GOOGLE_MEET"] == "true"
+
+
+def _jev_sources(services: dict) -> dict[str, str | None]:
+    return {
+        name: {s["target"]: s["source"] for s in services[name]["secrets"]}.get("TYPESAFE_API_KEY")
+        for name in ("gateway", "worker", "delivery")
+    }
+
+
+def test_jev_key_reaches_the_gateway_and_worker_through_one_switch(tmp_path: Path) -> None:
+    (tmp_path / "default").mkdir()
+    default = render(tmp_path / "default", "staging-approved", "pipeline-approved")
+    # Default: the disabled placeholder, which Settings reads as no key. Delivery never has Jev.
+    assert _jev_sources(default["services"]) == {
+        "gateway": "staging_disabled_jev_key",
+        "worker": "staging_disabled_jev_key",
+        "delivery": None,
+    }
+    assert "staging_jev_key" not in default["secrets"]
+    placeholder = Path(default["secrets"]["staging_disabled_jev_key"]["file"])
+    assert placeholder.name == "staging_disabled_model_key"
+
+    (tmp_path / "wired").mkdir()
+    wired = render(
+        tmp_path / "wired",
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_JEV_SECRET": "staging_jev_key"},
+    )
+    assert _jev_sources(wired["services"]) == {
+        "gateway": "staging_jev_key",
+        "worker": "staging_jev_key",
+        "delivery": None,
+    }
+    assert wired["secrets"]["staging_jev_key"]["file"].endswith("pipeline/staging_jev_key")
+    assert "staging_disabled_jev_key" not in wired["secrets"]

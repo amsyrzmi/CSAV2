@@ -335,3 +335,32 @@ def test_assistant_draft_model_defaults_to_the_same_model() -> None:
     assert _settings(ASSISTANT_DRAFT_MODEL="synthetic/drafter").ASSISTANT_DRAFT_MODEL == (
         "synthetic/drafter"
     )
+
+
+def test_customer_decide_mode_default_is_llm_and_bounded() -> None:
+    assert _settings().CUSTOMER_DECIDE_MODE_DEFAULT == "llm"
+    # cascade needs no key to start: with no Jev provider the customer path runs on the LLM.
+    assert _settings(CUSTOMER_DECIDE_MODE_DEFAULT="cascade").CUSTOMER_DECIDE_MODE_DEFAULT == (
+        "cascade"
+    )
+    for mode in ("jev", "shadow", "auto", ""):
+        with pytest.raises(ValidationError):
+            _settings(CUSTOMER_DECIDE_MODE_DEFAULT=mode)
+
+
+@pytest.mark.parametrize("placeholder", ["", "   ", "disabled", "staging-disabled-no-model-access"])
+def test_a_jev_placeholder_reads_as_no_key_never_an_invalid_one(placeholder: str) -> None:
+    from scripts.staging_secrets import DISABLED_MODEL_KEY
+
+    assert DISABLED_MODEL_KEY == "staging-disabled-no-model-access"
+    settings = _settings(TYPESAFE_API_KEY=placeholder)
+    assert settings.TYPESAFE_API_KEY is None
+    # So no area is switched on by it: auto stays on the LLM, and an explicit cascade refuses.
+    with pytest.raises(ValidationError, match="TYPESAFE_API_KEY"):
+        _settings(TYPESAFE_API_KEY=placeholder, ASSISTANT_DECIDER_EMAIL="cascade")
+
+
+def test_a_real_jev_key_is_kept() -> None:
+    settings = _settings(TYPESAFE_API_KEY="synthetic-jev-key")
+    assert settings.TYPESAFE_API_KEY is not None
+    assert settings.TYPESAFE_API_KEY.get_secret_value() == "synthetic-jev-key"

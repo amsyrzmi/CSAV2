@@ -162,6 +162,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
             "staging_identity_dsn",
             "staging_credentials_key",
             "staging_disabled_model_key",
+            "staging_disabled_jev_key",
         },
         "frontend": set(),
         "cloudflared": {"staging_tunnel_token"},
@@ -279,6 +280,7 @@ def test_private_startup_selection_without_connector_secret(tmp_path: Path) -> N
         "IDENTITY_DATABASE_URL",
         "CREDENTIALS_KEY",
         "GROQ_API_KEY",
+        "TYPESAFE_API_KEY",
     }
     assert SYNTHETIC_VALUE not in result.stdout
 

@@ -31,6 +31,7 @@ from csa.core.tenancy import tx
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient
 from csa.decide.jev import JevClient, JevProvider
+from csa.decide.llm import LLMProvider
 from csa.graph.coordinator import CoordinatorRuntime, build_runtime, process_turn
 from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
@@ -638,6 +639,37 @@ def marketplace_live_access(
     return live_read_access(settings, app_pool)
 
 
+def build_turn_dependencies(
+    settings: Settings,
+    app_pool: AsyncConnectionPool,
+    llm: LLMProvider | None,
+    http: httpx.AsyncClient,
+    *,
+    mailer: Mailer,
+) -> PostgresTurnDependencies:
+    """The customer turn's dependencies, with Jev for the classifier only when there is a key.
+
+    Jev shares the worker's one HTTP client, which `run_until_stopped` closes. Without a key the
+    classifier runs on the LLM whatever CUSTOMER_DECIDE_MODE_DEFAULT says.
+    """
+    jev = (
+        JevProvider(
+            JevClient(settings.TYPESAFE_API_KEY.get_secret_value(), http),
+            capabilities=CAPABILITIES,
+        )
+        if settings.TYPESAFE_API_KEY is not None
+        else None
+    )
+    return PostgresTurnDependencies(
+        app_pool,
+        llm,
+        jev,
+        mailer=mailer,
+        marketplace_live=marketplace_live_access(settings, app_pool),
+        default_decide_mode=settings.CUSTOMER_DECIDE_MODE_DEFAULT,
+    )
+
+
 def register_marketplace_sync_task(
     settings: Settings, owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool
 ) -> asyncio.Task[None] | None:
@@ -704,14 +736,6 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             ),
             compose_fallback=compose_fallback,
         )
-        jev = (
-            JevProvider(
-                JevClient(settings.TYPESAFE_API_KEY.get_secret_value(), llm_http),
-                capabilities=CAPABILITIES,
-            )
-            if settings.TYPESAFE_API_KEY is not None
-            else None
-        )
         langfuse_sink = (
             LangfuseSink(
                 public_key=settings.LANGFUSE_PUBLIC_KEY,
@@ -722,13 +746,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
             else None
         )
-        turn_deps = PostgresTurnDependencies(
-            app_pool,
-            llm,
-            jev,
-            mailer=mailer,
-            marketplace_live=marketplace_live_access(settings, app_pool),
-        )
+        turn_deps = build_turn_dependencies(settings, app_pool, llm, llm_http, mailer=mailer)
         coordinator = build_runtime(
             turn_deps,
             build_saver(checkpoint_pool),

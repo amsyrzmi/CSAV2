@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     ASSISTANT_JEV_FLOOR_NOUL: float = Field(default=0.7, ge=0.0, le=1.0)
     ASSISTANT_JEV_FLOOR_CHOICE: float = Field(default=0.7, ge=0.0, le=1.0)
     ASSISTANT_DECIDER_AUDIT_SAMPLE: float = Field(default=0.10, ge=0.0, le=1.0)
+    # The customer classifier's mode for a company with no decide_mode stored in its policy, used
+    # only while the worker has a Jev provider (TYPESAFE_API_KEY set; without one it is llm). A
+    # stored decide_mode, an explicit llm included, always wins. The rollout turns cascade on last.
+    CUSTOMER_DECIDE_MODE_DEFAULT: Literal["llm", "cascade"] = "llm"
     # The drafter for the assistant's batch email only, through its own client; None (or empty)
     # means GROQ_MODEL. The Email tab's drafts always use GROQ_MODEL.
     ASSISTANT_DRAFT_MODEL: str | None = None
@@ -427,6 +431,16 @@ class Settings(BaseSettings):
             if a == b or a.is_relative_to(b) or b.is_relative_to(a):
                 raise ValueError(f"{later} must not be, contain or sit inside {earlier}")
         return self
+
+    @field_validator("TYPESAFE_API_KEY", mode="before")
+    @classmethod
+    def _jev_placeholder_is_unset(cls, value: object) -> object:
+        # No Jev key means every area runs on the LLM or rule, so a placeholder must read as no
+        # key and never as an invalid one: blank, "disabled", or the staging disabled-model-key
+        # file (staging maps its placeholder to TYPESAFE_API_KEY until a real key file is wired).
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        placeholders = {"", "disabled", "staging-disabled-no-model-access"}
+        return None if isinstance(raw, str) and raw.strip() in placeholders else value
 
     @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")
     @classmethod

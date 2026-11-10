@@ -52,6 +52,11 @@ services:
         target: CREDENTIALS_KEY
       - source: staging_disabled_model_key
         target: GROQ_API_KEY
+      # Jev decision layer. The disabled placeholder reads as no key (every area runs on the LLM
+      # or rule); CSA_STAGING_JEV_SECRET=staging_jev_key (declared by the pipeline file) wires
+      # the real key.
+      - source: ${CSA_STAGING_JEV_SECRET:-staging_disabled_jev_key}
+        target: TYPESAFE_API_KEY
     volumes: ["staging-uploads:/var/lib/csa/uploads"]
     depends_on:
       staging-db:
@@ -117,6 +122,8 @@ secrets:
   staging_credentials_key:
     external: true
   staging_disabled_model_key:
+    external: true
+  staging_disabled_jev_key:
     external: true
   staging_app_password:
     external: true
