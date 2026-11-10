@@ -518,7 +518,7 @@ def _placehold(text: str, sources: Sequence[str]) -> tuple[str, list[str]]:
     for start, end in reversed(unsupported_figures(text, sources)):
         if any(a <= start < b for a, b in gaps):
             continue  # already inside a [STAFF: ...] gap
-        link = text[start:end].lower().startswith("http")
+        link = any(char.isalpha() for char in text[start:end])  # a number span has no letter
         text = text[:start] + (LINK if link else FIGURE) + text[end:]
         needs.append("confirm this link" if link else "confirm this figure")
     return text, needs

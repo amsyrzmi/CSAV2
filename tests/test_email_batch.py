@@ -242,6 +242,57 @@ def test_unsupported_figures_finds_numbers_and_links_missing_from_the_sources() 
     assert unsupported_figures("Thanks for staying with us.", []) == []
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "www.shop.example/renew",
+        "www.shop.example",
+        "shop.example/renew",
+        "renew.shop.example.com",
+        "kedai.example.my/promo?code=new",
+    ],
+)
+def test_unsupported_figures_finds_www_and_bare_domain_links(link: str) -> None:
+    """A link the model wrote without http(s):// is still checked: "www." links, a dotted host
+    with a path, and a host ending in a common top-level domain."""
+    text = f"Renew your plan at {link}. Thank you."
+    assert [text[a:b] for a, b in unsupported_figures(text, [])] == [link]
+    # The same link in the facts passes, with or without its scheme there.
+    assert unsupported_figures(text, [f"Renewal page: {link}"]) == []
+    assert unsupported_figures(text, [f"Renewal page: https://{link}"]) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Bring your own towel, e.g. a small one, and ask Mr. Tan or Dr. Lee at the desk.",
+        "The class runs 3.5 hours; i.e. two sessions.",
+        "Please read notes.pdf and the attached Plan_2026.docx before Friday.",
+        "Reply to aina.rahman@shop.example.com or ask.my@example.com if you need help.",
+        "Open 9.30am-5.30pm, and/or by appointment.",
+        "Thanks.See you soon.",
+    ],
+)
+def test_ordinary_dotted_text_is_not_a_link(text: str) -> None:
+    """Abbreviations, decimals, file names and email addresses are not links (only the numbers
+    count as figures)."""
+    sources = ["Hours: 3.5; Open 9.30 to 5.30; Year 2026"]
+    assert unsupported_figures(text, sources) == []
+
+
+def test_check_figures_turns_an_invented_www_link_into_a_link_placeholder() -> None:
+    proposal = DraftProposal(
+        subject="Renewal", body="Hello,\n\nRenew at www.shop.example/renew today.\n\nThe team"
+    )
+    checked = email_batch.check_figures(proposal, ["Plan: basic"])
+    assert "www.shop.example" not in checked.body
+    assert "Renew at [STAFF: confirm this link] today." in checked.body
+    assert "confirm this link" in checked.needs_facts_from_staff
+    assert has_staff_placeholder(f"{checked.subject}\n{checked.body}")
+    kept = email_batch.check_figures(proposal, ["Renewal page: www.shop.example/renew"])
+    assert kept == proposal
+
+
 def _no_placeholder_fragment(text: str) -> bool:
     """Every ``[`` in ``text`` opens a whole ``[STAFF: ...]`` placeholder."""
     return "[" not in re.sub(r"\[STAFF: [^\]]*\]", "", text)
@@ -663,6 +714,33 @@ async def test_the_planners_question_cannot_veto_a_clear_typed_send(
     assert asks_to_send(turn.body, proposal.send) is False  # the folded body would not
     out = await _build(world, expanded, SEND_ALL, proposal=proposal, turn=turn, authored=typed)
     assert [step.kind for step in out.steps] == ["email_send", "email_send"]
+
+
+@requires_docker
+async def test_an_invented_bare_link_forces_an_export_step(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A link with no http(s):// that is in no fact becomes a placeholder: the draft needs
+    staff input and is exported, never sent."""
+
+    def body(user: dict[str, Any]) -> str:
+        if user["recipient_name"].endswith(" 1"):
+            return "Hi,\n\nRenew at www.shop.example/renew or shop.example.com.\n\nThe team"
+        return "Hi,\n\nSee you soon.\n\nThe team"
+
+    await _ready(world, monkeypatch, BatchModel(body))
+    await _customers(world, 2)
+    expanded = await _expanded(world, GROUP)
+    out = await _build(world, expanded, SEND_ALL)
+    labels = [r.label for r in expanded.recipients]
+    kinds = dict(zip(labels, [step.kind for step in out.steps], strict=True))
+    assert kinds == {"Batch Customer 0": "email_send", "Batch Customer 1": "email_export"}
+    rows = await _drafts(world, out)
+    linked = rows[labels.index("Batch Customer 1")]
+    assert "shop.example" not in linked["body"]
+    assert linked["body"].count("[STAFF: confirm this link]") == 2
+    assert linked["needs_staff_input"] is True
 
 
 @requires_docker
