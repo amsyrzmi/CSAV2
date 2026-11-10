@@ -26,7 +26,7 @@ request count at five, plus two that wait on the owner.
 |---|---|---|---|---|
 | 0 | Replay cases file in the image, and the planner's batch `mode` fix | none (built) | none | Already built on two branches, pushed together |
 | 1 | Knowledge cleanup | `2026-11-10-knowledge-cleanup-design.md` | 0550–0559 | Live tenant confusion today, independent of everything else |
-| 2 | Customer bot: answers and escalation ladder | `2026-11-10-customer-bot-business-answers-design.md` | 0560–0569, probably none | Real customers are on production; the answers and the ladder change the same graph and the same golden cases |
+| 2 | Customer bot: answers and escalation ladder | `2026-11-10-customer-bot-business-answers-design.md` | 0560–0569 (0560 adds `escalations.note`) | Real customers are on production; the answers and the ladder change the same graph and the same golden cases |
 | 3 | Connections tab | `2026-11-10-connections-tab-design.md` | none | Console navigation changes here before the Overview-as-assistant pull request changes it again |
 | 4 | Product management | `2026-11-10-product-management-design.md` | 0570–0579 | Needs new write routes, a stock-authority rule and assistant actions |
 | 5 | Assistant PR 3 (Overview becomes the assistant, interactive dock, alive avatar) | already planned in the assistant refinement programme; its design is brainstormed when it starts | to be decided | Last, so it renders the cards that 4 adds |

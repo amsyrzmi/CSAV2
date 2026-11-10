@@ -108,8 +108,8 @@ audit entry on every action):
 - `POST /kb/ingest-jobs/dismiss-failed`: dismisses every `failed`, `partial` and `cancelled` job of
   the tenant; returns the count.
 - `remove_file` and `delete_document` close every job that lists the file in `files[].file_id`: a job
-  whose files are all deleted becomes `cancelled` and dismissed; a job with other live files keeps
-  them and gets a per-file note in `meta.results`.
+  whose files are all deleted becomes `cancelled` and dismissed; a job with other live files is left
+  untouched (its card shows the deleted file as gone, because the console knows the live files).
 - The delete routes no longer depend on the `enabled` check (they only remove); upload and retry still
   do. `cleanup_after_remove` returns whether the sweep succeeded; the two delete routes change from 204
   to 200 with a small body (`{"storage_cleanup": "done" | "pending"}`), updated in the console, the
@@ -174,5 +174,6 @@ Change any of these on request; none needs the owner.
 - **"The original is still stored":** decided per file by `file_id` (live row in `kb_upload_files`).
   A `files[]` entry with no `file_id` (path only, used by the development ingest script) is treated as
   live for retry, checked against the object store, and is never cancelled by the migration backfill.
-- **Retry of a `partial` job** re-runs only the files whose result failed; per-file results are merged
-  into `meta.results` instead of overwritten (the plan changes the finish SQL accordingly).
+- **Retry of a `partial` job** re-runs every file of the job. A file already read comes back as
+  `duplicate` (the ingest finds its hash), so nothing is stored twice and no per-file merge into
+  `meta.results` is needed. (Changed from "only the failed files" while planning; see the plan.)
