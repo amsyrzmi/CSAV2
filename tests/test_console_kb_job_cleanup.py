@@ -502,6 +502,29 @@ async def test_cancel_of_a_processing_job_is_409(sessions: SessionWorld) -> None
     assert (await only_job(sessions, tenant))["status"] == "processing"
 
 
+async def test_the_reaper_requeues_an_abandoned_job_of_a_disabled_tenant(
+    sessions: SessionWorld,
+) -> None:
+    """A worker died mid-read and the knowledge assistant was switched off: the job goes back to
+    queued (not cancelled, not claimed), so it is Paused on the page and Cancel still works."""
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    worker = processor(sessions)
+    claimed = await worker.claim(UUID(tenant))
+    assert claimed is not None and (await only_job(sessions, tenant))["status"] == "processing"
+    await agent_off(sessions, tenant)
+    await sessions.q(
+        "UPDATE kb_ingest_jobs SET locked_at = now() - interval '1 hour' WHERE client_id=%s",
+        tenant,
+    )
+    assert await worker.claim(UUID(tenant)) is None  # requeued, but disabled: not claimed again
+    row = await only_job(sessions, tenant)
+    assert row["status"] == "queued" and row["locked_at"] is None
+    assert row["dismissed_at"] is None and row["finished_at"] is None
+    [listed] = await listed_jobs(sessions, tenant)
+    assert listed["id"] == str(row["id"]) and listed["status"] == "queued"
+
+
 async def test_dismiss_failed_clears_all_and_reports_the_count(sessions: SessionWorld) -> None:
     tenant = await enable(sessions)
     other = sessions.tenants[1]

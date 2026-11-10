@@ -1888,7 +1888,9 @@ async def test_deleting_a_source_makes_no_attention_card(site: Site) -> None:
             )
             await button(page, page.get_by_test_id("kb-confirm"), "Confirm delete").click()
             await expect(
-                page.get_by_text("Deleted. We'll finish clearing the stored file shortly.", exact=True)
+                page.get_by_text(
+                    "Deleted. We'll finish clearing the stored file shortly.", exact=True
+                )
             ).to_be_visible()
             await expect(page.get_by_text("The stored file is gone.")).to_have_count(0)
 

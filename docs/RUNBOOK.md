@@ -428,7 +428,7 @@ reaper. Deleting a source or a document closes every job that only that file kep
 `cancelled` and dismissed, so no card is left behind, and a worker that finds its source deleted stores
 no document. Delete works with the assistant switched off; when the answer says the storage sweep is
 `pending`, **Clean up leftover files** on the Maintenance page finishes it. Migration 0550 cleaned up
-the cards already stuck before this release (failed, partial, queued or stale processing jobs whose
+the cards already stuck before this release (failed, partial, queued or processing jobs whose
 files were all deleted became `cancelled` and dismissed). To check a company by hand, list its jobs
 with `dismissed_at IS NULL` in `kb_ingest_jobs`; every audit row for these actions is named
 `kb.job_dismissed`, `kb.job_retried`, `kb.job_cancelled` or `kb.jobs_dismissed`.

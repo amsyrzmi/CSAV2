@@ -2221,7 +2221,7 @@ The separate machine principal remains read-only and tenant-allowlisted.
   upload job again with all its files (files read before answer `duplicate`), attempts 0, error
   cleared and a new queue time, so a deletion before the retry does not fence it. 409
   `original_removed` when `original_stored` is false; 409 `not_retryable` when the job is not
-  `failed`/`partial` (two quick calls queue once); 409 when the KB switches are off. Audit
+  `failed`/`partial` or not an upload job (two quick calls queue once); 409 when the KB switches are off. Audit
   `kb.job_retried`.
   `POST /console/v1/kb/ingest-jobs/{id}/cancel`: **200 job** (`cancelled`, dismissed); only a
   `queued` job, including one paused while the switches are off; anything else is 409

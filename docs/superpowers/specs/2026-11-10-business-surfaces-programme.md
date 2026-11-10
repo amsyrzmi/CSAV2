@@ -84,4 +84,4 @@ places in the existing plans.
 ## 6. State
 
 - 2026-11-10: the TikTok Shop app is published as a Public app and is under TikTok's review; until it is approved, only the owner's own shop is known to connect (ledger row 13). The owner's own shop is connected on staging; live product sync needed the price fix on `fix/tiktok-live-product-shape`.
-- Next: the plan for pull request 1 (knowledge cleanup), then its build.
+- Next: the plan for pull request 1 (knowledge cleanup) is written and PR 1 is built on `feat/knowledge-cleanup`, awaiting the owner's merge and rollout (migration 0550 needs the owner's go).
