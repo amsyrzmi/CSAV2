@@ -2162,8 +2162,8 @@ The separate machine principal remains read-only and tenant-allowlisted.
   reuse with different files returns 409. Cookies/CSRF and verified tenant context
   are required; machine credentials cannot upload or read/download managed sources.
   Platform/tenant admins and tenant staff may write; readers may view/download.
-  Upload/document/source deletion and gap resolution require both KB switches on (409).
-  Reconciliation remains available with switches off.
+  Upload, job retry and gap resolution require both KB switches on (409). Document and
+  source deletion, the other job actions and reconciliation remain available with switches off.
 - Parser bounds apply while streaming, before unbounded buffering: **31 MiB total**,
   **8 KiB headers per part**, at most 3 file parts and no non-file fields. Oversized
   input is 413; malformed/incomplete multipart, invalid filenames, empty files, unsupported
@@ -2181,12 +2181,16 @@ The separate machine principal remains read-only and tenant-allowlisted.
   deleted/foreign sources are 404, missing storage is an explicit 503. Responses are
   attachment downloads with no-store/nosniff. Downloads already authorized/open may finish
   during deletion; new downloads cannot.
-- `DELETE /console/v1/kb/documents/{id}`: **204**, scoped/audited; missing is 404.
-  Removes chunks/document, marks every linked source deleted and unlinks originals.
-  `DELETE /console/v1/kb/files/{id}`: **204**, scoped/audited and repeatable for known
-  sources; when linked it deletes the shared document and **all linked duplicate sources**.
-  Deleting an unprocessed source invalidates it even if a worker already read its bytes.
-  Superseded document versions remain visible until explicitly deleted.
+- `DELETE /console/v1/kb/documents/{id}`: **200 `{storage_cleanup}`**, scoped/audited;
+  missing is 404. Removes chunks/document, marks every linked source deleted and unlinks originals.
+  `DELETE /console/v1/kb/files/{id}`: **200 `{storage_cleanup}`**, scoped/audited and repeatable
+  for known sources; when linked it deletes the shared document and **all linked duplicate
+  sources**. Deleting an unprocessed source invalidates it even if a worker already read its bytes.
+  Superseded document versions remain visible until explicitly deleted. `storage_cleanup` is
+  `done` when the storage sweep after the commit succeeded (or no store is configured) and
+  `pending` when it failed: the removal still stands, the failure is logged and
+  `POST /kb/storage/reconcile` finishes the sweep. Both routes close the jobs whose files are now
+  all deleted (status `cancelled`, dismissed); a job with a path-only entry or a live file stays.
 - Worker deduplication, final storage and deletion share a tenant transaction advisory
   lock. Hash tombstones fence jobs queued before a content deletion (including legacy
   jobs without file IDs); managed file validity is rechecked after embedding, so deletion
@@ -2199,11 +2203,32 @@ The separate machine principal remains read-only and tenant-allowlisted.
   legacy import or scheduler is implied. Available via **Reconcile orphaned storage**
   on the source panel; I/O/DB failures propagate and are logged, not reported as success.
 - `GET /console/v1/kb/ingest-jobs?limit=20` and `GET /console/v1/kb/ingest-jobs/{id}`:
-  curated typed job status (`queued`, `processing`, `done`, `partial`, `failed`),
-  attempts/timestamps, public `{name,file_id}` files and per-file `meta.results`
-  (`file,status,document_id,chunks,version,error`). Internal paths/requester/arbitrary
-  metadata are omitted; errors containing path syntax are redacted. Legacy `upload:`
-  document source locations are omitted too. This intentionally replaces raw job JSON.
+  curated typed job status (`queued`, `processing`, `done`, `partial`, `failed`, `cancelled`),
+  attempts/timestamps, public `{name,file_id}` files, per-file `meta.results`
+  (`file,status,document_id,chunks,version,error`) and `original_stored`. Internal
+  paths/requester/arbitrary metadata are omitted; errors containing path syntax are redacted.
+  Legacy `upload:` document source locations are omitted too. This intentionally replaces raw
+  job JSON. Dismissed jobs are left out of the list and are 404 by id (migration 0550).
+  `original_stored` is false when a file of the job has been removed, or when the job (or one of
+  its results) failed because its content was deleted after it was queued; such a job can only be
+  dismissed. An entry with a path and no `file_id` (legacy) counts as stored.
+- Job actions: human writer/CSRF, knowledge base add-on, scoped to the tenant and audited. A
+  job that is absent, belongs to another tenant or is dismissed is 404.
+  `POST /console/v1/kb/ingest-jobs/{id}/dismiss`: **204**; takes a finished job (`done`,
+  `partial`, `failed`, `cancelled`) off the list; `queued`/`processing` is 409 `job_still_running`.
+  Audit `kb.job_dismissed`.
+  `POST /console/v1/kb/ingest-jobs/{id}/retry`: **200 job**; queues a `failed` or `partial`
+  upload job again with all its files (files read before answer `duplicate`), attempts 0, error
+  cleared and a new queue time, so a deletion before the retry does not fence it. 409
+  `original_removed` when `original_stored` is false; 409 `not_retryable` when the job is not
+  `failed`/`partial` (two quick calls queue once); 409 when the KB switches are off. Audit
+  `kb.job_retried`.
+  `POST /console/v1/kb/ingest-jobs/{id}/cancel`: **200 job** (`cancelled`, dismissed); only a
+  `queued` job, including one paused while the switches are off; anything else is 409
+  `not_cancellable`. Audit `kb.job_cancelled`.
+  `POST /console/v1/kb/ingest-jobs/dismiss-failed`: **200 `{dismissed}`**, the number of the
+  tenant's `failed`, `partial` and `cancelled` jobs taken off the list. Audit `kb.jobs_dismissed`
+  (target: the tenant).
 - `GET /console/v1/kb/gaps` lists unanswered questions.
   `POST /console/v1/kb/gaps/{id}/resolve` atomically marks resolved and audits the action;
   it does not create an answer. Reader controls are absent and backend writes are denied.

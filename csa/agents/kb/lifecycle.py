@@ -12,6 +12,10 @@ from psycopg import AsyncConnection
 from csa.agents.kb.extract import KbFileError
 from csa.core import db
 
+# The worker's failure for content deleted after its job was queued; the console reads a job that
+# failed this way as one whose original is gone, so it can't be tried again.
+CONTENT_DELETED_ERROR = "content was deleted after this job was queued; upload again deliberately"
+
 
 async def lock(conn: AsyncConnection[Any], client_id: UUID) -> None:
     await db.q.execute("kb/lifecycle_lock.sql", (str(client_id),), conn=conn)
@@ -28,9 +32,7 @@ async def check_ingestion(
     if await db.q.fetch_one(
         "kb/deletion_check.sql", (client_id, content_hash, started_at), conn=conn
     ):
-        raise KbFileError(
-            "content was deleted after this job was queued; upload again deliberately"
-        )
+        raise KbFileError(CONTENT_DELETED_ERROR)
     if file_id is not None:
         row = await db.q.fetch_one("kb/file_get.sql", (client_id, file_id), conn=conn)
         if row is None or row["deleted_at"] is not None or row["content_hash"] != content_hash:

@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from csa.agents.kb.ingest_jobs import parse_job_files
+from csa.agents.kb.lifecycle import CONTENT_DELETED_ERROR
 
 
 class JobFileOut(BaseModel):
@@ -42,6 +43,27 @@ class JobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    # False when a file of the job was removed or its content was deleted after it was queued:
+    # the job can't be tried again, only taken off the list.
+    original_stored: bool
+
+
+class JobsDismissedOut(BaseModel):
+    dismissed: int
+
+
+def content_deleted(error: str | None) -> bool:
+    return error is not None and error.startswith(CONTENT_DELETED_ERROR)
+
+
+def original_stored(row: dict[str, Any], files: list[JobFileOut], meta: JobMetaOut) -> bool:
+    """Read from the raw row: a path-only entry (no file_id) counts as stored."""
+    deleted = {str(file_id) for file_id in row.get("deleted_file_ids") or ()}
+    if any(item.file_id is not None and str(item.file_id) in deleted for item in files):
+        return False
+    return not content_deleted(row["error"]) and not any(
+        content_deleted(result.error) for result in meta.results
+    )
 
 
 def safe_error(error: str | None) -> str | None:
@@ -61,6 +83,7 @@ def public_job(row: dict[str, Any]) -> JobOut:
         for item in parse_job_files(row["files"])
     ]
     meta = JobMetaOut.model_validate(row["meta"] or {})
+    stored = original_stored(row, files, meta)
     for result in meta.results:
         result.file = PurePosixPath(result.file.replace("\\", "/")).name
         result.error = safe_error(result.error)
@@ -80,4 +103,5 @@ def public_job(row: dict[str, Any]) -> JobOut:
         files=files,
         meta=meta,
         error=safe_error(row["error"]),
+        original_stored=stored,
     )
