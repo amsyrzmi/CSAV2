@@ -75,6 +75,8 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 HOST_CHANGED = "host settings changed since plan; run plan again"
 APPLY_COMMAND = ".venv/bin/python -m scripts.staging_rollout apply"
+RECORD_COMMAND = ".venv/bin/python -m scripts.staging_rollout record-staged"
+GATE_ENVIRONMENT = "staging"
 DOWNTIME = (
     "Downtime: console unavailable and bot replies delayed (queued, not lost) "
     "until the services are back."
@@ -329,19 +331,33 @@ def target_sha(runner: Runner, repo: Path) -> str:
     return sha
 
 
-def _gh(runner: Runner, argv: Sequence[str]) -> str:
-    result = runner.run(argv)  # no env: gh keeps the user's login
+def _gh(
+    runner: Runner,
+    argv: Sequence[str],
+    step: str = "plan",
+    *,
+    body: Mapping[str, object] | None = None,
+) -> str:
+    """Run gh; a ``body`` is sent as JSON on stdin, for ``--input -``."""
+    stdin = None if body is None else json.dumps(body)
+    result = runner.run(argv, input=stdin)  # no env: gh keeps the user's login
     if result.returncode != 0:
         detail = _first_line(result.stderr) or f"exit {result.returncode}"
-        raise RolloutError("plan", f"gh failed: {detail}")
+        raise RolloutError(step, f"gh failed: {detail}")
     return result.stdout
 
 
-def _gh_json(runner: Runner, argv: Sequence[str]) -> object:
+def _gh_json(
+    runner: Runner,
+    argv: Sequence[str],
+    step: str = "plan",
+    *,
+    body: Mapping[str, object] | None = None,
+) -> object:
     try:
-        return json.loads(_gh(runner, argv))
+        return json.loads(_gh(runner, argv, step, body=body))
     except json.JSONDecodeError as error:
-        raise RolloutError("plan", "gh returned unreadable output") from error
+        raise RolloutError(step, "gh returned unreadable output") from error
 
 
 def _version_tags(version: object) -> list[object]:
@@ -418,6 +434,88 @@ def publish_state(runner: Runner, sha: str) -> str:
     if status in {"pending", "requested", "queued", "in_progress"}:
         return "in progress"
     return f"finished: {newest.get('conclusion') or status}"
+
+
+def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
+    """When ``sha`` first succeeded on staging, from GitHub Deployments; None if it never did.
+
+    Fails closed: a gh failure or any answer not of the expected shape is a stop, never a pass.
+    """
+    deployments = f"repos/{target.repo}/deployments"
+    query = f"sha={sha}&environment={GATE_ENVIRONMENT}&per_page=100"
+    listing = _gh_json(runner, ["gh", "api", f"{deployments}?{query}"], "gate")
+    if not isinstance(listing, list):
+        raise RolloutError("gate", "gh returned an unexpected deployment listing")
+    succeeded: list[str] = []
+    for deployment in listing:
+        if not isinstance(deployment, dict):
+            raise RolloutError("gate", "gh returned an unexpected deployment listing")
+        number = deployment.get("id")
+        if type(number) is not int:
+            raise RolloutError("gate", "gh returned an unexpected deployment listing")
+        if deployment.get("sha") != sha:
+            raise RolloutError("gate", "gh returned a deployment for another commit")
+        if deployment.get("environment", GATE_ENVIRONMENT) != GATE_ENVIRONMENT:
+            raise RolloutError("gate", f"gh returned a deployment outside {GATE_ENVIRONMENT}")
+        statuses = _gh_json(
+            runner, ["gh", "api", f"{deployments}/{number}/statuses?per_page=100"], "gate"
+        )
+        if not isinstance(statuses, list) or not all(isinstance(s, dict) for s in statuses):
+            raise RolloutError("gate", "gh returned an unexpected deployment status listing")
+        for status in statuses:
+            if status.get("state") != "success":
+                continue
+            created = status.get("created_at")
+            if not isinstance(created, str) or not created:
+                raise RolloutError("gate", "gh returned a deployment status without a date")
+            succeeded.append(created)
+    return min(succeeded) if succeeded else None
+
+
+def require_staged(runner: Runner, target: Target, sha: str) -> str:
+    """The staged record's date for a gated target; a commit staging never ran is refused."""
+    if not target.staged_gate:
+        return ""
+    record = staged_record(runner, target, sha)
+    if record is None:
+        raise RolloutError("gate", f"commit {sha[:7]} has not been rolled out to staging")
+    return record
+
+
+def record_staged(runner: Runner, target: Target, sha: str) -> None:
+    """Record ``sha`` as a successful staging deployment.
+
+    ``auto_inactive`` false keeps an older commit's success after a newer one is recorded.
+    """
+    deployments = f"repos/{target.repo}/deployments"
+    created = _gh_json(
+        runner,
+        ["gh", "api", "--method", "POST", deployments, "--input", "-"],
+        "gate",
+        body={
+            "ref": sha,
+            "environment": GATE_ENVIRONMENT,
+            "auto_merge": False,
+            "required_contexts": [],
+            "transient_environment": False,
+            "production_environment": False,
+            "description": "staging rollout",
+        },
+    )
+    number = created.get("id") if isinstance(created, dict) else None
+    if type(number) is not int:
+        raise RolloutError("gate", "gh returned an unexpected deployment")
+    _gh(
+        runner,
+        ["gh", "api", "--method", "POST", f"{deployments}/{number}/statuses", "--input", "-"],
+        "gate",
+        body={
+            "state": "success",
+            "environment": GATE_ENVIRONMENT,
+            "auto_inactive": False,
+            "description": "staging rollout finished",
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -573,6 +671,7 @@ class Plan:
     env: dict[str, str] = field(repr=False)  # non-secret flags and image refs for apply
     host_values: dict[str, str] = field(default_factory=dict, repr=False)  # values never printed
     warnings: list[str] = field(default_factory=list)
+    staged_on: str = ""  # when staging first ran this commit; gated targets only
 
 
 def plan_steps(
@@ -633,6 +732,8 @@ def build_plan(
         raise RolloutError(
             "confirm", f"HEAD changed since plan ({expected_sha[:7]} → {sha[:7]}); run plan again"
         )
+    # Before any image lookup: a gated target takes only commits staging has run.
+    staged_on = require_staged(runner, target, sha)
     images = published_images(runner, sha, target=target)
     if images is None:
         raise RolloutError(
@@ -667,7 +768,19 @@ def build_plan(
     warnings = downgrade_warnings(runner, repo, sha, rollback) if target.downgrade_warning else []
     checks = [path.name for path in check_files(checks_dir)]
     steps = plan_steps(pending, checks, target=target)
-    return Plan(sha, images, rollback, pending, missing, checks, steps, env, host_values, warnings)
+    return Plan(
+        sha,
+        images,
+        rollback,
+        pending,
+        missing,
+        checks,
+        steps,
+        env,
+        host_values,
+        warnings,
+        staged_on,
+    )
 
 
 def _pending_line(pending: Sequence[str]) -> str:
@@ -675,7 +788,10 @@ def _pending_line(pending: Sequence[str]) -> str:
 
 
 def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
-    lines = [f"Target SHA: {plan.sha}", "Images to deploy:"]
+    lines = [f"Target SHA: {plan.sha}"]
+    if target.staged_gate:
+        lines.append(f"Staged on: {plan.staged_on}")
+    lines.append("Images to deploy:")
     lines += [f"  {app}: {plan.images[app]}" for app in APPS]
     lines += plan.warnings
     lines.append("Rollback references (current containers):")
@@ -1187,6 +1303,36 @@ def apply(
         return 1
 
 
+def record_staged_command(
+    runner: Runner, target: Target, sha: str, out: Callable[[str], None] = print
+) -> int:
+    """``record-staged``: write the staging record again after a failed write."""
+    try:
+        if target.name != GATE_ENVIRONMENT:
+            raise RolloutError(
+                "gate", f"record-staged records staging rollouts only, not {target.name}"
+            )
+        if not SHA_RE.match(sha):
+            raise RolloutError("gate", "--sha must be the full 40-character SHA")
+        record_staged(runner, target, sha)
+    except RolloutError as error:
+        _report_stop(error, out)
+        return 1
+    out(f"Recorded {sha[:7]} as staged")
+    return 0
+
+
+def _record_rollout(runner: Runner, sha: str, out: Callable[[str], None]) -> None:
+    """After a successful staging apply; staging stands even when the record is not written."""
+    try:
+        record_staged(runner, STAGING, sha)
+    except RolloutError as error:
+        out(f"WARNING: staging is fine but the staged record was not written: {error.message}")
+        out(f"Retry: {RECORD_COMMAND} --sha {sha}")
+        return
+    out(f"Recorded {sha[:7]} as staged")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scripts.staging_rollout", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1194,17 +1340,23 @@ def _parser() -> argparse.ArgumentParser:
     apply = commands.add_parser("apply", help="roll HEAD out to staging")
     apply.add_argument("--sha", required=True, help="the full target SHA, as plan printed")
     apply.add_argument("--migrations", help="comma-separated pending versions, as plan printed")
+    record = commands.add_parser(
+        "record-staged", help="record a staging rollout for production (retry after a failed write)"
+    )
+    record.add_argument("--sha", required=True, help="the full SHA of the staging rollout")
     return parser
 
 
 def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     args = _parser().parse_args(argv)
     runner = runner or SubprocessRunner(cwd=REPO_ROOT)
+    if args.command == "record-staged":
+        return record_staged_command(runner, STAGING, args.sha)
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))
     try:
         docker_config.chmod(0o700)
         if args.command == "apply":
-            return apply(
+            code = apply(
                 runner,
                 REPO_ROOT,
                 parse_migrations(args.migrations),
@@ -1213,6 +1365,10 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
                 secret_dir=SECRET_DIR,
                 checks_dir=CHECKS_DIR,
             )
+            if code == 0:
+                # Not inside apply: a failed record must not turn a good rollout into a stop.
+                _record_rollout(runner, args.sha, print)
+            return code
         plan = build_plan(
             runner,
             REPO_ROOT,

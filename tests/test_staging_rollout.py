@@ -1136,6 +1136,7 @@ def test_main_apply_wires_migrations_to_apply(
     rollout_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rig = ApplyRig(tmp_path, rollout_env, monkeypatch, **MIGRATING)
+    rig.runner.rules[:0] = [(has("--method POST"), ok('{"id": 1}'))]
     argv = ["apply", "--sha", SHA, "--migrations", "0486,0487"]
     assert sr.main(argv, runner=rig.runner) == 0
     assert labels(rig.runner).count("migrate") == 1
