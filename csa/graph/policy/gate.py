@@ -41,6 +41,8 @@ class Policy(ContractModel):
     # error or low confidence) | jev. Jev modes need TYPESAFE_API_KEY.
     decide_mode: Literal["llm", "shadow", "cascade", "jev"] = "llm"
     jev_min_confidence: float = Field(default=0.5, ge=0, le=1)
+    # Kill switch: False stops the customer bot being given the earlier messages of a chat.
+    conversation_memory: bool = True
 
 
 def confidence(state: TurnState) -> float:

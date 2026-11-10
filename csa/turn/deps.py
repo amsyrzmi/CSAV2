@@ -46,12 +46,14 @@ from csa.contracts.facts import AgentResult, Fact
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.registry import CapabilityRegistry
 from csa.contracts.state import (
+    RECENT_WINDOW,
     BookingContext,
     Context,
     Draft,
     GateVerdict,
     GuardResult,
     OutboundMessage,
+    RecentMessage,
     Signals,
     TurnState,
     Verification,
@@ -67,12 +69,16 @@ from csa.graph.policy.gate import Policy, evaluate
 from csa.graph.policy.plan_rules import tiktok_stock_fallback
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
+from csa.turn.texts import clip_message
 
 logger = structlog.get_logger(__name__)
 
 # The booking read's own share of the context node's 2 s: longer and the customer is planned for
 # without it, as every other company is.
 BOOKING_CONTEXT_BUDGET_S = 1.0
+# The earlier messages and the handoff flag have their own second, for the same reason: a read
+# that overruns is left out, the turn is not failed.
+RECENT_BUDGET_S = 1.0
 # The reply of a turn that wrote a booking is composed and checked inside this, a little under the
 # graph's 10 s node limit (which would cancel it without a word): past it the facts are sent.
 BOOKING_COMPOSE_BUDGET_S = 9.0
@@ -198,6 +204,18 @@ def build_llm_provider(
     )
 
 
+async def _handoff_recent(
+    conn: psycopg.AsyncConnection[Any], client_id: UUID, conversation_id: UUID
+) -> bool:
+    """True when a person was really asked to take this chat over in the last 24 hours."""
+    row = await db.q.fetch_one(
+        "turn/recent_handoff.sql",
+        {"client_id": client_id, "conversation_id": conversation_id},
+        conn=conn,
+    )
+    return bool(row and row["handoff_recent"])
+
+
 class PostgresTurnDependencies:
     """Implements ``CoordinatorDependencies`` against the tenant-scoped app pool."""
 
@@ -267,13 +285,58 @@ class PostgresTurnDependencies:
             )
         if row is None:
             raise RuntimeError("conversation_not_found")
+        recent, handoff_recent = await self._recent_messages(envelope, conversation_id)
         return Context(
             summary=row["summary"],
             clarify_count=row["clarify_count"],
             active_order_ids=row["active_order_ids"],
-            flags={"human_muted": bool(row["human_muted"])},
+            flags={"human_muted": bool(row["human_muted"]), "handoff_recent": handoff_recent},
             booking=await self._booking_context(envelope, conversation_id),
+            recent=recent,
         )
+
+    async def _recent_messages(
+        self, envelope: Envelope, conversation_id: UUID
+    ) -> tuple[list[RecentMessage], bool]:
+        """The chat's earlier messages (oldest first) and whether a person was lately asked in.
+
+        For every company and channel, unless the company switched `conversation_memory` off, in
+        which case no message is read. Its own budget, and any failure leaves both empty: this
+        must never fail the turn.
+        """
+        try:
+            async with asyncio.timeout(RECENT_BUDGET_S):
+                policy = await self._policy(envelope.client_id)
+                async with tx(self._pool, str(envelope.client_id)) as conn:
+                    recent: list[RecentMessage] = []
+                    if policy.conversation_memory:
+                        rows = await db.q.fetch_all(
+                            "turn/recent_messages.sql",
+                            {
+                                "client_id": envelope.client_id,
+                                "conversation_id": conversation_id,
+                                "trace_id": envelope.trace_id,
+                                "limit": RECENT_WINDOW,
+                            },
+                            conn=conn,
+                        )
+                        recent = [
+                            RecentMessage(
+                                author="customer" if row["direction"] == "inbound" else "assistant",
+                                text=clip_message(row["redacted_body"].strip()),
+                            )
+                            for row in rows
+                        ]
+                    handoff = await _handoff_recent(conn, envelope.client_id, conversation_id)
+                return recent, handoff
+        except Exception as exc:  # including TimeoutError
+            logger.warning(
+                "turn_context_degraded",
+                category="recent_messages_failed",
+                error_type=type(exc).__name__,
+                trace_id=str(envelope.trace_id),
+            )
+            return [], False
 
     async def _booking_context(
         self, envelope: Envelope, conversation_id: UUID

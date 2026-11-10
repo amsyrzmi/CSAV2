@@ -81,7 +81,7 @@ async def booking_context(
             )
         )
     messages = await db.q.fetch_all(
-        "turn/booking_recent_messages.sql",
+        "turn/recent_messages.sql",
         {
             "client_id": client_id,
             "conversation_id": conversation_id,

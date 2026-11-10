@@ -1825,7 +1825,7 @@ async def test_a_company_without_bookings_gets_the_context_it_always_had(shop: S
     )
     assert loaded.booking is None
     assert loaded.model_dump(exclude={"booking"}) == Context(
-        flags={"human_muted": False}
+        flags={"human_muted": False, "handoff_recent": False}
     ).model_dump(exclude={"booking"})
 
 
