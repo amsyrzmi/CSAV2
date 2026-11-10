@@ -92,16 +92,19 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   host; do not start the workflow again.** On the instance: `ls -t /var/log/csa-prod-deploy | head -n 3`,
   read the newest log, and `pgrep -af csa-prod-deploy`. In AWS: Systems Manager, Run Command,
   Command history, the command id from the line `ssm_run: sent <action> for <sha> as command <id>`.
-  Systems Manager itself stops a command that runs longer than 30 minutes (the documents'
-  `timeoutSeconds`) and reports it as timed out; treat that the same way, because an apply may
-  have stopped part-way.
+  Systems Manager itself stops a command that runs longer than 40 minutes (the documents'
+  `timeoutSeconds`, longer than the runner waits), so a command still running at 124 may yet
+  finish or be stopped.
 - **64**: the runner refused an argument or setting; nothing was sent.
 - **1**: anything else, including a command that failed on the instance. The line
   `ssm_run: command <id> finished with status <status> (exit code <N>)` gives the instance's exit
   code: **75** means another deploy holds the lock (`another deploy is running`); wait for it to
   finish and start again. **64** means `csa-prod-deploy` refused its arguments. **2** is a plan
   that found missing secret files. **1** is a rollout stop, `commit is not on main`, or a failed
-  `git fetch`.
+  `git fetch`. A `TimedOut` status also arrives as runner exit 1, not 124: either the instance did
+  not pick the command up within 10 minutes (it never ran), or Systems Manager stopped it at its
+  40-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
+  run; the instance's log shows which.
 
 A `Require the deploy variables` step that fails names the secret or variable that is not set
 (see One-time setup, step 6). With an empty `sha`, `no successful staging deployment found` means
@@ -199,7 +202,9 @@ unset ACT_ID ACT_CODE
 sudo snap start amazon-ssm-agent
 ```
 
-The code is typed at a hidden prompt, so it never lands in shell history. If the agent asks
+The code is typed at a hidden prompt, so it never lands in shell history; it is single-use,
+expires with the activation, and appears briefly in `ps` and in sudo's entry in the auth log while
+the command runs. If the agent asks
 whether to overwrite an existing registration, answer yes. Then measure it on this 2 GB host:
 
 ```bash
@@ -234,8 +239,8 @@ RAW=https://raw.githubusercontent.com/amsyrzmi/CSAV2/main/deploy/production
 for f in iam/plan-trust-policy.json iam/plan-permissions-policy.json iam/apply-trust-policy.json iam/apply-permissions-policy.json ssm-document-plan.json ssm-document-apply.json; do
   curl -fsSLO "$RAW/$f"
 done
-sed -i -e "s|<region>|$REGION|g" -e "s|<account-id>|$ACCOUNT|g" \
-  -e "s|<managed-instance-id>|$NODE|g" -e "s|<oidc-provider-arn>|$OIDC|g" ./*-policy.json
+: "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" && sed -i -e "s|<region>|$REGION|g" \
+  -e "s|<account-id>|$ACCOUNT|g" -e "s|<managed-instance-id>|$NODE|g" -e "s|<oidc-provider-arn>|$OIDC|g" ./*-policy.json
 grep -n '<' ./*-policy.json || echo "placeholders filled"
 aws iam create-role --role-name csa-prod-deploy-plan --assume-role-policy-document file://plan-trust-policy.json
 aws iam put-role-policy --role-name csa-prod-deploy-plan --policy-name send-plan-document --policy-document file://plan-permissions-policy.json
@@ -243,7 +248,10 @@ aws iam create-role --role-name csa-prod-deploy-apply --assume-role-policy-docum
 aws iam put-role-policy --role-name csa-prod-deploy-apply --policy-name send-apply-document --policy-document file://apply-permissions-policy.json
 ```
 
-The filled copies stay in CloudShell, never in the repository. The two role ARNs
+The `:` guard stops the `sed` when `REGION`, `ACCOUNT` or `NODE` is empty, as in a new CloudShell
+tab (set them again from steps 1 and 2). If the `grep` line prints anything other than
+`placeholders filled`, stop before creating the roles. The filled copies stay in CloudShell, never
+in the repository. The two role ARNs
 (`aws iam get-role --role-name csa-prod-deploy-plan --query Role.Arn --output text`, and the same
 for `csa-prod-deploy-apply`) go into GitHub secrets in step 6.
 
@@ -336,9 +344,15 @@ f. The backup script, **only after step e**: the repository's `deploy/production
    6-hourly cron backup would fail. Backups run as `ubuntu` without `sudo`: `ubuntu` must be able
    to write `/var/tmp/csa-backup.lock`, append to `/srv/csa-prod/backup/backup.log`, read
    `/srv/csa-prod/backup/s3-key.txt` and `host.env`, and use docker. Check, install, then run it
-   once by hand:
+   once by hand. `install` replaces the file, so the directory `/srv/csa-prod/backup` itself must
+   be writable by `ubuntu`, and every later reinstall the deploy asks for runs without `sudo`. If
+   `ls -ld` shows another owner, or the installed `backup.sh` is root-owned (as the script's own
+   header says), run once
+   `sudo chown ubuntu:ubuntu /srv/csa-prod/backup /srv/csa-prod/backup/backup.sh`, then the plain
+   `install` below:
 
    ```bash
+   ls -ld /srv/csa-prod/backup
    ls -l /var/tmp/csa-backup.lock /srv/csa-prod/backup/
    crontab -l | grep backup.sh
    cd ~/CSAV2 && install -m 0755 deploy/production/backup.sh /srv/csa-prod/backup/backup.sh
@@ -393,7 +407,12 @@ h. Run a plan on the instance exactly as Systems Manager will, for the newest st
 The `main`-only restriction on both environments is mandatory: the roles' trust policies name the
 environment, and the environment's branch rule is what keeps another branch from getting that
 token (the jobs also check `github.ref`). The role ARNs and instance id are secrets so the public
-workflow logs mask them. The same from a terminal, each secret typed at `gh`'s hidden prompt:
+workflow logs mask them.
+
+Create the two environments, their reviewers and branch rules first, in the web settings
+(Settings, Environments); `gh secret set --env` for an environment that does not exist yet fails
+with HTTP 404. Then set the secrets and the variable, in the web settings or from a terminal, each
+secret typed at `gh`'s hidden prompt:
 
 ```bash
 gh secret set PROD_PLAN_ROLE_ARN --repo amsyrzmi/CSAV2 --env production-plan
@@ -402,8 +421,6 @@ gh secret set PROD_APPLY_ROLE_ARN --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_INSTANCE_ID --repo amsyrzmi/CSAV2 --env production
 gh variable set PROD_DEPLOY_REGION --repo amsyrzmi/CSAV2 --body <region>
 ```
-
-The environments, reviewers and branch rules are set in the web settings.
 
 ### 7. GitHub: verify with a plan
 

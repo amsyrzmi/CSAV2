@@ -437,7 +437,7 @@ def test_document_parameters_have_the_exact_patterns_and_the_one_command(kind: s
     (step,) = document["mainSteps"]
     assert step["action"] == "aws:runShellScript"
     assert step["name"] == "deploy"
-    assert step["inputs"]["timeoutSeconds"] == "1800"
+    assert step["inputs"]["timeoutSeconds"] == "2400"
     commands = step["inputs"]["runCommand"]
     assert commands == ["set -eu", DOCUMENT_COMMANDS[kind]]
 
@@ -449,6 +449,25 @@ def test_document_parameters_have_the_exact_patterns_and_the_one_command(kind: s
     assert len(re.findall(r'"\{\{ \w+ \}\}"', command)) == len(placeholders)
     # Nothing else in the document may smuggle in a placeholder or another command.
     assert "{{" not in json.dumps({k: v for k, v in document.items() if k != "mainSteps"})
+
+
+def _ssm_run_default(name: str) -> int:
+    (value,) = re.findall(rf': "\$\{{{name}:=(\d+)\}}"', SSM_RUN.read_text())
+    return int(value)
+
+
+@pytest.mark.parametrize("kind", ["plan", "apply"])
+def test_document_timeout_outlasts_the_runner_and_fits_inside_the_job(kind: str) -> None:
+    timeout = int(_document(kind)["mainSteps"][0]["inputs"]["timeoutSeconds"])
+    runner_wait = _ssm_run_default("SSM_MAX_POLLS") * _ssm_run_default("SSM_POLL_SECONDS")
+    job_minutes = [int(m) for m in re.findall(r"^\s+timeout-minutes: (\d+)$", _workflow(), re.M)]
+
+    assert timeout == 2400
+    # A slow apply must not be killed while the runner still waits for it, and the job must
+    # outlive the command.
+    assert timeout > runner_wait
+    assert len(job_minutes) == 2
+    assert all(timeout < minutes * 60 for minutes in job_minutes)
 
 
 def test_each_document_fixes_its_action_literally() -> None:
@@ -1794,3 +1813,27 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
     ):
         assert needle in text, needle
     assert text.index("plan") < text.index("apply")
+
+
+def test_production_doc_review_fixes() -> None:
+    text = _production_doc()
+    deploying = _section(text, "Deploying from GitHub")
+    setup = _section(text, "One-time setup")
+
+    # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
+    assert "`TimedOut`" in deploying
+    assert "40 minutes" in deploying
+    assert "30 minutes" not in text
+    # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
+    guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}"'
+    assert guard in setup
+    assert setup.index(guard) < setup.index("sed -i") < setup.index("grep -n '<'")
+    # (c) install replaces the file, so the directory must be writable by ubuntu.
+    assert "sudo chown ubuntu:ubuntu /srv/csa-prod/backup /srv/csa-prod/backup/backup.sh" in setup
+    assert setup.index("sudo chown ubuntu:ubuntu") < setup.index(sr.BACKUP_REINSTALL)
+    # (d) the environments exist before their secrets are set.
+    github = setup[setup.index("### 6.") : setup.index("### 7.")]
+    assert "404" in github
+    assert github.index("web settings") < github.index("gh secret set")
+    # the activation code's exposure.
+    assert "single-use" in setup
