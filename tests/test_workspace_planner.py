@@ -199,7 +199,7 @@ def test_own_words_drops_folds_picks_and_colleague_picks() -> None:
 
 
 def test_turn_language_carries() -> None:
-    assert turn_language("danial@fourstacks.my", [], "ms") == "ms"
+    assert turn_language("danial.hakim@example.com", [], "ms") == "ms"
     assert turn_language("ok", [], None) == "en"
     assert turn_language("send it to danial please", [], "ms") == "en"
     assert turn_language("danial@x.my", ["danial@x.my"], "ms") == "ms"
@@ -213,7 +213,7 @@ def test_detect_language_recognises_malay() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("hantar emel kat danial@fourstacks.my pasal mesyuarat esok", "ms"),
+        ("hantar emel kat danial.hakim@example.com pasal mesyuarat esok", "ms"),
         ("emel aina.rahman.binti.ali@company.example.com.my tentang cuti", "ms"),
         ("buka tab HR", "ms"),
         ("tolong hantar emel kepada nur.aina.binti.ahmad@syarikat-contoh.com.my", "ms"),
@@ -223,7 +223,7 @@ def test_detect_language_recognises_malay() -> None:
         ("can you open HR", "en"),
         ("yes", "en"),
         ("ok", None),
-        ("danial@fourstacks.my", None),
+        ("danial.hakim@example.com", None),
         ("Danial Hakim", None),
         ("Find Ada", None),
         ("", None),
@@ -2902,7 +2902,7 @@ async def test_malay_conversation_stays_malay_after_a_typed_address(planned) -> 
     asked = await _turn(w, browser, thread, "tolong hantar emel kepada Danial", "email")
     assert asked.status_code == 201, asked.text
     model.reply({"action": "answer", "markdown": "Baik."})
-    typed = await _turn(w, browser, thread, "danial@fourstacks.my", "email")
+    typed = await _turn(w, browser, thread, "danial.hakim@example.com", "email")
     assert typed.status_code == 201, typed.text
     assert asked.json()["language"] == "ms" and typed.json()["language"] == "ms"
     assert model.facts(0)["language"] == "ms" and model.facts(1)["language"] == "ms"

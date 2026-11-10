@@ -35,7 +35,7 @@ panel are English only.
 ## Goals
 
 1. **Better language guess.** These all come out Malay:
-   - "hantar emel kat danial@fourstacks.my pasal mesyuarat esok"
+   - "hantar emel kat danial.hakim@example.com pasal mesyuarat esok"
    - "emel aina.rahman.binti.ali@company.example.com.my tentang cuti"
    - "buka tab HR"
    - "tolong hantar emel kepada nur.aina.binti.ahmad@syarikat-contoh.com.my"
@@ -111,7 +111,7 @@ Malay lines already do this.
   | Message | Result |
   |---|---|
   | "ok" | `None` |
-  | "danial@fourstacks.my" | `None` |
+  | "danial.hakim@example.com" | `None` |
   | "Danial Hakim" | `None` |
   | "ya" | `ms` (a one-word Malay reply to a question is clear) |
   | "yes" | `en` |

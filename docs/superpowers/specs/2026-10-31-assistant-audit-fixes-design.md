@@ -9,7 +9,7 @@
 ## Intent
 
 The owner's staging tests keep finding assistant failures, one feature at a time:
-- a 500 error on "send email to danial@fourstacks.my …";
+- a 500 error on "send email to danial.hakim@example.com …";
 - "That item isn't available any more" on a training card;
 - a dead end at "No matching colleague was found".
 
