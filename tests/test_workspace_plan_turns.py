@@ -1080,3 +1080,43 @@ async def test_a_continued_page_says_so_on_its_card(
     rest = _card(await _turn_with(w, model, browser, thread, _batch(SUBSCRIBERS), body))
     assert await _recipients(w, await _steps(w, rest["id"])) == members[2:]
     assert CONTINUED[language] in rest["card"]["summary"]
+
+
+# --------------------- final fix wave: a plan's export step checks the draft version it read
+
+
+async def test_a_plan_export_step_whose_draft_was_edited_is_skipped_with_no_gmail_call(
+    planned, proposals_app
+) -> None:
+    """A plan binds only its stored step versions, so the export executor must hand the step's
+    draft version to ``export_draft``: a draft edited after the card is refused there
+    (``draft_changed``, shown as changed) and nothing of it reaches Gmail."""
+    w, model = planned
+    _, gmail = proposals_app
+    gmail.expected_thread_id, gmail.expected_to = None, AINA[1]  # a new email, to Aina only
+    browser = await _mail_ready(w, "hr")
+    _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    thread = await _thread(w, browser)
+    model.reply(_batch(*_named(AINA, BAKAR)))
+    body = "Draft an email to Aina Example and Bakar Example that we close at 5pm"
+    proposal = _card(await _turn(w, browser, thread, body, "email"))
+    steps = await _steps(w, proposal["id"])
+    assert [step["kind"] for step in steps] == ["email_export"] * 2
+    edited_id = UUID(str(steps[1]["payload"]["draft_id"]))
+    (draft,) = await w.q("SELECT to_addresses, subject FROM email_drafts WHERE id=%s", edited_id)
+    edited = await browser.put(
+        f"/console/v1/email/drafts/{edited_id}",
+        json={"to": draft["to_addresses"], "subject": draft["subject"], "body": "Edited later."},
+        headers={**w.headers(browser), "Idempotency-Key": str(uuid4())},
+    )
+    assert edited.status_code == 200, edited.text
+    done = await w.mutate(browser, f"{PROPOSALS}/{proposal['id']}/confirm")
+    assert done.status_code == 200, done.text
+    outcomes = [(step["status"], step.get("code")) for step in done.json()["result"]["steps"]]
+    assert outcomes == [("done", None), ("skipped", "changed")]
+    exports = [path for method, path, _ in gmail.requests if method == "POST"]
+    assert len([path for path in exports if path.endswith("/drafts")]) == 1
+    rows = await w.q("SELECT status FROM email_drafts WHERE id=%s", edited_id)
+    assert rows == [{"status": "draft"}]
