@@ -42,6 +42,8 @@ PROD = dataclasses.replace(
     db_name="csa_staging",
 )
 DOCKER = ["docker", "--host", sr.SOCKET]
+# A non-staging plan prints its apply command with the target, in the CLI's own order.
+PROD_APPLY = ".venv/bin/python -m scripts.staging_rollout --target production apply"
 IMAGE_ONE = "sha256:" + "1" * 64
 IMAGE_TWO = "sha256:" + "2" * 64
 
@@ -517,13 +519,13 @@ def test_plan_prints_host_digest_and_override_names(tmp_path: Path) -> None:
     lines = printed.splitlines()
     assert "Host overrides: CSA_PROD_DB_IMAGE, CSA_PROD_MEM_DB" in lines
     assert f"Host settings digest: {digest}" in lines
-    assert lines[-1] == f"{sr.APPLY_COMMAND} --sha {SHA} --migrations 0486 --host-digest {digest}"
+    assert lines[-1] == f"{PROD_APPLY} --sha {SHA} --migrations 0486 --host-digest {digest}"
     assert not any(value in printed for value in ("1000m", "pg-x", *HOST_REQUIRED.values()))
 
     plan = sr.Plan(SHA, images, {}, [], [], [], steps, {}, dict(HOST_REQUIRED))
     lines = sr.format_plan(plan, target=target).splitlines()
     assert "Host overrides: none" in lines
-    assert lines[-1].endswith(f"--sha {SHA} --host-digest {expected_digest(HOST_REQUIRED)}")
+    assert lines[-1] == f"{PROD_APPLY} --sha {SHA} --host-digest {expected_digest(HOST_REQUIRED)}"
 
     # Staging prints neither line and keeps its command.
     plan = sr.Plan(SHA, images, {}, [], [], [], steps, {})

@@ -410,3 +410,61 @@ def test_production_apply_without_a_record_changes_nothing(
     assert rig.docker_calls() == []
     assert not any("pull" in argv or "versions" in " ".join(argv) for argv in rig.runner.argvs)
     assert not any(argv[0] == "gh" and "--method" in argv for argv in rig.runner.argvs)
+
+
+# --- --target reaches main's subcommands ---------------------------------------------------------
+
+
+def test_record_staged_with_target_production_is_refused(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = FakeRunner([])
+    assert sr.main(["--target", "production", "record-staged", "--sha", SHA], runner=runner) == 1
+    assert capsys.readouterr().out == (
+        "Stopped at gate: record-staged records staging rollouts only, not production\n"
+    )
+    assert runner.calls == []
+
+
+def main_rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HostedRig:
+    """A gated hosted rig that ``main --target production`` resolves to."""
+    rig = gated_rig(tmp_path, monkeypatch, deployment(11, SHA, "success"))
+    monkeypatch.setattr(sr, "REPO_ROOT", rig.repo)
+    monkeypatch.setattr(sr, "CHECKS_DIR", rig.checks)
+    monkeypatch.setattr(sr, "get_target", lambda name: {"production": rig.target}[name])
+    return rig
+
+
+def test_main_production_plan_prints_the_apply_command_with_the_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = main_rig(tmp_path, monkeypatch)
+    digest = sr.host_settings_digest(sr.load_host_values(rig.target))
+    assert sr.main(["--target", "production", "plan"], runner=rig.runner) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert f"Staged on: {STAGED_AT}" in lines
+    assert lines[-1] == (
+        ".venv/bin/python -m scripts.staging_rollout --target production apply "
+        f"--sha {SHA} --migrations 0486 --host-digest {digest}"
+    )
+
+
+def test_main_production_apply_writes_no_staged_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = main_rig(tmp_path, monkeypatch)
+    rig.runner.rules[:0] = record_rules()  # answered if asked; must not be asked
+    digest = sr.host_settings_digest(sr.load_host_values(rig.target))
+    argv = ["--target", "production", "apply", "--sha", SHA, "--migrations", "0486"]
+    assert sr.main([*argv, "--host-digest", digest], runner=rig.runner) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1] == "Rollout of a1b2c3d finished."
+    assert "Recorded" not in out
+    assert not any(argv[0] == "gh" and "--method" in argv for argv in rig.runner.argvs)
+    # The origins come from the host file and reach every docker and compose call.
+    envs = [env for _, env, _ in rig.runner.calls if env is not None]
+    assert envs and all(
+        env["CSA_STAGING_CONSOLE_ORIGIN"] == "https://console.example.test"
+        and env["CSA_STAGING_HOOKS_ORIGIN"] == "https://hooks.example.test"
+        for env in envs
+    )

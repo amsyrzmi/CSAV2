@@ -8,7 +8,7 @@ imports nothing from the rollout script.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -33,7 +33,7 @@ class Target:
     optional_keys: frozenset[str]
     host_file: Path | None
     host_required_keys: frozenset[str]
-    host_override_keys: frozenset[str]  # subset of optional_keys a host file may set
+    host_override_keys: frozenset[str]  # optional keys a host file may set (its value wins)
     migration_approval: tuple[str, str]
     staged_gate: bool
     downgrade_warning: bool
@@ -84,7 +84,51 @@ STAGING = Target(
     live_checkout="/home/amsyrzmi/CSAV2",
 )
 
-_TARGETS: dict[str, Target] = {STAGING.name: STAGING}
+# Sizing and Postgres tuning for the production host. The repo file may set them; the host
+# file may override them, so a resize needs no PR.
+PROD_TUNING_KEYS = frozenset(
+    {
+        "CSA_PROD_WORKER_REPLICAS",
+        "CSA_PROD_MEM_DB",
+        "CSA_PROD_MEM_GATEWAY",
+        "CSA_PROD_MEM_WORKER",
+        "CSA_PROD_MEM_DELIVERY",
+        "CSA_PROD_MEM_FRONTEND",
+        "CSA_PROD_MEM_EMBEDDINGS",
+        "CSA_PROD_MEM_CLOUDFLARED",
+        "CSA_PROD_PG_SHARED_BUFFERS",
+        "CSA_PROD_PG_EFFECTIVE_CACHE",
+        "CSA_PROD_PG_WORK_MEM",
+        "CSA_PROD_PG_MAINTENANCE_MEM",
+        "CSA_PROD_PG_MAX_CONNECTIONS",
+    }
+)
+_ORIGIN_KEYS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"})
+
+# The interim production instance runs the staging stack under its own project, so the
+# database service, name and user are staging's (container csa-prod-staging-db-1). The two
+# origins are production hostnames, which the public repo does not commit: they come from the
+# host file with the bucket and region, and the repo file holds the other six switches.
+PRODUCTION = replace(
+    STAGING,
+    name="production",
+    project="csa-prod",
+    secret_dir=Path("/srv/csa-prod/secrets"),
+    compose_files=(*STAGING.compose_files, "deploy/compose.production.yml"),
+    profiles=("staging-approved", "pipeline-approved"),
+    replicas={"worker": ("CSA_PROD_WORKER_REPLICAS", 2)},
+    flags_file="deploy/production-rollout.env",
+    required_keys=STAGING.required_keys - _ORIGIN_KEYS,
+    optional_keys=PROD_TUNING_KEYS,
+    host_file=Path("/srv/csa-prod/host.env"),
+    host_required_keys=frozenset({"CSA_PROD_S3_BUCKET", "CSA_PROD_S3_REGION"}) | _ORIGIN_KEYS,
+    host_override_keys=PROD_TUNING_KEYS | {"CSA_PROD_DB_IMAGE"},
+    staged_gate=True,
+    downgrade_warning=True,
+    live_checkout="/home/ubuntu/CSAV2",
+)
+
+_TARGETS: dict[str, Target] = {STAGING.name: STAGING, PRODUCTION.name: PRODUCTION}
 
 
 def get_target(name: str) -> Target:

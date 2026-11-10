@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
-from scripts.rollout_targets import STAGING, Target
+from scripts.rollout_targets import STAGING, Target, get_target
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
@@ -74,8 +74,11 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 HOST_CHANGED = "host settings changed since plan; run plan again"
-APPLY_COMMAND = ".venv/bin/python -m scripts.staging_rollout apply"
-RECORD_COMMAND = ".venv/bin/python -m scripts.staging_rollout record-staged"
+MODULE_COMMAND = ".venv/bin/python -m scripts.staging_rollout"
+APPLY_COMMAND = f"{MODULE_COMMAND} apply"
+RECORD_COMMAND = f"{MODULE_COMMAND} record-staged"
+TARGET_NAMES = ("staging", "production")
+HOST_DIGEST_RE = re.compile(r"^[0-9a-f]{12}$")
 GATE_ENVIRONMENT = "staging"
 DOWNTIME = (
     "Downtime: console unavailable and bot replies delayed (queued, not lost) "
@@ -813,7 +816,10 @@ def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     lines += [f"  {number}. {step}" for number, step in enumerate(plan.steps, start=1)]
     if plan.pending:
         lines.append(DOWNTIME)
-    command = f"{APPLY_COMMAND} --sha {plan.sha}"
+    command = APPLY_COMMAND
+    if target.name != "staging":
+        command = f"{MODULE_COMMAND} --target {target.name} apply"
+    command += f" --sha {plan.sha}"
     if plan.pending:
         command += f" --migrations {','.join(plan.pending)}"
     if target.host_file is not None:
@@ -1333,13 +1339,27 @@ def _record_rollout(runner: Runner, sha: str, out: Callable[[str], None]) -> Non
     out(f"Recorded {sha[:7]} as staged")
 
 
+def _host_digest(value: str) -> str:
+    if not HOST_DIGEST_RE.match(value):
+        raise argparse.ArgumentTypeError("must be 12 lowercase hex characters, as plan printed")
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scripts.staging_rollout", description=__doc__)
+    parser.add_argument(
+        "--target", choices=TARGET_NAMES, default="staging", help="where to roll out"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("plan", help="show what a rollout of HEAD would do (read-only)")
-    apply = commands.add_parser("apply", help="roll HEAD out to staging")
+    apply = commands.add_parser("apply", help="roll HEAD out to the target")
     apply.add_argument("--sha", required=True, help="the full target SHA, as plan printed")
     apply.add_argument("--migrations", help="comma-separated pending versions, as plan printed")
+    apply.add_argument(
+        "--host-digest",
+        type=_host_digest,
+        help="the host settings digest, as plan printed (targets with a host file)",
+    )
     record = commands.add_parser(
         "record-staged", help="record a staging rollout for production (retry after a failed write)"
     )
@@ -1348,10 +1368,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    target = get_target(args.target)
+    if args.command == "apply":
+        if target.host_file is not None and args.host_digest is None:
+            parser.error(f"apply --target {target.name} requires --host-digest, as plan printed")
+        if target.host_file is None and args.host_digest is not None:
+            parser.error(f"--host-digest is not used by --target {target.name}")
     runner = runner or SubprocessRunner(cwd=REPO_ROOT)
     if args.command == "record-staged":
-        return record_staged_command(runner, STAGING, args.sha)
+        return record_staged_command(runner, target, args.sha)
+    # Staging keeps its module-level directory (tests point it elsewhere).
+    secret_dir = SECRET_DIR if target.name == "staging" else target.secret_dir
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))
     try:
         docker_config.chmod(0o700)
@@ -1362,26 +1391,30 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
                 parse_migrations(args.migrations),
                 sha=args.sha,
                 docker_config=docker_config,
-                secret_dir=SECRET_DIR,
+                secret_dir=secret_dir,
                 checks_dir=CHECKS_DIR,
+                target=target,
+                host_digest=args.host_digest,
             )
-            if code == 0:
+            if code == 0 and target.name == GATE_ENVIRONMENT:
                 # Not inside apply: a failed record must not turn a good rollout into a stop.
+                # Only a staging rollout is a staged record; no other target writes one.
                 _record_rollout(runner, args.sha, print)
             return code
         plan = build_plan(
             runner,
             REPO_ROOT,
             docker_config=docker_config,
-            secret_dir=SECRET_DIR,
+            secret_dir=secret_dir,
             checks_dir=CHECKS_DIR,
+            target=target,
         )
     except RolloutError as error:
         _report_stop(error, print)
         return 1
     finally:
         shutil.rmtree(docker_config, ignore_errors=True)
-    print(format_plan(plan))
+    print(format_plan(plan, target=target))
     return 2 if plan.missing else 0
 
 
