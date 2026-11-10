@@ -1,6 +1,6 @@
 # Business surfaces programme: knowledge cleanup, a customer bot that knows the business, one Connections tab, product management
 
-Status: proposal for the owner (Amsyar), 2026-11-10. Each piece has its own design in this folder; this
+Status: APPROVED by the owner (Amsyar) on 2026-11-10, together with the four designs. Each piece has its own design in this folder; this
 document fixes the order, the pull request grouping, the migration ranges and the owner's own tasks.
 
 ## 1. Where this came from
@@ -80,3 +80,8 @@ These block specific parts and are listed in the matching designs.
 Payments for subscriptions, WhatsApp media and templates, TikTok chat as a channel, TikTok LIVE,
 voice, and the customer classifier's move to the Jev model are separate tracks and keep their own
 places in the existing plans.
+
+## 6. State
+
+- 2026-11-10: the TikTok Shop app is published as a Public app and is under TikTok's review; until it is approved, only the owner's own shop is known to connect (ledger row 13). The owner's own shop is connected on staging; live product sync needed the price fix on `fix/tiktok-live-product-shape`.
+- Next: the plan for pull request 1 (knowledge cleanup), then its build.
