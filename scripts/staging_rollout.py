@@ -56,14 +56,15 @@ FLAG_KEYS = frozenset(
     }
 )
 # Allowed in the flags file but not required, so a file without them still loads. Unset, compose
-# uses the default written in the staging compose files.
-OPTIONAL_FLAG_KEYS = frozenset(
-    {
-        # Names the secret mapped to TYPESAFE_API_KEY (gateway and worker); unset it is the
-        # disabled placeholder, so every Jev area runs on the LLM or rule.
-        "CSA_STAGING_JEV_SECRET",
-    }
-)
+# uses the default written in the staging compose files. Each value must be one of its allowed
+# values: a typo fails loudly here instead of reaching a service's environment.
+OPTIONAL_FLAG_VALUES: dict[str, tuple[str, ...]] = {
+    # Names the secret mapped to TYPESAFE_API_KEY (gateway and worker); unset it is the disabled
+    # placeholder, so every Jev area runs on the LLM or rule. Only the two Jev secrets: any other
+    # declared secret (a DSN, the Groq key) would be sent to the external Jev API as its token.
+    "CSA_STAGING_JEV_SECRET": ("staging_disabled_jev_key", "staging_jev_key"),
+}
+OPTIONAL_FLAG_KEYS = frozenset(OPTIONAL_FLAG_VALUES)
 CHECKS_DIR = REPO_ROOT / "deploy" / "rollout_checks"
 MIGRATION_APPROVAL = ("CSA_STAGING_MIGRATION_APPROVAL", "approved-isolated-staging")
 READY_PROBE = (
@@ -175,7 +176,15 @@ def load_flags(path: Path) -> dict[str, str]:
             raise RolloutError("flags", f"{path.name} line {number}: unknown key {key}")
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
-        flags[key] = value.strip()
+        value = value.strip()
+        allowed = OPTIONAL_FLAG_VALUES.get(key)
+        if allowed is not None and value not in allowed:
+            # The value is not echoed: the file is not secret, but a bad line may still be a typo
+            # of something that is.
+            raise RolloutError(
+                "flags", f"{path.name} line {number}: {key} must be one of {', '.join(allowed)}"
+            )
+        flags[key] = value
     missing = sorted(FLAG_KEYS - flags.keys())
     if missing:
         raise RolloutError("flags", f"{path.name} is missing: {', '.join(missing)}")

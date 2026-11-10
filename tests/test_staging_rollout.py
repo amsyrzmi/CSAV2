@@ -1631,7 +1631,10 @@ def test_load_flags_accepts_the_optional_jev_switch_but_does_not_need_it(tmp_pat
     assert sr.load_flags(path) == {**ALL_FLAGS, "CSA_STAGING_JEV_SECRET": "staging_jev_key"}
     path.write_text(FLAGS_TEXT)  # the checked-in file has no such line
     assert "CSA_STAGING_JEV_SECRET" not in sr.load_flags(path)
-    path.write_text(FLAGS_TEXT + "CSA_STAGING_JEV_SECRET=a\nCSA_STAGING_JEV_SECRET=b\n")
+    path.write_text(
+        FLAGS_TEXT
+        + "CSA_STAGING_JEV_SECRET=staging_jev_key\nCSA_STAGING_JEV_SECRET=staging_disabled_jev_key\n"
+    )
     with pytest.raises(RolloutError, match="duplicate key CSA_STAGING_JEV_SECRET"):
         sr.load_flags(path)
     assert sr.OPTIONAL_FLAG_KEYS == {"CSA_STAGING_JEV_SECRET"}
@@ -1676,3 +1679,36 @@ def test_the_jev_switch_makes_plan_ask_for_the_real_key_file(tmp_path: Path) -> 
     assert "staging_jev_key" in sr.missing_secrets(paths)  # not written yet: plan stops (exit 2)
     paths["staging_jev_key"].write_text("SYNTHETIC-ONLY")
     assert "staging_jev_key" not in sr.missing_secrets(paths)
+
+
+@pytest.mark.parametrize("value", ["staging_disabled_jev_key", "staging_jev_key"])
+def test_the_jev_secret_switch_accepts_only_the_two_jev_secrets(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "flags.env"
+    path.write_text(FLAGS_TEXT + f"CSA_STAGING_JEV_SECRET={value}\n")
+    assert sr.load_flags(path)["CSA_STAGING_JEV_SECRET"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Any other declared secret would be sent to the external Jev API as a bearer token.
+        "staging_domain_dsn",
+        "staging_owner_dsn",
+        "staging_model_key",
+        "staging_credentials_key",
+        "staging_disabled_model_key",
+        "a",
+        "",
+        "STAGING_JEV_KEY",
+        "staging_jev_key2",
+    ],
+)
+def test_the_jev_secret_switch_refuses_any_other_secret(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "flags.env"
+    path.write_text(FLAGS_TEXT + f"CSA_STAGING_JEV_SECRET={value}\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path)
+    assert caught.value.step == "flags"
+    assert "CSA_STAGING_JEV_SECRET must be one of staging_disabled_jev_key, staging_jev_key" in (
+        caught.value.message
+    )
