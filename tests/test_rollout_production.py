@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -13,6 +14,7 @@ from scripts.rollout_targets import STAGING, Target
 from scripts.staging_rollout import Completed, RolloutError
 
 from tests.test_staging_rollout import (
+    ALL_FLAGS,
     DIGEST_A,
     DIGEST_B,
     FLAGS_TEXT,
@@ -316,3 +318,285 @@ def test_apply_against_a_target_uses_only_its_names(
     ready = [argv for argv, _, _ in runner.calls if argv[3:4] == ["exec"]]
     assert ready and all("csa-prod-gateway-1" in argv for argv in ready)
     assert "Stopping gateway, frontend, worker, delivery…" in lines
+
+
+# --- the repo switch file with an allow-listed host overlay -----------------------------------
+
+ORIGINS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"})
+TUNING = frozenset({"CSA_PROD_MEM_DB", "CSA_PROD_MEM_WORKER", "CSA_PROD_WORKER_REPLICAS"})
+SWITCHES = {key: value for key, value in ALL_FLAGS.items() if key not in ORIGINS}
+SWITCHES_TEXT = "".join(f"{key}={value}\n" for key, value in SWITCHES.items())
+HOST_REQUIRED = {
+    "CSA_PROD_S3_BUCKET": "bucket-value-x",
+    "CSA_PROD_S3_REGION": "region-value-x",
+    "CSA_STAGING_CONSOLE_ORIGIN": "https://console.example.test",
+    "CSA_STAGING_HOOKS_ORIGIN": "https://hooks.example.test",
+}
+HOST_TEXT = "".join(f"{key}={value}\n" for key, value in HOST_REQUIRED.items())
+
+
+def hosted(host_file: Path | None, base: Target = PROD) -> Target:
+    """A production-like target: origins and bucket in the host file, tuning overridable."""
+    return dataclasses.replace(
+        base,
+        required_keys=frozenset(SWITCHES),
+        optional_keys=TUNING | {"CSA_PROD_GROQ_CHAT_URL"},
+        host_file=host_file,
+        host_required_keys=frozenset(HOST_REQUIRED),
+        host_override_keys=TUNING | {"CSA_PROD_DB_IMAGE"},
+    )
+
+
+def expected_digest(values: Mapping[str, str]) -> str:
+    text = "".join(f"{key}={values[key]}\n" for key in sorted(values))
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+@pytest.mark.parametrize(
+    ("content", "line", "value"),
+    [
+        (HOST_TEXT + "CSA_STAGING_INVITE_MAIL=true\n", 5, "true"),
+        (HOST_TEXT + "CSA_PROD_GROQ_CHAT_URL=http://x\n", 5, "http://x"),
+        (HOST_TEXT + "CSA_PROD_NOPE=1\n", 5, "1"),
+        (HOST_TEXT + "CSA_PROD_MEM_DB=777m\nCSA_PROD_MEM_DB=777m\n", 6, "777m"),
+        (HOST_TEXT + "CSA_PROD_MEM_DB\n", 5, "CSA_PROD_MEM_DB"),
+        (HOST_TEXT + "not-a-name=secret-ish\n", 5, "not-a-name"),
+    ],
+    ids=["switch", "groq-url", "unknown", "duplicate", "malformed", "bad-name"],
+)
+def test_host_file_refuses_switches_groq_url_unknown_duplicate_and_malformed(
+    tmp_path: Path, content: str, line: int, value: str
+) -> None:
+    host = tmp_path / "host.env"
+    host.write_text(content)
+    with pytest.raises(RolloutError) as caught:
+        sr.load_host_values(hosted(host))
+    assert caught.value.step == "flags"
+    assert f"host.env line {line}" in caught.value.message
+    assert value not in caught.value.message
+    assert not any(v in caught.value.message for v in HOST_REQUIRED.values())
+
+
+def test_host_file_missing_a_required_key_is_refused(tmp_path: Path) -> None:
+    host = tmp_path / "host.env"
+    host.write_text(HOST_TEXT.replace("CSA_PROD_S3_REGION=region-value-x\n", ""))
+    with pytest.raises(RolloutError) as caught:
+        sr.load_host_values(hosted(host))
+    assert caught.value.step == "flags"
+    assert caught.value.message == "host.env is missing: CSA_PROD_S3_REGION"
+
+    host.unlink()
+    with pytest.raises(RolloutError) as caught:
+        sr.load_host_values(hosted(host))
+    assert (caught.value.step, caught.value.message) == ("flags", "cannot read host.env")
+
+
+def test_host_file_accepts_export_prefix_comments_and_tuning(tmp_path: Path) -> None:
+    host = tmp_path / "host.env"
+    host.write_text(
+        "# tuning for this instance\n"
+        "\n"
+        "export CSA_PROD_S3_BUCKET=bucket-value-x\n"
+        "export   CSA_PROD_S3_REGION = region-value-x\n"
+        "CSA_STAGING_CONSOLE_ORIGIN=https://console.example.test\n"
+        "  # indented comment\n"
+        "CSA_STAGING_HOOKS_ORIGIN=https://hooks.example.test\n"
+        "CSA_PROD_MEM_DB=1000m\n"
+        "export CSA_PROD_DB_IMAGE=postgres:16=x\n"
+    )
+    assert sr.load_host_values(hosted(host)) == {
+        **HOST_REQUIRED,
+        "CSA_PROD_MEM_DB": "1000m",
+        "CSA_PROD_DB_IMAGE": "postgres:16=x",
+    }
+    assert sr.load_host_values(hosted(None)) == {}
+    assert sr.load_host_values(STAGING) == {}
+
+
+def test_repo_file_allows_optional_tuning_keys_only_once(tmp_path: Path) -> None:
+    target = hosted(None)
+    path = tmp_path / "production-rollout.env"
+    path.write_text(SWITCHES_TEXT)
+    assert sr.load_flags(path, target) == SWITCHES
+
+    path.write_text(SWITCHES_TEXT + "CSA_PROD_MEM_DB=640m\nCSA_PROD_GROQ_CHAT_URL=http://x\n")
+    assert sr.load_flags(path, target) == {
+        **SWITCHES,
+        "CSA_PROD_MEM_DB": "640m",
+        "CSA_PROD_GROQ_CHAT_URL": "http://x",
+    }
+
+    path.write_text(SWITCHES_TEXT + "CSA_PROD_MEM_DB=640m\nCSA_PROD_MEM_DB=700m\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path, target)
+    assert caught.value.message == ("production-rollout.env line 8: duplicate key CSA_PROD_MEM_DB")
+
+    path.write_text(SWITCHES_TEXT + "CSA_PROD_S3_BUCKET=b\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path, target)
+    assert caught.value.message == ("production-rollout.env line 7: unknown key CSA_PROD_S3_BUCKET")
+
+    path.write_text(SWITCHES_TEXT.replace("CSA_STAGING_INVITE_MAIL=true\n", ""))
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path, target)
+    assert caught.value.message == "production-rollout.env is missing: CSA_STAGING_INVITE_MAIL"
+
+    # Staging allows no optional key.
+    path.write_text(FLAGS_TEXT + "CSA_PROD_MEM_DB=640m\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path)
+    assert caught.value.message == "production-rollout.env line 9: unknown key CSA_PROD_MEM_DB"
+
+
+def test_host_override_wins_for_tuning_only(tmp_path: Path) -> None:
+    repo_file = tmp_path / "production-rollout.env"
+    repo_file.write_text(SWITCHES_TEXT + "CSA_PROD_MEM_DB=640m\nCSA_PROD_MEM_WORKER=512m\n")
+    host = tmp_path / "host.env"
+    host.write_text(HOST_TEXT + "CSA_PROD_MEM_DB=1000m\n")
+    target = hosted(host)
+    flags = sr.load_flags(repo_file, target)
+    host_values = sr.load_host_values(target)
+    images = {"python": PYTHON_REF, "frontend": FRONTEND_REF}
+    env = sr.build_env(
+        flags, images, docker_config=tmp_path / "dc", target=target, host_values=host_values
+    )
+    assert env["CSA_PROD_MEM_DB"] == "1000m"
+    assert env["CSA_PROD_MEM_WORKER"] == "512m"
+    assert env["CSA_PROD_S3_BUCKET"] == "bucket-value-x"
+    assert env["CSA_STAGING_CONSOLE_ORIGIN"] == "https://console.example.test"
+    assert {key: env[key] for key in SWITCHES} == SWITCHES
+
+    # A host switch never reaches the merge.
+    host.write_text(HOST_TEXT + "CSA_STAGING_INVITE_MAIL=false\n")
+    with pytest.raises(RolloutError):
+        sr.load_host_values(target)
+    # And the merge itself refuses a host value for a repo key it may not override.
+    with pytest.raises(RolloutError) as caught:
+        sr.build_env(
+            flags,
+            images,
+            docker_config=tmp_path / "dc",
+            target=target,
+            host_values={"CSA_STAGING_INVITE_MAIL": "false"},
+        )
+    assert caught.value.step == "flags"
+    assert "false" not in caught.value.message
+
+
+def test_plan_prints_host_digest_and_override_names(tmp_path: Path) -> None:
+    target = hosted(tmp_path / "host.env")
+    host_values = {**HOST_REQUIRED, "CSA_PROD_MEM_DB": "1000m", "CSA_PROD_DB_IMAGE": "pg-x"}
+    images = {"python": PYTHON_REF, "frontend": FRONTEND_REF}
+    steps = sr.plan_steps(["0486"], [], target=target)
+    plan = sr.Plan(SHA, images, {}, ["0486"], [], [], steps, {}, host_values)
+    assert "host_values" not in repr(plan) and "pg-x" not in repr(plan)
+    assert sr.host_settings_digest(host_values) == expected_digest(host_values)
+    digest = expected_digest(host_values)
+    printed = sr.format_plan(plan, target=target)
+    lines = printed.splitlines()
+    assert "Host overrides: CSA_PROD_DB_IMAGE, CSA_PROD_MEM_DB" in lines
+    assert f"Host settings digest: {digest}" in lines
+    assert lines[-1] == f"{sr.APPLY_COMMAND} --sha {SHA} --migrations 0486 --host-digest {digest}"
+    assert not any(value in printed for value in ("1000m", "pg-x", *HOST_REQUIRED.values()))
+
+    plan = sr.Plan(SHA, images, {}, [], [], [], steps, {}, dict(HOST_REQUIRED))
+    lines = sr.format_plan(plan, target=target).splitlines()
+    assert "Host overrides: none" in lines
+    assert lines[-1].endswith(f"--sha {SHA} --host-digest {expected_digest(HOST_REQUIRED)}")
+
+    # Staging prints neither line and keeps its command.
+    plan = sr.Plan(SHA, images, {}, [], [], [], steps, {})
+    lines = sr.format_plan(plan).splitlines()
+    assert not any(line.startswith("Host ") for line in lines)
+    assert lines[-1] == f"{sr.APPLY_COMMAND} --sha {SHA}"
+
+
+class HostedRig:
+    """A whole apply against a hosted target whose names all differ from staging."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_text: str) -> None:
+        self.repo = tmp_path / "repo"
+        (self.repo / "deploy").mkdir(parents=True)
+        self.host = tmp_path / "host.env"
+        self.host.write_text(host_text)
+        self.target = hosted(self.host, base=ELSEWHERE)
+        (self.repo / self.target.flags_file).write_text(SWITCHES_TEXT + "CSA_PROD_MEM_DB=640m\n")
+        self.secret_dir = tmp_path / "secrets"
+        self.secret_dir.mkdir()
+        (self.secret_dir / "owner_dsn").write_text("SYNTHETIC-ONLY")
+        self.checks = tmp_path / "checks"
+        self.checks.mkdir()
+        self.docker_config = tmp_path / "dc"
+        monkeypatch.setattr(
+            sr,
+            "discover_migrations",
+            lambda: [(v, Path(f"{v}_x.sql")) for v in ("0484", "0485", "0486")],
+        )
+        self.runner = elsewhere_runner(self.secret_dir / "owner_dsn")
+        self.lines: list[str] = []
+
+    def plan(self) -> sr.Plan:
+        return sr.build_plan(
+            self.runner,
+            self.repo,
+            docker_config=self.docker_config,
+            secret_dir=self.secret_dir,
+            checks_dir=self.checks,
+            target=self.target,
+        )
+
+    def apply(self, host_digest: str | None) -> int:
+        self.runner.calls.clear()
+        return sr.apply(
+            self.runner,
+            self.repo,
+            ["0486"],
+            sha=SHA,
+            docker_config=self.docker_config,
+            secret_dir=self.secret_dir,
+            checks_dir=self.checks,
+            sleep=lambda _: None,
+            out=self.lines.append,
+            target=self.target,
+            host_digest=host_digest,
+        )
+
+    def docker_calls(self) -> list[list[str]]:
+        return [argv for argv in self.runner.argvs if argv[0] == "docker"]
+
+
+def test_apply_refuses_when_host_digest_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = HostedRig(tmp_path, monkeypatch, HOST_TEXT + "CSA_PROD_MEM_DB=1000m\n")
+    digest = sr.host_settings_digest(rig.plan().host_values)
+    for wrong in ("0" * 12, None):
+        rig.lines.clear()
+        assert rig.apply(wrong) == 1
+        assert (
+            rig.lines[0] == "Stopped at confirm: host settings changed since plan; run plan again"
+        )
+        assert "Nothing on production was changed." in rig.lines
+        assert rig.docker_calls() == []
+
+    rig.lines.clear()
+    assert rig.apply(digest) == 0, "\n".join(rig.lines)
+    envs = [env for _, env, _ in rig.runner.calls if env is not None]
+    assert envs and all(
+        env["CSA_PROD_MEM_DB"] == "1000m" and env["CSA_PROD_S3_BUCKET"] == "bucket-value-x"
+        for env in envs
+    )
+    assert not any(value in "\n".join(rig.lines) for value in HOST_REQUIRED.values())
+
+
+def test_replica_count_change_between_plan_and_apply_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = HostedRig(tmp_path, monkeypatch, HOST_TEXT + "CSA_PROD_WORKER_REPLICAS=2\n")
+    plan = rig.plan()
+    assert plan.env["CSA_PROD_WORKER_REPLICAS"] == "2"
+    digest = sr.host_settings_digest(plan.host_values)
+    rig.host.write_text(HOST_TEXT + "CSA_PROD_WORKER_REPLICAS=1\n")
+    assert rig.apply(digest) == 1
+    assert rig.lines[0] == "Stopped at confirm: host settings changed since plan; run plan again"
+    assert rig.docker_calls() == []

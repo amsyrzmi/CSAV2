@@ -15,6 +15,7 @@ secret directory is opened, read or printed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -71,6 +72,8 @@ IMAGE_ENV = {"python": "CSA_STAGING_PYTHON_IMAGE", "frontend": "CSA_STAGING_FRON
 PUBLISH_WORKFLOW = "publish-staging-images.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+HOST_CHANGED = "host settings changed since plan; run plan again"
 APPLY_COMMAND = ".venv/bin/python -m scripts.staging_rollout apply"
 DOWNTIME = (
     "Downtime: console unavailable and bot replies delayed (queued, not lost) "
@@ -136,13 +139,14 @@ class SubprocessRunner:
         return Completed(result.returncode, result.stdout, result.stderr)
 
 
-def load_flags(path: Path, *, target: Target = STAGING) -> dict[str, str]:
-    """Read the non-secret switches: exactly the allowed keys, each once."""
+def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
+    """Read the non-secret switches: every required key once, each optional key at most once."""
     flags: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise RolloutError("flags", f"cannot read {path.name}") from error
+    allowed = target.required_keys | target.optional_keys
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -151,7 +155,7 @@ def load_flags(path: Path, *, target: Target = STAGING) -> dict[str, str]:
         key = key.strip()
         if not separator:
             raise RolloutError("flags", f"{path.name} line {number} has no '='")
-        if key not in target.required_keys:
+        if key not in allowed:
             raise RolloutError("flags", f"{path.name} line {number}: unknown key {key}")
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
@@ -160,6 +164,46 @@ def load_flags(path: Path, *, target: Target = STAGING) -> dict[str, str]:
     if missing:
         raise RolloutError("flags", f"{path.name} is missing: {', '.join(missing)}")
     return flags
+
+
+def load_host_values(target: Target) -> dict[str, str]:
+    """The instance's own settings: allow-listed keys only, each once. Values never printed."""
+    if target.host_file is None:
+        return {}
+    name = target.host_file.name
+    try:
+        text = target.host_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RolloutError("flags", f"cannot read {name}") from error
+    allowed = target.host_required_keys | target.host_override_keys
+    values: dict[str, str] = {}
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export ") or line.startswith("export\t"):
+            line = line[len("export") :].lstrip()
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator:
+            raise RolloutError("flags", f"{name} line {number} has no '='")
+        if key not in allowed:
+            # A key that is not even a name may be a pasted value: do not print it.
+            shown = f" {key}" if KEY_RE.match(key) else ""
+            raise RolloutError("flags", f"{name} line {number}: unknown key{shown}")
+        if key in values:
+            raise RolloutError("flags", f"{name} line {number}: duplicate key {key}")
+        values[key] = value.strip()
+    missing = sorted(target.host_required_keys - values.keys())
+    if missing:
+        raise RolloutError("flags", f"{name} is missing: {', '.join(missing)}")
+    return values
+
+
+def host_settings_digest(values: Mapping[str, str]) -> str:
+    """Twelve hex of sha256 over the sorted ``KEY=VALUE`` lines: plan prints it, apply checks."""
+    text = "".join(f"{key}={values[key]}\n" for key in sorted(values))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def docker_base() -> list[str]:
@@ -212,8 +256,19 @@ def build_env(
     docker_config: Path,
     secret_dir: Path | None = None,
     target: Target = STAGING,
+    host_values: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """The whole environment for docker and compose; nothing else is inherited."""
+    """The whole environment for docker and compose; nothing else is inherited.
+
+    Repo flags first, then host values: a host value replaces a repo flag only for the
+    target's ``host_override_keys``.
+    """
+    host_values = host_values or {}
+    clashing = sorted((host_values.keys() & flags.keys()) - target.host_override_keys)
+    if clashing:
+        raise RolloutError(
+            "flags", f"set in both the repo file and the host file: {', '.join(clashing)}"
+        )
     env = {name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ}
     env |= {
         "NO_LOCAL_ENV": "1",
@@ -225,6 +280,7 @@ def build_env(
     }
     env |= {IMAGE_ENV[app]: images[app] for app in APPS}
     env |= flags
+    env |= host_values
     return env
 
 
@@ -509,6 +565,7 @@ class Plan:
     checks: list[str]
     steps: list[str]
     env: dict[str, str] = field(repr=False)  # non-secret flags and image refs for apply
+    host_values: dict[str, str] = field(default_factory=dict, repr=False)  # values never printed
 
 
 def plan_steps(
@@ -538,6 +595,7 @@ def build_plan(
     checks_dir: Path = CHECKS_DIR,
     expected_sha: str | None = None,
     target: Target = STAGING,
+    expected_host_digest: str | None = None,
 ) -> Plan:
     if expected_sha is not None and not SHA_RE.match(expected_sha):
         raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
@@ -552,8 +610,19 @@ def build_plan(
             "plan", f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})"
         )
     flags = load_flags(repo / target.flags_file, target=target)
+    host_values = load_host_values(target)
+    # Before any docker command: replica counts and tuning must be what plan printed.
+    if expected_host_digest is not None and expected_host_digest != host_settings_digest(
+        host_values
+    ):
+        raise RolloutError("confirm", HOST_CHANGED)
     env = build_env(
-        flags, images, docker_config=docker_config, secret_dir=secret_dir, target=target
+        flags,
+        images,
+        docker_config=docker_config,
+        secret_dir=secret_dir,
+        target=target,
+        host_values=host_values,
     )
     # Secrets first: a host with a missing file lists it instead of failing on a staging read.
     missing = missing_secrets(secret_paths(runner, env, target=target))
@@ -568,7 +637,7 @@ def build_plan(
     )
     checks = [path.name for path in check_files(checks_dir)]
     steps = plan_steps(pending, checks, target=target)
-    return Plan(sha, images, rollback, pending, missing, checks, steps, env)
+    return Plan(sha, images, rollback, pending, missing, checks, steps, env, host_values)
 
 
 def _pending_line(pending: Sequence[str]) -> str:
@@ -589,6 +658,10 @@ def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
             f"Missing secret files: {', '.join(plan.missing)}",
             "apply will refuse until they exist",
         ]
+    if target.host_file is not None:
+        overrides = sorted(plan.host_values.keys() & target.host_override_keys)
+        lines.append(f"Host overrides: {', '.join(overrides) if overrides else 'none'}")
+        lines.append(f"Host settings digest: {host_settings_digest(plan.host_values)}")
     lines.append("Steps:")
     lines += [f"  {number}. {step}" for number, step in enumerate(plan.steps, start=1)]
     if plan.pending:
@@ -596,6 +669,8 @@ def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     command = f"{APPLY_COMMAND} --sha {plan.sha}"
     if plan.pending:
         command += f" --migrations {','.join(plan.pending)}"
+    if target.host_file is not None:
+        command += f" --host-digest {host_settings_digest(plan.host_values)}"
     lines.append(command)
     return "\n".join(lines)
 
@@ -1008,9 +1083,12 @@ def apply(
     sleep: Callable[[float], None] = time.sleep,
     out: Callable[[str], None] = print,
     target: Target = STAGING,
+    host_digest: str | None = None,
 ) -> int:
     progress = _Progress()
     try:
+        if target.host_file is not None and host_digest is None:
+            raise RolloutError("confirm", HOST_CHANGED)
         plan = build_plan(
             runner,
             repo,
@@ -1019,6 +1097,7 @@ def apply(
             checks_dir=checks_dir,
             expected_sha=sha,
             target=target,
+            expected_host_digest=host_digest,
         )
         env = plan.env
         progress.pending = plan.pending
