@@ -81,6 +81,15 @@ def test_smoke_cases_parse_and_cover_features() -> None:
     assert {case.language for case in cases} == {"en", "ms"}
 
 
+def test_smoke_cases_and_checklist_hold_only_synthetic_addresses() -> None:
+    """The repository is public: every address in the cases and the checklist is invented, on
+    example.com or a .test domain, never a real mailbox."""
+    for path in (smoke.CASES_FILE, CHECKLIST):
+        for address in ADDRESS.findall(path.read_text(encoding="utf-8")):
+            domain = address.rsplit("@", 1)[1].lower()
+            assert domain == "example.com" or domain.endswith(".test"), (path.name, address)
+
+
 def test_unknown_preset_or_override_is_refused() -> None:
     adapter = TypeAdapter(smoke.SmokeCase)
     base = {

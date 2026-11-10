@@ -308,7 +308,7 @@
   {
     "id": "compose-en-3",
     "language": "en",
-    "message": "send email to danial@fourstacks.my about the meeting",
+    "message": "send email to danial.hakim@example.com about the meeting",
     "facts": {
       "preset": "staff_basic"
     },
@@ -317,14 +317,14 @@
         "email_compose"
       ],
       "send": true,
-      "recipient": "danial@fourstacks.my",
+      "recipient": "danial.hakim@example.com",
       "draft_valid": true
     }
   },
   {
     "id": "compose-ms-3",
     "language": "ms",
-    "message": "hantar emel kat danial@fourstacks.my pasal mesyuarat esok",
+    "message": "hantar emel kat danial.hakim@example.com pasal mesyuarat esok",
     "facts": {
       "preset": "staff_basic"
     },
@@ -333,7 +333,7 @@
         "email_compose"
       ],
       "send": true,
-      "recipient": "danial@fourstacks.my",
+      "recipient": "danial.hakim@example.com",
       "draft_valid": true
     }
   },

@@ -319,11 +319,11 @@ row names them, the fields the model wrote (compared without case), never the se
 | --- | --- | --- | --- |
 | Send an email to aina.rahman@example.com saying the meeting has moved to 3pm | Gmail connected | An email to exactly that address, a Send card, a valid draft | `compose-en-1` |
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang | Gmail connected | An email to exactly that address, a Send card, a valid draft | `compose-ms-1` |
-| hantar emel kat danial@fourstacks.my pasal mesyuarat esok | Gmail connected | An email to exactly that address, a Send card, a valid draft; the sentence has an address in it and must still read as Malay | `compose-ms-3` |
+| hantar emel kat danial.hakim@example.com pasal mesyuarat esok | Gmail connected | An email to exactly that address, a Send card, a valid draft; the sentence has an address in it and must still read as Malay | `compose-ms-3` |
 | Email my manager that I will be late tomorrow morning | Gmail connected, staff linked with a manager | An email to an offered recipient (the manager), a Send card, a valid draft | `compose-en-2` |
 | Tolong emel pengurus saya bahawa saya cuti esok | Staff with no employee link | An answer, no email card | `compose-ms-2` |
-| send email to danial@fourstacks.my about the meeting | Gmail connected (the owner's 500) | An email to exactly that address, a Send card, a valid draft | `compose-en-3` |
-| send email to danial@fourstacks.my about the meeting | Gmail connected | A Send card, never a 500; when the drafting model fails, a plain sentence to try again | manual |
+| send email to danial.hakim@example.com about the meeting | Gmail connected (the owner's 500) | An email to exactly that address, a Send card, a valid draft | `compose-en-3` |
+| send email to danial.hakim@example.com about the meeting | Gmail connected | A Send card, never a 500; when the drafting model fails, a plain sentence to try again | manual |
 
 ## Draft
 
@@ -500,7 +500,7 @@ Each case must pass at least 4 of 5 (they were 0, 0, 1 and 0 of 5 before). Then 
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang | An address in the request | An email to exactly that address and no other recipient | `compose-ms-1` |
 | Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet | "Don't send" | A draft card, never Send | `dont_send-en-1` |
 | Tolong tulis emel kepada aina.rahman@example.com tentang mesyuarat itu dan jangan hantar dulu | "Don't send" | A draft card, never Send | `dont_send-ms-1` |
-| Tolong hantar emel kepada Danial, then, when asked, type only danial@fourstacks.my | Gmail connected, a new conversation | The question and the reply to the typed address stay Malay: the typed address does not switch the panel to English, and the Send card that follows is Malay | manual |
+| Tolong hantar emel kepada Danial, then, when asked, type only danial.hakim@example.com | Gmail connected, a new conversation | The question and the reply to the typed address stay Malay: the typed address does not switch the panel to English, and the Send card that follows is Malay | manual |
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang, then press Hantar | Gmail connected | The Send card's title, summary and field labels are Malay (Kepada, Subjek), its buttons and the status line after pressing (sending, sent) are Malay, and the email preview's labels are Malay. The address, the subject and the body are shown exactly as they are | manual |
 | Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang, then press Batal | Gmail connected | The card's status line is Malay and its buttons are disabled | manual |
 | A Malay conversation, then in the same conversation "Open the HR tab" typed in English | Gmail connected | The panel follows the new clear language: the next reply, its card and the dock's title, "New conversation" button and placeholder are English | manual |
