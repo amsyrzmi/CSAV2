@@ -54,6 +54,9 @@ TIKTOK_FILES = (
     "pipeline/staging_tiktok_app_secret",
     "pipeline/staging_tiktok_service_id",
 )
+# The Jev key (TYPESAFE_API_KEY), written by scripts/staging_jev_key.py only after the evaluation
+# passes. Optional for ``check``; when present it must be a private regular file like the rest.
+JEV_KEY_FILE = "pipeline/staging_jev_key"
 # Invitation mail relay credentials. The owner leaves them at the top of the secret
 # directory; ``smtp-install`` moves them into ``runtime/``. They stay optional for
 # ``check`` because mail is off by default, but they come as a pair.
@@ -276,7 +279,7 @@ def check(secret_dir: Path, runtime_uid: int) -> list[str]:
             failures.append(f"{name}: must be {role}@{HOST}:5432/{DATABASE}")
         elif password_file in values and unquote(url.password or "") != values[password_file]:
             failures.append(f"{name}: password does not match {password_file}")
-    for name in (*WHATSAPP_FILES, *TIKTOK_FILES):
+    for name in (*WHATSAPP_FILES, *TIKTOK_FILES, JEV_KEY_FILE):
         path = target / name
         if path.exists() or path.is_symlink():
             _read(path, runtime_uid, failures, name)
