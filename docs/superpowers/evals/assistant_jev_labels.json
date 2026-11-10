@@ -1,5 +1,5 @@
 {
- "note": "Synthetic labelled messages for scripts/assistant_jev_eval.py. No real names, addresses or customer text.",
+ "note": "Synthetic labelled messages for scripts/assistant_jev_eval.py. No real names, addresses or customer text. Cases with a source are the smoke messages (csa/workspace/smoke_cases.json, that id), labelled by hand against the question wording; addresses only at example domains.",
  "cases": [
   {
    "id": "routing-en-01",
@@ -1680,6 +1680,764 @@
    },
    "expect": {
     "injection": false
+   }
+  },
+  {
+   "id": "routing-directory-en-2",
+   "area": "routing",
+   "language": "en",
+   "source": "directory-en-2",
+   "state": {
+    "message": "Send an email to Razak about the invoice"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-directory-ms-2",
+   "area": "routing",
+   "language": "ms",
+   "source": "directory-ms-2",
+   "state": {
+    "message": "Tolong hantar emel kepada Razak tentang invois itu"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-directory-en-3",
+   "area": "routing",
+   "language": "en",
+   "source": "directory-en-3",
+   "state": {
+    "message": "send email to danial"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-directory-ms-3",
+   "area": "routing",
+   "language": "ms",
+   "source": "directory-ms-3",
+   "state": {
+    "message": "hantar emel kepada danial"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-directory-en-4",
+   "area": "routing",
+   "language": "en",
+   "source": "directory-en-4",
+   "state": {
+    "message": "Email the finance manager about the budget"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-directory-ms-4",
+   "area": "routing",
+   "language": "ms",
+   "source": "directory-ms-4",
+   "state": {
+    "message": "Tolong emel pengurus kewangan tentang bajet"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "compose-en-1",
+   "state": {
+    "message": "Send an email to aina.rahman@example.com saying the meeting has moved to 3pm"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "compose-ms-1",
+   "state": {
+    "message": "Tolong hantar emel kepada aina.rahman@example.com bahawa mesyuarat dipindahkan ke pukul 3 petang"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-en-2",
+   "area": "routing",
+   "language": "en",
+   "source": "compose-en-2",
+   "state": {
+    "message": "Email my manager that I will be late tomorrow morning"
+   },
+   "expect": {
+    "needs:manager": true,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-ms-2",
+   "area": "routing",
+   "language": "ms",
+   "source": "compose-ms-2",
+   "state": {
+    "message": "Tolong emel pengurus saya bahawa saya cuti esok"
+   },
+   "expect": {
+    "needs:manager": true,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-en-3",
+   "area": "routing",
+   "language": "en",
+   "source": "compose-en-3",
+   "state": {
+    "message": "send email to danial@example.com about the meeting"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-compose-ms-3",
+   "area": "routing",
+   "language": "ms",
+   "source": "compose-ms-3",
+   "state": {
+    "message": "hantar emel kat danial@example.com pasal mesyuarat esok"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-draft-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "draft-en-1",
+   "state": {
+    "message": "Draft an email to aina.rahman@example.com asking for the March sales report"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-draft-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "draft-ms-1",
+   "state": {
+    "message": "Tolong draf emel kepada aina.rahman@example.com untuk minta laporan jualan bulan Mac"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-reply-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "reply-en-1",
+   "state": {
+    "message": "Reply to Aina about the invoice and say we will pay on Friday"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-reply-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "reply-ms-1",
+   "state": {
+    "message": "Tolong balas kepada Aina tentang invois itu dan kata kami akan bayar pada hari Jumaat"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-team-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "team-en-1",
+   "state": {
+    "message": "Email my team that the office closes at 5pm on Friday"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": true,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-team-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "team-ms-1",
+   "state": {
+    "message": "Tolong emel pasukan saya bahawa pejabat akan tutup pukul 5 petang pada hari Jumaat"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": true,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-attention-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "attention-en-1",
+   "state": {
+    "message": "What needs my attention in my email today?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-attention-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "attention-ms-1",
+   "state": {
+    "message": "Apa emel yang perlu perhatian saya hari ini?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "training-en-1",
+   "state": {
+    "message": "Request a first aid training course for me"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "training-ms-1",
+   "state": {
+    "message": "Tolong mohon kursus latihan pertolongan cemas untuk saya"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-en-2",
+   "area": "routing",
+   "language": "en",
+   "source": "training-en-2",
+   "state": {
+    "message": "I want to request a fire safety training"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-ms-2",
+   "area": "routing",
+   "language": "ms",
+   "source": "training-ms-2",
+   "state": {
+    "message": "Saya nak mohon latihan keselamatan kebakaran"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-ms-3",
+   "area": "routing",
+   "language": "ms",
+   "source": "training-ms-3",
+   "state": {
+    "message": "Saya nak mohon kursus latihan pertolongan cemas"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-training-en-3",
+   "area": "routing",
+   "language": "en",
+   "source": "training-en-3",
+   "state": {
+    "message": "i want to send a request for ComptiaA+ training"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": true,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-dont_send-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "dont_send-en-1",
+   "state": {
+    "message": "Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-dont_send-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "dont_send-ms-1",
+   "state": {
+    "message": "Tolong tulis emel kepada aina.rahman@example.com tentang mesyuarat itu dan jangan hantar dulu"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-hr_add-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "hr_add-en-1",
+   "state": {
+    "message": "Add Danial Hakim as Sales Executive in Sales starting 1 December 2026 under Razak"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_add-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "hr_add-ms-1",
+   "state": {
+    "message": "Tolong tambah Danial Hakim sebagai Sales Executive dalam jabatan Sales bermula 1 Disember 2026 di bawah Razak"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_add-en-2",
+   "area": "routing",
+   "language": "en",
+   "source": "hr_add-en-2",
+   "state": {
+    "message": "Add Danial as Sales Executive"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_update-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "hr_update-en-1",
+   "state": {
+    "message": "Change Siti's manager to Razak"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_update-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "hr_update-ms-1",
+   "state": {
+    "message": "Tukar pengurus Siti kepada Razak"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_leave-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "hr_leave-en-1",
+   "state": {
+    "message": "Mark Aina as leaving, last day 30 November 2026, she resigned"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-hr_leave-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "hr_leave-ms-1",
+   "state": {
+    "message": "Tandakan Aina akan berhenti, hari terakhir 30 November 2026, dia letak jawatan"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-people_query-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "people_query-en-1",
+   "state": {
+    "message": "Who reports to Razak?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-people_query-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "people_query-ms-1",
+   "state": {
+    "message": "Siapa yang melapor kepada Razak?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": true
+   }
+  },
+  {
+   "id": "routing-email_batch-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "email_batch-en-1",
+   "state": {
+    "message": "Send the same email to Aina Rahman, Danial Hakim and Mei Ling Tan, each on their own: the office closes at 5pm on Friday"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-email_batch-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "email_batch-ms-1",
+   "state": {
+    "message": "Tolong hantar emel yang sama kepada Aina Rahman, Danial Hakim dan Mei Ling Tan, seorang satu: pejabat tutup pukul 5 petang hari Jumaat"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-email_batch_group-en-1",
+   "area": "routing",
+   "language": "en",
+   "source": "email_batch_group-en-1",
+   "state": {
+    "message": "Draft an email to all our active subscribers reminding each of them of their own renewal date"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "routing-email_batch_group-ms-1",
+   "area": "routing",
+   "language": "ms",
+   "source": "email_batch_group-ms-1",
+   "state": {
+    "message": "Tolong draf emel kepada semua pelanggan aktif kita untuk ingatkan tarikh pembaharuan langganan mereka sendiri"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false
+   }
+  },
+  {
+   "id": "email-email_batch-en-1",
+   "area": "email",
+   "language": "en",
+   "source": "email_batch-en-1",
+   "state": {
+    "message": "Send the same email to Aina Rahman, Danial Hakim and Mei Ling Tan, each on their own: the office closes at 5pm on Friday",
+    "subject": "Office closes at 5pm on Friday",
+    "instructions": "Tell everyone the office closes at 5pm on Friday."
+   },
+   "expect": {
+    "mode": "shared",
+    "needs:subscription": false,
+    "needs:kb": false,
+    "send": true
+   }
+  },
+  {
+   "id": "email-email_batch-ms-1",
+   "area": "email",
+   "language": "ms",
+   "source": "email_batch-ms-1",
+   "state": {
+    "message": "Tolong hantar emel yang sama kepada Aina Rahman, Danial Hakim dan Mei Ling Tan, seorang satu: pejabat tutup pukul 5 petang hari Jumaat",
+    "subject": "Pejabat tutup pukul 5 petang Jumaat",
+    "instructions": "Beritahu semua orang pejabat tutup pukul 5 petang hari Jumaat."
+   },
+   "expect": {
+    "mode": "shared",
+    "needs:subscription": false,
+    "needs:kb": false,
+    "send": true
+   }
+  },
+  {
+   "id": "email-email_batch_group-en-1",
+   "area": "email",
+   "language": "en",
+   "source": "email_batch_group-en-1",
+   "state": {
+    "message": "Draft an email to all our active subscribers reminding each of them of their own renewal date",
+    "subject": "Your renewal date",
+    "instructions": "Remind each subscriber of their own renewal date."
+   },
+   "expect": {
+    "mode": "personalised",
+    "needs:subscription": true,
+    "needs:kb": false,
+    "send": false
+   }
+  },
+  {
+   "id": "email-email_batch_group-ms-1",
+   "area": "email",
+   "language": "ms",
+   "source": "email_batch_group-ms-1",
+   "state": {
+    "message": "Tolong draf emel kepada semua pelanggan aktif kita untuk ingatkan tarikh pembaharuan langganan mereka sendiri",
+    "subject": "Tarikh pembaharuan anda",
+    "instructions": "Ingatkan setiap pelanggan tentang tarikh pembaharuan langganan mereka sendiri."
+   },
+   "expect": {
+    "mode": "personalised",
+    "needs:subscription": true,
+    "needs:kb": false,
+    "send": false
+   }
+  },
+  {
+   "id": "email-email_batch_rest-en-1",
+   "area": "email",
+   "language": "en",
+   "source": "email_batch_rest-en-1",
+   "state": {
+    "message": "Now send the same reminder to the rest of them please",
+    "subject": "New opening hours",
+    "instructions": "Remind everyone about the new opening hours."
+   },
+   "expect": {
+    "mode": "shared",
+    "needs:subscription": false,
+    "needs:kb": false,
+    "send": true
+   }
+  },
+  {
+   "id": "email-email_batch_rest-ms-1",
+   "area": "email",
+   "language": "ms",
+   "source": "email_batch_rest-ms-1",
+   "state": {
+    "message": "Tolong hantar peringatan yang sama kepada selebihnya pula",
+    "subject": "Waktu buka baru",
+    "instructions": "Ingatkan semua orang tentang waktu buka yang baru."
+   },
+   "expect": {
+    "mode": "shared",
+    "needs:subscription": false,
+    "needs:kb": false,
+    "send": true
    }
   }
  ]

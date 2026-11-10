@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
@@ -14,6 +15,8 @@ import pytest
 from csa.decide.jev import JevError, JevResponse
 from pydantic import ValidationError
 from scripts import assistant_jev_eval as ev
+
+SMOKE_PATH = Path(__file__).resolve().parents[1] / "csa/workspace/smoke_cases.json"
 
 FLOORS = {"noul": 0.7, "choice": 0.7}
 CASES = ev.load_cases()
@@ -36,7 +39,9 @@ class OracleClient:
         flip: Mapping[str, float] | None = None,
         error: Exception | None = None,
     ) -> None:
-        self._by_message = {case.state["message"]: case for case in cases}
+        # Keyed by what Jev receives: the redacted state (a smoke message's address is a
+        # placeholder by then), whole, since a routing and an email case can share a message.
+        self._by_state = {_sent_key(ev._redact_state(case.state, ())): case for case in cases}
         self._confidence = confidence
         # question -> confidence at which this client answers WRONG (inverted label).
         self._flip = dict(flip or {})
@@ -49,7 +54,7 @@ class OracleClient:
         self.sent.append(state)
         if self._error is not None:
             raise self._error
-        case = self._by_message[state["message"]]  # type: ignore[index]
+        case = self._by_state[_sent_key(state)]
         answers: dict[str, dict[str, Any]] = {}
         for name, question in questions.items():
             label = case.expect[name]
@@ -59,6 +64,10 @@ class OracleClient:
             else:
                 answers[name] = _answer(question, label, confidence=self._confidence)
         return JevResponse(model="fake", answers=answers)
+
+
+def _sent_key(state: object) -> str:
+    return json.dumps(state, sort_keys=True)
 
 
 def _other_mode(mode: object) -> str:
@@ -95,9 +104,53 @@ def test_the_evaluation_asks_the_questions_the_live_deciders_ask() -> None:
 
 
 def test_the_label_file_holds_no_real_addresses() -> None:
+    # Smoke messages carry addresses; the evaluation redacts them before anything is sent (see
+    # test_only_redacted_text_is_sent_to_jev), so the file may hold reserved example ones only.
     text = ev.LABELS_PATH.read_text(encoding="utf-8")
-    assert "@" not in text
+    domains = set(re.findall(r"@([A-Za-z0-9.-]+)", text))
+    assert domains <= {"example.com", "example.test"}, domains
     assert "http" not in text
+
+
+SMOKE = {case["id"]: case for case in json.loads(SMOKE_PATH.read_text(encoding="utf-8"))}
+# Smoke cases with no labelled counterpart, and why: none of them needs a fact group or an email
+# decision, or what the question would answer is not clear from its wording.
+SMOKE_LEFT_OUT = {
+    # No fact group, no email: navigation, help, bookings.
+    "navigate-en-1", "navigate-ms-1", "navigate-en-2", "navigate-ms-2", "navigate-ms-3",
+    "answer-en-1", "answer-ms-1",
+    "booking_book-en-1", "booking_book-ms-1", "booking_book-en-2",
+    "booking_move-en-1", "booking_move-ms-1", "booking_move-ms-2",
+    "booking_cancel-en-1", "booking_cancel-ms-1",
+    "booking_free-en-1", "booking_free-ms-1", "booking_free-en-2",
+    "plan_bookings-en-1", "plan_bookings-ms-1",
+    # Finding or opening one person: "people records" in the question names adding, changing,
+    # removing, reporting lines and leaving; a lookup is not clearly one of them.
+    "directory-en-1", "directory-ms-1", "hr_open-en-1", "hr_open-ms-1",
+}  # fmt: skip
+
+
+def test_the_smoke_derived_labels_are_the_smoke_messages_jev_would_see() -> None:
+    sourced = [case for case in CASES if case.source is not None]
+    assert sourced, "no labels derived from the smoke cases"
+    for case in sourced:
+        smoke = SMOKE[case.source]
+        assert case.language == smoke["language"], case.id
+        # Identical once redacted: an address may be swapped for an example one.
+        assert ev._redact_state(case.state["message"], ()) == ev._redact_state(
+            smoke["message"], ()
+        ), case.id
+    # Every smoke case is either labelled or left out on purpose (a new one needs a decision).
+    assert {case.source for case in sourced} | SMOKE_LEFT_OUT == set(SMOKE)
+    assert not {case.source for case in sourced} & SMOKE_LEFT_OUT
+    messages = {case.state["message"] for case in sourced}
+    for phrase in (
+        "Email my manager that I will be late tomorrow morning",
+        "Who reports to Razak?",
+    ):
+        assert phrase in messages
+    assert any("each on their own" in message for message in messages)
+    assert {case.area for case in sourced} == {"routing", "email"}
 
 
 def _case(**overrides: object) -> dict[str, object]:
@@ -144,6 +197,7 @@ async def test_a_jev_that_matches_every_label_meets_every_target() -> None:
     report = await ev.evaluate(client, CASES, floors=FLOORS)
     assert report.passed
     assert report.cases == len(CASES) == len(client.sent)
+    assert "@" not in json.dumps(client.sent)  # the smoke messages' addresses were redacted
     assert not report.errors
     questions = {(r.area, r.question) for r in report.results}
     assert questions == {

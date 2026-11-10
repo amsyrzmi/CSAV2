@@ -75,6 +75,9 @@ class LabelledCase(BaseModel):
     language: Literal["en", "ms"]
     state: dict[str, str]
     expect: dict[str, bool | str]
+    # The csa/workspace/smoke_cases.json id the message comes from, for cases derived from the
+    # smoke set; None for the cases written for the evaluation.
+    source: str | None = None
 
     @model_validator(mode="after")
     def _expect_matches_the_questions(self) -> LabelledCase:
