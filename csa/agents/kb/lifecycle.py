@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -36,6 +37,22 @@ async def check_ingestion(
             raise KbFileError("uploaded source was deleted or is no longer valid")
 
 
+async def close_jobs_for_files(
+    conn: AsyncConnection[Any], client_id: UUID, file_ids: Sequence[UUID]
+) -> int:
+    """Cancel and dismiss the open jobs whose files are all deleted; call under ``lock``.
+
+    The files named in ``file_ids`` must already be soft-deleted in this transaction. A worker that
+    still holds a closed job loses nothing: its finish and release only touch ``processing`` rows.
+    """
+    if not file_ids:
+        return 0
+    rows = await db.q.fetch_all(
+        "kb/jobs_close_for_files.sql", (client_id, [str(i) for i in file_ids]), conn=conn
+    )
+    return len(rows)
+
+
 async def delete_document(conn: AsyncConnection[Any], client_id: UUID, document_id: UUID) -> bool:
     await lock(conn, client_id)
     row = await db.q.fetch_one("kb/document_get.sql", (client_id, document_id), conn=conn)
@@ -43,7 +60,10 @@ async def delete_document(conn: AsyncConnection[Any], client_id: UUID, document_
         return False
     if row["content_hash"]:
         await db.q.execute("kb/deletion_record.sql", (client_id, row["content_hash"]), conn=conn)
-    await db.q.fetch_all("kb/files_delete_document.sql", (client_id, document_id), conn=conn)
+    deleted = await db.q.fetch_all(
+        "kb/files_delete_document.sql", (client_id, document_id), conn=conn
+    )
+    await close_jobs_for_files(conn, client_id, [file["id"] for file in deleted])
     await db.q.execute("kb/delete_chunks_by_document.sql", (client_id, document_id), conn=conn)
     await db.q.fetch_one("kb/delete_document.sql", (client_id, document_id), conn=conn)
     return True

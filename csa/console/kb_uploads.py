@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 from starlette.types import Receive, Scope, Send
 
 from csa.agents.kb.extract import KbFileError, extract_document, file_kind_for
-from csa.agents.kb.lifecycle import delete_document, lock
+from csa.agents.kb.lifecycle import close_jobs_for_files, delete_document, lock
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.multipart import MAX_FILE_BYTES, upload_form
@@ -359,6 +359,7 @@ def build_upload_router(store: ObjectStore | None) -> APIRouter:
                 raise HTTPException(404, "source file not found")
             if row["document_id"]:
                 await delete_document(conn, client_id, row["document_id"])
+            await close_jobs_for_files(conn, client_id, [file_id])
             await audit(conn, actor, client_id, "kb.source_deleted", str(file_id))
         await cleanup_after_remove(db_pool, objects, client_id)
 
