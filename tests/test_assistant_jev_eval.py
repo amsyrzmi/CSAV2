@@ -429,7 +429,6 @@ def test_the_script_refuses_unusable_labels_without_echoing_them(
     assert ev.main(["--labels", str(tmp_path / "missing.json")]) == 2
 
 
-
 class _Terminal(io.StringIO):
     def isatty(self) -> bool:
         return True

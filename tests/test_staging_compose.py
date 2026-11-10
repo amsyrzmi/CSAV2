@@ -710,7 +710,6 @@ def test_secret_file_owner_mode_grants_only_the_intended_uid(
     assert readable is expected
 
 
-
 def _render_staging_proposal(tmp_path: Path, overrides: dict[str, str]) -> dict:
     env = {
         "HOME": str(tmp_path),

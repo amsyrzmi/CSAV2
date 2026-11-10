@@ -9,10 +9,11 @@ counts is the agreement on the answers the cascade would actually use: those at 
 confidence floor. Answers below the floor fall back to the LLM or rule in production, so they are
 reported as coverage, not judged. An error or timeout is the same: a fallback, counted.
 
-The key is typed at a hidden prompt (nothing echoed, nothing in shell history); a key already in the
-shell's TYPESAFE_API_KEY is used instead. Never from a repo file. With no key and no terminal the run
-stops (exit 2) rather than read one from a pipe. The output is content-free: area, question, counts, percentages and the ids of mislabelled cases (synthetic ids
-such as ``routing-ms-04``), never message text. Exit codes: 0 every question meets its target,
+The key is typed at a hidden prompt (nothing echoed, nothing in shell history); a key already in
+the shell's TYPESAFE_API_KEY is used instead. Never from a repo file. With no key and no terminal
+the run stops (exit 2) rather than read one from a pipe. The output is content-free: area,
+question, counts, percentages and the ids of mislabelled cases (synthetic ids such as
+``routing-ms-04``), never message text. Exit codes: 0 every question meets its target,
 1 at least one is below it, 2 the run could not start (no key, bad labels).
 
 The customer classifier has its own evaluation, ``csa.evals.decisions`` (docs/RUNBOOK.md, Jev).

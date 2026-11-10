@@ -1631,10 +1631,8 @@ def test_load_flags_accepts_the_optional_jev_switch_but_does_not_need_it(tmp_pat
     assert sr.load_flags(path) == {**ALL_FLAGS, "CSA_STAGING_JEV_SECRET": "staging_jev_key"}
     path.write_text(FLAGS_TEXT)  # the checked-in file has no such line
     assert "CSA_STAGING_JEV_SECRET" not in sr.load_flags(path)
-    path.write_text(
-        FLAGS_TEXT
-        + "CSA_STAGING_JEV_SECRET=staging_jev_key\nCSA_STAGING_JEV_SECRET=staging_disabled_jev_key\n"
-    )
+    twice = ("staging_jev_key", "staging_disabled_jev_key")
+    path.write_text(FLAGS_TEXT + "".join(f"CSA_STAGING_JEV_SECRET={v}\n" for v in twice))
     with pytest.raises(RolloutError, match="duplicate key CSA_STAGING_JEV_SECRET"):
         sr.load_flags(path)
     assert sr.OPTIONAL_FLAG_KEYS == {

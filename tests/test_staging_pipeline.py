@@ -716,7 +716,6 @@ def test_jev_key_reaches_the_gateway_and_worker_through_one_switch(tmp_path: Pat
     assert "staging_disabled_jev_key" not in wired["secrets"]
 
 
-
 # The optional staging switches (scripts/staging_rollout.py OPTIONAL_FLAG_KEYS) and where each
 # lands: compose variable -> (service, environment name, default).
 JEV_SWITCHES = {
@@ -766,8 +765,10 @@ def test_the_jev_switches_at_their_defaults_change_nothing(tmp_path: Path) -> No
     )
 
     def without_paths(config: dict) -> str:
-        return json.dumps(config, sort_keys=True).replace(str(tmp_path / "unset"), "").replace(
-            str(tmp_path / "explicit"), ""
+        return (
+            json.dumps(config, sort_keys=True)
+            .replace(str(tmp_path / "unset"), "")
+            .replace(str(tmp_path / "explicit"), "")
         )
 
     assert without_paths(unset) == without_paths(explicit)

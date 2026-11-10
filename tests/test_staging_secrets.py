@@ -291,7 +291,6 @@ def test_smtp_install_main_never_prints_values(
     assert "already installed" in capsys.readouterr().out
 
 
-
 def _write_jev_key(target: Path, mode: int = 0o400) -> Path:
     (target / "pipeline").mkdir(mode=0o700, exist_ok=True)
     key = target / "pipeline/staging_jev_key"
