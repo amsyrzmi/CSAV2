@@ -6,11 +6,12 @@ import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from scripts import staging_rollout as sr
-from scripts.rollout_targets import STAGING, Target
+from scripts.rollout_targets import PRODUCTION, STAGING, Target
 from scripts.staging_rollout import Completed, RolloutError
 
 from tests.test_staging_rollout import (
@@ -742,3 +743,370 @@ def test_downgrade_across_a_migration_is_still_refused(
         "production has migrations this checkout lacks: 0487; "
         "update the checkout before rolling out"
     )
+
+
+# --- the backup before anything changes --------------------------------------------------------
+
+BACKUP_ARGV = ["/srv/csa-prod/backup/backup.sh"]
+BACKUP_TEXT = "#!/bin/bash\nset -euo pipefail\n# repository copy\n"
+# The script stamps its log line when it starts, at whole seconds; apply starts mid-second.
+STARTED = datetime(2026, 11, 10, 6, 0, 1, 500000, tzinfo=UTC)
+TS_AT_START = "20261110T060001Z"
+TS_BEFORE_START = "20261110T060000Z"
+OBJECT_AT_START = f"backups/csa_staging-{TS_AT_START}.dump"
+BACKUP_FAILED = (
+    "Nothing on production was changed. The backup step failed; "
+    "the deploy stopped before any change."
+)
+REINSTALL = "install -m 0755 deploy/production/backup.sh /srv/csa-prod/backup/backup.sh"
+
+
+class BackupBox:
+    """The repository copy, the installed copy and the log, with a backup that appends ``line``."""
+
+    def __init__(self, tmp_path: Path, repo: Path, line: str | None, code: int = 0) -> None:
+        self.repo = repo
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (repo / "deploy" / "production").mkdir(parents=True, exist_ok=True)
+        (repo / "deploy" / "production" / "backup.sh").write_text(BACKUP_TEXT)
+        self.installed = tmp_path / "installed-backup.sh"
+        self.installed.write_text(BACKUP_TEXT)
+        self.log = tmp_path / "backup.log"
+        self.log.write_text("20261110T000001Z ok 2923724 bytes\n")
+        self.line = line
+        self.code = code
+
+    def answer(self, argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        if self.line is not None:
+            with self.log.open("a") as log:
+                log.write(self.line + "\n")
+        return Completed(self.code, "", "")
+
+    def run(self, runner: FakeRunner, target: Target | None = None) -> sr.BackupResult | None:
+        return sr.run_pre_change(
+            runner,
+            target or BACKED_UP,
+            self.repo,
+            now=lambda: STARTED,
+            log_path=self.log,
+            installed=self.installed,
+        )
+
+
+BACKED_UP = dataclasses.replace(PROD, pre_change=tuple(BACKUP_ARGV))
+
+
+def backup_runner(box: BackupBox) -> FakeRunner:
+    return FakeRunner([(lambda argv: list(argv) == BACKUP_ARGV, box.answer)])
+
+
+def test_backup_ok_at_the_start_second_passes(tmp_path: Path) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", f"{TS_AT_START} ok 3097983 bytes")
+    runner = backup_runner(box)
+    assert box.run(runner) == sr.BackupResult(TS_AT_START, OBJECT_AT_START)
+    assert runner.argvs == [BACKUP_ARGV]
+    # Its environment is the rollout's own: nothing added, nothing from the host file.
+    assert runner.calls[0][1] is None
+
+
+def test_backup_skipped_line_refuses(tmp_path: Path) -> None:
+    line = f"{TS_AT_START} skipped: previous backup still running"
+    box = BackupBox(tmp_path, tmp_path / "repo", line)
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+    assert line in caught.value.message
+
+
+def test_backup_stale_ok_line_refuses(tmp_path: Path) -> None:
+    line = f"{TS_BEFORE_START} ok 3097983 bytes"
+    box = BackupBox(tmp_path, tmp_path / "repo", line)
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+    assert line in caught.value.message
+
+    # The script appended nothing: the last line is an older run's.
+    box = BackupBox(tmp_path / "quiet", tmp_path / "quiet-repo", None)
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert "20261110T000001Z ok 2923724 bytes" in caught.value.message
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "2026-11-10T06:00:01+00:00 ok 3097983 bytes",
+        "20261110T060001 ok 3097983 bytes",
+        "20261399T060001Z ok 3097983 bytes",
+        "ok",
+        "less than 2 GB free in /var/tmp",
+    ],
+    ids=["iso-extended", "no-zone", "bad-date", "no-timestamp", "an-error"],
+)
+def test_backup_unparseable_timestamp_refuses(tmp_path: Path, line: str) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", line)
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+    assert line in caught.value.message
+
+
+def test_backup_missing_or_empty_log_refuses(tmp_path: Path) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", None)
+    box.log.unlink()
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+    assert "backup.log" in caught.value.message
+
+    for empty in ("", "\n\n  \n"):
+        box.log.write_text(empty)
+        with pytest.raises(RolloutError) as caught:
+            box.run(backup_runner(box))
+        assert caught.value.step == "backup"
+        assert "backup.log" in caught.value.message
+
+    box.log.unlink()
+    box.log.mkdir()
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+
+
+def test_backup_reads_only_the_tail_of_a_long_log(tmp_path: Path) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", f"{TS_AT_START} ok 3097983 bytes\n\n")
+    box.log.write_text("20261101T000001Z ok 1 bytes\n" * 50_000)
+    assert box.run(backup_runner(box)) == sr.BackupResult(TS_AT_START, OBJECT_AT_START)
+
+
+def test_backup_nonzero_exit_refuses(tmp_path: Path) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", f"{TS_AT_START} ok 3097983 bytes", code=1)
+    with pytest.raises(RolloutError) as caught:
+        box.run(backup_runner(box))
+    assert caught.value.step == "backup"
+    assert "exit 1" in caught.value.message
+
+
+def test_backup_installed_copy_must_match_repo(tmp_path: Path) -> None:
+    box = BackupBox(tmp_path, tmp_path / "repo", f"{TS_AT_START} ok 3097983 bytes")
+    box.installed.write_text(BACKUP_TEXT + "# edited on the instance\n")
+    runner = backup_runner(box)
+    with pytest.raises(RolloutError) as caught:
+        box.run(runner)
+    assert caught.value.step == "backup"
+    assert "reinstall" in caught.value.message
+    assert REINSTALL in caught.value.message
+    assert runner.argvs == []
+
+    box.installed.unlink()
+    with pytest.raises(RolloutError) as caught:
+        box.run(runner)
+    assert "reinstall" in caught.value.message
+    assert REINSTALL in caught.value.message
+    assert runner.argvs == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("sudo", "/srv/csa-prod/backup/backup.sh"),
+        ("/usr/bin/sudo", "-n", "/srv/csa-prod/backup/backup.sh"),
+        ("/srv/csa-prod/backup/backup.sh", "sudo"),
+    ],
+    ids=["sudo", "sudo-path", "sudo-argument"],
+)
+def test_pre_change_argv_never_contains_sudo(tmp_path: Path, argv: tuple[str, ...]) -> None:
+    assert PRODUCTION.pre_change is not None
+    assert not any(Path(part).name == "sudo" for part in PRODUCTION.pre_change)
+    assert sr.BACKUP_INSTALLED == Path(PRODUCTION.pre_change[0])
+
+    box = BackupBox(tmp_path, tmp_path / "repo", f"{TS_AT_START} ok 3097983 bytes")
+    runner = FakeRunner([(lambda _: True, ok())])
+    with pytest.raises(RolloutError) as caught:
+        box.run(runner, dataclasses.replace(PROD, pre_change=argv))
+    assert caught.value.step == "backup"
+    assert "sudo" in caught.value.message
+    assert runner.argvs == []
+
+
+def test_no_pre_change_does_nothing(tmp_path: Path) -> None:
+    runner = FakeRunner([])
+    for target in (STAGING, PROD):
+        assert (
+            sr.run_pre_change(
+                runner,
+                target,
+                tmp_path / "no-repo",
+                now=lambda: pytest.fail("no clock without a backup"),
+                log_path=tmp_path / "no-log",
+                installed=tmp_path / "no-installed",
+            )
+            is None
+        )
+    assert runner.calls == []
+
+
+class BackupRig(HostedRig):
+    """A hosted apply whose target takes a backup first."""
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        line: str | None,
+        code: int = 0,
+    ) -> None:
+        super().__init__(tmp_path, monkeypatch, HOST_TEXT)
+        self.target = dataclasses.replace(self.target, pre_change=tuple(BACKUP_ARGV))
+        self.box = BackupBox(tmp_path, self.repo, line, code)
+        self.runner.rules.insert(0, (lambda argv: list(argv) == BACKUP_ARGV, self.box.answer))
+
+    def apply(self, host_digest: str | None) -> int:
+        self.runner.calls.clear()
+        return sr.apply(
+            self.runner,
+            self.repo,
+            ["0486"],
+            sha=SHA,
+            docker_config=self.docker_config,
+            secret_dir=self.secret_dir,
+            checks_dir=self.checks,
+            sleep=lambda _: None,
+            out=self.lines.append,
+            target=self.target,
+            host_digest=host_digest,
+            now=lambda: STARTED,
+            backup_log=self.box.log,
+            backup_installed=self.box.installed,
+        )
+
+    def digest(self) -> str:
+        return sr.host_settings_digest(self.plan().host_values)
+
+
+def test_backup_ok_after_start_passes_and_names_the_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    assert rig.apply(rig.digest()) == 0, "\n".join(rig.lines)
+    assert f"Backup taken: {OBJECT_AT_START}" in rig.lines
+    order = [line for line in rig.lines if line.endswith("…") or line.startswith("Backup taken")]
+    assert order[:4] == [
+        "Checking compose config…",
+        "Taking a backup…",
+        f"Backup taken: {OBJECT_AT_START}",
+        "Pulling and verifying images…",
+    ]
+    argvs = rig.runner.argvs
+    backup = argvs.index(BACKUP_ARGV)
+    assert any("config --quiet" in " ".join(argv) for argv in argvs[:backup])
+    assert argvs[backup + 1][3:4] == ["pull"]
+    assert argvs.count(BACKUP_ARGV) == 1
+
+
+@pytest.mark.parametrize(
+    ("line", "code"),
+    [
+        (f"{TS_AT_START} ok 3097983 bytes", 1),
+        (f"{TS_AT_START} skipped: previous backup still running", 0),
+    ],
+    ids=["nonzero-exit", "skipped"],
+)
+def test_backup_nonzero_exit_refuses_before_any_docker_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str, code: int
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, line, code)
+    assert rig.apply(rig.digest()) == 1
+    # Plan's reads and the compose config check come first; nothing runs after the backup.
+    assert rig.runner.argvs[-1] == BACKUP_ARGV
+    assert not any(
+        argv[3:4] in (["pull"], ["exec"]) or {"stop", "up", "run"} & set(argv)
+        for argv in rig.docker_calls()
+    )
+    assert rig.lines[rig.lines.index("Taking a backup…") + 1].startswith("Stopped at backup: ")
+    assert BACKUP_FAILED in rig.lines
+    assert "Nothing on production was changed." not in rig.lines
+    assert not any(line.startswith("Backup taken") for line in rig.lines)
+
+
+def test_installed_copy_mismatch_stops_apply_before_the_backup_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    rig.box.installed.write_text("#!/bin/bash\n# an older copy\n")
+    assert rig.apply(rig.digest()) == 1
+    assert BACKUP_ARGV not in rig.runner.argvs
+    assert any(REINSTALL in line for line in rig.lines)
+    assert BACKUP_FAILED in rig.lines
+
+
+def test_recovery_after_migration_names_the_backup_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    rig.runner.rules.insert(0, (lambda argv: argv[3:4] == ["exec"], fail(1)))
+    assert rig.apply(rig.digest()) == 1
+    named = (
+        f"The backup taken at the start of this deploy is {OBJECT_AT_START} "
+        "(restore: deploy/PRODUCTION.md)"
+    )
+    assert rig.lines[-3:] == [
+        "Migrations were applied: 0486. The previous images fail /readyz against this schema, "
+        "so do not roll back; fix forward, then re-run plan and apply.",
+        named,
+        sr.RERUN_HINT,
+    ]
+
+    # Without a migration there is nothing to restore from: the rollback lines stand alone.
+    lines: list[str] = []
+    progress = sr._Progress(phase="up", recorded=[], backup=OBJECT_AT_START)
+    sr._report_recovery(progress, lines.append, target=PROD)
+    assert not any("backup" in line for line in lines)
+
+    # When the migration state is unknown the backup is named too.
+    lines.clear()
+    progress = sr._Progress(phase="stopped", recorded=None, pending=["0486"])
+    progress.backup = OBJECT_AT_START
+    sr._report_recovery(progress, lines.append, target=PROD)
+    assert lines[-1] == named
+
+
+def test_production_plan_never_runs_a_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    log_before = rig.box.log.read_text()
+    rig.plan()
+    assert BACKUP_ARGV not in rig.runner.argvs
+    assert rig.box.log.read_text() == log_before
+
+
+def _relative(rig: HostedRig, root: Path) -> tuple[list[str], list[list[str]]]:
+    """The rig's output lines and argvs with its temporary directory written as ``<tmp>``."""
+    lines = [line.replace(str(root), "<tmp>") for line in rig.lines]
+    argvs = [[part.replace(str(root), "<tmp>") for part in argv] for argv in rig.runner.argvs]
+    return lines, argvs
+
+
+def test_target_without_pre_change_applies_exactly_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backed = BackupRig(tmp_path / "backed", monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    assert backed.apply(backed.digest()) == 0, "\n".join(backed.lines)
+    plain = BackupRig(tmp_path / "plain", monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    plain.target = dataclasses.replace(plain.target, pre_change=None)
+    plain.box.installed.unlink()  # never read without a backup
+    assert plain.apply(plain.digest()) == 0, "\n".join(plain.lines)
+    backed_lines, backed_argvs = _relative(backed, tmp_path / "backed")
+    plain_lines, plain_argvs = _relative(plain, tmp_path / "plain")
+    added = ["Taking a backup…", f"Backup taken: {OBJECT_AT_START}"]
+    assert [line for line in backed_lines if line not in added] == plain_lines
+    assert [argv for argv in backed_argvs if argv != BACKUP_ARGV] == plain_argvs
+    assert BACKUP_ARGV not in plain_argvs
+    assert not any("ackup" in line for line in plain_lines)
+
+    # A failure before any change still prints the plain recovery line.
+    lines: list[str] = []
+    sr._report_recovery(sr._Progress(), lines.append, target=PROD)
+    assert lines == ["Nothing on production was changed."]

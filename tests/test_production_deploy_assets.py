@@ -1027,6 +1027,7 @@ NEW_FILES = (
     PLAN_PERMISSIONS,
     APPLY_PERMISSIONS,
     WORKFLOW,
+    PRODUCTION_DIR / "backup.sh",
 )
 
 
@@ -1417,3 +1418,183 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
     assert harness.calls() == [["ssm_run", "apply", SHA, migrations, DIGEST]]
     assert result.stdout == b"applied\n"
     assert summary.read_text() == f"### Production apply of `{SHA}`\n\n````\napplied\n````\n"
+
+
+# --- backup.sh: the instance's backup, kept in the repository ------------------------------------
+
+BACKUP = PRODUCTION_DIR / "backup.sh"
+BACKUP_HOST_ENV = "HOST_ENV=/srv/csa-prod/host.env"
+BACKUP_LAST_PARSE = "REGION=$(host_value CSA_PROD_S3_REGION)"
+BUCKET_VALUE = "bucket-value-x"
+REGION_VALUE = "region-value-x"
+
+
+def test_backup_script_is_bash_strict_and_has_no_secrets() -> None:
+    text = BACKUP.read_text()
+    lines = text.splitlines()
+
+    assert lines[0] in {"#!/bin/bash", "#!/usr/bin/env bash"}
+    assert "set -euo pipefail" in lines
+    assert "exec 9>/var/tmp/csa-backup.lock" in lines
+    assert any(line.startswith("flock -n 9 ") for line in lines)
+    assert not re.search(r"AKIA[0-9A-Z]{16}", text)
+    assert BACKUP.stat().st_mode & stat.S_IXUSR
+    mode = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-s", "--", str(BACKUP)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert mode.startswith("100755 ")
+
+
+def test_backup_script_names_no_bucket_or_region() -> None:
+    text = BACKUP.read_text()
+
+    # The public repository holds neither: both come from the instance's host file.
+    assert "fourstacks" not in text.lower()
+    assert "ap-southeast-1" not in text
+    assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", text)
+    assert re.findall(r"s3://\S*", text) == ['s3://$B/backups/csa_staging-$ts.dump"']
+    assert "B=$(host_value CSA_PROD_S3_BUCKET)" in text.splitlines()
+    assert BACKUP_LAST_PARSE in text.splitlines()
+    assert 'AWS_DEFAULT_REGION="$REGION"' in text
+    assert not re.search(r"\bsource\b|^\s*\.\s", text, re.MULTILINE)
+
+
+def test_backup_script_keeps_the_live_steps_in_order() -> None:
+    lines = BACKUP.read_text().splitlines()
+    steps = [
+        "LOG=/srv/csa-prod/backup/backup.log",
+        "exec 9>/var/tmp/csa-backup.lock",
+        'flock -n 9 || { echo "$(date -u +%Y%m%dT%H%M%SZ) skipped: previous backup still running"'
+        ' >> "$LOG"; exit 0; }',
+        "renice -n 19 -p $$ > /dev/null",
+        "ionice -c3 -p $$ || true",
+        '[ "$(df --output=avail -k /var/tmp | tail -1)" -gt 2097152 ] || '
+        '{ echo "less than 2 GB free in /var/tmp" >&2; exit 1; }',
+        BACKUP_HOST_ENV,
+        "B=$(host_value CSA_PROD_S3_BUCKET)",
+        BACKUP_LAST_PARSE,
+        "read -r AK SK < /srv/csa-prod/backup/s3-key.txt",
+        'export AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_DEFAULT_REGION="$REGION"',
+        "ts=$(date -u +%Y%m%dT%H%M%SZ)",
+        "tmp=$(mktemp /var/tmp/csa-dump.XXXXXX); trap 'rm -f \"$tmp\"' EXIT",
+        "docker exec csa-prod-staging-db-1 nice -n 19 pg_dump -U csa -d csa_staging -Fc -Z 3"
+        ' > "$tmp"',
+        'docker exec -i csa-prod-staging-db-1 pg_restore --list < "$tmp" > /dev/null',
+        'aws s3 cp "$tmp" "s3://$B/backups/csa_staging-$ts.dump" --only-show-errors',
+        '[ -s /srv/csa-prod/backup/ping-url ] && curl -fsS -m 10 "$(cat /srv/csa-prod/backup/'
+        'ping-url)" > /dev/null || true',
+        'echo "$ts ok $(stat -c %s "$tmp") bytes" >> "$LOG"',
+    ]
+    positions = [lines.index(step) for step in steps]
+    assert positions == sorted(positions)
+    assert lines[-1] == steps[-1]
+
+
+def _host_parse_block(host_env: Path) -> str:
+    """The script's host-file lines, pointed at ``host_env``; the rest of backup.sh uses fixed
+    instance paths (the lock, the key file, the log), so only these lines are run here."""
+    lines = BACKUP.read_text().splitlines()
+    start, end = lines.index(BACKUP_HOST_ENV), lines.index(BACKUP_LAST_PARSE)
+    block = [f"HOST_ENV={host_env}", *lines[start + 1 : end + 1]]
+    return "\n".join(["set -euo pipefail", *block, 'printf "%s|%s\\n" "$B" "$REGION"', ""])
+
+
+def _run_host_parse(
+    tmp_path: Path, host_text: str | None, locale: str = "C"
+) -> subprocess.CompletedProcess[str]:
+    host_env = tmp_path / "host.env"
+    if host_text is not None:
+        host_env.write_text(host_text)
+    script = tmp_path / "parse.sh"
+    script.write_text(_host_parse_block(host_env))
+    return subprocess.run(
+        ["bash", str(script)],
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": locale, "LANG": locale},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "host_text",
+    [
+        f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_REGION={REGION_VALUE}\n",
+        "# instance settings\n"
+        "CSA_STAGING_CONSOLE_ORIGIN=https://console.example.test\n"
+        f"export CSA_PROD_S3_BUCKET={BUCKET_VALUE}\n"
+        f"export\tCSA_PROD_S3_REGION = {REGION_VALUE}  \n"
+        "CSA_PROD_MEM_DB=1000m\n",
+    ],
+    ids=["plain", "export-comments-and-other-keys"],
+)
+def test_backup_reads_bucket_and_region_from_the_host_file(tmp_path: Path, host_text: str) -> None:
+    result = _run_host_parse(tmp_path, host_text)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{BUCKET_VALUE}|{REGION_VALUE}\n"
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize(
+    ("host_text", "key"),
+    [
+        (f"CSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\n", "CSA_PROD_S3_REGION"),
+        (f"CSA_PROD_S3_BUCKET=\nCSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_REGION=  \n", "CSA_PROD_S3_REGION"),
+        (
+            f"# CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_REGION={REGION_VALUE}\n",
+            "CSA_PROD_S3_BUCKET",
+        ),
+        (f"CSA_PROD_S3_BUCKET=a;id\nCSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f'CSA_PROD_S3_BUCKET="b"\nCSA_PROD_S3_REGION={REGION_VALUE}\n', "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET=a b\nCSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET=$(id)\nCSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET=a/b\nCSA_PROD_S3_REGION={REGION_VALUE}\n", "CSA_PROD_S3_BUCKET"),
+        (f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_REGION=r٠\n", "CSA_PROD_S3_REGION"),
+        (f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_REGION=rａ\n", "CSA_PROD_S3_REGION"),
+        (
+            f"CSA_PROD_S3_BUCKET={BUCKET_VALUE}\nCSA_PROD_S3_BUCKET={BUCKET_VALUE}\n"
+            f"CSA_PROD_S3_REGION={REGION_VALUE}\n",
+            "CSA_PROD_S3_BUCKET",
+        ),
+    ],
+    ids=[
+        "no-bucket",
+        "no-region",
+        "empty-bucket",
+        "blank-region",
+        "commented-bucket",
+        "semicolon",
+        "quoted",
+        "space",
+        "substitution",
+        "slash",
+        "arabic-indic-digit",
+        "fullwidth-letter",
+        "duplicate",
+    ],
+)
+def test_backup_refuses_a_missing_empty_or_unsafe_host_value(
+    tmp_path: Path, host_text: str, key: str, locale: str
+) -> None:
+    result = _run_host_parse(tmp_path, host_text, locale)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert key in result.stderr
+    for value in (BUCKET_VALUE, REGION_VALUE, "a;id", "$(id)", "a/b", "r٠", "rａ"):
+        assert value not in result.stderr
+
+
+def test_backup_refuses_an_unreadable_host_file(tmp_path: Path) -> None:
+    result = _run_host_parse(tmp_path, None)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "host.env" in result.stderr

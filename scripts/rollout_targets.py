@@ -105,6 +105,10 @@ PROD_TUNING_KEYS = frozenset(
 )
 _ORIGIN_KEYS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"})
 
+# The instance's backup script, installed from deploy/production/backup.sh. Production runs it
+# before anything changes; the rollout checks the installed copy matches the repository's.
+BACKUP_SCRIPT = "/srv/csa-prod/backup/backup.sh"
+
 # The interim production instance runs the staging stack under its own project, so the
 # database service, name and user are staging's (container csa-prod-staging-db-1). The two
 # origins are production hostnames, which the public repo does not commit: they come from the
@@ -125,6 +129,7 @@ PRODUCTION = replace(
     host_override_keys=PROD_TUNING_KEYS | {"CSA_PROD_DB_IMAGE"},
     staged_gate=True,
     downgrade_warning=True,
+    pre_change=(BACKUP_SCRIPT,),
     live_checkout="/home/ubuntu/CSAV2",
 )
 

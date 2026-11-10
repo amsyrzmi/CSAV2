@@ -26,11 +26,12 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
-from scripts.rollout_targets import STAGING, Target, get_target
+from scripts.rollout_targets import BACKUP_SCRIPT, STAGING, Target, get_target
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
@@ -80,6 +81,15 @@ RECORD_COMMAND = f"{MODULE_COMMAND} record-staged"
 TARGET_NAMES = ("staging", "production")
 HOST_DIGEST_RE = re.compile(r"^[0-9a-f]{12}$")
 GATE_ENVIRONMENT = "staging"
+# The backup taken before anything changes (deploy/production/backup.sh, installed by path).
+BACKUP_LOG = Path("/srv/csa-prod/backup/backup.log")
+BACKUP_INSTALLED = Path(BACKUP_SCRIPT)
+BACKUP_REPO_COPY = "deploy/production/backup.sh"
+BACKUP_REINSTALL = f"install -m 0755 {BACKUP_REPO_COPY} {BACKUP_SCRIPT}"
+BACKUP_TIMESTAMP = "%Y%m%dT%H%M%SZ"  # backup.sh: ts=$(date -u +%Y%m%dT%H%M%SZ)
+BACKUP_OBJECT = "backups/csa_staging-{timestamp}.dump"  # backup.sh: s3://$B/backups/...-$ts.dump
+BACKUP_LOG_TAIL = 4096  # bytes: the last line is all apply reads
+BACKUP_FAILED = "The backup step failed; the deploy stopped before any change."
 DOWNTIME = (
     "Downtime: console unavailable and bot replies delayed (queued, not lost) "
     "until the services are back."
@@ -872,15 +882,99 @@ def _verify_pull(runner: Runner, env: Mapping[str, str], ref: str, sha: str) -> 
         raise RolloutError("pull", f"{ref} was built from {revision}, expected {sha}")
 
 
+@dataclass(frozen=True)
+class BackupResult:
+    timestamp: str  # as logged
+    object_name: str  # "backups/csa_staging-<timestamp>.dump"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _last_log_line(path: Path) -> str:
+    """The last non-empty line of the backup log, reading only its tail."""
+    try:
+        with path.open("rb") as log:
+            size = log.seek(0, os.SEEK_END)
+            log.seek(max(0, size - BACKUP_LOG_TAIL))
+            tail = log.read()
+    except OSError as error:
+        raise RolloutError("backup", f"cannot read {path} after the backup ran") from error
+    lines = [line.strip() for line in tail.decode("utf-8", "replace").splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        raise RolloutError("backup", f"{path} is empty after the backup ran")
+    return lines[-1]
+
+
+def run_pre_change(
+    runner: Runner,
+    target: Target,
+    repo: Path,
+    *,
+    now: Callable[[], datetime] = _utc_now,
+    log_path: Path = BACKUP_LOG,
+    installed: Path = BACKUP_INSTALLED,
+) -> BackupResult | None:
+    """Take the backup ``target.pre_change`` names and prove it ran now; None when there is none.
+
+    A backup counts only when the script exits 0 and the log's last line is ``<ts> ok ...``
+    stamped no earlier than this call: a lock-held run exits 0 with a ``skipped`` line instead.
+    The script's own output is not printed: an aws error can carry the bucket name.
+    """
+    if target.pre_change is None:
+        return None
+    argv = list(target.pre_change)
+    if not argv or any(Path(part).name == "sudo" for part in argv):
+        raise RolloutError("backup", "the backup command must be a plain argv without sudo")
+    try:
+        expected = (repo / BACKUP_REPO_COPY).read_bytes()
+    except OSError as error:
+        raise RolloutError("backup", f"cannot read {BACKUP_REPO_COPY} in the checkout") from error
+    try:
+        current: bytes | None = installed.read_bytes()
+    except OSError:
+        current = None
+    if current != expected:
+        why = "is missing" if current is None else f"differs from {BACKUP_REPO_COPY}"
+        raise RolloutError("backup", f"{installed} {why}; reinstall it: {BACKUP_REINSTALL}")
+    started = now()
+    if started.tzinfo is None:
+        raise ValueError("now() must return an aware datetime")
+    # backup.sh stamps its line at whole seconds when it starts, so compare at whole seconds.
+    start = started.astimezone(UTC).replace(microsecond=0)
+    result = runner.run(argv)
+    if result.returncode != 0:
+        raise RolloutError(
+            "backup",
+            f"{argv[0]} failed (exit {result.returncode}); run it on the instance to see why",
+        )
+    line = _last_log_line(log_path)
+    fields = line.split()
+    try:
+        stamped = datetime.strptime(fields[0], BACKUP_TIMESTAMP).replace(tzinfo=UTC)
+    except (IndexError, ValueError) as error:
+        raise RolloutError(
+            "backup", f"the backup log's last line has no timestamp: {line}"
+        ) from error
+    if fields[1:2] != ["ok"]:
+        raise RolloutError("backup", f"the backup did not report ok: {line}")
+    if stamped < start:
+        raise RolloutError("backup", f"the backup log's last ok line is from before now: {line}")
+    return BackupResult(fields[0], BACKUP_OBJECT.format(timestamp=fields[0]))
+
+
 @dataclass
 class _Progress:
     """How far apply got, so a stop can say what changed and how to recover."""
 
-    phase: str = "unchanged"  # unchanged, stopped, recreating, up, checks or check_unread
+    phase: str = "unchanged"  # unchanged, backup, stopped, recreating, up, checks or check_unread
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
     rollback: Mapping[str, RunningImage | None] = field(default_factory=dict)
     env: Mapping[str, str] = field(default_factory=dict)  # names the replicas to restart
+    backup: str | None = None  # the object name of the backup taken before any change
 
 
 def _join(names: Sequence[str]) -> str:
@@ -1180,12 +1274,23 @@ def _report_rollback(
         )
 
 
+def _report_backup(progress: _Progress, out: Callable[[str], None]) -> None:
+    if progress.backup is not None:
+        out(
+            f"The backup taken at the start of this deploy is {progress.backup} "
+            f"(restore: {PRODUCTION_RUNBOOK})"
+        )
+
+
 def _report_recovery(
     progress: _Progress, out: Callable[[str], None], *, target: Target = STAGING
 ) -> None:
     """Recovery lines for how far apply got; never a rollback once a migration is recorded."""
     if progress.phase == "unchanged":
         out(f"Nothing on {target.name} was changed.")
+        return
+    if progress.phase == "backup":
+        out(f"Nothing on {target.name} was changed. {BACKUP_FAILED}")
         return
     if progress.phase == "check_unread":
         out("The check did not run and the services were not stopped; fix the check file.")
@@ -1202,6 +1307,7 @@ def _report_recovery(
         out(f"If none of {planned} is recorded, to bring the previous version back:")
         out(restart_command(target, progress.env))
         out("If any is recorded, do not roll back; fix forward, then re-run plan and apply.")
+        _report_backup(progress, out)
         return
     if progress.recorded:
         out(
@@ -1209,6 +1315,7 @@ def _report_recovery(
             "/readyz against this schema, so do not roll back; fix forward, then re-run plan "
             "and apply."
         )
+        _report_backup(progress, out)
         return
     if progress.phase == "stopped":
         out("To bring the previous version back:")
@@ -1237,6 +1344,9 @@ def apply(
     out: Callable[[str], None] = print,
     target: Target = STAGING,
     host_digest: str | None = None,
+    now: Callable[[], datetime] = _utc_now,
+    backup_log: Path = BACKUP_LOG,
+    backup_installed: Path = BACKUP_INSTALLED,
 ) -> int:
     progress = _Progress()
     try:
@@ -1269,6 +1379,16 @@ def apply(
             "config",
             "compose config --quiet",
         )
+        if target.pre_change is not None:
+            out("Taking a backup…")
+            progress.phase = "backup"
+            backup = run_pre_change(
+                runner, target, repo, now=now, log_path=backup_log, installed=backup_installed
+            )
+            progress.phase = "unchanged"
+            if backup is not None:
+                progress.backup = backup.object_name
+                out(f"Backup taken: {backup.object_name}")
         out("Pulling and verifying images…")
         for app in APPS:
             _verify_pull(runner, env, plan.images[app], plan.sha)

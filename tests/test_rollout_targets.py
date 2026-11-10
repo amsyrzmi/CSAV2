@@ -127,7 +127,7 @@ def test_production_target_values() -> None:
     assert PRODUCTION.staged_gate is True
     assert PRODUCTION.downgrade_warning is True
     assert PRODUCTION.live_checkout == "/home/ubuntu/CSAV2"
-    assert PRODUCTION.pre_change is None
+    assert PRODUCTION.pre_change == ("/srv/csa-prod/backup/backup.sh",)
 
 
 def test_staging_still_requires_its_eight_keys() -> None:
