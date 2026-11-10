@@ -56,6 +56,14 @@ and runs every check file in `deploy/rollout_checks/`. A service that reports un
 counts as started once it is healthy on the new image within 300 seconds (the gateway can take
 about 45 seconds on a memory-starved host).
 
+**Staged record for production.** A successful `apply` ends by recording the commit as a
+successful GitHub Deployment in the environment `staging` (`Recorded <sha7> as staged`), using
+the host's `gh` login. Production (`deploy-production`, `deploy/PRODUCTION.md`) refuses any commit
+without that record. A failed rollout records nothing. If the write fails after a good rollout,
+`apply` still exits 0 and prints `WARNING: staging is fine but the staged record was not written:
+...` and a `Retry:` line; run it from the same checkout:
+`.venv/bin/python -m scripts.staging_rollout record-staged --sha <full 40-character sha>`.
+
 **A migration rollout stops all four services.** Owner decision of 2026-10-30, for every
 migration: `gateway`, `frontend`, `worker` and `delivery` are stopped before `migrate` runs, so no
 old code runs against the new schema. The console is unavailable and bot replies are delayed

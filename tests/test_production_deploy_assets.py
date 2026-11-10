@@ -1598,3 +1598,199 @@ def test_backup_refuses_an_unreadable_host_file(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert result.stdout == ""
     assert "host.env" in result.stderr
+
+
+# --- the runbook and the skills -----------------------------------------------------------------
+
+PRODUCTION_DOC = ROOT / "deploy" / "PRODUCTION.md"
+PIPELINE_DOC = ROOT / "deploy" / "STAGING_PIPELINE.md"
+STAGING_SKILL = ROOT / ".claude" / "skills" / "staging-rollout" / "SKILL.md"
+PRODUCTION_SKILL = ROOT / ".claude" / "skills" / "production-deploy" / "SKILL.md"
+
+
+def _section(text: str, heading: str) -> str:
+    """The level-two section whose heading starts with ``heading``, up to the next one."""
+    lines = text.splitlines()
+    starts = [n for n, line in enumerate(lines) if line.startswith(f"## {heading}")]
+    assert len(starts) == 1, f"expected one '## {heading}' heading, found {len(starts)}"
+    start = starts[0]
+    end = next((n for n in range(start + 1, len(lines)) if lines[n].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def _production_doc() -> str:
+    return PRODUCTION_DOC.read_text(encoding="utf-8")
+
+
+def test_production_doc_mentions_every_one_time_step() -> None:
+    text = _production_doc()
+    deploying = _section(text, "Deploying from GitHub")
+    setup = _section(text, "One-time setup")
+    break_glass = _section(text, "Break-glass")
+
+    assert "outside the staged-first rule" in break_glass
+    assert "owner" in break_glass
+    for needle in (
+        "ssm-document-plan.json",
+        "ssm-document-apply.json",
+        "csa-production-plan",
+        "csa-production-apply",
+        "plan-trust-policy.json",
+        "plan-permissions-policy.json",
+        "apply-trust-policy.json",
+        "apply-permissions-policy.json",
+        "PROD_PLAN_ROLE_ARN",
+        "PROD_APPLY_ROLE_ARN",
+        "PROD_INSTANCE_ID",
+        "PROD_DEPLOY_REGION",
+        "production-plan",
+        "`main`",
+        "/srv/csa-prod/host.env",
+        "DanSan0408",
+        "amsyrzmi",
+        "Prevent self-review",
+        "AmazonSSMManagedInstanceCore",
+        "/usr/local/sbin/csa-prod-deploy",
+        "/opt/csa-deploy/venv",
+        "deploy/production/requirements.txt",
+        "/var/log/csa-prod-deploy",
+        "read -rsp",
+        sr.BACKUP_REINSTALL,
+        "/srv/csa-prod/backup/backup.log",
+    ):
+        assert needle in setup, needle
+    # host.env must exist with the bucket and region before the repo backup.sh replaces the
+    # installed one, or the 6-hourly cron backup fails.
+    assert setup.index("CSA_PROD_S3_BUCKET") < setup.index(sr.BACKUP_REINSTALL)
+    for key in ("CSA_PROD_S3_REGION", "CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"):
+        assert key in setup, key
+    for needle in (
+        "deploy-production",
+        "has not been rolled out to staging",
+        sr.HOST_CHANGED,
+        "is older than the running",
+        sr.BACKUP_REINSTALL,
+        "skipped",
+        "124",
+        "75",
+        sr.RECORD_COMMAND,
+    ):
+        assert needle in deploying, needle
+
+
+def test_production_doc_explains_restoring_the_named_backup() -> None:
+    restore = _section(_production_doc(), "Restoring a backup")
+
+    for needle in (
+        "Backup taken: backups/csa_staging-",
+        "csa-prod-staging-db-1",
+        "csa_staging",
+        "-U csa",
+        "pg_restore",
+        "put-only",
+        "DROP DATABASE",
+    ):
+        assert needle in restore, needle
+    # The scratch restore comes before the live one, which is the owner's deliberate action.
+    assert restore.index("csa_restore_check") < restore.index("DROP DATABASE IF EXISTS csa_staging")
+
+
+def test_setup_section_names_every_secret_variable_and_environment_the_workflow_reads() -> None:
+    workflow = _workflow()
+    setup = _section(_production_doc(), "One-time setup")
+    names = set(re.findall(r"\$\{\{ (?:secrets|vars)\.([A-Z0-9_]+) \}\}", workflow))
+    environments = set(re.findall(r"^\s+environment: ([\w-]+)$", workflow, re.MULTILINE))
+
+    assert names == {
+        "PROD_PLAN_ROLE_ARN",
+        "PROD_APPLY_ROLE_ARN",
+        "PROD_INSTANCE_ID",
+        "PROD_DEPLOY_REGION",
+    }
+    assert environments == {"production", "production-plan"}
+    for name in names | environments:
+        assert name in setup, name
+
+
+SCANNED_DOCS = ("PRODUCTION.md", "production skill", "staging skill", "pipeline routine")
+
+
+def _scanned_doc(name: str) -> str:
+    """The new and changed doc text: whole files, and the one changed section of the pipeline."""
+    if name == "pipeline routine":
+        return _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
+    path = {
+        "PRODUCTION.md": PRODUCTION_DOC,
+        "production skill": PRODUCTION_SKILL,
+        "staging skill": STAGING_SKILL,
+    }[name]
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", SCANNED_DOCS)
+def test_docs_contain_no_account_ids_ip_addresses_or_arns(name: str) -> None:
+    text = _scanned_doc(name)
+
+    assert not re.search(r"\b\d{12}\b", text)
+    assert not re.search(r"arn:aws:[a-z0-9-]*:[a-z0-9-]*:\d", text)
+    assert not re.search(r"\b(?:mi|i)-[0-9a-f]{8,17}\b", text)
+    assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", text)
+    # Loopback (the readiness probe) identifies nothing; any other address does.
+    addresses = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)
+    assert [address for address in addresses if not address.startswith("127.")] == []
+    assert "fourstacks.my" not in text
+    assert "fourstacks-csa-prod" not in text
+    assert not re.search(r"\b(?:mito|webhooks)\.[a-z]", text)
+
+
+def test_the_scan_catches_what_it_forbids() -> None:
+    samples = (
+        "123456789012",
+        "arn:aws:iam::123456789012:role/x",
+        "mi-0123456789abcdef0",
+        "10.1.2.3",
+        "ap-southeast-1",
+    )
+    patterns = (
+        r"\b\d{12}\b",
+        r"arn:aws:[a-z0-9-]*:[a-z0-9-]*:\d",
+        r"\b(?:mi|i)-[0-9a-f]{8,17}\b",
+        r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
+        r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b",
+    )
+    for sample, pattern in zip(samples, patterns, strict=True):
+        assert re.search(pattern, sample), sample
+
+
+def test_staging_skill_mentions_the_staged_record() -> None:
+    retry = f"{sr.RECORD_COMMAND} --sha"
+    skill = STAGING_SKILL.read_text(encoding="utf-8")
+    routine = _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
+
+    for text in (skill, routine):
+        assert retry in text
+        assert "GitHub Deployment" in text
+        assert "`staging`" in text
+        assert "production" in text
+
+
+def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate() -> None:
+    text = PRODUCTION_SKILL.read_text(encoding="utf-8")
+    frontmatter = text.split("---", 2)[1]
+
+    assert "name: production-deploy" in frontmatter
+    assert "description: Use when the owner asks to deploy" in frontmatter
+    for needle in (
+        "deploy-production",
+        "gh workflow run deploy-production",
+        "production-plan",
+        "`production`",
+        "has not been rolled out to staging",
+        "never approve",
+        "break-glass",
+        "verbatim",
+        "numbered, copy-ready commands",
+        "deploy/PRODUCTION.md",
+    ):
+        assert needle in text, needle
+    assert text.index("plan") < text.index("apply")
