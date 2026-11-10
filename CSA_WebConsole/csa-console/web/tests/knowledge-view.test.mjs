@@ -13,7 +13,7 @@ async function load(name) {
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, couldNotReadText, kindText,
   looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW, validateSelection, progressWord, SELECTION_MESSAGE,
-  atLimit, countText, answerTitle, LIST_LIMITS,
+  atLimit, countText, answerTitle, LIST_LIMITS, attentionNote, jobActions,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -28,14 +28,14 @@ const document = (id, extra = {}) => ({
 const job = (id, status, extra = {}) => ({
   id, source: "upload", status, files: [{ name: `${id}.pdf`, file_id: null }], attempts: 1,
   error: null, meta: { results: [] }, created_at: "2026-11-02T03:00:00Z",
-  started_at: null, finished_at: null, ...extra,
+  started_at: null, finished_at: null, original_stored: true, ...extra,
 });
 
 test("groupSources puts documents, queued jobs and failed jobs in the right group", () => {
   const files = [file("f1", { document_id: "d1" }), file("f2")];
   const documents = [document("d1"), document("d2", { file_name: null, source_uri: null })];
   const jobs = [
-    job("j1", "queued"), job("j2", "running"), job("j3", "failed", { error: "bad pdf" }),
+    job("j1", "queued"), job("j2", "processing"), job("j3", "failed", { error: "bad pdf" }),
     job("j4", "done"), job("j5", "partial"),
   ];
   const groups = groupSources(files, documents, jobs);
@@ -84,7 +84,7 @@ test("pollingNeeded only while reading", () => {
   assert.equal(pollingNeeded(empty), false);
   assert.equal(pollingNeeded(groupSources([], [document("d1")], [job("j3", "failed"), job("j4", "done")])), false);
   assert.equal(pollingNeeded(groupSources([], [], [job("j1", "queued")])), true);
-  assert.equal(pollingNeeded(groupSources([], [], [job("j2", "running")])), true);
+  assert.equal(pollingNeeded(groupSources([], [], [job("j2", "processing")])), true);
 });
 
 test("chips for unknown job states fall back to needs_attention", () => {
@@ -97,7 +97,7 @@ test("chips for unknown job states fall back to needs_attention", () => {
   assert.equal(chipLabel("needs_attention"), "Needs attention");
   assert.equal(jobStateText("exploded"), "Could not be read");
   assert.equal(jobStateText("queued"), "Waiting to be read");
-  assert.equal(jobStateText("running"), "Being read now");
+  assert.equal(jobStateText("processing"), "Being read now");
 });
 
 test("sizes, dates and kinds read in plain words", () => {
@@ -169,8 +169,8 @@ test("a failed or partial job whose file is already on a library card folds into
   const all = [...mixed.library, ...mixed.reading, ...mixed.attention].flatMap((c) => c.fileIds);
   assert.equal(new Set(all).size, all.length);
 
-  // A running job for a file already in the library stays its own Being read card.
-  const again = job("j3", "running", { files: [{ name: "f1.pdf", file_id: "f1" }] });
+  // A processing job for a file already in the library stays its own Being read card.
+  const again = job("j3", "processing", { files: [{ name: "f1.pdf", file_id: "f1" }] });
   assert.equal(groupSources(files, [document("d1")], [again]).reading.length, 1);
   // A failed job with an unknown file id cannot be proven covered and keeps its card.
   const unknown = job("j4", "failed", { files: [{ name: "x.pdf", file_id: null }] });
@@ -248,7 +248,7 @@ test("validateSelection rules and message", () => {
 test("progressWord maps every job status", () => {
   assert.equal(progressWord(null), "Waiting");
   assert.equal(progressWord("queued"), "Waiting");
-  assert.equal(progressWord("running"), "Reading");
+  assert.equal(progressWord("processing"), "Reading");
   assert.equal(progressWord("done"), "Ready");
   assert.equal(progressWord("partial"), "Partly read");
   assert.equal(progressWord("failed"), "Could not be read");
@@ -291,4 +291,80 @@ test("an answer title is cut by characters, so an emoji is never split", () => {
   assert.equal(Array.from(title).length, 255);
   assert.equal(title.endsWith("\u{1F600}"), true);
   assert.equal(/[\uD800-\uDBFF]$/.test(title), false);
+});
+
+test("processing shows Reading and keeps polling", () => {
+  assert.equal(progressWord("processing"), "Reading");
+  assert.equal(jobStateText("processing"), "Being read now");
+  const groups = groupSources([], [], [job("j1", "processing")]);
+  assert.deepEqual(groups.reading.map((c) => [c.id, c.chip]), [["j1", "reading"]]);
+  assert.equal(groups.attention.length, 0);
+  assert.equal(pollingNeeded(groups), true);
+  // The old "running" word is not something the server sends; it is not special any more.
+  assert.equal(progressWord("running"), "Could not be read");
+});
+
+test("a retried job never presents its old results as current while it waits or reads", () => {
+  const old = {
+    results: [{ file: "j1.pdf", status: "failed", error: "no text", document_id: null, chunks: 4, version: null }],
+  };
+  for (const status of ["queued", "processing"]) {
+    const [card] = groupSources([], [], [job("j1", status, { error: "old failure", meta: old })]).reading;
+    assert.equal(card.details.find((d) => d.label === "Searchable pieces").value, "None yet");
+    assert.ok(!card.details.some((d) => d.label === "What went wrong"));
+  }
+});
+
+test("cancelled makes no card", () => {
+  const groups = groupSources([], [], [job("j1", "cancelled")]);
+  assert.deepEqual([groups.library, groups.reading, groups.attention], [[], [], []]);
+  assert.equal(pollingNeeded(groups), false);
+  assert.equal(jobStateText("cancelled"), "Removed");
+});
+
+test("attentionNote for each of the three states", () => {
+  assert.equal(
+    attentionNote(job("j1", "failed", { original_stored: true })),
+    "We couldn't read this file. You can try again or remove it.",
+  );
+  assert.equal(
+    attentionNote(job("j2", "failed", { original_stored: false })),
+    "The original was removed, so this can't be tried again. Remove it.",
+  );
+  assert.equal(
+    attentionNote(job("j3", "partial")),
+    "Some of this file couldn't be read. The rest is in your assistant.",
+  );
+});
+
+test("jobActions table for every status and original_stored combination", () => {
+  const rows = [
+    ["queued", true, false, false, true], ["queued", false, false, false, true],
+    ["processing", true, false, false, false], ["processing", false, false, false, false],
+    ["done", true, false, false, false], ["done", false, false, false, false],
+    ["failed", true, true, true, false], ["failed", false, false, true, false],
+    ["partial", true, true, true, false], ["partial", false, false, true, false],
+    ["cancelled", true, false, true, false], ["cancelled", false, false, true, false],
+  ];
+  for (const [status, stored, canRetry, canRemove, canCancel] of rows) {
+    assert.deepEqual(
+      jobActions(job("j", status, { original_stored: stored })),
+      { canRetry, canRemove, canCancel },
+      `${status} original_stored=${stored}`,
+    );
+  }
+});
+
+test("a failed job with its original gone offers Remove only", () => {
+  assert.deepEqual(
+    jobActions(job("j1", "failed", { original_stored: false })),
+    { canRetry: false, canRemove: true, canCancel: false },
+  );
+});
+
+test("a queued job offers Cancel", () => {
+  assert.deepEqual(
+    jobActions(job("j1", "queued")),
+    { canRetry: false, canRemove: false, canCancel: true },
+  );
 });

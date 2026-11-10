@@ -63,7 +63,7 @@ export type ProgressWord = "Waiting" | "Reading" | "Ready" | "Partly read" | "Co
 /** One word for where an uploaded file is, from its job status (null while the job is not in the list yet). */
 export function progressWord(status: string | null): ProgressWord {
   if (status === null || status === "queued") return "Waiting";
-  if (status === "running") return "Reading";
+  if (status === "processing") return "Reading";
   if (status === "done") return "Ready";
   if (status === "partial") return "Partly read";
   return "Could not be read";
@@ -114,16 +114,20 @@ export function chipLabel(chip: Chip): string {
   return CHIP_LABELS[chip];
 }
 
-/** Read the job state. Only the two in-progress states read; anything unknown needs a look. */
+/**
+ * Read the job state. Only the two in-progress states read; a finished or removed job makes no
+ * card; anything unknown needs a look, so a new server state is never hidden.
+ */
 export function jobChip(status: string): Chip | null {
-  if (status === "queued" || status === "running") return "reading";
-  if (status === "done") return null;
+  if (status === "queued" || status === "processing") return "reading";
+  if (status === "done" || status === "cancelled") return null;
   return "needs_attention";
 }
 
 export function jobStateText(status: string): string {
   if (status === "queued") return "Waiting to be read";
-  if (status === "running") return "Being read now";
+  if (status === "processing") return "Being read now";
+  if (status === "cancelled") return "Removed";
   if (status === "done") return "Finished";
   if (status === "partial") return "Finished, but some files could not be read";
   return "Could not be read";
@@ -133,6 +137,26 @@ export function jobStateText(status: string): string {
 export function couldNotReadText(attempts: number): string {
   const tries = Number.isFinite(attempts) && attempts > 0 ? Math.round(attempts) : 0;
   return tries === 0 ? "Could not be read" : `Could not be read after ${tries} ${tries === 1 ? "try" : "tries"}`;
+}
+
+/** The plain note on a card that needs attention. The exact server line stays in Technical details. */
+export function attentionNote(job: KbJob): string {
+  if (job.status === "partial") return "Some of this file couldn't be read. The rest is in your assistant.";
+  return job.original_stored
+    ? "We couldn't read this file. You can try again or remove it."
+    : "The original was removed, so this can't be tried again. Remove it.";
+}
+
+export type JobActions = { canRetry: boolean; canRemove: boolean; canCancel: boolean };
+
+/** What a job's card offers: Try again only while the original is stored, Remove once it has ended, Cancel while it waits. */
+export function jobActions(job: KbJob): JobActions {
+  const ended = job.status === "failed" || job.status === "partial";
+  return {
+    canRetry: ended && job.original_stored,
+    canRemove: ended || job.status === "cancelled",
+    canCancel: job.status === "queued",
+  };
 }
 
 export function formatBytes(bytes: number): string {
@@ -213,14 +237,16 @@ function jobCard(job: KbJob, chip: Chip, files: KbFile[], loaded: Loaded, covere
   const known = new Map(files.map((file) => [file.id, file] as const));
   const own = job.files.flatMap((entry) => (entry.file_id && known.has(entry.file_id) ? [known.get(entry.file_id)!] : []));
   const names = job.files.map((entry) => entry.name);
-  const pieces = job.meta.results.reduce((sum, result) => sum + (result.chunks ?? 0), 0);
+  // A retry leaves the old results in place until the worker finishes; a waiting or reading job shows none of them.
+  const current = chip !== "reading";
+  const pieces = current ? job.meta.results.reduce((sum, result) => sum + (result.chunks ?? 0), 0) : 0;
   const size = sizeOf(own.filter((file) => !covered.has(file.id)), loaded.files);
   const details = [
     { label: "Size", value: size },
     { label: "Job state", value: jobStateText(job.status) },
     { label: "Searchable pieces", value: pieces ? String(pieces) : "None yet" },
   ];
-  const trouble = problems(job);
+  const trouble = current ? problems(job) : "";
   if (trouble) details.push({ label: "What went wrong", value: trouble });
   return {
     id: job.id,
@@ -237,8 +263,8 @@ function jobCard(job: KbJob, chip: Chip, files: KbFile[], loaded: Loaded, covere
 }
 
 /**
- * The cards of the page. Documents are In your library; queued or running jobs are Being read;
- * every other unfinished state (failed, partial and anything the server may add later) is
+ * The cards of the page. Documents are In your library; queued or processing jobs are Being read;
+ * every other unfinished state (failed, partial and anything the server may add later; a cancelled job is the exception and makes no card) is
  * Needs attention, so a new state is never hidden. A finished job makes no card: its document
  * is already in the library.
  */
