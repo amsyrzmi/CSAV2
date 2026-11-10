@@ -33,6 +33,11 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
    `plan`; then run `plan` again and ask again. Report the result: the final status lines, and
    any check output. If it stops, show its `Stopped at ...` line, the state line and the recovery
    lines verbatim, exactly as printed.
+   A successful `apply` then records the commit for production as a successful GitHub Deployment
+   in the environment `staging` and prints `Recorded <sha7> as staged`; production deploys only
+   recorded commits. If it prints `WARNING: staging is fine but the staged record was not
+   written: ...`, staging is fine: report it and, after the owner's go, run the printed `Retry:`
+   line, `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`.
 5. After a successful `apply`, offer the owner the assistant retest: the checklist
    `docs/ASSISTANT_RETEST.md`, and optionally first the model smoke run (about 40 to 50 model
    calls, synthetic facts only): `docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke`.

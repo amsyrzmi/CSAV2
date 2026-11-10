@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Production deploy, apply: runs the root-owned csa-prod-deploy entry script as the ubuntu user with the action fixed to apply. Published in AWS as csa-production-apply.",
+  "parameters": {
+    "sha": {
+      "type": "String",
+      "description": "Full 40 character lowercase commit sha on main, as the plan printed it.",
+      "allowedPattern": "^[0-9a-f]{40}$"
+    },
+    "migrations": {
+      "type": "String",
+      "description": "Comma-separated four-digit migration numbers as the plan printed them, or empty.",
+      "default": "",
+      "allowedPattern": "^([0-9]{4}(,[0-9]{4})*)?$"
+    },
+    "hostDigest": {
+      "type": "String",
+      "description": "12 character lowercase hex host settings digest, as the plan printed it.",
+      "allowedPattern": "^[0-9a-f]{12}$"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "2400",
+        "runCommand": [
+          "set -eu",
+          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy apply \"{{ sha }}\" \"{{ migrations }}\" \"{{ hostDigest }}\""
+        ]
+      }
+    }
+  ]
+}
