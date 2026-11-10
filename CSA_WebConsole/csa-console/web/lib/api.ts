@@ -19,6 +19,8 @@ const explained: Record<string, string> = {
     "The record changed after this was proposed. Nothing was changed; review it and ask again.",
   proposal_consumed: "This proposal was already decided. Nothing more was changed.",
   proposal_expired: "This proposal expired. Nothing was changed; ask again if you still need it.",
+  proposal_session_mismatch:
+    "This proposal was made in a different sign-in session. Ask the assistant to prepare it again here.",
   agent_disabled:
     "This assistant is switched off for your organisation. An administrator can turn it on in its settings.",
   planner_unavailable: "The assistant is unavailable right now. Try again in a moment.",
@@ -169,7 +171,17 @@ const explained: Record<string, string> = {
     "Your account isn't on the Bookings people list, so there is nothing to connect. Ask an Admin to add you.",
   not_connected: "Google Calendar isn't connected.",
   calendar_unavailable: "Google Calendar isn't switched on for this company yet.",
+  // Retrying a plan (csa/workspace/plan.py retry_plan); proposal_session_mismatch is above.
+  plan_nothing_to_retry:
+    "Nothing is left to retry. The other steps were done, or have changed since you reviewed them.",
+  plan_not_executed: "This plan hasn't run yet, so there is nothing to retry.",
+  proposal_not_retryable: "Only a plan from the assistant can be retried.",
 };
+
+/** The English sentence for a server code, or undefined when none is written (own keys only). */
+export function explainedMessage(code: string): string | undefined {
+  return Object.hasOwn(explained, code) ? explained[code] : undefined;
+}
 
 /**
  * Booking refusals say their own sentence next to `detail` (the code), and the sentence is more

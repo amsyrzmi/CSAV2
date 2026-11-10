@@ -499,3 +499,33 @@ test("a navigate result may carry an open product record", () => {
     { kind: "navigate", tab: "business", resume: false },
   );
 });
+
+test("a plan's receipt is read defensively and summarised by counts only", () => {
+  const steps = [
+    { index: 0, kind: "email_send", status: "done", receipt: { outcome: "sent" } },
+    { index: 1, kind: "email_send", status: "failed", code: "send_refused" },
+    { index: 2, kind: "booking_action", status: "skipped", code: "changed" },
+    { index: 3, kind: "hr_person", status: "not_run" },
+    { index: 4, kind: "email_send", status: "done" },
+  ];
+  const plan = (result, extra) => proposal("p", { kind: "plan", status: "executed", result, ...extra });
+  assert.deepEqual(view.planReceipt({ steps }).map((s) => [s.index, s.status]), [[0, "done"], [1, "failed"], [2, "skipped"], [3, "not_run"], [4, "done"]]);
+  // Anything that is not a well-formed entry is dropped; the order is the receipt's index order.
+  assert.deepEqual(view.planReceipt({ steps: [null, 3, { index: "x", status: "done" }, { index: 1, status: "weird" }, { index: 2, kind: "email_send", status: "done" }] }).map((s) => s.index), [2]);
+  assert.deepEqual(view.planReceipt(null), []);
+  assert.deepEqual(view.planReceipt({ steps: "no" }), []);
+  assert.equal(view.resultSummary(plan({ steps })), "Result: 2 done, 1 failed, 1 skipped, 1 not run.");
+  assert.equal(view.resultSummary(plan({ steps }), "ms"), "Keputusan: 2 selesai, 1 gagal, 1 dilangkau, 1 tidak dijalankan.");
+  assert.equal(view.resultSummary(plan({ steps: steps.slice(0, 1) })), "Result: 1 done.");
+  assert.equal(view.resultSummary(plan(null)), "The plan has finished.");
+  assert.equal(view.resultSummary(plan({ steps: [] }), "ms"), "Pelan telah selesai.");
+  assert.match(view.resultSummary(plan(null, { status: "cancelled" })), /Cancelled/);
+});
+
+test("a retry card the dock was told about is withdrawn with the other open cards", () => {
+  const now = Date.parse("2026-10-26T00:30:00Z");
+  const retried = proposal("r", { kind: "plan" });
+  assert.deepEqual(view.openProposals([], { r: retried }, now).map((p) => p.id), ["r"]);
+  assert.deepEqual(view.openProposals([], { r: proposal("r", { status: "executed" }) }, now), []);
+  assert.deepEqual(view.openProposals([], { r: proposal("r", { expires_at: "2026-10-26T00:10:00Z" }) }, now), []);
+});
