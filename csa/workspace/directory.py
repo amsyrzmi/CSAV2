@@ -29,15 +29,19 @@ def clear_throttle() -> None:
     _lookups.clear()
 
 
-def throttle_lookup(session_id: UUID, *, now: float | None = None) -> None:
-    """Raise 429 once a login session exceeds the per-minute lookup budget."""
+def throttle_lookup(session_id: UUID, *, now: float | None = None, count: int = 1) -> None:
+    """Raise 429 once a login session exceeds the per-minute lookup budget.
+
+    ``count`` lookups are taken together (a batch email's name searches): all of them fit in
+    the budget left, or none is taken and the call is refused.
+    """
     moment = time.monotonic() if now is None else now
     window = _lookups.setdefault(session_id, deque())
     while window and moment - window[0] >= _WINDOW_SECONDS:
         window.popleft()
-    if len(window) >= LOOKUPS_PER_MINUTE:
+    if len(window) + count > LOOKUPS_PER_MINUTE:
         raise HTTPException(429, "people_lookup_rate_limited")
-    window.append(moment)
+    window.extend([moment] * count)
 
 
 def _like(text: str) -> str:

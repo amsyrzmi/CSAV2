@@ -437,6 +437,45 @@ def test_the_booking_action_is_allowed_in_both_constraints(migrated_dsn: str) ->
     assert not _accepts(migrated_dsn, _turn("not_an_action"))
 
 
+def test_the_plan_and_batch_email_are_allowed_and_drafts_keep_the_facts_used(
+    migrated_dsn: str,
+) -> None:
+    """0542: a plan card, a plan turn and a batch email turn can be stored, and email_drafts has
+    the jsonb column that holds the recipients' facts (owner-readable, never on the card)."""
+    with _owner(migrated_dsn) as conn:
+        assert "plan" in _allowed(conn, PROPOSALS_CHECK)
+        assert {"plan", "email_batch", "booking_action"} <= _allowed(conn, TURNS_CHECK)
+        [column] = conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns"
+            " WHERE table_schema = 'public' AND table_name = 'email_drafts'"
+            " AND column_name = 'facts_used'"
+        )
+    assert column["data_type"] == "jsonb" and column["is_nullable"] == "YES"
+    assert _accepts(migrated_dsn, _proposal("plan"))
+    assert _accepts(migrated_dsn, _turn("plan"))
+    assert _accepts(migrated_dsn, _turn("email_batch"))
+    assert not _accepts(migrated_dsn, _turn("not_an_action"))
+
+
+def test_running_0542_again_changes_nothing(migrated_dsn: str) -> None:
+    before = _definitions(migrated_dsn)
+    [path] = [p for v, p in migrate.discover_migrations() if v == "0542"]
+    with _owner(migrated_dsn) as conn:
+        conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+        [column] = conn.execute(
+            "SELECT count(*) AS n FROM information_schema.columns"
+            " WHERE table_name = 'email_drafts' AND column_name = 'facts_used'"
+        )
+    assert _definitions(migrated_dsn) == before
+    assert column["n"] == 1
+
+
+def test_0542_keeps_a_kind_it_does_not_know() -> None:
+    text = (MIGRATIONS / "0542_assistant_plan.sql").read_text(encoding="utf-8")
+    code = "\n".join(line for line in text.splitlines() if not line.startswith("--"))
+    assert "hr_person" not in code and "email_send" not in code
+
+
 def test_every_tab_the_assistant_can_be_asked_on_is_a_stored_page(migrated_dsn: str) -> None:
     """A turn stores the tab it was asked on, and 0460's list never named subscriptions or
     bookings, so a turn asked there could not be stored. Every TabKey must be accepted."""
@@ -535,7 +574,7 @@ def test_0531_keeps_a_kind_it_does_not_know() -> None:
 
 # Migrations that already redefine one of the three constraints (found by searching db/migrations).
 # Any other migration that names either must be numbered above 0531 or read the current list.
-KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531", "0540"}
+KNOWN_REBUILDS = {"0460", "0480", "0484", "0521", "0531", "0540", "0542"}
 
 
 def migrations_that_rebuild_the_constraints(

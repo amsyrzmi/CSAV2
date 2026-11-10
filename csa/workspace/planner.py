@@ -28,6 +28,7 @@ from csa.workspace.contracts import (
     BookingActionProposal,
     ClarificationProposal,
     DirectoryLookupProposal,
+    EmailBatchProposal,
     EmailComposeProposal,
     EmailReplyProposal,
     EmailTeamProposal,
@@ -41,6 +42,7 @@ from csa.workspace.contracts import (
     NavigateProposal,
     PageContext,
     PeopleQueryProposal,
+    PlanProposal,
     ProductStockReadProposal,
     TeamReason,
     TrainingSubmitProposal,
@@ -67,6 +69,8 @@ PlannerProposal = Annotated[
         PeopleQueryProposal,
         HrPersonOpenProposal,
         BookingActionProposal,
+        EmailBatchProposal,
+        PlanProposal,
         ProductStockReadProposal,
     ],
     Field(discriminator="action"),
@@ -96,7 +100,8 @@ class PriorTurn(_Contract):
     """One earlier turn of this thread: its stored (already redacted) message and outcome.
 
     Only identifiers the user was shown travel here (directory candidate ids, clarification
-    option values); never names, addresses or record bodies.
+    option values); never names, addresses or record bodies. ``resume_offset`` is where "the
+    rest" of a batch email's group starts: a count, never who.
     """
 
     message: str
@@ -107,6 +112,13 @@ class PriorTurn(_Contract):
     question: str | None = None
     offered_options: list[str] = Field(default_factory=list)
     chosen: str | None = None
+    resume_offset: int | None = Field(default=None, ge=1)
+    # The group and days that count was taken on, for the server's check only (never shown to
+    # the planner): an enum and a number.
+    resume_group: Literal["active_subscribers", "renewing_soon"] | None = Field(
+        default=None, exclude=True
+    )
+    resume_days: int | None = Field(default=None, ge=1, le=365, exclude=True)
 
 
 class ManagerFact(_Contract):
@@ -356,6 +368,18 @@ name as the user wrote it, or an id only from offered options.
 - To answer "when is Aina free tomorrow?" use answer with reads ["booking_availability"] and \
 availability: person or room (one of them, a name), day, and minutes when the user says how long. \
 Write the markdown as one short lead-in; the server lists the free times.
+- email_batch: one email to two or more people, each sent as a separate message (my_team stays \
+email_team). recipients: {{"kind": "employee", "value": a colleague's name}}, {{"kind": \
+"customer", "value": a customer's name}}, {{"kind": "address", "value": a typed address}}, or \
+ONE {{"kind": "group", "group": "active_subscribers"}} or {{"kind": "group", "group": \
+"renewing_soon", "days": N}}; the server finds each person. mode is "shared" when everyone gets \
+the same text and "personalised" when each email uses the person's own details; \
+use_knowledge_base is true when the email needs the business's policies or product information. \
+For "the rest" of a group, repeat the earlier email_batch with offset set to that history turn's \
+resume_offset. subject, instructions and send as for email_compose.
+- plan: two or more changes in one request (for example two bookings): steps holds one \
+booking_action, training_submit, inbox_decision or email_batch each, written as that action \
+would be on its own.
 
 Rules:
 - Never invent identifiers. Use only ids that appear in the facts or the message.

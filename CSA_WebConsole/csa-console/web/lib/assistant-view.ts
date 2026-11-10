@@ -16,6 +16,8 @@ import type {
   PageContext,
   PersonOut,
   ProposalOut,
+  PlanStepResult,
+  PlanStepStatus,
   TabKey,
   WorkspaceResult,
   WorkspaceTurn,
@@ -407,7 +409,44 @@ export function openProposals(
     if (proposal.status === "requested" && Date.parse(proposal.expires_at) > now)
       found.set(proposal.id, proposal);
   }
+  // A retry card is in no turn (the server writes none): the dock knows it only by its outcome.
+  for (const proposal of Object.values(outcomes))
+    if (proposal.status === "requested" && Date.parse(proposal.expires_at) > now)
+      found.set(proposal.id, proposal);
   return [...found.values()];
+}
+
+const STEP_STATUSES: readonly PlanStepStatus[] = ["done", "failed", "skipped", "not_run"];
+
+/**
+ * The steps of an executed plan's receipt, by row. Anything that is not a well-formed entry
+ * (the receipt is server data) is dropped, so a malformed receipt shows no badge, never a crash.
+ */
+export function planReceipt(result: unknown): PlanStepResult[] {
+  const steps = field(result, "steps");
+  if (!Array.isArray(steps)) return [];
+  const found: PlanStepResult[] = [];
+  for (const entry of steps) {
+    const index = field(entry, "index");
+    const status = field(entry, "status");
+    const kind = field(entry, "kind");
+    if (
+      typeof index !== "number" ||
+      !Number.isInteger(index) ||
+      index < 0 ||
+      typeof kind !== "string" ||
+      !STEP_STATUSES.includes(status as PlanStepStatus)
+    )
+      continue;
+    const code = field(entry, "code");
+    found.push({
+      index,
+      kind: kind as PlanStepResult["kind"],
+      status: status as PlanStepStatus,
+      ...(typeof code === "string" ? { code } : {}),
+    });
+  }
+  return found.sort((a, b) => a.index - b.index);
 }
 
 function text(value: unknown): string | null {
@@ -482,6 +521,22 @@ export function resultSummary(proposal: ProposalOut, language: Language = "en"):
             ? say("summary_booking_cancelled")
             : say(status === "pending" ? "summary_booking_pending" : "summary_booking_booked");
       return field(result, "customer_told") === false ? `${done} ${say("summary_booking_not_told")}` : done;
+    }
+    case "plan": {
+      // csa/workspace/plan.py: the receipt is one entry per step; the line is counts only.
+      const steps = planReceipt(result);
+      const parts = (
+        [
+          ["done", "plan_count_done"],
+          ["failed", "plan_count_failed"],
+          ["skipped", "plan_count_skipped"],
+          ["not_run", "plan_count_not_run"],
+        ] as const
+      )
+        .map(([status, key]) => [steps.filter((step) => step.status === status).length, key] as const)
+        .filter(([count]) => count > 0)
+        .map(([count, key]) => say(key, { count }));
+      return parts.length ? say("summary_plan", { parts: parts.join(", ") }) : say("summary_plan_none");
     }
   }
 }

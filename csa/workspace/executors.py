@@ -48,10 +48,12 @@ from csa.workspace.contracts import (
     ProposalKind,
     TrainingSubmitProposal,
 )
+from csa.workspace.plan import PlanExecutor
 from csa.workspace.registry import (
     CardContent,
     ProposalActionRefused,
     ProposalError,
+    ProposalExecutor,
     ProposalOrigin,
     ProposalRegistry,
 )
@@ -543,8 +545,13 @@ class EmailExportExecutor:
         proposal = _parse(EmailExportProposal, self.kind, payload)
         session = email_session_from(request, actor, client_id, mutation=True)
         try:
+            # The card's draft version, checked by the service after its replay: a plan card
+            # binds only the stored versions, so an edit since the review must refuse here.
             draft = await self._service(request).export_draft(
-                session, proposal.draft_id, _key(proposal_id, "email_export")
+                session,
+                proposal.draft_id,
+                _key(proposal_id, "email_export"),
+                expected_version=expected_version,
             )
         except (EmailPolicyError, GmailError) as exc:
             raise email_http_error(exc) from None
@@ -697,6 +704,9 @@ class InboxDecisionExecutor:
                 proposal.decision,
                 None,
                 _key(proposal_id, "inbox_decision"),
+                # The card's version: the registry checks it for a lone card, but a plan card
+                # binds only the stored versions, so the service checks it after its replay.
+                expected_version=expected_version,
             )
         return result.model_dump(mode="json")
 
@@ -707,14 +717,15 @@ def build_proposal_registry() -> ProposalRegistry:
     from csa.bookings.executor import BookingActionExecutor
     from csa.workspace.hr_people import HrPersonExecutor
 
-    return ProposalRegistry(
-        {
-            "training_submit": TrainingSubmitExecutor(),
-            "email_export": EmailExportExecutor(),
-            "email_send": EmailSendExecutor(),
-            "inbox_decision": InboxDecisionExecutor(),
-            "subscription_action": SubscriptionActionExecutor(),
-            "hr_person": HrPersonExecutor(),
-            "booking_action": BookingActionExecutor(),
-        }
-    )
+    executors: dict[ProposalKind, ProposalExecutor] = {
+        "training_submit": TrainingSubmitExecutor(),
+        "email_export": EmailExportExecutor(),
+        "email_send": EmailSendExecutor(),
+        "inbox_decision": InboxDecisionExecutor(),
+        "subscription_action": SubscriptionActionExecutor(),
+        "hr_person": HrPersonExecutor(),
+        "booking_action": BookingActionExecutor(),
+    }
+    # A plan's steps run through these same executors, called directly, not through the registry.
+    plan = PlanExecutor({kind: executor for kind, executor in executors.items()})
+    return ProposalRegistry({**executors, "plan": plan})

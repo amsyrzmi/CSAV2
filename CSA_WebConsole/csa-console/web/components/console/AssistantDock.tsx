@@ -606,6 +606,8 @@ function TurnResult({
           proposal={outcomes[view.proposal.id] ?? view.proposal}
           tenantId={tenant}
           onSettled={onSettled}
+          onOpened={onSettled}
+          outcomes={outcomes}
         />
       );
     case "answer":

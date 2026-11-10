@@ -59,7 +59,8 @@ export type ProposalKind =
   | "inbox_decision"
   | "subscription_action"
   | "hr_person"
-  | "booking_action";
+  | "booking_action"
+  | "plan";
 
 export interface ProposalCard {
   proposal_id: string;
@@ -81,6 +82,27 @@ export interface ProposalOut {
   result: Record<string, unknown> | null;
   created_at: string;
   expires_at: string;
+}
+
+/** How one step of an executed plan ended (csa/workspace/plan.py `StepStatus`). */
+export type PlanStepStatus = "done" | "failed" | "skipped" | "not_run";
+
+/**
+ * One entry of an executed plan's `result.steps`, in the card's row order (`index` is the row).
+ * `code` is a refusal code (or `changed`, `plan_deadline`), never shown as it is; `receipt` is
+ * the step's own executor receipt, which holds no address, name, subject or body.
+ */
+export interface PlanStepResult {
+  index: number;
+  kind: Exclude<ProposalKind, "plan" | "subscription_action">;
+  status: PlanStepStatus;
+  code?: string;
+  receipt?: Record<string, unknown>;
+}
+
+/** The receipt of an executed plan proposal (`ProposalOut.result`). */
+export interface PlanReceipt {
+  steps: PlanStepResult[];
 }
 
 export interface PersonOut {
@@ -105,7 +127,10 @@ export type WorkspaceErrorCode =
   | "proposal_stale"
   | "planner_unavailable"
   | "planner_invalid_output"
-  | "hr_training_not_permitted";
+  | "hr_training_not_permitted"
+  | "plan_nothing_to_retry"
+  | "plan_not_executed"
+  | "proposal_not_retryable";
 
 export interface WorkspaceThread {
   id: string;
@@ -346,6 +371,23 @@ export function cancelProposal(
 ): Promise<ProposalOut> {
   return request(
     `${PROPOSALS}/${encodeURIComponent(id)}/cancel${tenantQuery(tenantId)}`,
+    "POST",
+    undefined,
+    signal,
+  );
+}
+
+/**
+ * A new requested plan from an executed plan's failed and not-run steps. The server makes it the
+ * assistant's own (a tab cannot create a plan any other way) and writes no turn row for it.
+ */
+export function retryProposal(
+  id: string,
+  signal?: AbortSignal,
+  tenantId?: string | null,
+): Promise<ProposalOut> {
+  return request(
+    `${PROPOSALS}/${encodeURIComponent(id)}/retry${tenantQuery(tenantId)}`,
     "POST",
     undefined,
     signal,

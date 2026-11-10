@@ -289,3 +289,30 @@ def test_smtp_install_main_never_prints_values(
         assert value not in output.out + output.err
     assert staging_secrets.main(["smtp-install", *args]) == 0
     assert "already installed" in capsys.readouterr().out
+
+
+def _write_jev_key(target: Path, mode: int = 0o400) -> Path:
+    (target / "pipeline").mkdir(mode=0o700, exist_ok=True)
+    key = target / "pipeline/staging_jev_key"
+    key.write_text("SYNTHETIC-jev-key")
+    key.chmod(mode)
+    return key
+
+
+def test_the_jev_key_file_is_optional_and_checked_when_present(tmp_path: Path) -> None:
+    target = _create(tmp_path)
+    assert staging_secrets.check(target, UID) == []
+    key = _write_jev_key(target)
+    assert staging_secrets.check(target, UID) == []
+    key.chmod(0o440)
+    assert staging_secrets.check(target, UID) == ["pipeline/staging_jev_key: mode is not 0400"]
+    key.chmod(0o600)
+    key.write_text("")
+    assert staging_secrets.check(target, UID) == [
+        "pipeline/staging_jev_key: mode is not 0400",
+        "pipeline/staging_jev_key: empty",
+    ]
+    key.unlink()
+    key.symlink_to(target / "database/staging_owner_password")
+    assert staging_secrets.check(target, UID) == ["pipeline/staging_jev_key: not a regular file"]
+    assert staging_secrets.JEV_KEY_FILE == "pipeline/staging_jev_key"

@@ -162,6 +162,7 @@ def test_local_staging_compose_is_valid_and_network_isolated(tmp_path: Path) -> 
             "staging_identity_dsn",
             "staging_credentials_key",
             "staging_disabled_model_key",
+            "staging_disabled_jev_key",
         },
         "frontend": set(),
         "cloudflared": {"staging_tunnel_token"},
@@ -279,6 +280,7 @@ def test_private_startup_selection_without_connector_secret(tmp_path: Path) -> N
         "IDENTITY_DATABASE_URL",
         "CREDENTIALS_KEY",
         "GROQ_API_KEY",
+        "TYPESAFE_API_KEY",
     }
     assert SYNTHETIC_VALUE not in result.stdout
 
@@ -706,3 +708,65 @@ def test_secret_file_owner_mode_grants_only_the_intended_uid(
     readable = owner_read if consumer_uid == file_uid else other_read
 
     assert readable is expected
+
+
+def _render_staging_proposal(tmp_path: Path, overrides: dict[str, str]) -> dict:
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": os.defpath,
+        "CSA_STAGING_PYTHON_IMAGE": "ghcr.io/example/python@sha256:" + "a" * 64,
+        "CSA_STAGING_FRONTEND_IMAGE": "ghcr.io/example/frontend@sha256:" + "b" * 64,
+        "CSA_STAGING_CONSOLE_ORIGIN": "https://staging.example.test",
+        **overrides,
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "--file",
+            str(REPO_ROOT / "deploy" / "compose.staging-proposal.yml"),
+            "--profile",
+            "staging-approved",
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return json.loads(result.stdout)["services"]
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+def test_staging_proposal_gateway_carries_the_jev_switches(tmp_path: Path) -> None:
+    gateway = _render_staging_proposal(tmp_path, {})["gateway"]["environment"]
+    assert {
+        name: gateway[name]
+        for name in (
+            "ASSISTANT_DECIDER_EMAIL",
+            "ASSISTANT_DECIDER_ROUTING",
+            "ASSISTANT_DECIDER_INBOUND_INJECTION",
+            "ASSISTANT_JEV_FLOOR_NOUL",
+            "ASSISTANT_JEV_FLOOR_CHOICE",
+        )
+    } == {
+        "ASSISTANT_DECIDER_EMAIL": "auto",
+        "ASSISTANT_DECIDER_ROUTING": "auto",
+        "ASSISTANT_DECIDER_INBOUND_INJECTION": "auto",
+        "ASSISTANT_JEV_FLOOR_NOUL": "0.7",
+        "ASSISTANT_JEV_FLOOR_CHOICE": "0.7",
+    }
+    switched = _render_staging_proposal(
+        tmp_path,
+        {
+            "CSA_STAGING_ASSISTANT_DECIDER_ROUTING": "llm",
+            "CSA_STAGING_JEV_FLOOR_CHOICE": "0.9",
+        },
+    )["gateway"]["environment"]
+    assert switched["ASSISTANT_DECIDER_ROUTING"] == "llm"
+    assert switched["ASSISTANT_JEV_FLOOR_CHOICE"] == "0.9"
+    assert switched["ASSISTANT_DECIDER_EMAIL"] == "auto"

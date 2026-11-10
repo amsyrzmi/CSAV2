@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import signal
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,8 +15,15 @@ import httpx
 import psycopg
 import pytest
 from apps.delivery.main import DeliveryWorker
-from apps.worker.main import MAX_INGRESS_ATTEMPTS, ClaimedIngress, IngressWorker
+from apps.worker.main import (
+    MAX_INGRESS_ATTEMPTS,
+    ClaimedIngress,
+    IngressWorker,
+    build_turn_dependencies,
+    run_until_stopped,
+)
 from csa.channels.telegram import TelegramAdapter
+from csa.console.mailer import Mailer
 from csa.contracts.envelope import (
     Channel,
     Contact,
@@ -25,6 +33,8 @@ from csa.contracts.envelope import (
     Meta,
 )
 from csa.core import crypto, db, settings
+from csa.decide.jev import JevProvider
+from csa.turn.deps import CAPABILITIES
 from psycopg.types.json import Jsonb
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -636,3 +646,60 @@ def _notification_rows(owner_dsn: str, client_id: str) -> list[tuple[str, dict[s
             "SELECT event, payload FROM staff_notifications WHERE client_id=%s",
             (client_id,),
         ).fetchall()
+
+
+def _worker_settings(**overrides: str) -> settings.Settings:
+    env = {
+        "ENV": "ci",
+        "DATABASE_URL": "postgresql://csa_app:pw@localhost:5433/csa",
+        "LG_DATABASE_URL": "postgresql://csa_app:pw@localhost:5433/csa",
+        "GROQ_API_KEY": "test-key",
+        "PUBLIC_BASE_URL": "https://example.test",
+        "CREDENTIALS_KEY": _KEY,
+        **overrides,
+    }
+    return settings.Settings(_env_file=None, _secrets_dir=None, **env)  # type: ignore[call-arg]
+
+
+async def test_the_worker_builds_the_customer_jev_provider_only_with_a_key() -> None:
+    async with httpx.AsyncClient() as http:
+        without = build_turn_dependencies(
+            _worker_settings(CUSTOMER_DECIDE_MODE_DEFAULT="cascade"),
+            None,  # type: ignore[arg-type]
+            None,
+            http,
+            mailer=Mailer(None, "no-reply@example.test"),
+        )
+        assert without._jev is None
+        assert without._default_decide_mode == "cascade"
+        with_key = build_turn_dependencies(
+            _worker_settings(TYPESAFE_API_KEY="synthetic-jev-key"),
+            None,  # type: ignore[arg-type]
+            None,
+            http,
+            mailer=Mailer(None, "no-reply@example.test"),
+        )
+        assert isinstance(with_key._jev, JevProvider)
+        assert with_key._default_decide_mode == "llm"
+        # The capabilities the evaluation uses, and the worker's one HTTP client.
+        assert with_key._jev._capabilities == CAPABILITIES
+        assert with_key._jev._client._http is http
+
+
+async def test_the_customer_jev_client_closes_with_the_worker() -> None:
+    http = httpx.AsyncClient()
+    deps = build_turn_dependencies(
+        _worker_settings(TYPESAFE_API_KEY="synthetic-jev-key"),
+        None,  # type: ignore[arg-type]
+        None,
+        http,
+        mailer=Mailer(None, "no-reply@example.test"),
+    )
+    assert deps._jev is not None
+    loop = asyncio.get_running_loop()
+    try:
+        await run_until_stopped(asyncio.sleep(0), background=[], llm_http=http, deps=deps, pools=())
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)
+    assert http.is_closed

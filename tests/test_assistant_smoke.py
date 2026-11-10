@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,7 @@ from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
 from csa.workspace.planner import PlannerOutput, detect_language
 from csa.workspace.rules import ADDRESS
+from csa.workspace.service import REST_WORDS
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from scripts import assistant_smoke as smoke
 
@@ -42,12 +44,17 @@ FEATURES = (
     "booking_move",
     "booking_cancel",
     "booking_free",
+    "email_batch",
+    "email_batch_group",
+    "email_batch_rest",
+    "plan_bookings",
 )
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
 SCRIPTED_TEXT = "SCRIPTED-TEXT-55d0"
 UNREQUESTED_ADDRESS = "scripted.person@example.com"  # in no case message
+BATCH_NAMES = ("Aina Rahman", "Danial Hakim", "Mei Ling Tan")  # synthetic, in the batch cases
 
 
 def _feature(case_id: str) -> str:
@@ -72,6 +79,15 @@ def test_smoke_cases_parse_and_cover_features() -> None:
         assert len(languages) >= 2, feature
         assert {"en", "ms"} <= set(languages), feature
     assert {case.language for case in cases} == {"en", "ms"}
+
+
+def test_smoke_cases_and_checklist_hold_only_synthetic_addresses() -> None:
+    """The repository is public: every address in the cases and the checklist is invented, on
+    example.com or a .test domain, never a real mailbox."""
+    for path in (smoke.CASES_FILE, CHECKLIST):
+        for address in ADDRESS.findall(path.read_text(encoding="utf-8")):
+            domain = address.rsplit("@", 1)[1].lower()
+            assert domain == "example.com" or domain.endswith(".test"), (path.name, address)
 
 
 def test_unknown_preset_or_override_is_refused() -> None:
@@ -163,6 +179,28 @@ class ScriptedModel:
             }
         if action == "inbox_summary":
             return {"action": "inbox_summary"}
+        if action == "email_batch":
+            group = case.expect.group
+            if group is not None:
+                days = {"days": 30} if group == "renewing_soon" else {}
+                recipients = [{"kind": "group", "group": group, **days}]
+            else:
+                # The names as the message writes them: a name the user never wrote is refused.
+                count = case.expect.recipients or 2
+                names = [name for name in BATCH_NAMES if name in case.message][:count]
+                assert len(names) == count, case.id
+                recipients = [{"kind": "employee", "value": name} for name in names]
+            return {
+                "action": "email_batch",
+                "recipients": recipients,
+                "subject": SCRIPTED_SUBJECT,
+                "instructions": SCRIPTED_TEXT,
+                "send": send,
+                **case.expect.fields,
+            }
+        if action == "plan":
+            steps = [{"action": step, **case.expect.step_fields} for step in case.expect.steps]
+            return {"action": "plan", "steps": steps}
         if action == "training_submit":
             return {
                 "action": "training_submit",
@@ -550,3 +588,184 @@ def test_smoke_checks_the_expected_reads(capsys: pytest.CaptureFixture[str]) -> 
     assert f"PASS {case.id} action=answer" in capsys.readouterr().out
     assert smoke.main(["--case", case.id], client=ScriptedModel(frozenset({case.id}))) == 1
     assert f"FAIL {case.id} action=answer reads" in capsys.readouterr().out
+
+
+BATCH_CASES = ("email_batch-en-1", "email_batch-ms-1", "email_batch_group-en-1")
+PLAN_CASES = ("plan_bookings-en-1", "plan_bookings-ms-1")
+
+
+def test_batch_and_plan_cases_are_smoke_cases_with_their_expectations() -> None:
+    """The batch and plan cases (English and Malay) name what a PASS checks."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in (*BATCH_CASES, "email_batch_group-ms-1"):
+        case = cases[case_id]
+        assert case.expect.actions == ["email_batch"], case_id
+        assert "email_compose" in case.expect.not_actions, case_id
+        assert case.expect.fields.get("mode") in ("shared", "personalised"), case_id
+        assert case.expect.send is not None, case_id
+    for case_id in ("email_batch-en-1", "email_batch-ms-1"):
+        assert cases[case_id].expect.recipients == 3 and cases[case_id].expect.group is None
+        assert cases[case_id].expect.send is True
+    for case_id in ("email_batch_group-en-1", "email_batch_group-ms-1"):
+        case = cases[case_id]
+        assert case.expect.group == "active_subscribers" and case.expect.send is False
+        # Groups are subscription customers: the preset has the Subscriptions service on.
+        assert case.facts.preset == "staff_subscriptions"
+        keys = {p.key for p in smoke.build_facts(case).packages if p.status == "active"}
+        assert "subscriptions" in keys
+    for case_id in PLAN_CASES:
+        case = cases[case_id]
+        assert case.expect.actions == ["plan"] and case.facts.preset == "staff_bookings"
+        assert case.expect.steps == ["booking_action", "booking_action"]
+        assert case.expect.step_fields == {"change": "book"}
+    # Subscriptions stays off in every other preset (navigate-ms-2 expects it locked).
+    for case in cases.values():
+        if case.facts.preset != "staff_subscriptions":
+            keys = {p.key for p in smoke.build_facts(case).packages}
+            assert "subscriptions" not in keys, case.id
+
+
+def test_smoke_checks_batch_recipients_group_send_and_plan_steps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A wrong recipient count, group, send or plan step fails its field, never printed."""
+    for case_id in (*BATCH_CASES, *PLAN_CASES):
+        assert smoke.main(["--case", case_id], client=ScriptedModel()) == 0
+        assert f"PASS {case_id}" in capsys.readouterr().out
+
+    class Wrong(ScriptedModel):
+        def __init__(self, change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+            super().__init__()
+            self.change = change
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return self.change(super()._proposal(case))
+
+    def one_person(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "recipients": p["recipients"][:1]}
+
+    def renewing(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "recipients": [{"kind": "group", "group": "renewing_soon", "days": 7}]}
+
+    def one_step(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "steps": p["steps"][:1]}
+
+    def moves(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "steps": [{**step, "change": "move"} for step in p["steps"]]}
+
+    def no_send(p: dict[str, Any]) -> dict[str, Any]:
+        return {**p, "send": False}
+
+    for case_id, change, field in (
+        ("email_batch-en-1", one_person, "recipients"),
+        ("email_batch_group-en-1", renewing, "group"),
+        ("plan_bookings-en-1", one_step, "steps"),
+        ("plan_bookings-ms-1", moves, "step_fields"),
+    ):
+        assert smoke.main(["--case", case_id], client=Wrong(change)) == 1
+        out = capsys.readouterr().out
+        assert field in out.split(), (case_id, out)
+        _assert_content_free(out)
+    # "Send" is in the words: a plan send of false still gives a send (the server's rule).
+    assert smoke.main(["--case", "email_batch-en-1"], client=Wrong(no_send)) == 0
+    capsys.readouterr()
+
+
+def test_smoke_refuses_an_unrequested_batch_address(capsys: pytest.CaptureFixture[str]) -> None:
+    """A typed-address recipient the message never wrote is refused like on email_compose."""
+
+    class Unrequested(ScriptedModel):
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            if proposal["action"] != "email_batch":
+                return proposal
+            extra = {"kind": "address", "value": UNREQUESTED_ADDRESS}
+            return {**proposal, "recipients": [*proposal["recipients"], extra]}
+
+    assert smoke.main(["--case", "email_batch-en-1"], client=Unrequested()) == 1
+    out = capsys.readouterr().out
+    assert "FAIL email_batch-en-1 action=email_batch recipient" in out
+    assert UNREQUESTED_ADDRESS not in out
+
+
+REST_CASES = ("email_batch_rest-en-1", "email_batch_rest-ms-1")
+
+
+def test_the_rest_cases_carry_a_batch_turn_with_a_resume_count() -> None:
+    """ "The rest" is a history case: the earlier batch turn holds the stored resume count."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in REST_CASES:
+        case = cases[case_id]
+        assert case.expect.actions == ["email_batch"] and case.expect.group == "active_subscribers"
+        history = smoke.build_facts(case).history
+        assert [(turn.action, turn.resume_offset) for turn in history] == [("email_batch", 20)]
+
+
+def test_the_rest_words_match_the_rest_cases_and_not_everyday_more_or_lagi() -> None:
+    """The server's rest-word rule continues a group only on words for "the rest": the smoke
+    rest messages match, an everyday "more" or "lagi" in a fresh request does not."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in REST_CASES:
+        assert REST_WORDS.search(cases[case_id].message), case_id
+    for rest in ("the rest of them", "yang selebihnya", "the remaining ones", "baki pelanggan"):
+        assert REST_WORDS.search(rest), rest
+    for fresh in (
+        "Send more details to all active subscribers",
+        "Tolong draf emel kepada semua pelanggan aktif, jangan hantar lagi",
+    ):
+        assert not REST_WORDS.search(fresh), fresh
+
+
+def test_smoke_resumes_the_rest_from_the_stored_count_and_fails_an_unknown_offset(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A model that forgets the offset still gets the next page (the server's rest-word rule);
+    one that writes an offset the thread never stored fails ``offset``."""
+    for case_id in REST_CASES:
+        assert smoke.main(["--case", case_id], client=ScriptedModel()) == 0
+        assert f"PASS {case_id} action=email_batch" in capsys.readouterr().out
+
+    class Offset(ScriptedModel):
+        def __init__(self, offset: int) -> None:
+            super().__init__()
+            self.offset = offset
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            return {**super()._proposal(case), "offset": self.offset}
+
+    assert smoke.main(["--case", REST_CASES[0]], client=Offset(20)) == 0
+    assert f"PASS {REST_CASES[0]}" in capsys.readouterr().out
+    assert smoke.main(["--case", REST_CASES[0]], client=Offset(7)) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {REST_CASES[0]} action=email_batch offset" in out
+    _assert_content_free(out)
+
+
+def test_smoke_refuses_a_group_or_name_the_message_never_wrote(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The planner alone cannot add a group or a name: refused twice, the recipient fallback."""
+
+    class Added(ScriptedModel):
+        def __init__(self, extra: dict[str, Any]) -> None:
+            super().__init__()
+            self.extra = extra
+
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            return {**proposal, "recipients": [*proposal["recipients"], self.extra]}
+
+    for extra in (
+        {"kind": "group", "group": "active_subscribers"},
+        {"kind": "customer", "value": "Scripted Customer"},
+    ):
+        assert smoke.main(["--case", "email_batch-en-1"], client=Added(extra)) == 1
+        out = capsys.readouterr().out
+        # The recipient refusal itself ("recipient"), not a wrong count ("recipients").
+        assert out.splitlines()[0].split()[:4] == [
+            "FAIL",
+            "email_batch-en-1",
+            "action=email_batch",
+            "recipient",
+        ], out
+        assert "Scripted Customer" not in out

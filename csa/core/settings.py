@@ -98,6 +98,21 @@ class Settings(BaseSettings):
     # The name the gateway gives in EHLO; the container's own hostname is not a real FQDN.
     SMTP_EHLO_HOSTNAME: str = "fourstacks.my"
     TYPESAFE_API_KEY: SecretStr | None = None
+    # Jev beside the LLM or rule for the staff assistant's quick typed decisions, per area.
+    # auto is cascade when TYPESAFE_API_KEY is set and llm otherwise; llm is the kill switch.
+    ASSISTANT_DECIDER_EMAIL: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_DECIDER_ROUTING: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_DECIDER_INBOUND_INJECTION: Literal["auto", "llm", "shadow", "cascade"] = "auto"
+    ASSISTANT_JEV_FLOOR_NOUL: float = Field(default=0.7, ge=0.0, le=1.0)
+    ASSISTANT_JEV_FLOOR_CHOICE: float = Field(default=0.7, ge=0.0, le=1.0)
+    ASSISTANT_DECIDER_AUDIT_SAMPLE: float = Field(default=0.10, ge=0.0, le=1.0)
+    # The customer classifier's mode for a company with no decide_mode stored in its policy, used
+    # only while the worker has a Jev provider (TYPESAFE_API_KEY set; without one it is llm). A
+    # stored decide_mode, an explicit llm included, always wins. The rollout turns cascade on last.
+    CUSTOMER_DECIDE_MODE_DEFAULT: Literal["llm", "cascade"] = "llm"
+    # The drafter for the assistant's batch email only, through its own client; None (or empty)
+    # means GROQ_MODEL. The Email tab's drafts always use GROQ_MODEL.
+    ASSISTANT_DRAFT_MODEL: str | None = None
     TEI_ENDPOINT: HttpUrl | None = None
     KB_EMBED_MODEL_LABEL: str = Field(default="tei-384", min_length=1, max_length=64)
     # E5-family models (e.g. intfloat/multilingual-e5-small) expect these prefixes.
@@ -271,6 +286,19 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_assistant_deciders(self) -> Settings:
+        if self.TYPESAFE_API_KEY is not None:
+            return self
+        for name in (
+            "ASSISTANT_DECIDER_EMAIL",
+            "ASSISTANT_DECIDER_ROUTING",
+            "ASSISTANT_DECIDER_INBOUND_INJECTION",
+        ):
+            if getattr(self, name) in {"shadow", "cascade"}:
+                raise ValueError(f"{name}={getattr(self, name)} requires TYPESAFE_API_KEY")
+        return self
+
+    @model_validator(mode="after")
     def _validate_email_assistant(self) -> Settings:
         if not self.EMAIL_ASSISTANT_ENABLED:
             return self
@@ -403,6 +431,16 @@ class Settings(BaseSettings):
             if a == b or a.is_relative_to(b) or b.is_relative_to(a):
                 raise ValueError(f"{later} must not be, contain or sit inside {earlier}")
         return self
+
+    @field_validator("TYPESAFE_API_KEY", mode="before")
+    @classmethod
+    def _jev_placeholder_is_unset(cls, value: object) -> object:
+        # No Jev key means every area runs on the LLM or rule, so a placeholder must read as no
+        # key and never as an invalid one: blank, "disabled", or the staging disabled-model-key
+        # file (staging maps its placeholder to TYPESAFE_API_KEY until a real key file is wired).
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        placeholders = {"", "disabled", "staging-disabled-no-model-access"}
+        return None if isinstance(raw, str) and raw.strip() in placeholders else value
 
     @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")
     @classmethod

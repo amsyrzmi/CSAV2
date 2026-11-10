@@ -163,9 +163,11 @@ need spans immediately must call the returned provider's `force_flush()`.
 ## Jev and semantic checking
 
 Enter `TYPESAFE_API_KEY` yourself in the ignored `.env.local`; never print it. The worker uses it
-only when a tenant's `clients.config.policy.decide_mode` selects `shadow`, `cascade` or `jev`.
-The default is `llm`; the local dev tenant currently uses `cascade`. Restart the worker after
-changing an API key. Policy changes are read on each turn.
+for the customer classifier when a tenant's `clients.config.policy.decide_mode` selects `shadow`,
+`cascade` or `jev`, or when the tenant has stored no `decide_mode` and
+`CUSTOMER_DECIDE_MODE_DEFAULT=cascade` (see "Jev for the staff assistant" below). The default is
+`llm`; the local dev tenant currently uses `cascade`. Restart the worker after changing an API
+key. Policy changes are read on each turn.
 
 - `shadow`: Groq decides; Jev runs alongside for comparison.
 - `cascade`: Jev decides at or above `jev_min_confidence` (default 0.5); errors or lower
@@ -185,6 +187,186 @@ ENV=dev uv run python -m csa.evals.decisions --provider both --concurrency 1 --o
 See [decision_report.md](archive/evals/decision_report.md) for the measured comparison. Review Jev
 retention and operational terms before real-client rollout. This evaluation does not calibrate
 all decision thresholds or prove production throughput.
+
+## Jev for the staff assistant and the customer classifier
+
+One `TYPESAFE_API_KEY` serves two places: the gateway (the staff assistant's quick typed
+decisions) and the worker (the customer-message classifier). Jev only answers typed questions; it
+never writes text, never decides a send, and sees only redacted text (addresses, phone and card
+numbers, and the recipient names the caller knows). With no key every area runs on the LLM or the
+server rule and nothing errors. A key of `disabled`, blank, or the staging disabled-model-key text
+reads as no key.
+
+**Switches** (gateway environment unless noted; the first three are per area):
+
+| Setting | Values | Meaning |
+| --- | --- | --- |
+| `ASSISTANT_DECIDER_EMAIL` | `auto`, `llm`, `shadow`, `cascade` | Batch email: shared or personalised, which facts to read, whether the words ask to send. |
+| `ASSISTANT_DECIDER_ROUTING` | same | Which facts (manager, mailbox, team, training, People) reach the planner. |
+| `ASSISTANT_DECIDER_INBOUND_INJECTION` | same | Refuses to draft a reply to an inbound email that tries to steer the assistant. |
+| `ASSISTANT_JEV_FLOOR_NOUL`, `ASSISTANT_JEV_FLOOR_CHOICE` | 0 to 1, default 0.7 | Jev answers a question only at or above its floor; below it the LLM or rule answers. |
+| `ASSISTANT_DECIDER_AUDIT_SAMPLE` | 0 to 1, default 0.10 | Share of confident Jev answers also answered by the fallback, to log drift. The injection check always does. |
+| `CUSTOMER_DECIDE_MODE_DEFAULT` (worker) | `llm` (default), `cascade` | The customer classifier's mode for a company with no `decide_mode` stored, and only while a key exists. A stored mode, an explicit `llm` included, always wins. |
+
+`auto` is `cascade` with a key and `llm` without one; `shadow` runs Jev beside the fallback and logs
+both; `cascade` lets Jev decide each question at or above its floor. An explicit `shadow` or
+`cascade` without a key refuses to start. A Jev error, timeout (2 s) or malformed answer falls back
+and never reaches the user.
+
+The floors are per question **type** and global: `ASSISTANT_JEV_FLOOR_NOUL` applies to every yes/no
+question in every area (the routing groups, the email decider's `needs:subscription`, `needs:kb`
+and `send`, and the injection check), and `ASSISTANT_JEV_FLOOR_CHOICE` to every choice question
+(today only the email decider's `mode`). Raising one to fix one area raises it for all of them.
+
+**Staging switches.** Staging services take their environment only from
+`deploy/staging-rollout.env` (`scripts/staging_rollout.py` builds the whole environment from it;
+nothing else is inherited). These optional lines set the settings above; each is checked when the
+file is read, and a value outside its set or range stops `plan` and `apply` before anything runs.
+Unset, compose uses the settings' own default, so nothing changes. The file's header lists only
+the eight required keys; these optional lines are allowed too. Adding or changing one is a reviewed
+PR, then a rollout with the `staging-rollout` skill (the service whose environment changed is
+recreated).
+
+| Line in `deploy/staging-rollout.env` | Values | Sets (service) |
+| --- | --- | --- |
+| `CSA_STAGING_JEV_SECRET` | `staging_disabled_jev_key` (default), `staging_jev_key` | which secret is mounted as `TYPESAFE_API_KEY` (gateway and worker) |
+| `CSA_STAGING_ASSISTANT_DECIDER_EMAIL` | `auto` (default), `llm`, `shadow`, `cascade` | `ASSISTANT_DECIDER_EMAIL` (gateway) |
+| `CSA_STAGING_ASSISTANT_DECIDER_ROUTING` | same | `ASSISTANT_DECIDER_ROUTING` (gateway) |
+| `CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION` | same | `ASSISTANT_DECIDER_INBOUND_INJECTION` (gateway) |
+| `CSA_STAGING_JEV_FLOOR_NOUL` | a decimal from 0.5 to 1.0 (default 0.7) | `ASSISTANT_JEV_FLOOR_NOUL` (gateway) |
+| `CSA_STAGING_JEV_FLOOR_CHOICE` | a decimal from 0.5 to 1.0 (default 0.7) | `ASSISTANT_JEV_FLOOR_CHOICE` (gateway) |
+| `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT` | `llm` (default), `cascade` | `CUSTOMER_DECIDE_MODE_DEFAULT` (worker) |
+
+`CSA_STAGING_JEV_SECRET` accepts only those two names: any other declared secret (a database DSN,
+the Groq key) would be sent to the external Jev API. A decider at `shadow` or `cascade`, or the
+customer default at `cascade`, also needs `CSA_STAGING_JEV_SECRET=staging_jev_key` in the same file,
+or the file is refused (the gateway would not start, and the customer default would quietly stay on
+the LLM). The audit sample has no staging switch; it stays at 0.10.
+
+**Kill switch.** Per area, on staging: a reviewed PR adds `CSA_STAGING_ASSISTANT_DECIDER_EMAIL=llm`
+(or `_ROUTING`, `_INBOUND_INJECTION`) to `deploy/staging-rollout.env`, then roll out; `llm` needs no
+key and is always accepted. Everything at once: a reviewed PR removes the
+`CSA_STAGING_JEV_SECRET=staging_jev_key` line (and any `shadow`/`cascade` lines, which need it),
+then roll out. The customer classifier: a reviewed PR sets
+`CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=llm` (or removes the line), then roll out; or, at once and
+for one company, `csa.ops.runbooks.force_decide_mode(conn, client_id, "llm")` (runbook 04), which
+is read on the next turn and wins over the default. Elsewhere (development, production) set the
+same settings in that deployment's environment and restart the gateway or worker.
+
+**Rollout order** (each step its own reviewed change; the owner does the key steps):
+
+1. Roll out the images and migration 0542 with no key wired into the services. Every area runs on
+   the LLM or rule. (A rollout with no key plans and applies cleanly: the staging compose files map
+   the disabled placeholder to `TYPESAFE_API_KEY`, and the real key's file is not asked for.)
+2. **Owner: run the staff evaluation** from a checkout (no settings or database needed):
+
+   ```sh
+   uv run python -m scripts.assistant_jev_eval
+   ```
+
+   It asks for the key at a hidden prompt (nothing echoed, nothing in shell history; never put the
+   key on the command line or in a repo file). It prints, per area and question, agreement with the
+   labelled English and Malay messages (written cases plus the smoke messages) on the answers at or
+   above the floor, the coverage, and whether the question meets its target: 90 percent, 95 for
+   the injection check, with at least 5 confident answers. It prints counts and case ids, never
+   message text. Exit 0 passes, 2 means it could not start, 1 means a question is below target.
+   For a 1, either keep that area on `llm` (step 3 then adds its `llm` line with the key), or find
+   a floor that passes by running again with a higher floor for that question's type:
+
+   ```sh
+   uv run python -m scripts.assistant_jev_eval --floor-noul 0.8 --floor-choice 0.7
+   ```
+
+   Run without the flags, it repeats the default 0.7 floors. A higher floor means fewer confident
+   answers (lower coverage, more fallbacks) and applies to every question of that type in every
+   area, so read the whole report again, not only the question that failed. The floor that passes
+   is applied on staging by `CSA_STAGING_JEV_FLOOR_NOUL` / `CSA_STAGING_JEV_FLOOR_CHOICE` in the
+   step 3 PR. Put the report (it holds no message text) in that PR.
+3. **Owner: write the key file, then wire it.** Only after step 2 passes. On the staging host, as
+   your own user (UID 1000, the runtime UID; not with sudo), from the main checkout:
+
+   ```sh
+   uv run python -m scripts.staging_jev_key --secret-dir /srv/csa-staging/secrets
+   ```
+
+   It checks the secret layout first (as `staging_secrets check` does), asks for the key at a
+   hidden prompt, writes `pipeline/staging_jev_key` (mode 0400, no trailing newline), refuses to
+   overwrite an existing file or follow a symlink, and prints only the file's path. Then a reviewed
+   PR adds `CSA_STAGING_JEV_SECRET=staging_jev_key` to `deploy/staging-rollout.env`, with any floor
+   or `llm` lines from step 2, and you roll out with the `staging-rollout` skill (`plan` stops,
+   exit 2, until the key file exists). That turns the staff areas on in the gateway, because `auto`
+   becomes `cascade`. The worker has the key from then on too. For a company with **no** stored
+   `decide_mode` its classifier stays on the LLM until step 4; a company whose policy already
+   stores `shadow`, `cascade` or `jev` (forced earlier, or the local dev tenant's `cascade`) goes
+   live on Jev at this step. Check for such companies before the step 3 PR (owner connection):
+   `SELECT id FROM public.clients WHERE config->'policy' ? 'decide_mode' AND config->'policy'->>'decide_mode' <> 'llm';`.
+   On production (`compose.production.yml`, unchanged here) the same two secret entries
+   (`TYPESAFE_API_KEY` on the gateway and the worker) go in with the key file in that
+   deployment's own secret directory.
+4. **Owner: run the customer gate, then flip the customer default last.** After a few days of
+   real use with the staff audit rows (below) looking right, run the customer classifier's own
+   evaluation on your workstation, from the main checkout, where your ignored `.env.local` holds
+   the development DSNs, `GROQ_API_KEY` and `TYPESAFE_API_KEY` (you enter them there yourself;
+   the run reads settings, so it needs all three even though it touches no database):
+
+   ```sh
+   ENV=dev uv run python -m csa.evals.decisions --provider both --concurrency 1 --out "$HOME/csa-evals/decision-report.md"
+   ```
+
+   Keep `--out` outside the repository: without it the report is written to
+   `docs/evals/decision_report.md` in the checkout. It sends synthetic case text only. The gate
+   is the **`jev` row** of its table: the `intent`, `language` and `urgent` columns at least 90
+   percent, and the `wants_human`, `injection`, `injection recall` and `human recall` columns at
+   least 95 percent. These numbers count every Jev answer, an error as a miss, whatever its intent
+   confidence; the cascade uses Jev only at or above the company's `jev_min_confidence` (default
+   0.5) and gives the rest to the LLM, so the gate is stricter than what production uses and holds
+   at any `jev_min_confidence`. If every number meets its target, a reviewed PR (with the table)
+   adds `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=cascade`; roll out, then check the `signals`
+   rows as below. If any number is below its target, the customer default stays `llm`; a single
+   company can still be put on `cascade` by hand with `force_decide_mode` once its own `signals`
+   rows have been checked in `shadow`.
+
+**Audit queries** (tenant-scoped; rows hold typed answers and confidences, never message text):
+
+```sql
+-- Staff areas: how often Jev decided, fell back, and why.
+SELECT node, mode, provider, fallback_reason, count(*) AS n, round(avg(latency_ms)) AS avg_ms
+FROM public.decision_log
+WHERE client_id = '<CLIENT_UUID>' AND node LIKE 'assistant_%'
+  AND created_at > now() - interval '1 day'
+GROUP BY node, mode, provider, fallback_reason ORDER BY node, n DESC;
+
+-- Where Jev and the fallback disagreed (the audit sample, and every injection check).
+SELECT created_at, node, disagree, answers, final
+FROM public.decision_log
+WHERE client_id = '<CLIENT_UUID>' AND node LIKE 'assistant_%' AND cardinality(disagree) > 0
+ORDER BY id DESC LIMIT 50;
+
+-- Customer classifier (node 'signals'): same shape.
+SELECT mode, provider, fallback_reason, count(*) AS n
+FROM public.decision_log
+WHERE client_id = '<CLIENT_UUID>' AND node = 'signals'
+  AND created_at > now() - interval '1 day'
+GROUP BY mode, provider, fallback_reason ORDER BY n DESC;
+```
+
+Many disagreements on confident answers in an area mean its floor is too low: find a passing floor
+with the evaluation (step 2) and set it with the floor switch, or set the area to `llm`. A rising
+`jev_timeout` or `jev_http_*` count, or mostly `low_confidence` fallbacks, means Jev is not helping
+that area: set it to `llm`.
+
+**The secret file.** The key is never in the repository, the image or the environment file. Staging
+mounts it as a Compose secret named by `CSA_STAGING_JEV_SECRET` (default
+`staging_disabled_jev_key`, the same placeholder file as the disabled model key);
+`staging_secrets check` verifies the real file's owner and mode whenever it exists. To rotate the
+key: remove the old file (`rm -f /srv/csa-staging/secrets/pipeline/staging_jev_key`; the file is
+mode 0400, so a plain `rm` stops to ask, but the directory is yours), run `scripts.staging_jev_key`
+again with the new key, then restart the gateway and worker so they mount and read the new file:
+`docker --host unix:///var/run/docker.sock restart csa-staging-gateway-1 csa-staging-worker-1`.
+Restarting (not recreating) the two containers should re-bind the new file, since a Compose file
+secret is a bind mount by path, but this is untried: after the first rotation, run the first
+`decision_log` query above and check that Jev answers again (provider `jev`, no new `jev_http_*`
+fallbacks) before relying on it.
 
 ## Gotchas
 
