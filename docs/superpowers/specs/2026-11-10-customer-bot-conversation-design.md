@@ -1,6 +1,6 @@
 # Customer bot: conversation memory, register and handoff wording (PR A of 2)
 
-Status: design for the owner's approval, 2026-11-10. Items marked **(call)** are decisions I took; the owner can overrule any of them. Scope: the CUSTOMER support bot (the graph in `csa/graph`, the turn in `csa/turn/deps.py`, the prompts in `csa/decide/llm.py`), not the staff workspace assistant.
+Status: approved by the owner 2026-11-10 (handoff decision: option a; window 20 messages, 200 characters each). Items marked **(call)** are decisions I took; the owner can overrule any of them. Scope: the CUSTOMER support bot (the graph in `csa/graph`, the turn in `csa/turn/deps.py`, the prompts in `csa/decide/llm.py`), not the staff workspace assistant.
 
 ## Intent
 
@@ -58,9 +58,9 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 
 ### 1. Conversation memory
 
-- New `Context.recent: list[RecentMessage]` (same model, max 6). `BookingContext.recent` stays as it is for the booking planner; when both exist the prompts show ONE block, taken from `Context.recent`.
+- New `Context.recent: list[RecentMessage]` (same model, max 20). `BookingContext.recent` stays as it is for the booking planner; when both exist the prompts show ONE block, taken from `Context.recent`.
 - New read in `load_context`: the same SQL (renamed or reused), run for every channel including web, under its own 1.0 second budget; any error or timeout leaves `recent` empty and logs `turn_context_degraded` (a failed read never fails the turn).
-- Per-message caps **(call)**: 300 characters for customer messages (as today), 600 for assistant messages, because a plan list's tail is exactly what matters. Window stays 6.
+- Window and caps (owner's decision): the last 20 messages (both directions), each capped at 200 characters, so at most 4000 characters of history. This replaces `RECENT_MESSAGES = 6` and `RECENT_CHARS = 300` for the generalised block; the booking planner's own `BookingContext.recent` keeps its current constants. A long outbound message (a plan list) is cut at 200 characters, which still shows what was listed and what was asked last only if the cut keeps the end: keep the first 120 and the last 80 characters of a longer message **(call)**.
 - Prompts: `_recent_block` and the rule read `ctx.recent` (falling back to `ctx.booking.recent`). Classify and plan get the block with the generalised rule ("a short answer continues the topic in the earlier messages"); **compose gets the block for the first time**, after the facts. Messages stay escaped (`<`, `>`) and untrusted.
 - Grounding widens in two different ways **(call)**. The deterministic check (`ungrounded`, `_sources` in `csa/decide/llm.py`) accepts numbers and links that appear in the recent messages of either side (the customer's own words, and earlier outbound messages). The semantic `review` (which judges business claims against facts only) is given the recent OUTBOUND messages as "already told to this customer" and accepts a claim they support, so repeating "RM50" from the previous reply passes both checks. Customer messages never support a business claim in `review`: "you said the refund is RM200" does not make a refund of RM200 true. Outbound messages are safe to trust because each was grounded by this same check when sent, written or approved by staff, or built from booking facts; the old fallback line carries no figures.
 - Kill switch: `Policy.conversation_memory: bool = True`. When false, `Context.recent` is empty. The model field ships in this PR; setting it is an ops step (a runbook SQL like `force_decide_mode`), with no console control **(call)**.
@@ -69,7 +69,7 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 
 - Compose rule: do not repeat what an earlier assistant message already said; acknowledge new information; if the customer asks the same thing again, answer shorter or differently.
 - `Context.flags["handoff_recent"]`: true when an `escalations` row exists for this conversation in the last 24 hours **whose reason is a real handoff** (a small new read; the `escalations` table already exists). Rows with reason `fail_safe:*` and `approval_expired` do NOT count: they notify and mute no one, so the composer must not be told "a team member was already notified" after them **(call)**. When set, the composer is told a team member was already notified and must not say so again unless the customer asks for a person.
-- A real handoff mutes the bot for 24 hours (`ai_muted_until`, `owned_by='human_support'`), so the flag only matters when the conversation can be answered again: after staff press "AI resumed", in shadow mode (no mute), or when the mute expired. Why the bot kept answering after handoffs in the owner's transcript is not verified (a muted turn goes to `muted_turn` and sends nothing); the staging replay checks it first, and the golden scenario sets up a released conversation.
+- A real handoff mutes the bot for 24 hours (`ai_muted_until`, `owned_by='human_support'`), so the flag only matters when the conversation can be answered again: after staff press "AI resumed", in shadow mode (no mute), or when the mute expired. In the owner's transcript the bot kept answering after handoffs because the owner handed the conversation back to the assistant each time (the "AI resumed" path), so this flag is exactly the case that happened; the golden scenario sets up a released conversation.
 - Lists **(call, from the transcript)**: when offering options (plans, products), at most three at a time and one short question to narrow, never the whole catalogue in one message.
 
 ### 3. Register
@@ -108,8 +108,8 @@ The escalation ladder: split "must escalate now" (asked for a human, abusive, a 
 1. Malay register examples: approve or rewrite the three to five example replies the register block will carry (drafts come with the plan), including how to address the customer ("awak", "kak/abang", or no pronoun).
 2. The localized handoff templates' Malay wording.
 3. The three-option cap on lists.
-4. Knowledge-base content: "how to buy / sign up", "which plan suits whom", and what a customer can expect after a handoff (who replies, where, when).
-5. Handoff reply and approval: should a required handoff always send its acknowledgement without staff approval, even for a company in `suggest` mode (recommended; shadow mode still sends nothing), or be held for staff like any other reply (then staff must see and approve a draft in a conversation the bot has just muted)?
+4. Knowledge-base content (the owner's, per company; the SIM sign-up facts are specific to the Team Jo tenant): "how to buy / sign up", "which plan suits whom", and what a customer can expect after a handoff (who replies, where, when).
+5. Handoff reply and approval (owner chose a, 2026-11-10): a required handoff always sends its acknowledgement without staff approval, even for a company in `suggest` mode; shadow mode still sends nothing.
 
 ## Left to the builder
 
