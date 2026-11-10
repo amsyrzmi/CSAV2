@@ -379,7 +379,7 @@ class ScriptedModel:
         if schema is ReviewOut:
             return ReviewOut(ok=True)
         if schema is ComposeOut:
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             return ComposeOut(
                 reply=" ".join(f["text"] for f in facts), used_fact_ids=[f["id"] for f in facts]
             )
@@ -722,7 +722,7 @@ class ContextualModel:
         if schema is ReviewOut:
             return ReviewOut(ok=True)
         if schema is ComposeOut:
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             if not facts:
                 return ComposeOut(reply="Which service and time do you mean?")
             return ComposeOut(
@@ -839,7 +839,8 @@ async def test_a_company_without_bookings_is_planned_exactly_as_before(shop: Sho
     model = ContextualModel()
     deps, state, _ = await message_in_chat(shop, contact, chat, model, "What's free on Tuesday?")
     (prompt,) = model.plan_prompts
-    assert "recent_messages" not in prompt and '"booking":' not in prompt
+    # Every company's planner now sees the earlier messages, but none of the booking context.
+    assert "an earlier message" in prompt and '"booking":' not in prompt
     assert json.loads(prompt.split("\n")[0])["context"].keys() == {
         "summary",
         "has_active_orders",
@@ -874,7 +875,7 @@ class ComposingModel(ScriptedModel):
         if schema is ComposeOut:
             self.composed += 1
             self.systems.append(system)
-            facts = json.loads(user.split("\n<message>")[0])["facts"]
+            facts = json.loads(re.split(r"\n<(?:recent_messages|message)>", user)[0])["facts"]
             reply = self.write([f["text"] for f in facts])
             return ComposeOut(reply=reply, used_fact_ids=[f["id"] for f in facts])
         if schema is ReviewOut and self.review is not None:
