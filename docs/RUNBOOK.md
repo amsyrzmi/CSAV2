@@ -368,6 +368,46 @@ secret is a bind mount by path, but this is untried: after the first rotation, r
 `decision_log` query above and check that Jev answers again (provider `jev`, no new `jev_http_*`
 fallbacks) before relying on it.
 
+## Customer bot conversation memory
+
+The customer bot is shown the earlier messages of the chat it is answering: the last 20 messages,
+each cut to 200 characters, with PII already redacted in the stored body (never the raw text). The
+classifier, the planner and the reply writer all see them, so the bot can avoid repeating itself
+and can follow a short answer such as "yes" or "the second one".
+
+**Kill switch.** `clients.config.policy.conversation_memory` (default `true`) is a per-company
+setting. When it is `false` the bot is given no earlier messages and answers each message alone.
+It is read on every turn, so a change takes effect on the company's next message with no restart
+or rollout. There is no console control for it; switch it from the owner connection. The nested
+`jsonb_set` creates `policy` if the company has none (a single `jsonb_set(config, '{policy,conversation_memory}', ...)`
+does nothing when `config->'policy'` is missing):
+
+```sql
+-- Off for one company
+UPDATE public.clients
+SET config = jsonb_set(
+        jsonb_set(COALESCE(config, '{}'::jsonb), '{policy}', COALESCE(config->'policy', '{}'::jsonb), true),
+        '{policy,conversation_memory}', 'false'::jsonb, true)
+WHERE id = '<client id>';
+
+-- On again (explicit)
+UPDATE public.clients
+SET config = jsonb_set(config, '{policy,conversation_memory}', 'true'::jsonb, true)
+WHERE id = '<client id>';
+
+-- Back to the default (remove the key)
+UPDATE public.clients SET config = config #- '{policy,conversation_memory}' WHERE id = '<client id>';
+
+-- Read it back (NULL means the key is not set, so the default `true` applies)
+SELECT config->'policy'->>'conversation_memory' FROM public.clients WHERE id = '<client id>';
+```
+
+Clearing the key or setting it to `true` restores the default. The console's own writes to the
+policy (reply mode, approval wait) set single keys with `jsonb_set`, so they leave this key alone.
+Write only JSON `true` or `false`: the policy model rejects unknown keys and wrong types, and a
+policy that fails validation fails the company's turns. The owner's retest rows are in
+[CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
+
 ## Gotchas
 
 - `make db-reset` is destructive: it regenerates the webhook id, so rerun `make setup-dev-telegram` and
