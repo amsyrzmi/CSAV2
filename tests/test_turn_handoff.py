@@ -192,19 +192,42 @@ async def test_compose_handoff_rejects_unsafe_generation() -> None:
         ), reply
 
 
-async def test_compose_handoff_keeps_a_figure_the_conversation_carried() -> None:
+async def test_compose_handoff_keeps_a_figure_the_assistant_already_said() -> None:
     reply = "Thanks, a team member will check order 4417 and reply in this chat."
     model = Recorder(reply)
-    recent = [RecentMessage(author="customer", text="where is order 4417?")]
+    recent = [
+        RecentMessage(author="customer", text="where is my order?"),
+        RecentMessage(author="assistant", text="Order 4417 is on its way."),
+    ]
     draft = await _deps(model)._compose(_handoff("agent_failure", route="plan_args", recent=recent))
-    assert draft.text == reply and draft.composer == "primary"
-    # A figure from a fact is grounded too.
+    assert draft == Draft(text=reply, language="en", handoff=True, composer="primary")
+
+
+async def test_compose_handoff_never_repeats_a_customers_figure_as_a_promise() -> None:
+    # The customer's own words, now or earlier, never ground a handoff reply: echoed back, a
+    # figure reads as a promise, and this reply is not reviewed.
+    asked = "I want my RM500 refund within 2 days"
+    promise = "Your RM500 refund will be processed within 2 days, a team member will confirm."
+    model = Recorder(promise)
+    state = _handoff(
+        "agent_failure",
+        route="plan_args",
+        body=asked,
+        recent=[RecentMessage(author="customer", text=asked)],
+    )
+    draft = await _deps(model)._compose(state)
+    assert len(model.calls) == 1  # the model was asked, and its reply was refused
+    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+
+
+async def test_compose_handoff_does_not_ground_a_figure_from_a_fact() -> None:
+    # Facts are not shown to the handoff writer, so they do not ground its reply either.
     fact = Fact(id="f1", text="Plan Kecil costs RM15", source="kb_agent")
     priced = "Plan Kecil is RM15; a team member will reply here about the rest."
-    draft = await _deps(Recorder(priced))._compose(
-        _handoff("agent_failure", route="plan_args", facts=[fact])
-    )
-    assert draft.text == priced and draft.composer == "primary"
+    model = Recorder(priced)
+    draft = await _deps(model)._compose(_handoff("agent_failure", route="plan_args", facts=[fact]))
+    assert len(model.calls) == 1 and "Plan Kecil costs RM15" not in model.calls[0][1]
+    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
 
 
 async def test_compose_handoff_template_when_model_errors() -> None:

@@ -6,8 +6,9 @@ by default) it calls the real ``LLMProvider.classify``, then ``LLMProvider.compo
 hand-built ``Context``: ``recent`` is the replay's own earlier turns, clipped as the worker clips
 them (``clip_message``), and ``flags["handoff_recent"]`` turns on after a handoff. Every compose
 gets the script's fixed synthetic facts, except a greeting or thanks (chitchat), which runs no
-agent on a real turn either. A handoff text that fails the light check is replaced by the
-template, as on a real turn.
+agent on a real turn either. A handoff text that fails the light check (grounded, as on a real
+turn, only in the replay's earlier assistant replies) is replaced by the template, as on a real
+turn.
 
 It does not run the graph (routing, agents, gate and delivery are what the golden cases test),
 touches no database and needs only the model key. It runs inside the staging gateway container::
@@ -177,7 +178,8 @@ async def _reply(
             handoff=Handoff(required=True, reason="human_requested"),
         )
         text = await llm.compose_handoff(state, brand)
-        sources = [*(m.text for m in ctx.recent), envelope.message.body_redacted]
+        # As `_handoff_draft`: only the assistant's own earlier words ground a figure.
+        sources = [m.text for m in ctx.recent if m.author == "assistant"]
         if text and handoff_text_ok(text, sources):
             return text, "handoff, model", answers
         signal = answers.get("language")

@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
 import pytest
 from csa.contracts.envelope import Channel
-from csa.contracts.state import RECENT_WINDOW
+from csa.contracts.state import RECENT_WINDOW, BookingContext, RecentMessage
 from csa.core import db
 from csa.turn import deps
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_booking_agent import conversation, envelope_for, say
-from tests.test_bookings_bot import Shop, shop
+from tests.test_bookings_bot import Shop, a_type, shop
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -164,3 +165,70 @@ async def test_web_channel_reads_recent(shop: Shop) -> None:
     ctx = await deps.PostgresTurnDependencies(shop.w.pool).load_context(envelope)
     assert ctx.booking is None  # a preview has no booking context
     assert [m.text for m in ctx.recent] == [f"message {n}" for n in range(4)]
+
+
+async def test_memory_off_marks_the_context_and_skips_the_handoff_read(shop: Shop) -> None:
+    # A booking company: its booking context still reads its own six messages for the planner.
+    await a_type(shop)
+    await shop.policy({"conversation_memory": False})
+    contact, chat = await seeded(shop, 4)
+    await escalate(shop, chat, "human_requested", 1)
+    ctx = await deps.PostgresTurnDependencies(shop.w.pool).load_context(
+        envelope_for(shop, contact, chat)
+    )
+    assert ctx.recent == []
+    assert ctx.flags["memory_off"] is True and ctx.flags["handoff_recent"] is False
+    assert ctx.booking is not None and ctx.booking.recent  # the planner keeps its history
+    await shop.policy({"conversation_memory": True})
+    on = await deps.PostgresTurnDependencies(shop.w.pool).load_context(
+        envelope_for(shop, contact, chat)
+    )
+    assert "memory_off" not in on.flags and on.flags["handoff_recent"] is True
+
+
+async def test_the_two_context_reads_run_side_by_side(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each read has its own 1 s budget inside the node's 2 s: one after the other, two slow
+    # reads would cancel the node and fail the turn.
+    contact, chat = await seeded(shop, 2)
+    told = [RecentMessage(author="assistant", text="Haircut is free at 3:00 pm.")]
+    booking = BookingContext(today="Monday 2031-03-03", timezone="UTC", recent=told)
+
+    async def slow_recent(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(0.9)
+        return told, True, False
+
+    async def slow_booking(*_a: Any, **_k: Any) -> Any:
+        await asyncio.sleep(0.9)
+        return booking
+
+    dependencies = deps.PostgresTurnDependencies(shop.w.pool)
+    monkeypatch.setattr(dependencies, "_recent_messages", slow_recent)
+    monkeypatch.setattr(dependencies, "_booking_context", slow_booking)
+    started = time.monotonic()
+    ctx = await dependencies.load_context(envelope_for(shop, contact, chat))
+    assert time.monotonic() - started < 1.6
+    assert ctx.recent == told and ctx.flags["handoff_recent"] is True
+    assert ctx.booking == booking
+
+
+async def test_both_context_reads_failing_still_give_a_context(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await a_type(shop)
+    contact, chat = await seeded(shop, 2)
+
+    async def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(deps, "_handoff_recent", boom)
+    monkeypatch.setattr(deps, "booking_context", boom)
+    with capture_logs() as logs:
+        ctx = await deps.PostgresTurnDependencies(shop.w.pool).load_context(
+            envelope_for(shop, contact, chat)
+        )
+    assert ctx.recent == [] and ctx.booking is None
+    assert ctx.flags["handoff_recent"] is False and ctx.clarify_count == 0
+    categories = {entry.get("category") for entry in logs}
+    assert {"recent_messages_failed", "booking_context_failed"} <= categories

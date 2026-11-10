@@ -2046,7 +2046,15 @@ class _FakeClient:
         timeout: float,
         max_tokens: int = 1500,
     ) -> Any:
-        self.calls.append({"schema": schema, "system": system, "user": user, "timeout": timeout})
+        self.calls.append(
+            {
+                "schema": schema,
+                "system": system,
+                "user": user,
+                "timeout": timeout,
+                "max_tokens": max_tokens,
+            }
+        )
         if self.error is not None:
             raise self.error
         return schema.model_validate(self.answer)
@@ -2219,3 +2227,153 @@ async def test_classify_and_plan_reach_a_real_gemini_fallback() -> None:
     assert [t.agent for t in plan.tasks] == ["order_agent"]
     assert len(primary.calls) == 2 and len(bodies) == 2
     assert all("responseSchema" not in b["generationConfig"] for b in bodies)
+
+
+# --- the memory kill switch: no history for the reply writers, the planner keeps its own -------
+
+
+def _memory_off(ctx: Context, **flags: bool) -> Context:
+    return ctx.model_copy(update={"flags": {"memory_off": True, **flags}})
+
+
+async def test_memory_off_leaves_a_booking_companys_reply_without_history() -> None:
+    ctx = _memory_off(_booking_context(), handoff_recent=True)
+    system, user = await _compose_for(ctx)
+    assert "<recent_messages>" not in user and "What is free on Tuesday?" not in user
+    assert "recent_messages" not in system
+    assert _NO_REPEAT_TEXT not in system and _HANDOFF_RECENT_TEXT not in system
+    # Memory on: the booking context's messages reach the reply writer as before.
+    system, user = await _compose_for(_booking_context())
+    assert "What is free on Tuesday?" in user and _NO_REPEAT_TEXT in system
+
+
+@pytest.mark.parametrize("call", ["classify", "plan"])
+async def test_memory_off_keeps_the_booking_history_for_the_classifier_and_planner(
+    call: str,
+) -> None:
+    off = await _prompts_for(_memory_off(_booking_context()), call)
+    assert off == await _prompts_for(_booking_context(), call)
+    system, user = off
+    assert user.count("<recent_messages>") == 1 and "What is free on Tuesday?" in user
+    assert "recent_messages" in system
+
+
+async def test_memory_off_leaves_the_handoff_reply_without_history() -> None:
+    _, body = await _handoff_request(_memory_off(_booking_context(), handoff_recent=True))
+    system, user = (m["content"] for m in body["messages"])
+    assert "<recent_messages>" not in user and "What is free on Tuesday?" not in user
+    assert "recent_messages" not in system and _HANDOFF_ALREADY_TOLD_TEXT not in system
+
+
+async def test_memory_off_leaves_the_review_nothing_already_told() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][1]["content"])
+        return _ok({"ok": True, "issues": []})(request)
+
+    def told() -> list[str]:
+        return json.loads(seen[-1].split("\n<message>")[0])["already_told"]
+
+    state = _review_state("Haircut is free at 3:00 pm.")
+    await _provider(handler).review(state.model_copy(update={"ctx": _booking_context()}))
+    assert told() == ["Haircut is free at 3:00 pm."]
+    await _provider(handler).review(
+        state.model_copy(update={"ctx": _memory_off(_booking_context())})
+    )
+    assert told() == []
+
+
+def test_memory_off_does_not_ground_a_figure_from_the_booking_history() -> None:
+    from csa.contracts.state import Draft
+
+    state = TurnState(
+        envelope=make_envelope("ok"),
+        draft=Draft(text="Haircut is free at 3:00 pm.", language="en"),
+        ctx=_booking_context(),
+    )
+    assert LLMProvider.verify(state).ok is True
+    assert (
+        LLMProvider.verify(state.model_copy(update={"ctx": _memory_off(_booking_context())})).ok
+        is False
+    )
+
+
+# --- the semantic review: second client, and only a provider failure degrades it ---------------
+
+
+async def test_review_falls_back_to_the_second_client() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_http_503"))
+    fallback = _FakeClient(
+        "fallback-model", answer={"ok": False, "issues": ["claims free delivery"]}
+    )
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    result = await provider.review(_review_state("Yes, and delivery is free."))
+    assert result.ok is False and result.issues == ["claims free delivery"]
+    assert len(primary.calls) == 1 and len(fallback.calls) == 1
+    assert fallback.calls[0] == primary.calls[0]  # the same request, once
+    assert fallback.calls[0]["max_tokens"] == 600
+
+
+def _review_raising(error: BaseException) -> Any:
+    deps = _deps_with(_ok({"reply": "unused", "used_fact_ids": []}), review=True)
+
+    async def review(_state: TurnState) -> Any:
+        raise error
+
+    deps._llm.review = review
+    return deps
+
+
+@pytest.mark.parametrize(
+    "error", [CompletionError("gemini_http_503"), GroqError("groq_timeout"), TimeoutError()]
+)
+async def test_a_review_provider_failure_degrades_to_grounding(error: BaseException) -> None:
+    from csa.contracts.state import Verification
+
+    state = _booking_turn_state(
+        agent="order_agent", action="status", draft="All set for 3:30 pm.", regen=0
+    )
+    with capture_logs() as events:
+        assert await _review_raising(error).verify(state) == Verification(ok=True)
+    assert [e["error_type"] for e in events if e["event"] == "semantic_review_degraded"] == [
+        type(error).__name__
+    ]
+
+
+async def test_a_review_programming_error_is_not_swallowed() -> None:
+    state = _booking_turn_state(
+        agent="order_agent", action="status", draft="All set for 3:30 pm.", regen=0
+    )
+    with pytest.raises(TypeError):
+        await _review_raising(TypeError("bad call")).verify(state)
+
+
+async def test_review_reaches_a_real_gemini_fallback_with_its_schema() -> None:
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    bodies: list[dict[str, Any]] = []
+    gemini = _gemini_capturing('{"ok": true, "issues": []}', bodies)
+    provider = build_llm_provider(primary, compose_fallback=gemini)
+    assert (await provider.review(_review_state("Yes, A1 is MYR 10.50."))).ok is True
+    (body,) = bodies
+    config = body["generationConfig"]
+    assert config["maxOutputTokens"] == 600
+    assert config["responseSchema"]["properties"]["ok"] == {"type": "BOOLEAN"}
+
+
+async def test_compose_handoff_is_not_shown_the_facts() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][1]["content"])
+        return _ok({"reply": "A team member will reply here.", "used_fact_ids": []})(request)
+
+    fact = Fact(id="f1", text="Plan Kecil costs RM15", source="kb_agent")
+    state = _handoff_state("en", _recent_ctx(("assistant", "Boleh, ada tiga plan."))).model_copy(
+        update={"facts": [fact]}
+    )
+    await _provider(handler).compose_handoff(state, None)
+    (user,) = seen
+    assert "Plan Kecil costs RM15" not in user and "facts" not in user
+    assert user.startswith("<recent_messages>") and "Boleh, ada tiga plan." in user
+    assert user.endswith("<message>nak cakap dengan orang</message>")

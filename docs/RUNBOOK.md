@@ -376,9 +376,14 @@ classifier, the planner and the reply writer all see them, so the bot can avoid 
 and can follow a short answer such as "yes" or "the second one".
 
 **Kill switch.** `clients.config.policy.conversation_memory` (default `true`) is a per-company
-setting. When it is `false` the bot is given no earlier messages and answers each message alone.
-It is read on every turn, so a change takes effect on the company's next message with no restart
-or rollout. There is no console control for it; switch it from the owner connection. The nested
+setting. When it is `false`, no earlier message reaches the reply writer (compose), the handoff
+reply or the reply check, and no reply carries the already-notified sentence ("a team member has
+already been told"); the read of earlier handoffs is skipped too. One exception: for a company
+with bookings, the booking planner keeps its own history of the last 6 messages for the classifier
+and the planner, as it had before this release, so a short answer such as "3 pm" still continues a
+booking. The setting is read on every turn, so a change takes effect on the company's next message
+with no restart or rollout. There is no console control for it; switch it from the owner
+connection. The nested
 `jsonb_set` creates `policy` if the company has none (a single `jsonb_set(config, '{policy,conversation_memory}', ...)`
 does nothing when `config->'policy'` is missing):
 
@@ -405,7 +410,9 @@ SELECT config->'policy'->>'conversation_memory' FROM public.clients WHERE id = '
 Clearing the key or setting it to `true` restores the default. The console's own writes to the
 policy (reply mode, approval wait) set single keys with `jsonb_set`, so they leave this key alone.
 Write only JSON `true` or `false`: the policy model rejects unknown keys and wrong types, and a
-policy that fails validation fails the company's turns. The owner's retest rows are in
+policy that fails validation fails the company's turns. Clear the key (or set it true) before
+rolling back to an image older than this release: the older policy model rejects unknown keys and
+would fail every turn of that company. The owner's retest rows are in
 [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
 
 ## Gotchas

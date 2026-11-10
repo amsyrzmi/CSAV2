@@ -61,9 +61,9 @@ from csa.contracts.state import (
 from csa.core import db
 from csa.core.pii import real_email, redact, redact_with_values
 from csa.core.tenancy import tx
-from csa.decide.completion import JsonCompletionClient
+from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.decide.jev import JevProvider
-from csa.decide.llm import ClientBrand, LLMProvider, _recent_messages
+from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
 from csa.graph.policy.plan_rules import tiktok_stock_fallback
@@ -294,50 +294,61 @@ class PostgresTurnDependencies:
             )
         if row is None:
             raise RuntimeError("conversation_not_found")
-        recent, handoff_recent = await self._recent_messages(envelope, conversation_id)
+        # Side by side: each read has its own budget and never raises (both degrade to empty), so
+        # together they stay inside the node's limit, which one after the other they need not.
+        (recent, handoff_recent, memory_off), booking = await asyncio.gather(
+            self._recent_messages(envelope, conversation_id),
+            self._booking_context(envelope, conversation_id),
+        )
+        flags = {"human_muted": bool(row["human_muted"]), "handoff_recent": handoff_recent}
+        if memory_off:
+            # The reply writers and the review then see no earlier message, not even a booking
+            # context's own (`_memory_messages`); the classifier and planner keep those.
+            flags["memory_off"] = True
         return Context(
             summary=row["summary"],
             clarify_count=row["clarify_count"],
             active_order_ids=row["active_order_ids"],
-            flags={"human_muted": bool(row["human_muted"]), "handoff_recent": handoff_recent},
-            booking=await self._booking_context(envelope, conversation_id),
+            flags=flags,
+            booking=booking,
             recent=recent,
         )
 
     async def _recent_messages(
         self, envelope: Envelope, conversation_id: UUID
-    ) -> tuple[list[RecentMessage], bool]:
-        """The chat's earlier messages (oldest first) and whether a person was lately asked in.
+    ) -> tuple[list[RecentMessage], bool, bool]:
+        """The chat's earlier messages (oldest first), whether a person was lately asked in, and
+        whether the company switched memory off.
 
         For every company and channel, unless the company switched `conversation_memory` off, in
-        which case no message is read. Its own budget, and any failure leaves both empty: this
-        must never fail the turn.
+        which case neither is read. Its own budget, and any failure leaves all three empty (memory
+        then counts as on, with nothing to show): this must never fail the turn.
         """
         try:
             async with asyncio.timeout(RECENT_BUDGET_S):
                 policy = await self._policy(envelope.client_id)
+                if not policy.conversation_memory:
+                    return [], False, True
                 async with tx(self._pool, str(envelope.client_id)) as conn:
-                    recent: list[RecentMessage] = []
-                    if policy.conversation_memory:
-                        rows = await db.q.fetch_all(
-                            "turn/recent_messages.sql",
-                            {
-                                "client_id": envelope.client_id,
-                                "conversation_id": conversation_id,
-                                "trace_id": envelope.trace_id,
-                                "limit": RECENT_WINDOW,
-                            },
-                            conn=conn,
+                    rows = await db.q.fetch_all(
+                        "turn/recent_messages.sql",
+                        {
+                            "client_id": envelope.client_id,
+                            "conversation_id": conversation_id,
+                            "trace_id": envelope.trace_id,
+                            "limit": RECENT_WINDOW,
+                        },
+                        conn=conn,
+                    )
+                    recent = [
+                        RecentMessage(
+                            author="customer" if row["direction"] == "inbound" else "assistant",
+                            text=clip_message(row["redacted_body"].strip()),
                         )
-                        recent = [
-                            RecentMessage(
-                                author="customer" if row["direction"] == "inbound" else "assistant",
-                                text=clip_message(row["redacted_body"].strip()),
-                            )
-                            for row in rows
-                        ]
+                        for row in rows
+                    ]
                     handoff = await _handoff_recent(conn, envelope.client_id, conversation_id)
-                return recent, handoff
+                return recent, handoff, False
         except Exception as exc:  # including TimeoutError
             logger.warning(
                 "turn_context_degraded",
@@ -345,7 +356,7 @@ class PostgresTurnDependencies:
                 error_type=type(exc).__name__,
                 trace_id=str(envelope.trace_id),
             )
-            return [], False
+            return [], False, False
 
     async def _booking_context(
         self, envelope: Envelope, conversation_id: UUID
@@ -596,10 +607,11 @@ class PostgresTurnDependencies:
                     error_type=type(error).__name__,
                 )
                 text = None
+            # Only what the assistant itself said earlier grounds a figure here. This reply is not
+            # reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed back
+            # reads as a promise; the facts are not shown to the handoff writer at all.
             sources = [
-                *(m.text for m in _recent_messages(state.ctx or Context())),
-                message.body_redacted,
-                *(fact.text for fact in state.facts),
+                m.text for m in _memory_messages(state.ctx or Context()) if m.author == "assistant"
             ]
             if text and handoff_text_ok(text, sources):
                 return Draft(text=text, language=language, handoff=True, composer="primary")
@@ -667,7 +679,9 @@ class PostgresTurnDependencies:
                 return grounded
             try:
                 return await self._llm.review(state)
-            except Exception as exc:  # advisory: the deterministic check has already passed
+            # Advisory: the deterministic check has already passed. Only a provider that cannot
+            # answer degrades it; any other error is a fault and fails the turn as one.
+            except (CompletionError, TimeoutError) as exc:
                 logger.warning(
                     "semantic_review_degraded",
                     error_type=type(exc).__name__,
