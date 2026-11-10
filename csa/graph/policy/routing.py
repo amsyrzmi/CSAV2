@@ -26,6 +26,13 @@ _HARD_ESCALATE = re.compile(
     r"வழக்கறிஞர்|நீதிமன்றம்)",
     re.IGNORECASE,
 )
+
+
+def has_hard_escalate_words(text: str) -> bool:
+    """Whether ``text`` carries a legal or police word that sends the turn straight to staff."""
+    return _HARD_ESCALATE.search(text) is not None
+
+
 _ACCOUNT_INTENTS = {
     "order",
     "refund_returns",
@@ -53,7 +60,7 @@ def route_turn(state: TurnState) -> Route:
         voice is not None and not (voice.transcript or "").strip()
     ):
         return "voice_failed"
-    if _HARD_ESCALATE.search(message.body_raw):
+    if has_hard_escalate_words(message.body_raw):
         return "hard_escalate"
     if state.guard is not None and not state.guard.allowed:
         return "guard_blocked"

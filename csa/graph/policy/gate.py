@@ -9,7 +9,6 @@ from pydantic import Field
 from csa.contracts.envelope import Channel, ContractModel
 from csa.contracts.plan import Intent
 from csa.contracts.state import GateVerdict, TurnState
-from csa.graph.policy.handoff import SERVICE_OFF
 
 POLICY_NAME = "lg07-gate-v1"
 FAILURE_PENALTY = 0.25
@@ -63,9 +62,10 @@ def evaluate(policy: Policy, state: TurnState) -> GateVerdict:
     follows_mode = state.envelope.channel != Channel.WEB
     if follows_mode and policy.deployment_mode == "shadow":
         return verdict("reject", "shadow_mode")
-    # The handoff has already muted the bot, so holding this reply would leave the customer
-    # with nothing and staff with no draft.
-    if state.handoff is not None and state.handoff.required and state.handoff.reason == SERVICE_OFF:
+    # The handoff has already muted the bot, and the owner chose that a required handoff always
+    # tells the customer without staff approval (decision a): a two-sentence acknowledgement that
+    # passed the light check, or a fixed template. Shadow mode, above, still sends nothing.
+    if state.handoff is not None and state.handoff.required:
         return verdict("send", "system_reply")
     plan = state.plan
     # Acknowledging a handoff and answering button taps must never wait for a human.

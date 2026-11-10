@@ -63,13 +63,14 @@ from csa.core.pii import real_email, redact, redact_with_values
 from csa.core.tenancy import tx
 from csa.decide.completion import JsonCompletionClient
 from csa.decide.jev import JevProvider
-from csa.decide.llm import ClientBrand, LLMProvider
+from csa.decide.llm import ClientBrand, LLMProvider, _recent_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
 from csa.graph.policy.plan_rules import tiktok_stock_fallback
+from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
-from csa.turn.texts import clip_message
+from csa.turn.texts import clip_message, handoff_template, handoff_text_ok, resolve_language
 
 logger = structlog.get_logger(__name__)
 
@@ -83,7 +84,6 @@ RECENT_BUDGET_S = 1.0
 # graph's 10 s node limit (which would cancel it without a word): past it the facts are sent.
 BOOKING_COMPOSE_BUDGET_S = 9.0
 FALLBACK_TEXT = "Thanks for your message. A team member will follow up with you shortly."
-HANDOFF_TEXT = "I've passed this to a team member who will get back to you shortly."
 SANDBOX_SCOPE_TEXT = (
     "Sandbox assistant can only answer knowledge and product-information questions. "
     "Customer records, business actions and staff escalation are unavailable."
@@ -534,11 +534,11 @@ class PostgresTurnDependencies:
                 language=state.envelope.message.language,
                 composer="template",
             )
+        if (state.handoff is not None and state.handoff.required) or (
+            state.plan is not None and state.plan.reply_strategy == "escalate"
+        ):
+            return await self._handoff_draft(state)
         language = state.envelope.message.language
-        if state.handoff is not None and state.handoff.required:
-            return Draft(text=HANDOFF_TEXT, language=language)
-        if state.plan is not None and state.plan.reply_strategy == "escalate":
-            return Draft(text=HANDOFF_TEXT, language=language)
         brand = await self._client_brand(state.envelope.client_id)
         if (
             state.envelope.callback is not None
@@ -562,6 +562,35 @@ class PostgresTurnDependencies:
         body = state.envelope.message.body_redacted.strip()
         text = f"Echo: {body}"[:4096] if body else "Echo: message received."
         return Draft(text=text, language=language)
+
+    async def _handoff_draft(self, state: TurnState) -> Draft:
+        """The reply that tells the customer a person has been told: written by the model where
+        that is safe (`_handoff_may_be_written`) and it passes the light check, else the localized
+        template. The check runs here, once; `verify` skips a handoff draft."""
+        signal = state.signals.answers.get("language") if state.signals else None
+        message = state.envelope.message
+        language = resolve_language(
+            signal if isinstance(signal, str) else None, message.language, message.body_redacted
+        )
+        if self._llm is not None and _handoff_may_be_written(state):
+            brand = await self._client_brand(state.envelope.client_id)
+            text = await self._llm.compose_handoff(state, brand)
+            sources = [
+                *(m.text for m in _recent_messages(state.ctx or Context())),
+                message.body_redacted,
+                *(fact.text for fact in state.facts),
+            ]
+            if text and handoff_text_ok(text, sources):
+                return Draft(text=text, language=language, handoff=True, composer="primary")
+            if text:
+                logger.info(
+                    "handoff_reply_replaced_by_template",
+                    trace_id=str(state.envelope.trace_id),
+                    chars=len(text),
+                )
+        return Draft(
+            text=handoff_template(language), language=language, handoff=True, composer="template"
+        )
 
     async def _keep_a_written_booking(self, state: TurnState, draft: Draft) -> Draft:
         """A turn that wrote a booking must tell the customer what was written.
@@ -598,10 +627,11 @@ class PostgresTurnDependencies:
     async def verify(self, state: TurnState) -> Verification:
         if state.draft is None:
             return Verification(ok=False, issues=["empty_draft"])
-        # Handoff text and button-tap acknowledgements are system text, not model claims.
+        # A handoff reply was checked where it was written (`_handoff_draft`); button-tap
+        # acknowledgements are system text, not model claims.
         if (
             self._llm is None
-            or state.draft.text == HANDOFF_TEXT
+            or state.draft.handoff
             or state.envelope.callback
             or (state.envelope.channel == Channel.WEB and state.draft.text == SANDBOX_SCOPE_TEXT)
         ):
@@ -709,8 +739,14 @@ class PostgresTurnDependencies:
             raise RuntimeError("hold_draft_missing")
         envelope = state.envelope
         async with tx(self._pool, str(envelope.client_id)) as conn:
+            # A held handoff reply is kept for staff: the escalation agent has already muted the
+            # conversation, which would otherwise drop it without a word.
             if not await automation_allowed(
-                conn, envelope.client_id, _require_conversation(envelope), envelope.trace_id
+                conn,
+                envelope.client_id,
+                _require_conversation(envelope),
+                envelope.trace_id,
+                handoff=state.draft.handoff,
             ):
                 return
             if envelope.channel == Channel.WEB:
@@ -747,14 +783,18 @@ class PostgresTurnDependencies:
 
     async def emit(self, state: TurnState) -> None:
         envelope = state.envelope
+        draft = state.draft
         async with tx(self._pool, str(envelope.client_id)) as conn:
             for message in state.outbound:
-                await _insert_outbound(
-                    conn,
-                    envelope,
-                    message,
-                    handoff=envelope.channel != Channel.WEB and message.body == HANDOFF_TEXT,
+                # The draft says it is the handoff reply; only the message that carries its text
+                # is sent on the handoff's authority (never on the web sandbox).
+                handoff = (
+                    envelope.channel != Channel.WEB
+                    and draft is not None
+                    and draft.handoff
+                    and message.body == draft.text
                 )
+                await _insert_outbound(conn, envelope, message, handoff=handoff)
 
     async def finalize(self, state: TurnState) -> None:
         conversation_id = _require_conversation(state.envelope)
@@ -844,6 +884,35 @@ def _resolve_order_number(task: Task, envelope: Envelope) -> Task:
     if not _PLAIN_ORDER_NUMBER.match(digits):
         return task
     return task.model_copy(update={"input": {**task.input, "order_number": digits}})
+
+
+# Routes whose handoff reply is always the template: the guard or the legal-word rule blocked the
+# message, there was no transcript, or the language is one the bot does not write.
+_TEMPLATE_HANDOFF_ROUTES = frozenset(
+    {"hard_escalate", "guard_blocked", "voice_failed", "unsupported_language"}
+)
+_WRITTEN_HANDOFF_REASONS = frozenset({"human_requested", "angry_customer", "agent_failure"})
+
+
+def _handoff_may_be_written(state: TurnState) -> bool:
+    """Whether the model may write this turn's handoff reply (plan ruling R3).
+
+    Never on a button tap, on an injection turn, on a message with a legal or police word, or for
+    a reason other than asking for a person, anger, an agent failure or an escalating plan. An
+    escalating plan is written only off the hard routes; a person asked for, or anger, also
+    reaches ``hard_escalate`` (from the classifier), and is written unless the guard or the
+    route's own rules (voice, language) blocked the message.
+    """
+    if state.envelope.callback is not None or state.handoff is None:
+        return False
+    if state.signals is not None and state.signals.answers.get("injection") is True:
+        return False
+    if has_hard_escalate_words(state.envelope.message.body_raw):
+        return False
+    reason = state.handoff.reason
+    if reason in _WRITTEN_HANDOFF_REASONS:
+        return state.route not in _TEMPLATE_HANDOFF_ROUTES - {"hard_escalate"}
+    return reason == "plan_escalated" and state.route not in _TEMPLATE_HANDOFF_ROUTES
 
 
 def _require_conversation(envelope: Envelope) -> UUID:

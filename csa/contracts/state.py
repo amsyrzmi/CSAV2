@@ -99,6 +99,9 @@ class Draft(ContractModel):
     language: str = Field(min_length=2, max_length=16)
     fact_ids: list[str] = Field(default_factory=list, max_length=100)
     composer: Literal["primary", "fallback", "template"] | None = None
+    # The reply that tells the customer a person has been told: it is checked where it is written
+    # (`_compose`), and `emit` delivers it while the conversation is muted for that person.
+    handoff: bool = False
 
 
 class Verification(ContractModel):

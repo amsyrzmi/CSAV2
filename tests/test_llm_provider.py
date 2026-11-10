@@ -1894,3 +1894,83 @@ async def test_classify_and_plan_prompts_for_a_bare_context_are_unchanged() -> N
     assert plan_system.startswith(_OLD_PLAN_HEAD + "Agent input schemas: {")
     assert plan_system.endswith("}. Agent purposes: " + json.dumps(CAPABILITIES) + ".")
     assert plan_system.count("Agent input schemas: ") == 1
+
+
+# --- the handoff reply (compose_handoff) ---------------------------------------------------------
+
+_HANDOFF_RULES_TEXT = (
+    "Write the reply that tells the customer a team member has been told and will answer in "
+    "this chat. At most two short sentences, in the customer's language and register. If the "
+    "customer is upset, open with one short clause that acknowledges it. Refer to what they "
+    "asked only in general terms taken from the conversation. Promise no time, refund, discount "
+    "or outcome. Do not repeat an earlier assistant message."
+)
+
+
+def _handoff_state(language: str = "en", ctx: Context | None = None) -> TurnState:
+    from csa.contracts.state import Handoff
+
+    return TurnState(
+        envelope=make_envelope("nak cakap dengan orang"),
+        ctx=ctx,
+        signals=make_signals(Intent.HUMAN_REQUEST, answers={"language": language}),
+        plan=Plan(
+            tasks=[],
+            reply_strategy="escalate",
+            intent=Intent.HUMAN_REQUEST,
+            confidence=1,
+            source="policy",
+        ),
+        handoff=Handoff(required=True, reason="human_requested", priority="high"),
+    )
+
+
+async def test_compose_handoff_prompt_carries_the_rules_and_the_register() -> None:
+    from csa.decide.llm import ClientBrand
+
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        seen.append((messages[0]["content"], messages[1]["content"]))
+        return _ok({"reply": "  Baik, saya dah bagitahu team.  ", "used_fact_ids": []})(request)
+
+    brand = ClientBrand(brand_name="Acme", brand_tone="warm", persona_name="Mira")
+    ctx = _recent_ctx(("customer", "plan mana sesuai?"), ("assistant", "Boleh, ada tiga plan."))
+    text = await _provider(handler).compose_handoff(_handoff_state("ms", ctx), brand)
+    assert text == "Baik, saya dah bagitahu team."
+    ((system, user),) = seen
+    assert _HANDOFF_RULES_TEXT in system
+    assert "Persona: Mira. Tone: warm." in system
+    assert "bahasa baku" in system and "Say the casual word" in system  # the Malay register
+    assert system.index("Tone: warm.") < system.index(_HANDOFF_RULES_TEXT)
+    assert "Reply language: Malay" in system
+    assert "<recent_messages>" in user and "plan mana sesuai?" in user
+    assert user.endswith("<message>nak cakap dengan orang</message>")
+    # English: the same rules, no register block, no recent block without earlier messages.
+    seen.clear()
+    await _provider(handler).compose_handoff(_handoff_state("en"), None)
+    ((system, user),) = seen
+    assert _HANDOFF_RULES_TEXT in system and "bahasa baku" not in system
+    assert "<recent_messages>" not in user
+
+
+async def test_compose_handoff_returns_none_on_a_model_error_without_a_fallback_call() -> None:
+    calls = {"primary": 0}
+
+    def down(_: httpx.Request) -> httpx.Response:
+        calls["primary"] += 1
+        return httpx.Response(500)
+
+    fallback_calls = {"n": 0}
+
+    def fallback_handler(_: httpx.Request) -> httpx.Response:
+        fallback_calls["n"] += 1
+        return httpx.Response(200, json={"candidates": []})
+
+    gemini = GeminiClient(
+        "k", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(fallback_handler))
+    )
+    provider = _provider(down, compose_fallback=gemini)
+    assert await provider.compose_handoff(_handoff_state(), None) is None
+    assert calls["primary"] >= 1 and fallback_calls["n"] == 0  # no failover chain
