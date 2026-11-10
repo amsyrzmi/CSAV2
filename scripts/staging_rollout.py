@@ -193,7 +193,13 @@ def load_host_values(target: Target) -> dict[str, str]:
             raise RolloutError("flags", f"{name} line {number}: unknown key{shown}")
         if key in values:
             raise RolloutError("flags", f"{name} line {number}: duplicate key {key}")
-        values[key] = value.strip()
+        value = value.strip()
+        # No shell here: quotes would reach compose as part of the value.
+        if value[:1] in {'"', "'"}:
+            raise RolloutError(
+                "flags", f"{name} line {number}: quoted value; write KEY=value without quotes"
+            )
+        values[key] = value
     missing = sorted(target.host_required_keys - values.keys())
     if missing:
         raise RolloutError("flags", f"{name} is missing: {', '.join(missing)}")

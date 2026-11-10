@@ -377,6 +377,26 @@ def test_host_file_refuses_switches_groq_url_unknown_duplicate_and_malformed(
     assert not any(v in caught.value.message for v in HOST_REQUIRED.values())
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        'export CSA_STAGING_HOOKS_ORIGIN="probe-quoted-77"',
+        "CSA_STAGING_HOOKS_ORIGIN='probe-quoted-77'",
+        'CSA_STAGING_HOOKS_ORIGIN = "probe-quoted-77"',
+    ],
+    ids=["double-export", "single", "spaced"],
+)
+def test_host_file_refuses_quoted_values(tmp_path: Path, line: str) -> None:
+    host = tmp_path / "host.env"
+    text = HOST_TEXT.replace("CSA_STAGING_HOOKS_ORIGIN=https://hooks.example.test\n", "")
+    host.write_text(text + line + "\n")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_host_values(hosted(host))
+    assert caught.value.step == "flags"
+    assert caught.value.message == ("host.env line 4: quoted value; write KEY=value without quotes")
+    assert "probe-quoted-77" not in caught.value.message
+
+
 def test_host_file_missing_a_required_key_is_refused(tmp_path: Path) -> None:
     host = tmp_path / "host.env"
     host.write_text(HOST_TEXT.replace("CSA_PROD_S3_REGION=region-value-x\n", ""))
