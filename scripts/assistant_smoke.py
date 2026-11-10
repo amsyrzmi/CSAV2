@@ -16,12 +16,13 @@ It runs inside the staging gateway container, which has the model key mounted::
     docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke [--repeat N] [--case ID]
 
 Output is content-free: one ``PASS|FAIL <id> action=<action>`` line per sample, the failing
-field names after a failure, ``RATE <id> k/N`` per case with ``--repeat``, and a last
-``N passed, M failed`` line. Never a message, model text, subject, body or address; the key is
-never printed. Exit 0 when every sample passes, 1 when any fails, 2 on a setup error (no model
-key, the model unavailable on the first call, an unknown case id, a missing or invalid case
-file). A run is about 59 model calls (one planner call per case plus one drafting call per draft
-case), up to about 107 with re-plans.
+field names after a failure, ``replanned`` when the one correction was used, ``mode_inferred``
+when a batch email's mode came from the server (the planner left it out), ``RATE <id> k/N`` per
+case with ``--repeat``, and a last ``N passed, M failed`` line. Never a message, model text,
+subject, body or address; the key is never printed. Exit 0 when every sample passes, 1 when any
+fails, 2 on a setup error (no model key, the model unavailable on the first call, an unknown
+case id, a missing or invalid case file). A run is about 59 model calls (one planner call per
+case plus one drafting call per draft case), up to about 107 with re-plans.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ from csa.workspace.service import (
     _corrected_plan,
     _named_recipient_check,
     _Planned,
-    _resumed,
+    _ready_batch,
 )
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -341,12 +342,15 @@ class Outcome:
     action: str
     failed: list[str] = field(default_factory=list)
     replanned: bool = False
+    mode_inferred: bool = False
 
     def line(self, case_id: str) -> str:
         status = "FAIL" if self.failed else "PASS"
         parts = [status, case_id, f"action={self.action}", *self.failed]
         if self.replanned:
             parts.append("replanned")
+        if self.mode_inferred:
+            parts.append("mode_inferred")
         return " ".join(parts)
 
 
@@ -355,6 +359,9 @@ class _Call:
     """One planner call of a turn: what the model proposed and how the server took it."""
 
     proposal: WorkspaceProposal | None = None
+    # The proposal as the server drafts it: a batch with the stored offset and a filled-in mode.
+    ready: WorkspaceProposal | None = None
+    mode_inferred: bool = False
     refusal: str | None = None
     locked: bool = False
     stop: str | None = None  # the server's answer instead of the card (a batch offset unknown)
@@ -405,11 +412,22 @@ def _resolver(
                 _named_recipient_check(proposal, message, facts)
             elif isinstance(proposal, EmailBatchProposal | PlanProposal):
                 steps = [proposal] if isinstance(proposal, EmailBatchProposal) else proposal.steps
+                ready: list[Any] = []
                 for step in steps:
                     if isinstance(step, EmailBatchProposal):
-                        # Recipients traced to the user's words; "the rest" from the stored count.
-                        resumed = _resumed(step, message, facts)
-                        call.stop = call.stop or _check_batch(resumed, message, facts)
+                        # "The rest" from the stored count and a missing mode filled in, as the
+                        # turn's _plan does; recipients traced to the user's words.
+                        drafted = _ready_batch(step, message, facts)
+                        call.mode_inferred = call.mode_inferred or step.mode is None
+                        call.stop = call.stop or _check_batch(drafted, message, facts)
+                        ready.append(drafted)
+                    else:
+                        ready.append(step)
+                call.ready = (
+                    ready[0]
+                    if isinstance(proposal, EmailBatchProposal)
+                    else proposal.model_copy(update={"steps": ready})
+                )
         except PlannerInvalidOutput as exc:
             call.refusal = exc.reason or CONTRACT_INVALID
             raise
@@ -467,6 +485,9 @@ async def run_case(
         failed.append("content_question")
     if proposal is None:
         return outcome
+    # Checked as the server drafts it (a batch's mode filled in when the planner left it out).
+    proposal = last.ready or proposal
+    outcome.mode_inferred = last.mode_inferred
     expect = case.expect
     if proposal.action not in expect.actions:
         failed.append("actions")

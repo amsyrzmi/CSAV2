@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import Literal
 
 from csa.console.contracts import Role
 from csa.console.services import PackageState
@@ -46,6 +47,36 @@ def asks_to_send(text: str, plan_send: bool) -> bool:
     if SEND_WORDS.search(text) and (plan_send or not written):
         return True
     return bool(plan_send and EMAIL_VERB.search(text) and not written)
+
+
+# --- A batch email's mode when the planner left it out --------------------------------------
+# "The same email/message/text" (Malay "emel/mesej yang sama"): one text for everyone.
+SAME_TEXT_WORDS = re.compile(
+    r"\b(?:same|identical)\s+(?:e-?mails?|messages?|texts?|notices?|notes?|wording|reminders?)\b"
+    r"|\b(?:e-?mel|emel|mesej|teks|notis|peringatan)\s+yang\s+sama\b",
+    re.IGNORECASE,
+)
+# A person's own details: "their own renewal date", "personalised", "mereka sendiri". "Each on
+# their own" (separate messages) is not one: "own" must be followed by a word that is not a
+# little word such as "the" or "and" ("each on their own: the office closes" stays shared).
+OWN_DETAILS_WORDS = re.compile(
+    r"\b(?:their|his|her)\s+own\s+(?!(?:the|a|an|and|or|to|with|that|this)\b)[a-z]"
+    r"|\bpersonali[sz]\w*|\bmereka\s+sendiri\b|\bmasing-masing\b|\bperibadi\b",
+    re.IGNORECASE,
+)
+
+
+def batch_mode(text: str) -> Literal["shared", "personalised"]:
+    """The mode for these user-written words when the planner gave none.
+
+    ``shared`` only when the words ask for the same text (``SAME_TEXT_WORDS``) and name no
+    person's own details (``OWN_DETAILS_WORDS``); anything else is ``personalised``, the email
+    decider's default. A wrong ``shared`` would send one text where each person needed their
+    own details, so only explicit words give it.
+    """
+    if SAME_TEXT_WORDS.search(text) and not OWN_DETAILS_WORDS.search(text):
+        return "shared"
+    return "personalised"
 
 
 # --- Placeholder options ---------------------------------------------------------------------
@@ -142,7 +173,8 @@ CORRECTION_NOTES: dict[str, str] = {
     "characters, a value under 200 characters and no email addresses.",
     CONTRACT_INVALID: "Return one JSON object that matches the schema exactly; for "
     "email_compose set exactly one of recipient_employee_id and recipient_address; for "
-    "people_query set reports_to or department.",
+    "people_query set reports_to or department; for answer, set availability (one of person or "
+    "room, and day; no time) with the booking_availability read and only with it.",
 }
 
 

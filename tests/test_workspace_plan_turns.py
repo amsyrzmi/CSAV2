@@ -164,6 +164,28 @@ async def test_email_batch_turn_creates_a_plan_card_of_email_steps(planned) -> N
     assert origin == [{"origin": "assistant", "thread_id": UUID(thread)}]
 
 
+async def test_a_batch_without_mode_is_drafted_once_for_the_same_email(planned) -> None:
+    """The planner left mode out (the staging smoke failure): "the same email" in the user's
+    words drafts one shared text, copied to each; other words draft each person."""
+    w, model = planned
+    browser = await _mail_ready(w, "hr")
+    drafter = _clean_drafter(w)
+    await _employee(w, AINA)
+    await _employee(w, BAKAR)
+    thread = await _thread(w, browser)
+    model.reply(_batch(*_named(AINA, BAKAR)))
+    body = "Draft the same email to Aina Example and Bakar Example: we close at 5pm"
+    shared = _card(await _turn(w, browser, thread, body, "email"))
+    assert len(await _steps(w, shared["id"])) == 2
+    assert len(drafter.named("DraftProposal")) == 1
+    other = await _thread(w, browser)
+    model.reply(_batch(*_named(AINA, BAKAR)))
+    body = "Draft an email to Aina Example and Bakar Example that we close at 5pm"
+    each = _card(await _turn(w, browser, other, body, "email"))
+    assert len(await _steps(w, each["id"])) == 2
+    assert len(drafter.named("DraftProposal")) == 3
+
+
 async def test_a_send_word_gives_send_steps_and_no_send_word_only_exports(planned) -> None:
     w, model = planned
     browser = await _mail_ready(w, "hr")

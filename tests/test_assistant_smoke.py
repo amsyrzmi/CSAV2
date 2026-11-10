@@ -245,7 +245,9 @@ def test_smoke_output_is_content_free_and_exit_code(capsys: pytest.CaptureFixtur
     passed = [line for line in lines if line.startswith("PASS ")]
     assert len(passed) == len(cases) - 1
     for line in passed:
-        assert re.fullmatch(r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?", line), line
+        assert re.fullmatch(
+            r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?( mode_inferred)?", line
+        ), line
     assert lines[-1] == f"{len(cases) - 1} passed, 1 failed"
 
     # Every case passing exits 0; drafting was called for the draft checks.
@@ -769,3 +771,39 @@ def test_smoke_refuses_a_group_or_name_the_message_never_wrote(
             "recipient",
         ], out
         assert "Scripted Customer" not in out
+
+
+class NoModeModel(ScriptedModel):
+    """The staging failure: the planner's email_batch leaves ``mode`` out."""
+
+    def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+        proposal = super()._proposal(case)
+        proposal.pop("mode", None)
+        return proposal
+
+
+def test_smoke_checks_the_mode_the_server_drafts_with_and_marks_an_inferred_one(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A batch with no planner mode is checked on the mode the server fills in from the
+    user's words ("the same email" is shared, a person's own details personalised), and the
+    line says so: the prompt's own rate stays visible."""
+    for case_id in (*BATCH_CASES, "email_batch_group-ms-1"):
+        assert smoke.main(["--case", case_id], client=NoModeModel()) == 0, case_id
+        out = capsys.readouterr().out
+        assert f"PASS {case_id} action=email_batch mode_inferred" in out, (case_id, out)
+        _assert_content_free(out)
+        # A planner that sets the mode is not marked.
+        assert smoke.main(["--case", case_id], client=ScriptedModel()) == 0
+        assert "mode_inferred" not in capsys.readouterr().out
+
+    class WrongMode(ScriptedModel):
+        def _proposal(self, case: smoke.SmokeCase) -> dict[str, Any]:
+            proposal = super()._proposal(case)
+            if proposal["action"] == "email_batch":
+                proposal["mode"] = "personalised"
+            return proposal
+
+    # The planner's own (wrong) choice is kept, so it still fails.
+    assert smoke.main(["--case", "email_batch-en-1"], client=WrongMode()) == 1
+    assert "FAIL email_batch-en-1 action=email_batch fields" in capsys.readouterr().out
