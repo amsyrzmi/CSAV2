@@ -35,7 +35,9 @@ PLAN_TIMEOUT_S = 7.0
 COMPOSE_TIMEOUT_S = 9.0
 _PRIMARY_COMPOSE_TIMEOUT_S = 4.5
 _FALLBACK_COMPOSE_TIMEOUT_S = 5.0
-REVIEW_TIMEOUT_S = 5.0
+# Split like compose: a hung primary plus a second-client attempt must fit the verify node's 10 s.
+REVIEW_PRIMARY_TIMEOUT_S = 4.0
+REVIEW_FALLBACK_TIMEOUT_S = 4.5
 MAX_ISSUE_CHARS = 160
 MIN_CAPABILITY_SCORE = 0.5
 _BUTTON_ONLY = {("order_agent", "confirm"), ("order_agent", "cancel")}
@@ -353,7 +355,14 @@ class LLMProvider:
         return f"groq:{self._client.model}"
 
     async def _json(
-        self, schema: type[T], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+        self,
+        schema: type[T],
+        *,
+        system: str,
+        user: str,
+        timeout: float,
+        max_tokens: int = 1500,
+        fallback_timeout: float | None = None,
     ) -> T:
         """One JSON call on the primary client, then once on the second client after a provider
         error, when one is configured (plan ruling R1: the primary client already retried itself).
@@ -372,7 +381,11 @@ class LLMProvider:
                 provider="primary",
             )
         return await self._compose_fallback.json_completion(
-            schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+            schema,
+            system=system,
+            user=user,
+            timeout=fallback_timeout if fallback_timeout is not None else timeout,
+            max_tokens=max_tokens,
         )
 
     @staticmethod
@@ -830,7 +843,12 @@ class LLMProvider:
         # On the second client too: in a primary outage the reply was composed there, and must
         # not then go out unreviewed.
         out = await self._json(
-            ReviewOut, system=system, user=user, timeout=REVIEW_TIMEOUT_S, max_tokens=600
+            ReviewOut,
+            system=system,
+            user=user,
+            timeout=REVIEW_PRIMARY_TIMEOUT_S,
+            fallback_timeout=REVIEW_FALLBACK_TIMEOUT_S,
+            max_tokens=600,
         )
         if out.ok:
             return Verification(ok=True)

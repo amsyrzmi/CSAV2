@@ -2311,7 +2311,8 @@ async def test_review_falls_back_to_the_second_client() -> None:
     result = await provider.review(_review_state("Yes, and delivery is free."))
     assert result.ok is False and result.issues == ["claims free delivery"]
     assert len(primary.calls) == 1 and len(fallback.calls) == 1
-    assert fallback.calls[0] == primary.calls[0]  # the same request, once
+    # The same request, once; only the time budget differs (see the review timeout tests).
+    assert {**fallback.calls[0], "timeout": None} == {**primary.calls[0], "timeout": None}
     assert fallback.calls[0]["max_tokens"] == 600
 
 
@@ -2377,3 +2378,37 @@ async def test_compose_handoff_is_not_shown_the_facts() -> None:
     assert "Plan Kecil costs RM15" not in user and "facts" not in user
     assert user.startswith("<recent_messages>") and "Boleh, ada tiga plan." in user
     assert user.endswith("<message>nak cakap dengan orang</message>")
+
+
+# --- review timeouts: a primary plus a second-client attempt must fit the verify node --------
+
+
+async def test_review_second_client_gets_its_own_shorter_budget() -> None:
+    from csa.decide import llm
+
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    fallback = _FakeClient("fallback-model", answer={"ok": True, "issues": []})
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    result = await provider.review(_review_state("Yes, A1 is MYR 10.50."))
+    assert result.ok
+    assert primary.calls[0]["timeout"] == llm.REVIEW_PRIMARY_TIMEOUT_S == 4.0
+    assert fallback.calls[0]["timeout"] == llm.REVIEW_FALLBACK_TIMEOUT_S == 4.5
+
+
+async def test_json_without_fallback_timeout_reuses_the_timeout_on_the_second_client() -> None:
+    from csa.decide import llm
+
+    primary = _FakeClient("primary-model", error=GroqError("groq_timeout"))
+    fallback = _FakeClient("fallback-model", answer={"ok": True, "issues": []})
+    provider = build_llm_provider(primary, compose_fallback=fallback)
+    await provider._json(llm.ReviewOut, system="s", user="u", timeout=3.0)
+    assert primary.calls[0]["timeout"] == 3.0
+    assert fallback.calls[0]["timeout"] == 3.0
+
+
+def test_review_timeouts_fit_inside_the_verify_node_limit() -> None:
+    from csa.decide import llm
+    from csa.graph.coordinator import _NODE_TIMEOUTS
+
+    total = llm.REVIEW_PRIMARY_TIMEOUT_S + llm.REVIEW_FALLBACK_TIMEOUT_S
+    assert total <= _NODE_TIMEOUTS["compose"] - 1.0
