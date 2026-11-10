@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable
 from typing import Literal, cast
 
-from csa.decide.grounding import ungrounded
+from csa.decide.grounding import ungrounded, unsupported_figures
 
 Language = Literal["en", "ms", "zh", "ta"]
 
@@ -42,7 +42,7 @@ _MALAY_WORDS: frozenset[str] = frozenset(
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _TAMIL = re.compile(r"[஀-௿]")
 _WORD = re.compile(r"[a-z0-9]+")
-_SENTENCE_END = re.compile(r"[.!?]+(?:\s+|$)")
+_SENTENCE_END = re.compile(r"[.!?]+(?:\s+|$)|[。！？]+")
 
 _HANDOFF: dict[Language, str] = {
     "en": "I've passed this to a team member who will get back to you shortly.",
@@ -124,4 +124,5 @@ def handoff_text_ok(text: str, sources: Iterable[str]) -> bool:
     sentences = [part for part in _SENTENCE_END.split(stripped) if part.strip()]
     if len(sentences) > _HANDOFF_MAX_SENTENCES:
         return False
-    return not ungrounded(stripped, sources)
+    pool = list(sources)
+    return not ungrounded(stripped, pool) and not unsupported_figures(stripped, pool)

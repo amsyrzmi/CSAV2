@@ -19,7 +19,7 @@ LANGUAGES: tuple[Language, ...] = ("en", "ms", "zh", "ta")
 def test_resolve_language_prefers_signal_then_envelope_then_detector() -> None:
     """A valid signal wins, then the envelope's primary subtag, then the body detector."""
     assert resolve_language("ms", "und", "hi") == "ms"
-    assert resolve_language("other", "en-GB", "x") == "en"
+    assert resolve_language("other", "en-GB", "nak tanya boleh") == "en"
     assert resolve_language("other", "und", "nak tanya boleh x") == "ms"
     assert resolve_language("other", "und", "你好") == "zh"
     assert resolve_language(None, "und", "hello there") == "en"
@@ -68,3 +68,20 @@ def test_handoff_text_ok_accepts() -> None:
     assert handoff_text_ok("We open at 9 tomorrow.", ["Opening hours: 9 to 5"])
     for language in LANGUAGES:
         assert handoff_text_ok(handoff_template(language), [])
+
+
+def test_handoff_text_ok_counts_cjk_sentence_ends() -> None:
+    """Chinese full stops end a sentence without a space; two pass, three fail."""
+    assert not handoff_text_ok("一。二。三。", [])
+    assert handoff_text_ok("我已经通知团队。他们会回复您。", [])
+
+
+def test_handoff_text_ok_keeps_decimal_price_as_one_sentence() -> None:
+    """A dot between digits is not a sentence end."""
+    assert handoff_text_ok("RM1.50 only.", ["RM1.50"])
+
+
+def test_handoff_text_ok_rejects_bare_links_unless_in_sources() -> None:
+    """A link without a scheme must appear in a source, like a number."""
+    assert not handoff_text_ok("Visit www.shop.example now.", [])
+    assert handoff_text_ok("Visit www.shop.example now.", ["See www.shop.example for more"])
