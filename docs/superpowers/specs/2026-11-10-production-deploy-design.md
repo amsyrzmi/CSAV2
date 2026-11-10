@@ -176,11 +176,15 @@ on the instance outside the repository that the script reads in addition. This i
   managed-instance core policy, an activation code, the agent installed and registered). It adds a
   small resident process; its memory use is measured on the instance before the first deploy through
   it, against the capacity sampler's headroom numbers.
-- A custom Systems Manager command document `csa-production-deploy`, kept in the repository
-  (`deploy/production/ssm-document.json`) and created in AWS from that file. It takes two
-  parameters, `action` (`plan` or `apply`) and the commit SHA, plus an optional migrations list, each
-  with an `allowedPattern`, so Systems Manager itself rejects anything else. Its only step runs the
-  entry script below as the deploy user (commands run as root by default).
+- Two custom Systems Manager command documents, kept in the repository and created in AWS from those
+  files: `csa-production-plan` (`deploy/production/ssm-document-plan.json`; one parameter, the commit
+  SHA; the action `plan` is written into its command) and `csa-production-apply`
+  (`deploy/production/ssm-document-apply.json`; the SHA, an optional migrations list and the host
+  settings digest; the action `apply` is written into its command). Every parameter has an
+  `allowedPattern`, so Systems Manager itself rejects anything else. Each document's only step runs
+  the entry script below as the deploy user (commands run as root by default). They are split
+  because IAM cannot restrict a document's parameter values: one document taking an `action` would
+  let the role that may plan also apply (see section 5).
 - A root-owned entry script `deploy/production/deploy_entry.sh`, installed outside the checkout. It
   re-validates the arguments, takes a `flock` so two deploys cannot overlap, runs `git fetch` and
   `git checkout --detach` in the dedicated checkout, and runs the rollout. It never reads anything
@@ -205,11 +209,18 @@ on the instance outside the repository that the script reads in addition. This i
 - Both jobs share `concurrency: deploy-production` with no cancel-in-progress. Permissions are the
   minimum (`contents: read`, `deployments: read`, `id-token: write`). Third-party actions are pinned to
   a commit SHA.
-- The AWS side, created once: an OIDC identity provider for GitHub, and a role whose trust policy
-  allows only this repository and only the `production` environment, and whose permissions allow only
-  `ssm:SendCommand` on the one document and the one instance, plus reading that command's result.
-  It has no other AWS access. Held in GitHub as variables, not secrets: the role ARN and the managed
-  instance id. The workflow fails closed if either is missing.
+- The AWS side, created once: an OIDC identity provider for GitHub and two roles. The plan role's
+  trust policy allows only this repository and only the `production-plan` environment, and its
+  permissions allow only `ssm:SendCommand` on the plan document and the one instance, plus
+  `ssm:GetCommandInvocation`. The apply role's trust policy allows only the `production` environment
+  (which has the reviewers), and its permissions allow only `ssm:SendCommand` on the apply document
+  and the one instance, plus `ssm:GetCommandInvocation`. Neither role has any other AWS access. Held
+  in GitHub as environment secrets (masked in the logs of a public repository): `PROD_PLAN_ROLE_ARN`
+  on `production-plan`, `PROD_APPLY_ROLE_ARN` on `production`, `PROD_INSTANCE_ID` on both; the region
+  is the repository variable `PROD_DEPLOY_REGION`. The workflow fails closed if any is missing. Both
+  environments are restricted to deployments from `main`, and both jobs also check `github.ref`.
+  The `plan` job runs in a second environment, `production-plan`, with no required reviewer, because
+  an OIDC token's subject names the environment.
 - The summary also shows the staged record it found (date of the staging rollout).
 
 ### 6. First deploy
@@ -303,9 +314,21 @@ sibling production skill is optional.
 
 - The developer provides the read token for the private GHCR packages (and a way to renew it).
 - The owner (who holds the AWS admin login) creates the Systems Manager activation, the GitHub OIDC
-  provider and the deploy role; the plan lists the exact console or CLI steps. The owner also
+  provider, the two deploy roles and the two command documents; the plan lists the exact console or
+  CLI steps. The owner also
   creates the `production` GitHub environment with the owner and the other developer as required reviewers (one approval is enough, self-review allowed), and adds the role
   ARN and instance id as repository variables.
 - The owner decides whether the bucket name and hostnames may appear in the public repository (if not,
   they stay in a file on the instance).
 - Each production deploy is approved by the owner; the first one is watched live.
+
+## Changes made while building (2026-11-10)
+
+- Two roles and two documents instead of one (a review found that one role trusted by both
+  environments could send `apply` from the reviewer-less `production-plan` environment).
+- The role ARNs and the instance id are environment secrets, not repository variables, so a public
+  repository's logs do not show them.
+- `deploy_entry.sh` refuses a commit that is not an ancestor of `origin/main`, and pins `LC_ALL=C`
+  for its validation.
+- Production hostnames (console and hooks origins) live in the host file on the instance, not in the
+  repository, to keep real hostnames out of the public repository.
