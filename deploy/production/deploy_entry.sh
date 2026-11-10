@@ -5,6 +5,9 @@
 #   deploy_entry.sh <action> <sha> [<migrations>] [<host_digest>]
 # The four variables below are defaults only; nothing here lets them weaken a safety check.
 set -euo pipefail
+# Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
+# before any validation.
+export LC_ALL=C
 
 : "${CHECKOUT:=/home/ubuntu/CSAV2}"
 : "${PYTHON:=/opt/csa-deploy/venv/bin/python}"
@@ -50,6 +53,12 @@ log="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${action}-${sha:0:7}.log"
 # Each step returns on failure explicitly: errexit is suspended inside a pipeline's `||` list.
 run() {
     git -C "$CHECKOUT" fetch origin main || return
+    # The commit's own copy of the rollout code would run next, so it must already be on main.
+    git -C "$CHECKOUT" merge-base --is-ancestor "$sha" origin/main || {
+        echo "commit is not on main"
+        echo "commit is not on main" >&3
+        return 1
+    }
     git -C "$CHECKOUT" checkout --detach "$sha" || return
     cd "$CHECKOUT" || return
     if [[ "$action" == "plan" ]]; then
@@ -63,6 +72,8 @@ run() {
     fi
 }
 
+# fd 3 keeps the refusal on the real stderr; the pipeline below merges stderr into the log.
+exec 3>&2
 status=0
 run < /dev/null 2>&1 | tee -- "$log" || status=$?
 exit "$status"

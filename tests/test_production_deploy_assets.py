@@ -47,9 +47,14 @@ BAD_VALUES: dict[str, list[str]] = {
         "$(id)",
         SHA + "\n",
         " " + SHA,
+        # Unicode lookalikes: an ARABIC-INDIC DIGIT, a FULLWIDTH DIGIT and a FULLWIDTH LETTER.
+        # A locale-aware regex range in a UTF-8 locale accepts these; the script must not.
+        SHA[:-1] + "\u0660",
+        SHA[:-1] + "\uff10",
+        SHA[:-1] + "\uff41",
     ],
-    "migrations": ["0486;id", "0486,", "abc", "04861"],
-    "hostDigest": [DIGEST[:-1], DIGEST + "0", DIGEST.upper(), "$(id)"],
+    "migrations": ["0486;id", "0486,", "abc", "04861", "048\u0666"],
+    "hostDigest": [DIGEST[:-1], DIGEST + "0", DIGEST.upper(), "$(id)", DIGEST[:-1] + "\u0661"],
 }
 # Refusals that only the entry script can make: the digest is required for apply and empty for plan.
 ENTRY_ONLY_BAD_ARGUMENTS = [
@@ -78,6 +83,10 @@ def _bad_argument_vectors() -> list[object]:
 GIT_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'git\t%s\n' "$*" >> "$STUB_LOG"
+IFS=' '
+case " $* " in
+    *" merge-base "*) exit "${STUB_GIT_MERGE_BASE_STATUS:-0}" ;;
+esac
 exit "${STUB_GIT_STATUS:-0}"
 """
 # The python stub also reads stdin to EOF and records how many bytes it received.
@@ -147,9 +156,14 @@ def harness(tmp_path: Path) -> Harness:
     return Harness(tmp_path)
 
 
+# Validation must not depend on the caller's locale: a UTF-8 locale widens regex ranges.
+LOCALES = ("C", "en_US.UTF-8")
+
+
+@pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("args", _bad_argument_vectors())
-def test_entry_rejects_bad_arguments(harness: Harness, args: list[str]) -> None:
-    result = harness.run(args)
+def test_entry_rejects_bad_arguments(harness: Harness, args: list[str], locale: str) -> None:
+    result = harness.run(args, LC_ALL=locale, LANG=locale)
 
     assert result.returncode != 0
     assert harness.calls() == []
@@ -163,6 +177,7 @@ def test_entry_plan_checks_out_the_sha_and_runs_the_production_plan(harness: Har
     checkout = str(harness.checkout)
     assert harness.calls() == [
         ["git", "-C", checkout, "fetch", "origin", "main"],
+        ["git", "-C", checkout, "merge-base", "--is-ancestor", SHA, "origin/main"],
         ["git", "-C", checkout, "checkout", "--detach", SHA],
         ["python", "-m", "scripts.staging_rollout", "--target", "production", "plan"],
         ["python-cwd", checkout],
@@ -178,6 +193,7 @@ def test_entry_apply_passes_exactly_the_validated_arguments(harness: Harness) ->
     checkout = str(harness.checkout)
     assert harness.calls() == [
         ["git", "-C", checkout, "fetch", "origin", "main"],
+        ["git", "-C", checkout, "merge-base", "--is-ancestor", SHA, "origin/main"],
         ["git", "-C", checkout, "checkout", "--detach", SHA],
         [
             "python",
@@ -230,6 +246,20 @@ def test_entry_tees_output_to_a_named_log_and_returns_the_rollout_status(
     assert re.fullmatch(r"\d{8}T\d{6}Z-apply-0123456\.log", logs[0].name)
     assert "rollout output" in logs[0].read_text()
     assert b"rollout output" in result.stdout
+
+
+def test_entry_refuses_a_commit_that_is_not_on_main(harness: Harness) -> None:
+    result = harness.run(["apply", SHA, MIGRATIONS, DIGEST], STUB_GIT_MERGE_BASE_STATUS="1")
+
+    assert result.returncode != 0
+    assert b"commit is not on main" in result.stderr
+    (log,) = harness.log_dir.iterdir()
+    assert "commit is not on main" in log.read_text()
+    checkout = str(harness.checkout)
+    assert harness.calls() == [
+        ["git", "-C", checkout, "fetch", "origin", "main"],
+        ["git", "-C", checkout, "merge-base", "--is-ancestor", SHA, "origin/main"],
+    ]
 
 
 def test_entry_does_not_run_the_rollout_when_git_fails(harness: Harness) -> None:
