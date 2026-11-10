@@ -29,7 +29,7 @@ from csa.contracts.envelope import (
     Message,
     Meta,
 )
-from csa.core import crypto
+from csa.core import crypto, db
 from csa.decide.groq import GroqClient, GroqError
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
@@ -109,6 +109,8 @@ class Expect(Strict):
     action_status: str | None = None
     kb_gaps: int | None = None
     human_muted: bool | None = None
+    # Whether this turn's outbound reply went out on the handoff's authority (send_authority).
+    handoff_sent: bool | None = None
 
 
 class Tap(Strict):
@@ -121,6 +123,10 @@ class Tap(Strict):
 class Turn(Strict):
     say: str
     redacted: str | None = None
+    # The language the channel reports for the message (Message.language).
+    language: str = "en"
+    # Staff tapped "resume AI" before this turn: the release the staff action runs.
+    resume_ai: bool = False
     cassette: dict[str, Any] = Field(default_factory=dict)
     expect: Expect
     tap: Tap | None = None
@@ -347,6 +353,9 @@ def enqueue_turn(
     index: int,
     action_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
+    if turn.resume_ai:
+        # Before `now`: the release suppresses automation for messages received before it.
+        resume_ai(owner_dsn, tenant)
     trace_id = uuid.uuid4()
     now = datetime.now(UTC)
     envelope = Envelope(
@@ -370,7 +379,7 @@ def enqueue_turn(
         message=Message(
             body_raw=turn.say,
             body_redacted=turn.redacted if turn.redacted is not None else turn.say,
-            language="en",
+            language=turn.language,
         ),
         meta=Meta(is_first_contact=case.seed.first_contact and index == 0),
         callback=Callback(action_id=action_id) if action_id is not None else None,
@@ -400,6 +409,16 @@ def enqueue_turn(
     return trace_id
 
 
+def resume_ai(owner_dsn: str, tenant: Tenant) -> None:
+    """What staff's "resume AI" tap does to the conversation (csa.staff.callbacks), same SQL."""
+    with psycopg.connect(owner_dsn, autocommit=True) as conn:
+        released = conn.execute(
+            db.q.load("escalation/release_conversation.sql"),
+            (tenant.conversation_id, tenant.client_id),
+        ).fetchone()
+    assert released is not None, "resume_ai needs an escalated conversation"
+
+
 class Observed(BaseModel):
     route: str | None
     agents: list[str]
@@ -419,6 +438,7 @@ class Observed(BaseModel):
     action_status: str | None
     kb_gaps: int
     human_muted: bool
+    handoff_sent: bool
 
 
 def observe(
@@ -487,6 +507,11 @@ def observe(
             "FROM conversations WHERE client_id=%s AND id=%s",
             (tenant.client_id, tenant.conversation_id),
         ).fetchone()
+        handoff = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE trace_id=%s AND direction='outbound' "
+            "AND send_authority='handoff')",
+            (trace_id,),
+        ).fetchone()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -510,6 +535,7 @@ def observe(
         action_status=action[0] if action else None,
         kb_gaps=gaps[0] if gaps else 0,
         human_muted=ownership[0] if ownership else False,
+        handoff_sent=bool(handoff and handoff[0]),
     )
 
 
@@ -533,6 +559,7 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         "action_status",
         "kb_gaps",
         "human_muted",
+        "handoff_sent",
     ):
         expected = getattr(expect, field)
         if expected is not None:

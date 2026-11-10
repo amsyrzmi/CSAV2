@@ -1,0 +1,17 @@
+{
+  "id": "cs_classify_failure_holding_text",
+  "matrix": "Resilience: a classifier provider error sends the Malay holding text",
+  "description": "The classifier answers a provider error on a Malay message: the customer gets the localized holding text, which promises no person, and a fail-safe escalation row is kept for staff.",
+  "turns": [{
+    "say": "nak tanya boleh x",
+    "language": "ms",
+    "cassette": {"Classification": {"error": "groq_http_503"}},
+    "expect": {
+      "agents": [], "outbound_count": 1,
+      "reply_contains": ["Maaf, ada gangguan sekejap"],
+      "reply_excludes": ["team member", "Seorang ahli"],
+      "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"],
+      "handoff_sent": false, "escalations": 1
+    }
+  }]
+}
