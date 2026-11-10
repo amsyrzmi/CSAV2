@@ -16,6 +16,7 @@ from csa.console.contracts import ConsoleActor, Role
 from csa.console.security import digest
 from csa.core import db
 from csa.email.models import EmailPolicyError, EmailSession
+from csa.workspace import directory
 from csa.workspace.contracts import RecipientSpec
 from csa.workspace.email_batch import expand_recipients
 from fastapi import HTTPException
@@ -512,3 +513,41 @@ async def test_group_rows_fetched_counts_the_group_page_only(world: World) -> No
     assert page.group_rows_fetched == 2
     rest = await _expand(world, [group], offset=page.group_rows_fetched, limit=20)
     assert rest.group_rows_fetched == 3
+
+
+async def test_batch_name_lookups_share_the_people_lookup_throttle(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each name a batch searches (and its group) takes one slot of the login session's
+    per-minute lookup budget, the one GET /workspace/people and the assistant's directory lookup
+    use: a normal batch of 20 names passes, a burst of batches is refused with the same 429
+    before any person is read, and typed addresses take no slot."""
+    await _package(world, world.tenant, "subscriptions")
+    names = [_spec("customer", f"Nobody Example {n}") for n in range(19)]
+    batch = [*names, _spec("group", group="active_subscribers")]
+    for _ in range(3):  # 3 x 20 = 60 lookups: the whole budget, never over it
+        assert (await _expand(world, batch)).not_included == {"not_found": 19}
+    paths = _spy_reads(monkeypatch)
+    with pytest.raises(HTTPException) as caught:
+        await _expand(world, [_spec("customer", "Nobody Example 0")])
+    assert caught.value.status_code == 429
+    assert caught.value.detail == "people_lookup_rate_limited"
+    assert all("service_package" in path for path in paths)  # the package check, no person read
+    typed = await _expand(world, [_spec("address", "typed.person@example.test")])
+    assert _addresses(typed) == ["typed.person@example.test"]
+    with pytest.raises(HTTPException):  # a directory search shares the spent budget
+        directory.throttle_lookup(world.sessions["staff"])
+
+
+async def test_a_batch_takes_all_its_slots_or_none(world: World) -> None:  # noqa: F811
+    """A batch over the budget left is refused whole: it spends no slot, so a smaller one passes."""
+    await _package(world, world.tenant, "subscriptions")
+    session = world.sessions["staff"]
+    for _ in range(50):
+        directory.throttle_lookup(session)
+    names = [_spec("customer", f"Nobody Example {n}") for n in range(20)]
+    with pytest.raises(HTTPException) as caught:
+        await _expand(world, names)
+    assert caught.value.status_code == 429
+    assert (await _expand(world, names[:10])).not_included == {"not_found": 10}

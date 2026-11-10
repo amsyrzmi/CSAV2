@@ -71,7 +71,7 @@ from csa.workspace.contracts import (
     RecipientSpec,
     WorkspaceTurnInput,
 )
-from csa.workspace.directory import search_people
+from csa.workspace.directory import search_people, throttle_lookup
 from csa.workspace.draft_facts import kb_facts, subscription_facts
 from csa.workspace.registry import ProposalRegistry
 from csa.workspace.rules import asks_to_send
@@ -272,7 +272,10 @@ async def expand_recipients(
     A group is paged in the database by customer id. Every refusal is raised before any row is
     read: ``limit`` outside 1..20 or a negative ``offset`` (422 ``email_batch_limit_invalid``),
     more than one group spec (422 ``email_batch_one_group``), an inactive package, a role that may
-    not read Subscriptions, a malformed typed address.
+    not read Subscriptions, a malformed typed address, and the login session's lookup budget
+    (429 ``people_lookup_rate_limited``, the throttle of the people search and the assistant's
+    directory lookup): each named person, customer and group takes one slot, a typed address
+    none, so a normal batch of 20 fits in the 60 a minute and a burst of batches does not.
     """
     if not 1 <= limit <= MAX_LIMIT or offset < 0:
         raise HTTPException(422, "email_batch_limit_invalid")
@@ -286,6 +289,9 @@ async def expand_recipients(
     if any(spec.kind == "employee" for spec in specs):
         # Directory people need the hr package, as POST /email/compose does.
         await require_package(pool, client_id, frozenset({"hr"}))
+    lookups = sum(spec.kind != "address" for spec in specs)
+    if lookups:
+        throttle_lookup(actor.session_id, count=lookups)
     found = _Collector(limit)
     async with tx(pool, str(client_id)) as conn:
         for spec in sorted(specs, key=lambda spec: spec.kind == "group"):  # the group fills last
