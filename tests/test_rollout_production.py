@@ -19,6 +19,7 @@ from tests.test_staging_rollout import (
     DIGEST_B,
     FLAGS_TEXT,
     FRONTEND_REF,
+    PREV_SHA,
     PYTHON_REF,
     RUNNING_FORMAT,
     RUNNING_REF,
@@ -620,3 +621,122 @@ def test_replica_count_change_between_plan_and_apply_is_refused(
     assert rig.apply(digest) == 1
     assert rig.lines[0] == "Stopped at confirm: host settings changed since plan; run plan again"
     assert rig.docker_calls() == []
+
+
+# --- the downgrade warning ---------------------------------------------------------------------
+
+DOWNGRADE = (
+    f"WARNING: {SHA[:7]} is older than the running {PREV_SHA[:7]}; this is a downgrade. "
+    "A downgrade across a migration is refused."
+)
+CANNOT_COMPARE = f"WARNING: could not compare {SHA[:7]} with the running revision"
+
+
+def warning_rig(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ancestors: Mapping[str, int],
+    *,
+    warn: bool = True,
+    revision: str | None = PREV_SHA,
+) -> HostedRig:
+    """A hosted rig whose ``git merge-base --is-ancestor <sha> <R>`` answers come from ancestors.
+
+    Only the plan-time ``HEAD origin/main`` check may run besides those; anything else fails.
+    """
+    rig = HostedRig(tmp_path, monkeypatch, HOST_TEXT)
+    rig.target = dataclasses.replace(rig.target, downgrade_warning=warn)
+
+    def ancestry(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        if argv[-2:] == ["HEAD", "origin/main"]:
+            return ok()
+        assert argv[-2] == SHA, argv
+        if argv[-1] not in ancestors:
+            pytest.fail(f"unexpected ancestor check: {' '.join(argv)}")
+        return fail(ancestors[argv[-1]])
+
+    rig.runner.rules[:0] = [
+        (has("merge-base --is-ancestor"), ancestry),
+        (lambda argv: RUNNING_FORMAT in argv, ok(running_json(RUNNING_REF, revision=revision))),
+    ]
+    return rig
+
+
+def test_older_commit_prints_downgrade_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = warning_rig(tmp_path, monkeypatch, {PREV_SHA: 0})
+    plan = rig.plan()
+    assert plan.warnings == [DOWNGRADE]
+    assert [argv[-3:] for argv in rig.runner.argvs if "merge-base" in argv] == [
+        ["--is-ancestor", "HEAD", "origin/main"],
+        ["--is-ancestor", SHA, PREV_SHA],
+    ]
+    lines = sr.format_plan(plan, target=rig.target).splitlines()
+    start = lines.index("Images to deploy:")
+    assert lines[start + 1 : start + 4] == [
+        f"  python: {PYTHON_REF}",
+        f"  frontend: {FRONTEND_REF}",
+        DOWNGRADE,
+    ]
+    assert lines[start + 4] == "Rollback references (current containers):"
+    assert lines.count(DOWNGRADE) == 1
+
+
+def test_newer_commit_prints_no_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = warning_rig(tmp_path, monkeypatch, {PREV_SHA: 1})
+    plan = rig.plan()
+    assert plan.warnings == []
+    assert not any(
+        line.startswith("WARNING") for line in sr.format_plan(plan, target=rig.target).splitlines()
+    )
+
+    # A running image already built from the target commit needs no comparison at all.
+    same = warning_rig(tmp_path / "same", monkeypatch, {}, revision=SHA)
+    assert same.plan().warnings == []
+
+
+@pytest.mark.parametrize(
+    ("revision", "ancestors"),
+    [(None, {}), (PREV_SHA, {PREV_SHA: 128})],
+    ids=["no-revision-label", "git-error"],
+)
+def test_unknown_running_revision_warns_cannot_compare_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    revision: str | None,
+    ancestors: Mapping[str, int],
+) -> None:
+    rig = warning_rig(tmp_path, monkeypatch, ancestors, revision=revision)
+    plan = rig.plan()
+    assert plan.warnings == [CANNOT_COMPARE]
+    assert plan.pending == ["0486"]
+    assert sr.format_plan(plan, target=rig.target).splitlines().count(CANNOT_COMPARE) == 1
+    assert rig.apply(sr.host_settings_digest(plan.host_values)) == 0, "\n".join(rig.lines)
+
+
+def test_staging_never_runs_the_ancestor_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = warning_rig(tmp_path, monkeypatch, {}, warn=False)
+    plan = rig.plan()
+    assert plan.warnings == []
+    assert [argv for argv in rig.runner.argvs if "merge-base" in argv] == [
+        ["git", "-C", str(rig.repo), "merge-base", "--is-ancestor", "HEAD", "origin/main"]
+    ]
+    assert "WARNING" not in sr.format_plan(plan, target=rig.target)
+
+
+def test_downgrade_across_a_migration_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = warning_rig(tmp_path, monkeypatch, {PREV_SHA: 0})
+    applied = ok("0484\n0485\n0486\n0487\n")
+    rig.runner.rules.insert(0, (lambda argv: "psql" in argv and "-c" in argv, applied))
+    with pytest.raises(RolloutError) as caught:
+        rig.plan()
+    assert caught.value.step == "plan"
+    assert caught.value.message == (
+        "production has migrations this checkout lacks: 0487; "
+        "update the checkout before rolling out"
+    )

@@ -572,6 +572,7 @@ class Plan:
     steps: list[str]
     env: dict[str, str] = field(repr=False)  # non-secret flags and image refs for apply
     host_values: dict[str, str] = field(default_factory=dict, repr=False)  # values never printed
+    warnings: list[str] = field(default_factory=list)
 
 
 def plan_steps(
@@ -590,6 +591,28 @@ def plan_steps(
         f"run checks: {', '.join(checks) if checks else 'none'}",
     ]
     return steps
+
+
+def downgrade_warnings(
+    runner: Runner, repo: Path, sha: str, rollback: Mapping[str, RunningImage | None]
+) -> list[str]:
+    """Warn when what runs now was built from a newer commit than ``sha``; never stops a plan."""
+    cannot_compare = f"WARNING: could not compare {sha[:7]} with the running revision"
+    revisions = {image.revision if image else None for image in rollback.values()} - {sha}
+    warnings: list[str] = []
+    for revision in sorted(revisions, key=str):
+        outcome = None
+        if revision is not None:
+            argv = ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, revision]
+            outcome = runner.run(argv).returncode
+        if outcome == 0 and revision is not None:
+            warnings.append(
+                f"WARNING: {sha[:7]} is older than the running {revision[:7]}; "
+                "this is a downgrade. A downgrade across a migration is refused."
+            )
+        elif outcome != 1 and cannot_compare not in warnings:
+            warnings.append(cannot_compare)
+    return warnings
 
 
 def build_plan(
@@ -641,9 +664,10 @@ def build_plan(
     pending = pending_versions(
         checkout, applied_versions(runner, env, target=target), target=target
     )
+    warnings = downgrade_warnings(runner, repo, sha, rollback) if target.downgrade_warning else []
     checks = [path.name for path in check_files(checks_dir)]
     steps = plan_steps(pending, checks, target=target)
-    return Plan(sha, images, rollback, pending, missing, checks, steps, env, host_values)
+    return Plan(sha, images, rollback, pending, missing, checks, steps, env, host_values, warnings)
 
 
 def _pending_line(pending: Sequence[str]) -> str:
@@ -653,6 +677,7 @@ def _pending_line(pending: Sequence[str]) -> str:
 def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     lines = [f"Target SHA: {plan.sha}", "Images to deploy:"]
     lines += [f"  {app}: {plan.images[app]}" for app in APPS]
+    lines += plan.warnings
     lines.append("Rollback references (current containers):")
     unknown = f"unknown ({LOCAL_ROLLBACK})" if target.name != "staging" else "unknown (not running)"
     for service in target.app_services:
