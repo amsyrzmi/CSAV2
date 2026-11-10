@@ -80,7 +80,10 @@ commit in `/home/ubuntu/CSAV2` and runs
    production is in, the recovery lines for how far it got, and
    `Re-run plan, then apply, once the cause is fixed.` It never retries, restarts or rolls back by
    itself. Every run is also logged on the instance in
-   `/var/log/csa-prod-deploy/<timestamp>-<action>-<sha7>.log`.
+   `/var/log/csa-prod-deploy/<timestamp>-<action>-<sha7>.log`. Systems Manager's
+   `GetCommandInvocation` returns at most 24,000 characters of output, so a long apply loses its
+   tail (the recovery lines) from the workflow log and summary: the complete log is always the
+   one on the instance in `/var/log/csa-prod-deploy/`.
 
 ### What a failure means
 
@@ -396,7 +399,10 @@ h. Run a plan on the instance exactly as Systems Manager will, for the newest st
    sudo runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy plan "$SHA" "" ""
    ```
 
-   It must end with the apply command line and no `Stopped at` line.
+   It must end with the apply command line and no `Stopped at` line. Whenever you test the entry
+   script by hand, run it as `sudo runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy ...`,
+   never as root directly: a root run leaves the lock file root-owned, and every later run then
+   fails at the lock with `Permission denied`.
 
 ### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, three secrets, one variable
 
@@ -441,6 +447,24 @@ D=$(mktemp -d); DOCKER_CONFIG="$D" docker pull ghcr.io/amsyrzmi/csa-python@<dige
 ```
 
 Then reject the `production` deployment, or approve it to make the first deploy, watched live.
+
+### First production deploy: what to check
+
+- The first plan's log (`/var/log/csa-prod-deploy/`) shows no `getcwd` or permission lines before
+  `Target SHA:`, and `gh` finds its login (no `gh auth login` prompt or HTTP 401).
+- Before approving: an anonymous pull of the plan's digests works from the instance (the
+  `docker pull` with an empty `DOCKER_CONFIG` in step 7, for both the `python:` and the
+  `frontend:` digest).
+- The first apply with no pending migrations is accepted by `send-command` (the runner leaves
+  the empty `migrations` parameter out; the document's default is empty).
+- The Systems Manager agent's resident memory (`ps -o rss,cmd -C amazon-ssm-agent,ssm-agent-worker`) and the
+  headroom `free -m` shows are still acceptable during and after the run.
+- After the first run the lock file and the log directory are owned by `ubuntu`:
+  `ls -l /var/lock/csa-prod-deploy.lock` and `ls -ld /var/log/csa-prod-deploy`.
+- The two pinned action SHAs in `.github/workflows/deploy-production.yml` are the tagged
+  releases their comments claim: `gh api repos/<owner>/<action>/git/ref/tags/<tag>` (for
+  example `repos/actions/checkout/git/ref/tags/v7.0.1`) must name the pinned SHA; when its
+  `object.type` is `tag`, follow it with `gh api repos/<owner>/<action>/git/tags/<object sha>`.
 
 ## Restoring a backup
 

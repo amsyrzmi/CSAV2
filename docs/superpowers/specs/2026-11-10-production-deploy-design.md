@@ -69,8 +69,10 @@ The rule the owner chose: **production only receives code that staging has alrea
   and embeddings services are never recreated by a rollout.
 - `scripts/migrate.py` imports `psycopg`, and the rollout script imports `scripts.migrate`, so the
   rollout needs Python dependencies on the host it runs on. The instance has system Python only.
-- The instance can reach the public repository over HTTPS without credentials. It cannot read the
-  private GHCR packages; the developer who owns the packages must supply a read token.
+- The instance can reach the public repository over HTTPS without credentials, and pull the public
+  GHCR images by digest without a registry login. Only `gh`'s package-version lookup needs a token
+  (GitHub's package API asks for one even for public packages); the developer who owns the packages
+  must supply it.
 - The instance is a Lightsail instance, which Systems Manager does not manage by default. AWS
   documents registering one through a hybrid activation (an agent on the host that calls out to AWS;
   no inbound port).
@@ -169,9 +171,10 @@ on the instance outside the repository that the script reads in addition. This i
 - A Python environment with the rollout's dependencies (at least `psycopg`), created once and kept
   outside the repository; the builder decides between a venv on the host and running the script
   inside an image, weighing disk and memory.
-- `gh` installed and logged in with a read-only token (package read on the owner's packages, and
-  read access to the repository's deployments), plus `docker login ghcr.io` with the same token for
-  pulls. The token lives in a root-only file; it is the one dependency on the developer.
+- `gh` installed and logged in with a read-only token (a classic token with only `read:packages`;
+  the repository's deployments are public), stored for the `ubuntu` user in
+  `~/.config/gh/hosts.yml`. No `docker login`: the rollout pulls the public images by digest with an
+  empty `DOCKER_CONFIG`. The token is the one dependency on the developer.
 - The Systems Manager agent, registered once through a hybrid activation (a service role with the
   managed-instance core policy, an activation code, the agent installed and registered). It adds a
   small resident process; its memory use is measured on the instance before the first deploy through
@@ -312,12 +315,15 @@ sibling production skill is optional.
 
 ## Left to the owner and the developer
 
-- The developer provides the read token for the private GHCR packages (and a way to renew it).
+- The developer provides the read-only `gh` token (`read:packages`; no registry login is needed,
+  the packages are public) and a way to renew it.
 - The owner (who holds the AWS admin login) creates the Systems Manager activation, the GitHub OIDC
   provider, the two deploy roles and the two command documents; the plan lists the exact console or
-  CLI steps. The owner also
-  creates the `production` GitHub environment with the owner and the other developer as required reviewers (one approval is enough, self-review allowed), and adds the role
-  ARN and instance id as repository variables.
+  CLI steps. The owner also creates the two GitHub environments, both limited to `main`:
+  `production-plan` (no reviewer) and `production` (the owner and the other developer as required
+  reviewers; one approval is enough, self-review allowed). The environment secrets are
+  `PROD_PLAN_ROLE_ARN` (on `production-plan`), `PROD_APPLY_ROLE_ARN` (on `production`) and
+  `PROD_INSTANCE_ID` (on both); the region is the repository variable `PROD_DEPLOY_REGION`.
 - The owner decides whether the bucket name and hostnames may appear in the public repository (if not,
   they stay in a file on the instance).
 - Each production deploy is approved by the owner; the first one is watched live.
@@ -332,3 +338,10 @@ sibling production skill is optional.
   for its validation.
 - Production hostnames (console and hooks origins) live in the host file on the instance, not in the
   repository, to keep real hostnames out of the public repository.
+- After the final review: the runner (`ssm_run.sh`) gives up with exit 124 after 2100 seconds of
+  elapsed time since the send (bash `SECONDS`), not after a count of polls, so its wait stays below
+  the documents' 2400-second timeout, itself below the jobs' 45 minutes. Apply leaves an empty
+  `migrations` parameter out (the document defaults it to empty). The workflow brackets instance
+  output in `::stop-commands::` so it cannot issue workflow commands. The entry script starts with
+  `cd /` and exits 73 before any step when its log cannot be written. `record-staged --sha` refuses
+  a commit that is not on `origin/main` in the live checkout.

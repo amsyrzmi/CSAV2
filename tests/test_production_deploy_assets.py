@@ -2063,3 +2063,22 @@ def test_production_doc_review_fixes() -> None:
     assert github.index("web settings") < github.index("gh secret set")
     # the activation code's exposure.
     assert "single-use" in setup
+    # The workflow log holds at most the first 24,000 characters; the instance log is complete.
+    assert "24,000 characters" in deploying
+    assert "the complete log is always the" in deploying
+    # A root run of the entry script leaves the lock root-owned.
+    assert "never as root directly" in setup
+    assert "sudo runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy ..." in setup
+    first = setup[setup.index("### First production deploy: what to check") :]
+    for needle in (
+        "getcwd",
+        "`gh` finds its login",
+        "Before approving",
+        "DOCKER_CONFIG",
+        "send-command",
+        "free -m",
+        "/var/lock/csa-prod-deploy.lock",
+        "ls -ld /var/log/csa-prod-deploy",
+        "gh api repos/<owner>/<action>/git/ref/tags/<tag>",
+    ):
+        assert needle in first, needle

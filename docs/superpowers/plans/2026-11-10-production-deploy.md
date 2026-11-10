@@ -1,5 +1,7 @@
 # Production Deploy Implementation Plan
 
+> Superseded in places by the spec's "Changes made while building"; see the spec (docs/superpowers/specs/2026-11-10-production-deploy-design.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A manually started GitHub workflow plans a production deploy, waits for the owner's approval, and applies it through AWS Systems Manager, and production only accepts commits that staging has already rolled out.
