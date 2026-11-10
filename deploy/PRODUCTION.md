@@ -352,8 +352,8 @@ f. The backup script, **only after step e**: the repository's `deploy/production
    `/srv/csa-prod/backup/s3-key.txt` and `host.env`, and use docker. Check, install, then run it
    once by hand. `install` replaces the file, so the directory `/srv/csa-prod/backup` itself must
    be writable by `ubuntu`, and every later reinstall the deploy asks for runs without `sudo`. If
-   `ls -ld` shows another owner, or the installed `backup.sh` is root-owned (as the script's own
-   header says), run once
+   `ls -ld` shows another owner, or the installed `backup.sh` is root-owned (older copies were
+   installed that way), run once
    `sudo chown ubuntu:ubuntu /srv/csa-prod/backup /srv/csa-prod/backup/backup.sh`, then the plain
    `install` below:
 

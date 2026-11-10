@@ -1,5 +1,5 @@
 #!/bin/bash
-# Nightly and pre-deploy backup of the production database to S3, installed root-owned at
+# Nightly and pre-deploy backup of the production database to S3, installed owned by ubuntu at
 # /srv/csa-prod/backup/backup.sh (install -m 0755 deploy/production/backup.sh /srv/csa-prod/backup/backup.sh).
 # The bucket and region are not in this public repository: they are read, as text, from the
 # instance's host file. The S3 key is read from its own file by path and never printed.

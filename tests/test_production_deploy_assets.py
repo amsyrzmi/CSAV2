@@ -1676,6 +1676,18 @@ def test_backup_script_is_bash_strict_and_has_no_secrets() -> None:
     assert mode.startswith("100755 ")
 
 
+def test_header_comments_match_what_the_code_accepts_and_installs() -> None:
+    # The runbook installs backup.sh owned by ubuntu (a deploy reinstalls it without sudo).
+    header = BACKUP.read_text().split("\nset -euo pipefail\n", 1)[0]
+    assert "root-owned" not in header
+    assert "installed owned by ubuntu" in header
+    # load_flags also accepts the optional tuning keys and the Jev switches.
+    switches = (ROOT / "deploy" / "production-rollout.env").read_text()
+    assert "Exactly these six keys" not in switches
+    for needle in ("six keys below are all required", "CSA_PROD_*", "CSA_STAGING_JEV_SECRET"):
+        assert needle in switches, needle
+
+
 def test_backup_script_names_no_bucket_or_region() -> None:
     text = BACKUP.read_text()
 
