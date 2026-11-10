@@ -74,7 +74,7 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 
 ### 3. Register
 
-- A per-language register block appended to the compose system prompt, Malay first: everyday Malaysian Malay, friendly and professional; "saya/kami"; prefer "boleh", "tak", "dah", "nak", "sikit", "tolong", "sebab"; avoid "anda", "sila", "pihak kami", "dimaklumkan", "kerana" where a natural phrase works; avoid Indonesian words ("menemukan" becomes "jumpa" or "cari"); particles ("lah", "kan", "ya") sparingly; write full words even when the customer abbreviates ("x", "sy", "nk"); never mirror profanity, answer it with one calm clause; match the customer's length. The block carries 3 to 5 example replies approved by the owner (see Decisions for the owner).
+- A per-language register block appended to the compose system prompt, Malay first: everyday Malaysian Malay, friendly and professional; "saya/kami"; prefer "boleh", "tak", "dah", "nak", "sikit", "tolong", "sebab"; avoid "anda", "sila", "pihak kami", "dimaklumkan", "kerana" where a natural phrase works; avoid Indonesian words ("menemukan" becomes "jumpa" or "cari"); particles ("lah", "kan", "ya") sparingly; write full words even when the customer abbreviates ("x", "sy", "nk"); never mirror profanity, answer it with one calm clause; match the customer's length. The block carries a 30-pair formal-to-casual glossary and 12 example replies, one per common situation (greeting, one option at a time, usage follow-up, price, in stock, out of stock, order status, missing detail, no fact, upset customer, thanks, goodbye), which the owner approves or rewrites; the owner's own replies, if supplied, are added to them. Casual, not street: no "bro", "weh", "lu/gua", heavy "lah" or regional dialect. Five examples were judged too few (owner discussion 2026-11-10); a calibration pass on the staging replay follows the first rollout.
 - Precedence **(call)**: `brand_tone` is free text each company sets. An ordinary tone ("professional", "friendly", "polite", "helpful") does NOT switch the register back to formal: the tone adjusts warmth and word choice inside the colloquial register. Only an explicit request for formal language ("formal Malay", "bahasa baku", "no slang") switches it off. The register block comes after the tone in the prompt and states this rule. The register never overrides the support guide or the facts-only rule. The replay reports each test tenant's tone beside its replies, so an over-formal result can be traced to the tone.
 - English keeps today's guide; zh and ta unchanged (no register block) **(call)**. `other` and mixed Malay-English: "reply in the customer's own mix".
 
@@ -105,7 +105,7 @@ The escalation ladder: split "must escalate now" (asked for a human, abusive, a 
 
 ## Decisions for the owner
 
-1. Malay register examples: approve or rewrite the three to five example replies the register block will carry (drafts come with the plan), including how to address the customer ("awak", "kak/abang", or no pronoun).
+1. Malay register: approve or rewrite the glossary and the 12 example replies (drafts are in the plan), optionally add your own replies; the drafts address the customer with no pronoun (not "awak", not "kak/abang").
 2. The localized handoff templates' Malay wording.
 3. The three-option cap on lists.
 4. Knowledge-base content (the owner's, per company; the SIM sign-up facts are specific to the Team Jo tenant): "how to buy / sign up", "which plan suits whom", and what a customer can expect after a handoff (who replies, where, when).
