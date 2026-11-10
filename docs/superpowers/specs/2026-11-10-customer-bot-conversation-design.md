@@ -19,7 +19,7 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 - **G2 No repetition:** the composer is told what was already said, whether a team member was already notified, and not to repeat it; long option lists are shown in small pieces.
 - **G3 Register:** Malay replies are informal and warm but professional by default, mirroring the customer's level, with the persona tone able to override.
 - **G4 Handoff wording:** the handoff reply is written for the customer's language, register and situation, with localized fixed templates as the fallback; handoff delivery no longer depends on an exact English string.
-- **G5 Provider errors do not become escalations:** classify and the semantic review retry before failing, and a failure shows a localized holding message.
+- **G5 A provider error is not presented as a handoff:** classify, plan and next step retry once, the semantic review degrades to the deterministic check, and a remaining failure shows a localized holding message that promises no human follow-up (the `fail_safe` record for staff stays).
 - **G6 Safety and measurement:** a per-company kill switch for memory, multi-turn English and Malay scenario tests on the real graph, and a staging replay script.
 
 ## Non-goals
@@ -62,19 +62,20 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 - New read in `load_context`: the same SQL (renamed or reused), run for every channel including web, under its own 1.0 second budget; any error or timeout leaves `recent` empty and logs `turn_context_degraded` (a failed read never fails the turn).
 - Per-message caps **(call)**: 300 characters for customer messages (as today), 600 for assistant messages, because a plan list's tail is exactly what matters. Window stays 6.
 - Prompts: `_recent_block` and the rule read `ctx.recent` (falling back to `ctx.booking.recent`). Classify and plan get the block with the generalised rule ("a short answer continues the topic in the earlier messages"); **compose gets the block for the first time**, after the facts. Messages stay escaped (`<`, `>`) and untrusted.
-- Grounding sources widen to the recent messages (assistant ones were verified when sent; customer ones are the customer's own words), so repeating "RM50" from the previous reply is allowed.
+- Grounding widens in two different ways **(call)**. The deterministic check (`ungrounded`, `_sources` in `csa/decide/llm.py`) accepts numbers and links that appear in the recent messages of either side (the customer's own words, and earlier outbound messages). The semantic `review` (which judges business claims against facts only) is given the recent OUTBOUND messages as "already told to this customer" and accepts a claim they support, so repeating "RM50" from the previous reply passes both checks. Customer messages never support a business claim in `review`: "you said the refund is RM200" does not make a refund of RM200 true. Outbound messages are safe to trust because each was grounded by this same check when sent, written or approved by staff, or built from booking facts; the old fallback line carries no figures.
 - Kill switch: `Policy.conversation_memory: bool = True`. When false, `Context.recent` is empty. The model field ships in this PR; setting it is an ops step (a runbook SQL like `force_decide_mode`), with no console control **(call)**.
 
 ### 2. No repetition
 
 - Compose rule: do not repeat what an earlier assistant message already said; acknowledge new information; if the customer asks the same thing again, answer shorter or differently.
-- `Context.flags["handoff_recent"]`: true when an `escalations` row exists for this conversation in the last 24 hours (a small new read; the `escalations` table already exists). When set, the composer is told a team member was already notified and must not say so again unless the customer asks for a person.
+- `Context.flags["handoff_recent"]`: true when an `escalations` row exists for this conversation in the last 24 hours **whose reason is a real handoff** (a small new read; the `escalations` table already exists). Rows with reason `fail_safe:*` and `approval_expired` do NOT count: they notify and mute no one, so the composer must not be told "a team member was already notified" after them **(call)**. When set, the composer is told a team member was already notified and must not say so again unless the customer asks for a person.
+- A real handoff mutes the bot for 24 hours (`ai_muted_until`, `owned_by='human_support'`), so the flag only matters when the conversation can be answered again: after staff press "AI resumed", in shadow mode (no mute), or when the mute expired. Why the bot kept answering after handoffs in the owner's transcript is not verified (a muted turn goes to `muted_turn` and sends nothing); the staging replay checks it first, and the golden scenario sets up a released conversation.
 - Lists **(call, from the transcript)**: when offering options (plans, products), at most three at a time and one short question to narrow, never the whole catalogue in one message.
 
 ### 3. Register
 
 - A per-language register block appended to the compose system prompt, Malay first: everyday Malaysian Malay, friendly and professional; "saya/kami"; prefer "boleh", "tak", "dah", "nak", "sikit", "tolong", "sebab"; avoid "anda", "sila", "pihak kami", "dimaklumkan", "kerana" where a natural phrase works; avoid Indonesian words ("menemukan" becomes "jumpa" or "cari"); particles ("lah", "kan", "ya") sparingly; write full words even when the customer abbreviates ("x", "sy", "nk"); never mirror profanity, answer it with one calm clause; match the customer's length. The block carries 3 to 5 example replies approved by the owner (see Decisions for the owner).
-- Precedence: the persona tone can override the register (a company that sets a formal tone gets formal Malay); the register never overrides the support guide or the facts-only rule.
+- Precedence **(call)**: `brand_tone` is free text each company sets. An ordinary tone ("professional", "friendly", "polite", "helpful") does NOT switch the register back to formal: the tone adjusts warmth and word choice inside the colloquial register. Only an explicit request for formal language ("formal Malay", "bahasa baku", "no slang") switches it off. The register block comes after the tone in the prompt and states this rule. The register never overrides the support guide or the facts-only rule. The replay reports each test tenant's tone beside its replies, so an over-formal result can be traced to the tone.
 - English keeps today's guide; zh and ta unchanged (no register block) **(call)**. `other` and mixed Malay-English: "reply in the customer's own mix".
 
 ### 4. Handoff and fallback wording
@@ -82,13 +83,14 @@ The escalation rules themselves (one clarifying question, then escalate; `angry`
 - `_compose` stops returning `HANDOFF_TEXT` for a handoff. It composes a short handoff reply (at most two sentences) in the customer's language and register, using the recent messages and `handoff_recent`: acknowledge (one clause if the customer is upset), say a team member will reply in this chat, refer to what the customer asked only in general terms taken from the conversation, and promise no time, refund or outcome unless a knowledge-base fact states it.
 - A light check replaces the grounding skip: no digits or links that are not in the recent messages or facts, at most 300 characters. If generation fails the check, or the model errors, use a **localized template** (en, ms, zh, ta; the Malay wording approved by the owner). A handoff never goes to `fail_safe` because of its wording.
 - `Draft.handoff: bool`, set in `_compose` when the handoff is required or the plan escalates. `verify` skips grounding and review on `draft.handoff` (running the light check), and `emit` passes `handoff=` from the draft (still false on web), not from string equality. A test proves a handoff draft with a different text is delivered with `send_authority='handoff'` while the conversation is muted.
+- Gate and hold. The escalation agent has already muted the conversation by the time the gate runs, and `hold` calls `automation_allowed` without `handoff=True`, so a handoff reply the gate sends to approval is dropped silently today (it needs a policy that sets `suggest`, `always_review_if: requires_human` or an intent threshold; the defaults do not). Two changes: `hold` passes `handoff=` from the draft, so a held handoff reply is kept for staff instead of vanishing; and the gate treats any required handoff as a `system_reply` (send), as it already does for `service_off` and `escalate` plans, except in shadow mode (which still sends nothing). Recommended, owner to confirm: with a model-written text the second change widens what a `suggest`-mode company sends without approval to a two-sentence acknowledgement that passed the light check or is a fixed template (decision 5).
 - `FALLBACK_TEXT` (fail-safe and approval outcomes) becomes the localized template for the known language; when the language is unknown (a classify failure) a small deterministic Malay or English detector picks it **(call)**.
 - `SANDBOX_SCOPE_TEXT` keeps its English text (staff-facing preview).
 
 ### 5. Provider errors
 
-- Classify retries once after a short backoff on a model error (and uses the fallback client if one is configured) before the node fails. The semantic review (`review`) degrades to the deterministic check for that turn when it errors, as with `semantic_verify=false` today **(call)**: it is advisory and the deterministic grounding check has already run.
-- If classify still fails, the turn ends in `fail_safe` as today, but with the localized holding message instead of the English line.
+- The model-call nodes classify, plan and next step each retry once after a short backoff on a model error (and use the fallback client if one is configured) before the node fails **(call)**. The semantic review (`review`) degrades to the deterministic check for that turn when it errors, as with `semantic_verify=false` today **(call)**: it is advisory and the deterministic grounding check has already run.
+- If a node still fails, the turn ends in `fail_safe` as today, so `fail_safe` still writes its `escalations` row (a record for staff; it notifies and mutes no one), but the customer gets a localized holding message that promises nothing a person will do: in Malay along the lines of "Maaf, ada gangguan sekejap. Boleh hantar semula mesej tu sekejap lagi?" (exact wording is decision 2). Today's English line says "A team member will follow up", which nothing keeps. The new `fail_safe` rows do not feed `handoff_recent` (section 2).
 
 ### 6. Measurement and rollout
 
@@ -107,6 +109,7 @@ The escalation ladder: split "must escalate now" (asked for a human, abusive, a 
 2. The localized handoff templates' Malay wording.
 3. The three-option cap on lists.
 4. Knowledge-base content: "how to buy / sign up", "which plan suits whom", and what a customer can expect after a handoff (who replies, where, when).
+5. Handoff reply and approval: should a required handoff always send its acknowledgement without staff approval, even for a company in `suggest` mode (recommended; shadow mode still sends nothing), or be held for staff like any other reply (then staff must see and approve a draft in a conversation the bot has just muted)?
 
 ## Left to the builder
 
