@@ -176,6 +176,12 @@ const explained: Record<string, string> = {
     "Nothing is left to retry. The other steps were done, or have changed since you reviewed them.",
   plan_not_executed: "This plan hasn't run yet, so there is nothing to retry.",
   proposal_not_retryable: "Only a plan from the assistant can be retried.",
+  // Knowledge upload actions (csa/console/router.py); the Library reloads its lists after each refusal.
+  original_removed: "The original was removed, so this can't be tried again. Remove it.",
+  job_still_running: "This one is being read right now. Try again in a moment.",
+  not_retryable: "This one has already moved on. The list has been refreshed.",
+  not_cancellable: "This one has already moved on. The list has been refreshed.",
+  "ingest job not found": "That upload is no longer on the list. The list has been refreshed.",
 };
 
 /** The English sentence for a server code, or undefined when none is written (own keys only). */

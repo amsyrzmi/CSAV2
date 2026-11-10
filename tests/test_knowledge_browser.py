@@ -1941,3 +1941,25 @@ async def test_the_attention_flow_works_on_the_admin_twin(site: Site) -> None:
                 ].get("client_id") == [TENANT]
 
     await with_browser(body)
+
+
+async def test_try_again_on_a_job_whose_original_vanished_says_so_and_refreshes(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await expect(button(page, card(page, "job-0"), "Try again")).to_be_enabled()
+            # Another tab removed the original after this page loaded; the server now refuses.
+            stub.jobs[0]["original_stored"] = False
+            reads = stub.reads["jobs"]
+            await button(page, card(page, "job-0"), "Try again").click()
+            sentence = "The original was removed, so this can't be tried again. Remove it."
+            await expect(page.get_by_text(sentence, exact=True).first).to_be_visible()
+            await expect(page.get_by_text("original_removed")).to_have_count(0)
+            await until(lambda: stub.reads["jobs"] > reads, "the list was not read again")
+            # The refreshed card now offers Remove only.
+            await expect(button(page, card(page, "job-0"), "Try again")).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-0/retry"]
+
+    await with_browser(body)
