@@ -5,6 +5,9 @@
 #   deploy_entry.sh <action> <sha> [<migrations>] [<host_digest>]
 # The four variables below are defaults only; nothing here lets them weaken a safety check.
 set -euo pipefail
+# Systems Manager starts this in a root-only directory, where git and python would fail to read
+# the working directory: leave it before anything else runs.
+cd /
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
 export LC_ALL=C
@@ -47,8 +50,13 @@ flock -n 9 || {
     exit 75
 }
 
-mkdir -p -m 0750 "$LOG_DIR"
 log="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${action}-${sha:0:7}.log"
+# Fail before any git or rollout step when the log cannot be written: tee would report it only
+# at the end, turning a finished apply into a failure.
+if ! { mkdir -p -m 0750 "$LOG_DIR" && : >> "$log"; } 2> /dev/null; then
+    echo "csa-prod-deploy: cannot write the log file $log" >&2
+    exit 73
+fi
 
 # Each step returns on failure explicitly: errexit is suspended inside a pipeline's `||` list.
 run() {

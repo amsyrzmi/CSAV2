@@ -381,6 +381,62 @@ def test_entry_ignores_stdin(harness: Harness) -> None:
     assert ["python-stdin-bytes", "0"] in harness.calls()
 
 
+def test_entry_script_first_leaves_the_working_directory() -> None:
+    # Systems Manager starts the script in a root-only directory: nothing may run there.
+    code = [
+        line.strip()
+        for line in ENTRY.read_text().splitlines()[1:]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert code[:2] == ["set -euo pipefail", "cd /"]
+
+
+def test_entry_runs_from_root_whatever_the_starting_directory(harness: Harness) -> None:
+    start = harness.root / "start"
+    start.mkdir()
+    result = subprocess.run(
+        ["bash", str(ENTRY), "plan", SHA, "", ""],
+        env=harness.env(),
+        cwd=start,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # The rollout itself still runs in the checkout.
+    assert ["python-cwd", str(harness.checkout)] in harness.calls()
+
+
+needs_non_root = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root ignores file permissions"
+)
+
+
+@needs_non_root
+@pytest.mark.parametrize("broken", ["read-only-directory", "directory-is-a-file"])
+def test_entry_refuses_up_front_when_the_log_cannot_be_written(
+    harness: Harness, broken: str
+) -> None:
+    if broken == "read-only-directory":
+        harness.log_dir.mkdir()
+        harness.log_dir.chmod(0o500)
+        log_dir = harness.log_dir
+    else:
+        harness.log_dir.write_text("not a directory\n")
+        log_dir = harness.log_dir / "sub"
+    try:
+        result = harness.run(["apply", SHA, "", DIGEST], LOG_DIR=str(log_dir))
+    finally:
+        if harness.log_dir.is_dir():
+            harness.log_dir.chmod(0o700)
+
+    assert result.returncode == 73
+    assert b"csa-prod-deploy: cannot write the log file " + str(log_dir).encode() in result.stderr
+    # Nothing ran: no fetch, no checkout, no rollout.
+    assert harness.calls() == []
+
+
 def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
     text = ENTRY.read_text()
     lines = text.splitlines()
@@ -1849,6 +1905,8 @@ def test_production_doc_mentions_every_one_time_step() -> None:
         "skipped",
         "124",
         "75",
+        "**73**",
+        "cannot write the log file",
         sr.RECORD_COMMAND,
     ):
         assert needle in deploying, needle

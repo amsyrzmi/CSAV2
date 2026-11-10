@@ -100,7 +100,9 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
 - **1**: anything else, including a command that failed on the instance. The line
   `ssm_run: command <id> finished with status <status> (exit code <N>)` gives the instance's exit
   code: **75** means another deploy holds the lock (`another deploy is running`); wait for it to
-  finish and start again. **64** means `csa-prod-deploy` refused its arguments. **2** is a plan
+  finish and start again. **64** means `csa-prod-deploy` refused its arguments. **73** means it
+could not write its log in `/var/log/csa-prod-deploy` (`cannot write the log file`); nothing ran,
+and the directory must be owned by `ubuntu`. **2** is a plan
   that found missing secret files. **1** is a rollout stop, `commit is not on main`, or a failed
   `git fetch`. A `TimedOut` status also arrives as runner exit 1, not 124: either the instance did
   not pick the command up within 10 minutes (it never ran), or Systems Manager stopped it at its
