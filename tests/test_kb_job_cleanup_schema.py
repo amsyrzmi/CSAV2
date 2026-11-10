@@ -61,13 +61,17 @@ def _add_job(
     conn: Any, client_id: str, status: str, kinds: list[str], **extra: Any
 ) -> tuple[str, str]:
     """Insert a job whose entries are of the given kinds: 'deleted' and 'live' point at a
-    kb_upload_files row, 'path' has a path and no file_id, 'unknown' names a file_id with no row.
+    kb_upload_files row, 'path' has a path and no file_id, 'unknown' names a file_id with no row,
+    'text' is a bare string with no keys at all.
     """
     sql, params = _job(client_id, [], status, **extra)
     conn.execute(sql, params)
     job_id = params[0]
     files: list[dict[str, Any]] = []
     for kind in kinds:
+        if kind == "text":
+            files.append("plain-name.pdf")  # type: ignore[arg-type]
+            continue
         entry: dict[str, Any] = {"path": f"/synthetic/{uuid.uuid4()}.pdf", "name": "synthetic.pdf"}
         if kind in ("deleted", "live"):
             entry["file_id"] = _stored_file(conn, client_id, job_id, deleted=kind == "deleted")
@@ -134,6 +138,13 @@ def backfilled(pg_container: Any) -> Iterator[Backfilled]:
             jobs["unknown_file"] = _add_job(conn, client, "failed", ["unknown"])
             jobs["deleted_and_unknown"] = _add_job(conn, client, "failed", ["deleted", "unknown"])
             jobs["no_files"] = _add_job(conn, client, "failed", [])
+            jobs["string_entry"] = _add_job(conn, client, "failed", ["text"])
+            jobs["deleted_and_string"] = _add_job(conn, client, "failed", ["deleted", "text"])
+            jobs["files_not_array"] = _add_job(conn, client, "failed", [])
+            conn.execute(
+                "UPDATE kb_ingest_jobs SET files = %s WHERE id = %s",
+                (json.dumps({"name": "not-a-list.pdf"}), jobs["files_not_array"][0]),
+            )
             jobs["done"] = _add_job(conn, client, "done", ["deleted"])
         patch.setattr(migrate, "discover_migrations", real)
         _run_migrations(dsn)
@@ -198,15 +209,16 @@ def test_backfill_leaves_a_job_with_one_live_file(backfilled: Backfilled) -> Non
 
 
 def test_backfill_leaves_a_path_only_job_alone(backfilled: Backfilled) -> None:
-    for scenario in ("path_only", "deleted_and_path"):
+    for scenario in ("path_only", "deleted_and_path", "string_entry", "deleted_and_string"):
         job_id, status = backfilled.jobs[scenario]
         row = _row(backfilled.dsn, job_id)
         assert (row["status"], row["dismissed_at"]) == (status, None), scenario
 
 
 def test_backfill_keeps_what_it_cannot_prove_is_removed(backfilled: Backfilled) -> None:
-    """A file_id with no kb_upload_files row, an empty files list and a finished job all stay."""
-    for scenario in ("unknown_file", "deleted_and_unknown", "no_files", "done"):
+    """A file_id with no kb_upload_files row, an empty or non-list files value and a finished job
+    all stay."""
+    for scenario in ("unknown_file", "deleted_and_unknown", "no_files", "files_not_array", "done"):
         job_id, status = backfilled.jobs[scenario]
         row = _row(backfilled.dsn, job_id)
         assert (row["status"], row["dismissed_at"]) == (status, None), scenario

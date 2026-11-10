@@ -62,11 +62,11 @@ UPDATE public.kb_ingest_jobs j
        locked_at = NULL,
        finished_at = COALESCE(j.finished_at, now())
  WHERE j.status IN ('failed', 'partial', 'queued', 'processing')
-   AND jsonb_typeof(j.files) = 'array'
-   AND jsonb_array_length(j.files) > 0
+   AND CASE WHEN jsonb_typeof(j.files) = 'array' THEN jsonb_array_length(j.files) > 0 ELSE false END
    AND NOT EXISTS (
          SELECT 1
-           FROM jsonb_array_elements(j.files) AS e
+           FROM jsonb_array_elements(
+                  CASE WHEN jsonb_typeof(j.files) = 'array' THEN j.files ELSE '[]'::jsonb END) AS e
           WHERE NOT EXISTS (
                   SELECT 1
                     FROM public.kb_upload_files f
