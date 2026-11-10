@@ -2054,10 +2054,10 @@ GROUP_WORDS: dict[str, re.Pattern[str]] = {
         rf"\b(?:{_SUBSCRIBER_WORDS}|renew\w*|due|habis tempoh|pembaharuan)\b", re.IGNORECASE
     ),
 }
-# "The rest" of a group, in English and Malay (see _resumed).
-REST_WORDS = re.compile(
-    r"\b(?:rest|remaining|others|more|selebihnya|baki|yang lain|lagi)\b", re.IGNORECASE
-)
+# "The rest" of a group, in English and Malay (see _resumed): "the rest of them" and "yang
+# selebihnya" match through rest and selebihnya. Never the everyday "more" or "lagi": a fresh
+# request for the same group ("send more details", "jangan hantar lagi") would skip page one.
+REST_WORDS = re.compile(r"\b(?:rest|remaining|others|selebihnya|baki|yang lain)\b", re.IGNORECASE)
 
 
 def _named_by_user(value: str, message: str, facts: PlannerFacts) -> bool:
@@ -2241,6 +2241,7 @@ class _Found:
     steps: list[PlanStep] = field(default_factory=list)
     left_out: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    continued: int = 0
     resume_offset: int | None = None
     resume_group: str | None = None
     resume_days: int | None = None
@@ -2365,6 +2366,8 @@ async def _batch_step(
         language=facts.language,
     )
     found.steps.extend(built.steps)
+    if built.steps:
+        found.continued = proposal.offset  # the card says a page continues (a count only)
     found.count(built.not_included)
     found.notes.extend(built.notes)
     group = next((spec for spec in proposal.recipients if spec.kind == "group"), None)
@@ -2453,7 +2456,9 @@ async def _plan(
         language=facts.language,
     )
     more = found.resume_offset is not None
-    notes = card_notes(found.notes, found.left_out, more=more, language=facts.language)
+    notes = card_notes(
+        found.notes, found.left_out, more=more, continued=found.continued, language=facts.language
+    )
     content = replace(prepared.content, summary=prepared.content.summary + notes)
     return _Planned(
         prepared=replace(prepared, content=content),

@@ -163,6 +163,7 @@ _LEFT_OUT: dict[Language, dict[str, str]] = {
         "draft_failed": "draft failed",
         "draft_deadline": "not drafted in time",
         "rest": ' Say "the rest" to email the next ones.',
+        "continued": " Continuing the group after {count} already offered.",
     },
     "ms": {
         "head": " Tidak disertakan: {count} ({reasons}).",
@@ -176,6 +177,7 @@ _LEFT_OUT: dict[Language, dict[str, str]] = {
         "draft_failed": "draf gagal",
         "draft_deadline": "tidak sempat didraf",
         "rest": ' Katakan "selebihnya" untuk e-mel yang seterusnya.',
+        "continued": " Menyambung kumpulan selepas {count} yang sudah ditawarkan.",
     },
 }
 
@@ -195,14 +197,23 @@ def left_out_note(counts: Mapping[str, int], language: Language) -> str:
 
 
 def card_notes(
-    notes: Sequence[str], counts: Mapping[str, int], *, more: bool, language: Language
+    notes: Sequence[str],
+    counts: Mapping[str, int],
+    *,
+    more: bool,
+    language: Language,
+    continued: int = 0,
 ) -> str:
-    """What a plan card's summary adds: the batch's count-only notes ("sending 12, saving 8 as
+    """What a plan card's summary adds: that a page continues a group (``continued``, the
+    batch's offset, when above 0), the batch's count-only notes ("sending 12, saving 8 as
     drafts"), what was left out, and how to ask for the rest of a group."""
+    text = _LEFT_OUT[language]
     added = f" {'; '.join(notes)}." if notes else ""
     if added:
         added = f" {added[1].upper()}{added[2:]}"
-    return added + left_out_note(counts, language) + (_LEFT_OUT[language]["rest"] if more else "")
+    if continued > 0:
+        added = text["continued"].format(count=continued) + added
+    return added + left_out_note(counts, language) + (text["rest"] if more else "")
 
 
 def step_id(plan_id: UUID, index: int) -> UUID:

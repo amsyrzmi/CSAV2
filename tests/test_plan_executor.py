@@ -473,6 +473,24 @@ DRIFT = (
 )
 
 
+@pytest.mark.parametrize(
+    ("language", "note"),
+    [
+        ("en", " Continuing the group after 20 already offered."),
+        ("ms", " Menyambung kumpulan selepas 20 yang sudah ditawarkan."),
+    ],
+)
+def test_card_notes_say_a_page_continues_only_past_offset_zero(
+    language: Language, note: str
+) -> None:
+    """A continued page always says so on its card, as a count (never who); page one does not."""
+    notes = plan_module.card_notes(["drafting 2"], {}, more=False, continued=20, language=language)
+    assert notes == note + " Drafting 2."
+    first = plan_module.card_notes(["drafting 2"], {}, more=False, continued=0, language=language)
+    assert first == " Drafting 2."
+    assert plan_module.card_notes([], {}, more=False, language=language) == ""
+
+
 def test_drift_codes_are_one_named_set() -> None:
     assert frozenset(DRIFT) == plan_module.DRIFT_CODES
 

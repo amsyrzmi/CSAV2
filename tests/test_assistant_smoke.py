@@ -18,6 +18,7 @@ from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
 from csa.workspace.planner import PlannerOutput, detect_language
 from csa.workspace.rules import ADDRESS
+from csa.workspace.service import REST_WORDS
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from scripts import assistant_smoke as smoke
 
@@ -689,6 +690,21 @@ def test_the_rest_cases_carry_a_batch_turn_with_a_resume_count() -> None:
         assert case.expect.actions == ["email_batch"] and case.expect.group == "active_subscribers"
         history = smoke.build_facts(case).history
         assert [(turn.action, turn.resume_offset) for turn in history] == [("email_batch", 20)]
+
+
+def test_the_rest_words_match_the_rest_cases_and_not_everyday_more_or_lagi() -> None:
+    """The server's rest-word rule continues a group only on words for "the rest": the smoke
+    rest messages match, an everyday "more" or "lagi" in a fresh request does not."""
+    cases = {case.id: case for case in smoke.load_cases()}
+    for case_id in REST_CASES:
+        assert REST_WORDS.search(cases[case_id].message), case_id
+    for rest in ("the rest of them", "yang selebihnya", "the remaining ones", "baki pelanggan"):
+        assert REST_WORDS.search(rest), rest
+    for fresh in (
+        "Send more details to all active subscribers",
+        "Tolong draf emel kepada semua pelanggan aktif, jangan hantar lagi",
+    ):
+        assert not REST_WORDS.search(fresh), fresh
 
 
 def test_smoke_resumes_the_rest_from_the_stored_count_and_fails_an_unknown_offset(

@@ -1030,3 +1030,53 @@ async def test_a_chain_past_the_history_window_refuses_names_but_continues_the_g
     )
     assert await _recipients(w, await _steps(w, fourth["id"])) == members[5:]
     assert await _all_drafted(w) == sorted([AINA[1], *members])
+
+
+# ------------------------- final fix wave: "more" or "lagi" is a fresh request, not "the rest"
+
+SUBSCRIBERS_BODY = "Draft the reminder to all active subscribers"
+CONTINUED = {
+    "en": " Continuing the group after 2 already offered.",
+    "ms": " Menyambung kumpulan selepas 2 yang sudah ditawarkan.",
+}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Send more details to all active subscribers",
+        "Tolong draf emel kepada semua pelanggan aktif, jangan hantar lagi",
+    ],
+)
+async def test_an_everyday_more_or_lagi_offers_page_one_again(
+    planned, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    """After a page that stored a count, a fresh request for the same group with an everyday
+    "more" or "lagi" stays at offset 0: page one is offered again, never silently skipped."""
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=3)
+    first = await _page_one(w, model, browser, thread, _batch(SUBSCRIBERS), SUBSCRIBERS_BODY)
+    assert first["resume_offset"] == 2
+    again = _card(await _turn_with(w, model, browser, thread, _batch(SUBSCRIBERS), body))
+    assert await _recipients(w, await _steps(w, again["id"])) == members[:2]
+    assert not any(note in again["card"]["summary"] for note in CONTINUED.values())
+
+
+@pytest.mark.parametrize(
+    ("body", "language"),
+    [
+        ("Now send the same reminder to the rest of them please", "en"),
+        ("Tolong draf yang selebihnya", "ms"),
+    ],
+)
+async def test_a_continued_page_says_so_on_its_card(
+    planned, monkeypatch: pytest.MonkeyPatch, body: str, language: str
+) -> None:
+    """ "The rest of them" and "yang selebihnya" continue (the planner forgot the offset) and the
+    card says it continues, with a count only; page one's card does not."""
+    w, model, browser, members, thread = await _chain_world(planned, monkeypatch, page=2, size=3)
+    model.reply(_batch(SUBSCRIBERS))
+    first = _card(await _turn(w, browser, thread, SUBSCRIBERS_BODY, "email"))
+    assert not any(note in first["card"]["summary"] for note in CONTINUED.values())
+    rest = _card(await _turn_with(w, model, browser, thread, _batch(SUBSCRIBERS), body))
+    assert await _recipients(w, await _steps(w, rest["id"])) == members[2:]
+    assert CONTINUED[language] in rest["card"]["summary"]
