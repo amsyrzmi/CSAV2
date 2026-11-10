@@ -1,6 +1,6 @@
 """Evaluation gate for the staff assistant's Jev deciders (the owner runs it with their own key).
 
-    TYPESAFE_API_KEY=... python -m scripts.assistant_jev_eval
+    uv run python -m scripts.assistant_jev_eval
 
 It sends each labelled synthetic message (docs/superpowers/evals/assistant_jev_labels.json, English
 and Malay) to Jev with the same questions, wording and redaction the live deciders use, then prints,
@@ -9,18 +9,20 @@ counts is the agreement on the answers the cascade would actually use: those at 
 confidence floor. Answers below the floor fall back to the LLM or rule in production, so they are
 reported as coverage, not judged. An error or timeout is the same: a fallback, counted.
 
-The key comes from the environment of the shell that runs it, never from a repo file. The output is
-content-free: area, question, counts, percentages and the ids of mislabelled cases (synthetic ids
+The key is typed at a hidden prompt (nothing echoed, nothing in shell history); a key already in the
+shell's TYPESAFE_API_KEY is used instead. Never from a repo file. With no key and no terminal the run
+stops (exit 2) rather than read one from a pipe. The output is content-free: area, question, counts, percentages and the ids of mislabelled cases (synthetic ids
 such as ``routing-ms-04``), never message text. Exit codes: 0 every question meets its target,
 1 at least one is below it, 2 the run could not start (no key, bad labels).
 
-The customer classifier has its own evaluation: ``python -m csa.evals.decisions --provider both``.
+The customer classifier has its own evaluation, ``csa.evals.decisions`` (docs/RUNBOOK.md, Jev).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import os
 import sys
@@ -319,9 +321,26 @@ def render(report: Report) -> str:
         "",
         "RESULT: every question meets its target"
         if report.passed
-        else "RESULT: below target. Raise the floor, or set that area to llm, then run again.",
+        else "RESULT: below target. Run again with a higher --floor-noul or --floor-choice, "
+        "or keep that area on llm (docs/RUNBOOK.md, Jev).",
     ]
     return "\n".join(lines)
+
+
+def _api_key() -> str | None:
+    """The shell's key, else one typed at a hidden prompt; None when there is no terminal.
+
+    An empty string means the prompt was left empty or abandoned. The key is never echoed.
+    """
+    from_shell = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    if from_shell:
+        return from_shell
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return getpass.getpass("Jev key, TYPESAFE_API_KEY (hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
 
 
 def _setup_error(text: str) -> int:
@@ -353,9 +372,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--floor-choice", type=float, default=fields["ASSISTANT_JEV_FLOOR_CHOICE"].default
     )
     args = parser.parse_args(argv)
-    api_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    api_key = _api_key()
+    if api_key is None:
+        return _setup_error(
+            "TYPESAFE_API_KEY is not set in this shell and there is no terminal to prompt on"
+        )
     if not api_key:
-        return _setup_error("TYPESAFE_API_KEY is not set in this shell")
+        return _setup_error("no key entered at the prompt")
     try:
         cases = load_cases(args.labels)
     except (OSError, ValueError, ValidationError) as exc:

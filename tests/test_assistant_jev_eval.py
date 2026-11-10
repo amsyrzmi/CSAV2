@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from collections import Counter
 from collections.abc import Mapping
@@ -372,3 +373,91 @@ def test_the_script_refuses_unusable_labels_without_echoing_them(
     assert "labels are unusable" in err
     assert "SECRET TEXT" not in err
     assert ev.main(["--labels", str(tmp_path / "missing.json")]) == 2
+
+
+
+class _Terminal(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def _capture_run(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    keys: list[str] = []
+
+    async def fake_run(args: object, api_key: str, cases: object) -> ev.Report:
+        keys.append(api_key)
+        return await _report(OracleClient(CASES))
+
+    monkeypatch.setattr(ev, "_run", fake_run)
+    return keys
+
+
+def test_with_no_key_in_the_shell_a_terminal_gets_a_hidden_prompt(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(ev.sys, "stdin", _Terminal())
+    prompts: list[str] = []
+
+    def hidden(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return "  synthetic-key-never-printed\n"
+
+    monkeypatch.setattr(ev.getpass, "getpass", hidden)
+    keys = _capture_run(monkeypatch)
+    assert ev.main([]) == 0
+    assert len(prompts) == 1
+    assert "synthetic-key-never-printed" not in prompts[0]
+    assert keys == ["synthetic-key-never-printed"]
+    out = capsys.readouterr()
+    assert "synthetic-key-never-printed" not in out.out + out.err
+
+
+def test_a_key_in_the_shell_is_used_without_a_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-env-key")
+    monkeypatch.setattr(ev.sys, "stdin", _Terminal())
+
+    def never(prompt: str = "") -> str:
+        raise AssertionError("prompted although the shell had a key")
+
+    monkeypatch.setattr(ev.getpass, "getpass", never)
+    keys = _capture_run(monkeypatch)
+    assert ev.main([]) == 0
+    assert keys == ["synthetic-env-key"]
+
+
+def test_with_no_key_and_no_terminal_the_script_refuses_without_prompting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(ev.sys, "stdin", io.StringIO("piped-synthetic-key\n"))
+
+    def never(prompt: str = "") -> str:
+        raise AssertionError("prompted without a terminal")
+
+    monkeypatch.setattr(ev.getpass, "getpass", never)
+    keys = _capture_run(monkeypatch)
+    assert ev.main([]) == 2
+    assert keys == []
+    err = capsys.readouterr().err
+    assert "TYPESAFE_API_KEY" in err
+    assert "piped-synthetic-key" not in err
+
+
+@pytest.mark.parametrize("entered", ["", "   ", EOFError(), KeyboardInterrupt()])
+def test_an_empty_or_abandoned_prompt_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], entered: object
+) -> None:
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(ev.sys, "stdin", _Terminal())
+
+    def hidden(prompt: str = "") -> str:
+        if isinstance(entered, BaseException):
+            raise entered
+        return str(entered)
+
+    monkeypatch.setattr(ev.getpass, "getpass", hidden)
+    keys = _capture_run(monkeypatch)
+    assert ev.main([]) == 2
+    assert keys == []
+    assert "no key" in capsys.readouterr().err
