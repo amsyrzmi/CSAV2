@@ -1,12 +1,15 @@
-"""Production deploy assets: the root-owned entry script, the Systems Manager document, the pins.
+"""Production deploy assets: the entry script, the Systems Manager document and its runner, the
+OIDC role policies, the ``deploy-production`` workflow and the pins.
 
-The entry script is run for real with ``bash`` against stub ``git`` and stub python executables
-that append their argv (tab-separated, one invocation per line) to a file, so these tests assert
-the exact commands the script would run without touching a repository or a database.
+The shell scripts are run for real with ``bash`` against stub ``git``, ``aws``, ``gh`` and python
+executables that append their argv (tab-separated, one invocation per line) to a file, so these
+tests assert the exact commands the scripts would run without touching a repository, a database,
+AWS or GitHub. The workflow is checked as text, and its shell blocks are extracted and run.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import json
 import os
@@ -14,15 +17,23 @@ import re
 import stat
 import subprocess
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+from scripts import staging_rollout as sr
+from scripts.rollout_targets import STAGING
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_DIR = ROOT / "deploy" / "production"
 ENTRY = PRODUCTION_DIR / "deploy_entry.sh"
 DOCUMENT = PRODUCTION_DIR / "ssm-document.json"
 REQUIREMENTS = PRODUCTION_DIR / "requirements.txt"
+SSM_RUN = PRODUCTION_DIR / "ssm_run.sh"
+PARSE_PLAN = PRODUCTION_DIR / "parse_plan.sh"
+TRUST_POLICY = PRODUCTION_DIR / "iam" / "trust-policy.json"
+PERMISSIONS_POLICY = PRODUCTION_DIR / "iam" / "permissions-policy.json"
+WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 MIGRATIONS = "0486,0487"
@@ -99,10 +110,71 @@ printf 'python-stdin-bytes\t%s\n' "${stdin_bytes//[[:space:]]/}" >> "$STUB_LOG"
 echo "rollout output"
 exit "${STUB_PYTHON_STATUS:-0}"
 """
+# The aws stub answers send-command with $STUB_COMMAND_ID and each get-command-invocation with the
+# next word of $STUB_STATUSES (the last word repeats): a Systems Manager status, or Missing (the
+# InvocationDoesNotExist race right after a send) or Denied (any other AWS error).
+AWS_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'aws\t%s\n' "$*" >> "$STUB_LOG"
+IFS=' '
+case "$2" in
+    send-command)
+        if [[ -n "${STUB_SEND_ERROR:-}" ]]; then
+            echo "$STUB_SEND_ERROR" >&2
+            exit 254
+        fi
+        printf '{"Command": {"CommandId": "%s", "Status": "Pending"}}\n' \
+            "${STUB_COMMAND_ID-0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0}"
+        ;;
+    get-command-invocation)
+        count=$(( $(cat "$STUB_POLLS" 2>/dev/null || echo 0) + 1 ))
+        echo "$count" > "$STUB_POLLS"
+        read -r -a statuses <<< "${STUB_STATUSES:-Success}"
+        last=$(( ${#statuses[@]} - 1 ))
+        status="${statuses[$(( count - 1 < last ? count - 1 : last ))]}"
+        case "$status" in
+            Missing)
+                echo "An error occurred (InvocationDoesNotExist) when calling the" \
+                    "GetCommandInvocation operation: " >&2
+                exit 254
+                ;;
+            Denied)
+                echo "An error occurred (AccessDeniedException)" >&2
+                exit 254
+                ;;
+        esac
+        out=$'remote output\n'
+        [[ -v STUB_STDOUT ]] && out="$STUB_STDOUT"
+        jq -n --arg status "$status" --arg out "$out" '{
+            Status: $status,
+            StatusDetails: $status,
+            ResponseCode: (if $status == "Success" then 0 else 2 end),
+            StandardOutputContent: $out,
+            StandardErrorContent: "remote stderr\n"
+        }'
+        ;;
+    *) exit 2 ;;
+esac
+"""
+# The gh stub serves `gh api <path>` from JSON files in $STUB_GH_DIR.
+GH_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'gh\t%s\n' "$*" >> "$STUB_LOG"
+IFS=' '
+[[ "$1" == api && $# -eq 2 ]] || exit 2
+case "$2" in
+    *"/statuses?per_page=100")
+        id="${2%/statuses*}"
+        cat "$STUB_GH_DIR/statuses-${id##*/}.json"
+        ;;
+    *"/deployments?environment=staging&per_page=100") cat "$STUB_GH_DIR/deployments.json" ;;
+    *) exit 2 ;;
+esac
+"""
 
 
 class Harness:
-    """Stub executables and an environment the entry script can run in."""
+    """Stub executables and an environment the deploy scripts can run in."""
 
     def __init__(self, tmp_path: Path) -> None:
         self.root = tmp_path
@@ -114,7 +186,11 @@ class Harness:
         self.lock = tmp_path / "deploy.lock"
         self.log_dir = tmp_path / "logs"
         self.python = tmp_path / "python-stub"
+        self.polls = tmp_path / "polls"
+        self.gh_dir = tmp_path / "gh"
         self._write_stub(self.bin / "git", GIT_STUB)
+        self._write_stub(self.bin / "aws", AWS_STUB)
+        self._write_stub(self.bin / "gh", GH_STUB)
         self._write_stub(self.python, PYTHON_STUB)
 
     @staticmethod
@@ -136,14 +212,31 @@ class Harness:
     def run(
         self, args: list[str], *, stdin: bytes = b"", **extra_env: str
     ) -> subprocess.CompletedProcess[bytes]:
+        return self.run_script(ENTRY, args, env=self.env(**extra_env), stdin=stdin)
+
+    @staticmethod
+    def run_script(
+        script: Path, args: list[str], *, env: dict[str, str], stdin: bytes = b""
+    ) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run(
-            ["bash", str(ENTRY), *args],
-            env=self.env(**extra_env),
+            ["bash", str(script), *args],
+            env=env,
             input=stdin,
             capture_output=True,
             timeout=30,
             check=False,
         )
+
+    def ssm(
+        self, args: list[str], *, unset: Iterable[str] = (), **extra_env: str
+    ) -> subprocess.CompletedProcess[bytes]:
+        env = self.env(**{**SSM_ENV, "STUB_POLLS": str(self.polls), **extra_env})
+        for name in unset:
+            env.pop(name)
+        return self.run_script(SSM_RUN, args, env=env)
+
+    def aws_calls(self) -> list[list[str]]:
+        return [call[1:] for call in self.calls() if call[0] == "aws"]
 
     def calls(self) -> list[list[str]]:
         if not self.log.exists():
@@ -375,3 +468,845 @@ def test_requirements_pin_matches_pyproject() -> None:
     ]
     assert len(pinned) == 1 and pinned[0]
     assert match.group(1) == pinned[0].group(1)
+
+
+# --- ssm_run.sh: send the document, wait, report -----------------------------------------------
+
+REGION = "test-region-1"
+INSTANCE = "mi-0123456789abcdef0"
+COMMAND_ID = "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
+SECRET = "test-secret-access-key-never-printed"
+TOKEN = "test-session-token-never-printed"
+SSM_ENV = {
+    "AWS_REGION": REGION,
+    "INSTANCE_ID": INSTANCE,
+    "SSM_POLL_SECONDS": "0",
+    "AWS_ACCESS_KEY_ID": "test-access-key-id",
+    "AWS_SECRET_ACCESS_KEY": SECRET,
+    "AWS_SESSION_TOKEN": TOKEN,
+}
+
+
+def _send_argv(parameters: str) -> list[str]:
+    return [
+        "ssm",
+        "send-command",
+        "--region",
+        REGION,
+        "--document-name",
+        "csa-production-deploy",
+        "--instance-ids",
+        INSTANCE,
+        "--parameters",
+        parameters,
+        "--timeout-seconds",
+        "600",
+        "--output",
+        "json",
+    ]
+
+
+POLL_ARGV = [
+    "ssm",
+    "get-command-invocation",
+    "--region",
+    REGION,
+    "--command-id",
+    COMMAND_ID,
+    "--instance-id",
+    INSTANCE,
+    "--output",
+    "json",
+]
+
+
+@pytest.mark.parametrize("name", ["AWS_REGION", "INSTANCE_ID"])
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_ssm_run_fails_closed_without_instance_or_region(
+    harness: Harness, name: str, value: str | None
+) -> None:
+    if value is None:
+        result = harness.ssm(["plan", SHA], unset=[name])
+    else:
+        result = harness.ssm(["plan", SHA], **{name: value})
+
+    assert result.returncode == 64
+    assert name.encode() in result.stderr
+    assert harness.calls() == []
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("INSTANCE_ID", "mi-0123; id"),
+        ("INSTANCE_ID", INSTANCE + "\n"),
+        ("AWS_REGION", "$(id)"),
+        ("SSM_POLL_SECONDS", "five"),
+        ("SSM_MAX_POLLS", "0"),
+        ("SSM_MAX_POLLS", "-1"),
+    ],
+)
+def test_ssm_run_refuses_malformed_settings(harness: Harness, name: str, value: str) -> None:
+    result = harness.ssm(["plan", SHA], **{name: value})
+
+    assert result.returncode == 64
+    assert name.encode() in result.stderr
+    assert harness.calls() == []
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("args", _bad_argument_vectors())
+def test_ssm_run_rejects_bad_arguments(harness: Harness, args: list[str], locale: str) -> None:
+    result = harness.ssm(args, LC_ALL=locale, LANG=locale)
+
+    assert result.returncode == 64
+    assert harness.calls() == []
+
+
+@pytest.mark.parametrize(
+    ("status", "code"), [("Success", 0), ("Failed", 1), ("TimedOut", 1), ("Cancelled", 1)]
+)
+def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_status(
+    harness: Harness, status: str, code: int
+) -> None:
+    output = harness.root / "github-output"
+    result = harness.ssm(
+        ["apply", SHA, MIGRATIONS, DIGEST], STUB_STATUSES=status, GITHUB_OUTPUT=str(output)
+    )
+
+    assert result.returncode == code, result.stderr
+    send, poll = harness.aws_calls()
+    assert send == _send_argv(send[9])
+    assert json.loads(send[9]) == {
+        "action": ["apply"],
+        "sha": [SHA],
+        "migrations": [MIGRATIONS],
+        "hostDigest": [DIGEST],
+    }
+    assert poll == POLL_ARGV
+    assert result.stdout == b"remote output\n"
+    assert b"remote stderr\n" in result.stderr
+    assert COMMAND_ID.encode() in result.stderr
+    assert f"status {status}".encode() in result.stderr
+    assert output.read_text() == f"command_id={COMMAND_ID}\n"
+    for credential in (SECRET, TOKEN):
+        assert credential.encode() not in result.stdout + result.stderr
+
+
+def test_ssm_run_plan_sends_the_empty_parameters_and_prints_the_output_verbatim(
+    harness: Harness,
+) -> None:
+    remote = "Target SHA: x\n  indented   line\n\nno final newline"
+    result = harness.ssm(["plan", SHA], STUB_STDOUT=remote)
+
+    assert result.returncode == 0, result.stderr
+    send, _poll = harness.aws_calls()
+    assert json.loads(send[9]) == {
+        "action": ["plan"],
+        "sha": [SHA],
+        "migrations": [""],
+        "hostDigest": [""],
+    }
+    assert result.stdout == remote.encode()
+
+
+def test_ssm_run_polls_through_inprogress_and_times_out(harness: Harness) -> None:
+    result = harness.ssm(["plan", SHA], STUB_STATUSES="InProgress", SSM_MAX_POLLS="3")
+
+    assert result.returncode == 124
+    assert [call[1] for call in harness.aws_calls()] == ["send-command"] + [
+        "get-command-invocation"
+    ] * 3
+    assert b"giving up" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("statuses", "code", "polls"),
+    [
+        pytest.param("Pending InProgress Delayed Success", 0, 4, id="waits-until-done"),
+        pytest.param("Missing Missing InProgress Success", 0, 4, id="tolerates-the-send-race"),
+        pytest.param("Missing " * 5 + "Success", 0, 6, id="five-missing-polls-tolerated"),
+        pytest.param("Missing " * 6 + "Success", 1, 6, id="the-sixth-missing-poll-fails"),
+        pytest.param("Denied Success", 1, 1, id="other-errors-fail-at-once"),
+    ],
+)
+def test_ssm_run_poll_outcomes(harness: Harness, statuses: str, code: int, polls: int) -> None:
+    result = harness.ssm(["plan", SHA], STUB_STATUSES=statuses)
+
+    assert result.returncode == code, result.stderr
+    calls = [call[1] for call in harness.aws_calls()]
+    assert calls == ["send-command"] + ["get-command-invocation"] * polls
+
+
+@pytest.mark.parametrize("command_id", ["", "not-a-command-id", "$(id)", COMMAND_ID + "0"])
+def test_ssm_run_refuses_a_malformed_command_id(harness: Harness, command_id: str) -> None:
+    output = harness.root / "github-output"
+    result = harness.ssm(["plan", SHA], STUB_COMMAND_ID=command_id, GITHUB_OUTPUT=str(output))
+
+    assert result.returncode == 1
+    assert [call[1] for call in harness.aws_calls()] == ["send-command"]
+    assert not output.exists()
+
+
+def test_ssm_run_stops_when_send_command_fails(harness: Harness) -> None:
+    result = harness.ssm(["plan", SHA], STUB_SEND_ERROR="An error occurred (AccessDeniedException)")
+
+    assert result.returncode == 1
+    assert b"AccessDeniedException" in result.stderr
+    assert [call[1] for call in harness.aws_calls()] == ["send-command"]
+
+
+def _unquoted_expansions(script: str) -> list[str]:
+    """Lines with a ``$`` expansion outside double quotes; the ``=~ $1`` regex operand excepted.
+
+    A small quote tracker, not a shell parser: single quotes, ANSI-C ``$'...'`` strings, double
+    quotes, ``\\`` escapes and nested ``$(...)`` are followed, a ``#`` after a blank ends the line.
+    """
+    offending: list[str] = []
+    for raw in script.splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        line = raw.replace("=~ $1", "=~ ")
+        stack = ["code"]
+        i = 0
+        while i < len(line):
+            char, following = line[i], line[i + 1 : i + 2]
+            if stack[-1] == "dq":
+                if char == "\\":
+                    i += 1
+                elif char == '"':
+                    stack.pop()
+                elif char == "$" and following == "(":
+                    stack.append("(")
+                    i += 1
+            elif char == "\\":
+                i += 1
+            elif char == "'" or (char == "$" and following == "'"):
+                start = i + 1 if char == "'" else i + 2
+                i = line.index("'", start)
+            elif char == '"':
+                stack.append("dq")
+            elif char == "$" and following == "(":
+                stack.append("(")
+                i += 1
+            elif char == "(":
+                stack.append("(")
+            elif char == ")" and stack[-1] == "(":
+                stack.pop()
+            elif char == "#" and (i == 0 or line[i - 1].isspace()):
+                break
+            elif char == "$" and re.match(r"[A-Za-z_{0-9@#?*!-]", following):
+                offending.append(raw)
+                break
+            i += 1
+    return offending
+
+
+def test_the_quote_checker_finds_unquoted_expansions() -> None:
+    assert _unquoted_expansions("echo \"$a\" '$b' $'\\n' \"$(cmd \"$c\" '$d')\"\n") == []
+    assert _unquoted_expansions('[[ "$2" =~ $1 ]]\nx="$((n + 1))"\n# $comment\n') == []
+    bad = ["echo $a", 'echo "$(cmd $b)"', "exit $?", "for x in ${list[@]}; do :; done"]
+    assert _unquoted_expansions("\n".join(bad)) == bad
+
+
+@pytest.mark.parametrize("script", [SSM_RUN, PARSE_PLAN], ids=lambda path: path.name)
+def test_runner_scripts_are_bash_strict_quoted_and_executable(script: Path) -> None:
+    text = script.read_text()
+    lines = text.splitlines()
+    code = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+    assert lines[0] == "#!/bin/bash"
+    strict = lines.index("set -euo pipefail")
+    locale = lines.index("export LC_ALL=C")
+    assert strict < locale < next(i for i, line in enumerate(lines) if "=~" in line)
+    assert not re.search(r"\beval\b|\b(?:ba)?sh -c\b|\bset -x\b|\bsource\b", code)
+    assert _unquoted_expansions(text) == []
+    assert script.stat().st_mode & stat.S_IXUSR
+    assert os.access(script, os.X_OK)
+
+
+# --- parse_plan.sh: the three values apply must send ---------------------------------------------
+
+PROD_LIKE = dataclasses.replace(
+    STAGING, name="production", host_file=Path("/nonexistent/host.env"), staged_gate=True
+)
+HOST_VALUES = {"CSA_PROD_EXAMPLE": "1"}
+PLAN_DIGEST = sr.host_settings_digest(HOST_VALUES)
+OTHER_SHA = "f" * 40
+
+
+def _plan_output(pending: list[str], *, sha: str = SHA, production: bool = True) -> str:
+    """What ``format_plan`` prints for a production-like target (or staging, with no digest)."""
+    target = PROD_LIKE if production else STAGING
+    images = {app: f"ghcr.io/example/csa-{app}@sha256:{'1' * 64}" for app in sr.APPS}
+    plan = sr.Plan(
+        sha,
+        images,
+        {},
+        pending,
+        [],
+        [],
+        sr.plan_steps(pending, [], target=target),
+        {},
+        host_values=HOST_VALUES,
+        staged_on="2026-11-09T01:02:03Z",
+    )
+    return sr.format_plan(plan, target=target) + "\n"
+
+
+def _parse(
+    harness: Harness, text: str, *args: str, locale: str = "C"
+) -> subprocess.CompletedProcess[bytes]:
+    plan = harness.root / "plan.txt"
+    plan.write_bytes(text.encode())
+    argv = list(args) if args else [str(plan), SHA]
+    return harness.run_script(PARSE_PLAN, argv, env=harness.env(LC_ALL=locale, LANG=locale))
+
+
+def _outputs(sha: str, migrations: str, digest: str) -> bytes:
+    return f"sha={sha}\nmigrations={migrations}\nhost_digest={digest}\n".encode()
+
+
+@pytest.mark.parametrize(
+    ("text", "migrations"),
+    [
+        pytest.param(_plan_output(["0486", "0487"]), "0486,0487", id="two-migrations"),
+        pytest.param(_plan_output(["0490"]), "0490", id="one-migration"),
+        pytest.param(_plan_output([]), "", id="none"),
+        pytest.param(_plan_output([]).rstrip("\n"), "", id="no-final-newline"),
+        pytest.param(
+            _plan_output(["0486"])
+            + f"note: Target SHA: {OTHER_SHA}\n  Host settings digest: ffffffffffff\n"
+            + "rollout said Pending migrations: 0999\n",
+            "0486",
+            id="embedded-lookalikes-ignored",
+        ),
+    ],
+)
+def test_parse_plan_reads_the_three_lines(harness: Harness, text: str, migrations: str) -> None:
+    result = _parse(harness, text)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _outputs(SHA, migrations, PLAN_DIGEST)
+
+
+def _replace_line(text: str, prefix: str, new: str) -> str:
+    return "".join(new if line.startswith(prefix) else line for line in text.splitlines(True))
+
+
+GOOD_PLAN = _plan_output(["0486", "0487"])
+HOSTILE_PLANS = [
+    pytest.param(GOOD_PLAN + f"Target SHA: {SHA}\n", id="duplicate-target"),
+    pytest.param(GOOD_PLAN + "Pending migrations: none\n", id="duplicate-pending"),
+    pytest.param(GOOD_PLAN + f"Host settings digest: {PLAN_DIGEST}\n", id="duplicate-digest"),
+    pytest.param(_plan_output(["0486"], production=False), id="missing-digest-staging-format"),
+    pytest.param(_replace_line(GOOD_PLAN, "Target SHA: ", ""), id="missing-target"),
+    pytest.param(_replace_line(GOOD_PLAN, "Pending migrations: ", ""), id="missing-pending"),
+    pytest.param(GOOD_PLAN.replace("\n", "\r\n"), id="crlf-line-endings"),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Host settings digest: ", f"Host settings digest: {DIGEST}\r\n"),
+        id="cr-in-digest",
+    ),
+    pytest.param(
+        _replace_line(
+            GOOD_PLAN, "Host settings digest: ", f"Host settings digest: {DIGEST.upper()}\n"
+        ),
+        id="uppercase-digest",
+    ),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Host settings digest: ", "Host settings digest: \n"),
+        id="empty-digest",
+    ),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Pending migrations: ", "Pending migrations: 0486,0487\n"),
+        id="migrations-without-the-printed-spacing",
+    ),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Pending migrations: ", "Pending migrations: 0486, 048\u0666\n"),
+        id="unicode-digit-migration",
+    ),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Pending migrations: ", "Pending migrations: 0486; id\n"),
+        id="injected-migrations",
+    ),
+    pytest.param(
+        _replace_line(GOOD_PLAN, "Target SHA: ", f"Target SHA: {SHA[:-1]}\uff10\n"),
+        id="fullwidth-digit-sha",
+    ),
+    pytest.param(_plan_output(["0486"], sha=OTHER_SHA), id="plan-for-another-commit"),
+    pytest.param("", id="empty-output"),
+]
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("text", HOSTILE_PLANS)
+def test_parse_plan_refuses_hostile_output(harness: Harness, text: str, locale: str) -> None:
+    result = _parse(harness, text, locale=locale)
+
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert result.stderr.startswith(b"parse_plan: ")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["{plan}", "$(id)"], id="bad-expected-sha"),
+        pytest.param(["{plan}", SHA.upper()], id="uppercase-expected-sha"),
+        pytest.param(["{missing}", SHA], id="missing-file"),
+        pytest.param(["{plan}"], id="no-expected-sha"),
+        pytest.param(["{plan}", SHA, "extra"], id="too-many-arguments"),
+    ],
+)
+def test_parse_plan_refuses_bad_arguments(harness: Harness, args: list[str]) -> None:
+    paths = {"{plan}": str(harness.root / "plan.txt"), "{missing}": str(harness.root / "none")}
+    result = _parse(harness, GOOD_PLAN, *[paths.get(arg, arg) for arg in args])
+
+    assert result.returncode != 0
+    assert result.stdout == b""
+
+
+# --- the OIDC role ------------------------------------------------------------------------------
+
+AUD = "token.actions.githubusercontent.com:aud"
+SUB = "token.actions.githubusercontent.com:sub"
+DOCUMENT_ARN = "arn:aws:ssm:<region>:<account-id>:document/csa-production-deploy"
+INSTANCE_ARN = "arn:aws:ssm:<region>:<account-id>:managed-instance/<managed-instance-id>"
+
+
+def _as_list(value: str | list[str]) -> list[str]:
+    return value if isinstance(value, list) else [value]
+
+
+def test_trust_policy_is_scoped_to_this_repo_and_the_two_environments() -> None:
+    policy = json.loads(TRUST_POLICY.read_text())
+
+    assert set(policy) == {"Version", "Statement"}
+    assert policy["Version"] == "2012-10-17"
+    (statement,) = policy["Statement"]
+    assert set(statement) == {"Effect", "Principal", "Action", "Condition"}
+    assert statement["Effect"] == "Allow"
+    assert statement["Principal"] == {"Federated": "<oidc-provider-arn>"}
+    assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
+    assert statement["Condition"] == {
+        "StringEquals": {
+            AUD: "sts.amazonaws.com",
+            SUB: [
+                "repo:amsyrzmi/CSAV2:environment:production",
+                "repo:amsyrzmi/CSAV2:environment:production-plan",
+            ],
+        }
+    }
+    assert "*" not in json.dumps(statement["Condition"])
+    assert "*" not in json.dumps(statement["Principal"])
+
+
+def test_permissions_policy_has_only_the_allowed_actions() -> None:
+    policy = json.loads(PERMISSIONS_POLICY.read_text())
+
+    assert set(policy) == {"Version", "Statement"}
+    assert policy["Version"] == "2012-10-17"
+    statements = policy["Statement"]
+    for statement in statements:
+        assert set(statement) <= {"Sid", "Effect", "Action", "Resource"}
+        assert statement["Effect"] == "Allow"
+    actions = [action for statement in statements for action in _as_list(statement["Action"])]
+    assert sorted(actions) == [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:SendCommand",
+    ]
+
+    (send,) = [s for s in statements if "ssm:SendCommand" in _as_list(s["Action"])]
+    assert _as_list(send["Action"]) == ["ssm:SendCommand"]
+    assert sorted(_as_list(send["Resource"])) == sorted([DOCUMENT_ARN, INSTANCE_ARN])
+    assert "*" not in json.dumps(send)
+
+    # The two read actions support no resource-level scoping (the service authorization
+    # reference lists no resource type for them), so they can only be granted on "*".
+    (read,) = [s for s in statements if s is not send]
+    assert sorted(_as_list(read["Action"])) == [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+    ]
+    assert read["Resource"] == "*"
+
+
+NEW_FILES = (SSM_RUN, PARSE_PLAN, TRUST_POLICY, PERMISSIONS_POLICY, WORKFLOW)
+
+
+@pytest.mark.parametrize("path", NEW_FILES, ids=lambda path: path.name)
+def test_deploy_files_hold_no_account_instance_region_or_address(path: Path) -> None:
+    text = path.read_text()
+
+    assert not re.search(r"\b\d{12}\b", text)
+    assert not re.search(r"\b(?:mi|i)-[0-9a-f]{8,17}\b", text)
+    assert not re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text)
+    assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", text)
+    assert not re.search(r"arn:aws:iam::\d", text)
+
+
+# --- the deploy-production workflow -------------------------------------------------------------
+
+JOB_PERMISSIONS = ["contents: read", "deployments: read", "id-token: write"]
+PIN = re.compile(r"^\s*(?:- )?uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
+
+
+def _workflow() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def _children(text: str, header: str, *, direct: bool = True) -> list[str]:
+    """The stripped lines nested under the line ``header`` (exact, with its indent)."""
+    lines = text.splitlines()
+    start = lines.index(header)
+    indent = len(header) - len(header.lstrip())
+    nested: list[str] = []
+    for line in lines[start + 1 :]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        depth = len(line) - len(line.lstrip())
+        if depth <= indent:
+            break
+        if not direct or depth == indent + 2:
+            nested.append(line.strip())
+    return nested
+
+
+def _jobs() -> dict[str, str]:
+    section = _workflow().split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([a-z][a-z0-9_-]*):\n", section, flags=re.MULTILINE)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def _steps(job: str) -> list[str]:
+    body = _jobs()[job].split("\n    steps:\n", 1)[1]
+    return re.split(r"^      - ", body, flags=re.MULTILINE)[1:]
+
+
+def _step(job: str, name: str) -> str:
+    (step,) = [step for step in _steps(job) if step.startswith(f"name: {name}\n")]
+    return step
+
+
+def _run_blocks(text: str) -> list[str]:
+    """Every ``run:`` value: the dedented body of a ``run: |`` block, or a one-line command."""
+    lines = text.splitlines()
+    blocks: list[str] = []
+    for index, line in enumerate(lines):
+        match = re.match(r"^(\s*)(?:- )?run:(.*)$", line)
+        if not match:
+            continue
+        if match.group(2).strip() != "|":
+            blocks.append(match.group(2).strip())
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following.strip() and len(following) - len(following.lstrip()) <= len(
+                match.group(1)
+            ):
+                break
+            body.append(following)
+        indent = min(len(item) - len(item.lstrip()) for item in body if item.strip())
+        blocks.append("\n".join(item[indent:] for item in body).strip("\n") + "\n")
+    return blocks
+
+
+def _run_step(
+    job: str, name: str, env: dict[str, str], cwd: Path
+) -> subprocess.CompletedProcess[bytes]:
+    (block,) = _run_blocks(_step(job, name))
+    return subprocess.run(
+        ["bash", "-c", block], env=env, cwd=cwd, capture_output=True, timeout=30, check=False
+    )
+
+
+def test_workflow_triggers_permissions_and_pinning() -> None:
+    text = _workflow()
+    top = [line for line in text.splitlines() if line and not line[0].isspace() and line[0] != "#"]
+    assert top == ["name: deploy-production", "on:", "permissions:", "concurrency:", "jobs:"]
+    assert _children(text, "on:") == ["workflow_dispatch:"]
+    assert _children(text, "    inputs:") == ["sha:"]
+    sha_input = _children(text, "      sha:")
+    assert "required: false" in sha_input
+    assert "type: string" in sha_input
+    (description,) = [line for line in sha_input if line.startswith("description:")]
+    assert "empty = newest staged commit" in description
+    assert _children(text, "permissions:") == ["contents: read"]
+    assert _children(text, "concurrency:") == [
+        "group: deploy-production",
+        "cancel-in-progress: false",
+    ]
+    assert text.count("concurrency:") == 1
+    assert text.count("permissions:") == 3
+
+    jobs = _jobs()
+    assert list(jobs) == ["plan", "apply"]
+    for name, body in jobs.items():
+        assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS, name
+        assert "    runs-on: ubuntu-24.04\n" in body
+    assert "    environment: production-plan\n" in jobs["plan"]
+    assert "needs:" not in jobs["plan"]
+    assert "    environment: production\n" in jobs["apply"]
+    assert "    needs: plan\n" in jobs["apply"]
+
+    uses = [line for line in text.splitlines() if re.match(r"^\s*(?:- )?uses:", line)]
+    assert len(uses) == 4
+    pinned = [PIN.match(line) for line in uses]
+    assert all(pinned), uses
+    assert sorted({match.group(1) for match in pinned if match}) == [
+        "actions/checkout",
+        "aws-actions/configure-aws-credentials",
+    ]
+    assert len({line.strip() for line in uses}) == 2  # both jobs use the same pins
+
+
+def test_workflow_never_interpolates_inputs_into_run_text() -> None:
+    text = _workflow()
+    blocks = _run_blocks(text)
+
+    assert len(blocks) == 6
+    for block in blocks:
+        assert block.startswith("set -euo pipefail\n"), block
+        assert "${{" not in block, block
+        assert _unquoted_expansions(block) == [], block
+    outputs = {
+        "sha: ${{ steps.parse.outputs.sha }}",
+        "migrations: ${{ steps.parse.outputs.migrations }}",
+        "host_digest: ${{ steps.parse.outputs.host_digest }}",
+    }
+    assert set(_children(text, "    outputs:")) == outputs
+    for line in text.splitlines():
+        if re.search(r"\$\{\{\s*(?:inputs|needs|steps)\.", line):
+            stripped = line.strip()
+            assert stripped in outputs or re.fullmatch(
+                r"[A-Z][A-Z_]*: \$\{\{ (?:inputs|needs|steps)\.[a-z_.]+ \}\}", stripped
+            ), line
+
+
+def _variables_env(**overrides: str | None) -> dict[str, str]:
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "ROLE_ARN": "arn:aws:iam::<account-id>:role/example",
+        "AWS_REGION": REGION,
+        "INSTANCE_ID": INSTANCE,
+    }
+    for name, value in overrides.items():
+        if value is None:
+            env.pop(name)
+        else:
+            env[name] = value
+    return env
+
+
+@pytest.mark.parametrize("job", ["plan", "apply"])
+def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) -> None:
+    text = _workflow()
+    for variable in ("PROD_DEPLOY_ROLE_ARN", "PROD_DEPLOY_REGION", "PROD_INSTANCE_ID"):
+        assert f"${{{{ vars.{variable} }}}}" in text
+    env = _children("  job:\n" + _jobs()[job], "    env:")
+    assert env == [
+        "ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}",
+        "AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}",
+        "INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}",
+    ]
+    (configure,) = [step for step in _steps(job) if "configure-aws-credentials@" in step]
+    assert "role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}" in configure
+    assert "aws-region: ${{ vars.PROD_DEPLOY_REGION }}" in configure
+    assert "mask-aws-account-id: true" in configure
+    assert _steps(job)[0].startswith("name: Require the deploy variables\n")
+
+    name = "Require the deploy variables"
+    assert _run_step(job, name, _variables_env(), tmp_path).returncode == 0
+    for variable, setting in [
+        ("ROLE_ARN", "PROD_DEPLOY_ROLE_ARN"),
+        ("AWS_REGION", "PROD_DEPLOY_REGION"),
+        ("INSTANCE_ID", "PROD_INSTANCE_ID"),
+    ]:
+        for value in ("", None):
+            result = _run_step(job, name, _variables_env(**{variable: value}), tmp_path)
+            assert result.returncode != 0
+            assert setting.encode() in result.stderr
+
+
+@pytest.mark.parametrize("job", ["plan", "apply"])
+def test_workflow_runs_the_scripts_from_a_main_checkout(job: str) -> None:
+    text = _workflow()
+    assert re.findall(r"^[ \t]*ref:.*$", text, flags=re.MULTILINE) == ["          ref: main"] * 2
+    assert "working-directory:" not in text
+
+    steps = _steps(job)
+    (checkout,) = [i for i, step in enumerate(steps) if "uses: actions/checkout@" in step]
+    assert _children("      - " + steps[checkout], "        with:") == [
+        "ref: main",
+        "persist-credentials: false",
+    ]
+    (configure,) = [i for i, step in enumerate(steps) if "configure-aws-credentials@" in step]
+    scripts = [i for i, step in enumerate(steps) if "deploy/production/" in step]
+    assert scripts
+    assert checkout < configure < min(scripts)
+    invoked = re.findall(r"deploy/production/\w+\.sh[^\n>|]*", "".join(steps))
+    expected = {
+        "plan": [
+            'deploy/production/ssm_run.sh plan "$SHA" ',
+            'deploy/production/parse_plan.sh "$RUNNER_TEMP/plan.txt" "$SHA" ',
+        ],
+        "apply": ['deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" '],
+    }
+    assert invoked == expected[job]
+
+
+def _resolve(
+    harness: Harness, input_sha: str, *, locale: str = "C"
+) -> subprocess.CompletedProcess[bytes]:
+    harness.gh_dir.mkdir(exist_ok=True)
+    env = harness.env(
+        INPUT_SHA=input_sha,
+        GH_TOKEN="test-token",
+        REPOSITORY="example/repo",
+        RUNNER_TEMP=str(harness.root),
+        GITHUB_OUTPUT=str(harness.root / "github-output"),
+        STUB_GH_DIR=str(harness.gh_dir),
+        LC_ALL=locale,
+        LANG=locale,
+    )
+    return _run_step("plan", "Resolve the commit to deploy", env, harness.root)
+
+
+def _deployments(harness: Harness, *deployments: tuple[object, str, list[str]]) -> None:
+    harness.gh_dir.mkdir(exist_ok=True)
+    listing = [{"id": number, "sha": sha} for number, sha, _states in deployments]
+    (harness.gh_dir / "deployments.json").write_text(json.dumps(listing))
+    for number, _sha, states in deployments:
+        statuses = [{"state": state} for state in states]
+        (harness.gh_dir / f"statuses-{number}.json").write_text(json.dumps(statuses))
+
+
+def _github_output(harness: Harness) -> str:
+    path = harness.root / "github-output"
+    return path.read_text() if path.exists() else ""
+
+
+def test_workflow_uses_a_valid_input_sha_without_asking_github(harness: Harness) -> None:
+    result = _resolve(harness, SHA)
+
+    assert result.returncode == 0, result.stderr
+    assert _github_output(harness) == f"sha={SHA}\n"
+    assert harness.calls() == []
+
+
+@pytest.mark.parametrize("locale", LOCALES)
+@pytest.mark.parametrize("value", [value for value in BAD_VALUES["sha"] if value])
+def test_workflow_refuses_a_bad_input_sha(harness: Harness, value: str, locale: str) -> None:
+    result = _resolve(harness, value, locale=locale)
+
+    assert result.returncode != 0
+    assert _github_output(harness) == ""
+    assert harness.calls() == []
+
+
+def test_workflow_resolves_the_newest_successful_staging_deployment(harness: Harness) -> None:
+    newest, older, oldest = "a" * 40, "b" * 40, "c" * 40
+    _deployments(
+        harness,
+        (3, newest, ["in_progress", "failure"]),
+        (2, older, ["success", "inactive"]),
+        (1, oldest, ["success"]),
+    )
+    result = _resolve(harness, "")
+
+    assert result.returncode == 0, result.stderr
+    assert _github_output(harness) == f"sha={older}\n"
+    listing = "repos/example/repo/deployments?environment=staging&per_page=100"
+    assert harness.calls() == [
+        ["gh", "api", listing],
+        ["gh", "api", "repos/example/repo/deployments/3/statuses?per_page=100"],
+        ["gh", "api", "repos/example/repo/deployments/2/statuses?per_page=100"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "deployments",
+    [
+        pytest.param([], id="no-deployments"),
+        pytest.param([(2, "a" * 40, ["failure"]), (1, "b" * 40, [])], id="none-succeeded"),
+        pytest.param([("2; id", "a" * 40, ["success"])], id="malformed-id"),
+        pytest.param([(2, "A" * 40, ["success"])], id="malformed-sha"),
+    ],
+)
+def test_workflow_refuses_when_no_staged_commit_is_found(
+    harness: Harness, deployments: list[tuple[object, str, list[str]]]
+) -> None:
+    _deployments(harness, *deployments)
+    result = _resolve(harness, "")
+
+    assert result.returncode != 0
+    assert _github_output(harness) == ""
+
+
+SSM_RUN_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'ssm_run\t%s\n' "$*" >> "$STUB_LOG"
+printf '%s' "$STUB_SSM_OUTPUT"
+exit "${STUB_SSM_STATUS:-0}"
+"""
+
+
+def _workspace(harness: Harness) -> Path:
+    """A checkout with a stub ``ssm_run.sh`` and the real ``parse_plan.sh``."""
+    work = harness.root / "work"
+    scripts = work / "deploy" / "production"
+    scripts.mkdir(parents=True)
+    harness._write_stub(scripts / "ssm_run.sh", SSM_RUN_STUB)
+    harness._write_stub(scripts / "parse_plan.sh", PARSE_PLAN.read_text())
+    return work
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
+    harness: Harness, status: int
+) -> None:
+    work = _workspace(harness)
+    summary = harness.root / "summary.md"
+    output = harness.root / "github-output"
+    env = harness.env(
+        SHA=SHA,
+        RUNNER_TEMP=str(harness.root),
+        GITHUB_STEP_SUMMARY=str(summary),
+        GITHUB_OUTPUT=str(output),
+        STUB_SSM_OUTPUT=GOOD_PLAN.rstrip("\n"),
+        STUB_SSM_STATUS=str(status),
+    )
+    planned = _run_step("plan", "Plan on the production instance", env, work)
+
+    assert planned.returncode == status
+    assert harness.calls() == [["ssm_run", "plan", SHA]]
+    assert planned.stdout.decode() == GOOD_PLAN.rstrip("\n")
+    assert summary.read_text() == (f"### Production plan for `{SHA}`\n\n````\n{GOOD_PLAN}````\n")
+    if status:
+        return
+
+    parsed = _run_step("plan", "Read the plan", env, work)
+    assert parsed.returncode == 0, parsed.stderr
+    assert output.read_bytes() == _outputs(SHA, "0486,0487", PLAN_DIGEST)
+
+
+@pytest.mark.parametrize("migrations", ["", MIGRATIONS])
+def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migrations: str) -> None:
+    work = _workspace(harness)
+    summary = harness.root / "summary.md"
+    env = harness.env(
+        SHA=SHA,
+        MIGRATIONS=migrations,
+        HOST_DIGEST=DIGEST,
+        RUNNER_TEMP=str(harness.root),
+        GITHUB_STEP_SUMMARY=str(summary),
+        STUB_SSM_OUTPUT="applied\n",
+        STUB_SSM_STATUS="3",
+    )
+    result = _run_step("apply", "Apply on the production instance", env, work)
+
+    assert result.returncode == 3
+    assert harness.calls() == [["ssm_run", "apply", SHA, migrations, DIGEST]]
+    assert result.stdout == b"applied\n"
+    assert summary.read_text() == f"### Production apply of `{SHA}`\n\n````\napplied\n````\n"

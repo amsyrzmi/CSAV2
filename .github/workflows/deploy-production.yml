@@ -1,0 +1,179 @@
+# Deploy one commit on main to production through AWS Systems Manager Run Command. Manual
+# dispatch only. `plan` resolves the commit (the `sha` input, or the newest commit with a
+# successful `staging` deployment), sends the read-only plan to the instance and shows it in the
+# job summary. `apply` waits for the `production` environment approval, then sends exactly the
+# SHA, migrations and host settings digest that plan printed; the rollout on the instance refuses
+# if either has changed. AWS access is a short-lived OIDC role session. The role ARN, region and
+# instance id are repository variables; a missing one stops the run before any AWS call. The
+# runner scripts always come from a checkout of main, never from the commit being deployed.
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA on main to deploy (empty = newest staged commit: the newest successful staging deployment)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    environment: production-plan
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      deployments: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.parse.outputs.sha }}
+      migrations: ${{ steps.parse.outputs.migrations }}
+      host_digest: ${{ steps.parse.outputs.host_digest }}
+    env:
+      ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
+      INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
+    steps:
+      - name: Require the deploy variables
+        run: |
+          set -euo pipefail
+          [ -n "${ROLE_ARN:-}" ] || { echo "repository variable PROD_DEPLOY_ROLE_ARN is not set" >&2; exit 1; }
+          [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "repository variable PROD_INSTANCE_ID is not set" >&2; exit 1; }
+
+      - name: Resolve the commit to deploy
+        id: target
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A UTF-8 locale lets Unicode digits through [0-9].
+          export LC_ALL=C
+          if [ -n "$INPUT_SHA" ]; then
+            if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ || "$INPUT_SHA" == *$'\n'* ]]; then
+              echo "sha must be the full 40 character lowercase commit SHA" >&2
+              exit 1
+            fi
+            sha="$INPUT_SHA"
+          else
+            sha=""
+            gh api "repos/$REPOSITORY/deployments?environment=staging&per_page=100" > "$RUNNER_TEMP/deployments.json"
+            jq -r '.[] | "\(.id) \(.sha)"' "$RUNNER_TEMP/deployments.json" > "$RUNNER_TEMP/candidates.txt"
+            # Newest first: the first deployment with a success status is the newest staged commit.
+            while read -r id candidate; do
+              if [[ ! "$id" =~ ^[0-9]+$ || ! "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "gh returned an unexpected deployment listing" >&2
+                exit 1
+              fi
+              gh api "repos/$REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses.json"
+              if jq -e 'any(.[]; .state == "success")' "$RUNNER_TEMP/statuses.json" > /dev/null; then
+                sha="$candidate"
+                break
+              fi
+            done < "$RUNNER_TEMP/candidates.txt"
+            if [ -z "$sha" ]; then
+              echo "no successful staging deployment found" >&2
+              exit 1
+            fi
+          fi
+          echo "Commit to deploy: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.PROD_DEPLOY_REGION }}
+          role-session-name: deploy-production-plan
+          mask-aws-account-id: true
+
+      - name: Plan on the production instance
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          status=0
+          deploy/production/ssm_run.sh plan "$SHA" > "$RUNNER_TEMP/plan.txt" || status="$?"
+          cat "$RUNNER_TEMP/plan.txt"
+          {
+            echo "### Production plan for \`$SHA\`"
+            echo
+            echo '````'
+            sed -e '$a\' "$RUNNER_TEMP/plan.txt"
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Read the plan
+        id: parse
+        env:
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deploy/production/parse_plan.sh "$RUNNER_TEMP/plan.txt" "$SHA" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      deployments: read
+      id-token: write
+    env:
+      ROLE_ARN: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
+      INSTANCE_ID: ${{ vars.PROD_INSTANCE_ID }}
+    steps:
+      - name: Require the deploy variables
+        run: |
+          set -euo pipefail
+          [ -n "${ROLE_ARN:-}" ] || { echo "repository variable PROD_DEPLOY_ROLE_ARN is not set" >&2; exit 1; }
+          [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "repository variable PROD_INSTANCE_ID is not set" >&2; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.PROD_DEPLOY_REGION }}
+          role-session-name: deploy-production-apply
+          mask-aws-account-id: true
+
+      - name: Apply on the production instance
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+          MIGRATIONS: ${{ needs.plan.outputs.migrations }}
+          HOST_DIGEST: ${{ needs.plan.outputs.host_digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" > "$RUNNER_TEMP/apply.txt" || status="$?"
+          cat "$RUNNER_TEMP/apply.txt"
+          {
+            echo "### Production apply of \`$SHA\`"
+            echo
+            echo '````'
+            sed -e '$a\' "$RUNNER_TEMP/apply.txt"
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
