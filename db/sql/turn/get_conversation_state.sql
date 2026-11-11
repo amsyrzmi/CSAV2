@@ -1,10 +1,12 @@
--- ladder_stale: the chat's newest earlier message (not this turn's own) is older than
--- %(stale_after)s, so the unresolved-turns count starts over. No earlier message: not stale.
+-- ladder_stale: the customer's newest earlier message (inbound, not this turn's own) is older
+-- than %(stale_after)s, so the unresolved-turns count starts over. Staff replies and reminders do
+-- not keep a stale count alive. No earlier customer message: not stale.
 SELECT c.clarify_count,
        COALESCE((
            SELECT max(m.created_at) < now() - %(stale_after)s
            FROM public.messages m
            WHERE m.client_id = c.client_id AND m.conversation_id = c.id
+             AND m.direction = 'inbound'
              AND (m.trace_id IS NULL OR m.trace_id <> %(trace_id)s)
        ), false) AS ladder_stale,
        (c.owned_by = 'human_support' AND

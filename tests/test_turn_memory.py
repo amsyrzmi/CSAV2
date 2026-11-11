@@ -268,6 +268,20 @@ async def test_the_ladder_count_is_kept_when_there_is_no_earlier_message(shop: S
     assert await _loaded_count(shop, stored=0, hours_ago=None) == 0
 
 
+async def test_a_recent_staff_reply_does_not_keep_a_stale_ladder_count_alive(shop: Shop) -> None:
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    day_and_a_half = datetime.now(UTC) - timedelta(hours=36)
+    await say(shop, chat, 0, "inbound", "earlier", at=day_and_a_half)
+    await say(shop, chat, 1, "outbound", "a reminder", at=datetime.now(UTC) - timedelta(hours=2))
+    own_trace = uuid.uuid4()
+    await say(shop, chat, 2, "inbound", "the message being answered", trace=own_trace)
+    await shop.w.q("UPDATE conversations SET clarify_count = 2 WHERE id = %s", str(chat))
+    envelope = envelope_for(shop, contact, chat).model_copy(update={"trace_id": own_trace})
+    ctx = await deps.PostgresTurnDependencies(shop.w.pool).load_context(envelope)
+    assert ctx.clarify_count == 0
+
+
 async def test_the_ladder_count_goes_stale_with_memory_off_too(shop: Shop) -> None:
     await shop.policy({"conversation_memory": False})
     assert await _loaded_count(shop, stored=2, hours_ago=25) == 0

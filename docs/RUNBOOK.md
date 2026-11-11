@@ -422,6 +422,10 @@ would fail every turn of that company. The owner's retest rows are in
 more: it hands off, and the escalation's reason is `unresolved_turns`. `ask_clarifying` and
 `partial_answer` add one, chitchat and ignored messages keep the count, any other strategy (an answer,
 a confirmation, a handoff) resets it to 0. The count is written once per turn when the turn finishes.
+When the customer's previous inbound message is more than 24 hours old (`LADDER_STALE_AFTER` in
+`plan_rules.py`, read in `get_conversation_state.sql` as `ladder_stale`), the stored count is loaded as
+0, so a customer who comes back after a day starts at the first clarifying question. Staff replies
+and reminders do not count as the customer's activity.
 A request for a person, anger, a legal or police word, an injection attempt, a blocked message, a
 voice message that could not be read and an unsupported language skip the ladder and hand off at
 once, under their own reason (those routes record `plan_escalated`, or `human_requested` and
