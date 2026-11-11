@@ -70,6 +70,33 @@ _CLIP_HEAD = 120
 _CLIP_TAIL = 79
 _HANDOFF_MAX_CHARS = 300
 _HANDOFF_MAX_SENTENCES = 2
+_GAP_TOPIC_MIN_CHARS = 3
+_GAP_TOPIC_MAX_CHARS = 60
+_GAP_TOPIC_MAX_WORDS = 6
+_GAP_TOPIC_CHARS = re.compile(r"[a-z' -]+")
+
+# Staff notes for a handoff the model did not write (or wrote badly): by the handoff's reason
+# first, then, for an escalating plan, by the route that produced it.
+_NOTE_BY_REASON: dict[str, str] = {
+    "human_requested": "The customer asked for a person.",
+    "angry_customer": "The customer is upset; the assistant handed over at once.",
+    "unresolved_turns": (
+        "The assistant could not answer after three tries. Read the chat for what is missing."
+    ),
+    "agent_failure": "A lookup failed, so the assistant could not answer.",
+    "service_off": "The question needs a service this company has not switched on.",
+}
+_NOTE_BY_ROUTE: dict[str, str] = {
+    "hard_escalate": (
+        "The message has a legal or police word, so the assistant handed over without answering."
+    ),
+    "guard_blocked": (
+        "The safety check stopped this message, so the assistant handed over without answering."
+    ),
+    "voice_failed": "A voice message could not be understood.",
+    "unsupported_language": "The customer wrote in a language the assistant does not answer.",
+}
+_NOTE_DEFAULT = "The assistant handed this chat over. Read the chat for details."
 
 
 def detect_language(text: str) -> Language:
@@ -126,3 +153,34 @@ def handoff_text_ok(text: str, sources: Iterable[str]) -> bool:
         return False
     pool = list(sources)
     return not ungrounded(stripped, pool) and not unsupported_figures(stripped, pool)
+
+
+def staff_note_ok(text: str, sources: Iterable[str]) -> bool:
+    """Light check on a model-written staff note: as `handoff_text_ok`, grounded in the sources.
+
+    Unlike the customer text, the sources may include the customer's own messages: the note is
+    for staff and promises nothing."""
+    return handoff_text_ok(text, sources)
+
+
+def gap_topic_or_none(text: str | None) -> str | None:
+    """A model-written gap topic cleaned up, or None: lower case, spaces collapsed, 3 to 60
+    characters, at most six words, letters, spaces, apostrophes and hyphens only."""
+    if text is None:
+        return None
+    topic = " ".join(text.lower().split())
+    if not _GAP_TOPIC_MIN_CHARS <= len(topic) <= _GAP_TOPIC_MAX_CHARS:
+        return None
+    if len(topic.split(" ")) > _GAP_TOPIC_MAX_WORDS or not _GAP_TOPIC_CHARS.fullmatch(topic):
+        return None
+    return topic
+
+
+def fallback_staff_note(route: str | None, reason: str) -> str:
+    """The fixed staff note for a handoff without a usable model note: by reason, then by route
+    for an escalating plan, else a general line."""
+    if reason in _NOTE_BY_REASON:
+        return _NOTE_BY_REASON[reason]
+    if reason == "plan_escalated" and route in _NOTE_BY_ROUTE:
+        return _NOTE_BY_ROUTE[route]
+    return _NOTE_DEFAULT

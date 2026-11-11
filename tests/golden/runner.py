@@ -111,6 +111,10 @@ class Expect(Strict):
     human_muted: bool | None = None
     # Whether this turn's outbound reply went out on the handoff's authority (send_authority).
     handoff_sent: bool | None = None
+    # Substrings of the note stored on this turn's escalation (every one must be in it).
+    escalation_note_contains: list[str] = Field(default_factory=list)
+    # The knowledge gap queries of the company after this turn, sorted (exact).
+    kb_gap_queries: list[str] | None = None
 
 
 class Tap(Strict):
@@ -439,6 +443,8 @@ class Observed(BaseModel):
     kb_gaps: int
     human_muted: bool
     handoff_sent: bool
+    escalation_notes: list[str]
+    kb_gap_queries: list[str]
 
 
 def observe(
@@ -512,6 +518,14 @@ def observe(
             "AND send_authority='handoff')",
             (trace_id,),
         ).fetchone()
+        notes = conn.execute(
+            "SELECT note FROM escalations WHERE client_id=%s AND trace_id=%s "
+            "AND note IS NOT NULL ORDER BY created_at",
+            (tenant.client_id, trace_id),
+        ).fetchall()
+        gap_queries = conn.execute(
+            "SELECT query FROM kb_gaps WHERE client_id=%s ORDER BY query", (tenant.client_id,)
+        ).fetchall()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -536,13 +550,17 @@ def observe(
         kb_gaps=gaps[0] if gaps else 0,
         human_muted=ownership[0] if ownership else False,
         handoff_sent=bool(handoff and handoff[0]),
+        escalation_notes=[row[0] for row in notes],
+        kb_gap_queries=[row[0] for row in gap_queries],
     )
 
 
 def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before: int) -> None:
     called = [name for name, _ in llm.calls]
     prompts = "\n".join(prompt for _, prompt in llm.calls)
-    compose = "\n".join(prompt for name, prompt in llm.calls if name == "ComposeOut")
+    compose = "\n".join(
+        prompt for name, prompt in llm.calls if name in {"ComposeOut", "HandoffOut"}
+    )
     reply = "\n".join(seen.replies)
     detail = json.dumps(
         {"seen": seen.model_dump(), "llm_calls": called, "missing": llm.missing}, default=str
@@ -564,6 +582,11 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         expected = getattr(expect, field)
         if expected is not None:
             assert getattr(seen, field) == expected, detail
+    if expect.kb_gap_queries is not None:
+        assert seen.kb_gap_queries == sorted(expect.kb_gap_queries), detail
+    stored = "\n".join(seen.escalation_notes)
+    for text in expect.escalation_note_contains:
+        assert text in stored, f"escalation note missing {text!r}: {detail}"
     if expect.gate_reason is not None:
         assert seen.gate_reason == expect.gate_reason, detail
     assert not llm.missing, f"unrecorded model calls {llm.missing}: {detail}"

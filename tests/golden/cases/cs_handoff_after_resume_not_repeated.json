@@ -12,14 +12,15 @@
       "say": "Can I talk to a person please?",
       "cassette": {
         "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
-        "ComposeOut": {"reply": "Sure, I've let our team know and someone will reply in this chat."}
+        "HandoffOut": {"reply": "Sure, I've let our team know and someone will reply in this chat.", "staff_note": "The customer asked for a person. Nothing else was said.", "gap_topic": null}
       },
       "expect": {
         "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
         "outbound_count": 1, "reply_contains": ["I've let our team know"],
         "llm_not_called": ["PlanOut", "ReviewOut"],
-        "llm_calls": {"Classification": 1, "ComposeOut": 1},
-        "handoff_sent": true, "human_muted": true, "escalations": 1
+        "llm_calls": {"Classification": 1, "HandoffOut": 1},
+        "handoff_sent": true, "human_muted": true, "escalations": 1,
+        "escalation_note_contains": ["The customer asked for a person."]
       }
     },
     {
@@ -44,7 +45,7 @@
       "say": "I still want to talk to a person",
       "cassette": {
         "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
-        "ComposeOut": {"reply": "Of course, the team already has your chat and will answer here."}
+        "HandoffOut": {"reply": "Of course, the team already has your chat and will answer here.", "staff_note": "The customer asked for a person again after staff handed the chat back. The assistant had just answered the price of Plan Sederhana.", "gap_topic": null}
       },
       "expect": {
         "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
@@ -52,7 +53,7 @@
         "reply_excludes": ["Sure, I've let our team know and someone will reply in this chat."],
         "compose_sees": ["A team member was already told earlier", "I've let our team know and someone will reply in this chat."],
         "llm_not_called": ["PlanOut", "ReviewOut"],
-        "llm_calls": {"Classification": 1, "ComposeOut": 1},
+        "llm_calls": {"Classification": 1, "HandoffOut": 1},
         "handoff_sent": true, "human_muted": true, "escalations": 1
       }
     }

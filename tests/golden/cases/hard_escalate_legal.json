@@ -10,7 +10,8 @@
     "expect": {
       "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
       "outbound_count": 1, "reply_contains": ["team member"],
-      "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"], "escalations": 1
+      "llm_not_called": ["PlanOut", "HandoffOut", "ComposeOut", "ReviewOut"], "escalations": 1,
+      "escalation_note_contains": ["The customer asked for a person."]
     }
   }]
 }

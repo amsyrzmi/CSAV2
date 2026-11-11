@@ -72,10 +72,13 @@ from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
 from csa.turn.texts import (
     clip_message,
+    fallback_staff_note,
+    gap_topic_or_none,
     handoff_template,
     handoff_text_ok,
     holding_text,
     resolve_language,
+    staff_note_ok,
 )
 
 logger = structlog.get_logger(__name__)
@@ -592,6 +595,8 @@ class PostgresTurnDependencies:
         language = resolve_language(
             signal if isinstance(signal, str) else None, message.language, message.body_redacted
         )
+        reason = state.handoff.reason if state.handoff else "plan_escalated"
+        note = fallback_staff_note(state.route, reason)
         if self._llm is not None and _handoff_may_be_written(state):
             # Slow or failing, the brand read or the model must never fail the compose node: by
             # now the conversation is muted, so a turn sent to fail_safe would tell the customer
@@ -599,30 +604,56 @@ class PostgresTurnDependencies:
             try:
                 async with asyncio.timeout(HANDOFF_COMPOSE_BUDGET_S):
                     brand = await self._client_brand(state.envelope.client_id)
-                    text = await self._llm.compose_handoff(state, brand)
+                    written = await self._llm.compose_handoff(state, brand)
             except Exception as error:
                 logger.warning(
                     "handoff_reply_replaced_by_template",
                     trace_id=str(state.envelope.trace_id),
                     error_type=type(error).__name__,
                 )
-                text = None
-            # Only what the assistant itself said earlier grounds a figure here. This reply is not
-            # reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed back
-            # reads as a promise; the facts are not shown to the handoff writer at all.
-            sources = [
-                m.text for m in _memory_messages(state.ctx or Context()) if m.author == "assistant"
-            ]
-            if text and handoff_text_ok(text, sources):
-                return Draft(text=text, language=language, handoff=True, composer="primary")
-            if text:
-                logger.info(
-                    "handoff_reply_replaced_by_template",
-                    trace_id=str(state.envelope.trace_id),
-                    chars=len(text),
+                written = None
+            if written is not None:
+                # The staff note is judged apart from the reply: it never reaches the customer,
+                # so what the customer said may ground it; the reply may not (below).
+                recent = _memory_messages(state.ctx or Context())
+                note_sources = [m.text for m in recent] + [state.envelope.message.body_redacted]
+                if written.staff_note and staff_note_ok(written.staff_note, note_sources):
+                    note = written.staff_note
+                gap_topic = gap_topic_or_none(written.gap_topic)
+                # Only what the assistant itself said earlier grounds a figure in the reply. It is
+                # not reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed
+                # back reads as a promise; the facts are not shown to the handoff writer at all.
+                sources = [m.text for m in recent if m.author == "assistant"]
+                text = written.reply
+                if text and handoff_text_ok(text, sources):
+                    return Draft(
+                        text=text,
+                        language=language,
+                        handoff=True,
+                        composer="primary",
+                        staff_note=note,
+                        gap_topic=gap_topic,
+                    )
+                if text:
+                    logger.info(
+                        "handoff_reply_replaced_by_template",
+                        trace_id=str(state.envelope.trace_id),
+                        chars=len(text),
+                    )
+                return Draft(
+                    text=handoff_template(language),
+                    language=language,
+                    handoff=True,
+                    composer="template",
+                    staff_note=note,
+                    gap_topic=gap_topic,
                 )
         return Draft(
-            text=handoff_template(language), language=language, handoff=True, composer="template"
+            text=handoff_template(language),
+            language=language,
+            handoff=True,
+            composer="template",
+            staff_note=note,
         )
 
     async def _keep_a_written_booking(self, state: TurnState, draft: Draft) -> Draft:
@@ -860,6 +891,21 @@ class PostgresTurnDependencies:
                     (locale, contact_id, state.envelope.client_id, locale),
                     conn=conn,
                 )
+            draft = state.draft
+            if draft is not None and draft.handoff and draft.staff_note:
+                # The note lands once: the update only fills an empty note, so a resumed finalize
+                # finds no row and records no second gap for the same turn.
+                stored = await db.q.fetch_one(
+                    "turn/update_escalation_note.sql",
+                    (draft.staff_note, state.envelope.client_id, state.envelope.trace_id),
+                    conn=conn,
+                )
+                if stored is not None and draft.gap_topic:
+                    await db.q.execute(
+                        "kb/record_gap.sql",
+                        (state.envelope.client_id, draft.gap_topic),
+                        conn=conn,
+                    )
 
     async def fail_safe(
         self,

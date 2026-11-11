@@ -1948,8 +1948,8 @@ async def test_compose_handoff_prompt_carries_the_rules_and_the_register() -> No
 
     brand = ClientBrand(brand_name="Acme", brand_tone="warm", persona_name="Mira")
     ctx = _recent_ctx(("customer", "plan mana sesuai?"), ("assistant", "Boleh, ada tiga plan."))
-    text = await _provider(handler).compose_handoff(_handoff_state("ms", ctx), brand)
-    assert text == "Baik, saya dah bagitahu team."
+    out = await _provider(handler).compose_handoff(_handoff_state("ms", ctx), brand)
+    assert out is not None and out.reply == "Baik, saya dah bagitahu team."
     ((system, user),) = seen
     assert _HANDOFF_RULES_TEXT in system
     assert "Persona: Mira. Tone: warm." in system
@@ -1964,6 +1964,59 @@ async def test_compose_handoff_prompt_carries_the_rules_and_the_register() -> No
     ((system, user),) = seen
     assert _HANDOFF_RULES_TEXT in system and "bahasa baku" not in system
     assert "<recent_messages>" not in user
+
+
+_HANDOFF_NOTE_RULES_TEXT = (
+    "Also write staff_note: one or two short sentences in English for the team member who takes "
+    "over, never shown to the customer: what the customer wants, what the assistant already "
+    "answered, and what is still missing. Use only what the conversation says. And gap_topic: "
+    "when the customer asked for business information (for example how to sign up, how to pay, "
+    "which plan suits them) that no earlier assistant message answered, a topic of at most six "
+    'English words in lower case, such as "how to pay"; otherwise null.'
+)
+
+
+async def test_compose_handoff_asks_for_a_staff_note_and_a_gap_topic() -> None:
+    from csa.decide.llm import _HANDOFF_NOTE_RULES
+
+    assert _HANDOFF_NOTE_RULES == _HANDOFF_NOTE_RULES_TEXT
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        messages = json.loads(request.content)["messages"]
+        seen.append((messages[0]["content"], messages[1]["content"]))
+        return _ok({"reply": "Okay.", "staff_note": "x", "gap_topic": None})(request)
+
+    ctx = _recent_ctx(("customer", "plan mana sesuai?"), ("assistant", "Boleh, ada tiga plan."))
+    fact_state = _handoff_state("en", ctx).model_copy(
+        update={"facts": [Fact(id="f1", text="Plan Kecil costs RM15", source="kb_agent")]}
+    )
+    await _provider(handler).compose_handoff(fact_state, None)
+    ((system, user),) = seen
+    assert _HANDOFF_NOTE_RULES_TEXT in system
+    assert system.index(_HANDOFF_RULES_TEXT) < system.index(_HANDOFF_NOTE_RULES_TEXT)
+    assert '{"reply": str, "staff_note": str, "gap_topic": str | null}' in system
+    assert "used_fact_ids" not in system
+    assert "Plan Kecil costs RM15" not in user and "<facts>" not in user
+
+
+async def test_compose_handoff_returns_the_three_fields() -> None:
+    from csa.decide.llm import HandoffOut
+
+    payload = {
+        "reply": "  Baik, saya dah bagitahu team.  ",
+        "staff_note": "Customer asks how to pay. Nothing answered yet.",
+        "gap_topic": "how to pay",
+    }
+    out = await _provider(_ok(payload)).compose_handoff(_handoff_state("ms"), None)
+    assert out == HandoffOut(
+        reply="Baik, saya dah bagitahu team.",
+        staff_note="Customer asks how to pay. Nothing answered yet.",
+        gap_topic="how to pay",
+    )
+    # The note and the topic are optional in the answer: a reply alone still parses.
+    bare = await _provider(_ok({"reply": "Okay."})).compose_handoff(_handoff_state("en"), None)
+    assert bare == HandoffOut(reply="Okay.", staff_note="", gap_topic=None)
 
 
 async def test_compose_handoff_returns_none_on_a_model_error_without_a_fallback_call() -> None:

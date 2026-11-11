@@ -64,8 +64,10 @@ class _Model:
 
     model = "fake-model"
 
-    def __init__(self, reply: str) -> None:
+    def __init__(self, reply: str, note: str | None = None, gap: str | None = None) -> None:
         self.reply = reply
+        self.note = note
+        self.gap = gap
 
     async def json_completion(self, schema: Any, **_kwargs: Any) -> Any:
         if schema.__name__ == "Classification":
@@ -79,13 +81,17 @@ class _Model:
                     "urgent": False,
                 }
             )
+        if schema.__name__ == "HandoffOut":
+            return schema.model_validate(
+                {"reply": self.reply, "staff_note": self.note or "", "gap_topic": self.gap}
+            )
         return schema.model_validate({"reply": self.reply, "used_fact_ids": []})
 
 
 async def _handoff_how(reply: str, recent: list[RecentMessage]) -> str:
     conversation = Conversation(id="c1", language="en", messages=["x"])
     asked = "I want my RM500 refund within 2 days, let me talk to a person"
-    _, how, _ = await _reply(
+    _, how, _, _ = await _reply(
         build_llm_provider(_Model(reply)),
         ClientBrand(),
         [],
@@ -103,3 +109,26 @@ async def test_replay_handoff_is_grounded_only_in_earlier_assistant_messages() -
     told = "Thanks, a team member will check order 4417 and reply in this chat."
     assistant = [RecentMessage(author="assistant", text="Order 4417 is on its way.")]
     assert await _handoff_how(told, assistant) == "handoff, model"
+
+
+async def test_replay_prints_the_staff_note_of_a_handoff() -> None:
+    from scripts.customer_bot_replay import ReplayScript, replay
+
+    note = "The customer asks for a person. Nothing else was said."
+    model = build_llm_provider(
+        _Model("Okay, a team member will reply here.", note=note, gap="how to pay")
+    )
+    conversation = Conversation(id="c1", language="en", messages=["let me talk to a person"])
+    lines: list[str] = []
+    script = ReplayScript.model_validate(
+        {"brand": {"brand_name": "Acme"}, "facts": [], "conversations": [conversation.model_dump()]}
+    )
+    await replay(model, script, [conversation], lines.append)
+    assert any("staff note: " + note in line for line in lines)
+    assert any("gap topic: how to pay" in line for line in lines)
+    # A note that fails the check prints the fixed note of the route instead.
+    bad = build_llm_provider(_Model("Okay, a team member will reply here.", note="Owed RM500."))
+    lines.clear()
+    await replay(bad, script, [conversation], lines.append)
+    assert any("staff note: The customer asked for a person." in line for line in lines)
+    assert not any("RM500" in line for line in lines)
