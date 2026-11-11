@@ -156,7 +156,9 @@ _HANDOFF_OFFER_CLASSIFY_RULE = (
     " wants_human is also true when the latest assistant message in <recent_messages> offered to "
     "pass the chat to a team member and this message accepts it (for example yes, 'ya', 'boleh', "
     "'ok boleh'). A yes, ok or ya to anything else is not wants_human: never after a normal "
-    "answer, and never when the customer earlier declined the offer and the conversation moved on."
+    "answer, and never when the customer earlier declined the offer and the conversation moved on. "
+    "Thanks or goodbye ('terima kasih', 'ok thanks', 'bye'), even with an ok, only closes the "
+    "chat: it does not accept the offer."
 )
 # Said to the classifier only when the turn carries a booking context.
 _BOOKING_CLASSIFY_RULE = (
@@ -172,6 +174,15 @@ _BOOKING_SOURCE = "booking_agent"
 # The dates rule also covers the renewal, end and change dates a subscription fact writes.
 _DATES_SOURCES = (_BOOKING_SOURCE, "subscription_agent")
 _BOOKING_CHANGES = ("book", "reschedule", "cancel")
+
+# Once a chat has earlier messages the closing offer of help is left out: the customer has been
+# offered it, and a guide that asks for it every turn outweighs a later "do not repeat" rule.
+_CLOSER = "or, when the question is fully answered, close with a short offer of further help"
+assert _CLOSER in _SUPPORT_GUIDE
+_SUPPORT_GUIDE_LATER = _SUPPORT_GUIDE.replace(
+    _CLOSER,
+    "or, when the question is fully answered, just stop: do not add an offer of further help",
+)
 
 # Compose-only rules. The list cap is said every turn; the others only when they apply, so a
 # first message with no history sees no change beyond the list cap.
@@ -697,7 +708,7 @@ class LLMProvider:
         system = (
             f"You write the customer-facing reply for {brand_name}. "
             f"Persona: {persona}. Tone: {tone}.{intro} "
-            f"{_SUPPORT_GUIDE} "
+            f"{_SUPPORT_GUIDE_LATER if _memory_messages(compose_ctx) else _SUPPORT_GUIDE} "
             f"{_LIST_RULE} "
             + (f"{_NO_REPEAT_RULE} " if _memory_messages(compose_ctx) else "")
             + (f"{_HANDOFF_RECENT_RULE} " if _handoff_told(compose_ctx) else "")
