@@ -420,9 +420,12 @@ would fail every turn of that company. The owner's retest rows are in
 A failed or half-read upload shows a card under Needs attention on the Business knowledge page. **Try
 again** re-queues it from the stored original (no new upload; the tries counter and the error are
 reset) and needs the knowledge assistant switched on; it is offered only while the original is still
-stored. **Remove** takes the message off the list (the job gets `dismissed_at`); it never changes what the
-assistant knows, and **Clear all that failed** does the same for every failed, partly read or cancelled
-upload of the company. **Cancel** is for a job still `queued` (for example while the assistant is
+stored. **Remove** takes the message off the list (the job gets `dismissed_at`) and deletes the job's own
+uploaded file (its `kb_upload_files` row is soft-deleted and the bytes are swept after the commit; a file
+a document uses, or another listed job names, is kept); it never changes what the assistant knows, and
+**Clear all that failed** does the same for every failed, partly read or cancelled upload of the company.
+Remove, Cancel and Clear all answer `storage_cleanup: pending` when the sweep failed; **Clean up leftover
+files** on the Maintenance page finishes it. **Cancel** is for a job still `queued` (for example while the assistant is
 switched off); a job a worker is reading cannot be cancelled and finishes, fails or is requeued by the
 reaper. Deleting a source or a document closes every job that only that file kept alive: the job ends
 `cancelled` and dismissed, so no card is left behind, and a worker that finds its source deleted stores

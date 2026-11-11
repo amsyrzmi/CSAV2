@@ -173,6 +173,17 @@ Change any of these on request; none needs the owner.
 - **Retry:** resets `created_at` and `attempts` and clears `error`, so the tombstone fence compares
   against the new time. A job that failed because its content was deleted after it was queued is not
   retryable (`original_removed`); the card says so and offers Remove only.
+- **Remove and Cancel delete the stored original (owner decision, 2026-11-11, fix PR after #96).**
+  The first release left the uploaded file stored after Remove or Cancel (it then showed under "Other
+  uploaded files"). Now `dismiss`, `cancel` and `dismiss-failed` soft-delete the job's own
+  `kb_upload_files` rows in the same transaction and sweep the bytes after the commit, exactly as the
+  delete routes do (`storage_cleanup: "done" | "pending"`; a pending sweep is finished by the existing
+  reconcile). A file is deleted only when the job names it (a `files[].file_id` of the job, the same
+  link `original_stored` uses; every upload has its own file id and stored name), it is still live, no document uses it (`document_id` is null)
+  and no other job still on the list names it. A file behind a document goes only with that document;
+  documents, chunks and hash tombstones are never touched, so the same content can be uploaded again.
+  After Remove the job is off the list, so a retry is 404; a job that is still listed with a removed
+  file keeps answering 409 `original_removed`. The confirmations and card notes say the file is deleted.
 - **"The original is still stored":** decided per file by `file_id` (live row in `kb_upload_files`).
   A `files[]` entry with no `file_id` (path only, used by the development ingest script) is treated as
   stored for retry (no object-store check) and is never cancelled by the backfill or by a delete.
