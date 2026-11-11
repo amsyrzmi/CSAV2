@@ -1711,7 +1711,9 @@ _LIST_RULE_TEXT = (
 _NO_REPEAT_TEXT = (
     "Do not repeat what an earlier assistant message already said. Acknowledge what the "
     "customer just added, and build on it. If they ask the same thing again, answer shorter or "
-    "differently, and ask one new question rather than repeating the last one."
+    "differently, and ask one new question rather than repeating the last one. This covers the "
+    "closing offer of further help and any offer to pass the question to a team member: when an "
+    "earlier assistant message already made that offer, end this reply without it."
 )
 _HANDOFF_RECENT_TEXT = (
     "A team member has already been told about this conversation: do not say again that you "
