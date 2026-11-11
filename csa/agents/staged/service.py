@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from csa.agents.base import AgentContext, SideEffects
+from csa.agents.facts import day
 from csa.agents.staged.booking_facts import (
     NEEDS_NAME,
     NOT_FOUND,
@@ -511,14 +512,28 @@ def _plan_name(row: Mapping[str, Any]) -> str:
     return str(row.get("plan_name") or row["plan"])
 
 
+def _which_names(requestable: Sequence[Mapping[str, Any]], timezone: str) -> list[str]:
+    """The plan names to ask about; a name two rows share gets its start date, so they differ."""
+    names = [_plan_name(r) for r in requestable]
+    return [
+        f"{name} (from {day(r['started_at'], timezone)})" if names.count(name) > 1 else name
+        for name, r in zip(names, requestable, strict=True)
+    ]
+
+
 def resolve_subscription(
-    rows: Sequence[Mapping[str, Any]], subscription_id: UUID | None, current_plan: str | None
+    rows: Sequence[Mapping[str, Any]],
+    subscription_id: UUID | None,
+    current_plan: str | None,
+    timezone: str = "Asia/Kuala_Lumpur",
 ) -> Resolved:
     """The one subscription a request means, from this contact's live rows (newest first).
 
     A `subscription_id` or `current_plan` from the planner only narrows within these rows: an id
     that is not here finds nothing. Without either, the only requestable plan is the one meant;
-    several need the customer to say which; one waiting for payment cannot be acted on yet.
+    several need the customer to say which; one waiting for payment cannot be acted on yet. A plan
+    the customer names that matches none (or several) of their requestable plans is never swapped
+    for the only one: they are asked which, so "cancel my Premium" cannot prepare a cancel on Basic.
     """
     if subscription_id is not None:
         row = next((r for r in rows if r["id"] == subscription_id), None)
@@ -537,12 +552,14 @@ def resolve_subscription(
         ]
         if len(matched) == 1:
             return matched[0]
+        if requestable:
+            return ("which", _which_names(requestable, timezone))
     if not requestable:
         waiting = [r for r in rows if r["status"] == "pending"]
         return ("waiting", [_plan_name(waiting[0])]) if waiting else ("none", [])
     if len(requestable) == 1:
         return requestable[0]
-    return ("which", [_plan_name(r) for r in requestable])
+    return ("which", _which_names(requestable, timezone))
 
 
 def answer(ctx: AgentContext, facts: list[Fact]) -> AgentResult:
@@ -628,7 +645,7 @@ class SubscriptionAgent:
         rows: Sequence[Mapping[str, Any]],
     ) -> AgentResult:
         """Pass a pause, cancel or change to staff on the customer's own subscription."""
-        picked = resolve_subscription(rows, inp.subscription_id, inp.current_plan)
+        picked = resolve_subscription(rows, inp.subscription_id, inp.current_plan, ctx.timezone)
         if isinstance(picked, tuple):
             kind, names = picked
             if kind == "which":

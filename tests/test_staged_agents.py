@@ -668,7 +668,20 @@ def test_the_resolution_table() -> None:
     assert resolve_subscription([pro, basic], None, "BASIC") is basic
     assert resolve_subscription([pro, basic], None, "pro") is pro
     assert resolve_subscription([pro, basic], None, "no such plan") == ("which", ["Pro", "Basic"])
-    assert resolve_subscription([basic], None, "no such plan") is basic
+    # A plan named that matches none of the requestable rows is never swapped for the only one.
+    assert resolve_subscription([basic], None, "no such plan") == ("which", ["Basic"])
+    assert resolve_subscription([basic], None, "Premium") == ("which", ["Basic"])
+    assert resolve_subscription([waiting, basic], None, "Premium") == ("which", ["Basic"])
+    assert resolve_subscription([waiting], None, "Premium") == ("waiting", ["Lite"])
+    assert resolve_subscription([], None, "Premium") == ("none", [])
+    # Two rows of one plan name are told apart by their start date, only those two.
+    older = _sub("pro", "Pro", started_at=datetime(2026, 3, 3, 4, tzinfo=UTC))
+    newer = _sub("pro", "Pro", started_at=datetime(2026, 5, 9, 4, tzinfo=UTC))
+    assert resolve_subscription([newer, older, basic], None, None) == (
+        "which",
+        ["Pro (from 09 May 2026)", "Pro (from 03 Mar 2026)", "Basic"],
+    )
+    assert resolve_subscription([newer, older], None, "pro")[0] == "which"  # type: ignore[index]
     assert resolve_subscription([pro, paused], None, "max") is paused
     # A named plan that is waiting for payment is not requestable.
     assert resolve_subscription([waiting], None, "lite") == ("waiting", ["Lite"])
@@ -803,6 +816,26 @@ async def test_a_request_without_an_id_prepares_on_the_only_subscription_with_th
             conn=conn,
         )
     assert read["subscription_id"] == world.subscription_id and read["reason"] == "holiday"
+
+
+@requires_docker
+async def test_a_plan_the_customer_names_that_they_do_not_have_prepares_nothing(
+    world: World,
+) -> None:
+    agent = SubscriptionAgent()
+    wrong = await agent.run(
+        world.ctx, SubscriptionInput(action="request_cancel", current_plan="Premium")
+    )
+    assert [f.id for f in wrong.facts] == ["subscription_which"]
+    assert wrong.facts[0].text == (
+        "I can't find a plan by that name on this chat. "
+        "The plan I can see is basic. Is that the one you mean?"
+    )
+    assert await world.rows() == []
+    # Naming nothing still resolves to the only plan.
+    unnamed = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert [f.id for f in unnamed.facts] == ["subscription_passed"]
+    assert len(await world.rows()) == 1
 
 
 @requires_docker

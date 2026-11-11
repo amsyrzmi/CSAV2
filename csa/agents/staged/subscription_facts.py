@@ -115,7 +115,13 @@ def request_fact(
             what = f"{_VERBS.get(action or '', 'change')} {name}"
         text = f"Your request to {what} was passed to our staff to decide. Nothing has changed yet."
     elif kind == "which":
-        text = f"This chat has more than one plan: {', '.join(names)}. Which one do you mean?"
+        if len(names) == 1:
+            text = (
+                "I can't find a plan by that name on this chat. "
+                f"The plan I can see is {names[0]}. Is that the one you mean?"
+            )
+        else:
+            text = f"This chat has more than one plan: {', '.join(names)}. Which one do you mean?"
     elif kind == "already_ending":
         when = f" on {day(ends, timezone)}" if ends else ""
         text = f"{name} is already set to end{when} and will not renew."

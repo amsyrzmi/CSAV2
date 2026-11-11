@@ -152,6 +152,10 @@ def test_request_facts_use_the_exact_copy() -> None:
     assert text("which", names=["Pro", "Basic"]) == (
         "This chat has more than one plan: Pro, Basic. Which one do you mean?"
     )
+    assert text("which", names=["Basic"]) == (
+        "I can't find a plan by that name on this chat. "
+        "The plan I can see is Basic. Is that the one you mean?"
+    )
     assert text("none") == "I can't find a subscription linked to this chat."
     assert text("already_ending", name="Basic", ends=RENEWS) == (
         "Basic is already set to end on 01 Dec 2026 and will not renew."
