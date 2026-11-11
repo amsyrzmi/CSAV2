@@ -5,10 +5,13 @@ by default) it calls the real ``LLMProvider.classify``, then ``LLMProvider.compo
 ``LLMProvider.compose_handoff`` when the classifier says the customer asks for a person, with a
 hand-built ``Context``: ``recent`` is the replay's own earlier turns, clipped as the worker clips
 them (``clip_message``), and ``flags["handoff_recent"]`` turns on after a handoff. Every compose
-gets the script's fixed synthetic facts, except a greeting or thanks (chitchat), which runs no
-agent on a real turn either. A handoff text that fails the light check (grounded, as on a real
-turn, only in the replay's earlier assistant replies) is replaced by the template, as on a real
-turn.
+gets the script's fixed synthetic facts (or the conversation's own, per conversation or per
+turn, tagged with the agent that would write them), except
+a greeting or thanks (chitchat), which runs no agent on a real turn either. A handoff text that
+fails the light check (grounded, as on a real turn, only in the replay's earlier assistant
+replies) is replaced by the template, as on a real turn. A handoff also prints the staff note
+(the model's when it passes the real turn's check, else the fixed note for a person asked for)
+and the gap topic when the model gave one.
 
 It does not run the graph (routing, agents, gate and delivery are what the golden cases test),
 touches no database and needs only the model key. It runs inside the staging gateway container::
@@ -60,11 +63,14 @@ from csa.decide.llm import ClientBrand, LLMProvider
 from csa.turn.deps import build_llm_provider
 from csa.turn.texts import (
     clip_message,
+    fallback_staff_note,
+    gap_topic_or_none,
     handoff_template,
     handoff_text_ok,
     resolve_language,
+    staff_note_ok,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SCRIPT_FILE = Path(__file__).resolve().parent / "customer_bot_replay_cases.json"
 # compose's own default when the company set no tone (csa.decide.llm.LLMProvider.compose).
@@ -95,6 +101,25 @@ class Conversation(_Strict):
     id: str = Field(min_length=1)
     language: Literal["en", "ms", "zh", "ta"]
     messages: list[str] = Field(min_length=1)
+    # Replaces the script's facts for this conversation (an empty list means no facts): the
+    # subscription and stock conversations are told what those agents' facts say.
+    facts: list[str] | None = None
+    # Facts that differ turn by turn, one list per message: the plan facts on the first turns, the
+    # cancel request fact only after the customer asks to cancel. Instead of ``facts``, not with it.
+    facts_by_turn: list[list[str]] | None = None
+    # The agent the facts come from (a real fact carries its agent's name): the dates rule is said
+    # only for a ``subscription_agent`` or ``booking_agent`` fact. Default the knowledge base.
+    facts_source: str = Field(default="kb_agent", min_length=1)
+
+    @model_validator(mode="after")
+    def _facts_by_turn_fits(self) -> Conversation:
+        if self.facts_by_turn is None:
+            return self
+        if self.facts is not None:
+            raise ValueError("give facts or facts_by_turn, not both")
+        if len(self.facts_by_turn) != len(self.messages):
+            raise ValueError("facts_by_turn needs one list of facts per message")
+        return self
 
 
 class ReplayScript(_Strict):
@@ -165,8 +190,9 @@ async def _reply(
     facts: list[Fact],
     envelope: Envelope,
     ctx: Context,
-) -> tuple[str, str, dict[str, Any]]:
-    """One customer message: (reply, how it was written, the classifier's answers)."""
+) -> tuple[str, str, dict[str, Any], str | None]:
+    """One customer message: (reply, how it was written, the classifier's answers, and for a
+    handoff the lines for staff: the staff note and the gap topic, else None)."""
     signals = await llm.classify(envelope, ctx)
     answers = dict(signals.answers)
     answers["intent"] = signals.intent.value if signals.intent else None
@@ -177,18 +203,27 @@ async def _reply(
             signals=signals,
             handoff=Handoff(required=True, reason="human_requested"),
         )
-        text = await llm.compose_handoff(state, brand)
-        # As `_handoff_draft`: only the assistant's own earlier words ground a figure.
+        written = await llm.compose_handoff(state, brand)
+        # As `_handoff_draft`: only the assistant's own earlier words ground a figure in the
+        # reply; the staff note may also rest on the customer's words.
         sources = [m.text for m in ctx.recent if m.author == "assistant"]
-        if text and handoff_text_ok(text, sources):
-            return text, "handoff, model", answers
+        note = fallback_staff_note("hard_escalate", "human_requested")
+        gap = None
+        if written is not None:
+            note_sources = [m.text for m in ctx.recent] + [envelope.message.body_redacted]
+            if written.staff_note and staff_note_ok(written.staff_note, note_sources):
+                note = written.staff_note
+            gap = gap_topic_or_none(written.gap_topic)
+        staff = f"staff note: {note}" + (f"\ngap topic: {gap}" if gap else "")
+        if written is not None and written.reply and handoff_text_ok(written.reply, sources):
+            return written.reply, "handoff, model", answers, staff
         signal = answers.get("language")
         language = resolve_language(
             signal if isinstance(signal, str) else None,
             envelope.message.language,
             envelope.message.body_redacted,
         )
-        return handoff_template(language), "handoff, template", answers
+        return handoff_template(language), "handoff, template", answers, staff
     intent = signals.intent or Intent.OTHER
     state = TurnState(
         envelope=envelope,
@@ -204,7 +239,15 @@ async def _reply(
         facts=[] if intent == Intent.CHITCHAT else facts,
     )
     draft = await llm.compose(state, brand=brand)
-    return draft.text, draft.composer or "primary", answers
+    return draft.text, draft.composer or "primary", answers, None
+
+
+def _facts_for_turn(conversation: Conversation, shared: Sequence[str], turn: int) -> list[Fact]:
+    texts = shared if conversation.facts_by_turn is None else conversation.facts_by_turn[turn]
+    return [
+        Fact(id=f"fact_{index}", text=text, source=conversation.facts_source)
+        for index, text in enumerate(texts, start=1)
+    ]
 
 
 async def replay(
@@ -220,24 +263,22 @@ async def replay(
         persona_name=script.brand.persona_name,
     )
     tone = script.brand.brand_tone or f"{DEFAULT_TONE} (default)"
-    facts = [
-        Fact(id=f"fact_{index}", text=text, source="kb_agent")
-        for index, text in enumerate(script.facts, start=1)
-    ]
     problems = 0
     first = True
     for conversation in conversations:
         out(f"== conversation {conversation.id} (language {conversation.language})")
         out(f"brand_tone: {tone}")
+        shared = script.facts if conversation.facts is None else conversation.facts
         recent: list[RecentMessage] = []
         replies: list[str] = []
         handoff_told = False
         for turn, text in enumerate(conversation.messages):
             envelope = _envelope(conversation, text, turn)
+            facts = _facts_for_turn(conversation, shared, turn)
             ctx = Context(recent=recent[-RECENT_WINDOW:], flags={"handoff_recent": handoff_told})
             out(f"[{turn + 1}] customer: {text}")
             try:
-                reply, how, answers = await _reply(llm, brand, facts, envelope, ctx)
+                reply, how, answers, staff = await _reply(llm, brand, facts, envelope, ctx)
             except CompletionError as error:
                 if first:
                     raise ModelUnavailable from error
@@ -250,6 +291,9 @@ async def replay(
                 f"language={answers.get('language')} wants_human={answers.get('wants_human')}"
             )
             out(f"[{turn + 1}] bot ({how}): {reply}")
+            if staff is not None:
+                for line in staff.splitlines():
+                    out(f"[{turn + 1}] {line}")
             replies.append(reply)
             handoff_told = handoff_told or how.startswith("handoff")
             recent.append(

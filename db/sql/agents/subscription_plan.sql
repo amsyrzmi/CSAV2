@@ -1,1 +1,6 @@
-SELECT code FROM plans WHERE client_id = %s AND code = %s AND is_active;
+-- An active plan of this company, by the code or the name the customer used.
+SELECT code, name FROM public.plans
+WHERE client_id = %(client_id)s AND is_active
+  AND (code = lower(%(plan)s) OR lower(name) = lower(%(plan)s))
+ORDER BY (code = lower(%(plan)s)) DESC, sort_order, code
+LIMIT 1;

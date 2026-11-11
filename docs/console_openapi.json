@@ -7312,6 +7312,16 @@
               }
             ]
           },
+          "handoff_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxHandoffNote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "human_muted": {
             "title": "Human Muted",
             "type": "boolean"
@@ -7407,6 +7417,27 @@
           "next_cursor"
         ],
         "title": "InboxConversationPage",
+        "type": "object"
+      },
+      "InboxHandoffNote": {
+        "additionalProperties": false,
+        "description": "The assistant's note to staff, written when it handed the chat over (detail read only).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "at"
+        ],
+        "title": "InboxHandoffNote",
         "type": "object"
       },
       "InboxLastMessage": {

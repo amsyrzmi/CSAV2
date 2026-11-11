@@ -9,10 +9,11 @@ import shlex
 import shutil
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from typing import Literal
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -31,6 +32,7 @@ from csa.agents.staged.service import (
     StaffActor,
     StaffPreparationService,
     SubscriptionAgent,
+    resolve_subscription,
 )
 from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.plan import Task
@@ -424,7 +426,8 @@ async def test_contact_and_tenant_isolation(world: World) -> None:
     assert (await agent.run(world.ctx, inp)).ok
     stranger = replace(world.ctx, contact_id=world.other_contact)
     denied = await agent.run(stranger, inp)
-    assert denied.error and denied.error.code.endswith("_not_found")
+    assert denied.ok and [f.id for f in denied.facts] == ["subscription_none"]
+    assert "basic" not in denied.facts[0].text
     outsider = replace(world.ctx, client_id=world.other_client)
     disabled = await agent.run(outsider, inp)
     assert disabled.error and disabled.error.code == "disabled"
@@ -449,7 +452,7 @@ async def test_subscription_change_validates_plan_without_mutation(world: World)
             subscription_id=world.subscription_id,
         ),
     )
-    assert '"plan": "basic"' in status.facts[0].text
+    assert status.facts[0].text.startswith("Your plan: basic, MYR 10.00")
     assert len(await world.rows()) == 1
 
 
@@ -588,7 +591,8 @@ async def test_subscription_pause_cancel_do_not_mutate(world: World, action: str
     current = await SubscriptionAgent().run(
         world.ctx, SubscriptionInput(action="status", subscription_id=world.subscription_id)
     )
-    assert '"status": "active"' in current.facts[0].text
+    assert current.facts[0].text.startswith("Your plan: basic")
+    assert "paused" not in current.facts[0].text and "cancelled" not in current.facts[0].text
 
 
 @requires_docker
@@ -607,8 +611,333 @@ async def test_missing_context_contact_cannot_prepare(world: World) -> None:
 async def test_all_local_lists_work(world: World) -> None:
     subscriptions = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="list"))
     plans = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="plans"))
-    assert str(world.subscription_id) in subscriptions.facts[0].text
-    assert '"code": "pro"' in plans.facts[0].text
+    assert subscriptions.facts[0].text.startswith("Your plan: basic, MYR 10.00")
+    assert str(world.subscription_id) not in subscriptions.facts[0].text
+    assert plans.facts[0].text == "Synthetic: MYR 20.00 a month."
+
+
+def test_the_subscription_input_takes_the_customers_words_and_no_id() -> None:
+    assert SubscriptionAgent.ACTION_RISK["mine"] == "read"
+    assert SubscriptionInput(action="mine").subscription_id is None
+    assert SubscriptionInput(action="request_cancel", reason="moving abroad").plan_code is None
+    change = SubscriptionInput(action="request_change", plan_code="Pro Plus", current_plan="Basic")
+    assert (change.plan_code, change.current_plan) == ("Pro Plus", "Basic")
+    # A model that fills an unused field with an empty string is understood.
+    blank = SubscriptionInput.model_validate(
+        {"action": "request_pause", "current_plan": "", "plan_code": " ", "reason": ""}
+    )
+    assert blank.current_plan is None and blank.plan_code is None and blank.reason is None
+    with pytest.raises(ValidationError):
+        SubscriptionInput(action="request_change")
+    with pytest.raises(ValidationError):
+        SubscriptionInput(action="request_pause", current_plan="x" * 121)
+    with pytest.raises(ValidationError):
+        SubscriptionInput(action="request_change", plan_code="x" * 121)
+    descriptions = {n: f.description for n, f in SubscriptionInput.model_fields.items()}
+    assert descriptions["subscription_id"] == (
+        "Leave it out: the server finds the customer's own subscription from this chat."
+    )
+    assert descriptions["reason"] == "The customer's reason, only if they gave one."
+    assert "mine: the customer's own plans" in str(descriptions["action"])
+
+
+def _sub(
+    plan: str, name: str | None, status: str = "active", **fields: object
+) -> dict[str, object]:
+    return {
+        "id": uuid4(),
+        "plan": plan,
+        "plan_name": name,
+        "status": status,
+        "cancel_at_period_end": False,
+        **fields,
+    }
+
+
+def test_the_resolution_table() -> None:
+    pro, basic = _sub("pro", "Pro"), _sub("basic", "Basic")
+    waiting = _sub("lite", "Lite", status="pending")
+    paused = _sub("max", "Max", status="paused")
+    # No id and no plan named: the only requestable row, else which (names in the order given).
+    assert resolve_subscription([basic], None, None) is basic
+    assert resolve_subscription([pro, basic], None, None) == ("which", ["Pro", "Basic"])
+    assert resolve_subscription([], None, None) == ("none", [])
+    assert resolve_subscription([waiting], None, None) == ("waiting", ["Lite"])
+    assert resolve_subscription([waiting, basic], None, None) is basic
+    # A plan named by the customer picks one row, by code or by name, whatever the case.
+    assert resolve_subscription([pro, basic], None, "BASIC") is basic
+    assert resolve_subscription([pro, basic], None, "pro") is pro
+    assert resolve_subscription([pro, basic], None, "no such plan") == ("which", ["Pro", "Basic"])
+    # A plan named that matches none of the requestable rows is never swapped for the only one.
+    assert resolve_subscription([basic], None, "no such plan") == ("which", ["Basic"])
+    assert resolve_subscription([basic], None, "Premium") == ("which", ["Basic"])
+    assert resolve_subscription([waiting, basic], None, "Premium") == ("which", ["Basic"])
+    assert resolve_subscription([waiting], None, "Premium") == ("waiting", ["Lite"])
+    assert resolve_subscription([], None, "Premium") == ("none", [])
+    # Two rows of one plan name are told apart by their start date, only those two.
+    older = _sub("pro", "Pro", started_at=datetime(2026, 3, 3, 4, tzinfo=UTC))
+    newer = _sub("pro", "Pro", started_at=datetime(2026, 5, 9, 4, tzinfo=UTC))
+    assert resolve_subscription([newer, older, basic], None, None) == (
+        "which",
+        ["Pro (from 09 May 2026)", "Pro (from 03 Mar 2026)", "Basic"],
+    )
+    assert resolve_subscription([newer, older], None, "pro")[0] == "which"  # type: ignore[index]
+    assert resolve_subscription([pro, paused], None, "max") is paused
+    # A named plan that is waiting for payment is not requestable.
+    assert resolve_subscription([waiting], None, "lite") == ("waiting", ["Lite"])
+    # An id only picks among these rows; one that is not here finds nothing.
+    assert resolve_subscription([pro, basic], pro["id"], None) is pro  # type: ignore[arg-type]
+    assert resolve_subscription([pro, basic], uuid4(), None) == ("none", [])
+    assert resolve_subscription([pro, waiting], waiting["id"], None) == ("waiting", ["Lite"])  # type: ignore[arg-type]
+    # The id wins over a plan named.
+    assert resolve_subscription([pro, basic], basic["id"], "pro") is basic  # type: ignore[arg-type]
+
+
+async def add_subscription(
+    world: World,
+    *,
+    plan: str,
+    contact: UUID | None = None,
+    status: str = "active",
+    started_days: int = 0,
+    renews_at: datetime | None = None,
+) -> UUID:
+    """A synthetic subscription of the world's company; `started_days` orders them."""
+    sub = uuid4()
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO subscriptions (id,client_id,contact_id,plan,price,status,started_at,"
+            "renews_at) VALUES (%s,%s,%s,%s,15,%s,%s,%s)",
+            (
+                sub,
+                world.ctx.client_id,
+                contact or world.ctx.contact_id,
+                plan,
+                status,
+                datetime(2028, 1, 1, tzinfo=UTC) + timedelta(days=started_days),
+                renews_at,
+            ),
+        )
+    return sub
+
+
+async def name_plan(world: World, code: str, name: str, features: str = "[]") -> None:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO plans (client_id,code,name,price,features) "
+            "VALUES (%s,%s,%s,20,%s::jsonb) "
+            "ON CONFLICT (client_id,code) DO UPDATE SET name = excluded.name, "
+            "features = excluded.features",
+            (world.ctx.client_id, code, name, features),
+        )
+
+
+async def mine(
+    world: World,
+    ctx: AgentContext | None = None,
+    action: Literal["mine", "list", "status"] = "mine",
+) -> list[str]:
+    result = await SubscriptionAgent().run(ctx or world.ctx, SubscriptionInput(action=action))
+    assert result.ok, result.error
+    return [f.text for f in result.facts]
+
+
+@requires_docker
+async def test_mine_with_zero_one_and_several_subscriptions(world: World) -> None:
+    nobody = replace(world.ctx, contact_id=world.other_contact)
+    assert await mine(world, nobody) == ["I can't find a subscription linked to this chat."]
+    assert await mine(world) == ["Your plan: basic, MYR 10.00."]
+    await name_plan(world, "pro", "Pro")
+    await add_subscription(
+        world, plan="pro", started_days=10, renews_at=datetime(2029, 3, 1, tzinfo=UTC)
+    )
+    await add_subscription(world, plan="old", status="cancelled", started_days=20)
+    result = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="mine"))
+    assert [f.id for f in result.facts] == ["subscription_1", "subscription_2"]
+    assert [f.text for f in result.facts] == [
+        "Your plan: Pro, MYR 15.00 a month. It renews on 01 Mar 2029.",
+        "Your plan: basic, MYR 10.00.",
+    ]
+    # `list` also shows the cancelled one; `status` with no id answers as `mine`.
+    assert len(await mine(world, action="list")) == 3
+    assert "Your plan: old was cancelled." in await mine(world, action="list")
+    assert await mine(world, action="status") == await mine(world)
+
+
+@requires_docker
+async def test_mine_never_returns_another_contacts_subscription(world: World) -> None:
+    await add_subscription(world, plan="secret-plan", contact=world.other_contact, started_days=5)
+    for action in ("mine", "list", "status"):
+        shown = await mine(world, action=action)
+        assert shown == ["Your plan: basic, MYR 10.00."], action
+    theirs = replace(world.ctx, contact_id=world.other_contact)
+    assert await mine(world, theirs) == ["Your plan: secret-plan, MYR 15.00."]
+
+
+@requires_docker
+async def test_an_injected_subscription_id_of_another_contact_finds_nothing_and_prepares_nothing(
+    world: World,
+) -> None:
+    theirs = await add_subscription(world, plan="secret-plan", contact=world.other_contact)
+    none = "I can't find a subscription linked to this chat."
+    for action in ("status", "request_pause", "request_cancel"):
+        result = await SubscriptionAgent().run(
+            world.ctx,
+            SubscriptionInput(action=action, subscription_id=theirs),  # type: ignore[arg-type]
+        )
+        assert result.ok, action
+        assert [(f.id, f.text) for f in result.facts] == [("subscription_none", none)], action
+    change = SubscriptionInput(action="request_change", subscription_id=theirs, plan_code="pro")  # type: ignore[arg-type]
+    result = await SubscriptionAgent().run(world.ctx, change)
+    assert [f.text for f in result.facts] == [none]
+    assert await world.rows() == []
+
+
+@requires_docker
+async def test_a_request_without_an_id_prepares_on_the_only_subscription_with_the_id_stored(
+    world: World,
+) -> None:
+    result = await SubscriptionAgent().run(
+        world.ctx, SubscriptionInput(action="request_pause", reason="holiday")
+    )
+    assert result.ok and [f.id for f in result.facts] == ["subscription_passed"]
+    rows = await world.rows()
+    assert len(rows) == 1
+    payload = rows[0]["payload"]
+    assert isinstance(payload, dict)
+    assert payload["subscription_id"] == str(world.subscription_id)
+    assert payload["action"] == "request_pause" and payload["reason"] == "holiday"
+    assert payload.get("plan_code") is None and payload.get("current_plan") is None
+    # What staff read back is the resolved subscription.
+    async with tx(world.ctx.pool, str(world.ctx.client_id)) as conn:
+        read = await db.q.fetch_one(
+            "subscriptions/request_get.sql",
+            {"client_id": world.ctx.client_id, "request_id": rows[0]["id"]},
+            conn=conn,
+        )
+    assert read["subscription_id"] == world.subscription_id and read["reason"] == "holiday"
+
+
+@requires_docker
+async def test_a_plan_the_customer_names_that_they_do_not_have_prepares_nothing(
+    world: World,
+) -> None:
+    agent = SubscriptionAgent()
+    wrong = await agent.run(
+        world.ctx, SubscriptionInput(action="request_cancel", current_plan="Premium")
+    )
+    assert [f.id for f in wrong.facts] == ["subscription_which"]
+    assert wrong.facts[0].text == (
+        "I can't find a plan by that name on this chat. "
+        "The plan I can see is basic. Is that the one you mean?"
+    )
+    assert await world.rows() == []
+    # Naming nothing still resolves to the only plan.
+    unnamed = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert [f.id for f in unnamed.facts] == ["subscription_passed"]
+    assert len(await world.rows()) == 1
+
+
+@requires_docker
+async def test_two_subscriptions_ask_which_and_current_plan_picks_one(world: World) -> None:
+    await name_plan(world, "pro", "Pro")
+    second = await add_subscription(world, plan="pro", started_days=10)
+    agent = SubscriptionAgent()
+    asked = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert [f.id for f in asked.facts] == ["subscription_which"]
+    assert asked.facts[0].text == (
+        "This chat has more than one plan: Pro, basic. Which one do you mean?"
+    )
+    unknown = await agent.run(
+        world.ctx, SubscriptionInput(action="request_cancel", current_plan="platinum")
+    )
+    assert [f.id for f in unknown.facts] == ["subscription_which"]
+    assert await world.rows() == []
+    picked = await agent.run(
+        world.ctx, SubscriptionInput(action="request_cancel", current_plan="PRO")
+    )
+    assert [f.id for f in picked.facts] == ["subscription_passed"]
+    assert picked.facts[0].text.startswith("Your request to cancel Pro was passed")
+    rows = await world.rows()
+    assert len(rows) == 1 and rows[0]["payload"]["subscription_id"] == str(second)  # type: ignore[index]
+
+
+@requires_docker
+async def test_request_change_takes_the_plan_name_and_stores_its_code(world: World) -> None:
+    await name_plan(world, "pro-plus", "Pro Plus")
+    result = await SubscriptionAgent().run(
+        world.ctx, SubscriptionInput(action="request_change", plan_code="pro plus")
+    )
+    assert result.ok, result.error
+    assert result.facts[0].text == (
+        "Your request to change basic to Pro Plus was passed to our staff to decide. "
+        "Nothing has changed yet."
+    )
+    rows = await world.rows()
+    assert len(rows) == 1
+    payload = rows[0]["payload"]
+    assert payload["plan_code"] == "pro-plus"  # type: ignore[index]
+    assert payload["subscription_id"] == str(world.subscription_id)  # type: ignore[index]
+    # Another tenant's plan, or none at all, is the existing error and prepares nothing.
+    missing = await SubscriptionAgent().run(
+        world.ctx, SubscriptionInput(action="request_change", plan_code="Platinum")
+    )
+    assert missing.error and missing.error.code == "plan_not_found"
+    assert len(await world.rows()) == 1
+
+
+@requires_docker
+async def test_cancelling_a_plan_already_ending_prepares_nothing(world: World) -> None:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE subscriptions SET cancel_at_period_end = true, renews_at = %s WHERE id = %s",
+            (datetime(2029, 2, 1, 4, 0, tzinfo=UTC), world.subscription_id),
+        )
+    agent = SubscriptionAgent()
+    result = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert [f.id for f in result.facts] == ["subscription_already_ending"]
+    assert result.facts[0].text == "basic is already set to end on 01 Feb 2029 and will not renew."
+    assert await mine(world) == [
+        "Your plan: basic, MYR 10.00. It ends on 01 Feb 2029 and will not renew."
+    ]
+    # A pause is still fine; and a paused plan is not paused twice.
+    assert (await agent.run(world.ctx, SubscriptionInput(action="request_pause"))).ok
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE subscriptions SET status = 'paused' WHERE id = %s", (world.subscription_id,)
+        )
+    again = await agent.run(world.ctx, SubscriptionInput(action="request_pause"))
+    assert [f.id for f in again.facts] == ["subscription_already_paused"]
+    assert again.facts[0].text == "basic is already paused."
+    assert len(await world.rows()) == 1
+
+
+@requires_docker
+async def test_the_request_fact_says_passed_and_nothing_changed(world: World) -> None:
+    agent = SubscriptionAgent()
+    first = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    text = first.facts[0].text
+    assert text == (
+        "Your request to cancel basic was passed to our staff to decide. Nothing has changed yet."
+    )
+    assert "prepared" not in text and "Request " not in text
+    assert first.facts[0].source == "subscription_agent" and first.facts[0].as_of is not None
+    # A retried message is a duplicate, not a second request, and says the same.
+    again = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert again.meta.was_duplicate and again.facts[0].text == text
+    assert len(await world.rows()) == 1
+    assert (await mine(world)) == ["Your plan: basic, MYR 10.00."]
+    # The same key for different input is still refused.
+    clash = await agent.run(world.ctx, SubscriptionInput(action="request_pause"))
+    assert clash.error and clash.error.code == "idempotency_conflict"
+
+
+@requires_docker
+async def test_plans_carry_features(world: World) -> None:
+    await name_plan(world, "pro", "Pro", features='["5 GB data", "Free calls"]')
+    result = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="plans"))
+    assert [f.id for f in result.facts] == ["subscription_plan_1"]
+    assert result.facts[0].text == "Pro: MYR 20.00 a month. Includes: 5 GB data; Free calls."
 
 
 @requires_docker

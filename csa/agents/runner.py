@@ -116,7 +116,8 @@ class SpokeRunner:
             (task.agent == "kb_agent" and task.input.get("action") == "query")
             or (
                 task.agent == "order_agent"
-                and task.input.get("action") in ("search_products", "product_detail")
+                and task.input.get("action")
+                in ("search_products", "product_availability", "product_detail")
             )
         ):
             result = _error_result(

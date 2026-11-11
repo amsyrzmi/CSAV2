@@ -27,9 +27,17 @@ from csa.contracts.state import (
     TurnState,
     Verification,
 )
+from csa.decide.llm import HandoffOut
 from csa.graph.policy.gate import Policy
+from csa.graph.policy.handoff import decide_handoff
+from csa.graph.policy.plan_rules import validate_plan
 from csa.turn import deps
-from csa.turn.texts import handoff_template
+from csa.turn.texts import (
+    fallback_staff_note,
+    gap_topic_or_none,
+    handoff_template,
+    staff_note_ok,
+)
 
 from tests.conftest import requires_docker
 from tests.test_booking_agent import envelope_for
@@ -48,8 +56,16 @@ _KIND = "I've passed this to a team member who will get back to you shortly."
 class Recorder:
     """A model transport that records every call and answers with ``reply`` (or a 500)."""
 
-    def __init__(self, reply: str | None = "Sorry. A team member will reply here.") -> None:
+    def __init__(
+        self,
+        reply: str | None = "Sorry. A team member will reply here.",
+        *,
+        note: str | None = None,
+        gap: str | None = None,
+    ) -> None:
         self.reply = reply
+        self.note = note
+        self.gap = gap
         self.calls: list[tuple[str, str]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -57,7 +73,10 @@ class Recorder:
         self.calls.append((messages[0]["content"], messages[1]["content"]))
         if self.reply is None:
             return httpx.Response(500)
-        return _ok({"reply": self.reply, "used_fact_ids": []})(request)
+        payload: dict[str, Any] = {"reply": self.reply, "gap_topic": self.gap}
+        if self.note is not None:
+            payload["staff_note"] = self.note
+        return _ok(payload)(request)
 
 
 def _deps(handler: Callable[[httpx.Request], httpx.Response]) -> deps.PostgresTurnDependencies:
@@ -134,6 +153,7 @@ async def test_compose_handoff_is_written_by_the_model_when_allowed(
         language="en",
         handoff=True,
         composer="primary",
+        staff_note=fallback_staff_note(route, reason),  # the model gave no note
     )
 
 
@@ -158,7 +178,10 @@ async def test_compose_handoff_uses_template_on_injection_or_hard_route(
     model = Recorder()
     draft = await _deps(model)._compose(state)
     assert model.calls == [], label
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template"), label
+    assert draft.model_copy(update={"staff_note": None}) == Draft(
+        text=_KIND, language="en", handoff=True, composer="template"
+    ), label
+    assert draft.staff_note, label
 
 
 async def test_compose_handoff_template_is_in_the_customers_language() -> None:
@@ -187,7 +210,7 @@ async def test_compose_handoff_rejects_unsafe_generation() -> None:
         model = Recorder(reply)
         draft = await _deps(model)._compose(_handoff(language="ms"))
         assert len(model.calls) == 1, reply
-        assert draft == Draft(
+        assert draft.model_copy(update={"staff_note": None}) == Draft(
             text=handoff_template("ms"), language="ms", handoff=True, composer="template"
         ), reply
 
@@ -200,7 +223,13 @@ async def test_compose_handoff_keeps_a_figure_the_assistant_already_said() -> No
         RecentMessage(author="assistant", text="Order 4417 is on its way."),
     ]
     draft = await _deps(model)._compose(_handoff("agent_failure", route="plan_args", recent=recent))
-    assert draft == Draft(text=reply, language="en", handoff=True, composer="primary")
+    assert draft == Draft(
+        text=reply,
+        language="en",
+        handoff=True,
+        composer="primary",
+        staff_note=fallback_staff_note("plan_args", "agent_failure"),
+    )
 
 
 async def test_compose_handoff_never_repeats_a_customers_figure_as_a_promise() -> None:
@@ -217,7 +246,8 @@ async def test_compose_handoff_never_repeats_a_customers_figure_as_a_promise() -
     )
     draft = await _deps(model)._compose(state)
     assert len(model.calls) == 1  # the model was asked, and its reply was refused
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []
 
 
 async def test_compose_handoff_does_not_ground_a_figure_from_a_fact() -> None:
@@ -227,22 +257,28 @@ async def test_compose_handoff_does_not_ground_a_figure_from_a_fact() -> None:
     model = Recorder(priced)
     draft = await _deps(model)._compose(_handoff("agent_failure", route="plan_args", facts=[fact]))
     assert len(model.calls) == 1 and "Plan Kecil costs RM15" not in model.calls[0][1]
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []  # the fact is not carried over
 
 
 async def test_compose_handoff_template_when_model_errors() -> None:
     model = Recorder(None)
     draft = await _deps(model)._compose(_handoff("angry_customer", language="ms"))
     assert model.calls  # it was asked
-    assert draft == Draft(
-        text=handoff_template("ms"), language="ms", handoff=True, composer="template"
-    )
+    assert draft.text == handoff_template("ms") and draft.language == "ms"
+    assert draft.handoff and draft.composer == "template"
+    assert draft.fact_ids == []
+    # The model gave nothing, so the fixed note of the reason is stored.
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "angry_customer")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_without_a_model_is_the_template() -> None:
     plain = deps.PostgresTurnDependencies(None)  # type: ignore[arg-type]
     draft = await plain._compose(_handoff())
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
 
 
 async def test_an_escalate_plan_without_a_required_handoff_is_still_a_handoff_draft() -> None:
@@ -259,6 +295,176 @@ async def test_sandbox_handoff_keeps_sandbox_text_and_flag_off() -> None:
     assert draft.handoff is False and model.calls == []
 
 
+# --- the staff note and the gap topic ----------------------------------------------------------
+
+_NOTE = "The customer wants to know how to pay. The assistant has not answered that yet."
+
+
+async def test_a_written_handoff_keeps_a_grounded_note() -> None:
+    model = Recorder(note=_NOTE, gap="how to pay")
+    draft = await _deps(model)._compose(_handoff("human_requested", body="how do I pay?"))
+    assert draft.staff_note == _NOTE
+    assert draft.gap_topic == "how to pay"
+    assert draft.composer == "primary" and draft.handoff
+
+
+async def test_a_note_with_a_figure_nobody_said_becomes_the_fallback_note() -> None:
+    model = Recorder(note="The customer is owed RM500 within 2 days.", gap="refund")
+    draft = await _deps(model)._compose(_handoff("human_requested"))
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
+    assert draft.staff_note == "The customer asked for a person."
+    # The reply is checked on its own: the model's reply stays.
+    assert draft.text == "Sorry. A team member will reply here." and draft.composer == "primary"
+
+
+async def test_a_ladder_handoff_is_written_by_the_model_with_a_note() -> None:
+    note = "The customer's questions stayed unclear. Nothing about the plan was answered yet."
+    model = Recorder(note=note)
+    state = _handoff("unresolved_turns", route="clarify", body="hmm not sure what I mean")
+    draft = await _deps(model)._compose(state)
+    assert len(model.calls) == 1
+    assert draft.handoff and draft.composer == "primary"
+    assert draft.text == "Sorry. A team member will reply here."
+    assert draft.staff_note == note
+    # The same ladder reason on a hard route is never model-written.
+    template = await _deps(Recorder())._compose(
+        _handoff("unresolved_turns", route="hard_escalate", body="my lawyer will sue")
+    )
+    assert template.composer == "template"
+
+
+async def test_a_customers_own_figure_may_be_in_the_note() -> None:
+    asked = "my order 4417 has not arrived"
+    note = "The customer says order 4417 has not arrived. Nothing was answered yet."
+    model = Recorder(note=note)
+    state = _handoff(
+        "agent_failure",
+        route="plan_args",
+        body=asked,
+        recent=[RecentMessage(author="customer", text="where is order 4417?")],
+    )
+    draft = await _deps(model)._compose(state)
+    assert draft.staff_note == note
+
+
+@pytest.mark.parametrize(
+    ("reason", "route", "note"),
+    [
+        ("human_requested", "hard_escalate", "The customer asked for a person."),
+        (
+            "angry_customer",
+            "guard_blocked",
+            "The customer is upset; the assistant handed over at once.",
+        ),
+        (
+            "unresolved_turns",
+            "clarify",
+            "The assistant could not answer after three tries. Read the chat for what is missing.",
+        ),
+        ("agent_failure", "callback", "A lookup failed, so the assistant could not answer."),
+        (
+            "service_off",
+            "plan_args",
+            "The question needs a service this company has not switched on.",
+        ),
+        (
+            "plan_escalated",
+            "hard_escalate",
+            "The message has a legal or police word, so the assistant handed over without "
+            "answering.",
+        ),
+        (
+            "plan_escalated",
+            "guard_blocked",
+            "The safety check stopped this message, so the assistant handed over without "
+            "answering.",
+        ),
+        ("plan_escalated", "voice_failed", "A voice message could not be understood."),
+        (
+            "plan_escalated",
+            "unsupported_language",
+            "The customer wrote in a language the assistant does not answer.",
+        ),
+        (
+            "plan_escalated",
+            "clarify",
+            "The assistant handed this chat over. Read the chat for details.",
+        ),
+        ("plan_escalated", None, "The assistant handed this chat over. Read the chat for details."),
+        (
+            "human_requested:disabled",
+            "hard_escalate",
+            "The assistant handed this chat over. Read the chat for details.",
+        ),
+    ],
+)
+async def test_a_template_handoff_gets_the_fixed_note_for_its_route(
+    reason: str, route: str | None, note: str
+) -> None:
+    assert fallback_staff_note(route, reason) == note
+    model = Recorder(note="The model must not be asked.")
+    # A turn that never calls the model: legal words in the message make it a template handoff.
+    state = _handoff(reason, route=route, body="I will ask my lawyer about this")
+    draft = await _deps(model)._compose(state)
+    assert model.calls == []
+    assert draft.composer == "template" and draft.staff_note == note
+    assert draft.gap_topic is None
+
+
+async def test_the_note_is_never_in_the_customer_reply() -> None:
+    model = Recorder(note=_NOTE, gap="how to pay")
+    draft = await _deps(model)._compose(_handoff("human_requested"))
+    assert draft.staff_note == _NOTE
+    assert _NOTE not in draft.text and "how to pay" not in draft.text
+    # And the model is told the note is never shown to the customer.
+    assert "never shown to the customer" in model.calls[0][0]
+    template = await _deps(Recorder())._compose(_handoff(body="my lawyer will sue"))
+    assert template.staff_note and template.staff_note not in template.text
+
+
+def test_staff_note_ok_table() -> None:
+    sources = ["where is order 4417?", "Plan Kecil is on offer."]
+    assert staff_note_ok("The customer asks about order 4417. Nothing answered yet.", sources)
+    assert not staff_note_ok("", sources)
+    assert not staff_note_ok("x" * 301, sources)
+    assert not staff_note_ok("One. Two. Three.", sources)
+    assert not staff_note_ok("The customer was promised RM500.", sources)
+    assert not staff_note_ok("Order 4417 is ready; pickup at 1234.", sources)
+
+
+def test_gap_topic_or_none_table() -> None:
+    assert gap_topic_or_none("How to Pay") == "how to pay"
+    assert gap_topic_or_none("  which   plan suits me  ") == "which plan suits me"
+    assert gap_topic_or_none("sign-up for kid's plan") == "sign-up for kid's plan"
+    assert gap_topic_or_none("plan 5g") is None  # digits
+    assert gap_topic_or_none("how to sign up for a plan") is None  # seven words
+    assert gap_topic_or_none("how to sign up for plans") == "how to sign up for plans"  # six
+    assert gap_topic_or_none("hi") is None  # under three characters
+    assert gap_topic_or_none("a" * 61) is None
+    assert gap_topic_or_none("how to pay!") is None  # punctuation
+    assert gap_topic_or_none("") is None
+    assert gap_topic_or_none("   ") is None
+    assert gap_topic_or_none(None) is None
+    # At least one letter: punctuation alone is not a topic.
+    assert gap_topic_or_none("---") is None
+    assert gap_topic_or_none("'''") is None
+    assert gap_topic_or_none("- - -") is None
+    assert gap_topic_or_none("a-b") == "a-b"
+
+
+async def test_a_note_is_kept_when_only_the_reply_fails_its_check() -> None:
+    model = Recorder("A team member will reply within 2 hours.", note=_NOTE, gap="how to pay")
+    draft = await _deps(model)._compose(_handoff("human_requested"))
+    assert draft.composer == "template" and draft.text == _KIND
+    assert draft.staff_note == _NOTE and draft.gap_topic == "how to pay"
+
+
+async def test_a_gap_topic_that_fails_the_check_is_dropped() -> None:
+    model = Recorder(note=_NOTE, gap="how to pay 100 now")
+    draft = await _deps(model)._compose(_handoff("human_requested"))
+    assert draft.gap_topic is None and draft.staff_note == _NOTE
+
+
 # --- a slow or failing handoff reply never fails the turn -------------------------------------
 
 
@@ -268,24 +474,28 @@ async def test_compose_handoff_template_when_the_model_is_slower_than_the_budget
     monkeypatch.setattr(deps, "HANDOFF_COMPOSE_BUDGET_S", 0.05, raising=False)
     made = _deps(Recorder())
 
-    async def slow(_state: TurnState, _brand: object) -> str:
+    async def slow(_state: TurnState, _brand: object) -> HandoffOut:
         await asyncio.sleep(1.0)
-        return "Sorry about that. A team member will reply in this chat."
+        return HandoffOut(reply="Sorry about that. A team member will reply in this chat.")
 
     made._llm.compose_handoff = slow  # type: ignore[union-attr, method-assign]
     draft = await made._compose(_handoff())
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_template_when_the_model_raises() -> None:
     made = _deps(Recorder())
 
-    async def broken(_state: TurnState, _brand: object) -> str:
+    async def broken(_state: TurnState, _brand: object) -> HandoffOut:
         raise RuntimeError("transport went away")
 
     made._llm.compose_handoff = broken  # type: ignore[union-attr, method-assign]
     draft = await made._compose(_handoff())
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_template_when_the_brand_read_fails() -> None:
@@ -297,7 +507,7 @@ async def test_compose_handoff_template_when_the_brand_read_fails() -> None:
 
     made._client_brand = no_brand  # type: ignore[method-assign]
     draft = await made._compose(_handoff())
-    assert draft == Draft(text=_KIND, language="en", handoff=True, composer="template")
+    assert draft.text == _KIND and draft.handoff and draft.composer == "template"
     assert model.calls == []
 
 
@@ -448,3 +658,153 @@ async def test_hold_keeps_a_handoff_draft_on_a_muted_conversation(shop: Shop) ->
     await real.hold(_with_draft(other, handoff=False).model_copy(update={"verdict": verdict}))
     left = await shop.w.q("SELECT id FROM approvals WHERE conversation_id = %s", str(other_chat))
     assert left == []
+
+
+# --- finalize stores the note and the gap ----------------------------------------------------
+
+
+def _with_note(state: TurnState, note: str, gap: str | None) -> TurnState:
+    return state.model_copy(
+        update={
+            "draft": Draft(
+                text="Okay, a team member will reply.",
+                language="en",
+                handoff=True,
+                composer="primary",
+                staff_note=note,
+                gap_topic=gap,
+            )
+        }
+    )
+
+
+async def _notes(shop: Shop, chat: uuid.UUID) -> list[str | None]:
+    rows = await shop.w.q("SELECT note FROM escalations WHERE conversation_id = %s", str(chat))
+    return [row["note"] for row in rows]
+
+
+async def _gaps(shop: Shop) -> list[dict[str, Any]]:
+    return await shop.w.q(
+        "SELECT query, hits FROM kb_gaps WHERE client_id = %s ORDER BY query", shop.tenant
+    )
+
+
+@requires_docker
+async def test_finalize_stores_the_note_on_the_escalation_once(shop: Shop) -> None:
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    assert await _notes(shop, chat) == [None]
+    await real.finalize(_with_note(state, "First note. Second sentence.", None))
+    assert await _notes(shop, chat) == ["First note. Second sentence."]
+    # A resumed finalize leaves the stored note as it was.
+    await real.finalize(_with_note(state, "A different note.", None))
+    assert await _notes(shop, chat) == ["First note. Second sentence."]
+    # A turn with no note (an ordinary draft, or a handoff draft without one) writes nothing.
+    other, other_chat = await _escalated(shop)
+    plain = other.model_copy(update={"draft": Draft(text="Hello.", language="en")})
+    await real.finalize(plain)
+    await real.finalize(
+        _with_note(other, "x", None).model_copy(
+            update={"draft": Draft(text="Hi.", language="en", handoff=True)}
+        )
+    )
+    assert await _notes(shop, other_chat) == [None]
+
+
+@requires_docker
+async def test_finalize_never_writes_another_trace_or_company_note(shop: Shop) -> None:
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    sibling, sibling_chat = await _escalated(shop)
+    await real.finalize(_with_note(state, "Only this trace.", None))
+    assert await _notes(shop, chat) == ["Only this trace."]
+    assert await _notes(shop, sibling_chat) == [None]
+
+
+@requires_docker
+async def test_finalize_records_the_gap_topic_once_and_never_on_a_resume(shop: Shop) -> None:
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, _chat = await _escalated(shop)
+    handed = _with_note(state, "The customer asks how to pay.", "how to pay")
+    await real.finalize(handed)
+    assert await _gaps(shop) == [{"query": "how to pay", "hits": 1}]
+    await real.finalize(handed)  # a resumed finalize
+    assert await _gaps(shop) == [{"query": "how to pay", "hits": 1}]
+    # A second customer asking the same thing counts a second hit.
+    other, _ = await _escalated(shop)
+    await real.finalize(_with_note(other, "Same question.", "how to pay"))
+    assert await _gaps(shop) == [{"query": "how to pay", "hits": 2}]
+    # No topic, no gap.
+    third, _ = await _escalated(shop)
+    await real.finalize(_with_note(third, "No topic.", None))
+    assert await _gaps(shop) == [{"query": "how to pay", "hits": 2}]
+
+
+# --- finalize counts unresolved turns ---------------------------------------------------------
+
+
+def _planned(state: TurnState, strategy: str, intent: Intent, count: int) -> TurnState:
+    return state.model_copy(
+        update={
+            "ctx": Context(clarify_count=count),
+            "plan": Plan(
+                tasks=[],
+                reply_strategy=strategy,  # type: ignore[arg-type]
+                intent=intent,
+                confidence=1,
+                source="policy",
+            ),
+        }
+    )
+
+
+async def _clarify_count(shop: Shop, chat: uuid.UUID) -> int:
+    rows = await shop.w.q("SELECT clarify_count FROM conversations WHERE id = %s", str(chat))
+    return rows[0]["clarify_count"]
+
+
+@requires_docker
+async def test_finalize_counts_unresolved_turns_and_resets_on_an_answer(shop: Shop) -> None:
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    assert await _clarify_count(shop, chat) == 0
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 0))
+    assert await _clarify_count(shop, chat) == 1
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 1))
+    assert await _clarify_count(shop, chat) == 2
+    # Small talk and an ignored message keep the count; neither resolves nor adds.
+    await real.finalize(_planned(state, "auto_reply", Intent.CHITCHAT, 2))
+    assert await _clarify_count(shop, chat) == 2
+    await real.finalize(_planned(state, "ignore", Intent.OTHER, 2))
+    assert await _clarify_count(shop, chat) == 2
+    await real.finalize(_planned(state, "partial_answer", Intent.OTHER, 2))
+    assert await _clarify_count(shop, chat) == 3
+    # An answer resets it.
+    await real.finalize(_planned(state, "auto_reply", Intent.ORDER, 3))
+    assert await _clarify_count(shop, chat) == 0
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 0))
+    await real.finalize(_planned(state, "escalate", Intent.OTHER, 1))
+    assert await _clarify_count(shop, chat) == 0
+
+
+@requires_docker
+async def test_with_memory_off_the_ladder_still_hands_off_at_three(shop: Shop) -> None:
+    await shop.policy({"conversation_memory": False})
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    await shop.w.q("UPDATE conversations SET clarify_count = 3 WHERE id = %s", str(chat))
+    ctx = await real.load_context(state.envelope)
+    assert ctx.flags["memory_off"] is True and ctx.clarify_count == 3
+    asked = Plan(
+        tasks=[],
+        reply_strategy="ask_clarifying",
+        intent=Intent.OTHER,
+        confidence=1,
+        source="policy",
+    )
+    plan, _ = validate_plan(asked, known_agents=frozenset(), clarify_count=ctx.clarify_count)
+    handoff = decide_handoff(plan, [], context=ctx, signals=make_signals(Intent.OTHER))
+    assert plan.reply_strategy == "escalate"
+    assert handoff is not None and handoff.required and handoff.reason == "unresolved_turns"
+    await real.finalize(state.model_copy(update={"ctx": ctx, "plan": plan}))
+    assert await _clarify_count(shop, chat) == 0

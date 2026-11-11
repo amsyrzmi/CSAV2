@@ -102,6 +102,10 @@ class Draft(ContractModel):
     # The reply that tells the customer a person has been told: it is checked where it is written
     # (`_compose`), and `emit` delivers it while the conversation is muted for that person.
     handoff: bool = False
+    # A handoff draft only: the English note for the team member who takes over (stored on the
+    # escalation, never sent to the customer) and the topic of an unanswered business question.
+    staff_note: str | None = Field(default=None, max_length=300)
+    gap_topic: str | None = Field(default=None, max_length=60)
 
 
 class Verification(ContractModel):

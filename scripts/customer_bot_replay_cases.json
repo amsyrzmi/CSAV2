@@ -33,6 +33,50 @@
       ]
     },
     {
+      "id": "ms-subscription",
+      "language": "ms",
+      "facts_source": "subscription_agent",
+      "facts_by_turn": [
+        ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026."],
+        ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026."],
+        [
+          "Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026.",
+          "Your request to cancel Plan Sederhana was passed to our staff to decide. Nothing has changed yet."
+        ],
+        [
+          "Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026.",
+          "Your request to cancel Plan Sederhana was passed to our staff to decide. Nothing has changed yet."
+        ],
+        [
+          "Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026.",
+          "Your request to cancel Plan Sederhana was passed to our staff to decide. Nothing has changed yet."
+        ]
+      ],
+      "messages": [
+        "hi, saya tengah guna plan apa eh sekarang?",
+        "bila plan saya renew?",
+        "saya nak stop plan ni bulan depan",
+        "dah stop ke tu?",
+        "ok terima kasih"
+      ]
+    },
+    {
+      "id": "ms-stock",
+      "language": "ms",
+      "facts_source": "order_agent",
+      "facts": [
+        "Kad SIM Pro (SIM-PRO-01): MYR 25.00, 12 available in our shop.",
+        "Kad SIM Pro (Prepaid): 8 available on our TikTok Shop.",
+        "Pek Data Tambahan (ADD-DATA-02): MYR 10.00, out of stock in our shop."
+      ],
+      "messages": [
+        "hi, ada stok kad sim pro x?",
+        "kat tiktok ada jugak ke?",
+        "pek data tambahan pulak ada lagi tak?",
+        "ok nanti saya beli, terima kasih"
+      ]
+    },
+    {
       "id": "en-plans",
       "language": "en",
       "messages": [
@@ -42,6 +86,24 @@
         "I travel a lot and watch a lot of YouTube",
         "can I change plans later?",
         "thanks!"
+      ]
+    },
+    {
+      "id": "en-decline-then-ok",
+      "language": "en",
+      "messages": [
+        "hi, can I pay by cheque?",
+        "no thanks, don't pass it on. what plans do you have?",
+        "ok"
+      ]
+    },
+    {
+      "id": "ms-decline-then-ok",
+      "language": "ms",
+      "messages": [
+        "hi, boleh bayar guna cek x?",
+        "tak payah, takpe. ada plan apa je?",
+        "ya"
       ]
     }
   ]

@@ -1,0 +1,51 @@
+{
+  "id": "flow_ladder_human_request_skips_ladder",
+  "matrix": "Flow: asking for a person at the top of the ladder hands off at once, with no partial answer",
+  "description": "Two unclear messages bring the unresolved count to 2, where the next unclear turn would get a partial answer. A customer who then asks for a person is handed off at once for the reason human_requested, not the ladder's, and the count starts over.",
+  "turns": [
+    {
+      "say": "something ambiguous",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Could you please specify how I can help you today?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Could you please specify"], "escalations": 0,
+        "clarify_count": 1
+      }
+    },
+    {
+      "say": "still unclear",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Is this about an order, a plan or a booking?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["order, a plan or a booking"], "escalations": 0,
+        "clarify_count": 2
+      }
+    },
+    {
+      "say": "Can I talk to a person please?",
+      "cassette": {
+        "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
+        "HandoffOut": {"reply": "Of course, I've let our team know and someone will reply in this chat.", "staff_note": "The customer asked for a person after two unclear messages. The assistant had asked what the chat was about.", "gap_topic": null}
+      },
+      "expect": {
+        "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["team"], "reply_excludes": ["Is this about"],
+        "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"], "escalations": 1, "escalation_reason": "human_requested",
+        "escalation_note_contains": ["after two unclear messages"], "clarify_count": 0, "handoff_sent": true,
+        "human_muted": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "cs_stock_both_en",
+  "matrix": "Products: one stock answer from our shop and our TikTok Shop, each source named",
+  "description": "A company with the TikTok service and the same product in both places: the reply gives both numbers and names both places.",
+  "seed": {
+    "products": [
+      {"sku": "SIM-TRV-01", "name": "Travel SIM", "price": "25.00", "stock_qty": 12}
+    ],
+    "listings": [
+      {"product_name": "Travel SIM", "variant_name": "Prepaid", "seller_sku": "SIM-TRV-01", "stock_qty": 8, "price": "25.00"}
+    ],
+    "services": ["ecommerce_agent"]
+  },
+  "turns": [
+    {
+      "say": "Do you have the Travel SIM in stock?",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.9}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "product_availability", "query": "Travel SIM"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Yes. We have 12 in our shop and 8 on our TikTok Shop. Which would you like to order from?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["12 in our shop and 8 on our TikTok Shop"], "compose_sees": ["Travel SIM (SIM-TRV-01): MYR 25.00, 12 available in our shop.", "Travel SIM (Prepaid) on our TikTok Shop: 8 were available as of 10 minutes ago."],
+        "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}

@@ -43,6 +43,16 @@ export function dateTime(at: string): string {
   return time ? `${dayLabel(at)}, ${clockTime(at)}` : "";
 }
 
+/**
+ * The line under "who is replying" for the assistant's handoff note, or null without one.
+ * The text is model output shaped by a customer's message: it is returned as is and must
+ * only ever be rendered as a plain text child.
+ */
+export function handoffNoteLine(note: { text: string; at: string } | null | undefined): string | null {
+  if (!note || !note.text.trim()) return null;
+  return `Note from the assistant (${dateTime(note.at)}): ${note.text}`;
+}
+
 /** Same sender within this window: one group (tighter spacing, one avatar). */
 export const GROUP_WINDOW_MS = 5 * 60_000;
 

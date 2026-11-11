@@ -24,7 +24,10 @@ from csa.agents.ecommerce.agent import (
     ORDER_LIMIT_TEXT,
     ORDER_NOT_FOUND_TEXT,
     ORDER_NUMBER_UNREADABLE_HINT,
+    STOCK_NOT_FOUND_FACT,
+    STOCK_NOT_FOUND_TEXT,
     STOCK_UNCHECKED_TEXT,
+    tiktok_stock_fact,
 )
 from csa.agents.ecommerce.models import (
     ListingChoice,
@@ -33,6 +36,12 @@ from csa.agents.ecommerce.models import (
     OrderStatusFact,
     SkuStock,
     StockLookup,
+)
+from csa.agents.orders.availability import (
+    SHOP_NOT_FOUND_FACT,
+    SHOP_NOT_FOUND_TEXT,
+    availability_facts,
+    shop_fact,
 )
 from csa.agents.runner import SpokeRunner
 from csa.contracts.callbacks import PendingActionStore
@@ -48,7 +57,7 @@ from tests.test_coordinator import make_envelope
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 LISTING = UUID("00000000-0000-4000-8000-000000000019")
 LUHN_ORDER = "576461413038785750"  # passes the card check, so redact() masks it
-COPY_HEAD = "Synthetic mug (Black / M), MYR 19.90 on our TikTok Shop: "
+COPY_HEAD = "Synthetic mug (Black / M) on our TikTok Shop: "
 
 
 def _sample_creds() -> TikTokShopCredentials:
@@ -119,11 +128,11 @@ def test_input_model_has_no_write_actions(payload: dict[str, Any]) -> None:
         EcommerceInput.model_validate(payload)
 
 
-def test_input_schema_offers_exactly_the_two_read_actions() -> None:
+def test_input_schema_offers_exactly_the_one_read_action() -> None:
     schema = EcommerceInput.model_json_schema()
-    assert sorted(schema["properties"]["action"]["enum"]) == ["order_status", "stock_check"]
-    assert set(schema["properties"]) == {"action", "order_number", "query"}
-    assert ACTION_RISK == {"order_status": "read", "stock_check": "read"}
+    assert schema["properties"]["action"]["const"] == "order_status"
+    assert set(schema["properties"]) == {"action", "order_number"}
+    assert ACTION_RISK == {"order_status": "read"}
     assert EcommerceAgent.ACTION_RISK == ACTION_RISK
 
 
@@ -136,10 +145,6 @@ def test_input_schema_offers_exactly_the_two_read_actions() -> None:
         {"action": "order_status", "order_number": "5764'; DROP"},
         {"action": "order_status", "order_number": "5" * 101},
         {"action": "order_status", "order_number": "576461413038785752", "query": "mug"},
-        {"action": "stock_check"},
-        {"action": "stock_check", "query": "   "},
-        {"action": "stock_check", "query": "x" * 101},
-        {"action": "stock_check", "query": "mug", "order_number": "576461413038785752"},
         {"action": "order_status", "order_number": "[EMAIL_0]"},
         {"action": "order_status", "order_number": "[CARD_x]"},
         {"action": "order_status", "order_number": "[CARD_0] 1"},
@@ -151,12 +156,11 @@ def test_input_needs_exactly_the_field_of_its_action(payload: dict[str, Any]) ->
         EcommerceInput.model_validate(payload)
 
 
-def test_input_accepts_order_numbers_and_strips_queries() -> None:
+def test_input_accepts_order_numbers() -> None:
     assert EcommerceInput(action="order_status", order_number="576461413038785752")
     assert EcommerceInput(action="order_status", order_number="TT-12_ab").order_number == (
         "TT-12_ab"
     )
-    assert EcommerceInput(action="stock_check", query="  Black mug  ").query == "Black mug"
     # The planner only sees redacted text, so a placeholder is accepted for order_status.
     for placeholder in ("[CARD_0]", "[PHONE_12]"):
         assert EcommerceInput(action="order_status", order_number=placeholder)
@@ -169,7 +173,8 @@ def test_agent_cannot_be_built_without_a_reader() -> None:
     assert agent.name == "ecommerce_agent"
     assert agent.side_effects == "none"
     assert agent.max_retries == 0
-    assert agent.risk(EcommerceInput(action="stock_check", query="mug")) == "read"
+    order = EcommerceInput(action="order_status", order_number="576461413038785752")
+    assert agent.risk(order) == "read"
 
 
 # -- wording --------------------------------------------------------------------------------
@@ -294,11 +299,10 @@ def stock(
     )
 
 
-async def test_live_stock_reply_has_count_price_and_shop() -> None:
-    result = await run(FakeReader(stock=stock(8, live=True)), action="stock_check", query="mug")
-    (only,) = result.facts
+def test_live_stock_reply_has_count_and_shop_and_no_price() -> None:
+    only = tiktok_stock_fact(stock(8, live=True), NOW)
     assert only.id == "tiktok_stock"
-    assert only.text == "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop."
+    assert only.text == "Synthetic mug (Black / M): 8 available on our TikTok Shop."
     assert only.as_of == NOW
 
 
@@ -327,15 +331,26 @@ async def test_live_stock_reply_has_count_price_and_shop() -> None:
         ),
     ],
 )
-async def test_copy_reply_by_age_when_the_live_check_failed(age: timedelta, text: str) -> None:
-    result = await run(
-        FakeReader(stock=stock(8, live=False, as_of=NOW - age)), action="stock_check", query="m"
-    )
-    assert result.facts[0].text == text
+def test_copy_reply_by_age_when_the_live_check_failed(age: timedelta, text: str) -> None:
+    fact = tiktok_stock_fact(stock(8, live=False, as_of=NOW - age), NOW)
+    assert fact.text == text
     assert STOCK_UNCHECKED_TEXT == "I can't check right now. Our staff will confirm."
 
 
-async def test_choices_reply_lists_the_matches() -> None:
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        stock(8, live=True),
+        stock(8, live=False, as_of=NOW - timedelta(minutes=40)),
+        stock(8, live=False, as_of=NOW - timedelta(days=3)),
+    ],
+)
+def test_a_tiktok_fact_never_carries_a_price(lookup: StockLookup) -> None:
+    text = tiktok_stock_fact(lookup, NOW).text
+    assert "19.90" not in text and "MYR" not in text
+
+
+def test_choices_reply_lists_the_matches() -> None:
     choices = tuple(
         ListingChoice(
             listing_id=uuid4(),
@@ -345,32 +360,26 @@ async def test_choices_reply_lists_the_matches() -> None:
         )
         for index in range(1, 6)
     )
-    result = await run(
-        FakeReader(stock=StockLookup(outcome="choices", choices=choices)),
-        action="stock_check",
-        query="mug",
-    )
-    (only,) = result.facts
+    only = tiktok_stock_fact(StockLookup(outcome="choices", choices=choices), NOW)
     assert only.id == "tiktok_stock_choices"
     assert only.text.startswith("Several items on our TikTok Shop match. Which one do you mean?")
     assert "1. Synthetic mug (Colour 1) (SKU MUG-1); 2. Synthetic mug (Colour 2); " in only.text
     assert only.text.endswith("5. Synthetic mug (Colour 5) (SKU MUG-5)")
 
 
-async def test_not_found_stock_reply_offers_staff() -> None:
-    result = await run(FakeReader(), action="stock_check", query="nothing like it")
-    assert result.facts[0].id == "tiktok_stock_not_found"
-    assert "staff" in result.facts[0].text
+def test_not_found_stock_reply_offers_staff() -> None:
+    fact = tiktok_stock_fact(StockLookup(outcome="not_found"), NOW)
+    assert fact.id == "tiktok_stock_not_found"
+    assert fact.text == STOCK_NOT_FOUND_TEXT and "staff" in fact.text
 
 
-async def test_a_sku_removed_since_the_match_is_not_found() -> None:
+def test_a_sku_removed_since_the_match_is_not_found() -> None:
     lookup = stock(8, live=True)
     assert lookup.stock is not None
     gone = lookup.model_copy(
         update={"stock": lookup.stock.model_copy(update={"skus": lookup.stock.skus[1:]})}
     )
-    result = await run(FakeReader(stock=gone), action="stock_check", query="mug")
-    assert result.facts[0].id == "tiktok_stock_not_found"
+    assert tiktok_stock_fact(gone, NOW).id == "tiktok_stock_not_found"
 
 
 # -- the capability gate --------------------------------------------------------------------
@@ -384,7 +393,6 @@ async def test_agent_needs_the_marketplaces_package() -> None:
     runner = SpokeRunner({"ecommerce_agent": EcommerceAgent(reader)}, capabilities=registry)
     inputs: list[dict[str, object]] = [
         {"action": "order_status", "order_number": "576461413038785752"},
-        {"action": "stock_check", "query": "mug"},
     ]
     for inp in inputs:
         result = await runner.execute(Task(task_id="t", agent="ecommerce_agent", input=inp), ctx())
@@ -403,7 +411,7 @@ async def test_runner_risk_reads_the_new_surface() -> None:
         return runner.risk(Task(task_id="t", agent="ecommerce_agent", input=dict(inp)))
 
     assert risk(action="order_status", order_number="1") == "read"
-    assert risk(action="stock_check", query="mug") == "read"
+    assert risk(action="stock_check", query="mug") is None
     assert risk(action="fulfill_order", order_id="1", tracking_number="T") is None
     assert risk(action="sync_inventory", sku="A") is None
 
@@ -418,24 +426,77 @@ async def test_an_unresolved_placeholder_is_never_looked_up() -> None:
     assert reader.calls == []
 
 
-async def test_a_listing_that_is_not_selling_is_never_available() -> None:
+def test_a_listing_that_is_not_selling_is_never_available() -> None:
     for live in (True, False):
-        result = await run(
-            FakeReader(stock=stock(8, live=live, sellable=False)),
-            action="stock_check",
-            query="mug",
-        )
-        assert result.facts[0].id == "tiktok_stock_not_found"
-        assert "available" not in result.facts[0].text
+        fact = tiktok_stock_fact(stock(8, live=live, sellable=False), NOW)
+        assert fact.id == STOCK_NOT_FOUND_FACT
+        assert "available" not in fact.text
 
 
-async def test_a_copy_under_a_minute_old_says_less_than_a_minute() -> None:
-    result = await run(
-        FakeReader(stock=stock(8, live=False, as_of=NOW - timedelta(seconds=20))),
-        action="stock_check",
-        query="mug",
+def test_a_copy_under_a_minute_old_says_less_than_a_minute() -> None:
+    fact = tiktok_stock_fact(stock(8, live=False, as_of=NOW - timedelta(seconds=20)), NOW)
+    assert fact.text == f"{COPY_HEAD}8 were available as of less than a minute ago."
+
+
+# -- the merge of our shop and TikTok Shop (no database) -------------------------------------
+
+
+def _row(sku: str = "LAMP-1", qty: int = 7) -> dict[str, Any]:
+    return {
+        "sku": sku,
+        "name": "Synthetic lamp",
+        "price": Decimal("12"),
+        "currency": "MYR",
+        "available_qty": qty,
+    }
+
+
+def test_a_shop_fact_names_the_shop_and_says_out_of_stock_at_zero() -> None:
+    fact = shop_fact(2, _row())
+    assert (fact.id, fact.source) == ("shop_product_2", "order_agent")
+    assert fact.text == "Synthetic lamp (LAMP-1): MYR 12.00, 7 available in our shop."
+    assert shop_fact(0, _row(qty=0)).text == (
+        "Synthetic lamp (LAMP-1): MYR 12.00, out of stock in our shop."
     )
-    assert result.facts[0].text == f"{COPY_HEAD}8 were available as of less than a minute ago."
+
+
+def test_the_merge_gives_every_shop_row_then_the_tiktok_match() -> None:
+    rows = [_row("LAMP-1"), _row("LAMP-2", 0)]
+    facts = availability_facts(rows, stock(8, live=True), NOW)
+    assert [f.id for f in facts] == ["shop_product_0", "shop_product_1", "tiktok_stock"]
+    assert facts[2].text.endswith("8 available on our TikTok Shop.")
+    # Our shop alone when TikTok was not checked, or found nothing.
+    assert [f.id for f in availability_facts(rows, None, NOW)] == [
+        "shop_product_0",
+        "shop_product_1",
+    ]
+    assert [f.id for f in availability_facts(rows, StockLookup(outcome="not_found"), NOW)] == [
+        "shop_product_0",
+        "shop_product_1",
+    ]
+
+
+def test_tiktok_choices_and_unsellable_matches_add_nothing_beside_a_shop_row() -> None:
+    choices = tuple(
+        ListingChoice(
+            listing_id=uuid4(), product_name="Synthetic mug", variant_name=name, seller_sku=None
+        )
+        for name in ("A", "B")
+    )
+    lookup = StockLookup(outcome="choices", choices=choices)
+    assert [f.id for f in availability_facts([_row()], lookup, NOW)] == ["shop_product_0"]
+    assert [f.id for f in availability_facts([], lookup, NOW)] == ["tiktok_stock_choices"]
+    unsellable = stock(8, live=True, sellable=False)
+    assert [f.id for f in availability_facts([_row()], unsellable, NOW)] == ["shop_product_0"]
+
+
+def test_nothing_found_gives_one_not_found_fact_by_what_was_checked() -> None:
+    (shop_only,) = availability_facts([], None, NOW)
+    assert (shop_only.id, shop_only.text) == (SHOP_NOT_FOUND_FACT, SHOP_NOT_FOUND_TEXT)
+    assert SHOP_NOT_FOUND_TEXT == "I couldn't find that item in our shop."
+    for lookup in (StockLookup(outcome="not_found"), stock(8, live=True, sellable=False)):
+        (both,) = availability_facts([], lookup, NOW)
+        assert (both.id, both.text) == (STOCK_NOT_FOUND_FACT, STOCK_NOT_FOUND_TEXT)
 
 
 def _envelope(raw: str, redacted: str | None = None) -> Envelope:

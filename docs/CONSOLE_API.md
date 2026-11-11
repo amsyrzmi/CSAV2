@@ -505,7 +505,8 @@ This is common-pattern redaction, not a promise to remove all personal informati
 The fingerprint distinguishes different original text even if redaction would match.
 Same-key changed text returns 409; no client-provided identity becomes authority.
 
-Only `kb_agent.query`, `order_agent.search_products` and `order_agent.product_detail`
+Only `kb_agent.query`, `order_agent.search_products`, `order_agent.product_availability`
+(our own catalogue only: no TikTok Shop read on the web) and `order_agent.product_detail`
 can execute for web turns. The shared spoke runner denies everything else **before
 agent execution**, including order status/customer history, KB administration,
 invoice/payment/marketplace, booking/subscription/ticket, escalation and business writes.
@@ -765,6 +766,12 @@ clients):
   collapsed; the same text the thread shows) and `at`; `null` when there are no messages.
 - `pending_approvals`: count of the conversation's approvals that are `pending` and not
   past `expires_at`.
+- `handoff_note`: `{ text, at }`, the assistant's staff note from its newest escalation of
+  this conversation that has one (migration `0560`; `at` is that escalation's time), or
+  `null`. Only `GET /conversations/{id}` fills it. List rows, takeover, release and reply
+  results, and their stored receipts never carry it (`null`). The text is model output
+  shaped by the customer's message, at most 500 characters: clients show it as plain text
+  and never as markup or a link, and it is never sent to the customer.
 
 The page also returns `needs_review_count`: the number of conversations in the whole
 tenant with at least one such approval. It ignores `channel`, `needs_review`, `sender`

@@ -66,16 +66,23 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
-from csa.graph.policy.plan_rules import tiktok_stock_fallback
+from csa.graph.policy.plan_rules import (
+    LADDER_REASON,
+    LADDER_STALE_AFTER,
+    next_unresolved,
+)
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
 from csa.turn.texts import (
     clip_message,
+    fallback_staff_note,
+    gap_topic_or_none,
     handoff_template,
     handoff_text_ok,
     holding_text,
     resolve_language,
+    staff_note_ok,
 )
 
 logger = structlog.get_logger(__name__)
@@ -111,12 +118,14 @@ _SANDBOX_ACCOUNT_INTENTS = frozenset(
 
 
 CAPABILITIES = {
-    "order_agent": "Order status, product search and details, creating order drafts",
+    "order_agent": (
+        "Order status, product availability in our shop and on our TikTok Shop, product "
+        "details, creating order drafts"
+    ),
     "ticket_agent": "Support tickets: create, look up, list, add a note, cancel, reopen",
     "ecommerce_agent": (
         "Read-only TikTok Shop answers: the status and tracking of an order by its TikTok "
-        "order number, and the stock of items found only on our TikTok Shop (checked after "
-        "order_agent finds no match in our own catalogue)"
+        "order number"
     ),
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
     "invoice_agent": "Invoice lookup, status check, and signed download links",
@@ -124,7 +133,10 @@ CAPABILITIES = {
         "Free times for a service, booking, moving and cancelling the customer's own "
         "appointments, and looking up their bookings"
     ),
-    "subscription_agent": "Plan/status lookup and unexecuted requests; no billing changes",
+    "subscription_agent": (
+        "The plans on offer, the customer's own plan (found from this chat), and requests to "
+        "pause, cancel or change it that staff decide; no billing changes"
+    ),
 }
 
 
@@ -137,10 +149,6 @@ _PLANNABLE: dict[str, Any] = {
     "booking_agent": BookingAgent,
     "subscription_agent": SubscriptionAgent,
 }
-# Spec 6.7: the client's own catalogue answers stock first. The TikTok stock check runs only
-# as the deterministic fallback in ``next_step`` (plan_rules.tiktok_stock_fallback), so the
-# model's look-ahead may not propose it.
-_NOT_FOR_THE_MODEL_LOOP = frozenset({("ecommerce_agent", "stock_check")})
 
 
 def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
@@ -202,11 +210,7 @@ def build_llm_provider(
         capabilities=CAPABILITIES,
         inputs={name: agent.Input for name, agent in _PLANNABLE.items()},
         read_actions={
-            name: [
-                action
-                for action, risk in agent.ACTION_RISK.items()
-                if risk == "read" and (name, action) not in _NOT_FOR_THE_MODEL_LOOP
-            ]
+            name: [action for action, risk in agent.ACTION_RISK.items() if risk == "read"]
             for name, agent in _PLANNABLE.items()
         },
         compose_fallback=compose_fallback,
@@ -266,7 +270,12 @@ class PostgresTurnDependencies:
         self._runner = SpokeRunner(
             {
                 "escalation_agent": EscalationAgent(),
-                "order_agent": OrderAgent(),
+                "order_agent": OrderAgent(
+                    marketplace,
+                    marketplace_on=lambda client_id: self._capabilities.allows_execution(
+                        client_id, "ecommerce_agent"
+                    ),
+                ),
                 "ticket_agent": TicketAgent(),
                 "order_approval": OrderApprovalAgent(),
                 "ecommerce_agent": EcommerceAgent(marketplace),
@@ -289,7 +298,12 @@ class PostgresTurnDependencies:
         async with tx(self._pool, str(envelope.client_id)) as conn:
             row = await db.q.fetch_one(
                 "turn/get_conversation_state.sql",
-                (conversation_id, envelope.client_id),
+                {
+                    "conversation_id": conversation_id,
+                    "client_id": envelope.client_id,
+                    "trace_id": envelope.trace_id,
+                    "stale_after": LADDER_STALE_AFTER,
+                },
                 conn=conn,
             )
         if row is None:
@@ -307,7 +321,8 @@ class PostgresTurnDependencies:
             flags["memory_off"] = True
         return Context(
             summary=row["summary"],
-            clarify_count=row["clarify_count"],
+            # Only the loaded value: finalize still writes the new absolute count.
+            clarify_count=0 if row["ladder_stale"] else row["clarify_count"],
             active_order_ids=row["active_order_ids"],
             flags=flags,
             booking=booking,
@@ -463,14 +478,6 @@ class PostgresTurnDependencies:
         policy = await self._policy(state.envelope.client_id)
         if state.step >= policy.agent_loop_max_steps:
             return []
-        # Local catalogue first (spec 6.7): only a stock question our own products could not
-        # answer goes to the TikTok copy, and only for a company with the E-commerce service.
-        # The web sandbox answers product questions from the catalogue only.
-        fallback = [] if state.envelope.channel == Channel.WEB else tiktok_stock_fallback(state)
-        if fallback and await self._capabilities.allows_execution(
-            state.envelope.client_id, "ecommerce_agent"
-        ):
-            return fallback
         return await self._llm.next_step(state)
 
     def task_risk(self, task: Task) -> RiskClass | None:
@@ -592,6 +599,8 @@ class PostgresTurnDependencies:
         language = resolve_language(
             signal if isinstance(signal, str) else None, message.language, message.body_redacted
         )
+        reason = state.handoff.reason if state.handoff else "plan_escalated"
+        note = fallback_staff_note(state.route, reason)
         if self._llm is not None and _handoff_may_be_written(state):
             # Slow or failing, the brand read or the model must never fail the compose node: by
             # now the conversation is muted, so a turn sent to fail_safe would tell the customer
@@ -599,30 +608,56 @@ class PostgresTurnDependencies:
             try:
                 async with asyncio.timeout(HANDOFF_COMPOSE_BUDGET_S):
                     brand = await self._client_brand(state.envelope.client_id)
-                    text = await self._llm.compose_handoff(state, brand)
+                    written = await self._llm.compose_handoff(state, brand)
             except Exception as error:
                 logger.warning(
                     "handoff_reply_replaced_by_template",
                     trace_id=str(state.envelope.trace_id),
                     error_type=type(error).__name__,
                 )
-                text = None
-            # Only what the assistant itself said earlier grounds a figure here. This reply is not
-            # reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed back
-            # reads as a promise; the facts are not shown to the handoff writer at all.
-            sources = [
-                m.text for m in _memory_messages(state.ctx or Context()) if m.author == "assistant"
-            ]
-            if text and handoff_text_ok(text, sources):
-                return Draft(text=text, language=language, handoff=True, composer="primary")
-            if text:
-                logger.info(
-                    "handoff_reply_replaced_by_template",
-                    trace_id=str(state.envelope.trace_id),
-                    chars=len(text),
+                written = None
+            if written is not None:
+                # The staff note is judged apart from the reply: it never reaches the customer,
+                # so what the customer said may ground it; the reply may not (below).
+                recent = _memory_messages(state.ctx or Context())
+                note_sources = [m.text for m in recent] + [state.envelope.message.body_redacted]
+                if written.staff_note and staff_note_ok(written.staff_note, note_sources):
+                    note = written.staff_note
+                gap_topic = gap_topic_or_none(written.gap_topic)
+                # Only what the assistant itself said earlier grounds a figure in the reply. It is
+                # not reviewed, and a customer's own figure ("my RM500 refund in 2 days") echoed
+                # back reads as a promise; the facts are not shown to the handoff writer at all.
+                sources = [m.text for m in recent if m.author == "assistant"]
+                text = written.reply
+                if text and handoff_text_ok(text, sources):
+                    return Draft(
+                        text=text,
+                        language=language,
+                        handoff=True,
+                        composer="primary",
+                        staff_note=note,
+                        gap_topic=gap_topic,
+                    )
+                if text:
+                    logger.info(
+                        "handoff_reply_replaced_by_template",
+                        trace_id=str(state.envelope.trace_id),
+                        chars=len(text),
+                    )
+                return Draft(
+                    text=handoff_template(language),
+                    language=language,
+                    handoff=True,
+                    composer="template",
+                    staff_note=note,
+                    gap_topic=gap_topic,
                 )
         return Draft(
-            text=handoff_template(language), language=language, handoff=True, composer="template"
+            text=handoff_template(language),
+            language=language,
+            handoff=True,
+            composer="template",
+            staff_note=note,
         )
 
     async def _keep_a_written_booking(self, state: TurnState, draft: Draft) -> Draft:
@@ -841,8 +876,7 @@ class PostgresTurnDependencies:
 
     async def finalize(self, state: TurnState) -> None:
         conversation_id = _require_conversation(state.envelope)
-        asked = state.plan is not None and state.plan.reply_strategy == "ask_clarifying"
-        clarify = (state.ctx.clarify_count + 1) if asked and state.ctx is not None else 0
+        clarify = next_unresolved(state.plan, state.ctx.clarify_count if state.ctx else 0)
         intent = state.plan.intent.value if state.plan is not None else None
         async with tx(self._pool, str(state.envelope.client_id)) as conn:
             updated = await db.q.fetch_one(
@@ -860,6 +894,21 @@ class PostgresTurnDependencies:
                     (locale, contact_id, state.envelope.client_id, locale),
                     conn=conn,
                 )
+            draft = state.draft
+            if draft is not None and draft.handoff and draft.staff_note:
+                # The note lands once: the update only fills an empty note, so a resumed finalize
+                # finds no row and records no second gap for the same turn.
+                stored = await db.q.fetch_one(
+                    "turn/update_escalation_note.sql",
+                    (draft.staff_note, state.envelope.client_id, state.envelope.trace_id),
+                    conn=conn,
+                )
+                if stored is not None and draft.gap_topic:
+                    await db.q.execute(
+                        "kb/record_gap.sql",
+                        (state.envelope.client_id, draft.gap_topic),
+                        conn=conn,
+                    )
 
     async def fail_safe(
         self,
@@ -960,7 +1009,9 @@ def _handoff_may_be_written(state: TurnState) -> bool:
     reason = state.handoff.reason
     if reason in _WRITTEN_HANDOFF_REASONS:
         return state.route not in _TEMPLATE_HANDOFF_ROUTES - {"hard_escalate"}
-    return reason == "plan_escalated" and state.route not in _TEMPLATE_HANDOFF_ROUTES
+    return reason in {"plan_escalated", LADDER_REASON} and (
+        state.route not in _TEMPLATE_HANDOFF_ROUTES
+    )
 
 
 def _require_conversation(envelope: Envelope) -> UUID:

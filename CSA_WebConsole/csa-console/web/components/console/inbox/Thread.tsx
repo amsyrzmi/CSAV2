@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/console/fs/Skeleton";
 import { action, field, Notice, secondary } from "@/components/console/ui";
 import { rowTitle } from "@/lib/customer-identity";
 import type { Approval, Conversation, Message } from "@/lib/inbox-api";
-import { dateTime, nearBottom, newMessagesText, threadItems, unseenCount } from "@/lib/inbox-thread";
+import { dateTime, handoffNoteLine, nearBottom, newMessagesText, threadItems, unseenCount } from "@/lib/inbox-thread";
 import { ChannelBadge, contactOf } from "./ConversationList";
 import { MessageItem } from "./MessageItem";
 import { ReviewCard } from "./ReviewCard";
@@ -31,6 +31,7 @@ export function Thread({
   const contact = contactOf(shown ?? { contact: null });
   const title = rowTitle(contact);
   const muted = current?.human_muted ?? null;
+  const noteLine = handoffNoteLine(current?.handoff_note);
   const base = `/console/v1/inbox/conversations/${id}`;
   const [text, setText] = useState("");
   // The reply is queued only after a second, explicit step; Cancel is where focus starts.
@@ -147,6 +148,8 @@ export function Thread({
               {shown && <ChannelBadge channel={shown.channel} testId="inbox-thread-channel" />}
               <span>{muted === null ? "Checking who is replying" : muted ? "Staff has taken over" : "The assistant is handling this"}</span>
             </p>
+            {/* Model text shaped by a customer's message: a plain text child, never markup or a link. */}
+            {noteLine && <p data-testid="inbox-handoff-note" className="mt-1 break-words text-xs text-ink-700">{noteLine}</p>}
           </div>
         </div>
       </div>

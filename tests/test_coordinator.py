@@ -31,7 +31,7 @@ from csa.contracts.state import (
     Verification,
 )
 from csa.graph.coordinator import run_turn
-from csa.graph.policy.plan_rules import resolve_order_status, validate_plan
+from csa.graph.policy.plan_rules import next_unresolved, resolve_order_status, validate_plan
 from csa.graph.policy.routing import route_turn
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -347,7 +347,9 @@ def test_plan_validation_escalates_unknown_agents_and_caps_clarification() -> No
         confidence=0.9,
         source="jev",
     )
-    capped, _ = validate_plan(clarify, known_agents=frozenset(), clarify_count=1)
+    asked, _ = validate_plan(clarify, known_agents=frozenset(), clarify_count=1)
+    assert asked.reply_strategy == "ask_clarifying"
+    capped, _ = validate_plan(clarify, known_agents=frozenset(), clarify_count=3)
     assert capped.reply_strategy == "escalate"
 
 
@@ -435,6 +437,43 @@ async def test_angry_customer_runs_escalation_agent() -> None:
     assert "escalation_agent" in deps.executed_tasks
     assert result.handoff is not None and result.handoff.required
     assert result.handoff.reason == "angry_customer"
+
+
+class _LadderDependencies(FakeDependencies):
+    """The clarify route with a real unresolved-turns counter, kept between turns like the row."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clarify_count = 0
+        self.seen: list[Plan | None] = []
+
+    async def load_context(self, envelope: Envelope) -> Context:
+        return Context(clarify_count=self.clarify_count)
+
+    async def signals(self, envelope: Envelope, context: Context) -> Signals:
+        return make_signals(Intent.OTHER)
+
+    async def finalize(self, state: TurnState) -> None:
+        await super().finalize(state)
+        self.seen.append(state.plan)
+        self.clarify_count = next_unresolved(state.plan, self.clarify_count)
+
+
+@pytest.mark.asyncio
+async def test_the_clarify_route_climbs_the_ladder() -> None:
+    deps = _LadderDependencies()
+    for _ in range(4):
+        await run_turn(make_envelope("something vague"), deps)
+    plans = [plan for plan in deps.seen if plan is not None]
+    assert [plan.reply_strategy for plan in plans] == [
+        "ask_clarifying",
+        "ask_clarifying",
+        "partial_answer",
+        "escalate",
+    ]
+    assert plans[-1].handoff_reason == "unresolved_turns"
+    assert deps.executed_tasks == ["escalation_agent"]
+    assert deps.clarify_count == 0  # a handoff is not an unresolved turn
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ const thread = await import(moduleUrl(
 const {
   senderOf, authorLabel, threadItems, dayLabel, clockTime, dateTime, cleanUsername, cleanContact,
   rowSubtitle, isExpired, approvalLabel, unseenCount, neighbourId, nearBottom, newMessagesText,
+  handoffNoteLine,
 } = thread;
 
 /** Local wall-clock time as ISO, so the tests pass in every time zone. */
@@ -127,4 +128,28 @@ test("the reader is at the bottom within 80 px", () => {
   assert.equal(nearBottom({ scrollTop: 920, scrollHeight: 1400, clientHeight: 400 }), true);
   assert.equal(nearBottom({ scrollTop: 919, scrollHeight: 1400, clientHeight: 400 }), false);
   assert.equal(nearBottom({ scrollTop: 0, scrollHeight: 300, clientHeight: 400 }), true);
+});
+
+test("handoffNoteLine gives the line with the time, and null without a note", () => {
+  const when = at(2026, 11, 10, 14, 5);
+  assert.equal(
+    handoffNoteLine({ text: "The customer asked about a refund.", at: when }),
+    "Note from the assistant (10 Nov 2026, 14:05): The customer asked about a refund.",
+  );
+  assert.equal(handoffNoteLine(null), null);
+  assert.equal(handoffNoteLine(undefined), null);
+  assert.equal(handoffNoteLine({ text: "   ", at: when }), null);
+  // Model text is passed through untouched: no markdown, link or tag handling here.
+  const hostile = '<img src=x onerror=alert(1)> [click](https://evil.example) **bold**';
+  assert.equal(handoffNoteLine({ text: hostile, at: when }),
+    `Note from the assistant (10 Nov 2026, 14:05): ${hostile}`);
+});
+
+test("the thread renders the assistant's note as an inert text child, never as markup", async () => {
+  const source = await readFile(new URL("../components/console/inbox/Thread.tsx", import.meta.url), "utf8");
+  assert.ok(!source.includes("dangerouslySetInnerHTML"), "Thread.tsx must not inject HTML");
+  assert.ok(!/react-markdown|marked|markdown-it|linkify/i.test(source), "Thread.tsx must not render markdown or links");
+  const tag = source.match(/<p[^>]*data-testid="inbox-handoff-note"[^>]*>\s*\{(\w+)\}\s*<\/p>/);
+  assert.ok(tag, "the note line is one <p> whose only child is a plain expression");
+  assert.match(source, new RegExp(`const ${tag[1]} = handoffNoteLine\\(`));
 });

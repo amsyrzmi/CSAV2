@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 from decimal import Decimal
 
@@ -16,6 +17,7 @@ from csa.turn.deps import PostgresTurnDependencies, build_llm_provider
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.golden.runner import (
+    CASE_TODAY,
     CassetteGroq,
     Expect,
     GoldenCase,
@@ -23,8 +25,11 @@ from tests.golden.runner import (
     Product,
     Seed,
     Turn,
+    case_day,
+    case_noon,
     check,
     enqueue_turn,
+    fill_dates,
     load_cases,
     observe,
     prepare_tap,
@@ -134,3 +139,21 @@ async def test_two_tenant_seed_timing_and_isolation(
     assert rows == [("suggest",), ("auto",)]
     print(f"LG08_SEED tenants=2 seconds={elapsed:.3f} tenant_isolation=passed")
     assert elapsed < 5, f"two synthetic tenant scenarios took {elapsed:.3f}s"
+
+
+async def test_the_case_dates_are_fixed_once_so_a_run_never_straddles_midnight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The placeholder text and the seed use one anchor day, taken at import."""
+    import tests.golden.runner as runner
+
+    class _NextDay(dt.datetime):
+        @classmethod
+        def now(cls, tz: dt.tzinfo | None = None) -> _NextDay:  # a clock past local midnight
+            return cls.combine(CASE_TODAY + dt.timedelta(days=1), dt.time(0, 5), tzinfo=tz)
+
+    monkeypatch.setattr(runner, "datetime", _NextDay)
+    assert case_day(0) == CASE_TODAY
+    assert case_day(30) == CASE_TODAY + dt.timedelta(days=30)
+    assert case_noon(2).date() == CASE_TODAY + dt.timedelta(days=2)
+    assert fill_dates("{{date+1}}") == (CASE_TODAY + dt.timedelta(days=1)).strftime("%d %b %Y")

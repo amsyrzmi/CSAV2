@@ -1,8 +1,10 @@
 """The customer-facing E-commerce spoke: read-only TikTok Shop answers (spec 6.7).
 
-Two questions only: the status of a TikTok order by its TikTok order number, and the stock of
-an item that is not in the client's own catalogue but is listed on its TikTok Shop. Nothing
-here writes to TikTok, and the planner cannot reach any write (``ACTION_RISK`` is read-only).
+One question only: the status of a TikTok order by its TikTok order number. The stock of an
+item on the TikTok Shop is read with our own catalogue by ``order_agent`` 'product_availability'
+(``csa.agents.orders.availability``), which words a TikTok listing with ``tiktok_stock_fact``
+below. Nothing here writes to TikTok, and the planner cannot reach any write (``ACTION_RISK``
+is read-only).
 
 The agent words the answers; a ``MarketplaceReader`` (``csa.marketplace.reads``) does the
 reads. An order number alone never reveals the buyer, the items, the totals or the ship-to.
@@ -27,7 +29,6 @@ from csa.agents.ecommerce.models import (
     OrderStatusFact,
     StockLookup,
 )
-from csa.agents.facts import money
 from csa.contracts.facts import (
     AgentError,
     AgentResult,
@@ -39,7 +40,6 @@ from csa.contracts.plan import RiskClass
 
 ACTION_RISK: dict[str, RiskClass] = {
     "order_status": "read",
-    "stock_check": "read",
 }
 
 # Fact ids are constants: they are recorded in agent_runs, so they never carry an order number.
@@ -51,6 +51,8 @@ ORDER_LOOKUP_FACT_IDS = (ORDER_FOUND_FACT, ORDER_NOT_FOUND_FACT)
 STOCK_FACT = "tiktok_stock"
 STOCK_CHOICES_FACT = "tiktok_stock_choices"
 STOCK_NOT_FOUND_FACT = "tiktok_stock_not_found"
+# The agent a TikTok stock fact is attributed to, wherever it is worded.
+ECOMMERCE_SOURCE = "ecommerce_agent"
 
 ORDER_NOT_FOUND_TEXT = (
     "I couldn't find that TikTok order number. Please check it, or ask our staff."
@@ -113,9 +115,7 @@ class EcommerceAgent:
                 )
             lookup = await self._reader.order_status(ctx, inp.order_number)
             return self._ok(ctx, [self._order_fact(lookup)])
-        assert inp.query is not None
-        stock = await self._reader.stock_check(ctx, inp.query)
-        return self._ok(ctx, [self._stock_fact(stock, ctx.now())])
+        return self._error(ctx, "invalid_input", "validation", "Unsupported action")
 
     # -- wording ----------------------------------------------------------------------------
 
@@ -125,26 +125,6 @@ class EcommerceAgent:
         if lookup.fact is None:
             return self._fact(ORDER_NOT_FOUND_FACT, ORDER_NOT_FOUND_TEXT)
         return self._fact(ORDER_FOUND_FACT, order_status_text(lookup.fact))
-
-    def _stock_fact(self, lookup: StockLookup, now: datetime) -> Fact:
-        if lookup.outcome == "choices":
-            return self._fact(STOCK_CHOICES_FACT, choices_text(lookup.choices))
-        stock = lookup.stock
-        sku = stock.asked() if stock is not None else None
-        # A listing that is not selling is never described as available (fail closed).
-        if stock is None or sku is None or not stock.sellable:
-            return self._fact(STOCK_NOT_FOUND_FACT, STOCK_NOT_FOUND_TEXT)
-        label = _label(stock.product_name, sku.variant_name)
-        price = f", {money(sku.price, sku.currency)}" if sku.price is not None else ""
-        qty = sku.stock_qty
-        if stock.checked_live and qty is not None:
-            text = f"{label}{price}: {qty} available on our TikTok Shop."
-        elif qty is not None and now - stock.as_of < COPY_QUOTABLE_FOR:
-            age = _age(now - stock.as_of)
-            text = f"{label}{price} on our TikTok Shop: {qty} were available as of {age} ago."
-        else:
-            text = f"{label} on our TikTok Shop: {STOCK_UNCHECKED_TEXT}"
-        return Fact(id=STOCK_FACT, text=text, source=self.name, as_of=stock.as_of)
 
     # -- results ----------------------------------------------------------------------------
 
@@ -195,6 +175,35 @@ def order_status_text(fact: OrderStatusFact) -> str:
     return text
 
 
+def tiktok_stock_fact(lookup: StockLookup, now: datetime) -> Fact:
+    """The TikTok Shop answer for one stock lookup, in plain words that name the source.
+
+    Fail closed: a listing that is not selling, or a SKU that is gone, is never described as
+    available. A stored copy younger than ``COPY_QUOTABLE_FOR`` is quoted with its age when the
+    live read failed; an older one only says staff will confirm. Never a price: TikTok's search
+    price is pre-tax and the detail read is unverified, so the customer hears only our own price
+    (owner decision, 2026-11-11).
+    """
+    if lookup.outcome == "choices":
+        return Fact(
+            id=STOCK_CHOICES_FACT, text=choices_text(lookup.choices), source=ECOMMERCE_SOURCE
+        )
+    stock = lookup.stock
+    sku = stock.asked() if stock is not None else None
+    if stock is None or sku is None or not stock.sellable:
+        return Fact(id=STOCK_NOT_FOUND_FACT, text=STOCK_NOT_FOUND_TEXT, source=ECOMMERCE_SOURCE)
+    label = _label(stock.product_name, sku.variant_name)
+    qty = sku.stock_qty
+    if stock.checked_live and qty is not None:
+        text = f"{label}: {qty} available on our TikTok Shop."
+    elif qty is not None and now - stock.as_of < COPY_QUOTABLE_FOR:
+        age = _age(now - stock.as_of)
+        text = f"{label} on our TikTok Shop: {qty} were available as of {age} ago."
+    else:
+        text = f"{label} on our TikTok Shop: {STOCK_UNCHECKED_TEXT}"
+    return Fact(id=STOCK_FACT, text=text, source=ECOMMERCE_SOURCE, as_of=stock.as_of)
+
+
 def choices_text(choices: tuple[ListingChoice, ...]) -> str:
     listed = "; ".join(
         f"{index}. {_label(choice.product_name, choice.variant_name)}"
@@ -224,8 +233,11 @@ __all__ = [
     "ORDER_LIMIT_TEXT",
     "ORDER_LOOKUP_FACT_IDS",
     "ORDER_NOT_FOUND_TEXT",
+    "STOCK_NOT_FOUND_FACT",
+    "STOCK_NOT_FOUND_TEXT",
     "STOCK_UNCHECKED_TEXT",
     "EcommerceAgent",
     "LiveStock",
     "MarketplaceReader",
+    "tiktok_stock_fact",
 ]

@@ -16,7 +16,7 @@
     },
     {
       "say": "", "tap": {"from_turn": 0, "button": "first_option", "expired": true},
-      "expect": {"route": "callback", "agents": ["escalation_agent"], "outbound_count": 1, "ticket_statuses": ["open", "open"], "ticket_events": {}, "action_status": "open", "escalations": 1, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+      "expect": {"route": "callback", "agents": ["escalation_agent"], "outbound_count": 1, "ticket_statuses": ["open", "open"], "ticket_events": {}, "action_status": "open", "escalations": 1, "llm_not_called": ["HandoffOut", "Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
     }
   ]
 }

@@ -7,16 +7,18 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from csa.core.pii import NUMBER_PLACEHOLDER
 
 MarketplacePlatform = Literal["tiktok_shop", "shopee", "lazada"]
 
-# Spec 6.7 [4 Nov]: the customer-facing spoke is read-only. These are the only two actions the
-# planner and the spoke accept, so a customer message can never plan a marketplace write. The
-# adapters' write methods (and the Shopee/Lazada adapters) stay in the code but unreachable.
-EcommerceAction = Literal["order_status", "stock_check"]
+# Spec 6.7 [4 Nov]: the customer-facing spoke is read-only. The one action the planner and the
+# spoke accept is the order status by TikTok order number, so a customer message can never plan
+# a marketplace write. Stock questions go through order_agent 'product_availability', which
+# reads our shop and our TikTok listings together. The adapters' write methods (and the
+# Shopee/Lazada adapters) stay in the code but unreachable.
+EcommerceAction = Literal["order_status"]
 # A TikTok order number as the customer types it: a plain token, never a free-text query.
 PLAIN_ORDER_NUMBER_PATTERN = r"^[A-Za-z0-9_-]{1,100}$"
 # The planner only sees redacted text: a number that looks like a card or a phone number reaches
@@ -84,24 +86,11 @@ class EcommerceInput(BaseModel):
     order_number: str | None = Field(
         default=None, min_length=1, max_length=100, pattern=ORDER_NUMBER_PATTERN
     )
-    query: str | None = Field(default=None, max_length=200)
-
-    @field_validator("query")
-    @classmethod
-    def strip_query(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not 1 <= len(value) <= 100:
-            raise ValueError("query must be 1 to 100 characters")
-        return value
 
     @model_validator(mode="after")
     def validate_action_fields(self) -> EcommerceInput:
-        if self.action == "order_status" and (self.order_number is None or self.query):
-            raise ValueError("order_status needs order_number only")
-        if self.action == "stock_check" and (self.query is None or self.order_number):
-            raise ValueError("stock_check needs query only")
+        if self.order_number is None:
+            raise ValueError("order_status needs order_number")
         return self
 
 

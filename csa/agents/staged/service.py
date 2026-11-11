@@ -7,7 +7,7 @@ different: it really books, through `csa.bookings.bot`.
 from __future__ import annotations
 
 import asyncio
-import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from csa.agents.base import AgentContext, SideEffects
+from csa.agents.facts import day
 from csa.agents.staged.booking_facts import (
     NEEDS_NAME,
     NOT_FOUND,
@@ -41,6 +42,13 @@ from csa.agents.staged.models import (
     PreparedRequest,
     ResearchInput,
     SubscriptionInput,
+)
+from csa.agents.staged.subscription_facts import (
+    REQUESTABLE_STATUSES,
+    SUBSCRIPTION_SOURCE,
+    plan_facts,
+    request_fact,
+    subscription_facts,
 )
 from csa.bookings import bot, notify, setup
 from csa.bookings import service as core
@@ -497,14 +505,84 @@ class BookingAgent:
         return Acted(scene, outcome)
 
 
+Resolved = Mapping[str, Any] | tuple[Literal["which", "none", "waiting"], list[str]]
+
+
+def _plan_name(row: Mapping[str, Any]) -> str:
+    return str(row.get("plan_name") or row["plan"])
+
+
+def _which_names(requestable: Sequence[Mapping[str, Any]], timezone: str) -> list[str]:
+    """The plan names to ask about; a name two rows share gets its start date, so they differ."""
+    names = [_plan_name(r) for r in requestable]
+    return [
+        f"{name} (from {day(r['started_at'], timezone)})" if names.count(name) > 1 else name
+        for name, r in zip(names, requestable, strict=True)
+    ]
+
+
+def resolve_subscription(
+    rows: Sequence[Mapping[str, Any]],
+    subscription_id: UUID | None,
+    current_plan: str | None,
+    timezone: str = "Asia/Kuala_Lumpur",
+) -> Resolved:
+    """The one subscription a request means, from this contact's live rows (newest first).
+
+    A `subscription_id` or `current_plan` from the planner only narrows within these rows: an id
+    that is not here finds nothing. Without either, the only requestable plan is the one meant;
+    several need the customer to say which; one waiting for payment cannot be acted on yet. A plan
+    the customer names that matches none (or several) of their requestable plans is never swapped
+    for the only one: they are asked which, so "cancel my Premium" cannot prepare a cancel on Basic.
+    """
+    if subscription_id is not None:
+        row = next((r for r in rows if r["id"] == subscription_id), None)
+        if row is None:
+            return ("none", [])
+        if row["status"] not in REQUESTABLE_STATUSES:
+            return ("waiting", [_plan_name(row)])
+        return row
+    requestable = [r for r in rows if r["status"] in REQUESTABLE_STATUSES]
+    if current_plan is not None:
+        named = current_plan.casefold()
+        matched = [
+            r
+            for r in requestable
+            if str(r["plan"]).casefold() == named or _plan_name(r).casefold() == named
+        ]
+        if len(matched) == 1:
+            return matched[0]
+        if requestable:
+            return ("which", _which_names(requestable, timezone))
+    if not requestable:
+        waiting = [r for r in rows if r["status"] == "pending"]
+        return ("waiting", [_plan_name(waiting[0])]) if waiting else ("none", [])
+    if len(requestable) == 1:
+        return requestable[0]
+    return ("which", _which_names(requestable, timezone))
+
+
+def answer(ctx: AgentContext, facts: list[Fact]) -> AgentResult:
+    """An ok result made of subscription facts, dated now."""
+    return AgentResult(
+        ok=True,
+        status="ok",
+        task_id=ctx.idempotency_key,
+        agent=SUBSCRIPTION_SOURCE,
+        data=AgentResultData(facts=[f.model_copy(update={"as_of": ctx.now()}) for f in facts]),
+        meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
+    )
+
+
 class SubscriptionAgent:
-    name = "subscription_agent"
+    name = SUBSCRIPTION_SOURCE
     Input = SubscriptionInput
     side_effects: SideEffects = "reversible"
     timeout_ms = 10000
     max_retries = 0
     ACTION_RISK: dict[str, RiskClass] = {
         "plans": "read",
+        "mine": "read",
         "list": "read",
         "status": "read",
         "request_pause": "draft",
@@ -517,6 +595,7 @@ class SubscriptionAgent:
         return self.ACTION_RISK[inp.action]
 
     async def run(self, ctx: AgentContext, inp: BaseModel) -> AgentResult:
+        """Every read is of the chat's own contact (`ctx.contact_id`, from the turn envelope)."""
         assert isinstance(inp, SubscriptionInput)
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             if not await db.q.fetch_one(
@@ -527,33 +606,90 @@ class SubscriptionAgent:
                 )
             if not await contact_exists(conn, ctx):
                 return result(ctx, self.name, "Contact not found.", code="contact_not_found")
-            if inp.action in {"plans", "list"}:
-                path = "subscription_plans" if inp.action == "plans" else "subscription_list"
-                params = (
-                    (ctx.client_id,) if inp.action == "plans" else (ctx.client_id, ctx.contact_id)
+            if inp.action == "plans":
+                plans = await db.q.fetch_all(
+                    "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn
                 )
-                rows = await db.q.fetch_all(f"agents/{path}.sql", params, conn=conn)
-                return result(ctx, self.name, json.dumps(rows, default=str))
-            row = await db.q.fetch_one(
-                "agents/subscription_get.sql",
-                (ctx.client_id, ctx.contact_id, inp.subscription_id),
+                return answer(ctx, plan_facts(plans))
+            if inp.action == "status" and inp.subscription_id is not None:
+                one = await db.q.fetch_one(
+                    "agents/subscription_get.sql",
+                    {
+                        "client_id": ctx.client_id,
+                        "contact_id": ctx.contact_id,
+                        "subscription_id": inp.subscription_id,
+                    },
+                    conn=conn,
+                )
+                shown = subscription_facts([one] if one else [], ctx.timezone)
+                return answer(ctx, shown or [request_fact("none")])
+            rows = await db.q.fetch_all(
+                "agents/subscription_list.sql",
+                {
+                    "client_id": ctx.client_id,
+                    "contact_id": ctx.contact_id,
+                    "live_only": inp.action != "list",
+                },
                 conn=conn,
             )
-            if not row:
-                return result(
-                    ctx, self.name, "Subscription not found.", code="subscription_not_found"
-                )
-            if inp.action == "status":
-                return result(ctx, self.name, json.dumps(row, default=str))
-            if row["status"] not in {"active", "paused"}:
-                return result(
-                    ctx, self.name, "Subscription is not active.", code="subscription_inactive"
-                )
-            if inp.action == "request_change" and not await db.q.fetch_one(
-                "agents/subscription_plan.sql", (ctx.client_id, inp.plan_code), conn=conn
-            ):
+            if inp.action in {"mine", "list", "status"}:
+                shown = subscription_facts(rows, ctx.timezone)
+                return answer(ctx, shown or [request_fact("none")])
+            return await self._request(conn, ctx, inp, rows)
+
+    async def _request(
+        self,
+        conn: AsyncConnection[Any],
+        ctx: AgentContext,
+        inp: SubscriptionInput,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> AgentResult:
+        """Pass a pause, cancel or change to staff on the customer's own subscription."""
+        picked = resolve_subscription(rows, inp.subscription_id, inp.current_plan, ctx.timezone)
+        if isinstance(picked, tuple):
+            kind, names = picked
+            if kind == "which":
+                return answer(ctx, [request_fact("which", names=names)])
+            if kind == "waiting":
+                return answer(ctx, [request_fact("waiting", name=names[0])])
+            return answer(ctx, [request_fact("none")])
+        name = _plan_name(picked)
+        if inp.action == "request_cancel" and picked["cancel_at_period_end"]:
+            ending = request_fact(
+                "already_ending", name=name, ends=picked["renews_at"], timezone=ctx.timezone
+            )
+            return answer(ctx, [ending])
+        if inp.action == "request_pause" and picked["status"] == "paused":
+            return answer(ctx, [request_fact("already_paused", name=name)])
+        plan_code: str | None = None
+        new_name: str | None = None
+        if inp.action == "request_change":
+            plan = await db.q.fetch_one(
+                "agents/subscription_plan.sql",
+                {"client_id": ctx.client_id, "plan": inp.plan_code},
+                conn=conn,
+            )
+            if not plan:
                 return result(ctx, self.name, "Active plan not found.", code="plan_not_found")
-            return await prepare(conn, ctx, self.name, inp)
+            plan_code, new_name = plan["code"], plan["name"]
+        prepared = await prepare(
+            conn,
+            ctx,
+            self.name,
+            inp.model_copy(
+                update={
+                    "subscription_id": picked["id"],
+                    "plan_code": plan_code,
+                    "current_plan": None,
+                }
+            ),
+        )
+        if not prepared.ok:
+            return prepared
+        passed = request_fact("passed", action=inp.action, name=name, new_name=new_name)
+        return prepared.model_copy(
+            update={"data": AgentResultData(facts=[passed.model_copy(update={"as_of": ctx.now()})])}
+        )
 
 
 class StaffActor(DraftModel):

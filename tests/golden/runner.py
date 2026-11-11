@@ -9,16 +9,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, TypeVar
+from zoneinfo import ZoneInfo
 
 import httpx
 import psycopg
+from csa.agents.ecommerce.models import EcommerceInput
 from csa.agents.kb.embedder import HASH_MODEL, _deterministic_embedding, vector_to_sql
 from csa.agents.kb.models import KbInput
+from csa.agents.staged.models import SubscriptionInput
 from csa.contracts.callbacks import CallbackCodec
 from csa.contracts.envelope import (
     Callback,
@@ -36,6 +40,29 @@ from pydantic import BaseModel, ConfigDict, Field
 
 CASES_DIR = Path(__file__).parent / "cases"
 T = TypeVar("T", bound=BaseModel)
+# The golden tenant keeps the default company time zone, so a date a fact writes is a date in it.
+CASE_ZONE = ZoneInfo("Asia/Kuala_Lumpur")
+# `{{date+30}}` in a case file is the day (as a fact writes it, "%d %b %Y") 30 days from today in
+# the company's time zone: the seed puts its renewal, end and resume dates on that same day.
+_DATE_TOKEN = re.compile(r"\{\{date([+-]\d+)\}\}")
+
+
+# Today, fixed once at import: the placeholders (collection) and the seed (run) must agree on the
+# day even when a run crosses local midnight.
+CASE_TODAY = datetime.now(CASE_ZONE).date()
+
+
+def case_day(days: int) -> date:
+    return CASE_TODAY + timedelta(days=days)
+
+
+def case_noon(days: int) -> datetime:
+    """Midday of ``case_day(days)`` in the company's zone: far from a day boundary."""
+    return datetime.combine(case_day(days), time(12, 0), tzinfo=CASE_ZONE)
+
+
+def fill_dates(text: str) -> str:
+    return _DATE_TOKEN.sub(lambda m: case_day(int(m.group(1))).strftime("%d %b %Y"), text)
 
 
 class Strict(BaseModel):
@@ -74,6 +101,42 @@ class KnowledgeArticle(Strict):
     other_tenant: bool = False
 
 
+class PlanSeed(Strict):
+    code: str
+    name: str
+    price: Decimal
+    billing_interval: Literal["month", "year"] = "month"
+    features: list[str] = Field(default_factory=list)
+
+
+class SubscriptionSeed(Strict):
+    """One subscription of the chat's contact (or of another contact), by plan code."""
+
+    # Fixed only when a case needs to type it (another contact's id in a customer message).
+    id: uuid.UUID | None = None
+    plan: str
+    status: Literal["active", "paused", "cancelled"] = "active"
+    price: Decimal
+    renews_in_days: int | None = None
+    cancel_at_period_end: bool = False
+    pending_plan: str | None = None
+    pending_in_days: int | None = None
+    resume_in_days: int | None = None
+    other_contact: bool = False
+
+
+class ListingSeed(Strict):
+    """One TikTok Shop listing (one SKU), copied into our tables ``synced_minutes_ago`` ago."""
+
+    product_name: str
+    variant_name: str
+    seller_sku: str
+    stock_qty: int
+    price: Decimal
+    product_status: str = "ACTIVATE"
+    synced_minutes_ago: int = 10
+
+
 class Seed(Strict):
     policy: dict[str, Any] = Field(default_factory=dict)
     products: list[Product] = Field(default_factory=list)
@@ -81,6 +144,11 @@ class Seed(Strict):
     first_contact: bool = False
     tickets: list[Ticket] = Field(default_factory=list)
     knowledge: list[KnowledgeArticle] = Field(default_factory=list)
+    plans: list[PlanSeed] = Field(default_factory=list)
+    subscriptions: list[SubscriptionSeed] = Field(default_factory=list)
+    listings: list[ListingSeed] = Field(default_factory=list)
+    # Capability rows switched on for the company (as ``kb_agent`` is when it has knowledge).
+    services: list[Literal["subscription_agent", "ecommerce_agent"]] = Field(default_factory=list)
 
 
 class Expect(Strict):
@@ -111,6 +179,16 @@ class Expect(Strict):
     human_muted: bool | None = None
     # Whether this turn's outbound reply went out on the handoff's authority (send_authority).
     handoff_sent: bool | None = None
+    # Substrings of the note stored on this turn's escalation (every one must be in it).
+    escalation_note_contains: list[str] = Field(default_factory=list)
+    # The knowledge gap queries of the company after this turn, sorted (exact).
+    kb_gap_queries: list[str] | None = None
+    # Requests prepared for staff to decide (agent_preparation_requests) by this turn.
+    prepared_requests: int | None = None
+    # The reason of the escalation this turn wrote (it must have written one).
+    escalation_reason: str | None = None
+    # The conversation's unresolved-turn count (the escalation ladder) after this turn.
+    clarify_count: int | None = None
 
 
 class Tap(Strict):
@@ -142,7 +220,7 @@ class GoldenCase(Strict):
 
 def load_cases() -> list[GoldenCase]:
     cases = [
-        GoldenCase.model_validate_json(path.read_text(encoding="utf-8"))
+        GoldenCase.model_validate_json(fill_dates(path.read_text(encoding="utf-8")))
         for path in sorted(CASES_DIR.glob("*.json"))
     ]
     ids = [case.id for case in cases]
@@ -232,6 +310,17 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                 "'python','low','python:kb_agent',%s,15000,1,'dispatched',true,true)",
                 (cid, Jsonb(KbInput.model_json_schema())),
             )
+        for service in case.seed.services:
+            schema = SubscriptionInput if service == "subscription_agent" else EcommerceInput
+            conn.execute(
+                "INSERT INTO capability_registry(client_id,name,display_name,description,"
+                "pattern,risk_class,workflow_id,input_schema,timeout_ms,max_retries,"
+                "capability_kind,is_enabled,client_enabled) "
+                "VALUES (%s,%s,%s,'Synthetic golden service','python','low',%s,%s,15000,1,"
+                "'dispatched',true,true) ON CONFLICT (client_id,name) DO UPDATE "
+                "SET is_enabled=true, client_enabled=true",
+                (cid, service, service, f"python:{service}", Jsonb(schema.model_json_schema())),
+            )
         conn.execute(
             "INSERT INTO channel_credentials (id, client_id, channel, access_token) "
             "VALUES (%s, %s, 'telegram', %s)",
@@ -253,8 +342,10 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
         )
         other_contact_id = uuid.uuid4()
         other_conversation_id = uuid.uuid4()
-        if any(order.other_contact for order in case.seed.orders) or any(
-            ticket.other_contact for ticket in case.seed.tickets
+        if (
+            any(order.other_contact for order in case.seed.orders)
+            or any(ticket.other_contact for ticket in case.seed.tickets)
+            or any(sub.other_contact for sub in case.seed.subscriptions)
         ):
             conn.execute(
                 "INSERT INTO contacts (id,client_id,full_name) VALUES (%s,%s,'Other Contact')",
@@ -279,6 +370,66 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                     product.description,
                 ),
             )
+        for plan in case.seed.plans:
+            conn.execute(
+                "INSERT INTO plans (client_id,code,name,price,billing_interval,features) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                (
+                    cid,
+                    plan.code,
+                    plan.name,
+                    plan.price,
+                    plan.billing_interval,
+                    Jsonb(plan.features),
+                ),
+            )
+        for index, sub in enumerate(case.seed.subscriptions):
+            conn.execute(
+                "INSERT INTO subscriptions (id,client_id,contact_id,plan,status,price,started_at,"
+                "renews_at,resume_at,pending_plan,pending_effective_at,cancel_at_period_end) "
+                "VALUES (coalesce(%s::uuid,uuid_generate_v4()),%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    sub.id,
+                    cid,
+                    other_contact_id if sub.other_contact else tenant.contact_id,
+                    sub.plan,
+                    sub.status,
+                    sub.price,
+                    now - timedelta(days=60 - index),
+                    None if sub.renews_in_days is None else case_noon(sub.renews_in_days),
+                    None if sub.resume_in_days is None else case_day(sub.resume_in_days),
+                    sub.pending_plan,
+                    None if sub.pending_in_days is None else case_noon(sub.pending_in_days),
+                    sub.cancel_at_period_end,
+                ),
+            )
+        if case.seed.listings:
+            store_id = uuid.uuid4()
+            conn.execute(
+                "INSERT INTO channel_credentials (id, client_id, channel, shop_id) "
+                "VALUES (%s, %s, 'tiktok_shop', %s)",
+                (store_id, cid, f"SYNTH-SHOP-{store_id}"),
+            )
+            for index, listing in enumerate(case.seed.listings):
+                conn.execute(
+                    "INSERT INTO marketplace_listings (client_id,store_id,channel,"
+                    "external_product_id,external_sku_id,product_name,variant_name,seller_sku,"
+                    "price,stock_qty,product_status,synced_at) "
+                    "VALUES (%s,%s,'tiktok_shop',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        cid,
+                        store_id,
+                        f"SYNTH-PRODUCT-{index}",
+                        f"SYNTH-SKU-{index}",
+                        listing.product_name,
+                        listing.variant_name,
+                        listing.seller_sku,
+                        listing.price,
+                        listing.stock_qty,
+                        listing.product_status,
+                        now - timedelta(minutes=listing.synced_minutes_ago),
+                    ),
+                )
         for index, order in enumerate(case.seed.orders):
             placed = (
                 None
@@ -439,6 +590,11 @@ class Observed(BaseModel):
     kb_gaps: int
     human_muted: bool
     handoff_sent: bool
+    escalation_notes: list[str]
+    kb_gap_queries: list[str]
+    escalation_reasons: list[str]
+    prepared_requests: int
+    clarify_count: int
 
 
 def observe(
@@ -512,6 +668,26 @@ def observe(
             "AND send_authority='handoff')",
             (trace_id,),
         ).fetchone()
+        notes = conn.execute(
+            "SELECT note FROM escalations WHERE client_id=%s AND trace_id=%s "
+            "AND note IS NOT NULL ORDER BY created_at",
+            (tenant.client_id, trace_id),
+        ).fetchall()
+        gap_queries = conn.execute(
+            "SELECT query FROM kb_gaps WHERE client_id=%s ORDER BY query", (tenant.client_id,)
+        ).fetchall()
+        reasons = conn.execute(
+            "SELECT reason FROM escalations WHERE client_id=%s AND trace_id=%s ORDER BY created_at",
+            (tenant.client_id, trace_id),
+        ).fetchall()
+        prepared = conn.execute(
+            "SELECT count(*) FROM agent_preparation_requests WHERE client_id=%s AND trace_id=%s",
+            (tenant.client_id, trace_id),
+        ).fetchone()
+        clarify = conn.execute(
+            "SELECT clarify_count FROM conversations WHERE client_id=%s AND id=%s",
+            (tenant.client_id, tenant.conversation_id),
+        ).fetchone()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -536,13 +712,20 @@ def observe(
         kb_gaps=gaps[0] if gaps else 0,
         human_muted=ownership[0] if ownership else False,
         handoff_sent=bool(handoff and handoff[0]),
+        escalation_notes=[row[0] for row in notes],
+        kb_gap_queries=[row[0] for row in gap_queries],
+        escalation_reasons=[row[0] for row in reasons],
+        prepared_requests=prepared[0] if prepared else 0,
+        clarify_count=clarify[0] if clarify else 0,
     )
 
 
 def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before: int) -> None:
     called = [name for name, _ in llm.calls]
     prompts = "\n".join(prompt for _, prompt in llm.calls)
-    compose = "\n".join(prompt for name, prompt in llm.calls if name == "ComposeOut")
+    compose = "\n".join(
+        prompt for name, prompt in llm.calls if name in {"ComposeOut", "HandoffOut"}
+    )
     reply = "\n".join(seen.replies)
     detail = json.dumps(
         {"seen": seen.model_dump(), "llm_calls": called, "missing": llm.missing}, default=str
@@ -560,10 +743,19 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         "kb_gaps",
         "human_muted",
         "handoff_sent",
+        "prepared_requests",
+        "clarify_count",
     ):
         expected = getattr(expect, field)
         if expected is not None:
             assert getattr(seen, field) == expected, detail
+    if expect.kb_gap_queries is not None:
+        assert seen.kb_gap_queries == sorted(expect.kb_gap_queries), detail
+    if expect.escalation_reason is not None:
+        assert seen.escalation_reasons == [expect.escalation_reason], detail
+    stored = "\n".join(seen.escalation_notes)
+    for text in expect.escalation_note_contains:
+        assert text in stored, f"escalation note missing {text!r}: {detail}"
     if expect.gate_reason is not None:
         assert seen.gate_reason == expect.gate_reason, detail
     assert not llm.missing, f"unrecorded model calls {llm.missing}: {detail}"

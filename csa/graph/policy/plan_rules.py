@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from csa.contracts.facts import AgentError
 from csa.contracts.plan import Intent, Plan, Task
-from csa.contracts.state import Context, Signals, TurnState
+from csa.contracts.state import Context, Signals
 from csa.core.pii import NUMBER_PLACEHOLDER
 
 _ORDER_STATUS = re.compile(
@@ -21,8 +22,6 @@ _MARKETPLACE_ORDER_NUMBER = re.compile(r"(?<!\d)\d{14,}(?!\d)")
 # The fast path reads redacted text: a long number that looks like a card or a phone number
 # arrives as a placeholder (csa.core.pii), so it defers on those too.
 _NUMBER_PLACEHOLDER = re.compile(NUMBER_PLACEHOLDER)
-_ECOMMERCE = "ecommerce_agent"
-_STOCK_CHECK = "stock_check"
 _ACCOUNT_INTENTS = {
     Intent.ORDER,
     Intent.REFUND_RETURNS,
@@ -32,6 +31,18 @@ _ACCOUNT_INTENTS = {
     Intent.WARRANTY,
 }
 _CONFIDENCE_FLOOR = 0.35
+
+# The escalation ladder. ``conversations.clarify_count`` counts unresolved turns in a row: below
+# PARTIAL_AT the bot asks a clarifying question, at PARTIAL_AT it answers in part with one
+# targeted question, from HANDOFF_AT on it hands the chat to staff.
+LADDER_REASON = "unresolved_turns"
+PARTIAL_AT = 2
+HANDOFF_AT = 3
+# The count is only meaningful inside one conversation spell: when the chat's previous message is
+# older than this, the turn starts the ladder over (the loaded count reads 0). The memory window
+# is a message count, so this duration is its own ruling.
+LADDER_STALE_AFTER = timedelta(hours=24)
+UNRESOLVED = frozenset({"ask_clarifying", "partial_answer"})
 
 
 def resolve_order_status(
@@ -86,7 +97,6 @@ def validate_plan(
     clarify_count: int,
 ) -> tuple[Plan, list[AgentError]]:
     """Validate task routing and required inputs without executing any agent."""
-    plan = local_stock_first(plan)
     errors: list[AgentError] = []
     task_ids: set[str] = set()
     for task in plan.tasks:
@@ -120,78 +130,35 @@ def validate_plan(
             return plan, errors
         plan = plan.model_copy(update={"reply_strategy": "ask_clarifying"})
 
-    if plan.reply_strategy == "ask_clarifying" and clarify_count >= 1:
-        plan = plan.model_copy(update={"reply_strategy": "escalate", "source": "policy"})
+    if plan.reply_strategy == "ask_clarifying":
+        if clarify_count >= HANDOFF_AT:
+            plan = plan.model_copy(
+                update={
+                    "reply_strategy": "escalate",
+                    "source": "policy",
+                    "handoff_reason": LADDER_REASON,
+                }
+            )
+        elif clarify_count >= PARTIAL_AT:
+            plan = plan.model_copy(update={"reply_strategy": "partial_answer"})
     return plan, errors
 
 
-def local_stock_first(plan: Plan) -> Plan:
-    """A planned TikTok stock check becomes a local catalogue search (spec 6.7).
+def next_unresolved(plan: Plan | None, current: int) -> int:
+    """The unresolved-turns count after a turn that ended with ``plan``.
 
-    The client's own products answer stock first; the TikTok copy is only asked by
-    ``tiktok_stock_fallback`` once the local search found nothing.
+    A question or a partial answer adds one; small talk and an ignored message keep the count
+    (they neither resolve nor fail the customer); any other turn resolved something and resets.
     """
-    tasks: list[Task] = []
-    changed = False
-    for task in plan.tasks:
-        if task.agent == _ECOMMERCE and task.input.get("action") == _STOCK_CHECK:
-            changed = True
-            query = task.input.get("query")
-            local = {"action": "search_products", "query": query}
-            if (
-                isinstance(query, str)
-                and query.strip()
-                and not any(
-                    t.agent == "order_agent" and t.input == local for t in [*plan.tasks, *tasks]
-                )
-            ):
-                tasks.append(task.model_copy(update={"agent": "order_agent", "input": local}))
-            continue
-        tasks.append(task)
-    return plan.model_copy(update={"tasks": tasks}) if changed else plan
-
-
-def tiktok_stock_fallback(state: TurnState) -> list[Task]:
-    """TikTok stock checks for the local product lookups that found nothing (spec 6.7).
-
-    A ``search_products`` whose only answer was "no matching products", or a
-    ``product_detail`` that answered ``product_not_found``, asks the TikTok copy with the same
-    words, once. Everything the local catalogue answered stays local.
-    """
-    ran = [*(state.plan.tasks if state.plan else []), *state.loop_tasks]
-    by_id = {task.task_id: task for task in ran}
-    asked = {
-        str(task.input.get("query"))
-        for task in ran
-        if task.agent == _ECOMMERCE and task.input.get("action") == _STOCK_CHECK
-    }
-    follow_ups: list[Task] = []
-    for result in state.results:
-        task = by_id.get(result.task_id)
-        if task is None or task.agent != "order_agent":
-            continue
-        action = task.input.get("action")
-        words: object = None
-        if action == "search_products" and result.ok:
-            if result.facts and all(fact.id == "no_products" for fact in result.facts):
-                words = task.input.get("query")
-        elif action == "product_detail" and result.error is not None:
-            if result.error.code == "product_not_found":
-                words = task.input.get("sku")
-        if not isinstance(words, str) or not words.strip():
-            continue
-        query = words.strip()[:100]
-        if query in asked:
-            continue
-        asked.add(query)
-        follow_ups.append(
-            Task(
-                task_id=f"tiktok-stock-{len(follow_ups)}",
-                agent=_ECOMMERCE,
-                input={"action": _STOCK_CHECK, "query": query},
-            )
-        )
-    return follow_ups
+    if plan is None:
+        return 0
+    if plan.reply_strategy in UNRESOLVED:
+        return current + 1
+    if plan.reply_strategy == "ignore" or (
+        plan.reply_strategy == "auto_reply" and plan.intent == Intent.CHITCHAT
+    ):
+        return current
+    return 0
 
 
 def _plan_error(code: str, message: str) -> AgentError:

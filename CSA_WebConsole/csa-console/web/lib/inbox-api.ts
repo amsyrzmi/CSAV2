@@ -12,6 +12,9 @@ export type Contact = {
 
 export type LastMessage = { preview: string; at: string };
 
+/** The assistant's note to staff from its handoff; only the single-conversation read carries it. */
+export type HandoffNote = { text: string; at: string };
+
 export type Conversation = {
   id: string;
   channel: "telegram" | "whatsapp";
@@ -24,6 +27,7 @@ export type Conversation = {
   contact: Contact | null;
   last_message: LastMessage | null;
   pending_approvals: number;
+  handoff_note?: HandoffNote | null;
 };
 
 /** The four delivery fields, restated structurally (same shape as DeliveryState in channels-api). */

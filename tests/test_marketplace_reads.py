@@ -18,14 +18,13 @@ from csa.agents.base import AgentContext
 from csa.agents.ecommerce import TikTokOrderSnapshot, TikTokProductSnapshot
 from csa.agents.ecommerce.agent import STOCK_UNCHECKED_TEXT, EcommerceAgent
 from csa.agents.ecommerce.models import EcommerceInput, OrderStatusFact
-from csa.agents.orders.agent import OrderAgent, OrderInput
+from csa.agents.orders.availability import availability_facts
 from csa.agents.recorder import PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
 from csa.contracts.callbacks import PendingActionStore
-from csa.contracts.plan import Intent, Plan, Task
-from csa.contracts.state import TurnState
+from csa.contracts.facts import Fact
+from csa.contracts.plan import Task
 from csa.core.tenancy import tx
-from csa.graph.policy.plan_rules import tiktok_stock_fallback
 from csa.marketplace.mapping import map_listings, map_order
 from csa.marketplace.reads import (
     LiveReadAccess,
@@ -144,6 +143,20 @@ def agent(pool: AsyncConnectionPool, live: LiveReadAccess | None = None) -> Ecom
 
 async def ask(agent_: EcommerceAgent, ctx: AgentContext, **inp: Any):  # type: ignore[no-untyped-def]
     return await agent_.run(ctx, EcommerceInput.model_validate(inp))
+
+
+class Answer:
+    """What the customer-facing read says about TikTok stock: the lookup, worded as in a turn."""
+
+    def __init__(self, facts: list[Fact]) -> None:
+        self.facts = facts
+
+
+async def stock_answer(
+    pool: AsyncConnectionPool, live: LiveReadAccess | None, ctx: AgentContext, query: str
+) -> Answer:
+    lookup = await PostgresMarketplaceReader(pool, live=live).stock_check(ctx, query)
+    return Answer(availability_facts([], lookup, ctx.now()))
 
 
 # -- order status by number -------------------------------------------------------------------
@@ -342,45 +355,7 @@ async def test_eleventh_lookup_in_an_hour_is_refused(
     assert "SYNTH-TRACK-1" not in repr(logs)
 
 
-# -- stock: local first, then TikTok ------------------------------------------------------------
-
-
-async def test_local_product_answered_locally_without_calling_tiktok(
-    pool: AsyncConnectionPool, migrated_dsn: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    binding = await store_for(migrated_dsn, pool)
-    client = binding.client_id
-    tiktok = FakeTikTok(binding.shop_id).install(monkeypatch)
-    await seed_listings(
-        pool, client, binding.record_id, product_payload("SYNTH-P-LOCAL"), synced_at=now()
-    )
-    async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
-        await conn.execute(
-            "INSERT INTO products (id, client_id, sku, name, price, stock_qty, reserved_qty) "
-            "VALUES (%s, %s, 'LOCAL-MUG', 'Synthetic mug', 12.00, 7, 0)",
-            (uuid4(), client),
-        )
-    task = Task(
-        task_id="t0-order_agent",
-        agent="order_agent",
-        input={"action": "search_products", "query": "mug"},
-    )
-    result = await OrderAgent().run(make_ctx(pool, client), OrderInput.model_validate(task.input))
-    assert result.ok and result.facts[0].text.endswith("7 available")
-    result = result.model_copy(update={"task_id": task.task_id})
-    state = TurnState(
-        envelope=make_envelope("is the mug in stock?"),
-        plan=Plan(
-            tasks=[task],
-            reply_strategy="auto_reply",
-            intent=Intent.ORDER,
-            confidence=1,
-            source="llm",
-        ),
-        results=[result],
-    )
-    assert tiktok_stock_fallback(state) == []
-    assert tiktok.requests == []
+# -- TikTok stock: the reader's lookup, worded by availability_facts --------------------------
 
 
 async def test_tiktok_only_item_checked_live_and_copy_updated(
@@ -400,12 +375,10 @@ async def test_tiktok_only_item_checked_live_and_copy_updated(
     live = LiveReadAccess(load_app=any_app_loader(pool), decrypt=decrypt)
     before = now()
     with capture_logs() as logs:
-        result = await ask(
-            agent(pool, live), make_ctx(pool, client), action="stock_check", query="mug-blk-m"
-        )
+        result = await stock_answer(pool, live, make_ctx(pool, client), "mug-blk-m")
     (fact,) = result.facts
     assert fact.id == "tiktok_stock"
-    assert fact.text == "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop."
+    assert fact.text == "Synthetic mug (Black / M): 8 available on our TikTok Shop."
     assert [kind for kind, _, _ in tiktok.requests] == ["shops", "product_detail"]
     rows = await fetch(
         migrated_dsn,
@@ -465,7 +438,7 @@ async def test_ambiguous_variants_prompt_lists_up_to_five(
     ]
     await seed_listings(pool, client, binding.record_id, payload, synced_at=now())
     live = LiveReadAccess(load_app=any_app_loader(pool), decrypt=decrypt)
-    result = await ask(agent(pool, live), make_ctx(pool, client), action="stock_check", query="mug")
+    result = await stock_answer(pool, live, make_ctx(pool, client), "mug")
     (fact,) = result.facts
     assert fact.id == "tiktok_stock_choices"
     assert fact.text.count("Synthetic mug (Colour") == 5
@@ -474,12 +447,7 @@ async def test_ambiguous_variants_prompt_lists_up_to_five(
     assert tiktok.requests == []
     # Naming the variant exactly picks it.
     tiktok.product_details["SYNTH-P-MANY"] = payload
-    result = await ask(
-        agent(pool, live),
-        make_ctx(pool, client),
-        action="stock_check",
-        query="Synthetic mug Colour 6",
-    )
+    result = await stock_answer(pool, live, make_ctx(pool, client), "Synthetic mug Colour 6")
     assert result.facts[0].id == "tiktok_stock"
     assert "Colour 6" in result.facts[0].text
 
@@ -503,16 +471,11 @@ async def test_live_failure_with_fresh_copy_and_with_stale_copy(
     tiktok.fail[("product_detail", "SYNTH-P-STALE")] = server_error
 
     with capture_logs() as logs:
-        result = await ask(
-            agent(pool, live), make_ctx(pool, client), action="stock_check", query="FRESH-1"
-        )
+        result = await stock_answer(pool, live, make_ctx(pool, client), "FRESH-1")
         assert result.facts[0].text == (
-            "Fresh mug (Black / M), MYR 19.90 on our TikTok Shop: "
-            "8 were available as of 2 hours ago."
+            "Fresh mug (Black / M) on our TikTok Shop: 8 were available as of 2 hours ago."
         )
-        result = await ask(
-            agent(pool, live), make_ctx(pool, client), action="stock_check", query="STALE-1"
-        )
+        result = await stock_answer(pool, live, make_ctx(pool, client), "STALE-1")
         assert (
             result.facts[0].text
             == f"Stale mug (Black / M) on our TikTok Shop: {STOCK_UNCHECKED_TEXT}"
@@ -538,18 +501,14 @@ async def test_no_live_read_for_a_disconnected_store_or_with_tiktok_off(
         pool, client, store, product_payload("SYNTH-P-OFF"), synced_at=now() - timedelta(minutes=30)
     )
     # TikTok off here: no live access at all.
-    result = await ask(
-        agent(pool, None), make_ctx(pool, client), action="stock_check", query="MUG-BLK-M"
-    )
+    result = await stock_answer(pool, None, make_ctx(pool, client), "MUG-BLK-M")
     assert "10 were available as of 30 minutes ago." in result.facts[0].text
     async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
         await conn.execute(
             "UPDATE channel_credentials SET disconnected_at = now() WHERE id = %s", (store,)
         )
     live = LiveReadAccess(load_app=any_app_loader(pool), decrypt=decrypt)
-    result = await ask(
-        agent(pool, live), make_ctx(pool, client), action="stock_check", query="MUG-BLK-M"
-    )
+    result = await stock_answer(pool, live, make_ctx(pool, client), "MUG-BLK-M")
     assert "10 were available as of 30 minutes ago." in result.facts[0].text
     assert tiktok.requests == []
 
@@ -682,7 +641,7 @@ async def test_only_selling_listings_are_offered(
     await seed_listings(pool, client, store, payload, synced_at=now() - timedelta(minutes=30))
     async with tx(pool, str(client)) as conn:
         assert bool(await find_listings(conn, client, "MUG-BLK-M")) is offered
-    result = await ask(agent(pool), make_ctx(pool, client), action="stock_check", query="MUG-BLK-M")
+    result = await stock_answer(pool, None, make_ctx(pool, client), "MUG-BLK-M")
     (fact,) = result.facts
     if offered:
         assert fact.id == "tiktok_stock"
@@ -709,9 +668,7 @@ async def test_a_live_product_that_stopped_selling_is_not_offered(
         (match,) = await find_listings(conn, client, "MUG-BLK-M")
     stock = await live_stock(pool, client, match.id, live=live)
     assert stock is not None and stock.checked_live and not stock.sellable
-    result = await ask(
-        agent(pool, live), make_ctx(pool, client), action="stock_check", query="MUG-BLK-M"
-    )
+    result = await stock_answer(pool, live, make_ctx(pool, client), "MUG-BLK-M")
     assert result.facts[0].id == "tiktok_stock_not_found"
     rows = await fetch(
         migrated_dsn,
@@ -731,11 +688,9 @@ async def test_a_copy_under_a_minute_old_is_not_read_live(
         pool, client, store, product_payload("SYNTH-P-NEW"), synced_at=now() - timedelta(seconds=10)
     )
     live = LiveReadAccess(load_app=any_app_loader(pool), decrypt=decrypt)
-    result = await ask(
-        agent(pool, live), make_ctx(pool, client), action="stock_check", query="MUG-BLK-M"
-    )
+    result = await stock_answer(pool, live, make_ctx(pool, client), "MUG-BLK-M")
     assert result.facts[0].text == (
-        "Synthetic mug (Black / M), MYR 19.90 on our TikTok Shop: "
+        "Synthetic mug (Black / M) on our TikTok Shop: "
         "10 were available as of less than a minute ago."
     )
     assert tiktok.requests == []

@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import pytest
-from csa.contracts.facts import AgentError, AgentResult, Fact
+from csa.agents.ecommerce.models import EcommerceInput
+from csa.agents.orders.agent import OrderAgent, OrderInput
+from csa.contracts.facts import AgentError, AgentResult
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
 from csa.graph.policy.handoff import decide_handoff
 from csa.graph.policy.plan_rules import (
+    HANDOFF_AT,
+    LADDER_REASON,
+    PARTIAL_AT,
+    UNRESOLVED,
+    next_unresolved,
     resolve_order_status,
-    tiktok_stock_fallback,
     validate_plan,
 )
 from csa.graph.policy.routing import route_turn
+from pydantic import ValidationError
 
 from tests.test_coordinator import make_envelope, make_result, make_signals
 
@@ -151,7 +158,117 @@ def test_a_hard_failure_stays_an_agent_failure() -> None:
     assert handoff.priority == "high"
 
 
-# -- TikTok routing (spec 6.7): order numbers to ecommerce_agent, stock local first -----------
+# -- The escalation ladder: two questions, a partial answer, then a handoff --
+
+
+def _strategy_plan(strategy: str, *, intent: Intent = Intent.OTHER) -> Plan:
+    return Plan(
+        tasks=[],
+        reply_strategy=strategy,  # type: ignore[arg-type]
+        intent=intent,
+        confidence=1,
+        source="llm",
+    )
+
+
+def test_the_ladder_constants() -> None:
+    assert (LADDER_REASON, PARTIAL_AT, HANDOFF_AT) == ("unresolved_turns", 2, 3)
+    assert UNRESOLVED == frozenset({"ask_clarifying", "partial_answer"})
+
+
+@pytest.mark.parametrize(
+    ("count", "strategy"),
+    [
+        (0, "ask_clarifying"),
+        (1, "ask_clarifying"),
+        (2, "partial_answer"),
+        (3, "escalate"),
+        (7, "escalate"),
+    ],
+)
+def test_the_ladder_asks_twice_then_answers_in_part_then_hands_off(
+    count: int, strategy: str
+) -> None:
+    plan, errors = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=count
+    )
+    assert not errors
+    assert plan.reply_strategy == strategy
+    if strategy == "escalate":
+        assert plan.handoff_reason == "unresolved_turns" and plan.source == "policy"
+    else:
+        assert plan.handoff_reason is None
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 7])
+def test_a_planned_answer_at_any_rung_is_kept(count: int) -> None:
+    answered = _plan_of(Task(task_id="t", agent="alpha", input={}))
+    plan, errors = validate_plan(answered, known_agents=frozenset({"alpha"}), clarify_count=count)
+    assert not errors and plan == answered
+
+
+@pytest.mark.parametrize(
+    ("strategy", "intent", "current", "expected"),
+    [
+        ("ask_clarifying", Intent.OTHER, 0, 1),
+        ("ask_clarifying", Intent.OTHER, 2, 3),
+        ("partial_answer", Intent.OTHER, 2, 3),
+        ("auto_reply", Intent.CHITCHAT, 2, 2),
+        ("ignore", Intent.OTHER, 1, 1),
+        ("auto_reply", Intent.ORDER, 2, 0),
+        ("confirm", Intent.ORDER, 2, 0),
+        ("escalate", Intent.OTHER, 2, 0),
+    ],
+)
+def test_next_unresolved_table(strategy: str, intent: Intent, current: int, expected: int) -> None:
+    assert next_unresolved(_strategy_plan(strategy, intent=intent), current) == expected
+
+
+def test_next_unresolved_without_a_plan_is_zero() -> None:
+    assert next_unresolved(None, 2) == 0
+
+
+def test_must_escalate_now_skips_the_ladder() -> None:
+    escalate = _strategy_plan("escalate")
+    wants = make_signals(Intent.OTHER, answers={"wants_human": True})
+    angry = make_signals(Intent.OTHER, answers={"sentiment": "angry"})
+    assert decide_handoff(escalate, [], context=Context(), signals=wants).reason == (  # type: ignore[union-attr]
+        "human_requested"
+    )
+    assert decide_handoff(escalate, [], context=Context(), signals=angry).reason == (  # type: ignore[union-attr]
+        "angry_customer"
+    )
+    plain = decide_handoff(escalate, [], context=Context(), signals=make_signals(Intent.OTHER))
+    assert plain is not None and plain.reason == "plan_escalated"
+    # And none of them climbed: the plan was never an ask, so it is not rewritten at count 0.
+    kept, _ = validate_plan(escalate, known_agents=frozenset(), clarify_count=0)
+    assert kept.reply_strategy == "escalate" and kept.handoff_reason is None
+
+
+def test_a_ladder_handoff_carries_its_reason_at_high_priority() -> None:
+    plan, _ = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=3
+    )
+    handoff = decide_handoff(plan, [], context=Context(), signals=make_signals(Intent.OTHER))
+    assert handoff is not None and handoff.required
+    assert handoff.reason == "unresolved_turns" and handoff.priority == "high"
+
+
+def test_a_ladder_handoff_with_handoff_disabled_is_not_required() -> None:
+    plan, _ = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=3
+    )
+    handoff = decide_handoff(
+        plan,
+        [],
+        context=Context(flags={"handoff_disabled": True}),
+        signals=make_signals(Intent.OTHER),
+    )
+    assert handoff is not None and not handoff.required
+    assert handoff.reason == "unresolved_turns:disabled"
+
+
+# -- TikTok routing (spec 6.7): order numbers to ecommerce_agent, stock by product_availability --
 
 
 def _plan_of(*tasks: Task) -> Plan:
@@ -164,91 +281,26 @@ def _plan_of(*tasks: Task) -> Plan:
     )
 
 
-def _stock_check(query: str, task_id: str = "t0-ecommerce_agent") -> Task:
-    return Task(
-        task_id=task_id, agent="ecommerce_agent", input={"action": "stock_check", "query": query}
-    )
-
-
-def _search(query: str, task_id: str = "t0-order_agent") -> Task:
-    return Task(
-        task_id=task_id, agent="order_agent", input={"action": "search_products", "query": query}
-    )
-
-
-AGENTS = frozenset({"order_agent", "ecommerce_agent"})
-
-
-def test_a_planned_tiktok_stock_check_becomes_a_local_search() -> None:
-    plan, errors = validate_plan(
-        _plan_of(_stock_check("mug")), known_agents=AGENTS, clarify_count=0
-    )
-    assert not errors
-    assert [(t.agent, t.input) for t in plan.tasks] == [
-        ("order_agent", {"action": "search_products", "query": "mug"})
-    ]
-    # Planned next to the same local search, it is simply dropped.
-    plan, _ = validate_plan(
-        _plan_of(_search("mug"), _stock_check("mug", "t1-ecommerce_agent")),
-        known_agents=AGENTS,
-        clarify_count=0,
-    )
-    assert [(t.task_id, t.agent) for t in plan.tasks] == [("t0-order_agent", "order_agent")]
-    # An order-number lookup is left alone.
+def test_the_planner_cannot_ask_for_a_tiktok_stock_check() -> None:
+    with pytest.raises(ValidationError):
+        EcommerceInput.model_validate({"action": "stock_check", "query": "mug"})
+    asked = OrderInput.model_validate({"action": "product_availability", "query": "mug"})
+    assert asked.query == "mug"
+    assert OrderAgent().risk(asked) == "read"
+    with pytest.raises(ValidationError):
+        OrderInput.model_validate({"action": "product_availability"})
+    # An order-number lookup is left alone by plan validation.
     lookup = Task(
         task_id="t0",
         agent="ecommerce_agent",
         input={"action": "order_status", "order_number": "576461413038785752"},
     )
-    plan, _ = validate_plan(_plan_of(lookup), known_agents=AGENTS, clarify_count=0)
-    assert plan.tasks == [lookup]
-
-
-def _no_products(task: Task) -> AgentResult:
-    result = make_result(task)
-    result.data.facts = [
-        Fact(id="no_products", text="No matching products were found.", source="order_agent")
-    ]
-    return result
-
-
-def _not_found(task: Task) -> AgentResult:
-    result = make_result(task, error=True)
-    result.error = AgentError(code="product_not_found", category="not_found", message="x")
-    return result
-
-
-def _state(tasks: list[Task], results: list[AgentResult], loop: list[Task] | None = None):
-    return TurnState(
-        envelope=make_envelope("is it in stock?"),
-        plan=_plan_of(*tasks),
-        results=results,
-        loop_tasks=loop or [],
+    plan, errors = validate_plan(
+        _plan_of(lookup),
+        known_agents=frozenset({"order_agent", "ecommerce_agent"}),
+        clarify_count=0,
     )
-
-
-def test_tiktok_stock_is_asked_only_after_the_local_catalogue_found_nothing() -> None:
-    search = _search("  mug  ")
-    (follow_up,) = tiktok_stock_fallback(_state([search], [_no_products(search)]))
-    assert follow_up.agent == "ecommerce_agent"
-    assert follow_up.input == {"action": "stock_check", "query": "mug"}
-
-    detail = Task(
-        task_id="t1-order_agent",
-        agent="order_agent",
-        input={"action": "product_detail", "sku": "MUG-BLK-M"},
-    )
-    (follow_up,) = tiktok_stock_fallback(_state([detail], [_not_found(detail)]))
-    assert follow_up.input == {"action": "stock_check", "query": "MUG-BLK-M"}
-
-    # A local answer, a failed search and another agent's empty answer stay local.
-    assert tiktok_stock_fallback(_state([search], [make_result(search)])) == []
-    assert tiktok_stock_fallback(_state([search], [make_result(search, error=True)])) == []
-    other = Task(task_id="t2-kb_agent", agent="kb_agent", input={"action": "query", "query": "x"})
-    assert tiktok_stock_fallback(_state([other], [_no_products(other)])) == []
-    # Asked once only.
-    asked = _stock_check("mug", "s1-0-ecommerce_agent")
-    assert tiktok_stock_fallback(_state([search], [_no_products(search)], [asked])) == []
+    assert not errors and plan.tasks == [lookup]
 
 
 @pytest.mark.parametrize(

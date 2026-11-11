@@ -415,6 +415,67 @@ rolling back to an image older than this release: the older policy model rejects
 would fail every turn of that company. The owner's retest rows are in
 [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
 
+### The escalation ladder, the staff note and the gaps
+
+**The ladder.** `conversations.clarify_count` counts the consecutive turns the bot could not answer.
+0 and 1: it asks a clarifying question; 2: it gives a partial answer with one targeted question; 3 or
+more: it hands off, and the escalation's reason is `unresolved_turns`. `ask_clarifying` and
+`partial_answer` add one, chitchat and ignored messages keep the count, any other strategy (an answer,
+a confirmation, a handoff) resets it to 0. The count is written once per turn when the turn finishes.
+When the customer's previous inbound message is more than 24 hours old (`LADDER_STALE_AFTER` in
+`plan_rules.py`, read in `get_conversation_state.sql` as `ladder_stale`), the stored count is loaded as
+0, so a customer who comes back after a day starts at the first clarifying question. Staff replies
+and reminders do not count as the customer's activity.
+A request for a person, anger, a legal or police word, an injection attempt, a blocked message, a
+voice message that could not be read and an unsupported language skip the ladder and hand off at
+once, under their own reason (those routes record `plan_escalated`, or `human_requested` and
+`angry_customer` when the classifier set them). The ladder works with `conversation_memory` off. There
+is no switch for the ladder itself; to see where a chat stands:
+
+```sql
+SELECT clarify_count FROM public.conversations WHERE id = '<conversation id>';
+```
+
+**The staff note.** Each handoff writes one note on its escalation row, `escalations.note` (at most
+500 characters, NULL when none; the assistant writes at most 300). It is for staff only: the inbox
+thread shows the newest one as "Note from the assistant (...)", and it is never sent to the customer or
+put in the Telegram alert (the alert carries the reason only). A note the model wrote that fails the
+grounding check, a model error and every template handoff (a legal word, a blocked message, a voice
+failure, an unsupported language) get a fixed English sentence instead. Read the notes of a company:
+
+```sql
+SELECT created_at, reason, note
+FROM public.escalations
+WHERE client_id = '<client id>' AND note IS NOT NULL
+ORDER BY created_at DESC LIMIT 20;
+```
+
+**Gap topics.** When the handoff follows a question no fact answered, the same model call writes a
+short topic (at most six words, no digits) and the turn records it in `kb_gaps` once. The knowledge
+agent records its own query for the same question, so one question can leave two rows. Read the open
+gaps of a company with `SELECT query, hits, last_seen FROM public.kb_gaps WHERE client_id = '<client id>'
+AND NOT resolved ORDER BY last_seen DESC`; the owner's fix is a knowledge-base entry that answers the
+topic, not a code change.
+
+**Roll back migration 0560.** Needed when going back to an image older than this release: its readiness
+check wants the highest applied version to equal its own, so it reports not ready while 0560 is applied.
+Stop the services, then, as the database owner and in this order: `DROP INDEX
+public.escalations_conversation_created;`, then `ALTER TABLE public.escalations DROP CONSTRAINT
+escalations_note_length;`, then `ALTER TABLE public.escalations DROP COLUMN note;` (every note already
+written is lost), and last `DELETE FROM public.schema_migrations WHERE version = '0560';`, or the
+runner thinks it is still applied. Then start the older images.
+
+**Replay the new conversations** (after the new image is on staging; synthetic facts, no database):
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-subscription
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-stock
+```
+
+For a handoff the replay also prints the staff note and the gap topic the model would write. The
+checklist for the whole release is "Business answers and the escalation ladder" in
+[CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
+
 ## Stuck knowledge uploads
 
 A failed or half-read upload shows a card under Needs attention on the Business knowledge page. **Try

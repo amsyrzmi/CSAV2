@@ -1,0 +1,33 @@
+{
+  "id": "cs_sub_ends_on_not_renews",
+  "matrix": "Subscriptions: a plan set to end says it ends and will not renew",
+  "description": "A plan cancelled at the period end: the fact says it ends on a date and will not renew, and the reply does not say it renews.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "subscriptions": [
+      {"plan": "sederhana", "price": "35.00", "renews_in_days": 10, "cancel_at_period_end": true}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "Will my plan renew next month?",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "No. Plan Sederhana ends on {{date+10}} and will not renew."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["ends on {{date+10}}", "will not renew"], "reply_excludes": ["renews on"], "model_never_sees": ["renews on"],
+        "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It ends on {{date+10}} and will not renew."], "prepared_requests": 0, "agent_errors": [],
+        "escalations": 0
+      }
+    }
+  ]
+}

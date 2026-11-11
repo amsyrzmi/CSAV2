@@ -43,10 +43,15 @@ class Task(ContractModel):
 
 class Plan(ContractModel):
     tasks: list[Task] = Field(default_factory=list, max_length=3)
-    reply_strategy: Literal["auto_reply", "ask_clarifying", "escalate", "ignore", "confirm"]
+    reply_strategy: Literal[
+        "auto_reply", "ask_clarifying", "partial_answer", "escalate", "ignore", "confirm"
+    ]
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
     intent: Intent
     sentiment: Literal["positive", "neutral", "frustrated", "angry"] = "neutral"
     confidence: float = Field(ge=0, le=1)
     requires_confirmation: bool = False
     source: Literal["fast_path", "jev", "llm", "policy"]
+    # Why an escalating plan escalates, when its maker knows (the ladder's ``unresolved_turns``);
+    # ``None`` keeps the generic reason. Only code sets it: the model's PlanOut has no such field.
+    handoff_reason: str | None = Field(default=None, min_length=1, max_length=64)

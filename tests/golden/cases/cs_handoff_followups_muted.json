@@ -7,20 +7,21 @@
       "say": "Can I speak to a human please?",
       "cassette": {
         "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
-        "ComposeOut": {"reply": "I've passed this to a team member who will get back to you shortly."}
+        "HandoffOut": {"reply": "I've passed this to a team member who will get back to you shortly.", "staff_note": "The customer asked to speak to a human. Nothing else was said.", "gap_topic": null}
       },
       "expect": {
         "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
         "outbound_count": 1, "reply_contains": ["team member"],
         "llm_not_called": ["PlanOut", "ReviewOut"],
-        "escalations": 1, "human_muted": true, "ticket_statuses": ["open"]
+        "escalations": 1, "human_muted": true, "ticket_statuses": ["open"],
+        "escalation_note_contains": ["asked to speak to a human"]
       }
     },
     {
       "say": "Any update about my parcel?",
       "expect": {
         "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
-        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "llm_not_called": ["Classification", "HandoffOut", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
         "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
       }
     },
@@ -28,7 +29,7 @@
       "say": "Please check again",
       "expect": {
         "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
-        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "llm_not_called": ["Classification", "HandoffOut", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
         "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
       }
     }

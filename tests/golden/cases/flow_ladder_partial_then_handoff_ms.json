@@ -1,0 +1,70 @@
+{
+  "id": "flow_ladder_partial_then_handoff_ms",
+  "matrix": "Flow: the escalation ladder in Malay asks twice, answers in part, then hands off to human support",
+  "description": "Malay twin of flow_ladder_partial_then_handoff: three unresolved turns (two clarifying questions, a partial answer with one targeted question), then a handoff with a note on the fourth. The unresolved count is 1, 2, 3 and then 0 after the handoff.",
+  "turns": [
+    {
+      "say": "yang tu macam mana eh",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Boleh terangkan sikit, nak tanya pasal apa ya?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["nak tanya pasal apa"], "compose_sees": ["Ask exactly one short clarifying question about the one thing you still need", "Malay register"],
+        "escalations": 0, "clarify_count": 1
+      }
+    },
+    {
+      "say": "yang biasa tu la",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Pasal order, plan atau booking ya?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["order, plan atau booking"], "compose_sees": ["Boleh terangkan sikit, nak tanya pasal apa ya?", "never ask a question an earlier assistant message already asked"],
+        "escalations": 0, "clarify_count": 2
+      }
+    },
+    {
+      "say": "alah yang biasa tu",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Saya boleh tolong pasal order, plan dan booking, tapi tak pasti yang mana satu. Boleh bagi nombor order atau nama plan?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "clarify", "agents": [], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["nombor order atau nama plan"], "compose_sees": ["The customer still has no answer after earlier questions", "Pasal order, plan atau booking ya?"],
+        "escalations": 0, "clarify_count": 3
+      }
+    },
+    {
+      "say": "korang tahu la maksud saya",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "other", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {}},
+        "PlanOut": {"tasks": [], "reply_strategy": "ask_clarifying"},
+        "HandoffOut": {"reply": "Baik, saya dah bagitahu team. Mereka akan balas dalam chat ni.", "staff_note": "The customer's messages stayed unclear after two questions and a partial answer. Nothing was resolved.", "gap_topic": null}
+      },
+      "expect": {
+        "route": "clarify", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["team"], "llm_not_called": ["ReviewOut"],
+        "escalations": 1, "escalation_reason": "unresolved_turns", "escalation_note_contains": ["stayed unclear"],
+        "clarify_count": 0
+      }
+    }
+  ]
+}

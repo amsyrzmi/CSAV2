@@ -1,0 +1,138 @@
+"""What the subscription agent tells the reply composer: plans on offer and the customer's own.
+
+Every fact states what the rows say, in words that read properly on their own, because when a
+reply cannot be checked they are sent as they stand. Fact ids are constants (with an index where
+there are several): never a subscription id, a plan code or anything of the contact's. A request
+fact never says the thing is done: staff decide, and nothing changes until they do.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime
+from typing import Any, Literal
+
+from csa.agents.facts import day, money
+from csa.contracts.facts import Fact
+
+SUBSCRIPTION_SOURCE = "subscription_agent"
+# `pending` waits for the status a later change adds; the live SQL allowlist already names it.
+LIVE_STATUSES = ("active", "paused", "pending")
+# A customer's request acts only on these (a plan waiting for payment cannot be changed yet).
+REQUESTABLE_STATUSES = frozenset({"active", "paused"})
+
+NONE_TEXT = "I can't find a subscription linked to this chat."
+
+RequestKind = Literal["passed", "which", "none", "already_ending", "already_paused", "waiting"]
+_VERBS = {"request_pause": "pause", "request_cancel": "cancel"}
+
+
+def _fact(fact_id: str, text: str) -> Fact:
+    return Fact(id=fact_id, text=text, source=SUBSCRIPTION_SOURCE)
+
+
+def _per(interval: object) -> str:
+    return f" a {interval}" if interval else ""
+
+
+def _plan_name(row: Mapping[str, Any]) -> str:
+    return str(row.get("plan_name") or row["plan"])
+
+
+def plan_facts(rows: Sequence[Mapping[str, Any]]) -> list[Fact]:
+    """One fact per plan on offer, with its price, interval and features."""
+    facts: list[Fact] = []
+    for n, row in enumerate(rows, start=1):
+        price = money(row["price"], row["currency"])
+        text = f"{row['name']}: {price}{_per(row.get('billing_interval'))}."
+        raw = row.get("features") or []
+        # A bare string is one feature, not a list of characters; a trailing '.' is dropped so
+        # joining and the sentence's own '.' never print '..'.
+        items = [raw] if isinstance(raw, str) else raw
+        features = [t for t in (str(f).strip().rstrip(".").strip() for f in items) if t]
+        if features:
+            text += f" Includes: {'; '.join(features)}."
+        facts.append(_fact(f"subscription_plan_{n}", text))
+    return facts
+
+
+def _line(row: Mapping[str, Any], timezone: str) -> str | None:
+    status = row["status"]
+    name = _plan_name(row)
+    price = f"{name}, {money(row['price'], row['currency'])}{_per(row.get('billing_interval'))}"
+    renews: datetime | None = row.get("renews_at")
+    if status == "cancelled":
+        return f"Your plan: {name} was cancelled."
+    if status == "paused":
+        resume: date | None = row.get("resume_at")
+        until = f" until {resume.strftime('%d %b %Y')}" if resume else ""
+        text = f"Your plan: {name} is paused{until}."
+    elif status == "pending":
+        text = f"Your plan: {price}, is waiting for payment."
+    elif status == "active":
+        text = f"Your plan: {price}."
+        if row.get("cancel_at_period_end"):
+            when = f" on {day(renews, timezone)}" if renews else ""
+            text += f" It ends{when} and will not renew."
+        elif renews:
+            text += f" It renews on {day(renews, timezone)}."
+    else:
+        return None
+    pending = row.get("pending_plan")
+    if pending:
+        new_name = row.get("pending_plan_name") or pending
+        effective: datetime | None = row.get("pending_effective_at")
+        if effective:
+            text += f" It changes to {new_name} on {day(effective, timezone)}."
+        else:
+            text += f" It is set to change to {new_name}."
+    return text
+
+
+def subscription_facts(rows: Sequence[Mapping[str, Any]], timezone: str) -> list[Fact]:
+    """One fact per subscription as the rows give them (newest first); none at all is said."""
+    if not rows:
+        return [_fact("subscription_none", NONE_TEXT)]
+    facts: list[Fact] = []
+    for row in rows:
+        text = _line(row, timezone)
+        if text is not None:
+            facts.append(_fact(f"subscription_{len(facts) + 1}", text))
+    return facts
+
+
+def request_fact(
+    kind: RequestKind,
+    *,
+    action: str | None = None,
+    names: Sequence[str] = (),
+    name: str | None = None,
+    new_name: str | None = None,
+    ends: datetime | None = None,
+    timezone: str = "Asia/Kuala_Lumpur",
+) -> Fact:
+    """The answer to a pause, cancel or change request: passed on, or why it was not."""
+    if kind == "passed":
+        if action == "request_change":
+            what = f"change {name} to {new_name}"
+        else:
+            what = f"{_VERBS.get(action or '', 'change')} {name}"
+        text = f"Your request to {what} was passed to our staff to decide. Nothing has changed yet."
+    elif kind == "which":
+        if len(names) == 1:
+            text = (
+                "I can't find a plan by that name on this chat. "
+                f"The plan I can see is {names[0]}. Is that the one you mean?"
+            )
+        else:
+            text = f"This chat has more than one plan: {', '.join(names)}. Which one do you mean?"
+    elif kind == "already_ending":
+        when = f" on {day(ends, timezone)}" if ends else ""
+        text = f"{name} is already set to end{when} and will not renew."
+    elif kind == "already_paused":
+        text = f"{name} is already paused."
+    elif kind == "waiting":
+        text = f"{name} is waiting for payment, so it can't be paused, cancelled or changed yet."
+    else:
+        text = NONE_TEXT
+    return _fact(f"subscription_{kind}", text)

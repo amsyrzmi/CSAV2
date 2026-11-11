@@ -6,12 +6,13 @@
     "say": "Can I talk to a real person please?",
     "cassette": {
       "Classification": {"intent": "human_request", "language": "en", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
-      "ComposeOut": {"reply": "I've passed this to a team member who will get back to you shortly."}
+      "HandoffOut": {"reply": "I've passed this to a team member who will get back to you shortly.", "staff_note": "The customer asked for a person. The assistant has not answered anything yet.", "gap_topic": null}
     },
     "expect": {
       "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
       "outbound_count": 1, "reply_contains": ["team member"],
-      "llm_not_called": ["PlanOut", "ReviewOut"], "escalations": 1
+      "llm_not_called": ["PlanOut", "ReviewOut"], "escalations": 1,
+      "escalation_note_contains": ["has not answered anything yet"], "kb_gap_queries": []
     }
   }]
 }
