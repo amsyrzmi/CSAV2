@@ -153,8 +153,10 @@ _BOOKING_PLAN_RULE = (
 )
 # Said to the classifier only when there are earlier messages: a yes answers the last offer.
 _HANDOFF_OFFER_CLASSIFY_RULE = (
-    " wants_human is also true when the message says yes to the assistant's last offer, in "
-    "<recent_messages>, to pass the chat to a team member (for example yes, ok, boleh, ya, nak)."
+    " wants_human is also true when the latest assistant message in <recent_messages> offered to "
+    "pass the chat to a team member and this message accepts it (for example yes, 'ya', 'boleh', "
+    "'ok boleh'). A yes, ok or ya to anything else is not wants_human: never after a normal "
+    "answer, and never when the customer earlier declined the offer and the conversation moved on."
 )
 # Said to the classifier only when the turn carries a booking context.
 _BOOKING_CLASSIFY_RULE = (
@@ -700,8 +702,13 @@ class LLMProvider:
             + f"{_data_rule(compose_ctx, memory=True)} Use ONLY the provided facts for any "
             "business claim, price, quantity, "
             "date, status or policy; never invent or round numbers. If no fact answers the "
-            "question, say so and offer to pass it to a team member; never say a team member "
-            "was told when no fact says so. "
+            "question, say so"
+            + (
+                ""
+                if _handoff_told(compose_ctx) or strategy == "ask_clarifying"
+                else " and offer to pass it to a team member"
+            )
+            + "; never say a team member was told when no fact says so. "
             + (
                 "This is a greeting or small talk: reply warmly in one short sentence and offer to "
                 "help with orders or questions. Do NOT mention a team member. "
@@ -905,11 +912,14 @@ class LLMProvider:
             "delivery time, policy, opening hours) that no fact supports; (2) saying an action was "
             "done (placed, confirmed, booked, moved, saved, cancelled, refunded, created) when no "
             "fact says so; "
-            "(3) contradicting a fact; (4) claiming success when a failure says it did not work. "
+            "(3) contradicting a fact; (4) claiming success when a failure says it did not work; "
+            "(5) saying a team member was told, or will follow up, when no fact says so and "
+            "already_told does not. "
             "A claim that already_told supports (what the assistant said earlier in this "
             "conversation) counts as supported. "
             "Greetings, offers to help, asking a clarifying question, telling the customer to tap "
-            "a button, and saying a team member will follow up are always fine. Reply with JSON "
+            "a button, and offering to pass the question to a team member are always fine. "
+            "Reply with JSON "
             '{"ok": bool, "issues": [short description of each problem]}.'
         )
         user = (

@@ -20,7 +20,7 @@
       },
       "expect": {
         "route": "plan_args", "agents": ["order_agent"], "gate": "send",
-        "outbound_count": 1, "reply_contains": ["8", "TikTok"], "reply_excludes": ["in our shop"],
+        "outbound_count": 1, "reply_contains": ["8 on our TikTok Shop"], "reply_excludes": ["in our shop"],
         "compose_sees": ["Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago."], "model_never_sees": ["available in our shop"], "agent_errors": [],
         "escalations": 0
       }

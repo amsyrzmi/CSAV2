@@ -17,7 +17,7 @@
         "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
         "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
         "StepOut": {"done": true},
-        "ComposeOut": {"reply": "Saya tak jumpa plan yang berkait dengan chat ni. Nak saya hantar pada team untuk semak?"},
+        "ComposeOut": {"reply": "Saya tak jumpa plan untuk chat ni. Nak saya hantar pada team untuk semak?"},
         "ReviewOut": {"ok": true}
       },
       "expect": {

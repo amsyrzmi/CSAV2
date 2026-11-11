@@ -645,6 +645,30 @@ async def test_review_rejects_with_bounded_issues() -> None:
     assert all(len(i) <= 160 for i in result.issues)
 
 
+async def _review_system() -> str:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return _ok({"ok": True, "issues": []})(request)
+
+    await _provider(handler).review(_review_state("Sure."))
+    return seen["body"]["messages"][0]["content"]
+
+
+async def test_review_accepts_an_offer_to_pass_it_on_but_not_a_promise_of_follow_up() -> None:
+    # Handoff replies are checked where they are written (`_handoff_draft`) and never reach the
+    # review, so a promise that a team member was told is a problem in every reviewed reply.
+    system = await _review_system()
+    assert "saying a team member will follow up are always fine" not in system
+    assert "offering to pass the question to a team member" in system
+    assert (
+        "saying a team member was told, or will follow up, when no fact says so and "
+        "already_told does not" in system
+    )
+    assert "(5) " in system
+
+
 async def test_review_rejection_without_issues_still_rejects() -> None:
     result = await _provider(_ok({"ok": False, "issues": []})).review(_review_state("Sure."))
     assert result.ok is False
@@ -1899,8 +1923,10 @@ _SENTIMENT_RULE_TEXT = (
     "'seriously?') are frustrated."
 )
 _HANDOFF_OFFER_CLASSIFY_RULE_TEXT = (
-    " wants_human is also true when the message says yes to the assistant's last offer, in "
-    "<recent_messages>, to pass the chat to a team member (for example yes, ok, boleh, ya, nak)."
+    " wants_human is also true when the latest assistant message in <recent_messages> offered to "
+    "pass the chat to a team member and this message accepts it (for example yes, 'ya', 'boleh', "
+    "'ok boleh'). A yes, ok or ya to anything else is not wants_human: never after a normal "
+    "answer, and never when the customer earlier declined the offer and the conversation moved on."
 )
 
 
@@ -2584,10 +2610,16 @@ async def test_classifier_reads_yes_to_a_handoff_offer_only_with_earlier_message
         _recent_ctx(("assistant", "Want me to ask a team member?")), "classify"
     )
     assert _HANDOFF_OFFER_CLASSIFY_RULE_TEXT in with_recent
+    # Only the latest assistant message counts, and a yes to anything else is no request.
+    assert "the latest assistant message in <recent_messages> offered to pass" in with_recent
+    assert "A yes, ok or ya to anything else is not wants_human" in with_recent
+    assert "never after a normal answer" in with_recent
+    assert "the customer earlier declined the offer and the conversation moved on" in with_recent
+    assert "assistant's last offer" not in with_recent
     # The rule rides on the earlier messages: without them there is no offer to say yes to.
     for ctx in (Context(), _booking_context(recent=[])):
         without, _ = await _prompts_for(ctx, "classify")
-        assert "says yes to the assistant's last offer" not in without
+        assert "latest assistant message in <recent_messages> offered" not in without
 
 
 async def test_support_guide_offers_a_handoff_instead_of_promising_one() -> None:
@@ -2603,6 +2635,60 @@ async def test_support_guide_offers_a_handoff_instead_of_promising_one() -> None
         "say a team member was told when no fact says so."
     ) in prompt
     assert "If no fact answers the question, say a team member will follow up." not in prompt
+
+
+_NO_FACT_OFFER = (
+    "If no fact answers the question, say so and offer to pass it to a team member; never "
+    "say a team member was told when no fact says so."
+)
+_NO_FACT_NO_OFFER = (
+    "If no fact answers the question, say so; never say a team member was told when no fact "
+    "says so."
+)
+
+
+async def _compose_system_with(strategy: str, ctx: Context | None) -> str:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"reply": "Sure.", "used_fact_ids": []})(request)
+
+    base = _guide_state()
+    assert base.plan is not None
+    state = base.model_copy(
+        update={"plan": base.plan.model_copy(update={"reply_strategy": strategy}), "ctx": ctx}
+    )
+    await _provider(handler).compose(state)
+    (system,) = seen
+    return system
+
+
+async def test_the_no_fact_sentence_offers_a_handoff_for_a_reply_and_a_partial_answer() -> None:
+    for strategy in ("auto_reply", "partial_answer"):
+        for ctx in (None, Context(flags={"handoff_recent": False})):
+            system = await _compose_system_with(strategy, ctx)
+            assert _NO_FACT_OFFER in system
+            assert _NO_FACT_NO_OFFER not in system
+
+
+async def test_the_no_fact_sentence_offers_no_handoff_after_a_team_member_was_told() -> None:
+    for strategy in ("auto_reply", "partial_answer"):
+        system = await _compose_system_with(strategy, Context(flags={"handoff_recent": True}))
+        assert _HANDOFF_RECENT_TEXT in system
+        assert _NO_FACT_NO_OFFER in system
+        assert _NO_FACT_OFFER not in system
+        assert "offer to pass it to a team member" not in system.split("Use ONLY the provided")[1]
+
+
+async def test_the_no_fact_sentence_offers_no_handoff_on_a_clarify_turn() -> None:
+    # Ladder turns 0 and 1 ask a question first: a handoff offer there would let a "ya" skip them.
+    for ctx in (None, Context(), _recent_ctx(("customer", "hmm"))):
+        system = await _compose_system_with("ask_clarifying", ctx)
+        assert _CLARIFY_TEXT in system
+        assert _NO_FACT_NO_OFFER in system
+        assert _NO_FACT_OFFER not in system
+        assert "offer to pass it to a team member" not in system.split("Use ONLY the provided")[1]
 
 
 # --- the handoff reply tolerates a model that writes null or the wrong type ----------------------

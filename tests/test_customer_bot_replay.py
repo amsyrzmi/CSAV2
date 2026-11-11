@@ -197,3 +197,17 @@ def test_the_shipped_script_has_the_subscription_and_stock_conversations() -> No
     assert "available in our shop." in stock and "on our TikTok Shop" in stock
     # The two conversations carry their own facts; the older ones keep the script's.
     assert by_id["ms-plans"].facts is None
+
+
+def test_the_shipped_script_has_the_decline_then_ok_conversations() -> None:
+    # The bot may offer a handoff, the customer declines and asks about plans, the bot answers,
+    # and the customer says ok or ya: read the last turn of each in the replay output, it must
+    # show wants_human=False and no handoff.
+    from scripts.customer_bot_replay import SCRIPT_FILE, load_script
+
+    by_id = {c.id: c for c in load_script(SCRIPT_FILE).conversations}
+    english, malay = by_id["en-decline-then-ok"], by_id["ms-decline-then-ok"]
+    assert (english.language, malay.language) == ("en", "ms")
+    assert english.messages[-1] == "ok" and malay.messages[-1] == "ya"
+    assert len(english.messages) == len(malay.messages) == 3
+    assert english.facts is None and malay.facts is None

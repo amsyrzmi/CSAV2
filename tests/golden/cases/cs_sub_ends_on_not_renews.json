@@ -24,7 +24,7 @@
       },
       "expect": {
         "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
-        "outbound_count": 1, "reply_contains": ["ends on {{date+10}}", "will not renew"], "reply_excludes": ["renews on"],
+        "outbound_count": 1, "reply_contains": ["ends on {{date+10}}", "will not renew"], "reply_excludes": ["renews on"], "model_never_sees": ["renews on"],
         "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It ends on {{date+10}} and will not renew."], "prepared_requests": 0, "agent_errors": [],
         "escalations": 0
       }

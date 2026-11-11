@@ -24,7 +24,7 @@
       },
       "expect": {
         "route": "plan_args", "agents": ["order_agent"], "gate": "send",
-        "outbound_count": 1, "reply_contains": ["12", "kedai kami", "8", "TikTok"], "compose_sees": ["Travel SIM (SIM-TRV-01): MYR 25.00, 12 available in our shop.", "Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago.", "Malay register"],
+        "outbound_count": 1, "reply_contains": ["12 kat kedai kami dan 8 kat TikTok Shop"], "compose_sees": ["Travel SIM (SIM-TRV-01): MYR 25.00, 12 available in our shop.", "Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago.", "Malay register"],
         "agent_errors": [], "escalations": 0
       }
     }

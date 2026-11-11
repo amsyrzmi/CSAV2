@@ -16,12 +16,12 @@
         "Classification": {"intent": "product_info", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.9}},
         "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "product_availability", "query": "Travel SIM"}}], "reply_strategy": "auto_reply"},
         "StepOut": {"done": true},
-        "ComposeOut": {"reply": "Ada, 8 kat TikTok Shop setakat 10 minit lepas."},
+        "ComposeOut": {"reply": "Ada, 8 kat TikTok Shop (ikut stok 10 minit lepas)."},
         "ReviewOut": {"ok": true}
       },
       "expect": {
         "route": "plan_args", "agents": ["order_agent"], "gate": "send",
-        "outbound_count": 1, "reply_contains": ["8", "TikTok"], "reply_excludes": ["kedai kami"],
+        "outbound_count": 1, "reply_contains": ["8 kat TikTok Shop"], "reply_excludes": ["kedai kami"],
         "compose_sees": ["Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago.", "Malay register"], "model_never_sees": ["available in our shop"], "agent_errors": [],
         "escalations": 0
       }

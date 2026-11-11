@@ -73,6 +73,24 @@
         "can I change plans later?",
         "thanks!"
       ]
+    },
+    {
+      "id": "en-decline-then-ok",
+      "language": "en",
+      "messages": [
+        "hi, can I pay by cheque?",
+        "no thanks, don't pass it on. what plans do you have?",
+        "ok"
+      ]
+    },
+    {
+      "id": "ms-decline-then-ok",
+      "language": "ms",
+      "messages": [
+        "hi, boleh bayar guna cek x?",
+        "tak payah, takpe. ada plan apa je?",
+        "ya"
+      ]
     }
   ]
 }

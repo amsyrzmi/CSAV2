@@ -20,7 +20,7 @@
         "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
         "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "request_cancel"}}], "reply_strategy": "auto_reply"},
         "StepOut": {"done": true},
-        "ComposeOut": {"reply": "Saya dah hantar permintaan nak stop Plan Sederhana tu kat staff kami untuk diputuskan. Belum ada apa-apa yang berubah lagi."},
+        "ComposeOut": {"reply": "Saya dah hantar permintaan nak stop Plan Sederhana pada staff kami, nanti mereka yang putuskan. Buat masa ni belum ada apa-apa berubah."},
         "ReviewOut": {"ok": true}
       },
       "expect": {
