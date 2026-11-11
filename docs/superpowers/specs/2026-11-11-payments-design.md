@@ -201,6 +201,8 @@ These settle what the builder check found and supersede any earlier sentence the
 
 ## 10. Owner decisions raised by the builder check
 
+Decided 2026-11-11: the owner asked for these to be resolved appropriately, so both defaults below stand.
+
 1. **WhatsApp-only customers and reminders.** A job cannot message a WhatsApp customer outside the 24-hour window
    without an approved template, and Telegram is the only proactive channel today. Default: the sign-up asks for an
    optional email and reminders fall back to email (the booking reminders already do), the WhatsApp template phase

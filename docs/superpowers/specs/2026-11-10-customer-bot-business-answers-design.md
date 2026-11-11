@@ -175,7 +175,7 @@ for how to sign up, how to pay, which plan suits whom, and what follows a handof
 
 - **How a subscription is tied to a chat:** staff create a subscription for an existing contact (a
   person who has already messaged) in the console, so `subscriptions.contact_id` is already the chat's
-  contact. A person who writes from a second channel is a second contact; staff link that contact too.
+  contact. A person who writes from a second channel is a second contact; until the onboarding design (PR 2b) ships, staff link that contact too, and from then on a channel-verified phone number links the two automatically.
   The bot says "I can't find a subscription linked to this chat" for no match, which reveals nothing
   about other identities. The web sandbox keeps its fixed scope text.
 - **The `SubscriptionInput` validator** is changed so `status` and the `request_*` actions work without
