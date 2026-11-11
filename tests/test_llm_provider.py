@@ -1001,6 +1001,23 @@ async def test_the_composer_is_told_to_keep_a_booking_time_as_written_only_when_
     assert "copy each date and time" not in prompts[1]
 
 
+async def test_the_dates_rule_is_said_for_subscription_facts() -> None:
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        prompts.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"reply": "Done.", "used_fact_ids": []})(request)
+
+    provider = _provider(handler)
+    renews = "Your plan: Basic, MYR 10.00 a month. It renews on 01 Dec 2026."
+    await provider.compose(
+        _booking_turn_state(agent="subscription_agent", action="mine", fact=renews)
+    )
+    await provider.compose(_booking_turn_state(agent="kb_agent", action="search"))
+    assert "copy each date and time exactly as the facts write them" in prompts[0]
+    assert "copy each date and time" not in prompts[1]
+
+
 def _down(_: httpx.Request) -> httpx.Response:
     return httpx.Response(500)
 

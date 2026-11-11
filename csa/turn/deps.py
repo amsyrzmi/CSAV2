@@ -127,7 +127,10 @@ CAPABILITIES = {
         "Free times for a service, booking, moving and cancelling the customer's own "
         "appointments, and looking up their bookings"
     ),
-    "subscription_agent": "Plan/status lookup and unexecuted requests; no billing changes",
+    "subscription_agent": (
+        "The plans on offer, the customer's own plan (found from this chat), and requests to "
+        "pause, cancel or change it that staff decide; no billing changes"
+    ),
 }
 
 

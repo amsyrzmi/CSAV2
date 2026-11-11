@@ -134,6 +134,8 @@ _BOOKING_COMPOSE_RULE = (
     "(for example 3:30 pm or 2026-11-10 15:30); translate only the words around them. "
 )
 _BOOKING_SOURCE = "booking_agent"
+# The dates rule also covers the renewal, end and change dates a subscription fact writes.
+_DATES_SOURCES = (_BOOKING_SOURCE, "subscription_agent")
 _BOOKING_CHANGES = ("book", "reschedule", "cancel")
 
 # Compose-only rules. The list cap is said every turn; the others only when they apply, so a
@@ -670,7 +672,7 @@ class LLMProvider:
                 if state.regen_count
                 else ""
             )
-            + (_BOOKING_COMPOSE_RULE if any(f.source == _BOOKING_SOURCE for f in all_facts) else "")
+            + (_BOOKING_COMPOSE_RULE if any(f.source in _DATES_SOURCES for f in all_facts) else "")
             + _register_block(language, tone)
             + "Reply language: "
             + (_LANGUAGES.get(language, "the same language as the customer message"))

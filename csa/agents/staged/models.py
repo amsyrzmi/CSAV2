@@ -147,17 +147,58 @@ class BookingInput(DraftModel):
 
 
 class SubscriptionInput(DraftModel):
-    action: Literal["plans", "list", "status", "request_pause", "request_cancel", "request_change"]
-    subscription_id: UUID | None = None
-    plan_code: str | None = Field(
-        default=None, min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$"
+    action: Literal[
+        "plans", "mine", "list", "status", "request_pause", "request_cancel", "request_change"
+    ] = Field(
+        description=(
+            "plans: the plans on offer, with prices and features. mine: the customer's own "
+            "plans, found from this chat (which plan, the renewal or end date, a scheduled "
+            "change, paused or waiting for payment). list: every subscription of the customer, "
+            "cancelled ones too. status: one of the customer's plans. request_pause, "
+            "request_cancel, request_change: pass the customer's request to staff, who decide; "
+            "nothing changes until they do."
+        )
     )
-    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    subscription_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Leave it out: the server finds the customer's own subscription from this chat."
+        ),
+    )
+    current_plan: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description=(
+            "Only when the customer has more than one plan: the name of the plan they mean, "
+            "as they or the last reply named it."
+        ),
+    )
+    # Stored requests read this name; it takes a plan's code or its name, resolved by the server.
+    plan_code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description=(
+            "request_change only: the plan they want, by its name as in a plans fact or their "
+            "own words."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1000,
+        description="The customer's reason, only if they gave one.",
+    )
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def blank_is_missing(cls, value: object) -> object:
+        """A model fills an unused field with an empty string as often as it leaves it out."""
+        return None if isinstance(value, str) and not value.strip() else value
 
     @model_validator(mode="after")
     def validate_action(self) -> Self:
-        if self.action not in {"plans", "list"} and self.subscription_id is None:
-            raise ValueError("subscription_id required")
         if self.action == "request_change" and self.plan_code is None:
             raise ValueError("plan_code required")
         return self
