@@ -275,7 +275,8 @@ async def test_dismiss_hides_a_failed_job_and_audits(sessions: SessionWorld) -> 
     await sessions.q(FAIL_JOBS, tenant)
     job = await only_job(sessions, tenant)
     response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
+    assert response.json() == {"storage_cleanup": "done"}
     assert (await only_job(sessions, tenant))["dismissed_at"] is not None
     assert await listed_jobs(sessions, tenant) == []
     assert [row["target"] for row in await audited(sessions, tenant, "kb.job_dismissed")] == [
@@ -317,7 +318,8 @@ async def test_dismiss_of_another_tenants_job_is_404(sessions: SessionWorld) -> 
         )
         assert response.status_code == 404, (action, response.text)
     cleared = await sessions.mutate(foreign, f"{JOBS}/dismiss-failed")
-    assert cleared.status_code == 200 and cleared.json() == {"dismissed": 0}
+    assert cleared.status_code == 200
+    assert cleared.json() == {"dismissed": 0, "storage_cleanup": "done"}
     row = await only_job(sessions, tenant)
     assert row["status"] == "failed" and row["dismissed_at"] is None
 
@@ -463,7 +465,7 @@ async def test_retry_when_the_knowledge_agent_is_off_is_409(sessions: SessionWor
     assert (await only_job(sessions, tenant))["status"] == "failed"
     # Taking a message off the list does not need the agent.
     dismissed = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
-    assert dismissed.status_code == 204, dismissed.text
+    assert dismissed.status_code == 200, dismissed.text
 
 
 async def test_cancel_a_queued_job_only(sessions: SessionWorld) -> None:
@@ -546,7 +548,8 @@ async def test_dismiss_failed_clears_all_and_reports_the_count(sessions: Session
     )
     await sessions.q(INSERT_FAILED, other, entry)
     response = await sessions.mutate(sessions.admin, f"{JOBS}/dismiss-failed?client_id={tenant}")
-    assert response.status_code == 200 and response.json() == {"dismissed": 3}, response.text
+    assert response.status_code == 200, response.text
+    assert response.json() == {"dismissed": 3, "storage_cleanup": "done"}
     assert sorted(job["status"] for job in await listed_jobs(sessions, tenant)) == [
         "done",
         "processing",
@@ -558,7 +561,7 @@ async def test_dismiss_failed_clears_all_and_reports_the_count(sessions: Session
     assert foreign["dismissed_at"] is None
     assert [r["target"] for r in await audited(sessions, tenant, "kb.jobs_dismissed")] == [tenant]
     again = await sessions.mutate(sessions.admin, f"{JOBS}/dismiss-failed?client_id={tenant}")
-    assert again.json() == {"dismissed": 0}
+    assert again.json() == {"dismissed": 0, "storage_cleanup": "done"}
 
 
 async def test_dismissed_jobs_are_missing_from_list_and_get(sessions: SessionWorld) -> None:
@@ -657,3 +660,232 @@ async def test_job_routes_need_a_writer_and_a_package(sessions: SessionWorld) ->
         )
     row = await only_job(sessions, tenant)
     assert row["status"] == "failed" and row["dismissed_at"] is None
+
+
+# Remove and Cancel also delete the job's own stored upload (a follow-up to PR 1).
+
+
+async def file_rows(world: SessionWorld, tenant: str) -> list[dict[str, Any]]:
+    return await world.q(
+        "SELECT id::text AS id, name, document_id, deleted_at FROM kb_upload_files"
+        " WHERE client_id=%s ORDER BY name",
+        tenant,
+    )
+
+
+def stored_names(world: SessionWorld, tenant: str) -> list[str]:
+    return sorted(world.kb_store.list_names(UUID(tenant)))
+
+
+async def test_dismiss_deletes_the_jobs_stored_file_and_bytes(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    await sessions.q(FAIL_JOBS, tenant)
+    assert len(stored_names(sessions, tenant)) == 1
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"storage_cleanup": "done"}
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is not None
+    assert stored_names(sessions, tenant) == []
+    assert await files(sessions, tenant) == []
+    # A document is never touched by the file removal; none existed here.
+    assert not await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)
+    # No hash tombstone: the same content can be uploaded again at once.
+    assert not await sessions.q("SELECT 1 FROM kb_deletions WHERE client_id=%s", tenant)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+
+
+async def test_cancel_deletes_the_jobs_stored_file_and_bytes(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (
+        await upload(sessions, [("faq.csv", FAQ_CSV), ("other.csv", OTHER_CSV)])
+    ).status_code == 202
+    assert len(stored_names(sessions, tenant)) == 2
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "cancel"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "cancelled" and body["storage_cleanup"] == "done"
+    assert body["original_stored"] is False
+    assert all(row["deleted_at"] is not None for row in await file_rows(sessions, tenant))
+    assert stored_names(sessions, tenant) == []
+    assert await files(sessions, tenant) == []
+
+
+async def test_dismiss_keeps_a_file_that_feeds_a_document(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    assert await handle(sessions) == "done"
+    # The job later reads as partial; its file already produced a document.
+    await sessions.q("UPDATE kb_ingest_jobs SET status='partial' WHERE client_id=%s", tenant)
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"storage_cleanup": "done"}
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None and row["document_id"] is not None
+    assert len(stored_names(sessions, tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_chunks WHERE client_id=%s", tenant)) > 0
+
+
+async def test_partial_job_deletes_only_the_unread_file(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (
+        await upload(sessions, [("faq.csv", FAQ_CSV), ("other.csv", OTHER_CSV)])
+    ).status_code == 202
+    assert await handle(sessions) == "done"
+    # Pretend the second file was not read: no document, a partial job.
+    await sessions.q(
+        "UPDATE kb_upload_files SET document_id=NULL WHERE client_id=%s AND name='other.csv'",
+        tenant,
+    )
+    await sessions.q("UPDATE kb_ingest_jobs SET status='partial' WHERE client_id=%s", tenant)
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
+    assert response.status_code == 200, response.text
+    rows = {row["name"]: row for row in await file_rows(sessions, tenant)}
+    assert rows["faq.csv"]["deleted_at"] is None
+    assert rows["other.csv"]["deleted_at"] is not None
+    assert len(stored_names(sessions, tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)) >= 1
+
+
+async def test_dismiss_keeps_a_file_another_live_job_still_lists(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    await sessions.q(FAIL_JOBS, tenant)
+    first = await only_job(sessions, tenant)
+    [source] = await file_rows(sessions, tenant)
+    # A second, visible job lists the same file_id.
+    shared = json.dumps([{"file_id": source["id"], "path": "x.csv", "name": "faq.csv"}])
+    await sessions.q(INSERT_FAILED, tenant, shared)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, first["id"], "dismiss"))
+    assert response.status_code == 200, response.text
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None
+    assert len(stored_names(sessions, tenant)) == 1
+    # Dismissing the other job as well leaves nobody using the file: now it goes.
+    [second] = [j for j in await listed_jobs(sessions, tenant) if str(j["id"]) != str(first["id"])]
+    response = await sessions.mutate(sessions.admin, job_path(tenant, second["id"], "dismiss"))
+    assert response.status_code == 200, response.text
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is not None
+    assert stored_names(sessions, tenant) == []
+
+
+@pytest.mark.parametrize("route", ["dismiss", "cancel", "dismiss-failed"])
+async def test_storage_failure_reports_pending_and_the_sweep_finishes_it(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    if route != "cancel":
+        await sessions.q(FAIL_JOBS, tenant)
+    job = await only_job(sessions, tenant)
+
+    def broken(client_id: UUID, name: str) -> None:
+        raise StorageError("synthetic storage outage")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sessions.kb_store, "delete", broken)
+        path = (
+            f"{JOBS}/dismiss-failed?client_id={tenant}"
+            if route == "dismiss-failed"
+            else job_path(tenant, job["id"], route)
+        )
+        response = await sessions.mutate(sessions.admin, path)
+    assert response.status_code == 200, response.text
+    assert response.json()["storage_cleanup"] == "pending"
+    # The record is gone and the job is off the list; the bytes wait for the sweep.
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is not None
+    assert (await only_job(sessions, tenant))["dismissed_at"] is not None
+    assert len(stored_names(sessions, tenant)) == 1
+    swept = await sessions.mutate(
+        sessions.admin, f"/console/v1/kb/storage/reconcile?client_id={tenant}"
+    )
+    assert swept.status_code == 200 and swept.json() == {"removed_files": 1}
+    assert stored_names(sessions, tenant) == []
+
+
+async def test_dismiss_failed_deletes_every_failed_jobs_file_in_this_tenant_only(
+    sessions: SessionWorld,
+) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    assert (await upload(sessions, [("other.csv", OTHER_CSV)])).status_code == 202
+    assert (
+        await upload(sessions, [("third.csv", b"question,answer\nWho?,Synthetic.\n")])
+    ).status_code == 202
+    # Two fail; the third keeps waiting and must keep its file.
+    await sessions.q(
+        "UPDATE kb_ingest_jobs SET status='failed', error='synthetic', finished_at=now()"
+        " WHERE client_id=%s AND id IN (SELECT id FROM kb_ingest_jobs WHERE client_id=%s"
+        " ORDER BY created_at LIMIT 2)",
+        tenant,
+        tenant,
+    )
+    other = sessions.tenants[1]
+    await sessions.q(INSERT_FAILED, other, json.dumps([{"path": "x.csv"}]))
+    response = await sessions.mutate(sessions.admin, f"{JOBS}/dismiss-failed?client_id={tenant}")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"dismissed": 2, "storage_cleanup": "done"}
+    rows = {row["name"]: row for row in await file_rows(sessions, tenant)}
+    assert rows["faq.csv"]["deleted_at"] is not None
+    assert rows["other.csv"]["deleted_at"] is not None
+    assert rows["third.csv"]["deleted_at"] is None
+    assert len(stored_names(sessions, tenant)) == 1
+    assert [r["target"] for r in await audited(sessions, tenant, "kb.jobs_dismissed")] == [tenant]
+
+
+async def test_another_tenants_job_cannot_delete_this_tenants_file(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    await sessions.q(FAIL_JOBS, tenant)
+    job = await only_job(sessions, tenant)
+    foreign_tenant = sessions.tenants[1]
+    await activate(sessions, foreign_tenant, "knowledge_base")
+    foreign, _ = await sessions.member(role="tenant_admin", tenant=foreign_tenant)
+    for action in ("dismiss", "cancel"):
+        response = await sessions.mutate(foreign, f"{JOBS}/{job['id']}/{action}")
+        assert response.status_code == 404, (action, response.text)
+    cleared = await sessions.mutate(foreign, f"{JOBS}/dismiss-failed")
+    assert cleared.status_code == 200 and cleared.json()["dismissed"] == 0
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None
+    assert len(stored_names(sessions, tenant)) == 1
+
+
+async def test_running_job_dismiss_keeps_its_file(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    assert await processor(sessions).claim(UUID(tenant)) is not None
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
+    assert response.status_code == 409, response.text
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None
+    assert len(stored_names(sessions, tenant)) == 1
+
+
+async def test_retry_after_the_file_is_gone_stays_refused(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    assert (
+        await upload(sessions, [("faq.csv", FAQ_CSV), ("other.csv", OTHER_CSV)])
+    ).status_code == 202
+    await sessions.q(FAIL_JOBS, tenant)
+    job = await only_job(sessions, tenant)
+    # One file is removed on its own: the job stays, and a stale Try again is 409.
+    listed = await files(sessions, tenant)
+    await remove_source(sessions, tenant, listed[0]["id"])
+    stale = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "retry"))
+    assert stale.status_code == 409 and stale.json()["detail"] == "original_removed"
+    # Remove deletes the remaining file; the dismissed job can no longer be retried.
+    dismissed = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "dismiss"))
+    assert dismissed.status_code == 200, dismissed.text
+    assert stored_names(sessions, tenant) == []
+    again = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "retry"))
+    assert again.status_code == 404

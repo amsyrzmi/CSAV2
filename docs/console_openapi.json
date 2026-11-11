@@ -8270,6 +8270,105 @@
         "title": "ItemPatch",
         "type": "object"
       },
+      "JobCancelledOut": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/JobFileOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/JobMetaOut"
+          },
+          "original_stored": {
+            "title": "Original Stored",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "storage_cleanup": {
+            "enum": [
+              "done",
+              "pending"
+            ],
+            "title": "Storage Cleanup",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "status",
+          "files",
+          "meta",
+          "attempts",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "original_stored",
+          "storage_cleanup"
+        ],
+        "title": "JobCancelledOut",
+        "type": "object"
+      },
       "JobFileOut": {
         "properties": {
           "file_id": {
@@ -8467,10 +8566,19 @@
           "dismissed": {
             "title": "Dismissed",
             "type": "integer"
+          },
+          "storage_cleanup": {
+            "enum": [
+              "done",
+              "pending"
+            ],
+            "title": "Storage Cleanup",
+            "type": "string"
           }
         },
         "required": [
-          "dismissed"
+          "dismissed",
+          "storage_cleanup"
         ],
         "title": "JobsDismissedOut",
         "type": "object"
@@ -29146,7 +29254,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JobOut"
+                  "$ref": "#/components/schemas/JobCancelledOut"
                 }
               }
             },
@@ -29216,7 +29324,14 @@
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedOut"
+                }
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
