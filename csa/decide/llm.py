@@ -160,6 +160,12 @@ _HANDOFF_OFFER_CLASSIFY_RULE = (
     "Thanks or goodbye ('terima kasih', 'ok thanks', 'bye'), even with an ok, only closes the "
     "chat: it does not accept the offer."
 )
+# Said to the classifier only when there are earlier messages: plan and product names in them
+# (Plan Kecil, Besar) are Malay words that pulled an English customer's language to ms.
+_LANGUAGE_CLASSIFY_RULE = (
+    " language is the language the customer wrote this one message in. Ignore the language of the "
+    "earlier messages and of any plan, product or brand names."
+)
 # Said to the classifier only when the turn carries a booking context.
 _BOOKING_CLASSIFY_RULE = (
     " A short answer that continues a booking in <recent_messages> (a time, a name, an email "
@@ -504,6 +510,7 @@ class LLMProvider:
             f"{_BOOKING_CLASSIFY_RULE if ctx.booking is not None else ''}"
             f"{_RECENT_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
             f"{_HANDOFF_OFFER_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
+            f"{_LANGUAGE_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
         )
         user = (
             _dumps(ctx, {"context": self._context_block(envelope, ctx)})

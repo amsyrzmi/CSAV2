@@ -2619,6 +2619,18 @@ async def test_classifier_scores_subscription_questions_and_has_the_anger_thresh
         )
 
 
+async def test_classifier_language_is_the_latest_message_only_with_earlier_messages() -> None:
+    from csa.decide.llm import _LANGUAGE_CLASSIFY_RULE
+
+    with_recent, _ = await _prompts_for(_recent_ctx(("assistant", "Plan Kecil RM15")), "classify")
+    assert _LANGUAGE_CLASSIFY_RULE in with_recent
+    assert "the language the customer wrote this one message in" in with_recent
+    assert "Ignore the language of the earlier messages" in with_recent
+    for ctx in (Context(), _booking_context(recent=[])):
+        without, _ = await _prompts_for(ctx, "classify")
+        assert "the language the customer wrote this one message in" not in without
+
+
 async def test_classifier_reads_yes_to_a_handoff_offer_only_with_earlier_messages() -> None:
     from csa.decide.llm import _HANDOFF_OFFER_CLASSIFY_RULE
 
