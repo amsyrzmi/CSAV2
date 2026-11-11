@@ -1112,7 +1112,7 @@ async def test_malay_plan_card_text(stack: tuple[str, Upstream, Any], tmp_path: 
                 badge, timeout=WAIT
             )
         await expect(steps.nth(1).get_by_test_id("plan-step-reason")).to_have_text(
-            "Sambungkan Gmail anda di tab Email assistant dahulu."
+            "Sambungkan Gmail anda di tab Connections dahulu."
         )
         await expect(steps.nth(2).get_by_test_id("plan-step-reason")).to_have_text(
             "Ia tidak pernah dimulakan."

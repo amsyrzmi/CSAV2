@@ -475,7 +475,7 @@ async def test_switch_off_asks_first_and_the_page_links_to_connections(site: Sit
             await expect(link).to_have_text("Manage in Connections")
             await expect(link).to_have_attribute("href", "/portal/connections")
             await expect(
-                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+                page.get_by_role("button", name=re.compile(r"\b(dis|re)?connect\b", re.I))
             ).to_have_count(0)
             assert world.count("POST", "email/mailbox/disconnect") == 0
 

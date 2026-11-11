@@ -53,7 +53,7 @@ export default function StoreConnections({ me, query }: { me: Me; query: string 
       {stores.error && <Notice error>{stores.error}</Notice>}
       {stores.loading && <p>Loading stores...</p>}
       {stores.items?.length === 0 && !stores.loading && <p>{canManage
-        ? "No online store is connected yet. Connect TikTok Shop to start syncing its orders and products."
+        ? "No online store is connected yet. Connect TikTok Shop on Connections to start syncing its orders and products."
         : "No online store is connected yet. An Admin can connect one."}</p>}
       <ul data-testid="business-stores-list" className="space-y-3">
         {items.map((store) => {

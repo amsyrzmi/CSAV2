@@ -681,7 +681,7 @@ async def test_an_expired_store_reads_needs_reconnecting_with_no_buttons(site: S
                 "TikTok Shop: Needs reconnecting."
             )
             await expect(
-                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+                page.get_by_role("button", name=re.compile(r"\b(dis|re)?connect\b", re.I))
             ).to_have_count(0)
             assert not stub.connect_calls and not stub.disconnect_calls
 
@@ -709,7 +709,7 @@ async def test_store_connections_has_no_connect_controls_and_links_to_connection
             await expect(link).to_have_attribute("href", "/portal/connections")
             await expect(page.get_by_test_id("business-store-staff-note")).to_have_count(0)
             await expect(
-                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+                page.get_by_role("button", name=re.compile(r"\b(dis|re)?connect\b", re.I))
             ).to_have_count(0)
             # What stays: the list's own buttons.
             await expect(page.get_by_role("button", name="Refresh stores")).to_be_visible()
