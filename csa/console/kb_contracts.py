@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -48,8 +48,18 @@ class JobOut(BaseModel):
     original_stored: bool
 
 
+# pending: the job is off the list and its file record is gone, but the storage sweep failed; the
+# existing storage reconcile finishes it (same meaning as on the file and document delete routes).
+StorageCleanup = Literal["done", "pending"]
+
+
+class JobCancelledOut(JobOut):
+    storage_cleanup: StorageCleanup
+
+
 class JobsDismissedOut(BaseModel):
     dismissed: int
+    storage_cleanup: StorageCleanup
 
 
 def content_deleted(error: str | None) -> bool:

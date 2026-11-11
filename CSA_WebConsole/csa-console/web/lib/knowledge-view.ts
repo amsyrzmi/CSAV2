@@ -143,8 +143,10 @@ export function couldNotReadText(attempts: number): string {
 /** The plain note on a card that needs attention. The exact server line stays in Technical details. */
 export function attentionNote(job: KbJob): string {
   if (!job.original_stored) return "The original was removed, so this can't be tried again. Remove it.";
-  if (job.status === "partial") return "Some of this file couldn't be read. The rest is in your assistant.";
-  return "We couldn't read this file. You can try again or remove it.";
+  if (job.status === "partial") {
+    return "Some of this file couldn't be read. The rest is in your assistant. Removing this deletes the uploaded file that couldn't be read.";
+  }
+  return "We couldn't read this file. You can try again, or remove it, which also deletes the uploaded file.";
 }
 
 export type JobActions = { canRetry: boolean; canRemove: boolean; canCancel: boolean };
@@ -311,4 +313,33 @@ export function pollingNeeded(groups: Groups): boolean {
 export function looseFiles(files: KbFile[], groups: Groups): KbFile[] {
   const shown = new Set([...groups.library, ...groups.reading, ...groups.attention].flatMap((card) => card.fileIds));
   return files.filter((file) => !shown.has(file.id));
+}
+
+export const SWEEP_PENDING = "We'll finish clearing the stored file shortly.";
+
+/**
+ * The sentence after Remove, Cancel or Clear all. Only an explicit "done" may say a file was deleted;
+ * "pending" says the sweep is still to finish, and anything else (a missing field from an older
+ * gateway) claims nothing about the file.
+ */
+export function removedSentence(
+  action: "dismiss" | "cancel" | "clear",
+  cleanup: string | null | undefined,
+  count = 0,
+): string {
+  if (action === "clear" && count === 0) return "Nothing was left to remove.";
+  const pending = SWEEP_PENDING;
+  if (action === "clear") {
+    const head = `Removed ${count} failed upload${count === 1 ? "" : "s"} from your list.`;
+    if (cleanup === "pending") return `${head} ${pending}`;
+    return cleanup === "done" ? `${head} The uploaded files are deleted too.` : head;
+  }
+  if (action === "cancel") {
+    if (cleanup === "pending") return `Cancelled. ${pending}`;
+    return cleanup === "done"
+      ? "Cancelled. The uploaded files that weren't read are deleted; what your assistant already learned stays."
+      : "Cancelled.";
+  }
+  if (cleanup === "pending") return `Removed from your list. ${pending}`;
+  return cleanup === "done" ? "Removed from your list. The uploaded file is deleted too." : "Removed.";
 }

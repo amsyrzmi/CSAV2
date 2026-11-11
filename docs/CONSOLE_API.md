@@ -2221,21 +2221,27 @@ The separate machine principal remains read-only and tenant-allowlisted.
   dismissed. An entry with a path and no `file_id` (legacy) counts as stored.
 - Job actions: human writer/CSRF, knowledge base add-on, scoped to the tenant and audited. A
   job that is absent, belongs to another tenant or is dismissed is 404.
-  `POST /console/v1/kb/ingest-jobs/{id}/dismiss`: **204**; takes a finished job (`done`,
-  `partial`, `failed`, `cancelled`) off the list; `queued`/`processing` is 409 `job_still_running`.
-  Audit `kb.job_dismissed`.
+  `POST /console/v1/kb/ingest-jobs/{id}/dismiss`: **200 `{storage_cleanup}`** (was 204); takes a
+  finished job (`done`, `partial`, `failed`, `cancelled`) off the list and deletes the job's own
+  stored uploads; `queued`/`processing` is 409 `job_still_running`. Audit `kb.job_dismissed`.
+  A stored upload is deleted (record soft-deleted, bytes swept after the commit, as on the file
+  delete route) only when the job names it in `files[].file_id`, it is live, no document uses it and no other job on
+  the list names it; documents, chunks and hash tombstones are never touched. `storage_cleanup` is
+  `done` or `pending` exactly as for `DELETE /kb/files/{id}`: `pending` means the sweep failed and
+  `POST /kb/storage/reconcile` finishes it. A dismissed job is 404 for a later retry.
   `POST /console/v1/kb/ingest-jobs/{id}/retry`: **200 job**; queues a `failed` or `partial`
   upload job again with all its files (files read before answer `duplicate`), attempts 0, error
   cleared and a new queue time, so a deletion before the retry does not fence it. 409
   `original_removed` when `original_stored` is false; 409 `not_retryable` when the job is not
   `failed`/`partial` or not an upload job (two quick calls queue once); 409 when the KB switches are off. Audit
   `kb.job_retried`.
-  `POST /console/v1/kb/ingest-jobs/{id}/cancel`: **200 job** (`cancelled`, dismissed); only a
-  `queued` job, including one paused while the switches are off; anything else is 409
-  `not_cancellable`. Audit `kb.job_cancelled`.
-  `POST /console/v1/kb/ingest-jobs/dismiss-failed`: **200 `{dismissed}`**, the number of the
-  tenant's `failed`, `partial` and `cancelled` jobs taken off the list. Audit `kb.jobs_dismissed`
-  (target: the tenant).
+  `POST /console/v1/kb/ingest-jobs/{id}/cancel`: **200 job plus `storage_cleanup`** (`cancelled`,
+  dismissed, `original_stored` false once its files are deleted); only a `queued` job, including one
+  paused while the switches are off; anything else is 409 `not_cancellable`. It deletes the job's
+  own stored uploads like dismiss. Audit `kb.job_cancelled`.
+  `POST /console/v1/kb/ingest-jobs/dismiss-failed`: **200 `{dismissed, storage_cleanup}`**, the
+  number of the tenant's `failed`, `partial` and `cancelled` jobs taken off the list, whose own
+  stored uploads are deleted by the same rule. Audit `kb.jobs_dismissed` (target: the tenant).
 - `GET /console/v1/kb/gaps` lists unanswered questions.
   `POST /console/v1/kb/gaps/{id}/resolve` atomically marks resolved and audits the action;
   it does not create an answer. Reader controls are absent and backend writes are denied.
