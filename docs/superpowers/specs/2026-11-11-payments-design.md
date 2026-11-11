@@ -57,8 +57,8 @@ Anti-goals
 - No payment amount, account number or reference is ever composed by the model: it comes from facts, and the
   grounding gate (every number must appear in a fact) applies.
 - No automatic suspension of a subscription for non-payment unless the company turns it on (default off).
-- Bank statement lines are financial personal data: Admin only, audited, the raw file deleted after 30 days, payer
-  account numbers stored only as a hash.
+- Bank statement lines are financial personal data: Admin only, audited, the uploaded file is never stored (it is
+  parsed on upload and discarded), long digit strings are masked, and the lines are purged after 90 days.
 
 ## 4. Approaches
 
@@ -85,9 +85,9 @@ Data (migration 0590 onward; additive, tenant isolated, `csa_app` only, partial 
 - `payments(client_id, invoice_id nullable, amount, currency, received_at, method kind, source
   statement|staff|cash, statement_line_id nullable, reference_seen, matched_by auto|staff, created_by)` with an
   idempotency key so importing the same line twice never pays twice.
-- `payment_proofs(invoice_id, storage_key, uploaded_by_contact, created_at)` (Payments 1: Telegram photos; WhatsApp
-  media remains out of scope, so a WhatsApp customer sends proof through the handoff).
-- Payments 2: `statement_imports(client_id, file_key, profile, status, imported_by, deleted_at)` and
+- `invoices.claim_note` (text) holds what the customer says they paid (the bot asks for the time and the bank, as
+  text); there is no image upload in these PRs (section 9).
+- Payments 2: `statement_imports(client_id, profile, status, imported_by, line_count, purged_at)` and
   `statement_lines(import_id, line_hash unique, posted_at, amount, description, payer_hash, match_status
   matched|suggested|unmatched|ignored, invoice_id nullable)`, plus a saved column-mapping profile per company.
 
@@ -103,8 +103,9 @@ Jobs (the worker; idempotent per invoice and per period; batched with limits)
 Bot
 
 - `PaymentAgent` (read plus draft): `instructions` (the company's method details, the invoice reference and amount as
-  facts), `status` (open invoices of this contact and whether a payment is matched), `submit_proof` (a Telegram
-  photo moves the invoice to `proof_submitted`; the bot says "we'll confirm when it shows in our account"),
+  facts), `status` (open invoices of this contact and whether a payment is matched), `claim_paid` (the customer says
+  they paid and when: the text is stored as `claim_note` and the invoice moves to `proof_submitted`; the bot says
+  "we'll confirm when it shows in our account"),
   `choose_cash` (books a meeting through the Bookings agent and sets the invoice to `cash_pending`). Intent
   `billing_invoice` routes to it; the planner and classifier get rules and examples in English and Malay; handoff
   when the customer disputes an amount.
@@ -157,4 +158,53 @@ CSV dialect handling per bank beyond the saved column mapping; the exact referen
 3. Suspension for non-payment is off by default and only a company setting turns it on.
 4. Reminders go on Telegram and inside open WhatsApp conversations only, until the WhatsApp template phase.
 5. The unique-amount switch (cents suffix for QR payments without a reference) is available but off by default.
-6. Statement files are Admin-only and the raw file is deleted after 30 days.
+6. Statement lines are Admin-only; the uploaded file is never stored and the lines are purged after 90 days.
+
+## 9. Builder check (2026-11-11): calls made by the designer
+
+These settle what the builder check found and supersede any earlier sentence they contradict.
+
+- **No proof images in these PRs.** Telegram photos arrive only as file ids that need each company's bot token to
+  fetch, and the worker has no write access to a `payments` storage prefix; adding stores, IAM prefixes and a worker
+  grant is infrastructure work out of scope here. The customer states what they paid and when as text (`claim_note`);
+  the statement match is the proof. Images return with the WhatsApp media phase.
+- **Statement files are parsed on upload and never stored.** The gateway parses the CSV (bounded: 5 MB, 20,000 lines)
+  into `statement_lines` inside the request and discards the file, so nothing sits in the versioned bucket. Matching
+  runs in a queue-driven job (like the knowledge-base ingest), not in the request. `description` keeps the text
+  needed for the reference and payer-name match with every digit run of nine or more characters masked, except the
+  invoice reference; lines are purged 90 days after import by a retention job (match results stay).
+- **References and account numbers avoid the redaction and grounding traps.** A reference is 4 to 6 characters of
+  letters and digits from an unambiguous alphabet plus one check character (for example `K7QX-4M`), never a long
+  digit run, so the phone and card masking and the numeric-value grounding check cannot mangle it. **Payment
+  instructions are a deterministic reply built from facts** (as `booking_write_facts` does), not model text: account
+  number, reference and amount are inserted exactly; the stored memory copy may be masked, and the agent reads the
+  facts again when asked.
+- **Invoices.** Customer-facing reads show only `issued`, `overdue`, `proof_submitted`, `cash_pending` and `paid`
+  invoices, never `draft` or `void`. `invoices.id` stays a globally unique text (`inv_` plus a time-ordered
+  random id); the company-unique `reference` is a separate column. The `download_link` action of the invoice agent
+  is removed in Payments 1: it promises a link whose handler does not exist, so invoices are shown as text facts
+  until a PDF is built.
+- **Periods and prices.** Periods keep rolling as today (`subscriptions_due_renew` is unchanged and does not look at
+  payment). The generator makes the invoice for the period that starts at `renews_at` seven days ahead, and uses the
+  plan in effect at that period's start, so a scheduled plan change (`pending_plan`) prices the first period it
+  covers. A `pending` subscription's period starts at its first payment. The suspend rule (off by default) sets the
+  subscription to `paused` with reason `unpaid` and resumes it on payment; no new status.
+- **Cash through Bookings.** `choose_cash` sets the invoice to `cash_pending` and replies with a deterministic
+  message offering to book a meeting; the next turn plans the existing booking spoke as for any booking. A booking
+  type can be flagged `collects_payment` (new column) and a booking can carry `invoice_id` (new nullable column);
+  cash is offered only when the company has the Bookings package and such a type. Cancelling the booking or a
+  no-show returns the invoice to `issued`; the staff **Collect cash** action on the booking writes the payment and
+  marks it paid.
+- **Package.** The `payment_agent` capability and the Payments tab belong to the existing `subscriptions` package (no
+  new sellable package); the jobs use the same package gate as `csa/jobs/subscriptions.py`.
+- **Open for the owner (section 10).** Reminder channel for WhatsApp-only customers; bank statement format.
+
+## 10. Owner decisions raised by the builder check
+
+1. **WhatsApp-only customers and reminders.** A job cannot message a WhatsApp customer outside the 24-hour window
+   without an approved template, and Telegram is the only proactive channel today. Default: the sign-up asks for an
+   optional email and reminders fall back to email (the booking reminders already do), the WhatsApp template phase
+   is scheduled as its own track (it needs Meta approval), and until then WhatsApp customers with no email appear
+   in a short "Needs a nudge" list for staff.
+2. **Statement format.** Default: CSV export with a saved column mapping per company (Maybank, CIMB and Public Bank
+   business accounts normally export CSV); a PDF-only bank is a later add.
