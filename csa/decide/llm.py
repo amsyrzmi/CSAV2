@@ -108,7 +108,7 @@ _SUPPORT_GUIDE = (
     "Then, unless they are only greeting you, thanking you or saying goodbye, end with one clear "
     "next step, chosen only from these: ask for the one missing detail (an order number, for "
     "example); point to the buttons shown; when no fact answers the question, say you don't have "
-    "that information here and offer to pass the question to a team member; or, when the "
+    "that information here (a separate rule says when to offer a team member); or, when the "
     "question is fully answered, close with a short offer of further help. Never advertise a "
     "service, feature or option that is not in the facts. Never promise a refund, discount, "
     "delivery date or any decision that only staff can make, unless a fact states it. If the "

@@ -2625,9 +2625,13 @@ async def test_classifier_reads_yes_to_a_handoff_offer_only_with_earlier_message
 async def test_support_guide_offers_a_handoff_instead_of_promising_one() -> None:
     (prompt,) = await _compose_prompts(None)
     assert (
-        "when no fact answers the question, say you don't have that information here and offer "
-        "to pass the question to a team member"
+        "when no fact answers the question, say you don't have that information here (a "
+        "separate rule says when to offer a team member)"
     ) in prompt
+    # The guide itself never offers a handoff: the conditional compose sentence does, and it is
+    # left out after a handoff and on clarifying turns.
+    guide_part = prompt.split("Use ONLY the provided")[0]
+    assert "offer to pass the question to a team member" not in guide_part
     assert "say a team member will follow up only when" not in prompt
     # The compose sentence after the data rule: say so, offer, never claim a person was told.
     assert (
