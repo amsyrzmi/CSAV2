@@ -29,7 +29,7 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
 
 BASE = "/console/v1/bookings/calendar"
-BOOKINGS = "/portal/bookings"
+BOOKINGS = "/portal/connections"
 TABLE = "booking_calendar_connections"
 
 
