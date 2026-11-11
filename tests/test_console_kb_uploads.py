@@ -349,7 +349,7 @@ async def test_deleted_during_embedding_cannot_resurrect(sessions: SessionWorld)
             f"/console/v1/kb/files/{source['id']}?client_id={tenant}",
             method="DELETE",
         )
-        assert deleted.status_code == 204, deleted.text
+        assert deleted.status_code == 200, deleted.text
     finally:
         release.set()
     assert await task == "failed"
@@ -374,7 +374,7 @@ async def test_document_delete_blocks_older_unattached_jobs_and_removes_aliases(
     response = await sessions.mutate(
         sessions.admin, f"/console/v1/kb/documents/{doc['id']}?client_id={tenant}", method="DELETE"
     )
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
     assert await handle(sessions) == "failed"
     assert not await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)
     [count] = await sessions.q(
@@ -450,7 +450,7 @@ async def test_partial_retry_cannot_recreate_deleted_first_result(sessions: Sess
             f"/console/v1/kb/documents/{doc['id']}?client_id={tenant}",
             method="DELETE",
         )
-    ).status_code == 204
+    ).status_code == 200
     await sessions.q(
         "UPDATE kb_ingest_jobs SET locked_at=now()-interval '1 second' WHERE client_id=%s", tenant
     )
@@ -510,7 +510,7 @@ async def test_legacy_source_job_is_fenced_during_embedding(sessions: SessionWor
             f"/console/v1/kb/documents/{stored.document_id}?client_id={tenant}",
             method="DELETE",
         )
-        assert deleted.status_code == 204
+        assert deleted.status_code == 200
     finally:
         release.set()
     assert await task == "failed"
@@ -675,7 +675,7 @@ async def test_delete_between_resolution_and_read_is_per_file_failure(
             f"/console/v1/kb/files/{source['id']}?client_id={tenant}",
             method="DELETE",
         )
-        assert deleted.status_code == 204
+        assert deleted.status_code == 200
     finally:
         release.set()
     assert await task == "partial"
@@ -824,7 +824,8 @@ async def test_remove_succeeds_when_storage_cleanup_fails(
             sessions.admin, f"{target}?client_id={tenant}", method="DELETE"
         )
 
-    assert removed.status_code == 204, removed.text
+    assert removed.status_code == 200, removed.text
+    assert removed.json() == {"storage_cleanup": "pending"}
     failures = [entry for entry in logs if entry["event"] == "kb_storage_cleanup_failed"]
     assert len(failures) == 1 and failures[0]["log_level"] == "error"
     assert "exc_info" in failures[0]

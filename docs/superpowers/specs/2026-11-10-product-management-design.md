@@ -1,6 +1,6 @@
 # Product management: one list for local and marketplace products
 
-Status: design for the owner's approval, 2026-11-10. Pull request 4 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 4 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`). Migrations 0570 to 0579. Part B (TikTok write-back) is a
 separate, later pull request that waits on the owner.
 
@@ -164,3 +164,4 @@ paging; whether `GET /products` replaces the old routes or sits beside them in t
   "View only" label follows that, as does the assistant card's permission. Change on request.
 - The first survey's sentence that only seed and repair SQL write to `products` was wrong; section 2
   now lists the real writers.
+- **Owner answer 2026-11-10:** decision 3 is settled: the assistant's product actions (create product, change price, adjust stock) are in this pull request, with the planner prompt change and the full `assistant_smoke` after rollout.

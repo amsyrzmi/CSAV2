@@ -1,6 +1,6 @@
 # Business surfaces programme: knowledge cleanup, a customer bot that knows the business, one Connections tab, product management
 
-Status: proposal for the owner (Amsyar), 2026-11-10. Each piece has its own design in this folder; this
+Status: APPROVED by the owner (Amsyar) on 2026-11-10, together with the four designs. Each piece has its own design in this folder; this
 document fixes the order, the pull request grouping, the migration ranges and the owner's own tasks.
 
 ## 1. Where this came from
@@ -26,7 +26,7 @@ request count at five, plus two that wait on the owner.
 |---|---|---|---|---|
 | 0 | Replay cases file in the image, and the planner's batch `mode` fix | none (built) | none | Already built on two branches, pushed together |
 | 1 | Knowledge cleanup | `2026-11-10-knowledge-cleanup-design.md` | 0550–0559 | Live tenant confusion today, independent of everything else |
-| 2 | Customer bot: answers and escalation ladder | `2026-11-10-customer-bot-business-answers-design.md` | 0560–0569, probably none | Real customers are on production; the answers and the ladder change the same graph and the same golden cases |
+| 2 | Customer bot: answers and escalation ladder | `2026-11-10-customer-bot-business-answers-design.md` | 0560–0569 (0560 adds `escalations.note`) | Real customers are on production; the answers and the ladder change the same graph and the same golden cases |
 | 3 | Connections tab | `2026-11-10-connections-tab-design.md` | none | Console navigation changes here before the Overview-as-assistant pull request changes it again |
 | 4 | Product management | `2026-11-10-product-management-design.md` | 0570–0579 | Needs new write routes, a stock-authority rule and assistant actions |
 | 5 | Assistant PR 3 (Overview becomes the assistant, interactive dock, alive avatar) | already planned in the assistant refinement programme; its design is brainstormed when it starts | to be decided | Last, so it renders the cards that 4 adds |
@@ -80,3 +80,8 @@ These block specific parts and are listed in the matching designs.
 Payments for subscriptions, WhatsApp media and templates, TikTok chat as a channel, TikTok LIVE,
 voice, and the customer classifier's move to the Jev model are separate tracks and keep their own
 places in the existing plans.
+
+## 6. State
+
+- 2026-11-10: the TikTok Shop app is published as a Public app and is under TikTok's review; until it is approved, only the owner's own shop is known to connect (ledger row 13). The owner's own shop is connected on staging; live product sync needed the price fix on `fix/tiktok-live-product-shape`.
+- Next: the plan for pull request 1 (knowledge cleanup) is written and PR 1 is built on `feat/knowledge-cleanup`, awaiting the owner's merge and rollout (migration 0550 needs the owner's go).

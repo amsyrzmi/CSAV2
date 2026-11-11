@@ -38,7 +38,10 @@ export default function MaintenanceSection({
     setBusy(true); setError("");
     try {
       const result = await post<{ removed_files: number }>(`/console/v1/kb/storage/reconcile?${query}`);
-      setMessage(`Clean-up done: ${result.removed_files} leftover files removed. Files in use were kept.`);
+      const count = result.removed_files;
+      setMessage(count === 0
+        ? "Clean-up done: no leftover files to remove. Files in use were kept."
+        : `Clean-up done: ${count} leftover file${count === 1 ? "" : "s"} removed. Files in use were kept.`);
       void loadFiles();
     } catch (cause) { setError((cause as Error).message); }
     finally { setBusy(false); }

@@ -989,11 +989,12 @@ async def test_m2_kb_console_execution_cannot_bypass_disabled_switch(
     assert "disabled" in response.json()["detail"]
     response = await sessions.mutate(admin, f"/console/v1/kb/gaps/{uuid.uuid4()}/resolve")
     assert response.status_code == 409
+    # Removal only takes knowledge away, so it skips the switch and reaches the lookup.
     assert (
         await admin.request(
             "DELETE", f"/console/v1/kb/documents/{uuid.uuid4()}", headers=sessions.headers(admin)
         )
-    ).status_code == 409
+    ).status_code == 404
 
 
 async def test_password_change_checks_current_password_and_revokes_other_sessions(

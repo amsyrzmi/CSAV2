@@ -1,6 +1,6 @@
 # Knowledge cleanup: remove, retry and clear, with friendly words
 
-Status: design for the owner's approval, 2026-11-10. Pull request 1 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 1 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`). Migrations 0550 to 0559.
 
 ## 1. Intent
@@ -91,7 +91,8 @@ Data (migration 0550; read the live constraint with `pg_get_constraintdef` and a
 - `kb_ingest_jobs.dismissed_at timestamptz` (null = visible).
 - One-time backfill in the same migration: set `cancelled` and `dismissed_at` on every `failed` or
   `partial` job whose files are all soft-deleted, and on every `queued` or `processing` job whose
-  `locked_at` is older than the stale limit and whose files are all deleted.
+  files are all deleted (no stale-lock condition: the rollout stops every worker before a migration
+  runs).
 
 API (the job routes sit in `csa/console/router.py` next to `GET /kb/ingest-jobs`, with that router's
 package gate; the file and document routes stay in `csa/console/kb_uploads.py`; writer role and an
@@ -99,25 +100,26 @@ audit entry on every action):
 
 - `POST /kb/ingest-jobs/{id}/dismiss`: sets `dismissed_at` for a finished job (`failed`, `partial`,
   `cancelled`, `done`); 409 for a running job.
-- `POST /kb/ingest-jobs/{id}/retry`: only for `failed` or `partial` jobs whose files still exist;
-  re-queues from the stored bytes (no new upload), resets `attempts`, clears `error`; 409 with a
-  reason code `original_removed` otherwise.
+- `POST /kb/ingest-jobs/{id}/retry`: only for `failed` or `partial` upload jobs whose original is
+  still stored; re-queues from the stored bytes (no new upload), resets `attempts`, clears `error`;
+  409 `original_removed` when it is not, 409 `not_retryable` when the job is not a failed or partial
+  upload job.
 - `POST /kb/ingest-jobs/{id}/cancel`: for `queued` jobs only (release the lock, set `cancelled`). A
   job a worker is already reading cannot be cancelled by the Admin; it finishes, fails or is requeued
   by the existing reaper.
 - `POST /kb/ingest-jobs/dismiss-failed`: dismisses every `failed`, `partial` and `cancelled` job of
   the tenant; returns the count.
 - `remove_file` and `delete_document` close every job that lists the file in `files[].file_id`: a job
-  whose files are all deleted becomes `cancelled` and dismissed; a job with other live files keeps
-  them and gets a per-file note in `meta.results`.
+  whose files are all deleted becomes `cancelled` and dismissed; a job with other live files is left
+  untouched (its card shows the deleted file as gone, because the console knows the live files).
 - The delete routes no longer depend on the `enabled` check (they only remove); upload and retry still
   do. `cleanup_after_remove` returns whether the sweep succeeded; the two delete routes change from 204
   to 200 with a small body (`{"storage_cleanup": "done" | "pending"}`), updated in the console, the
   API doc and the OpenAPI file in the same pull request; a pending sweep is left for the existing
   reconcile, instead of being swallowed.
-- A job left `queued` because the knowledge assistant is off is shown as "Paused: the knowledge
-  assistant is switched off" rather than "Reading", and the Admin can cancel it (the requeue of stale
-  `processing` jobs already works and stays as it is).
+- A job left `queued` because the knowledge assistant is off keeps the Reading chip and its note reads
+  "Paused: the knowledge assistant is switched off.", and the Admin can cancel it (the requeue of
+  stale `processing` jobs already works and stays as it is).
 
 Console:
 
@@ -129,11 +131,11 @@ Console:
   Remove it."; partial: "Some of this file couldn't be read. The rest is in your assistant."
 - Actions: **Try again** (retry), **Remove** (dismiss) with a confirmation that says exactly what
   happens ("This takes the message off your list. Nothing your assistant knows changes."), and a
-  **Clear all that failed** link above the list when more than one card needs attention.
+  **Clear all that failed** button beside the "Needs attention" heading when more than one card needs
+  attention.
 - Deleting a document or file uses copy per case and a success message that matches (a job is not "a
   file your assistant no longer uses").
-- The Maintenance section's storage sweep reports what it removed and how many bytes are still
-  pending.
+- The Maintenance section's storage sweep says how many leftover files it removed.
 
 ## 6. Tests (named for the builder)
 
@@ -173,6 +175,7 @@ Change any of these on request; none needs the owner.
   retryable (`original_removed`); the card says so and offers Remove only.
 - **"The original is still stored":** decided per file by `file_id` (live row in `kb_upload_files`).
   A `files[]` entry with no `file_id` (path only, used by the development ingest script) is treated as
-  live for retry, checked against the object store, and is never cancelled by the migration backfill.
-- **Retry of a `partial` job** re-runs only the files whose result failed; per-file results are merged
-  into `meta.results` instead of overwritten (the plan changes the finish SQL accordingly).
+  stored for retry (no object-store check) and is never cancelled by the backfill or by a delete.
+- **Retry of a `partial` job** re-runs every file of the job. A file already read comes back as
+  `duplicate` (the ingest finds its hash), so nothing is stored twice and no per-file merge into
+  `meta.results` is needed. (Changed from "only the failed files" while planning; see the plan.)
