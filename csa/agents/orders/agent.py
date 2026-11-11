@@ -11,6 +11,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 import psycopg
+import structlog
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -32,6 +33,8 @@ from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.notify.notifier import notify
+
+logger = structlog.get_logger(__name__)
 
 DRAFT_TTL = timedelta(minutes=30)
 ORDER_CHANNELS = {"telegram", "web", "tiktok_shop", "shopee", "manual"}
@@ -251,7 +254,14 @@ class OrderAgent:
             and ctx.channel != "web"
             and await self._marketplace_on(ctx.client_id)
         ):
-            lookup = await self._marketplace.stock_check(ctx, query)
+            try:
+                lookup = await self._marketplace.stock_check(ctx, query)
+            except Exception as exc:
+                # The shop rows are already read: a failed TikTok read never costs the customer
+                # that answer. Only the exception class is logged, never its text or the query.
+                # CancelledError is a BaseException and still propagates.
+                logger.warning("product_availability_tiktok_failed", error_type=type(exc).__name__)
+                lookup = None
         return self._ok(ctx, availability_facts(rows, lookup, ctx.now()))
 
     async def _detail(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:

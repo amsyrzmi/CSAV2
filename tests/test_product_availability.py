@@ -7,6 +7,7 @@ own tenant. The merge rules are also pinned without a database in tests/test_eco
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
 from typing import Any
@@ -16,11 +17,13 @@ import psycopg
 import pytest
 from csa.agents.base import AgentContext
 from csa.agents.ecommerce.agent import STOCK_UNCHECKED_TEXT
+from csa.agents.ecommerce.models import StockLookup
 from csa.agents.orders.agent import OrderAgent, OrderInput
 from csa.agents.orders.availability import SHOP_NOT_FOUND_TEXT
 from csa.contracts.facts import AgentResult
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from psycopg_pool import AsyncConnectionPool
+from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_ecommerce_storage import decrypt
@@ -345,3 +348,66 @@ async def test_a_query_with_no_words_never_lists_the_catalogue(
     await add_product(migrated_dsn, client, "LOCAL-LAMP", "Synthetic lamp", stock=7)
     result = await ask(pool, make_ctx(pool, client), query, capability=Switch(False))
     assert pairs(result) == [("shop_not_found", SHOP_NOT_FOUND_TEXT)]
+
+
+class BrokenReader:
+    """A TikTok reader whose stock read raises ``error``; the order status is never asked."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def order_status(self, ctx: AgentContext, order_number: str) -> Any:
+        raise AssertionError("not asked")
+
+    async def stock_check(self, ctx: AgentContext, query: str) -> StockLookup:
+        raise self.error
+
+
+async def ask_broken(
+    pool: AsyncConnectionPool, ctx: AgentContext, query: str, error: BaseException
+) -> AgentResult:
+    agent = OrderAgent(BrokenReader(error), marketplace_on=Switch(True))
+    return await agent.run(
+        ctx, OrderInput.model_validate({"action": "product_availability", "query": query})
+    )
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("synthetic-secret-detail"), psycopg.OperationalError("db down")]
+)
+async def test_a_failed_tiktok_read_still_gives_the_shop_facts(
+    pool: AsyncConnectionPool, migrated_dsn: str, error: Exception
+) -> None:
+    client, _, _ = await plain_store(migrated_dsn)
+    await add_product(migrated_dsn, client, "LOCAL-LAMP", "Synthetic lamp", stock=7)
+    with capture_logs() as logs:
+        result = await ask_broken(pool, make_ctx(pool, client), "lamp", error)
+    assert pairs(result) == [
+        ("shop_product_0", "Synthetic lamp (LOCAL-LAMP): MYR 12.00, 7 available in our shop.")
+    ]
+    failed = [entry for entry in logs if entry["event"] == "product_availability_tiktok_failed"]
+    assert len(failed) == 1
+    # A safe code only: the exception class, never its message, the query or the customer.
+    assert failed[0]["error_type"] == type(error).__name__
+    rendered = repr(logs)
+    assert "synthetic-secret-detail" not in rendered
+    assert "db down" not in rendered
+    assert "lamp" not in rendered.lower()
+
+
+async def test_a_failed_tiktok_read_with_no_shop_match_claims_only_the_shop(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    client, _, _ = await plain_store(migrated_dsn)
+    result = await ask_broken(pool, make_ctx(pool, client), "mug", RuntimeError("boom"))
+    # TikTok was supposed to be checked but was not: the answer never says it was.
+    assert pairs(result) == [("shop_not_found", SHOP_NOT_FOUND_TEXT)]
+
+
+async def test_a_cancelled_tiktok_read_still_propagates(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    client, _, _ = await plain_store(migrated_dsn)
+    await add_product(migrated_dsn, client, "LOCAL-LAMP", "Synthetic lamp", stock=7)
+    with pytest.raises(asyncio.CancelledError):
+        await ask_broken(pool, make_ctx(pool, client), "lamp", asyncio.CancelledError())
