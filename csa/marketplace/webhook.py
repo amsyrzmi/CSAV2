@@ -48,14 +48,15 @@ MAX_WEBHOOK_BYTES = 1_000_000
 
 EventKind = Literal["order", "product", "deauthorized"]
 
-# TikTok Shop webhook types, by number and by name. UNVERIFIED: verify in Partner Center
-# (ledger Task 21) before the webhook URL is registered; anything not listed is dropped.
+# TikTok Shop webhook types, by number and by name. The three numbers were read in Partner Center
+# on 2026-11-10 (ledger row 5); the names and the payload field names are still unverified.
+# Anything not listed is acknowledged and dropped.
 EVENT_KINDS: dict[int | str, EventKind] = {
-    1: "order",  # ORDER_STATUS_CHANGE (unverified)
+    1: "order",  # Order Status Change (confirmed)
     "ORDER_STATUS_CHANGE": "order",
-    5: "product",  # PRODUCT_STATUS_CHANGE, status or audit change (unverified)
+    5: "product",  # Product Status Change, audit results (confirmed)
     "PRODUCT_STATUS_CHANGE": "product",
-    6: "deauthorized",  # SELLER_DEAUTHORIZATION (unverified)
+    6: "deauthorized",  # Seller Deauthorization (confirmed; 12 is Order Return Status Change)
     "SELLER_DEAUTHORIZATION": "deauthorized",
 }
 
