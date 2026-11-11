@@ -477,7 +477,7 @@ const ABOUT_ORDERS =
 /** The About this page text; a tenant with no connected shop is told where to connect one. */
 export function ordersAboutText(sync: string | null): string {
   return sync === "not_connected"
-    ? `${ABOUT_ORDERS} No TikTok Shop is connected yet. Connect your TikTok Shop under Store connections.`
+    ? `${ABOUT_ORDERS} No TikTok Shop is connected yet. Connect your TikTok Shop on Connections.`
     : ABOUT_ORDERS;
 }
 
@@ -495,7 +495,7 @@ export const CATALOGUE_ABOUT_TEXT =
 /** The empty TikTok list says how to fill it. `sync` is the products read's marketplace_sync. */
 export function listingsEmptyText(sync: string | null): string {
   return sync === "not_connected"
-    ? "No TikTok Shop products copied yet. Connect your shop under Store connections."
+    ? "No TikTok Shop products copied yet. Connect your shop on Connections."
     : "No TikTok Shop products found.";
 }
 

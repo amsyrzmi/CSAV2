@@ -134,13 +134,13 @@ test("only one record is published: the last card opened, falling back when it c
   assert.equal("record" in businessPageContext("stores", [], ["l1"]), false);
 });
 
-test("the Orders folds say what is true, and point to Store connections only when not connected", () => {
+test("the Orders folds say what is true, and point to Connections only when not connected", () => {
   const connected = ordersAboutText("connected");
   assert.match(connected, /copied into fourstacks and kept up to date/);
   assert.match(connected, /never changes an order there/);
   assert.match(connected, /Shopee is not connected/);
-  assert.doesNotMatch(connected, /Connect your TikTok Shop under Store connections/);
-  assert.match(ordersAboutText("not_connected"), /Connect your TikTok Shop under Store connections\.$/);
+  assert.doesNotMatch(connected, /Connect your TikTok Shop on Connections/);
+  assert.match(ordersAboutText("not_connected"), /Connect your TikTok Shop on Connections\.$/);
   assert.equal(ordersAboutText(null), connected);
   for (const text of [connected, ordersAboutText("not_connected"), ORDERS_NOT_YET_TEXT, CATALOGUE_ABOUT_TEXT]) {
     assert.doesNotMatch(text, /not a live|don't update|Coming later|tenant admin|not connected or\s+checked/i);
@@ -183,7 +183,7 @@ test("a masked or missing SKU says so and never claims a match; stock may be unk
 
 test("the empty TikTok list says how to fill it only when no shop is connected", () => {
   assert.equal(listingsEmptyText("not_connected"),
-    "No TikTok Shop products copied yet. Connect your shop under Store connections.");
+    "No TikTok Shop products copied yet. Connect your shop on Connections.");
   assert.equal(listingsEmptyText("connected"), "No TikTok Shop products found.");
   assert.equal(listingsEmptyText(null), "No TikTok Shop products found.");
 });

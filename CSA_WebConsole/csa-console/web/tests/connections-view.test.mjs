@@ -13,7 +13,7 @@ async function load(name, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const {
-  cardGate, arrivals, connectionsHref, tiktokView, calendarView, gmailView, gmailNote, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED,
+  cardGate, arrivals, connectionsHref, tiktokView, tiktokLineWord, calendarView, gmailView, gmailNote, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED,
   MANAGE_LINK,
 } = await import(await load("connections-view.ts", {
   '"@/lib/business-view"': JSON.stringify(await load("business-view.ts", {
@@ -261,9 +261,24 @@ test("gmailView for every mailbox state, switched off and no provider", () => {
     sentence: "Gmail access was removed, so new email will not arrive.",
   });
   assert.equal(gmailView(null).word, "Not connected");
+  // The Email page's own fallback: a status it has no word for reads Not connected, in a neutral tone.
+  assert.deepEqual(gmailView(context(box("something_new"))), {
+    tone: "neutral", word: "Not connected", lastActivity: null, sentence: "No mailbox connected for your account.",
+  });
   // No Google client on this server: the existing sentence goes under a disabled Connect.
   assert.equal(gmailNote(context(null, { provider_configured: false })),
     "Connecting Gmail isn't available yet. Contact fourstacks support.");
   assert.equal(gmailNote(context(null)), null);
   assert.equal(gmailNote(null), null);
+});
+
+test("tiktokLineWord names the state of each TikTok shop for the old Store connections page", () => {
+  const store = (status, platform = "tiktok_shop") => ({ platform, connection: { status } });
+  assert.equal(tiktokLineWord([]), "Not connected");
+  assert.equal(tiktokLineWord([store("authorization_recorded")]), "Connected");
+  assert.equal(tiktokLineWord([store("expired")]), "Needs reconnecting");
+  assert.equal(tiktokLineWord([store("authorization_recorded"), store("expired")]), "Connected, Needs reconnecting");
+  assert.equal(tiktokLineWord([store("expired"), store("expired")]), "Needs reconnecting");
+  // Another marketplace's store is not a TikTok shop.
+  assert.equal(tiktokLineWord([store("authorization_recorded", "shopee")]), "Not connected");
 });

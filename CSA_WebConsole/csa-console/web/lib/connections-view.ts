@@ -90,6 +90,20 @@ export function tiktokView(store: StoreRecord | null, now: Date): ConnectionView
 }
 
 /**
+ * The word on the old Store connections page's "TikTok Shop: {word}." line: each TikTok shop's own
+ * state word (the distinct ones, in list order), or "Not connected" when there is no TikTok shop.
+ */
+export function tiktokLineWord(stores: { platform: string; connection: { status: string } }[]): string {
+  const words: string[] = [];
+  for (const store of stores) {
+    if (store.platform !== "tiktok_shop") continue;
+    const word = storeSummary({ ...store, shop_id: null }).status;
+    if (!words.includes(word)) words.push(word);
+  }
+  return words.length === 0 ? "Not connected" : words.join(", ");
+}
+
+/**
  * The Google Calendar row: the existing state words, the banner sentence for a connection Google
  * stopped accepting, and the two ways it can be unavailable (not switched on, not linked to a
  * person). The status carries no timestamp, so there is no last activity. `null` reads as off.
@@ -143,10 +157,14 @@ export function gmailView(context: EmailContext | null): ConnectionView {
   if (mailbox.status === "pending") {
     return { tone: "attention", word: "Not finished", lastActivity, sentence: "Gmail has not finished connecting." };
   }
-  return {
-    tone: "error", word: "Access removed", lastActivity,
-    sentence: "Gmail access was removed, so new email will not arrive.",
-  };
+  if (mailbox.status === "revoked") {
+    return {
+      tone: "error", word: "Access removed", lastActivity,
+      sentence: "Gmail access was removed, so new email will not arrive.",
+    };
+  }
+  // A status this page has no word for reads as no mailbox, as the Email page's own status does.
+  return none;
 }
 
 /** The line under a disabled Connect Gmail when this server has no Google client set up. */

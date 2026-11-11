@@ -669,71 +669,17 @@ async def test_never_synced_store_says_not_synced_yet(site: Site) -> None:
     await with_browser(body)
 
 
-async def test_admin_sees_connect_and_disconnect_staff_sees_neither(site: Site) -> None:
+async def test_an_expired_store_reads_needs_reconnecting_with_no_buttons(site: Site) -> None:
     async def body(browser: Any) -> None:
-        expired = make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B")
-        stub = Stub(stores=[make_store(), expired])
+        stub = Stub(stores=[make_store("expired")])
         async with business_page(
             browser, site, stub, path="/portal/business/stores", wait_for_rows=False
         ) as page:
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
-                timeout=WAIT
+            store = page.get_by_test_id(f"business-store-{STORE_ID}")
+            await expect(store).to_contain_text("Needs reconnecting", timeout=WAIT)
+            await expect(page.get_by_test_id("business-stores-manage-status")).to_have_text(
+                "TikTok Shop: Needs reconnecting."
             )
-            # Admins: Disconnect on the connected shop, Reconnect on the other; no second Connect
-            # beside a shop that needs reconnecting.
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            ).to_be_visible()
-            await expect(page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")).to_have_count(
-                0
-            )
-            await expect(
-                page.get_by_test_id(f"business-store-reconnect-{SECOND_ID}")
-            ).to_be_visible()
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{SECOND_ID}")
-            ).to_have_count(0)
-            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
-            await expect(page.get_by_test_id("business-store-staff-note")).to_have_count(0)
-
-        stub = Stub(stores=[make_store()])
-        async with business_page(
-            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
-        ) as page:
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
-                timeout=WAIT
-            )
-            await expect(page.get_by_test_id("business-store-connect")).to_be_visible()
-            await expect(
-                page.get_by_role("button", name="Connect TikTok Shop", exact=True)
-            ).to_be_enabled()
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            ).to_be_visible()
-
-        # Staff: the server says can_manage false, and the page offers no button at all.
-        stub = Stub(
-            stores=[
-                make_store(can_manage=False),
-                make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B", can_manage=False),
-            ]
-        )
-        async with business_page(
-            browser,
-            site,
-            stub,
-            path="/portal/business/stores",
-            wait_for_rows=False,
-            role="tenant_staff",
-        ) as page:
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_contain_text(
-                "Connected", timeout=WAIT
-            )
-            await expect(page.get_by_test_id(f"business-store-{SECOND_ID}")).to_contain_text(
-                "Needs reconnecting"
-            )
-            await expect(page.get_by_test_id("business-store-staff-note")).to_be_visible()
-            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
             await expect(
                 page.get_by_role("button", name=re.compile("Connect|Disconnect"))
             ).to_have_count(0)
@@ -742,34 +688,35 @@ async def test_admin_sees_connect_and_disconnect_staff_sees_neither(site: Site) 
     await with_browser(body)
 
 
-async def test_connect_navigates_to_the_returned_authorize_url(site: Site) -> None:
+async def test_store_connections_has_no_connect_controls_and_links_to_connections(
+    site: Site,
+) -> None:
     async def body(browser: Any) -> None:
-        stub = Stub(stores=[])
+        # A member's page: the status line, the link to the tab and no control of any kind.
+        stub = Stub(
+            stores=[make_store(), make_store("expired", store_id=SECOND_ID, shop_id="SHOP-B")]
+        )
         async with business_page(
             browser, site, stub, path="/portal/business/stores", wait_for_rows=False
         ) as page:
-            # TikTok is never contacted: the authorize host is answered here.
-            reached: list[str] = []
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
+                timeout=WAIT
+            )
+            line = page.get_by_test_id("business-stores-manage")
+            await expect(line).to_contain_text("TikTok Shop: Connected, Needs reconnecting.")
+            link = page.get_by_test_id("business-stores-manage-link")
+            await expect(link).to_have_text("Manage in Connections")
+            await expect(link).to_have_attribute("href", "/portal/connections")
+            await expect(page.get_by_test_id("business-store-staff-note")).to_have_count(0)
+            await expect(
+                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+            ).to_have_count(0)
+            # What stays: the list's own buttons.
+            await expect(page.get_by_role("button", name="Refresh stores")).to_be_visible()
+            assert not stub.connect_calls and not stub.disconnect_calls
 
-            async def tiktok(route: Any) -> None:
-                reached.append(route.request.url)
-                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
-
-            await page.route("https://services.tiktokshop.com/**", tiktok)
-            connect = page.get_by_test_id("business-store-connect")
-            await expect(connect).to_be_visible(timeout=WAIT)
-            await expect(page.get_by_text("No online store is connected yet.")).to_be_visible()
-            await connect.click()
-            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
-            assert reached == [AUTHORIZE_URL]
-            assert stub.connect_calls == [{"body": {}, "client_id": None}]
-
-    await with_browser(body)
-
-
-async def test_platform_admin_connect_and_reconnect_send_the_chosen_client(site: Site) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub(stores=[make_store("disconnected", shop_id="SHOP-A")])
+        # A platform admin's link keeps the chosen company.
+        stub = Stub(stores=[make_store()])
         async with business_page(
             browser,
             site,
@@ -778,43 +725,57 @@ async def test_platform_admin_connect_and_reconnect_send_the_chosen_client(site:
             wait_for_rows=False,
             role="platform_admin",
         ) as page:
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id("business-stores-manage-link")).to_have_attribute(
+                "href", f"/connections?client_id={TENANT}"
+            )
 
-            async def tiktok(route: Any) -> None:
-                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
+        # Staff see the same line and link; the old note about who may connect is gone.
+        stub = Stub(stores=[make_store(can_manage=False)])
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path="/portal/business/stores",
+            wait_for_rows=False,
+            role="tenant_staff",
+        ) as page:
+            await expect(page.get_by_test_id("business-stores-manage-status")).to_have_text(
+                "TikTok Shop: Connected.", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("business-store-staff-note")).to_have_count(0)
 
-            await page.route("https://services.tiktokshop.com/**", tiktok)
-            reconnect = page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
-            await expect(reconnect).to_be_visible(timeout=WAIT)
-            await reconnect.click()
-            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
-            assert stub.connect_calls == [{"body": {"store_id": STORE_ID}, "client_id": [TENANT]}]
+        # No shop yet: the line says so, and the empty-list sentence stays.
+        stub = Stub(stores=[])
+        async with business_page(
+            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id("business-stores-manage-status")).to_have_text(
+                "TikTok Shop: Not connected.", timeout=WAIT
+            )
+            await expect(page.get_by_text("No online store is connected yet.")).to_be_visible()
 
     await with_browser(body)
 
 
-async def test_an_expired_store_offers_reconnect_only(site: Site) -> None:
+async def test_the_old_page_no_longer_reads_the_return_parameters(site: Site) -> None:
     async def body(browser: Any) -> None:
-        stub = Stub(stores=[make_store("expired")])
+        stub = Stub()
         async with business_page(
-            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
+            browser,
+            site,
+            stub,
+            path="/portal/business/stores?tiktok=failed&reason=multiple_shops",
+            wait_for_rows=False,
         ) as page:
-            store = page.get_by_test_id(f"business-store-{STORE_ID}")
-            await expect(store).to_contain_text("Needs reconnecting", timeout=WAIT)
-            await expect(
-                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
-            ).to_be_visible()
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            ).to_have_count(0)
-            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
-
-            async def tiktok(route: Any) -> None:
-                await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
-
-            await page.route("https://services.tiktokshop.com/**", tiktok)
-            await page.get_by_test_id(f"business-store-reconnect-{STORE_ID}").click()
-            await page.wait_for_url(AUTHORIZE_URL, timeout=WAIT)
-            assert stub.connect_calls == [{"body": {"store_id": STORE_ID}, "client_id": None}]
+            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible(
+                timeout=WAIT
+            )
+            # The tab is the one reader: here nothing is said and the address is left alone.
+            await expect(page.get_by_test_id("business-tiktok-result")).to_have_count(0)
+            assert "tiktok=failed" in page.url
 
     await with_browser(body)
 
@@ -831,150 +792,10 @@ async def test_a_pending_store_reads_waiting_for_tiktok_approval(site: Site) -> 
             )
             await expect(store).to_contain_text("Store ID not recorded")
             await expect(
-                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
-            ).to_be_visible()
-            await expect(page.get_by_test_id("business-store-connect")).to_have_count(0)
+                page.get_by_role("button", name=re.compile("Connect|Reconnect"))
+            ).to_have_count(0)
             # Nothing has been synced from a shop nobody has approved yet.
             await expect(page.get_by_test_id(f"business-store-{STORE_ID}-sync")).to_have_count(0)
-
-    await with_browser(body)
-
-
-async def test_an_address_that_is_not_tiktoks_is_never_followed(site: Site) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub(
-            stores=[], connect_data={"authorization_url": "https://evil.example/open/authorize"}
-        )
-        async with business_page(
-            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
-        ) as page:
-            reached: list[str] = []
-
-            async def elsewhere(route: Any) -> None:
-                reached.append(route.request.url)
-                await route.abort()
-
-            await page.route("https://evil.example/**", elsewhere)
-            await page.get_by_test_id("business-store-connect").click(timeout=WAIT)
-            await expect(page.get_by_test_id("business-store-problem")).to_have_text(
-                "We couldn't start the connection. Try again in a moment."
-            )
-            await expect(page.get_by_test_id("business-store-connect")).to_be_enabled()
-            assert reached == []
-            assert page.url.endswith("/portal/business/stores")
-
-    await with_browser(body)
-
-
-async def test_tiktok_off_on_this_server_disables_the_buttons(site: Site) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub(stores=[], connect_status=503, connect_data={"detail": "tiktok_unavailable"})
-        async with business_page(
-            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
-        ) as page:
-            connect = page.get_by_test_id("business-store-connect")
-            await connect.click(timeout=WAIT)
-            await expect(page.get_by_test_id("business-store-unavailable")).to_have_text(
-                "TikTok Shop isn't set up on this server yet."
-            )
-            await expect(connect).to_be_disabled()
-            assert len(stub.connect_calls) == 1
-
-    await with_browser(body)
-
-
-async def test_failed_return_from_tiktok_shows_the_sentence_and_clears_the_query(
-    site: Site,
-) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub()
-        async with business_page(
-            browser,
-            site,
-            stub,
-            path="/portal/business/stores?tiktok=failed&reason=multiple_shops",
-            wait_for_rows=False,
-        ) as page:
-            result = page.get_by_test_id("business-tiktok-result")
-            await expect(result).to_have_text(
-                "This TikTok account has more than one shop. "
-                "Contact support to connect the right one.",
-                timeout=WAIT,
-            )
-            await expect(page).to_have_url(re.compile(r"/portal/business/stores$"), timeout=WAIT)
-            # The line stays after the address is cleaned.
-            await expect(result).to_be_visible()
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible()
-
-    await with_browser(body)
-
-
-async def test_success_return_for_a_platform_admin_keeps_the_client(site: Site) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub()
-        async with business_page(
-            browser,
-            site,
-            stub,
-            path=f"/business/stores?client_id={TENANT}&tiktok=connected",
-            wait_for_rows=False,
-            role="platform_admin",
-        ) as page:
-            await expect(page.get_by_test_id("business-tiktok-result")).to_have_text(
-                "TikTok Shop is connected. Orders and products will start syncing shortly.",
-                timeout=WAIT,
-            )
-            await expect(page).to_have_url(
-                re.compile(rf"/business/stores\?client_id={TENANT}$"), timeout=WAIT
-            )
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}")).to_be_visible()
-
-    await with_browser(body)
-
-
-async def test_disconnect_asks_first_then_the_card_reads_disconnected(site: Site) -> None:
-    async def body(browser: Any) -> None:
-        stub = Stub()
-        async with business_page(
-            browser, site, stub, path="/portal/business/stores", wait_for_rows=False
-        ) as page:
-            asked: list[str] = []
-            answers = [False, True]
-
-            async def reply(dialog: Any) -> None:
-                asked.append(dialog.message)
-                if answers.pop(0):
-                    await dialog.accept()
-                else:
-                    await dialog.dismiss()
-
-            page.on("dialog", lambda dialog: asyncio.ensure_future(reply(dialog)))
-            button = page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            await button.click(timeout=WAIT)
-            await until(lambda: len(asked) == 1)
-            await asyncio.sleep(0.3)
-            assert stub.disconnect_calls == []
-            await button.click()
-            await until(lambda: len(stub.disconnect_calls) == 1)
-            assert (
-                asked
-                == [
-                    "Stop syncing this shop? Orders stay visible for 30 days, then customer "
-                    "details are removed."
-                ]
-                * 2
-            )
-            store = page.get_by_test_id(f"business-store-{STORE_ID}")
-            await expect(page.get_by_test_id(f"business-store-{STORE_ID}-status")).to_have_text(
-                "Disconnected"
-            )
-            await expect(
-                page.get_by_test_id(f"business-store-reconnect-{STORE_ID}")
-            ).to_be_visible()
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            ).to_have_count(0)
-            await expect(store).to_contain_text("Customer details are removed 30 days")
 
     await with_browser(body)
 
@@ -1871,7 +1692,7 @@ async def test_the_orders_folds_say_what_is_true_for_each_sync_state(site: Site)
                 await expect(about).to_contain_text("copied into fourstacks and kept up to date")
                 await expect(about).to_contain_text("never changes an order there")
                 await expect(about).to_contain_text("Shopee is not connected")
-                hint = "Connect your TikTok Shop under Store connections"
+                hint = "Connect your TikTok Shop on Connections"
                 if connect_hint:
                     await expect(about).to_contain_text(hint)
                 else:
@@ -1976,7 +1797,7 @@ async def test_empty_listings_say_how_to_connect_or_that_none_were_found(site: S
         for sync, sentence in (
             (
                 "not_connected",
-                "No TikTok Shop products copied yet. Connect your shop under Store connections.",
+                "No TikTok Shop products copied yet. Connect your shop on Connections.",
             ),
             ("connected", "No TikTok Shop products found."),
         ):
@@ -2148,11 +1969,11 @@ async def test_store_connections_in_three_themes_and_at_phone_width(site: Site, 
             site,
             stub,
             theme=theme,
-            path="/portal/business/stores?tiktok=failed&reason=connect_failed",
+            path="/portal/business/stores",
             wait_for_rows=False,
         ) as page:
             await expect(page.locator("html")).to_have_attribute("data-theme", theme)
-            await expect(page.get_by_test_id("business-tiktok-result")).to_be_visible(timeout=WAIT)
+            await expect(page.get_by_test_id("business-stores-manage")).to_be_visible(timeout=WAIT)
             for store_id in (STORE_ID, SECOND_ID, DISCONNECTED_ID, WAITING_ID):
                 await expect(page.get_by_test_id(f"business-store-{store_id}")).to_be_visible()
             await open_fold(page, "stores")
@@ -2163,14 +1984,9 @@ async def test_store_connections_in_three_themes_and_at_phone_width(site: Site, 
             )
             await open_tech(page, f"business-store-{STORE_ID}")
             await check_widths(page, theme, "store-connections")
-            # The buttons stay reachable at phone width and keep their names.
+            # The status line and its link stay reachable at phone width.
             await page.set_viewport_size({"width": 390, "height": 800})
-            await expect(
-                page.get_by_test_id(f"business-store-disconnect-{STORE_ID}")
-            ).to_be_visible()
-            await expect(
-                page.get_by_test_id(f"business-store-reconnect-{SECOND_ID}")
-            ).to_be_visible()
+            await expect(page.get_by_test_id("business-stores-manage-link")).to_be_visible()
 
     await with_browser(body)
 
@@ -2212,10 +2028,10 @@ async def test_demo_mode_strings_remain_and_connect_is_a_real_button(site: Site)
             ) == before
             await page.get_by_role("button", name="Hide the example").click()
             await expect(order_card(page, 1)).to_be_visible()
-            # The demo lives on the Orders page only; the Connect buttons live on Stores.
+            # The demo lives on the Orders page only; Stores holds the status line and the link.
             await page.get_by_test_id("business-subnav-stores").click()
             await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
-            await expect(page.get_by_test_id("business-store-connect")).to_be_enabled()
+            await expect(page.get_by_test_id("business-stores-manage-link")).to_be_visible()
             await expect(page.get_by_role("button", name=" unavailable")).to_have_count(0)
             await page.get_by_test_id("business-subnav-products").click()
             await expect(page.get_by_role("button", name="See an example")).to_have_count(0)
