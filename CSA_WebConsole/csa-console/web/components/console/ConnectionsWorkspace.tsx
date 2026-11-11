@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
-import { ARRIVAL_KEYS, arrivals, type Arrival } from "@/lib/connections-view";
+import { ARRIVAL_KEYS, arrivals, cardGate, type Arrival } from "@/lib/connections-view";
 import type { Client, Me } from "@/lib/identity-contracts";
+import { TIKTOK_UNAVAILABLE } from "@/lib/tiktok-connect";
+import { TikTokCard } from "./connections/TikTokCard";
+import { useActivePackages } from "./overview/useActivePackages";
 import { field, Heading, Notice } from "./ui";
 
 /** The Connections tab: the company's connections (TikTok Shop) and the member's own Google ones. */
@@ -42,6 +45,14 @@ export function ConnectionsWorkspace({ me }: { me: Me }) {
   const chooseTenant = (value: string) => {
     router.replace(value ? `${pathname}?client_id=${encodeURIComponent(value)}` : pathname, { scroll: false });
   };
+  // The company's packages decide which cards are unlocked. `undefined` is still loading and draws
+  // nothing; `null` is a failed read and draws the cards unlocked (the server's gates still refuse).
+  // A platform admin with no company chosen has nothing to read (also `undefined`) and sees only
+  // the prompt: cards are never drawn, and cardGate never asked, before a company is picked.
+  const packages = useActivePackages(platform ? (selected || null) : "");
+  const ready = packages !== undefined && (!platform || selected !== "");
+  const tiktokQuery = platform ? `client_id=${encodeURIComponent(selected)}` : "";
+  const tiktokUnavailable = returned.some((arrival) => arrival.kind === "tiktok" && arrival.text === TIKTOK_UNAVAILABLE);
   const groupHeading = "font-(family-name:--fs-font-heading) text-(length:--fs-text-xl) font-semibold";
   return <>
     <Heading title="Connections"
@@ -63,6 +74,8 @@ export function ConnectionsWorkspace({ me }: { me: Me }) {
       <h2 className={groupHeading}>Your business</h2>
       <p className="mt-1 mb-4 text-sm text-[color:var(--fs-text-secondary)]">
         For the whole company. Only an Admin can connect or disconnect.</p>
+      {ready && packages !== undefined && <TikTokCard me={me} query={tiktokQuery} unavailable={tiktokUnavailable}
+        gate={cardGate("tiktok", me.role, packages)} />}
     </section>
     {!platform && <section data-testid="connections-group-you" className="mb-8">
       <h2 className={groupHeading}>You</h2>

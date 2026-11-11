@@ -20702,7 +20702,7 @@
         ],
         "responses": {
           "303": {
-            "description": "Back to Store connections with a safe outcome."
+            "description": "Back to Connections with a safe outcome."
           },
           "422": {
             "content": {

@@ -211,9 +211,9 @@ async def test_callback_refuses_a_client_without_the_marketplaces_package(
     tenant = w.tenants[0]
     seen = mock_tiktok(monkeypatch, [(f"SYNTH-SHOP-{uuid4()}", "SYNTHETIC-FIRST-CIPHER")])
     if role == "platform_admin":
-        client, query, root, extra = w.admin, tenant, "/business/stores", {"client_id": tenant}
+        client, query, root, extra = w.admin, tenant, "/connections", {"client_id": tenant}
     else:
-        client, query, root, extra = await admin_of(w), None, "/portal/business/stores", {}
+        client, query, root, extra = await admin_of(w), None, "/portal/connections", {}
     state = state_of(await connect(w, client, tenant=query))
     await w.q(
         "DELETE FROM console_service_packages WHERE client_id=%s AND package='marketplaces'",
@@ -290,7 +290,7 @@ async def test_connect_503_when_tiktok_off(world: SessionWorld) -> None:
         response = await connect(w, admin)
         assert response.status_code == 503 and response.json()["detail"] == "tiktok_unavailable"
         assert outcome(await callback(admin, code=CODE, state=state)) == (
-            "/portal/business/stores",
+            "/portal/connections",
             {"tiktok": "failed", "reason": "tiktok_unavailable"},
         )
         w.app.state.tiktok_connect = saved
@@ -323,9 +323,9 @@ async def test_callback_first_connect_redirects_connected_for_company_user_and_p
     state = state_of(await connect(w, client, tenant=query))
     response = await callback(client, code=CODE, state=state)
     if role == "platform_admin":
-        expected = ("/business/stores", {"client_id": tenant, "tiktok": "connected"})
+        expected = ("/connections", {"client_id": tenant, "tiktok": "connected"})
     else:
-        expected = ("/portal/business/stores", {"tiktok": "connected"})
+        expected = ("/portal/connections", {"tiktok": "connected"})
     assert outcome(response) == expected
     assert seen == ["exchange", "shops"]
     (store,) = await stores(w, tenant)
@@ -394,7 +394,7 @@ async def test_callback_foreign_client_state_redirects_state_invalid_and_changes
     before = (await attempts(w, w.tenants[0]), await stores(w, w.tenants[0]))
     foreign = await admin_of(w, w.tenants[1])
     assert outcome(await callback(foreign, code=CODE, state=state)) == (
-        "/portal/business/stores",
+        "/portal/connections",
         {"tiktok": "failed", "reason": "state_invalid"},
     )
     assert (await attempts(w, w.tenants[0]), await stores(w, w.tenants[0])) == before
@@ -533,7 +533,7 @@ async def test_each_failure_reason_is_a_listed_safe_code(world: SessionWorld) ->
         rewire(w, verify_first=refuse)
         state = state_of(await connect(w, admin))
         assert outcome(await callback(admin, code=CODE, state=state)) == (
-            "/portal/business/stores",
+            "/portal/connections",
             {"tiktok": "failed", "reason": reason},
         ), code
         assert calls == [code]

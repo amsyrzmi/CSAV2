@@ -13,8 +13,12 @@ async function load(name, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const {
-  cardGate, arrivals, connectionsHref, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED, MANAGE_LINK,
+  cardGate, arrivals, connectionsHref, tiktokView, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED, MANAGE_LINK,
 } = await import(await load("connections-view.ts", {
+  '"@/lib/business-view"': JSON.stringify(await load("business-view.ts", {
+    '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
+    '"@/lib/tiktok-connect"': JSON.stringify(await load("tiktok-connect.ts")),
+  })),
   '"@/lib/tiktok-connect"': JSON.stringify(await load("tiktok-connect.ts")),
   '"@/lib/bookings-view"': JSON.stringify(await load("bookings-view.ts")),
   '"@/lib/email-recipients"': JSON.stringify(await load("email-recipients.ts")),
@@ -159,4 +163,43 @@ test("the Connections pages are adopted and need a session", async () => {
   assert.equal(exports.proxy(new NextRequest("https://example.test/connectionsx", {
     headers: { Cookie: "csa_session=synthetic-session" },
   })).status, 404);
+});
+
+test("tiktokView for every stored status and for no shop", () => {
+  const now = new Date("2026-11-02T02:00:00Z");
+  const store = (status, sync = { orders_synced_at: "2026-11-02T01:57:00Z", products_synced_at: null, problem: null }) => ({
+    id: "s1", platform: "tiktok_shop", shop_id: "SHOP-A", expires_at: null, updated_at: "2026-10-03T00:00:00Z",
+    expiry: "unknown", authorization: "verified", permissions: "granted", provider_reads: "available",
+    connection: { status, live_integration: "available" }, sync, can_manage: true,
+  });
+  assert.deepEqual(tiktokView(null, now), {
+    tone: "neutral", word: "Not connected",
+    sentence: "Connect your TikTok Shop to sync its orders and products.", lastActivity: null,
+  });
+  const reconnect = "Syncing has stopped. Reconnect to start it again.";
+  const expected = {
+    unsupported: ["neutral", "Not supported yet", "Syncing isn't available for this marketplace yet."],
+    unverified: ["neutral", "Not verified", "Reconnect to check this shop with TikTok."],
+    revoked: ["attention", "Needs reconnecting", reconnect],
+    disconnected: ["neutral", "Disconnected", "Syncing is off. Customer details are removed 30 days after disconnecting."],
+    expired: ["attention", "Needs reconnecting", reconnect],
+    app_unavailable: ["attention", "Needs reconnecting", reconnect],
+    binding_missing: ["attention", "Needs reconnecting", reconnect],
+    permissions_missing: ["attention", "Needs reconnecting",
+      "TikTok didn't give us all the access we need. Reconnect and allow every permission."],
+    authorization_recorded: ["success", "Connected", "Orders and products sync from this shop."],
+  };
+  for (const [status, [tone, word, sentence]] of Object.entries(expected)) {
+    assert.deepEqual(tiktokView(store(status), now),
+      { tone, word, sentence, lastActivity: "Synced 3 min ago" }, status);
+  }
+  // Never synced, or no sync block at all.
+  assert.equal(tiktokView(store("authorization_recorded", { orders_synced_at: null, products_synced_at: null, problem: null }), now)
+    .lastActivity, "Not synced yet");
+  assert.equal(tiktokView(store("authorization_recorded", null), now).lastActivity, "Not synced yet");
+  // A pending store has nothing synced and says so by having no last activity.
+  assert.deepEqual(tiktokView(store("missing_shop_id"), now), {
+    tone: "attention", word: "Waiting for TikTok approval",
+    sentence: "Finish approving the connection on TikTok.", lastActivity: null,
+  });
 });

@@ -5,9 +5,12 @@
  */
 import type { Me } from "@/lib/identity-contracts";
 import type { PackageState } from "@/lib/services-api";
+import type { ConnectionView } from "@/components/console/connections/ConnectionCard";
+import type { StoreRecord } from "@/lib/business";
 import { calendarResult } from "@/lib/bookings-view";
+import { storeStatusTone, storeSummary } from "@/lib/business-view";
 import { emailErrorSentence } from "@/lib/email-recipients";
-import { connectErrorText, connectResult } from "@/lib/tiktok-connect";
+import { connectErrorText, connectResult, syncLine } from "@/lib/tiktok-connect";
 
 export type ConnectionKind = "tiktok" | "calendar" | "gmail";
 
@@ -63,6 +66,25 @@ export function cardGate(kind: ConnectionKind, role: Me["role"], packages: Packa
     };
   }
   return { show: true, locked: null, canAct: true, readStatus: true, note: null };
+}
+
+/** The TikTok row of the tab for one store, or for no shop yet. A pending store has no last activity. */
+export function tiktokView(store: StoreRecord | null, now: Date): ConnectionView {
+  if (store === null) {
+    return {
+      tone: "neutral", word: "Not connected",
+      sentence: "Connect your TikTok Shop to sync its orders and products.", lastActivity: null,
+    };
+  }
+  const summary = storeSummary(store);
+  return {
+    tone: storeStatusTone(store.connection.status),
+    word: summary.status,
+    sentence: summary.subtitle,
+    lastActivity: store.connection.status === "missing_shop_id"
+      ? null
+      : syncLine(null, store.sync?.orders_synced_at ?? null, now),
+  };
 }
 
 /** Where the tab lives: a platform admin's address keeps the chosen company. */

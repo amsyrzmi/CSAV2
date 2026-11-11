@@ -2,33 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { api, ApiError } from "@/lib/api";
-import { connectionLabels, type ConnectionStatus } from "@/lib/business";
+import { connectionLabels, type StoreRecord } from "@/lib/business";
 import { channelLabel, offersConnect, storeActions, storeSummary, whenText } from "@/lib/business-view";
 import type { Me } from "@/lib/identity-contracts";
-import {
-  connectErrorText, connectResult, navigate, syncLine, TIKTOK_UNAVAILABLE, type ConnectResult,
-} from "@/lib/tiktok-connect";
+import { connectResult, syncLine, TIKTOK_UNAVAILABLE, type ConnectResult } from "@/lib/tiktok-connect";
 import { TechnicalDetails, TechSwitch } from "../kit";
 import { action, field, Notice, secondary } from "../ui";
 import { Fold, StoreCard } from "./cards";
 import { useRecords } from "./useRecords";
-
-type Store = {
-  id: string; platform: string; shop_id: string | null; expires_at: string | null;
-  updated_at: string; expiry: "unknown" | "expired" | "not_expired";
-  authorization: "verified" | "unverified";
-  permissions: "granted" | "missing" | "unknown";
-  provider_reads: "available" | "unavailable";
-  connection: { status: ConnectionStatus; live_integration: "available" | "unavailable" };
-  sync: {
-    orders_synced_at: string | null; products_synced_at: string | null; problem: "sync_failing" | null;
-  } | null;
-  can_manage: boolean;
-};
-
-const DISCONNECT_CONFIRM = "Stop syncing this shop? Orders stay visible for 30 days, then customer details are removed.";
-const CONNECT_PATH = "/console/v1/business/stores/tiktok/connect";
+import { useTikTokConnect } from "./useTikTokConnect";
 
 /** The Store connections page: connect, reconnect and disconnect a TikTok shop, and each shop's status. */
 export default function StoreConnections({ me, query }: { me: Me; query: string }) {
@@ -38,11 +20,12 @@ export default function StoreConnections({ me, query }: { me: Me; query: string 
   const [platform, setPlatform] = useState("");
   const params = new URLSearchParams(query);
   if (platform) params.set("platform", platform);
-  const stores = useRecords<Store>(`/console/v1/business/stores?${params}`);
+  const stores = useRecords<StoreRecord>(`/console/v1/business/stores?${params}`);
   const [now, setNow] = useState(() => new Date());
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState("");
-  const [unavailable, setUnavailable] = useState(false);
+  const { busy, problem, unavailable, begin, disconnect, markUnavailable } = useTikTokConnect(query, () => {
+    setNow(new Date());
+    stores.newest();
+  });
   const canManage = me.role === "platform_admin" || me.role === "tenant_admin";
 
   // Back from TikTok: show the one-line result once, then drop `tiktok` and `reason` from the
@@ -55,7 +38,7 @@ export default function StoreConnections({ me, query }: { me: Me; query: string 
     setSeenArrival(arrival);
     if (arrival) {
       setResult(connectResult(search));
-      if (search.get("reason") === "tiktok_unavailable") setUnavailable(true);
+      if (search.get("reason") === "tiktok_unavailable") markUnavailable();
     }
   }
   useEffect(() => {
@@ -66,42 +49,6 @@ export default function StoreConnections({ me, query }: { me: Me; query: string 
     const text = rest.toString();
     router.replace(text ? `${pathname}?${text}` : pathname, { scroll: false });
   }, [arrival, search, pathname, router]);
-
-  const withTenant = (path: string) => (query ? `${path}?${query}` : path);
-
-  // Connect (no store) and Reconnect (that store) both end by leaving for TikTok's own page.
-  async function begin(storeId?: string) {
-    setBusy(true);
-    setProblem("");
-    try {
-      const started = await api<{ authorization_url: string }>(withTenant(CONNECT_PATH), {
-        method: "POST",
-        body: JSON.stringify(storeId ? { store_id: storeId } : {}),
-      });
-      if (navigate(started.authorization_url)) return; // The browser is leaving; the buttons stay off.
-      setProblem("We couldn't start the connection. Try again in a moment.");
-    } catch (cause) {
-      const failure = cause instanceof ApiError ? cause : null;
-      if (failure?.status === 503 && failure.code === "tiktok_unavailable") setUnavailable(true);
-      setProblem(connectErrorText(failure?.code ?? "", cause instanceof Error ? cause.message : "Something went wrong."));
-    }
-    setBusy(false);
-  }
-
-  async function disconnect(storeId: string) {
-    if (!window.confirm(DISCONNECT_CONFIRM)) return;
-    setBusy(true);
-    setProblem("");
-    try {
-      await api(withTenant(`/console/v1/business/stores/${encodeURIComponent(storeId)}/disconnect`), { method: "POST" });
-      setNow(new Date());
-      stores.newest();
-    } catch (cause) {
-      const failure = cause instanceof ApiError ? cause : null;
-      setProblem(connectErrorText(failure?.code ?? "", cause instanceof Error ? cause.message : "Something went wrong."));
-    }
-    setBusy(false);
-  }
 
   const items = stores.items ?? [];
   const showConnect = canManage && stores.items !== null && !stores.loading && stores.next === null
