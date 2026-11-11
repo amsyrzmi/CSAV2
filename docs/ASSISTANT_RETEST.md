@@ -483,6 +483,26 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke --repeat 5 \
 Each case must pass at least 4 of 5 (they were 0, 0, 1 and 0 of 5 before). Then run the full
 `assistant_smoke`: no case that passed before may fail now.
 
+## Connections tab (2026-11-10)
+
+The Connections tab (`/connections`, `/portal/connections`) shows TikTok Shop for the company and
+Google Calendar and Gmail for the signed-in member. Use a test company; for the lock rows turn the
+package off on Services first.
+
+| Step | Setup | Expected | Test |
+|---|---|---|---|
+| Open Connections as an Admin, press Connect on TikTok Shop, approve on TikTok | Marketplaces on, TikTok on this server | You land back on Connections still signed in, with "TikTok Shop connected." and the card reading Connected | manual |
+| Press Reconnect, then Disconnect (confirm) on the TikTok card | A connected store | Reconnect returns to the tab with the sentence; Disconnect asks first, then the card reads Not connected | manual |
+| Open Connections as a staff member and as a read-only member | A connected store | Both see the tab; neither sees a Connect button; the card says an Admin can connect or "Your role can't connect this" | manual |
+| Press Connect on Google Calendar, approve, return | Bookings on, Google configured | You return to Connections with the Calendar sentence and the card reads Connected | manual |
+| Press Connect on Gmail, approve, return | Staff email on, Google configured | You return to Connections with "Mailbox connected." and the card reads Connected | manual |
+| Deny consent on Google (calendar and Gmail) | As above | You return to Connections with the plain sentence, no raw code, and the query is cleared from the address | manual |
+| A company without Marketplaces, Bookings or Staff email | Packages off | Each card shows only its "Included in ..." sentence and no button | manual |
+| Platform admin picks a company | Several companies | Only "Your business" shows with that company's TikTok Shop; no Google cards; the address keeps `client_id` | manual |
+| Open Business → Store connections, Bookings → Calendar and Email | A connected store, calendar and mailbox | Each page shows its status line and "Manage in Connections", and no Connect, Reconnect or Disconnect button; the link opens the tab | manual |
+| Open an old bookmark such as `/portal/business/stores?tiktok=connected` | Any | The page loads; no result sentence appears there | manual |
+| Switch the email assistant off from the Email page | Mailbox connected | It asks first and still works from the Email page | manual |
+
 ## States and failure paths
 
 | Prompt | Setup | Expected | Smoke id |
