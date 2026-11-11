@@ -565,11 +565,11 @@ Per tenant, to use it:
 1. In the console, Services (platform administrator): activate the `staff_email` package
    for the client.
 2. A tenant administrator turns on the Email assistant switch.
-3. Each staff member connects their Gmail on the Email assistant tab.
+3. Each staff member connects their Gmail on the Connections tab.
 
 Verify, with nothing secret on screen:
 
-1. Connect a test user's mailbox on the Email assistant tab: Google's consent screen
+1. Connect a test user's mailbox on the Connections tab: Google's consent screen
    appears and, after approval, the tab shows the mailbox as connected.
 2. Run a sync: threads from the last 14 days are listed.
 3. If the gateway fails to start with `EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID,
