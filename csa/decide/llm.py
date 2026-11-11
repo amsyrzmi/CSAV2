@@ -149,6 +149,17 @@ _NO_REPEAT_RULE = (
     "just added, and build on it. If they ask the same thing again, answer shorter or "
     "differently, and ask one new question rather than repeating the last one."
 )
+_CLARIFY_RULE = (
+    "Ask exactly one short clarifying question about the one thing you still need. Use what the "
+    "customer already said in the earlier messages, and never ask a question an earlier "
+    "assistant message already asked. "
+)
+_PARTIAL_ANSWER_RULE = (
+    "The customer still has no answer after earlier questions. Do not ask another general "
+    "question. Give what the facts and the earlier messages do answer, or say plainly what you "
+    "cannot answer, then ask one targeted question about the single detail that would let you "
+    "answer. "
+)
 _HANDOFF_RECENT_RULE = (
     "A team member has already been told about this conversation: do not say again that you will "
     "pass it on or that someone will follow up, unless the customer asks for a person."
@@ -653,11 +664,8 @@ class LLMProvider:
                 if state.plan and state.plan.intent == Intent.CHITCHAT
                 else ""
             )
-            + (
-                "Ask exactly one short clarifying question. "
-                if strategy == "ask_clarifying"
-                else ""
-            )
+            + (_CLARIFY_RULE if strategy == "ask_clarifying" else "")
+            + (_PARTIAL_ANSWER_RULE if strategy == "partial_answer" else "")
             + (
                 "Buttons are shown to the customer: say the order is a draft that is NOT placed "
                 "until they tap Confirm, and refer to the buttons instead of asking for typed "

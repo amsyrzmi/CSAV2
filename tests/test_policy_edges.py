@@ -10,6 +10,11 @@ from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
 from csa.graph.policy.handoff import decide_handoff
 from csa.graph.policy.plan_rules import (
+    HANDOFF_AT,
+    LADDER_REASON,
+    PARTIAL_AT,
+    UNRESOLVED,
+    next_unresolved,
     resolve_order_status,
     validate_plan,
 )
@@ -151,6 +156,116 @@ def test_a_hard_failure_stays_an_agent_failure() -> None:
     handoff = decide_handoff(_plan(), results, context=None, signals=None)
     assert handoff is not None and handoff.reason == "agent_failure"
     assert handoff.priority == "high"
+
+
+# -- The escalation ladder: two questions, a partial answer, then a handoff --
+
+
+def _strategy_plan(strategy: str, *, intent: Intent = Intent.OTHER) -> Plan:
+    return Plan(
+        tasks=[],
+        reply_strategy=strategy,  # type: ignore[arg-type]
+        intent=intent,
+        confidence=1,
+        source="llm",
+    )
+
+
+def test_the_ladder_constants() -> None:
+    assert (LADDER_REASON, PARTIAL_AT, HANDOFF_AT) == ("unresolved_turns", 2, 3)
+    assert UNRESOLVED == frozenset({"ask_clarifying", "partial_answer"})
+
+
+@pytest.mark.parametrize(
+    ("count", "strategy"),
+    [
+        (0, "ask_clarifying"),
+        (1, "ask_clarifying"),
+        (2, "partial_answer"),
+        (3, "escalate"),
+        (7, "escalate"),
+    ],
+)
+def test_the_ladder_asks_twice_then_answers_in_part_then_hands_off(
+    count: int, strategy: str
+) -> None:
+    plan, errors = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=count
+    )
+    assert not errors
+    assert plan.reply_strategy == strategy
+    if strategy == "escalate":
+        assert plan.handoff_reason == "unresolved_turns" and plan.source == "policy"
+    else:
+        assert plan.handoff_reason is None
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 7])
+def test_a_planned_answer_at_any_rung_is_kept(count: int) -> None:
+    answered = _plan_of(Task(task_id="t", agent="alpha", input={}))
+    plan, errors = validate_plan(answered, known_agents=frozenset({"alpha"}), clarify_count=count)
+    assert not errors and plan == answered
+
+
+@pytest.mark.parametrize(
+    ("strategy", "intent", "current", "expected"),
+    [
+        ("ask_clarifying", Intent.OTHER, 0, 1),
+        ("ask_clarifying", Intent.OTHER, 2, 3),
+        ("partial_answer", Intent.OTHER, 2, 3),
+        ("auto_reply", Intent.CHITCHAT, 2, 2),
+        ("ignore", Intent.OTHER, 1, 1),
+        ("auto_reply", Intent.ORDER, 2, 0),
+        ("confirm", Intent.ORDER, 2, 0),
+        ("escalate", Intent.OTHER, 2, 0),
+    ],
+)
+def test_next_unresolved_table(strategy: str, intent: Intent, current: int, expected: int) -> None:
+    assert next_unresolved(_strategy_plan(strategy, intent=intent), current) == expected
+
+
+def test_next_unresolved_without_a_plan_is_zero() -> None:
+    assert next_unresolved(None, 2) == 0
+
+
+def test_must_escalate_now_skips_the_ladder() -> None:
+    escalate = _strategy_plan("escalate")
+    wants = make_signals(Intent.OTHER, answers={"wants_human": True})
+    angry = make_signals(Intent.OTHER, answers={"sentiment": "angry"})
+    assert decide_handoff(escalate, [], context=Context(), signals=wants).reason == (  # type: ignore[union-attr]
+        "human_requested"
+    )
+    assert decide_handoff(escalate, [], context=Context(), signals=angry).reason == (  # type: ignore[union-attr]
+        "angry_customer"
+    )
+    plain = decide_handoff(escalate, [], context=Context(), signals=make_signals(Intent.OTHER))
+    assert plain is not None and plain.reason == "plan_escalated"
+    # And none of them climbed: the plan was never an ask, so it is not rewritten at count 0.
+    kept, _ = validate_plan(escalate, known_agents=frozenset(), clarify_count=0)
+    assert kept.reply_strategy == "escalate" and kept.handoff_reason is None
+
+
+def test_a_ladder_handoff_carries_its_reason_at_high_priority() -> None:
+    plan, _ = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=3
+    )
+    handoff = decide_handoff(plan, [], context=Context(), signals=make_signals(Intent.OTHER))
+    assert handoff is not None and handoff.required
+    assert handoff.reason == "unresolved_turns" and handoff.priority == "high"
+
+
+def test_a_ladder_handoff_with_handoff_disabled_is_not_required() -> None:
+    plan, _ = validate_plan(
+        _strategy_plan("ask_clarifying"), known_agents=frozenset(), clarify_count=3
+    )
+    handoff = decide_handoff(
+        plan,
+        [],
+        context=Context(flags={"handoff_disabled": True}),
+        signals=make_signals(Intent.OTHER),
+    )
+    assert handoff is not None and not handoff.required
+    assert handoff.reason == "unresolved_turns:disabled"
 
 
 # -- TikTok routing (spec 6.7): order numbers to ecommerce_agent, stock by product_availability --

@@ -145,7 +145,12 @@ async def test_refund_request_without_tasks_keeps_clarification_bound() -> None:
     plan = await provider.plan(
         make_envelope("Refund my order"), Context(), make_signals(Intent.REFUND_RETURNS)
     )
-    for count, strategy in [(0, "ask_clarifying"), (1, "escalate")]:
+    for count, strategy in [
+        (0, "ask_clarifying"),
+        (1, "ask_clarifying"),
+        (2, "partial_answer"),
+        (3, "escalate"),
+    ]:
         validated, errors = validate_plan(
             plan, known_agents=frozenset(CAPABILITIES), clarify_count=count
         )
@@ -1706,6 +1711,51 @@ async def test_compose_no_repeat_rule_only_with_recent() -> None:
     assert with_recent.index(_LIST_RULE_TEXT) < with_recent.index(_NO_REPEAT_TEXT)
     # a booking context's own recent messages count too
     assert _NO_REPEAT_TEXT in await _compose_system(_booking_context())
+
+
+_CLARIFY_TEXT = (
+    "Ask exactly one short clarifying question about the one thing you still need. Use what the "
+    "customer already said in the earlier messages, and never ask a question an earlier "
+    "assistant message already asked. "
+)
+_PARTIAL_TEXT = (
+    "The customer still has no answer after earlier questions. Do not ask another general "
+    "question. Give what the facts and the earlier messages do answer, or say plainly what you "
+    "cannot answer, then ask one targeted question about the single detail that would let you "
+    "answer. "
+)
+
+
+async def _compose_system_for(strategy: str) -> str:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"reply": "Sure.", "used_fact_ids": []})(request)
+
+    base = _guide_state()
+    assert base.plan is not None
+    state = base.model_copy(
+        update={"plan": base.plan.model_copy(update={"reply_strategy": strategy})}
+    )
+    await _provider(handler).compose(state)
+    (system,) = seen
+    return system
+
+
+async def test_compose_partial_answer_says_the_partial_rule_not_the_clarify_rule() -> None:
+    system = await _compose_system_for("partial_answer")
+    assert _PARTIAL_TEXT in system
+    assert "Ask exactly one short clarifying question" not in system
+    assert _PARTIAL_TEXT not in await _compose_system_for("ask_clarifying")
+    assert _PARTIAL_TEXT not in await _compose_system_for("auto_reply")
+
+
+async def test_compose_clarify_forbids_repeating_a_question() -> None:
+    system = await _compose_system_for("ask_clarifying")
+    assert _CLARIFY_TEXT in system
+    assert "never ask a question an earlier assistant message already asked" in system
+    assert _CLARIFY_TEXT not in await _compose_system_for("auto_reply")
 
 
 async def test_compose_handoff_recent_sentence_only_when_flagged() -> None:

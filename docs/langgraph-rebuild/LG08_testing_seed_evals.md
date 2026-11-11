@@ -296,7 +296,7 @@ Intent accuracy, escalation precision/recall, grounding-failure rate, auto-send 
   (`order_draft_duplicate_sku_merged.json`), duplicate SKU line exceeding stock (`order_draft_duplicate_sku_out_of_stock.json`),
   multi-line order reservation release on cancellation (`order_cancel_two_lines_full_release.json`),
   typed confirmation button enforcement (`order_typed_confirm_asks_for_tap.json`),
-  repeated clarification escalation bound (`flow_clarify_twice_escalates.json`),
+  repeated clarification escalation bound (`flow_ladder_partial_then_handoff.json`),
   fast-path greeting routing (`flow_greeting_no_agent_no_plan.json`),
   and tenant policy `never_auto` review hold (`policy_never_auto_complaint.json`).
   All 33 cases pass against real PostgreSQL testcontainers and worker runtime.

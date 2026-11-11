@@ -29,6 +29,8 @@ from csa.contracts.state import (
 )
 from csa.decide.llm import HandoffOut
 from csa.graph.policy.gate import Policy
+from csa.graph.policy.handoff import decide_handoff
+from csa.graph.policy.plan_rules import validate_plan
 from csa.turn import deps
 from csa.turn.texts import (
     fallback_staff_note,
@@ -305,6 +307,22 @@ async def test_a_note_with_a_figure_nobody_said_becomes_the_fallback_note() -> N
     assert draft.staff_note == "The customer asked for a person."
     # The reply is checked on its own: the model's reply stays.
     assert draft.text == "Sorry. A team member will reply here." and draft.composer == "primary"
+
+
+async def test_a_ladder_handoff_is_written_by_the_model_with_a_note() -> None:
+    note = "The customer's questions stayed unclear. Nothing about the plan was answered yet."
+    model = Recorder(note=note)
+    state = _handoff("unresolved_turns", route="clarify", body="hmm not sure what I mean")
+    draft = await _deps(model)._compose(state)
+    assert len(model.calls) == 1
+    assert draft.handoff and draft.composer == "primary"
+    assert draft.text == "Sorry. A team member will reply here."
+    assert draft.staff_note == note
+    # The same ladder reason on a hard route is never model-written.
+    template = await _deps(Recorder())._compose(
+        _handoff("unresolved_turns", route="hard_escalate", body="my lawyer will sue")
+    )
+    assert template.composer == "template"
 
 
 async def test_a_customers_own_figure_may_be_in_the_note() -> None:
@@ -703,3 +721,73 @@ async def test_finalize_records_the_gap_topic_once_and_never_on_a_resume(shop: S
     third, _ = await _escalated(shop)
     await real.finalize(_with_note(third, "No topic.", None))
     assert await _gaps(shop) == [{"query": "how to pay", "hits": 2}]
+
+
+# --- finalize counts unresolved turns ---------------------------------------------------------
+
+
+def _planned(state: TurnState, strategy: str, intent: Intent, count: int) -> TurnState:
+    return state.model_copy(
+        update={
+            "ctx": Context(clarify_count=count),
+            "plan": Plan(
+                tasks=[],
+                reply_strategy=strategy,  # type: ignore[arg-type]
+                intent=intent,
+                confidence=1,
+                source="policy",
+            ),
+        }
+    )
+
+
+async def _clarify_count(shop: Shop, chat: uuid.UUID) -> int:
+    rows = await shop.w.q("SELECT clarify_count FROM conversations WHERE id = %s", str(chat))
+    return rows[0]["clarify_count"]
+
+
+@requires_docker
+async def test_finalize_counts_unresolved_turns_and_resets_on_an_answer(shop: Shop) -> None:
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    assert await _clarify_count(shop, chat) == 0
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 0))
+    assert await _clarify_count(shop, chat) == 1
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 1))
+    assert await _clarify_count(shop, chat) == 2
+    # Small talk and an ignored message keep the count; neither resolves nor adds.
+    await real.finalize(_planned(state, "auto_reply", Intent.CHITCHAT, 2))
+    assert await _clarify_count(shop, chat) == 2
+    await real.finalize(_planned(state, "ignore", Intent.OTHER, 2))
+    assert await _clarify_count(shop, chat) == 2
+    await real.finalize(_planned(state, "partial_answer", Intent.OTHER, 2))
+    assert await _clarify_count(shop, chat) == 3
+    # An answer resets it.
+    await real.finalize(_planned(state, "auto_reply", Intent.ORDER, 3))
+    assert await _clarify_count(shop, chat) == 0
+    await real.finalize(_planned(state, "ask_clarifying", Intent.OTHER, 0))
+    await real.finalize(_planned(state, "escalate", Intent.OTHER, 1))
+    assert await _clarify_count(shop, chat) == 0
+
+
+@requires_docker
+async def test_with_memory_off_the_ladder_still_hands_off_at_three(shop: Shop) -> None:
+    await shop.policy({"conversation_memory": False})
+    real = deps.PostgresTurnDependencies(shop.w.pool)
+    state, chat = await _escalated(shop)
+    await shop.w.q("UPDATE conversations SET clarify_count = 3 WHERE id = %s", str(chat))
+    ctx = await real.load_context(state.envelope)
+    assert ctx.flags["memory_off"] is True and ctx.clarify_count == 3
+    asked = Plan(
+        tasks=[],
+        reply_strategy="ask_clarifying",
+        intent=Intent.OTHER,
+        confidence=1,
+        source="policy",
+    )
+    plan, _ = validate_plan(asked, known_agents=frozenset(), clarify_count=ctx.clarify_count)
+    handoff = decide_handoff(plan, [], context=ctx, signals=make_signals(Intent.OTHER))
+    assert plan.reply_strategy == "escalate"
+    assert handoff is not None and handoff.required and handoff.reason == "unresolved_turns"
+    await real.finalize(state.model_copy(update={"ctx": ctx, "plan": plan}))
+    assert await _clarify_count(shop, chat) == 0

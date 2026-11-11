@@ -32,7 +32,7 @@ def decide_handoff(
     elif signals is not None and signals.answers.get("sentiment") == "angry":
         reason = "angry_customer"
     elif plan.reply_strategy == "escalate":
-        reason = "plan_escalated"
+        reason = plan.handoff_reason or "plan_escalated"
     elif any(
         result.requires_human
         or result.error is not None

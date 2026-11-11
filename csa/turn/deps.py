@@ -66,6 +66,7 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
+from csa.graph.policy.plan_rules import LADDER_REASON, next_unresolved
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
@@ -865,8 +866,7 @@ class PostgresTurnDependencies:
 
     async def finalize(self, state: TurnState) -> None:
         conversation_id = _require_conversation(state.envelope)
-        asked = state.plan is not None and state.plan.reply_strategy == "ask_clarifying"
-        clarify = (state.ctx.clarify_count + 1) if asked and state.ctx is not None else 0
+        clarify = next_unresolved(state.plan, state.ctx.clarify_count if state.ctx else 0)
         intent = state.plan.intent.value if state.plan is not None else None
         async with tx(self._pool, str(state.envelope.client_id)) as conn:
             updated = await db.q.fetch_one(
@@ -999,7 +999,9 @@ def _handoff_may_be_written(state: TurnState) -> bool:
     reason = state.handoff.reason
     if reason in _WRITTEN_HANDOFF_REASONS:
         return state.route not in _TEMPLATE_HANDOFF_ROUTES - {"hard_escalate"}
-    return reason == "plan_escalated" and state.route not in _TEMPLATE_HANDOFF_ROUTES
+    return reason in {"plan_escalated", LADDER_REASON} and (
+        state.route not in _TEMPLATE_HANDOFF_ROUTES
+    )
 
 
 def _require_conversation(envelope: Envelope) -> UUID:

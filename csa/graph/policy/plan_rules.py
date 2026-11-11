@@ -31,6 +31,14 @@ _ACCOUNT_INTENTS = {
 }
 _CONFIDENCE_FLOOR = 0.35
 
+# The escalation ladder. ``conversations.clarify_count`` counts unresolved turns in a row: below
+# PARTIAL_AT the bot asks a clarifying question, at PARTIAL_AT it answers in part with one
+# targeted question, from HANDOFF_AT on it hands the chat to staff.
+LADDER_REASON = "unresolved_turns"
+PARTIAL_AT = 2
+HANDOFF_AT = 3
+UNRESOLVED = frozenset({"ask_clarifying", "partial_answer"})
+
 
 def resolve_order_status(
     *,
@@ -117,9 +125,35 @@ def validate_plan(
             return plan, errors
         plan = plan.model_copy(update={"reply_strategy": "ask_clarifying"})
 
-    if plan.reply_strategy == "ask_clarifying" and clarify_count >= 1:
-        plan = plan.model_copy(update={"reply_strategy": "escalate", "source": "policy"})
+    if plan.reply_strategy == "ask_clarifying":
+        if clarify_count >= HANDOFF_AT:
+            plan = plan.model_copy(
+                update={
+                    "reply_strategy": "escalate",
+                    "source": "policy",
+                    "handoff_reason": LADDER_REASON,
+                }
+            )
+        elif clarify_count >= PARTIAL_AT:
+            plan = plan.model_copy(update={"reply_strategy": "partial_answer"})
     return plan, errors
+
+
+def next_unresolved(plan: Plan | None, current: int) -> int:
+    """The unresolved-turns count after a turn that ended with ``plan``.
+
+    A question or a partial answer adds one; small talk and an ignored message keep the count
+    (they neither resolve nor fail the customer); any other turn resolved something and resets.
+    """
+    if plan is None:
+        return 0
+    if plan.reply_strategy in UNRESOLVED:
+        return current + 1
+    if plan.reply_strategy == "ignore" or (
+        plan.reply_strategy == "auto_reply" and plan.intent == Intent.CHITCHAT
+    ):
+        return current
+    return 0
 
 
 def _plan_error(code: str, message: str) -> AgentError:
