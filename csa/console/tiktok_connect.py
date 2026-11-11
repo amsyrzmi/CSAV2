@@ -2,7 +2,7 @@
 
 The browser never supplies a shop, app material or tokens. Connect starts a single-use attempt
 and returns TikTok's authorize URL. TikTok sends the seller back to the callback, which
-completes that attempt and answers with a 303 to the Store connections page carrying only a
+completes that attempt and answers with a 303 to the Connections tab carrying only a
 fixed reason code (spec 6.2). Code, state, tokens and exception text are never echoed or logged.
 """
 
@@ -60,7 +60,7 @@ logger = structlog.get_logger(__name__)
 # Verify the Malaysia authorize host in Partner Center (ledger Task 21).
 AUTHORIZE_URL = "https://services.tiktokshop.com/open/authorize"
 
-# Every reason the callback can put in its redirect; the Store connections page words each one.
+# Every reason the callback can put in its redirect; the Connections tab words each one.
 REASONS = (
     "tiktok_unavailable",
     "provider_denied",
@@ -493,7 +493,7 @@ def build_tiktok_callback_router() -> APIRouter:
         "/stores/tiktok/callback",
         status_code=303,
         response_class=RedirectResponse,
-        responses={303: {"description": "Back to Store connections with a safe outcome."}},
+        responses={303: {"description": "Back to Connections with a safe outcome."}},
     )
     async def callback(
         request: Request,
@@ -509,11 +509,11 @@ def build_tiktok_callback_router() -> APIRouter:
         reason = await _complete(request, actor, parsed, code, error, duplicated)
         params: dict[str, str] = {}
         if actor.platform_admin:
-            target = "/business/stores"
+            target = "/connections"
             if parsed is not None:
                 params["client_id"] = str(parsed.client_id)
         else:
-            target = "/portal/business/stores"
+            target = "/portal/connections"
         if reason is None:
             params["tiktok"] = "connected"
         else:

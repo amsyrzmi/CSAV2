@@ -16,6 +16,20 @@ export const connectionLabels: Record<ConnectionStatus, string> = {
   authorization_recorded: "Connected and checked with TikTok",
 };
 
+/** One TikTok (or other marketplace) store record as `GET /business/stores` sends it. */
+export type StoreRecord = {
+  id: string; platform: string; shop_id: string | null; expires_at: string | null;
+  updated_at: string; expiry: "unknown" | "expired" | "not_expired";
+  authorization: "verified" | "unverified";
+  permissions: "granted" | "missing" | "unknown";
+  provider_reads: "available" | "unavailable";
+  connection: { status: ConnectionStatus; live_integration: "available" | "unavailable" };
+  sync: {
+    orders_synced_at: string | null; products_synced_at: string | null; problem: "sync_failing" | null;
+  } | null;
+  can_manage: boolean;
+};
+
 export type DemoListing = Readonly<{
   id: string;
   sku: string;

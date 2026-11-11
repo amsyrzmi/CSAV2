@@ -12,7 +12,7 @@ import { readReplies } from "@/lib/customer-replies";
 import { todayInZone } from "@/lib/bookings-view";
 import BookingsCalendar from "./bookings/BookingsCalendar";
 import BookingTypes from "./bookings/BookingTypes";
-import GoogleCalendarPanel, { GoogleCalendarPeople } from "./bookings/GoogleCalendarPanel";
+import GoogleCalendarLine, { GoogleCalendarPeople } from "./bookings/GoogleCalendarPanel";
 import PeopleAndRooms from "./bookings/PeopleAndRooms";
 import { useLoaded, type BookingsScope, type ZoneState } from "./bookings/parts";
 import { SectionNav, useSectionArrivalFocus } from "./kit";
@@ -180,7 +180,7 @@ function BookingsPage({
           </Notice>
         </div>
       )}
-      {section === "calendar" && <GoogleCalendarPanel scope={scope} calendar={calendar} />}
+      {section === "calendar" && <GoogleCalendarLine scope={scope} calendar={calendar} />}
       {section === "calendar" && <BookingsCalendar scope={scope} />}
       {section === "types" && <BookingTypes scope={scope} peopleHref={peopleHref} />}
       {section === "people" && <PeopleAndRooms scope={scope} settings={settings} />}

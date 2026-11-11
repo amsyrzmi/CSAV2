@@ -439,7 +439,7 @@ async def test_full_flow_switch_connect_sync_triage_draft_export(
         f"/console/v1/email/oauth/callback?state={state}&iss=https://accounts.google.com"
         "&code=abc&scope=https://www.googleapis.com/auth/gmail.readonly",
     )
-    assert done.status_code == 303 and done.headers["location"] == "/portal/email?connected=1"
+    assert done.status_code == 303 and done.headers["location"] == "/portal/connections?connected=1"
     replayed = await world.call(
         "staff", "GET", f"/console/v1/email/oauth/callback?code=abc&state={state}"
     )
@@ -601,6 +601,27 @@ async def test_full_flow_switch_connect_sync_triage_draft_export(
     assert (await world.call("staff", "POST", "/console/v1/email/sync")).json()[
         "detail"
     ] == "mailbox_not_connected"
+
+
+async def test_a_gmail_callback_with_client_id_returns_to_the_admin_tab_with_it(
+    world: World,
+) -> None:
+    # A callback that names its company goes back to the admin tab and keeps the company in the
+    # address; the outcome parameters are the same ones the member's own return carries.
+    denied = await world.call(
+        "staff",
+        "GET",
+        f"/console/v1/email/oauth/callback?client_id={world.tenant}&error=access_denied",
+    )
+    assert denied.status_code == 303
+    location = urlsplit(denied.headers["location"])
+    assert location.path == "/connections"
+    assert parse_qs(location.query) == {
+        "client_id": [str(world.tenant)],
+        "error": ["provider_denied"],
+    }
+    plain = await world.call("staff", "GET", "/console/v1/email/oauth/callback?error=access_denied")
+    assert plain.headers["location"] == "/portal/connections?error=provider_denied"
 
 
 async def test_machine_tokens_and_identity_headers_are_refused(world: World) -> None:

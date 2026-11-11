@@ -17,27 +17,16 @@ import { EmailPreview } from "./EmailPreview";
 import ConfirmAction from "./email/ConfirmAction";
 import FilterBar from "./email/FilterBar";
 import StatusBar from "./email/StatusBar";
+import { errorFor } from "./email/useGmailConnect";
 import StatusLabel from "./fs/StatusLabel";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, secondary, Heading, Notice, Panel } from "./ui";
-
-const CONNECTED = "Mailbox connected.";
-
-/** The plain sentence for a failed request; codes without one keep the generic form. */
-function errorFor(reason: unknown): string {
-  const sentence = emailErrorSentence(reason);
-  if (sentence) return sentence;
-  const code = reason instanceof ApiError ? reason.code : reason instanceof Error ? reason.message : String(reason);
-  return `Request failed: ${code}`;
-}
 
 type AttentionState =
   | { state: "off" } | { state: "loading" } | { state: "ready"; page: AttentionPage } | { state: "error"; text: string };
 
 /** Each tenant selection creates fresh state and transport; late responses cannot cross tenants. */
-export function EmailWorkspace({ me, initialTenant = "", notice = "" }: {
-  me: Me; initialTenant?: string; notice?: string;
-}) {
+export function EmailWorkspace({ me, initialTenant = "" }: { me: Me; initialTenant?: string }) {
   const [selection, setSelection] = useState(initialTenant || me.active_client_id || "");
   const [tenant, setTenant] = useState(me.role === "platform_admin" ? initialTenant : me.active_client_id ?? "");
   // Company names for the picker, read once and only for a platform administrator. A failed read
@@ -60,11 +49,11 @@ export function EmailWorkspace({ me, initialTenant = "", notice = "" }: {
       onChange={e => setSelection(e.target.value)} required><option value="">Choose a tenant</option>
       {me.memberships.map(m => <option key={m.client_id} value={m.client_id}>{names[m.client_id] ?? m.client_id}</option>)}
     </select></label><button className={secondary}>Open email</button></form>}
-    {tenant ? <TenantEmail key={tenant} me={me} tenant={tenant} notice={notice} /> : <Notice>Select a tenant to continue.</Notice>}
+    {tenant ? <TenantEmail key={tenant} me={me} tenant={tenant} /> : <Notice>Select a tenant to continue.</Notice>}
   </div>;
 }
 
-function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: string }) {
+function TenantEmail({ me, tenant }: { me: Me; tenant: string }) {
   const scope = me.role === "platform_admin" ? tenant : "";
   const client = useMemo(() => emailClient(scope), [scope]);
   const [context, setContext] = useState<EmailContext | null>(null);
@@ -76,8 +65,8 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   useEffect(() => { openThread.current = selected?.thread_id ?? null; }, [selected]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [tab, setTab] = useState<"inbox" | "drafts">("inbox");
-  const [error, setError] = useState(notice && notice !== "connected" ? emailErrorSentence({ code: notice }) ?? "" : "");
-  const [message, setMessage] = useState(notice === "connected" ? CONNECTED : "");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [more, setMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [attention, setAttention] = useState<AttentionState>({ state: "off" });
@@ -231,17 +220,13 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     {error && <Notice error>{error}</Notice>}
     {message && <Notice>{message}</Notice>}
     <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-    <StatusBar context={context} lastSync={lastSync} busy={busy} writable={writable} wide={attention.state === "off"}
+    <StatusBar context={context} lastSync={lastSync} busy={busy} writable={writable} wide={attention.state === "off"} platform={me.role === "platform_admin"}
       onSync={() => run(
         () => client.sync(), async r => { const ctx = await refreshAll(); const n = (r.detail as { threads?: number }).threads ?? 0; setMessage(`Checked Gmail: ${n} ${n === 1 ? "conversation" : "conversations"}.`); loadAttention(ctx); },
       )}
-      onConnect={() => run(() => client.connect(), result => { window.location.assign(result.authorization_url); })}
       onSetEnabled={next => run(
         () => client.setEnabled(next),
         async () => { const ctx = await client.context(); setContext(ctx); await reloadLists(ctx); setMessage(ctx.enabled ? "Assistant enabled." : "Assistant disabled."); },
-      )}
-      onDisconnect={() => run(
-        () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Gmail disconnected. Emails already loaded stay readable."); },
       )} />
     {attention.state !== "off" && <AttentionPanel attention={attention} busy={busy}
       onOpen={id => run(() => client.thread(id), detail => { setSelected(detail); setTab("inbox"); })} />}

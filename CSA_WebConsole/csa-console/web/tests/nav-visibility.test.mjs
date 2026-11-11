@@ -132,6 +132,24 @@ test("Training library follows its own package for every member role, after Book
   assert.equal(entryForPath(links, "/portal/trainingx"), null);
 });
 
+test("Connections is in every role's rail after Training library, /connections for platform admins, /portal/connections for members, with no package", () => {
+  for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"]) {
+    const none = navigationFor({ ...staff, role }, []);
+    const link = none.find((l) => l.label === "Connections");
+    assert.equal(link?.key, "connections", role);
+    assert.equal(link?.href, role === "platform_admin" ? "/connections" : "/portal/connections", role);
+    assert.equal(link?.children, undefined, role);
+    // No package is needed: it is in the rail with nothing active, and sits before the platform entries.
+    const all = navigationFor({ ...staff, role }, active("training_library", "bookings"));
+    const names = all.map((l) => l.label);
+    assert.equal(names.indexOf("Connections"), names.indexOf("Training library") + 1, role);
+  }
+  const admin = labels({ ...staff, role: "platform_admin" }, []);
+  assert.ok(admin.indexOf("Connections") < admin.indexOf("Tenants"));
+  const links = navigationFor(staff, []);
+  assert.equal(entryForPath(links, "/portal/connections")?.key, "connections");
+});
+
 test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
@@ -184,15 +202,15 @@ test("children never add a top-level key", () => {
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  // 15 since the Training library joined.
-  assert.equal(keys.size, 15);
+  // 16 since Connections joined.
+  assert.equal(keys.size, 16);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
   const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
-    "activity", "bookings", "business", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "activity", "bookings", "business", "connections", "email", "hr", "inbox", "knowledge_base", "members", "overview",
     "password", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });

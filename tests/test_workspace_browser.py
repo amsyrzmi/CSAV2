@@ -932,7 +932,7 @@ async def test_executed_plan_shows_a_badge_per_step(
             await expect(steps.nth(index)).to_have_attribute("data-status", state)
         reasons = [
             None,
-            "Connect your Gmail on the Email assistant tab first.",
+            "Connect your Gmail on the Connections tab first.",
             "It changed since you reviewed it.",
             "It was never started.",
             "This step could not be completed.",
@@ -1112,7 +1112,7 @@ async def test_malay_plan_card_text(stack: tuple[str, Upstream, Any], tmp_path: 
                 badge, timeout=WAIT
             )
         await expect(steps.nth(1).get_by_test_id("plan-step-reason")).to_have_text(
-            "Sambungkan Gmail anda di tab Email assistant dahulu."
+            "Sambungkan Gmail anda di tab Connections dahulu."
         )
         await expect(steps.nth(2).get_by_test_id("plan-step-reason")).to_have_text(
             "Ia tidak pernah dimulakan."

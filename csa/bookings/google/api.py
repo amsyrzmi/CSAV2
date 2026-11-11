@@ -19,8 +19,9 @@ from csa.console.services import package_gate
 from csa.core.tenancy import tx
 
 GOOGLE_ISSUER = "https://accounts.google.com"
-# The Bookings page; the result of a connection is one query parameter, cleared by the page.
-BOOKINGS_PAGE = "/portal/bookings"
+# Where the browser returns: the Connections tab, which says the result once (one query
+# parameter) and clears it from the address.
+RETURN_PAGE = "/portal/connections"
 CONNECTORS = {Role.TENANT_ADMIN, Role.TENANT_STAFF}
 REFUSALS = {"person_required": 409, "not_connected": 409, "calendar_unavailable": 503}
 Tenant = Annotated[UUID, Depends(tenant)]
@@ -88,7 +89,7 @@ def build_calendar_router() -> APIRouter:
         error: Annotated[str | None, Query(max_length=64)] = None,
         iss: Annotated[str | None, Query(max_length=256)] = None,
     ) -> Response:
-        """Google sends the browser back here; the answer is a redirect to the Bookings page."""
+        """Google sends the browser back here; the answer is a redirect to the Connections tab."""
         actor = actor_of(request, client_id)
         service = _service(request)
         params: dict[str, str] = {}
@@ -104,7 +105,7 @@ def build_calendar_router() -> APIRouter:
                 params["calendar"] = "connected"
             except CalendarError as failure:
                 params["calendar_error"] = failure.code
-        response = RedirectResponse(f"{BOOKINGS_PAGE}?{urlencode(params)}", status_code=303)
+        response = RedirectResponse(f"{RETURN_PAGE}?{urlencode(params)}", status_code=303)
         response.headers["Cache-Control"] = "no-store"
         return response
 

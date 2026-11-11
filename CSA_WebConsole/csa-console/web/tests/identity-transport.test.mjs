@@ -451,7 +451,7 @@ test("M6 synthetic demo listings are temporary local state with explicit no-API 
   assert.doesNotMatch(demoSection, /\bpost\s*\(/);
 });
 
-test("connection lifecycle labels are plain, and Connect and Reconnect are real, Admin-only buttons", async () => {
+test("connection lifecycle labels are plain, and the old page links to Connections instead of connecting", async () => {
   assert.deepEqual(Object.keys(connectionLabels).sort(), [
     "unsupported", "missing_shop_id", "unverified", "revoked", "disconnected",
     "expired", "app_unavailable", "binding_missing", "permissions_missing", "authorization_recorded",
@@ -467,12 +467,15 @@ test("connection lifecycle labels are plain, and Connect and Reconnect are real,
   assert.doesNotMatch(source, /Account registration alone|saved records only|coming soon|Partner Center eligibility/i);
   assert.match(workspace, /<StoreConnections /);
   assert.match(source, /connectionLabels\[store.connection.status\]/);
-  // Connect is shown only to an Admin or platform admin; per-card buttons follow can_manage.
-  assert.match(source, /me\.role === "platform_admin" \|\| me\.role === "tenant_admin"/);
-  assert.match(source, /storeActions\(store\)/);
-  // The only way the browser leaves for TikTok is the checked navigate helper.
-  assert.doesNotMatch(source, /window\.location/);
-  assert.match(source, /navigate\(started\.authorization_url\)/);
+  // The old page has no Connect, Reconnect or Disconnect and never leaves for TikTok: it links to
+  // the Connections tab, where the checked navigate helper is the only way out.
+  assert.doesNotMatch(source, /storeActions|useTikTokConnect|window\.location|navigate\(/);
+  assert.match(source, /<ManageInConnections /);
+  const hook = await readFile(
+    new URL("../components/console/business/useTikTokConnect.ts", import.meta.url), "utf8",
+  );
+  assert.doesNotMatch(hook, /window\.location/);
+  assert.match(hook, /navigate\(started\.authorization_url\)/);
 });
 
 test("lost upstream response becomes a proxy error; explicit upload retry keeps the durable job", async () => {

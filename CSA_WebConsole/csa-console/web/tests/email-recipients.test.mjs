@@ -76,7 +76,7 @@ test("send errors are plain sentences; unknown codes are left to the caller", ()
   assert.equal(sentence("draft_already_sent"), "This email was already sent.");
   assert.equal(sentence("draft_already_sending"), "This email is already being sent.");
   assert.equal(sentence("send_refused"), "Gmail refused this email. Check the addresses and try again.");
-  assert.equal(sentence("mailbox_reauthorization_required"), "Reconnect your Gmail on the Email assistant tab, then try again.");
+  assert.equal(sentence("mailbox_reauthorization_required"), "Reconnect your Gmail on the Connections tab, then try again.");
   assert.equal(sentence("provider_rate_limited"), "Gmail is busy. Try again in a minute.");
   assert.equal(sentence("recipients_invalid"), "Check the email addresses.");
   assert.equal(sentence("draft_not_releasable"), "Wait a couple of minutes, then try again.");
@@ -89,7 +89,7 @@ test("the attention panel hides for no access and explains a missing summary", (
   assert.equal(email.attentionProblem({ code: "permission_denied" }), "hide");
   assert.equal(email.attentionProblem({ code: "model_not_configured" }), "The summary isn't available right now.");
   assert.equal(email.attentionProblem({ code: "email_model_unavailable" }), "The summary isn't available right now.");
-  assert.equal(email.attentionProblem({ code: "mailbox_not_connected" }), "Connect your Gmail on the Email assistant tab first.");
+  assert.equal(email.attentionProblem({ code: "mailbox_not_connected" }), "Connect your Gmail on the Connections tab first.");
   assert.equal(email.attentionProblem({ code: "other" }), null);
   assert.equal(email.attentionNote({ items: [{}], skipped: 2, as_of: null }), "Some emails couldn't be summarised.");
   assert.equal(email.attentionNote({ items: [], skipped: 2, as_of: null }), null);
@@ -180,6 +180,10 @@ test("email sentences have a Malay side and send_limit_reached counts minutes in
   assert.equal(email.emailErrorSentence({ code: "draft_already_sent" }, "ms"), "E-mel ini sudah dihantar.");
   assert.equal(email.emailErrorSentence({ code: "draft_already_sent" }), "This email was already sent.");
   assert.equal(email.emailErrorSentence({ code: "nope" }, "ms"), null);
+  assert.equal(email.emailErrorSentence({ code: "mailbox_reauthorization_required" }, "ms"),
+    "Sambungkan semula Gmail anda di tab Connections, kemudian cuba lagi.");
+  assert.equal(email.emailErrorSentence({ code: "mailbox_not_connected" }, "ms"),
+    "Sambungkan Gmail anda di tab Connections dahulu.");
   assert.equal(email.emailErrorSentence({ code: "send_limit_reached" }, "ms"), "Anda telah menghantar 20 e-mel dalam sejam yang lalu. Cuba lagi dalam 1 minit.");
   assert.equal(email.emailErrorSentence({ code: "send_limit_reached", body: { retry_after: 600 } }, "ms"),
     "Anda telah menghantar 20 e-mel dalam sejam yang lalu. Cuba lagi dalam 10 minit.");

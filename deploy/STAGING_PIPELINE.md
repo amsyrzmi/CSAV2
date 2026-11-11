@@ -565,11 +565,11 @@ Per tenant, to use it:
 1. In the console, Services (platform administrator): activate the `staff_email` package
    for the client.
 2. A tenant administrator turns on the Email assistant switch.
-3. Each staff member connects their Gmail on the Email assistant tab.
+3. Each staff member connects their Gmail on the Connections tab.
 
 Verify, with nothing secret on screen:
 
-1. Connect a test user's mailbox on the Email assistant tab: Google's consent screen
+1. Connect a test user's mailbox on the Connections tab: Google's consent screen
    appears and, after approval, the tab shows the mailbox as connected.
 2. Run a sync: threads from the last 14 days are listed.
 3. If the gateway fails to start with `EMAIL_ASSISTANT_ENABLED requires GOOGLE_CLIENT_ID,
@@ -632,7 +632,7 @@ Two origins are involved, and mixing them up is the usual mistake:
   on the hooks host and it needs the live hooks Caddy edit (step 6).
 
 TikTok is off while any of the three files holds the literal `disabled`: connect answers 503
-`tiktok_unavailable`, the webhook answers 404, sync jobs skip, and the Store connections page shows
+`tiktok_unavailable`, the webhook answers 404, sync jobs skip, and the Connections tab shows
 Connect disabled. Run the steps in this order, in the shell of section 2 (where
 `csa_pipeline_compose` and its exports are active), from a checkout of the merge commit (an older
 checkout lacks the `tiktok-defaults` action). `scripts/staging_rollout.py` (Routine rollouts) can do the stop, `migrate` and recreate parts of
@@ -741,7 +741,7 @@ csa_pipeline_compose config --quiet || exit 1
 csa_pipeline_compose up --detach --wait --wait-timeout 300 --no-deps --pull never gateway worker delivery frontend
 ```
 
-Check `/readyz`. TikTok is still off, so the Store connections page says "TikTok Shop isn't set up
+Check `/readyz`. TikTok is still off, so the Connections tab says "TikTok Shop isn't set up
 on this server yet." and Connect is disabled.
 
 ### 12.4 Write the three real values (owner; nothing is printed)
@@ -786,7 +786,7 @@ CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
 Expected: `tiktok_shop: disabled at revision 1`, then `tiktok_shop: active at revision 2`. If the
 app was registered before, `register` answers `refused: app_registration_conflict` and exits 1: that
 is harmless, go on to `enable`. The
-Store connections page now offers Connect. `disable` is the same command with `disable`.
+Connections tab now offers Connect. `disable` is the same command with `disable`.
 
 **Rotating the App Secret later:** `disable`, replace the secret file as in step 12.4, recreate
 gateway and worker, `enable`. Each of those bumps the app revision, which stops every in-flight
@@ -881,7 +881,7 @@ In Partner Center, on the app:
 The callback is a browser navigation from TikTok back to the console. It works only if the admin's
 session cookie is sent with it. The console cookies are `SameSite=Lax`, which is sent on a
 top-level GET like this (Gmail's callback relies on the same thing). Prove it on the first connect:
-sign in, press Connect, approve on TikTok; you must land on Store connections still signed in, with
+sign in, press Connect, approve on TikTok; you must land on the Connections tab still signed in, with
 `?tiktok=connected`. If you land on the login page, the cookie did not come back: stop and do not
 loosen the cookie without a decision.
 
@@ -895,7 +895,7 @@ Record the answer in the ledger table (12.11).
 ### 12.10 Enable, connect and test
 
 1. As a platform admin: Services → the test company → enable the **Marketplaces** package. Marketplaces is sellable as of this project, so the staging roster accepts it and an Admin can also request it from Services.
-2. As that company's Admin: Business → Store connections → Connect TikTok Shop, and approve with the
+2. As that company's Admin: Connections → TikTok Shop → Connect, and approve with the
    owner's own shop. Expect `?tiktok=connected` and a store showing Connected.
 3. Run the **done means** list: (a) a client admin connected a real shop; (b) within minutes staff
    browse its orders and products; (c) a new TikTok order appears in our copy with no manual step

@@ -169,7 +169,7 @@ The Bookings screens have browser scenarios (`tests/test_bookings_browser.py`) t
 | Change the Bookings settings | Admin, People & rooms, "Settings" | Hours or days for the reminder, hours for the wait, and the customer limit save with "Saved."; a value outside the range is refused in a sentence before anything is sent. Staff and read-only members read the values and see no controls | manual |
 | Replies Off banner | Customer support with replies set to Off, then to auto | The Bookings tab, on all three pages, says "Customer replies are off, so customers get no automatic messages from Bookings." An Admin also sees "Turn replies on", which opens Services; staff and read-only members see the sentence alone. With replies on, or a company with Bookings only, there is no banner. Staff's own bookings and moves still tell the customer | manual |
 | A booking when the model is down or its reply cannot be checked | Switch the primary model off (or make it write a wrong time), then book | The booking is made and the customer is sent the booking facts as they stand ("Booking confirmed: ... (2026-11-10 15:30)"), in English, with no "try again" and no escalation. The same goes for a refused booking (a taken time, the customer limit): the facts say plainly that no booking was made | manual |
-| Connect a Google Calendar | A member linked to a bookable person, who is a test user of the staging Google client (it is External, in testing, so a grant lasts 7 days), and Google Calendar switched on (`CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR`) | On the Bookings calendar page, "Google Calendar" → "Connect Google Calendar" opens Google, which asks to allow the calendar the app makes, and returns to the Bookings page with "Google Calendar is connected." Google Calendar now lists a calendar named "<company> Bookings". An Admin sees "Connected" beside the person on People & rooms | manual |
+| Connect a Google Calendar | A member linked to a bookable person, who is a test user of the staging Google client (it is External, in testing, so a grant lasts 7 days), and Google Calendar switched on (`CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR`) | On the Connections tab, "Google Calendar" → "Connect" opens Google, which asks to allow the calendar the app makes, and returns to the Connections tab with "Google Calendar is connected." Google Calendar now lists a calendar named "<company> Bookings". An Admin sees "Connected" beside the person on People & rooms | manual |
 | A booking appears there | The same member as an attendee; an Admin books them | An event with the title, the time in the company's zone, the place or link and the names of who is attending appears on that calendar within seconds. Nothing in it about the customer but their name: no phone, email or note. The email they get says it is on their Google Calendar and has no calendar file | manual |
 | Move and cancel it | The same booking | The same event moves (no second event); on cancel it is gone, and that email has no calendar file either | manual |
 | A booking the customer's chat made, then cancelled in chat | A Telegram booking the connected member attends | The event appears within five minutes of the booking being confirmed and goes within five minutes of the cancel in chat (the reconcile job; chat changes do not push at once) | manual |
@@ -482,6 +482,26 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke --repeat 5 \
 
 Each case must pass at least 4 of 5 (they were 0, 0, 1 and 0 of 5 before). Then run the full
 `assistant_smoke`: no case that passed before may fail now.
+
+## Connections tab (2026-11-10)
+
+The Connections tab (`/connections`, `/portal/connections`) shows TikTok Shop for the company and
+Google Calendar and Gmail for the signed-in member. Use a test company; for the lock rows turn the
+package off on Services first.
+
+| Step | Setup | Expected | Test |
+|---|---|---|---|
+| Open Connections as an Admin, press Connect on TikTok Shop, approve on TikTok | Marketplaces on, TikTok on this server | You land back on Connections still signed in, with "TikTok Shop connected." and the card reading Connected | manual |
+| Press Reconnect, then Disconnect (confirm) on the TikTok card | A connected store | Reconnect returns to the tab with the sentence; Disconnect asks first, then the card reads Not connected | manual |
+| Open Connections as a staff member and as a read-only member | A connected store | Both see the tab; neither sees a Connect button; the card says an Admin can connect or "Your role can't connect this" | manual |
+| Press Connect on Google Calendar, approve, return | Bookings on, Google configured | You return to Connections with the Calendar sentence and the card reads Connected | manual |
+| Press Connect on Gmail, approve, return | Staff email on, Google configured | You return to Connections with "Mailbox connected." and the card reads Connected | manual |
+| Deny consent on Google (calendar and Gmail) | As above | You return to Connections with the plain sentence, no raw code, and the query is cleared from the address | manual |
+| A company without Marketplaces, Bookings or Staff email | Packages off | Each card shows only its "Included in ..." sentence and no button | manual |
+| Platform admin picks a company | Several companies | Only "Your business" shows with that company's TikTok Shop; no Google cards; the address keeps `client_id` | manual |
+| Open Business → Store connections, Bookings → Calendar and Email | A connected store, calendar and mailbox | Each page shows its status line and "Manage in Connections", and no Connect, Reconnect or Disconnect button; the link opens the tab | manual |
+| Open an old bookmark such as `/portal/business/stores?tiktok=connected` | Any | The page loads; no result sentence appears there | manual |
+| Switch the email assistant off from the Email page | Mailbox connected | It asks first and still works from the Email page | manual |
 
 ## States and failure paths
 

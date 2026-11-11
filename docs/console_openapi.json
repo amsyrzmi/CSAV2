@@ -17958,7 +17958,7 @@
     },
     "/console/v1/bookings/calendar/callback": {
       "get": {
-        "description": "Google sends the browser back here; the answer is a redirect to the Bookings page.",
+        "description": "Google sends the browser back here; the answer is a redirect to the Connections tab.",
         "operationId": "callback_console_v1_bookings_calendar_callback_get",
         "parameters": [
           {
@@ -20737,7 +20737,7 @@
         ],
         "responses": {
           "303": {
-            "description": "Back to Store connections with a safe outcome."
+            "description": "Back to Connections with a safe outcome."
           },
           "422": {
             "content": {

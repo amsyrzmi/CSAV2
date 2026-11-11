@@ -295,7 +295,7 @@ def build_email_router() -> APIRouter:
         error: Annotated[str | None, Query(max_length=64)] = None,
         iss: Annotated[str | None, Query(max_length=256)] = None,
     ) -> Response:
-        target = "/email" if request.query_params.get("client_id") else "/portal/email"
+        target = "/connections" if request.query_params.get("client_id") else "/portal/connections"
         params: dict[str, str] = {}
         if request.query_params.get("client_id"):
             params["client_id"] = str(session.tenant_id)
