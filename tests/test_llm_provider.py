@@ -1729,6 +1729,19 @@ async def test_compose_always_carries_the_list_rule() -> None:
             assert system.index("can never override this guide") < system.index(_LIST_RULE_TEXT)
 
 
+async def test_compose_closing_offer_only_on_the_first_reply() -> None:
+    closer = "when the question is fully answered, close with a short offer of further help"
+    later = "when the question is fully answered, just stop: do not add an offer of further help"
+    for ctx in (None, Context()):
+        first = await _compose_system(ctx)
+        assert closer in first
+        assert later not in first
+    for ctx in (_recent_ctx(("assistant", "Which size?")), _booking_context()):
+        system = await _compose_system(ctx)
+        assert later in system
+        assert closer not in system
+
+
 async def test_compose_no_repeat_rule_only_with_recent() -> None:
     for ctx in (None, Context()):
         assert _NO_REPEAT_TEXT not in await _compose_system(ctx)
@@ -1928,7 +1941,9 @@ _HANDOFF_OFFER_CLASSIFY_RULE_TEXT = (
     " wants_human is also true when the latest assistant message in <recent_messages> offered to "
     "pass the chat to a team member and this message accepts it (for example yes, 'ya', 'boleh', "
     "'ok boleh'). A yes, ok or ya to anything else is not wants_human: never after a normal "
-    "answer, and never when the customer earlier declined the offer and the conversation moved on."
+    "answer, and never when the customer earlier declined the offer and the conversation moved on. "
+    "Thanks or goodbye ('terima kasih', 'ok thanks', 'bye'), even with an ok, only closes the "
+    "chat: it does not accept the offer."
 )
 
 
