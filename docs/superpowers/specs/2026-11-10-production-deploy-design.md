@@ -223,7 +223,12 @@ on the instance outside the repository that the script reads in addition. This i
   is the repository variable `PROD_DEPLOY_REGION`. The workflow fails closed if any is missing. Both
   environments are restricted to deployments from `main`, and both jobs also check `github.ref`.
   The `plan` job runs in a second environment, `production-plan`, with no required reviewer, because
-  an OIDC token's subject names the environment.
+  an OIDC token's subject names the environment. The subject's prefix is not fixed: a repository
+  that uses GitHub's immutable subject issues `repo:<owner>@<owner id>/<repo>@<repo id>:environment:<name>`
+  and not `repo:<owner>/<repo>:environment:<name>`. The trust policies therefore keep a
+  `<repo-subject>` placeholder that the runbook fills from the repository's
+  `actions/oidc/customization/sub` setting. The first production run found this (the classic form
+  was rejected at the AWS step); the live roles were corrected and these files brought in line.
 - The summary also shows the staged record it found (date of the staging rollout).
 
 ### 6. First deploy

@@ -1044,9 +1044,14 @@ def test_parse_plan_refuses_bad_arguments(harness: Harness, args: list[str]) -> 
 AUD = "token.actions.githubusercontent.com:aud"
 SUB = "token.actions.githubusercontent.com:sub"
 INSTANCE_ARN = "arn:aws:ssm:<region>:<account-id>:managed-instance/<managed-instance-id>"
+# The templates keep a placeholder for the token subject's prefix: GitHub issues the classic
+# ``repo:<owner>/<repo>`` or the immutable ``repo:<owner>@<id>/<repo>@<id>`` per repository, and
+# the runbook fills in whatever the repository's OIDC setting prints. A stand-in is used below.
+SUBJECT_PLACEHOLDER = "<repo-subject>"
+SUBJECT_PREFIX = "repo:example-owner@1001/CSAV2@2002"
 ROLES = {
-    "plan": (PLAN_TRUST, PLAN_PERMISSIONS, "repo:amsyrzmi/CSAV2:environment:production-plan"),
-    "apply": (APPLY_TRUST, APPLY_PERMISSIONS, "repo:amsyrzmi/CSAV2:environment:production"),
+    "plan": (PLAN_TRUST, PLAN_PERMISSIONS, f"{SUBJECT_PLACEHOLDER}:environment:production-plan"),
+    "apply": (APPLY_TRUST, APPLY_PERMISSIONS, f"{SUBJECT_PLACEHOLDER}:environment:production"),
 }
 
 
@@ -1056,6 +1061,11 @@ def _as_list(value: str | list[str]) -> list[str]:
 
 def _policy(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
+
+
+def _filled_policy(path: Path) -> dict[str, Any]:
+    """The trust policy as the runbook leaves it once the subject prefix is filled in."""
+    return json.loads(path.read_text().replace(SUBJECT_PLACEHOLDER, SUBJECT_PREFIX))
 
 
 def _trust_allows(policy: dict[str, Any], claims: dict[str, str]) -> bool:
@@ -1089,8 +1099,9 @@ def test_trust_policy_is_scoped_to_this_repo_and_one_environment(kind: str) -> N
 
 
 def test_each_trust_policy_admits_only_its_own_environment() -> None:
-    plan, apply = _policy(PLAN_TRUST), _policy(APPLY_TRUST)
-    plan_sub, apply_sub = ROLES["plan"][2], ROLES["apply"][2]
+    plan, apply = _filled_policy(PLAN_TRUST), _filled_policy(APPLY_TRUST)
+    plan_sub = f"{SUBJECT_PREFIX}:environment:production-plan"
+    apply_sub = f"{SUBJECT_PREFIX}:environment:production"
 
     def token(sub: str) -> dict[str, str]:
         return {AUD: "sts.amazonaws.com", SUB: sub}
@@ -1101,9 +1112,11 @@ def test_each_trust_policy_admits_only_its_own_environment() -> None:
     assert not _trust_allows(apply, token(plan_sub))
     for policy in (plan, apply):
         for sub in (
-            "repo:amsyrzmi/CSAV2:ref:refs/heads/main",
-            "repo:amsyrzmi/CSAV2:pull_request",
-            "repo:someone/CSAV2:environment:production",
+            f"{SUBJECT_PREFIX}:ref:refs/heads/main",
+            f"{SUBJECT_PREFIX}:pull_request",
+            "repo:example-owner@1001/CSAV2@9999:environment:production",  # another repository id
+            "repo:someone@7/CSAV2@2002:environment:production",  # another owner
+            "repo:example-owner/CSAV2:environment:production",  # the classic form, not this prefix
         ):
             assert not _trust_allows(policy, token(sub)), sub
         assert not _trust_allows(policy, {SUB: plan_sub, AUD: "other"})
@@ -2051,9 +2064,15 @@ def test_production_doc_review_fixes() -> None:
     assert "35 minutes (by the clock, not a count of polls)" in deploying
     assert "about 35 minutes" not in text
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
-    guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}"'
+    guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}"'
     assert guard in setup
     assert setup.index(guard) < setup.index("sed -i") < setup.index("grep -n '<'")
+    # The trust policies' subject prefix is looked up, not assumed: the runbook shows the lookup
+    # and fills the placeholder, and a rejected token points back at it.
+    assert "actions/oidc/customization/sub --jq .sub_claim_prefix" in setup
+    assert "s|<repo-subject>|$SUBJECT|g" in setup
+    assert setup.index("sub_claim_prefix") < setup.index(guard)
+    assert "sts:AssumeRoleWithWebIdentity" in deploying
     # (c) install replaces the file, so the directory must be writable by ubuntu.
     assert "sudo chown ubuntu:ubuntu /srv/csa-prod/backup /srv/csa-prod/backup/backup.sh" in setup
     assert setup.index("sudo chown ubuntu:ubuntu") < setup.index(sr.BACKUP_REINSTALL)
