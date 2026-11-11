@@ -439,7 +439,7 @@ async def test_delete_draft_asks_first_and_cancel_deletes_nothing(site: Site) ->
     await with_browser(body)
 
 
-async def test_disconnect_and_switch_off_ask_first(site: Site) -> None:
+async def test_switch_off_asks_first_and_the_page_links_to_connections(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World()
         async with email_page(browser, site, world) as page:
@@ -469,27 +469,15 @@ async def test_disconnect_and_switch_off_ask_first(site: Site) -> None:
             await expect(off).to_be_focused()
             assert world.count("PUT", "email/settings") == 0
 
-            disconnect = page.get_by_test_id("email-disconnect")
-            await disconnect.click()
-            await expect(page.get_by_test_id("email-disconnect-ask")).to_contain_text(
-                "Disconnect Gmail?"
-            )
-            await page.keyboard.press("Escape")
-            await expect(disconnect).to_be_focused()
-            await disconnect.click()
-            await page.get_by_test_id("email-disconnect-cancel").click()
-            await expect(disconnect).to_be_focused()
-            assert world.count("POST", "email/mailbox/disconnect") == 0
-
-            await disconnect.click()
-            await page.get_by_test_id("email-disconnect-confirm").dblclick()
+            # Gmail is connected and disconnected on the Connections tab: the page keeps its
+            # status and the way there, and no control of its own.
+            link = page.get_by_test_id("email-manage-connections")
+            await expect(link).to_have_text("Manage in Connections")
+            await expect(link).to_have_attribute("href", "/portal/connections")
             await expect(
-                page.get_by_text("Gmail disconnected. Emails already loaded stay readable.")
-            ).to_be_visible(timeout=WAIT)
-            assert world.count("POST", "email/mailbox/disconnect") == 1
-            await expect(status).to_contain_text("Access removed")
-            # The Disconnect button is gone: focus moved to the control that replaced it.
-            await expect(page.get_by_test_id("email-connect")).to_be_focused()
+                page.get_by_role("button", name=re.compile("Connect|Disconnect"))
+            ).to_have_count(0)
+            assert world.count("POST", "email/mailbox/disconnect") == 0
 
             await off.click()
             await page.get_by_test_id("email-switch-off-confirm").dblclick()
@@ -531,6 +519,9 @@ async def test_platform_admin_picker_shows_company_names(site: Site) -> None:
             context_calls = [c for c in world.calls if c["path"] == "email/context"]
             assert context_calls and {c["query"] for c in context_calls} == {f"client_id={ACME}"}
             assert world.count("GET", "admin/clients") == reads
+            # A platform admin has no Gmail of their own: the status shows, the link does not.
+            await expect(page.get_by_test_id("email-status")).to_be_visible()
+            await expect(page.get_by_test_id("email-manage-connections")).to_have_count(0)
 
     await with_browser(body)
 
@@ -734,7 +725,7 @@ async def test_email_at_five_widths_in_three_themes(site: Site, theme: str) -> N
         world = World()
         async with email_page(browser, site, world, theme=theme, dock=True) as page:
             await page.get_by_test_id("email-mailbox-toggle").click()
-            await page.get_by_test_id("email-disconnect").click()
+            await page.get_by_test_id("email-switch-off").click()
             await page.get_by_test_id("email-chips-unread").click()
             await page.get_by_test_id("email-thread").first.click()
             await expect(page.get_by_test_id("email-thread-drafts")).to_be_visible()
