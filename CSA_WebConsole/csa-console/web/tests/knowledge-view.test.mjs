@@ -13,7 +13,7 @@ async function load(name) {
 const {
   groupSources, pollingNeeded, chipLabel, formatBytes, addedText, jobStateText, couldNotReadText, kindText,
   looseFiles, pausedReason, kbStatusLine, LIBRARY_PREVIEW, validateSelection, progressWord, SELECTION_MESSAGE,
-  atLimit, countText, answerTitle, LIST_LIMITS, attentionNote, jobActions,
+  atLimit, countText, answerTitle, LIST_LIMITS, attentionNote, jobActions, removedSentence,
 } = await import(await load("knowledge-view.ts"));
 
 const file = (id, extra = {}) => ({
@@ -382,4 +382,26 @@ test("a queued job offers Cancel", () => {
     jobActions(job("j1", "queued")),
     { canRetry: false, canRemove: false, canCancel: true },
   );
+});
+
+test("removedSentence claims a deleted file only when the gateway said done", () => {
+  assert.equal(removedSentence("dismiss", "done"), "Removed from your list. The uploaded file is deleted too.");
+  assert.equal(removedSentence("dismiss", "pending"), "Removed from your list. We'll finish clearing the stored file shortly.");
+  assert.equal(removedSentence("dismiss", undefined), "Removed.");
+  assert.equal(removedSentence("dismiss", null), "Removed.");
+  assert.equal(
+    removedSentence("cancel", "done"),
+    "Cancelled. The uploaded files that weren't read are deleted; what your assistant already learned stays.",
+  );
+  assert.equal(removedSentence("cancel", "pending"), "Cancelled. We'll finish clearing the stored file shortly.");
+  assert.equal(removedSentence("cancel", undefined), "Cancelled.");
+  assert.equal(removedSentence("clear", "done", 3), "Removed 3 failed uploads from your list. The uploaded files are deleted too.");
+  assert.equal(removedSentence("clear", "pending", 1), "Removed 1 failed upload from your list. We'll finish clearing the stored file shortly.");
+  assert.equal(removedSentence("clear", undefined, 2), "Removed 2 failed uploads from your list.");
+  assert.equal(removedSentence("clear", "done", 0), "Nothing was left to remove.");
+  for (const cleanup of [undefined, null, "other"]) {
+    for (const action of ["dismiss", "cancel", "clear"]) {
+      assert.doesNotMatch(removedSentence(action, cleanup, 2), /deleted|gone/);
+    }
+  }
 });

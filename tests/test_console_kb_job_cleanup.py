@@ -7,9 +7,10 @@ import json
 from typing import Any
 from uuid import UUID
 
+import psycopg
 import pytest
 from csa.agents.kb import DefaultKbEmbedder
-from csa.agents.kb.lifecycle import CONTENT_DELETED_ERROR
+from csa.agents.kb.lifecycle import CONTENT_DELETED_ERROR, delete_job_files
 from csa.storage.base import StorageError
 
 from tests.conftest import requires_docker
@@ -857,6 +858,55 @@ async def test_another_tenants_job_cannot_delete_this_tenants_file(sessions: Ses
     [row] = await file_rows(sessions, tenant)
     assert row["deleted_at"] is None
     assert len(stored_names(sessions, tenant)) == 1
+
+
+async def test_cancelling_a_requeued_job_keeps_the_file_that_already_feeds_a_document(
+    sessions: SessionWorld,
+) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    assert await handle(sessions) == "done"
+    # A retried partial job is queued again while its file already produced a document.
+    await sessions.q(
+        "UPDATE kb_ingest_jobs SET status='queued', finished_at=NULL, locked_at=NULL"
+        " WHERE client_id=%s",
+        tenant,
+    )
+    job = await only_job(sessions, tenant)
+    response = await sessions.mutate(sessions.admin, job_path(tenant, job["id"], "cancel"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "cancelled" and body["storage_cleanup"] == "done"
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None and row["document_id"] is not None
+    assert len(stored_names(sessions, tenant)) == 1
+    assert len(await sessions.q("SELECT id FROM kb_documents WHERE client_id=%s", tenant)) == 1
+
+
+async def test_delete_job_files_filters_by_company_in_the_sql_itself(
+    sessions: SessionWorld,
+) -> None:
+    tenant = await enable(sessions)
+    assert (await upload(sessions, [("faq.csv", FAQ_CSV)])).status_code == 202
+    await sessions.q(FAIL_JOBS, tenant)
+    job = await only_job(sessions, tenant)
+    [file_row] = await file_rows(sessions, tenant)
+    other = sessions.tenants[1]
+    # The other company's job names this company's file id on purpose.
+    await sessions.q(INSERT_FAILED, other, json.dumps([{"file_id": file_row["id"]}]))
+    [foreign_job] = await sessions.q("SELECT id FROM kb_ingest_jobs WHERE client_id=%s", other)
+    # The owner connection skips row level security, so only the query's own filter is tested.
+    async with await psycopg.AsyncConnection.connect(sessions.owner_dsn, autocommit=True) as conn:
+        assert await delete_job_files(conn, UUID(tenant), [foreign_job["id"]]) == []
+        assert await delete_job_files(conn, UUID(other), [job["id"]]) == []
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is None
+    assert len(stored_names(sessions, tenant)) == 1
+    # The same call for the owning company and its own job does delete the file.
+    async with await psycopg.AsyncConnection.connect(sessions.owner_dsn, autocommit=True) as conn:
+        assert await delete_job_files(conn, UUID(tenant), [job["id"]]) == [UUID(file_row["id"])]
+    [row] = await file_rows(sessions, tenant)
+    assert row["deleted_at"] is not None
 
 
 async def test_running_job_dismiss_keeps_its_file(sessions: SessionWorld) -> None:

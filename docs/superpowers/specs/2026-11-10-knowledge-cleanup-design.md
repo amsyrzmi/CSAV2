@@ -125,14 +125,20 @@ Console:
 
 - `jobChip`, `jobStateText`, `progressWord` and `pollingNeeded` handle `processing` (the one
   status-name fix) and `cancelled`.
-- A card's wording comes from its own state, in the voice of `docs/CONSOLE_VOICE.md`. Draft, for the
-  builder to refine: failed with the file stored: "We couldn't read this file. You can try again or
-  remove it."; failed with the file gone: "The original was removed, so this can't be tried again.
-  Remove it."; partial: "Some of this file couldn't be read. The rest is in your assistant."
+- A card's wording comes from its own state, in the voice of `docs/CONSOLE_VOICE.md`. Current copy
+  (after the 2026-11-11 decision below): failed with the file stored: "We couldn't read this file. You
+  can try again, or remove it, which also deletes the uploaded file."; failed with the file gone: "The
+  original was removed, so this can't be tried again. Remove it."; partial: "Some of this file
+  couldn't be read. The rest is in your assistant. Removing this deletes the uploaded file that
+  couldn't be read."
 - Actions: **Try again** (retry), **Remove** (dismiss) with a confirmation that says exactly what
-  happens ("This takes the message off your list. Nothing your assistant knows changes."), and a
+  happens ("This takes the message off your list and deletes the uploaded file. Nothing your assistant
+  already learned changes."), **Cancel** for a queued job (confirmation: "This stops the upload and
+  deletes the uploaded files that weren't read. What your assistant already learned stays."), and a
   **Clear all that failed** button beside the "Needs attention" heading when more than one card needs
-  attention.
+  attention (confirmation: "This takes every failed upload off your list and deletes the uploaded
+  files. Nothing your assistant already learned changes."). The success sentences claim a deleted file
+  only when the answer says `storage_cleanup: "done"`; a missing field reads "Removed." or "Cancelled.".
 - Deleting a document or file uses copy per case and a success message that matches (a job is not "a
   file your assistant no longer uses").
 - The Maintenance section's storage sweep says how many leftover files it removed.

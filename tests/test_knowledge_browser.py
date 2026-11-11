@@ -1661,8 +1661,8 @@ REMOVE_CONFIRM = (
     "Nothing your assistant already learned changes."
 )
 CANCEL_CONFIRM = (
-    "This stops the upload before it is read and deletes the uploaded file. "
-    "Nothing is added to your assistant."
+    "This stops the upload and deletes the uploaded files that weren't read. "
+    "What your assistant already learned stays."
 )
 CLEAR_CONFIRM = (
     "This takes every failed upload off your list and deletes the uploaded files. "
@@ -1742,6 +1742,10 @@ async def test_remove_asks_first_then_the_card_disappears(site: Site) -> None:
             )
             # The uploaded file is gone from the page too, not left under "Other uploaded files".
             assert stub.files == []
+            other = await open_fold(page, "kb-other-files")
+            await expect(other).to_contain_text("No uploaded sources")
+            await expect(other).not_to_contain_text("scanned-menu.pdf")
+            await expect(page.get_by_text("scanned-menu.pdf")).to_have_count(0)
 
     await with_browser(body)
 
@@ -1775,9 +1779,7 @@ async def test_cancel_and_clear_all_say_plainly_when_the_stored_files_are_still_
         async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
             await button(page, card(page, "job-wait"), "Cancel").click()
             await button(page, page.get_by_test_id("kb-confirm"), "Cancel upload").click()
-            await expect(
-                page.get_by_text(f"Cancelled. Nothing was added. {FILE_PENDING}", exact=True)
-            ).to_be_visible()
+            await expect(page.get_by_text(f"Cancelled. {FILE_PENDING}", exact=True)).to_be_visible()
         pending = attention_stub(count=2, storage_cleanup="pending")
         async with knowledge_page(browser, site, pending, wait="kb-attention") as page:
             await page.get_by_role("button", name="Clear all that failed").click()
@@ -1925,7 +1927,9 @@ async def test_a_queued_job_with_the_agent_off_shows_paused_and_cancel(site: Sit
             assert stub.files == []
             await expect(
                 page.get_by_text(
-                    "Cancelled. Nothing was added, and the uploaded file is deleted.", exact=True
+                    "Cancelled. The uploaded files that weren't read are deleted; "
+                    "what your assistant already learned stays.",
+                    exact=True,
                 )
             ).to_be_visible()
 

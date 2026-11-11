@@ -6,7 +6,7 @@ import { del, post } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
 import {
   atLimit, countText, formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, LIST_LIMITS, looseFiles, pausedReason,
-  pollingNeeded, type Card,
+  pollingNeeded, removedSentence, SWEEP_PENDING, type Card,
 } from "@/lib/knowledge-view";
 import { DetailsRow, TechDetailsProvider, TechnicalDetails, TechSwitch } from "../kit";
 import { action, Notice, Panel, secondary } from "../ui";
@@ -20,20 +20,20 @@ const box =
 
 /** What the open confirmation will do. A "files" delete is `linked` when its source belongs to a document. */
 type Confirm =
-  | { type: "files" | "documents"; id: string; name: string; linked: boolean }
-  | { type: "dismiss" | "cancel"; id: string; name: string }
+  | { type: "files"; id: string; name: string; linked: boolean }
+  | { type: "documents"; id: string; name: string; linked: boolean }
+  | { type: "dismiss"; id: string; name: string }
+  | { type: "cancel"; id: string; name: string }
   | { type: "clear" };
 
 type Removed = { storage_cleanup: "done" | "pending" };
-
-const SWEEP_PENDING = "We'll finish clearing the stored file shortly.";
 
 function confirmText(confirm: Confirm): string {
   if (confirm.type === "dismiss") {
     return "This takes the message off your list and deletes the uploaded file. Nothing your assistant already learned changes.";
   }
   if (confirm.type === "cancel") {
-    return "This stops the upload before it is read and deletes the uploaded file. Nothing is added to your assistant.";
+    return "This stops the upload and deletes the uploaded files that weren't read. What your assistant already learned stays.";
   }
   if (confirm.type === "clear") {
     return "This takes every failed upload off your list and deletes the uploaded files. Nothing your assistant already learned changes.";
@@ -126,25 +126,18 @@ export default function LibrarySection({
     if (!confirm) return;
     if (confirm.type === "dismiss") {
       await run(async () => {
-        const result = await post<Removed>(path(`kb/ingest-jobs/${confirm.id}/dismiss`));
-        return result?.storage_cleanup === "pending"
-          ? `Removed from your list. ${SWEEP_PENDING}`
-          : "Removed from your list. The uploaded file is deleted too.";
+        const result = await post<Partial<Removed>>(path(`kb/ingest-jobs/${confirm.id}/dismiss`));
+        return removedSentence("dismiss", result?.storage_cleanup);
       });
     } else if (confirm.type === "cancel") {
       await run(async () => {
-        const result = await post<Removed>(path(`kb/ingest-jobs/${confirm.id}/cancel`));
-        return result?.storage_cleanup === "pending"
-          ? `Cancelled. Nothing was added. ${SWEEP_PENDING}`
-          : "Cancelled. Nothing was added, and the uploaded file is deleted.";
+        const result = await post<Partial<Removed>>(path(`kb/ingest-jobs/${confirm.id}/cancel`));
+        return removedSentence("cancel", result?.storage_cleanup);
       });
     } else if (confirm.type === "clear") {
       await run(async () => {
-        const result = await post<{ dismissed: number } & Partial<Removed>>(path("kb/ingest-jobs/dismiss-failed"));
-        const count = result?.dismissed ?? 0;
-        if (count === 0) return "Nothing was left to remove.";
-        const head = `Removed ${count} failed upload${count === 1 ? "" : "s"} from your list.`;
-        return result?.storage_cleanup === "pending" ? `${head} ${SWEEP_PENDING}` : `${head} The uploaded files are deleted too.`;
+        const result = await post<{ dismissed?: number } & Partial<Removed>>(path("kb/ingest-jobs/dismiss-failed"));
+        return removedSentence("clear", result?.storage_cleanup, result?.dismissed ?? 0);
       });
     } else {
       const target = confirm;
