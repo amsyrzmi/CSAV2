@@ -1,11 +1,12 @@
-"""Real browser acceptance for the Connections tab (TikTok Shop card).
+"""Real browser acceptance for the Connections tab (TikTok Shop card and Google card).
 
 The real Next.js shell runs unmodified from the disposable staged copy that
 `test_services_redesign_browser.site` builds. Its layouts fetch `/auth/me` and `/services/active`
 server-side, so the loopback stub from `test_services_browser` answers those; every browser-side
 `/console/v1/*` call is answered by Playwright from `Stub`, which records the stores, packages and
-Google reads and fails on anything it does not know. The browser clock is fixed (Date only, timers
-keep running) so the "Synced 3 min ago" line is exact.
+Google reads and fails on anything it does not know. Google's calendar and email calls are served
+only when a test says it expects them (`serves_google`); otherwise any such call fails the test.
+The browser clock is fixed (Date only, timers keep running) so the "Synced 3 min ago" line is exact.
 """
 
 from __future__ import annotations
@@ -40,6 +41,64 @@ pytestmark = pytest.mark.asyncio
 site = services.site
 
 CONNECT_PATH = "business/stores/tiktok/connect"
+GOOGLE_URL = "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic-state"
+ADDRESS = "ada@example.test"
+EVERYTHING = [
+    {"key": "marketplaces", "status": "active"},
+    {"key": "bookings", "status": "active"},
+    {"key": "staff_email", "status": "active"},
+]
+BANNER = (
+    "Google stopped accepting the connection, so new bookings aren't reaching your calendar. "
+    "Reconnect to start them again."
+)
+CALENDAR_CONFIRM = (
+    "Stop sending bookings to your Google Calendar? "
+    "Your Bookings calendar and its events stay in your Google account."
+)
+GMAIL_QUESTION = (
+    "Disconnect Gmail? Emails already loaded stay readable. Connect Gmail again to sync or send."
+)
+GMAIL_DISCONNECTED = "Gmail disconnected. Emails already loaded stay readable."
+THEMES = ("cobalt", "night", "bureau")
+
+
+def calendar_status(
+    state: str | None = "not_connected",
+    *,
+    people: list[dict[str, str]] | None = None,
+    available: bool = True,
+    can_connect: bool = True,
+) -> dict[str, Any]:
+    return {"available": available, "can_connect": can_connect, "status": state, "people": people}
+
+
+def email_context(
+    status: str | None = None,
+    *,
+    address: str = ADDRESS,
+    enabled: bool = True,
+    configured: bool = True,
+    can_connect: bool = True,
+) -> dict[str, Any]:
+    mailbox = (
+        None
+        if status is None
+        else {"status": status, "address": address, "last_sync_at": "2026-11-02T01:57:00Z"}
+    )
+    return {
+        "enabled": enabled,
+        "can_manage": False,
+        "can_connect": can_connect,
+        "provider_configured": configured,
+        "model_configured": True,
+        "mailbox": mailbox,
+        "disclosure": "Synthetic disclosure.",
+        "last_synced_at": None,
+        "more_available": False,
+    }
+
+
 MARKETPLACES = [{"key": "marketplaces", "status": "active"}]
 STAFF_NOTE = "Only an Admin can connect or disconnect a shop."
 UNAVAILABLE = "TikTok Shop isn't set up on this server yet."
@@ -73,9 +132,49 @@ class Stub:
     disconnect_calls: list[str] = field(default_factory=list)
     store_queries: list[dict[str, list[str]]] = field(default_factory=list)
     package_queries: list[dict[str, list[str]]] = field(default_factory=list)
-    # Calendar and email status reads: none of them belongs to the TikTok card.
+    # Google: the calendar and email calls of the Google card. Served only when `serves_google`;
+    # every call is recorded either way, and a test that does not serve them fails on the first.
+    serves_google: bool = False
+    calendar: dict[str, Any] = field(default_factory=calendar_status)
+    calendar_connect_status: int = 200
+    calendar_connect_data: dict[str, Any] = field(default_factory=lambda: {"url": GOOGLE_URL})
+    email: dict[str, Any] = field(default_factory=email_context)
+    email_connect_data: dict[str, Any] = field(
+        default_factory=lambda: {"authorization_url": GOOGLE_URL}
+    )
     google_calls: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
+
+    def google_paths(self) -> set[str]:
+        """The distinct calls made so far, without the repeats strict mode causes."""
+        return set(self.google_calls)
+
+    def serve_google(self, method: str, path: str) -> tuple[int, Any]:
+        self.google_calls.append(f"{method} {path}")
+        if not self.serves_google:
+            return 404, {"detail": "not stubbed"}
+        if (method, path) == ("GET", "bookings/calendar/status"):
+            return 200, self.calendar
+        if (method, path) == ("POST", "bookings/calendar/connect"):
+            return self.calendar_connect_status, self.calendar_connect_data
+        if (method, path) == ("POST", "bookings/calendar/disconnect"):
+            self.calendar = calendar_status("not_connected")
+            return 204, None
+        if (method, path) == ("GET", "email/context"):
+            return 200, self.email
+        if (method, path) == ("POST", "email/mailbox/connect"):
+            return 200, self.email_connect_data
+        if (method, path) == ("POST", "email/mailbox/disconnect"):
+            self.email = email_context(None)
+            return 200, {
+                "operation": "disconnect",
+                "resource_id": "mailbox",
+                "status": "done",
+                "duplicate": False,
+                "detail": {},
+            }
+        self.unexpected.append(f"{method} {path}")
+        return 500, {"detail": "unexpected synthetic call"}
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
@@ -125,8 +224,10 @@ class Stub:
             await request_route.fulfill(status=204)
             return
         elif path.startswith(("bookings/calendar/", "email/")):
-            self.google_calls.append(f"{request.method} {path}")
-            status, data = 404, {"detail": "not stubbed"}
+            status, data = self.serve_google(request.method, path)
+            if status == 204:
+                await request_route.fulfill(status=204)
+                return
         else:
             self.unexpected.append(f"{request.method} {path}")
             status, data = 500, {"detail": "unexpected synthetic call"}
@@ -145,6 +246,7 @@ async def connections_page(
     path: str = "/portal/connections",
     role: str = "tenant_admin",
     width: int = 1280,
+    theme: str | None = None,
 ) -> AsyncIterator[Page]:
     site.upstream.me = make_me(role)
     site.upstream.packages = list(stub.packages)
@@ -152,9 +254,10 @@ async def connections_page(
     context.set_default_navigation_timeout(WAIT)
     context.set_default_timeout(15_000)
     await context.clock.set_fixed_time(NOW)
-    await context.add_cookies(
-        [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
-    )
+    cookies = [{"name": "csa_session", "value": "synthetic-session", "url": site.base}]
+    if theme:
+        cookies.append({"name": "fs-theme", "value": theme, "url": site.base})
+    await context.add_cookies(cookies)
     page = await context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -164,7 +267,8 @@ async def connections_page(
         yield page
         assert not errors, errors
         assert not stub.unexpected, stub.unexpected
-        assert not stub.google_calls, stub.google_calls
+        # Google calls are only for tests that serve them; the others must make none.
+        assert stub.serves_google or not stub.google_calls, stub.google_calls
     finally:
         await context.close()
 
@@ -389,7 +493,8 @@ async def test_staff_see_the_shop_status_with_connect_disabled(site: Site) -> No
 async def test_without_marketplaces_the_card_is_locked_and_reads_no_stores(site: Site) -> None:
     async def body(browser: Any) -> None:
         for role in ("tenant_admin", "tenant_staff"):
-            stub = Stub(packages=[{"key": "bookings", "status": "active"}])
+            # Another package on, so Google stays locked and only the TikTok card is judged.
+            stub = Stub(packages=[{"key": "customer_support", "status": "active"}])
             async with connections_page(browser, site, stub, role=role) as page:
                 await expect(page.get_by_test_id("connections-tiktok-locked")).to_have_text(
                     "Included in the Marketplaces add-on.", timeout=WAIT
@@ -408,7 +513,8 @@ async def test_without_marketplaces_the_card_is_locked_and_reads_no_stores(site:
             assert stub.store_queries == []
 
         # The packages read failing draws the card unlocked: the server's own gates still refuse.
-        stub = Stub(packages_fail=True)
+        # Unlocked also means the Google rows read; they are served, TikTok is what is judged.
+        stub = Stub(packages_fail=True, serves_google=True)
         async with connections_page(browser, site, stub) as page:
             await expect(page.get_by_test_id(f"connections-tiktok-{STORE_ID}-word")).to_have_text(
                 "Connected", timeout=WAIT
@@ -521,5 +627,443 @@ async def test_platform_admin_before_choosing_a_company_shows_the_prompt_and_no_
             await expect(page).to_have_url(re.compile(rf"/connections\?client_id={TENANT}$"))
             assert stub.package_queries
             assert all(query == {"client_id": [TENANT]} for query in stub.package_queries)
+
+    await with_browser(body)
+
+
+# --- The Google card (Calendar and Gmail) ------------------------------------------------------
+
+
+async def overflow(page: Page) -> dict[str, int]:
+    return await page.evaluate(
+        "() => ({scroll: document.documentElement.scrollWidth, inner: window.innerWidth})"
+    )
+
+
+async def to_google(page: Page) -> list[str]:
+    """Google is never contacted: its authorize host is answered here."""
+    reached: list[str] = []
+
+    async def google(route: Any) -> None:
+        reached.append(route.request.url)
+        await route.fulfill(status=200, content_type="text/html", body="<p>stub</p>")
+
+    await page.route("https://accounts.google.com/**", google)
+    return reached
+
+
+def answer_dialogs(page: Page, answers: list[bool]) -> list[str]:
+    """Answer each browser confirm in turn with the given yes or no; returns what was asked."""
+    asked: list[str] = []
+
+    async def reply(dialog: Any) -> None:
+        asked.append(dialog.message)
+        if answers.pop(0):
+            await dialog.accept()
+        else:
+            await dialog.dismiss()
+
+    page.on("dialog", lambda dialog: asyncio.ensure_future(reply(dialog)))
+    return asked
+
+
+def calendar_calls(stub: Stub, method: str, path: str) -> int:
+    return stub.google_calls.count(f"{method} bookings/calendar/{path}")
+
+
+async def test_a_member_connects_and_disconnects_google_calendar(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(packages=EVERYTHING, serves_google=True)
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            reached = await to_google(page)
+            await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                "Not connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-sentence")).to_contain_text(
+                "Your confirmed bookings appear on a calendar called Bookings"
+            )
+            await expect(page.get_by_test_id("connections-calendar-reconnect")).to_have_count(0)
+            await expect(page.get_by_test_id("connections-calendar-disconnect")).to_have_count(0)
+            await page.get_by_test_id("connections-calendar-connect").click()
+            await page.wait_for_url(GOOGLE_URL, timeout=WAIT)
+            assert reached == [GOOGLE_URL]
+            assert calendar_calls(stub, "POST", "connect") == 1
+
+        stub = Stub(packages=EVERYTHING, serves_google=True, calendar=calendar_status("connected"))
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            asked = answer_dialogs(page, [False, True])
+            await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                "Connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-connect")).to_have_count(0)
+            button = page.get_by_test_id("connections-calendar-disconnect")
+            await button.click()
+            await until(lambda: len(asked) == 1)
+            await asyncio.sleep(0.3)
+            assert calendar_calls(stub, "POST", "disconnect") == 0
+            await button.click()
+            await until(lambda: calendar_calls(stub, "POST", "disconnect") == 1)
+            assert asked == [CALENDAR_CONFIRM] * 2
+            await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                "Not connected"
+            )
+            await expect(page.get_by_test_id("connections-calendar-connect")).to_be_visible()
+            await expect(page.get_by_test_id("connections-calendar-disconnect")).to_have_count(0)
+
+        # Google refusing to start the connection shows the sentence and leaves the button usable.
+        stub = Stub(
+            packages=EVERYTHING,
+            serves_google=True,
+            calendar_connect_status=409,
+            calendar_connect_data={"detail": "person_required"},
+        )
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            await page.get_by_test_id("connections-calendar-connect").click(timeout=WAIT)
+            await expect(page.get_by_test_id("connections-calendar-problem")).to_be_visible()
+            await expect(page.get_by_test_id("connections-calendar-connect")).to_be_enabled()
+            assert page.url.endswith("/portal/connections")
+
+    await with_browser(body)
+
+
+async def test_needs_reconnect_offers_reconnect_with_the_banner_sentence(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            packages=EVERYTHING, serves_google=True, calendar=calendar_status("needs_reconnect")
+        )
+        async with connections_page(browser, site, stub) as page:
+            reached = await to_google(page)
+            await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                "Needs reconnecting", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-sentence")).to_have_text(BANNER)
+            await expect(page.get_by_test_id("connections-calendar-connect")).to_have_count(0)
+            await expect(page.get_by_test_id("connections-calendar-disconnect")).to_be_visible()
+            await page.get_by_test_id("connections-calendar-reconnect").click()
+            await page.wait_for_url(GOOGLE_URL, timeout=WAIT)
+            assert reached == [GOOGLE_URL]
+            assert calendar_calls(stub, "POST", "connect") == 1
+
+    await with_browser(body)
+
+
+async def test_calendar_off_or_not_linked_says_so_without_buttons(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        cases = [
+            (
+                calendar_status(None, available=False, can_connect=False),
+                "Not switched on",
+                "Google Calendar isn't switched on for this company yet. Ask your Admin.",
+            ),
+            (
+                calendar_status(None, can_connect=False),
+                "Not available",
+                "Your account isn't linked to a person in Bookings yet. "
+                "Ask your Admin to add you on People & rooms.",
+            ),
+        ]
+        for status, word, sentence in cases:
+            stub = Stub(packages=EVERYTHING, serves_google=True, calendar=status)
+            async with connections_page(browser, site, stub) as page:
+                await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                    word, timeout=WAIT
+                )
+                await expect(page.get_by_test_id("connections-calendar-sentence")).to_have_text(
+                    sentence
+                )
+                google = page.get_by_test_id("connections-card-google")
+                # Only Connect Gmail is left in the card: the Calendar row has no button.
+                await expect(google.get_by_role("button")).to_have_count(1)
+                await expect(page.get_by_test_id("connections-calendar-connect")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_a_member_connects_and_disconnects_gmail_after_asking(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(packages=EVERYTHING, serves_google=True)
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            reached = await to_google(page)
+            await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                "Not connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-gmail-sentence")).to_have_text(
+                "No mailbox connected for your account."
+            )
+            await page.get_by_test_id("connections-gmail-connect").click()
+            await page.wait_for_url(GOOGLE_URL, timeout=WAIT)
+            assert reached == [GOOGLE_URL]
+            assert stub.google_calls.count("POST email/mailbox/connect") == 1
+
+        stub = Stub(packages=EVERYTHING, serves_google=True, email=email_context("connected"))
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                "Connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-gmail-sentence")).to_have_text(
+                f"Your Gmail {ADDRESS} is connected to the Email assistant."
+            )
+            await expect(page.get_by_test_id("connections-gmail-last")).to_contain_text(
+                "Last checked"
+            )
+            await expect(page.get_by_test_id("connections-gmail-connect")).to_have_count(0)
+            await page.get_by_test_id("connections-gmail-disconnect").click()
+            await expect(page.get_by_test_id("connections-gmail-disconnect-ask")).to_contain_text(
+                GMAIL_QUESTION
+            )
+            # Cancel asks nothing of the server.
+            await page.get_by_test_id("connections-gmail-disconnect-cancel").click()
+            await asyncio.sleep(0.3)
+            assert "POST email/mailbox/disconnect" not in stub.google_calls
+            await page.get_by_test_id("connections-gmail-disconnect").click()
+            await page.get_by_test_id("connections-gmail-disconnect-confirm").click()
+            await expect(page.get_by_test_id("connections-gmail-message")).to_have_text(
+                GMAIL_DISCONNECTED
+            )
+            assert stub.google_calls.count("POST email/mailbox/disconnect") == 1
+            await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                "Not connected"
+            )
+            await expect(page.get_by_test_id("connections-gmail-connect")).to_be_visible()
+            await expect(page.get_by_test_id("connections-gmail-disconnect")).to_have_count(0)
+
+        # This server has no Google client: the existing sentence under a disabled Connect.
+        stub = Stub(packages=EVERYTHING, serves_google=True, email=email_context(configured=False))
+        async with connections_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("connections-gmail-connect")).to_be_disabled(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-gmail-note")).to_have_text(
+                "Connecting Gmail isn't available yet. Contact fourstacks support."
+            )
+
+        # Switched off for the company: the word and the sentence, and nothing to press.
+        stub = Stub(packages=EVERYTHING, serves_google=True, email=email_context(enabled=False))
+        async with connections_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                "Switched off", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-gmail-sentence")).to_have_text(
+                "The email assistant is switched off for your company."
+            )
+
+    await with_browser(body)
+
+
+CALENDAR_RETURNS = {
+    "calendar=connected": "Google Calendar is connected. Your confirmed bookings will appear on a "
+    "Bookings calendar in your Google account.",
+    "calendar_error=oauth_state_invalid": "That connection attempt expired or was already used. "
+    "Try connecting again.",
+    "calendar_error=provider_denied": "Google didn't give access, so nothing was connected. "
+    "Try again and choose Allow.",
+    "calendar_error=oauth_issuer_invalid": "Google's answer couldn't be checked, so nothing was "
+    "connected. Try again.",
+    "calendar_error=scopes_not_granted": "Google didn't allow access to the calendar this makes. "
+    "Try again and allow it.",
+    "calendar_error=calendar_unavailable": "Google Calendar isn't switched on for this company "
+    "yet. Ask your Admin.",
+    "calendar_error=something_new": "Google Calendar could not be connected. Try again.",
+}
+GMAIL_RETURNS = {
+    "connected=1": "Mailbox connected.",
+    "error=oauth_state_invalid": "The sign-in link expired or was already used. "
+    "Start the connection again.",
+    "error=something_new": "Gmail could not be connected. Try again.",
+}
+
+
+async def test_each_google_return_says_its_sentence_once_and_cleans_the_address(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        for kind, returns in (("calendar", CALENDAR_RETURNS), ("gmail", GMAIL_RETURNS)):
+            for query, sentence in returns.items():
+                stub = Stub(packages=EVERYTHING, serves_google=True)
+                async with connections_page(
+                    browser, site, stub, path=f"/portal/connections?{query}"
+                ) as page:
+                    result = page.get_by_test_id(f"connections-result-{kind}")
+                    await expect(result).to_have_text(sentence, timeout=WAIT)
+                    await expect(page).to_have_url(
+                        re.compile(r"/portal/connections$"), timeout=WAIT
+                    )
+                    # The line stays once the address is clean, and it is said once.
+                    await expect(result).to_be_visible()
+                    await expect(page.get_by_text(sentence, exact=True)).to_have_count(1)
+                    await expect(page.get_by_test_id(f"connections-{kind}-word")).to_be_visible()
+
+        # A return shows even when its card is locked.
+        stub = Stub(packages=MARKETPLACES)
+        async with connections_page(
+            browser, site, stub, path="/portal/connections?calendar_error=provider_denied"
+        ) as page:
+            await expect(page.get_by_test_id("connections-result-calendar")).to_have_text(
+                CALENDAR_RETURNS["calendar_error=provider_denied"], timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-locked")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_read_only_sees_disabled_buttons_and_reads_no_status(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(packages=EVERYTHING)
+        async with connections_page(browser, site, stub, role="read_only") as page:
+            for kind, label in (
+                ("calendar", "Connect Google Calendar"),
+                ("gmail", "Connect Gmail"),
+            ):
+                button = page.get_by_test_id(f"connections-{kind}-connect")
+                await expect(button).to_be_disabled(timeout=WAIT)
+                await expect(button).to_have_text(label)
+                await expect(page.get_by_test_id(f"connections-{kind}-note")).to_have_text(
+                    "Your role can't connect this."
+                )
+                await expect(page.get_by_test_id(f"connections-{kind}-word")).to_have_count(0)
+            await asyncio.sleep(0.8)
+            # No calendar, email or stores read at all (the stub fails the test on any Google call).
+            assert stub.google_calls == [] and stub.store_queries == []
+
+    await with_browser(body)
+
+
+async def test_platform_admin_sees_only_your_business_and_reads_no_google_status(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(packages=EVERYTHING)
+        async with connections_page(
+            browser, site, stub, path=f"/connections?client_id={TENANT}", role="platform_admin"
+        ) as page:
+            await expect(page.get_by_test_id("connections-group-business")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id(f"connections-tiktok-{STORE_ID}-word")).to_be_visible()
+            await expect(page.get_by_test_id("connections-group-you")).to_have_count(0)
+            await expect(page.get_by_test_id("connections-card-google")).to_have_count(0)
+            await expect(page.get_by_test_id("connections-calendar")).to_have_count(0)
+            await expect(page.get_by_test_id("connections-gmail")).to_have_count(0)
+            await asyncio.sleep(0.8)
+            assert stub.google_calls == []
+
+    await with_browser(body)
+
+
+async def test_locked_google_rows_name_their_package_and_read_nothing(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # Neither package: both rows say which package, and nothing is read for them.
+        for role in ("tenant_admin", "tenant_staff", "read_only"):
+            stub = Stub(packages=MARKETPLACES)
+            async with connections_page(browser, site, stub, role=role) as page:
+                await expect(page.get_by_test_id("connections-calendar-locked")).to_have_text(
+                    "Included in the Bookings package.", timeout=WAIT
+                )
+                await expect(page.get_by_test_id("connections-gmail-locked")).to_have_text(
+                    "Included in the Staff email package."
+                )
+                await expect(page.get_by_test_id("connections-calendar-connect")).to_have_count(0)
+                await expect(page.get_by_test_id("connections-gmail-connect")).to_have_count(0)
+                await asyncio.sleep(0.5)
+                assert stub.google_calls == []
+
+        # Only Bookings: the calendar reads its status, the locked Gmail row reads nothing.
+        stub = Stub(
+            packages=[*MARKETPLACES, {"key": "bookings", "status": "active"}], serves_google=True
+        )
+        async with connections_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("connections-calendar-word")).to_have_text(
+                "Not connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-gmail-locked")).to_be_visible()
+            await asyncio.sleep(0.5)
+            assert stub.google_paths() == {"GET bookings/calendar/status"}
+
+        # Only Staff email, suspended Bookings: the reverse.
+        stub = Stub(
+            packages=[
+                *MARKETPLACES,
+                {"key": "bookings", "status": "suspended"},
+                {"key": "staff_email", "status": "active"},
+            ],
+            serves_google=True,
+        )
+        async with connections_page(browser, site, stub) as page:
+            await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                "Not connected", timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-locked")).to_be_visible()
+            await asyncio.sleep(0.5)
+            assert stub.google_paths() == {"GET email/context"}
+
+    await with_browser(body)
+
+
+async def test_an_admin_sees_the_team_link_to_people_and_rooms(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        people = [
+            {
+                "person_id": "33333333-3333-4333-8333-333333333333",
+                "name": "Ada",
+                "status": "connected",
+            }
+        ]
+        stub = Stub(
+            packages=EVERYTHING, serves_google=True, calendar=calendar_status(people=people)
+        )
+        async with connections_page(browser, site, stub) as page:
+            link = page.get_by_test_id("connections-calendar-people")
+            await expect(link).to_have_text("See your team's calendar connections", timeout=WAIT)
+            await expect(link).to_have_attribute("href", "/portal/bookings/people-and-rooms")
+
+        # A member's status has no team list, so no link.
+        stub = Stub(packages=EVERYTHING, serves_google=True)
+        async with connections_page(browser, site, stub, role="tenant_staff") as page:
+            await expect(page.get_by_test_id("connections-calendar-word")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(page.get_by_test_id("connections-calendar-people")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_the_tab_fits_320_390_and_768_in_three_themes(site: Site, theme: str) -> None:
+    async def body(browser: Any) -> None:
+        # The longest things a row can say: a long mailbox address, a team link, every card drawn.
+        long_address = "a-very-long-synthetic-mailbox-name-for-the-fit-check@subdomain.example.test"
+        people = [
+            {
+                "person_id": "33333333-3333-4333-8333-333333333333",
+                "name": "Ada",
+                "status": "connected",
+            }
+        ]
+        stub = Stub(
+            packages=EVERYTHING,
+            serves_google=True,
+            calendar=calendar_status("needs_reconnect", people=people),
+            email=email_context("connected", address=long_address),
+        )
+        for width in (320, 390, 768):
+            async with connections_page(
+                browser, site, stub, width=width, theme=theme, role="tenant_admin"
+            ) as page:
+                await expect(page.get_by_test_id("connections-gmail-word")).to_have_text(
+                    "Connected", timeout=WAIT
+                )
+                await expect(page.get_by_test_id("connections-calendar-reconnect")).to_be_visible()
+                await expect(
+                    page.get_by_test_id(f"connections-tiktok-{STORE_ID}-word")
+                ).to_be_visible()
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], (theme, width, measured)
+                # The disconnect question opens inside the card, still without sideways scrolling.
+                await page.get_by_test_id("connections-gmail-disconnect").click()
+                await expect(
+                    page.get_by_test_id("connections-gmail-disconnect-ask")
+                ).to_be_visible()
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], ("ask", theme, width, measured)
 
     await with_browser(body)

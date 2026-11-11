@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { disconnectCalendar, startCalendarConnect, type CalendarStatus } from "@/lib/bookings-api";
-import { calendarControls, calendarResult, calendarStateWord, type CalendarResult } from "@/lib/bookings-view";
+import type { CalendarStatus } from "@/lib/bookings-api";
+import {
+  CALENDAR_EXPLAINER, CALENDAR_RECONNECT_BANNER, calendarControls, calendarResult, calendarStateWord, type CalendarResult,
+} from "@/lib/bookings-view";
 import { action, Notice, Panel, secondary } from "../ui";
-import { mutedText, useAction, type BookingsScope, type Loaded } from "./parts";
-
-const DISCONNECT_CONFIRM =
-  "Stop sending bookings to your Google Calendar? Your Bookings calendar and its events stay in your Google account.";
+import { mutedText, type BookingsScope, type Loaded } from "./parts";
+import { useCalendarConnect } from "./useCalendarConnect";
 
 /**
  * What Google sent the browser back with, shown once and then taken out of the address so a reload
@@ -33,7 +33,7 @@ function useConnectionResult(): CalendarResult | null {
 /** A member's own Google Calendar: where it stands, and Connect, Reconnect and Disconnect. */
 export default function GoogleCalendarPanel({ scope, calendar }: { scope: BookingsScope; calendar: Loaded<CalendarStatus> }) {
   const result = useConnectionResult();
-  const { busy, error, run } = useAction();
+  const { busy, error, connect, disconnect } = useCalendarConnect(scope.tenantId, calendar);
   const status = calendar.data;
   const controls = calendarControls(status);
   if (calendar.error && !status) {
@@ -42,20 +42,6 @@ export default function GoogleCalendarPanel({ scope, calendar }: { scope: Bookin
   if (!status || !controls.panel) {
     // A result can arrive for someone the feature no longer shows; it is still worth a sentence.
     return result ? <Notice error={result.tone === "error"} testId="google-calendar-result">{result.text}</Notice> : null;
-  }
-
-  async function connect() {
-    const started = await run(() => startCalendarConnect(scope.tenantId));
-    if (started) window.location.assign(started.url);
-  }
-
-  async function disconnect() {
-    if (!window.confirm(DISCONNECT_CONFIRM)) return;
-    const done = await run(async () => {
-      await disconnectCalendar(scope.tenantId);
-      return true;
-    });
-    if (done) calendar.reload();
   }
 
   return (
@@ -67,8 +53,7 @@ export default function GoogleCalendarPanel({ scope, calendar }: { scope: Bookin
           )}
           {controls.reconnect && (
             <Notice warning testId="google-calendar-banner">
-              Google stopped accepting the connection, so new bookings aren&apos;t reaching your calendar.
-              Reconnect to start them again.
+              {CALENDAR_RECONNECT_BANNER}
             </Notice>
           )}
           <p className="text-sm">
@@ -76,8 +61,7 @@ export default function GoogleCalendarPanel({ scope, calendar }: { scope: Bookin
             <span data-testid="google-calendar-status" className="font-medium">{calendarStateWord(status.status)}</span>
           </p>
           <p className={mutedText}>
-            Your confirmed bookings appear on a calendar called Bookings in your own Google account. Only that
-            calendar is touched, and changing an event in Google does not change the booking.
+            {CALENDAR_EXPLAINER}
           </p>
           {error && <Notice error testId="google-calendar-error">{error}</Notice>}
           <div className="flex flex-wrap gap-2">

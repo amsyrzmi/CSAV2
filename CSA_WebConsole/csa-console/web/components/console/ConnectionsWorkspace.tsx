@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { ARRIVAL_KEYS, arrivals, cardGate, type Arrival } from "@/lib/connections-view";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { TIKTOK_UNAVAILABLE } from "@/lib/tiktok-connect";
+import { GoogleCard } from "./connections/GoogleCard";
 import { TikTokCard } from "./connections/TikTokCard";
 import { useActivePackages } from "./overview/useActivePackages";
 import { field, Heading, Notice } from "./ui";
@@ -81,6 +82,8 @@ export function ConnectionsWorkspace({ me }: { me: Me }) {
       <h2 className={groupHeading}>You</h2>
       <p className="mt-1 mb-4 text-sm text-[color:var(--fs-text-secondary)]">
         Your own Google account. Nobody else can connect it for you.</p>
+      {ready && packages !== undefined && <GoogleCard peopleHref="/portal/bookings/people-and-rooms"
+        calendarGate={cardGate("calendar", me.role, packages)} gmailGate={cardGate("gmail", me.role, packages)} />}
     </section>}
   </>;
 }

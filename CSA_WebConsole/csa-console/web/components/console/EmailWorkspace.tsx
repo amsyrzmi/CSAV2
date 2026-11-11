@@ -17,19 +17,12 @@ import { EmailPreview } from "./EmailPreview";
 import ConfirmAction from "./email/ConfirmAction";
 import FilterBar from "./email/FilterBar";
 import StatusBar from "./email/StatusBar";
+import { errorFor, useGmailConnect } from "./email/useGmailConnect";
 import StatusLabel from "./fs/StatusLabel";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, secondary, Heading, Notice, Panel } from "./ui";
 
 const CONNECTED = "Mailbox connected.";
-
-/** The plain sentence for a failed request; codes without one keep the generic form. */
-function errorFor(reason: unknown): string {
-  const sentence = emailErrorSentence(reason);
-  if (sentence) return sentence;
-  const code = reason instanceof ApiError ? reason.code : reason instanceof Error ? reason.message : String(reason);
-  return `Request failed: ${code}`;
-}
 
 type AttentionState =
   | { state: "off" } | { state: "loading" } | { state: "ready"; page: AttentionPage } | { state: "error"; text: string };
@@ -103,7 +96,7 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
 
   async function run<T>(work: () => Promise<T>, done?: (value: T) => void | Promise<void>) {
     if (inFlight.current) return;
-    inFlight.current = true; setBusy(true); setError("");
+    inFlight.current = true; setBusy(true); setError(""); gmail.clear();
     try { const value = await work(); await done?.(value); }
     catch (reason) { setError(errorFor(reason)); }
     finally { inFlight.current = false; setBusy(false); }
@@ -168,6 +161,12 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
 
+  // Connect and Disconnect come from the hook the Connections tab shares; after a disconnect this
+  // page reads the context again and closes what was open.
+  const gmail = useGmailConnect(client, async () => {
+    const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" });
+  });
+
   if (!context) return <Notice>{error || "Loading…"}</Notice>;
   const mailbox = context.mailbox;
   const connected = mailbox?.status === "connected";
@@ -228,21 +227,19 @@ function TenantEmail({ me, tenant, notice }: { me: Me; tenant: string; notice: s
   }
 
   return <div className="space-y-6">
-    {error && <Notice error>{error}</Notice>}
-    {message && <Notice>{message}</Notice>}
+    {(gmail.error || error) && <Notice error>{gmail.error || error}</Notice>}
+    {(gmail.message || message) && <Notice>{gmail.message || message}</Notice>}
     <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-    <StatusBar context={context} lastSync={lastSync} busy={busy} writable={writable} wide={attention.state === "off"}
+    <StatusBar context={context} lastSync={lastSync} busy={busy || gmail.busy} writable={writable} wide={attention.state === "off"}
       onSync={() => run(
         () => client.sync(), async r => { const ctx = await refreshAll(); const n = (r.detail as { threads?: number }).threads ?? 0; setMessage(`Checked Gmail: ${n} ${n === 1 ? "conversation" : "conversations"}.`); loadAttention(ctx); },
       )}
-      onConnect={() => run(() => client.connect(), result => { window.location.assign(result.authorization_url); })}
+      onConnect={() => void gmail.connect()}
       onSetEnabled={next => run(
         () => client.setEnabled(next),
         async () => { const ctx = await client.context(); setContext(ctx); await reloadLists(ctx); setMessage(ctx.enabled ? "Assistant enabled." : "Assistant disabled."); },
       )}
-      onDisconnect={() => run(
-        () => client.disconnect(), async () => { const ctx = await client.context(); setContext(ctx); setSelected(null); setAttention({ state: "off" }); setMessage("Gmail disconnected. Emails already loaded stay readable."); },
-      )} />
+      onDisconnect={() => void gmail.disconnect()} />
     {attention.state !== "off" && <AttentionPanel attention={attention} busy={busy}
       onOpen={id => run(() => client.thread(id), detail => { setSelected(detail); setTab("inbox"); })} />}
     </div>

@@ -7,9 +7,11 @@ import type { Me } from "@/lib/identity-contracts";
 import type { PackageState } from "@/lib/services-api";
 import type { ConnectionView } from "@/components/console/connections/ConnectionCard";
 import type { StoreRecord } from "@/lib/business";
-import { calendarResult } from "@/lib/bookings-view";
+import type { CalendarStatus } from "@/lib/bookings-api";
+import type { EmailContext } from "@/lib/email-api";
+import { CALENDAR_EXPLAINER, CALENDAR_RECONNECT_BANNER, calendarResult, calendarStateWord } from "@/lib/bookings-view";
 import { storeStatusTone, storeSummary } from "@/lib/business-view";
-import { emailErrorSentence } from "@/lib/email-recipients";
+import { emailErrorSentence, formatWhen } from "@/lib/email-recipients";
 import { connectErrorText, connectResult, syncLine } from "@/lib/tiktok-connect";
 
 export type ConnectionKind = "tiktok" | "calendar" | "gmail";
@@ -85,6 +87,71 @@ export function tiktokView(store: StoreRecord | null, now: Date): ConnectionView
       ? null
       : syncLine(null, store.sync?.orders_synced_at ?? null, now),
   };
+}
+
+/**
+ * The Google Calendar row: the existing state words, the banner sentence for a connection Google
+ * stopped accepting, and the two ways it can be unavailable (not switched on, not linked to a
+ * person). The status carries no timestamp, so there is no last activity. `null` reads as off.
+ */
+export function calendarView(status: CalendarStatus | null): ConnectionView {
+  if (!status || !status.available) {
+    return {
+      tone: "neutral", word: "Not switched on", lastActivity: null,
+      sentence: "Google Calendar isn't switched on for this company yet. Ask your Admin.",
+    };
+  }
+  if (!status.can_connect || status.status === null) {
+    return {
+      tone: "neutral", word: "Not available", lastActivity: null,
+      sentence: "Your account isn't linked to a person in Bookings yet. Ask your Admin to add you on People & rooms.",
+    };
+  }
+  const word = calendarStateWord(status.status);
+  if (status.status === "needs_reconnect") {
+    return { tone: "attention", word, sentence: CALENDAR_RECONNECT_BANNER, lastActivity: null };
+  }
+  return {
+    tone: status.status === "connected" ? "success" : "neutral", word, sentence: CALENDAR_EXPLAINER, lastActivity: null,
+  };
+}
+
+export const GMAIL_UNAVAILABLE = "Connecting Gmail isn't available yet. Contact fourstacks support.";
+
+/** The Gmail row, with the Email page's state words and tones; `null` (nothing read) reads as not connected. */
+export function gmailView(context: EmailContext | null): ConnectionView {
+  const none: ConnectionView = {
+    tone: "neutral", word: "Not connected", sentence: "No mailbox connected for your account.", lastActivity: null,
+  };
+  if (!context) return none;
+  if (!context.enabled) {
+    return {
+      tone: "neutral", word: "Switched off", lastActivity: null,
+      sentence: "The email assistant is switched off for your company.",
+    };
+  }
+  const mailbox = context.mailbox;
+  if (!mailbox) return none;
+  const synced = mailbox.last_sync_at ?? context.last_synced_at;
+  const lastActivity = synced ? `Last checked ${formatWhen(synced)}.` : "Not checked yet.";
+  if (mailbox.status === "connected") {
+    return {
+      tone: "success", word: "Connected", lastActivity,
+      sentence: `Your Gmail ${mailbox.address ?? "(pending)"} is connected to the Email assistant.`,
+    };
+  }
+  if (mailbox.status === "pending") {
+    return { tone: "attention", word: "Not finished", lastActivity, sentence: "Gmail has not finished connecting." };
+  }
+  return {
+    tone: "error", word: "Access removed", lastActivity,
+    sentence: "Gmail access was removed, so new email will not arrive.",
+  };
+}
+
+/** The line under a disabled Connect Gmail when this server has no Google client set up. */
+export function gmailNote(context: EmailContext | null): string | null {
+  return context && !context.provider_configured ? GMAIL_UNAVAILABLE : null;
 }
 
 /** Where the tab lives: a platform admin's address keeps the chosen company. */

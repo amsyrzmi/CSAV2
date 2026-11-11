@@ -7,6 +7,7 @@ import StatusLabel from "../fs/StatusLabel";
 import { DetailsRow } from "../kit";
 import { action } from "../ui";
 import ConfirmAction from "./ConfirmAction";
+import { GMAIL_DISCONNECT_QUESTION } from "./useGmailConnect";
 
 /**
  * The top of the page: whether the mailbox is connected, when it last synced and the Sync action.
@@ -122,7 +123,7 @@ export default function StatusBar({
               <ConfirmAction
                 testId="email-disconnect"
                 label="Disconnect"
-                question="Disconnect Gmail? Emails already loaded stay readable. Connect Gmail again to sync or send."
+                question={GMAIL_DISCONNECT_QUESTION}
                 disabled={busy}
                 onConfirm={() => { refocus.current = "disconnected"; onDisconnect(); }}
               />

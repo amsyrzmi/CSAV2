@@ -836,6 +836,12 @@ export function calendarStateWord(state: string | null | undefined): string {
     : CALENDAR_STATE_WORDS.not_connected;
 }
 
+/** The needs-reconnect banner, and what a connected calendar is for: the panel and the tab say the same. */
+export const CALENDAR_RECONNECT_BANNER =
+  "Google stopped accepting the connection, so new bookings aren't reaching your calendar. Reconnect to start them again.";
+export const CALENDAR_EXPLAINER =
+  "Your confirmed bookings appear on a calendar called Bookings in your own Google account. Only that calendar is touched, and changing an event in Google does not change the booking.";
+
 export interface CalendarControls {
   /** The member's own Google Calendar panel is shown at all. */
   panel: boolean;

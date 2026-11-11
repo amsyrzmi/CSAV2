@@ -13,7 +13,8 @@ async function load(name, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 const {
-  cardGate, arrivals, connectionsHref, tiktokView, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED, MANAGE_LINK,
+  cardGate, arrivals, connectionsHref, tiktokView, calendarView, gmailView, gmailNote, ARRIVAL_KEYS, ROLE_CANNOT, LOCKED,
+  MANAGE_LINK,
 } = await import(await load("connections-view.ts", {
   '"@/lib/business-view"': JSON.stringify(await load("business-view.ts", {
     '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
@@ -202,4 +203,67 @@ test("tiktokView for every stored status and for no shop", () => {
     tone: "attention", word: "Waiting for TikTok approval",
     sentence: "Finish approving the connection on TikTok.", lastActivity: null,
   });
+});
+
+test("calendarView for every state, off and not linked", () => {
+  const history = "Your confirmed bookings appear on a calendar called Bookings in your own Google account. "
+    + "Only that calendar is touched, and changing an event in Google does not change the booking.";
+  const status = (state, extra = {}) => ({ available: true, can_connect: true, status: state, people: null, ...extra });
+  assert.deepEqual(calendarView(status("not_connected")),
+    { tone: "neutral", word: "Not connected", sentence: history, lastActivity: null });
+  assert.deepEqual(calendarView(status("connected")),
+    { tone: "success", word: "Connected", sentence: history, lastActivity: null });
+  assert.deepEqual(calendarView(status("needs_reconnect")), {
+    tone: "attention", word: "Needs reconnecting", lastActivity: null,
+    sentence: "Google stopped accepting the connection, so new bookings aren't reaching your calendar. "
+      + "Reconnect to start them again.",
+  });
+  const off = {
+    tone: "neutral", word: "Not switched on", lastActivity: null,
+    sentence: "Google Calendar isn't switched on for this company yet. Ask your Admin.",
+  };
+  assert.deepEqual(calendarView(status(null, { available: false, can_connect: false })), off);
+  assert.deepEqual(calendarView(null), off);
+  assert.deepEqual(calendarView(status(null, { can_connect: false })), {
+    tone: "neutral", word: "Not available", lastActivity: null,
+    sentence: "Your account isn't linked to a person in Bookings yet. Ask your Admin to add you on People & rooms.",
+  });
+});
+
+test("gmailView for every mailbox state, switched off and no provider", () => {
+  const context = (mailbox, extra = {}) => ({
+    enabled: true, can_manage: false, can_connect: true, provider_configured: true, model_configured: true,
+    mailbox, disclosure: "", last_synced_at: null, more_available: false, ...extra,
+  });
+  const box = (status, extra = {}) => ({ status, address: "ada@example.test", last_sync_at: null, ...extra });
+  assert.deepEqual(gmailView(context(null, { enabled: false })), {
+    tone: "neutral", word: "Switched off", lastActivity: null,
+    sentence: "The email assistant is switched off for your company.",
+  });
+  assert.deepEqual(gmailView(context(null)), {
+    tone: "neutral", word: "Not connected", lastActivity: null, sentence: "No mailbox connected for your account.",
+  });
+  assert.deepEqual(gmailView(context(box("connected"))), {
+    tone: "success", word: "Connected", lastActivity: "Not checked yet.",
+    sentence: "Your Gmail ada@example.test is connected to the Email assistant.",
+  });
+  // The mailbox's own last sync wins; otherwise the thread list's.
+  assert.match(gmailView(context(box("connected", { last_sync_at: "2026-11-02T01:57:00Z" }))).lastActivity,
+    /^Last checked .+\.$/);
+  assert.match(gmailView(context(box("connected"), { last_synced_at: "2026-11-02T01:57:00Z" })).lastActivity,
+    /^Last checked .+\.$/);
+  assert.deepEqual(gmailView(context(box("pending", { address: null }))), {
+    tone: "attention", word: "Not finished", lastActivity: "Not checked yet.",
+    sentence: "Gmail has not finished connecting.",
+  });
+  assert.deepEqual(gmailView(context(box("revoked"))), {
+    tone: "error", word: "Access removed", lastActivity: "Not checked yet.",
+    sentence: "Gmail access was removed, so new email will not arrive.",
+  });
+  assert.equal(gmailView(null).word, "Not connected");
+  // No Google client on this server: the existing sentence goes under a disabled Connect.
+  assert.equal(gmailNote(context(null, { provider_configured: false })),
+    "Connecting Gmail isn't available yet. Contact fourstacks support.");
+  assert.equal(gmailNote(context(null)), null);
+  assert.equal(gmailNote(null), null);
 });

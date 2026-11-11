@@ -36,7 +36,7 @@ export function ConnectionRow({ testId, name, view, locked, note, actions }: {
       <h4 className="font-medium">{name}</h4>
       {view && <span data-testid={`${testId}-word`}><StatusLabel tone={view.tone}>{view.word}</StatusLabel></span>}
     </div>
-    {view && <p data-testid={`${testId}-sentence`} className="mt-1 text-sm">{view.sentence}</p>}
+    {view && <p data-testid={`${testId}-sentence`} className="mt-1 text-sm [overflow-wrap:anywhere]">{view.sentence}</p>}
     {view?.lastActivity && <p data-testid={`${testId}-last`} className={`mt-1 ${muted}`}>{view.lastActivity}</p>}
     {actions && <div className="mt-3 flex flex-wrap items-center gap-3">{actions}</div>}
     {note && <p data-testid={`${testId}-note`} className={`mt-2 ${muted}`}>{note}</p>}
