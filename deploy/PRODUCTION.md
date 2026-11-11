@@ -112,6 +112,13 @@ and the directory must be owned by `ubuntu`. **2** is a plan
   40-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
   run; the instance's log shows which.
 
+A `Configure AWS credentials` step that fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity` means the role's trust policy does not match the token the job
+presented: the subject (see One-time setup, step 3, for how to look up the prefix GitHub issues for
+this repository) or the environment name. Nothing was sent to the instance.
+Fix it with `aws iam update-assume-role-policy --role-name <role> --policy-document file://<policy>`
+and start the workflow again.
+
 A `Require the deploy variables` step that fails names the secret or variable that is not set
 (see One-time setup, step 6). With an empty `sha`, `no successful staging deployment found` means
 no commit has a staged record yet. A failed `Read the plan` step (`parse_plan: ...`) means the
@@ -236,8 +243,22 @@ The plan role trusts only the `production-plan` environment of this repository a
 the plan document; the apply role trusts only `production` and may send only the apply document.
 Both may send to the one instance only, and neither has any other AWS access.
 
+The trust policies name the token's subject, and GitHub decides its shape per repository: the classic
+`repo:<owner>/<repo>` or, for repositories that use the immutable subject, `repo:<owner>@<owner id>/<repo>@<repo id>`.
+Ask GitHub which one this repository issues, on a machine where `gh` is logged in as a repository
+admin, for example your own machine (the endpoint needs the admin login):
+
+```bash
+gh api repos/amsyrzmi/CSAV2/actions/oidc/customization/sub --jq .sub_claim_prefix
+```
+
+Copy the printed value into CloudShell as `SUBJECT=<printed value>`, in the same tab as the commands
+below. A wrong value is the usual cause of `Not authorized to perform sts:AssumeRoleWithWebIdentity`
+at the workflow's AWS step (see What a failure means).
+
 ```bash
 aws iam list-open-id-connect-providers
+SUBJECT=<printed value>   # e.g. the prefix printed above, never written into the repository
 # Only if token.actions.githubusercontent.com is not listed:
 aws iam create-open-id-connect-provider --url https://token.actions.githubusercontent.com --client-id-list sts.amazonaws.com
 OIDC=arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com
@@ -246,8 +267,8 @@ RAW=https://raw.githubusercontent.com/amsyrzmi/CSAV2/main/deploy/production
 for f in iam/plan-trust-policy.json iam/plan-permissions-policy.json iam/apply-trust-policy.json iam/apply-permissions-policy.json ssm-document-plan.json ssm-document-apply.json; do
   curl -fsSLO "$RAW/$f"
 done
-: "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" && sed -i -e "s|<region>|$REGION|g" \
-  -e "s|<account-id>|$ACCOUNT|g" -e "s|<managed-instance-id>|$NODE|g" -e "s|<oidc-provider-arn>|$OIDC|g" ./*-policy.json
+: "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}" && sed -i -e "s|<region>|$REGION|g" \
+  -e "s|<account-id>|$ACCOUNT|g" -e "s|<managed-instance-id>|$NODE|g" -e "s|<oidc-provider-arn>|$OIDC|g" -e "s|<repo-subject>|$SUBJECT|g" ./*-policy.json
 grep -n '<' ./*-policy.json || echo "placeholders filled"
 aws iam create-role --role-name csa-prod-deploy-plan --assume-role-policy-document file://plan-trust-policy.json
 aws iam put-role-policy --role-name csa-prod-deploy-plan --policy-name send-plan-document --policy-document file://plan-permissions-policy.json

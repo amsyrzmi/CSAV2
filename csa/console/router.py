@@ -12,6 +12,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from csa.agents.base import AgentContext
 from csa.agents.kb import KbAgent, KbInput
+from csa.agents.kb.lifecycle import delete_job_files
 from csa.agents.kb.lifecycle import lock as kb_lock
 from csa.console import agents, capabilities, runtime, timeline
 from csa.console.access import authenticate, tenant
@@ -20,9 +21,9 @@ from csa.console.capabilities import CapabilityOut, CapabilityToggleIn, Speciali
 from csa.console.chat import build_chat_router
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.inbox import build_inbox_router
-from csa.console.kb_contracts import JobOut, JobsDismissedOut, public_job
+from csa.console.kb_contracts import JobCancelledOut, JobOut, JobsDismissedOut, public_job
+from csa.console.kb_uploads import RemovedOut, build_upload_router, cleanup_after_remove, removed
 from csa.console.kb_uploads import audit as kb_audit
-from csa.console.kb_uploads import build_upload_router
 from csa.console.kb_uploads import writer as kb_writer
 from csa.console.services import build_services_router, package_gate
 from csa.console.voice import build_voice_router
@@ -397,24 +398,36 @@ def build_router(
         actor: Annotated[ConsoleActor, Depends(kb_writer)],
     ) -> JobsDismissedOut:
         async with tx(db_pool, str(client_id)) as conn:
+            await kb_lock(conn, client_id)
             rows = await db.q.fetch_all("kb/jobs_dismiss_failed.sql", (client_id,), conn=conn)
+            await delete_job_files(conn, client_id, [row["id"] for row in rows])
             await kb_audit(conn, actor, client_id, "kb.jobs_dismissed", str(client_id))
-        return JobsDismissedOut(dismissed=len(rows))
+        swept = await cleanup_after_remove(db_pool, kb_store, client_id)
+        return JobsDismissedOut(dismissed=len(rows), storage_cleanup=removed(swept).storage_cleanup)
 
-    @router.post("/kb/ingest-jobs/{job_id}/dismiss", status_code=204, dependencies=job_writer)
+    # Remove and Cancel also delete the job's own stored upload (see delete_job_files). The bytes
+    # go in the sweep after the commit; a failed sweep is reported as pending, as on file delete.
+    @router.post(
+        "/kb/ingest-jobs/{job_id}/dismiss",
+        response_model=RemovedOut,
+        dependencies=job_writer,
+    )
     async def dismiss_kb_ingest_job(
         job_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(kb_writer)],
-    ) -> None:
+    ) -> RemovedOut:
         async with tx(db_pool, str(client_id)) as conn:
+            await kb_lock(conn, client_id)
             if await db.q.fetch_one("kb/job_dismiss.sql", (client_id, job_id), conn=conn) is None:
                 row = await db.q.fetch_one("kb/get_ingest_job.sql", (client_id, job_id), conn=conn)
                 if row is None:
                     raise HTTPException(404, "ingest job not found")
                 raise HTTPException(409, "job_still_running")
+            await delete_job_files(conn, client_id, [job_id])
             await kb_audit(conn, actor, client_id, "kb.job_dismissed", str(job_id))
+        return removed(await cleanup_after_remove(db_pool, kb_store, client_id))
 
     @router.post(
         "/kb/ingest-jobs/{job_id}/retry",
@@ -443,21 +456,30 @@ def build_router(
         assert row is not None
         return public_job(row)
 
-    @router.post("/kb/ingest-jobs/{job_id}/cancel", response_model=JobOut, dependencies=job_writer)
+    @router.post(
+        "/kb/ingest-jobs/{job_id}/cancel", response_model=JobCancelledOut, dependencies=job_writer
+    )
     async def cancel_kb_ingest_job(
         job_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(kb_writer)],
-    ) -> JobOut:
+    ) -> JobCancelledOut:
         async with tx(db_pool, str(client_id)) as conn:
+            await kb_lock(conn, client_id)
             row = await db.q.fetch_one("kb/job_cancel.sql", (client_id, job_id), conn=conn)
             if row is None:
                 if await db.q.fetch_one("kb/get_ingest_job.sql", (client_id, job_id), conn=conn):
                     raise HTTPException(409, "not_cancellable")
                 raise HTTPException(404, "ingest job not found")
+            gone = await delete_job_files(conn, client_id, [job_id])
             await kb_audit(conn, actor, client_id, "kb.job_cancelled", str(job_id))
-        return public_job(row)
+            # The row was read before its files were deleted: add the ones that are gone now.
+            row = {**row, "deleted_file_ids": [*row["deleted_file_ids"], *gone]}
+        swept = await cleanup_after_remove(db_pool, kb_store, client_id)
+        return JobCancelledOut(
+            **public_job(row).model_dump(), storage_cleanup=removed(swept).storage_cleanup
+        )
 
     @router.get("/kb/gaps", response_model=list[KbGapOut], dependencies=[Depends(kb_package)])
     async def list_kb_gaps(

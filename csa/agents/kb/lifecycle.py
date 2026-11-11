@@ -55,6 +55,22 @@ async def close_jobs_for_files(
     return len(rows)
 
 
+async def delete_job_files(
+    conn: AsyncConnection[Any], client_id: UUID, job_ids: Sequence[UUID]
+) -> list[UUID]:
+    """Soft-delete the stored uploads the given jobs own and return their ids; call under ``lock``.
+
+    Only a live file that no document uses and no other listed job names is deleted, so a file
+    behind a document or shared with a job still on the list stays. The caller sweeps the bytes
+    after commit (``cleanup_after_remove``); documents and chunks are never touched here.
+    """
+    if not job_ids:
+        return []
+    ids = list(job_ids)
+    rows = await db.q.fetch_all("kb/jobs_delete_files.sql", (client_id, ids, ids), conn=conn)
+    return [row["id"] for row in rows]
+
+
 async def delete_document(conn: AsyncConnection[Any], client_id: UUID, document_id: UUID) -> bool:
     await lock(conn, client_id)
     row = await db.q.fetch_one("kb/document_get.sql", (client_id, document_id), conn=conn)

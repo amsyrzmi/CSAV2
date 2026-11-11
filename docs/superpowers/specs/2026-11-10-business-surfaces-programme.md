@@ -83,11 +83,20 @@ These block specific parts and are listed in the matching designs.
 
 ## 5. What is not in this programme
 
-Payments for subscriptions, WhatsApp media and templates, TikTok chat as a channel, TikTok LIVE,
-voice, and the customer classifier's move to the Jev model are separate tracks and keep their own
-places in the existing plans.
+WhatsApp media and templates (the template track for proactive reminders is the one exception that
+the payments design schedules), TikTok chat as a channel, TikTok LIVE, voice, a payment gateway
+(the platform never holds money), and the customer classifier's move to the Jev model are separate
+tracks and keep their own places in the existing plans. Payments for subscriptions are in this
+programme as P1 and P2 (`2026-11-11-payments-design.md`).
 
 ## 6. State
 
 - 2026-11-10: the TikTok Shop app is published as a Public app and is under TikTok's review; until it is approved, only the owner's own shop is known to connect (ledger row 13). The owner's own shop is connected on staging; live product sync needed the price fix on `fix/tiktok-live-product-shape`.
-- Next: the plan for pull request 1 (knowledge cleanup) is written and PR 1 is built on `feat/knowledge-cleanup`, awaiting the owner's merge and rollout (migration 0550 needs the owner's go).
+- 2026-11-11: PR 1 (#96, migration 0550), the TikTok price fix (#95), PR 3 Connections tab (#98) and the
+  onboarding and payments designs (#97) are merged; staging runs 3d25165 (0550). The owner decided that
+  Remove and Cancel on a knowledge job card also delete the stored uploaded file (a follow-up branch
+  `fix/kb-remove-deletes-file`). On 2026-11-11 the owner asked for the open design decisions to be
+  resolved with their defaults: WhatsApp-only reminders and the statement format (payments design
+  section 10, now marked decided).
+- Next: the plan for pull request 2 (customer bot business answers, migration 0560) is being written on
+  `docs/customer-bot-answers-plan`; then the plans for 2b, P1, P2 and PR 4 in that order.

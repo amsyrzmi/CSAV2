@@ -6,7 +6,7 @@ import { del, post } from "@/lib/api";
 import type { Agent, KbDocument, KbFile, KbGap, KbJob } from "@/lib/identity-contracts";
 import {
   atLimit, countText, formatBytes, groupSources, kbStatusLine, kindText, LIBRARY_PREVIEW, LIST_LIMITS, looseFiles, pausedReason,
-  pollingNeeded, type Card,
+  pollingNeeded, removedSentence, SWEEP_PENDING, type Card,
 } from "@/lib/knowledge-view";
 import { DetailsRow, TechDetailsProvider, TechnicalDetails, TechSwitch } from "../kit";
 import { action, Notice, Panel, secondary } from "../ui";
@@ -20,17 +20,24 @@ const box =
 
 /** What the open confirmation will do. A "files" delete is `linked` when its source belongs to a document. */
 type Confirm =
-  | { type: "files" | "documents"; id: string; name: string; linked: boolean }
+  | { type: "files"; id: string; name: string; linked: boolean }
+  | { type: "documents"; id: string; name: string; linked: boolean }
   | { type: "dismiss"; id: string; name: string }
+  | { type: "cancel"; id: string; name: string }
   | { type: "clear" };
 
 type Removed = { storage_cleanup: "done" | "pending" };
 
-const SWEEP_PENDING = "We'll finish clearing the stored file shortly.";
-
 function confirmText(confirm: Confirm): string {
-  if (confirm.type === "dismiss") return "This takes the message off your list. Nothing your assistant knows changes.";
-  if (confirm.type === "clear") return "This takes every failed upload off your list. Nothing your assistant knows changes.";
+  if (confirm.type === "dismiss") {
+    return "This takes the message off your list and deletes the uploaded file. Nothing your assistant already learned changes.";
+  }
+  if (confirm.type === "cancel") {
+    return "This stops the upload and deletes the uploaded files that weren't read. What your assistant already learned stays.";
+  }
+  if (confirm.type === "clear") {
+    return "This takes every failed upload off your list and deletes the uploaded files. Nothing your assistant already learned changes.";
+  }
   if (!confirm.linked) {
     return `Delete ${confirm.name}? This removes the uploaded file and closes any upload that was still waiting on it. An already-authorized download may finish.`;
   }
@@ -119,14 +126,18 @@ export default function LibrarySection({
     if (!confirm) return;
     if (confirm.type === "dismiss") {
       await run(async () => {
-        await post(path(`kb/ingest-jobs/${confirm.id}/dismiss`));
-        return "Removed from your list.";
+        const result = await post<Partial<Removed>>(path(`kb/ingest-jobs/${confirm.id}/dismiss`));
+        return removedSentence("dismiss", result?.storage_cleanup);
+      });
+    } else if (confirm.type === "cancel") {
+      await run(async () => {
+        const result = await post<Partial<Removed>>(path(`kb/ingest-jobs/${confirm.id}/cancel`));
+        return removedSentence("cancel", result?.storage_cleanup);
       });
     } else if (confirm.type === "clear") {
       await run(async () => {
-        const result = await post<{ dismissed: number }>(path("kb/ingest-jobs/dismiss-failed"));
-        const count = result?.dismissed ?? 0;
-        return count === 0 ? "Nothing was left to remove." : `Removed ${count} failed upload${count === 1 ? "" : "s"} from your list.`;
+        const result = await post<{ dismissed?: number } & Partial<Removed>>(path("kb/ingest-jobs/dismiss-failed"));
+        return removedSentence("clear", result?.storage_cleanup, result?.dismissed ?? 0);
       });
     } else {
       const target = confirm;
@@ -150,13 +161,6 @@ export default function LibrarySection({
     });
   }
 
-  async function cancelJob(id: string) {
-    await run(async () => {
-      await post(path(`kb/ingest-jobs/${id}/cancel`));
-      return "Cancelled. Nothing was added.";
-    });
-  }
-
   const actions: CardActions = {
     canWrite, writable, busy, pausedReason: pausedReason(agentState, writable), addHref,
     agentOff: agent !== undefined && agent.capability?.active !== true,
@@ -164,7 +168,7 @@ export default function LibrarySection({
     onDelete: (type, id, name) => askDelete(type, id, name),
     onRetry: (id) => void retryJob(id),
     onDismiss: (id, name) => setConfirm({ type: "dismiss", id, name }),
-    onCancel: (id) => void cancelJob(id),
+    onCancel: (id, name) => setConfirm({ type: "cancel", id, name }),
   };
   const fileRows = files.slot.data ?? [];
   // A source that feeds a document (or a document itself) keeps the wording about linked documents; a stray upload does not.
@@ -206,14 +210,16 @@ export default function LibrarySection({
   if (locked) return <LockedNotice slot={locked} onRefresh={reloadAll} />;
 
   return <TechDetailsProvider><div className="space-y-6">
-    {confirm && <Panel title={confirm.type === "dismiss" || confirm.type === "clear" ? "Confirm removal" : "Confirm deletion"}>
+    {confirm && <Panel title={confirm.type === "cancel" ? "Confirm cancel" : confirm.type === "dismiss" || confirm.type === "clear" ? "Confirm removal" : "Confirm deletion"}>
       <div data-testid="kb-confirm">
         <p>{confirmText(confirm)}</p>
         <div className="mt-4 flex gap-3">
           <button className={action} disabled={busy || !canWrite} onClick={() => void confirmed()}>
-            {confirm.type === "dismiss" ? "Remove" : confirm.type === "clear" ? "Clear all" : "Confirm delete"}
+            {confirm.type === "dismiss" ? "Remove" : confirm.type === "cancel" ? "Cancel upload" : confirm.type === "clear" ? "Clear all" : "Confirm delete"}
           </button>
-          <button ref={cancel} className={secondary} disabled={busy} onClick={() => setConfirm(null)}>Cancel</button>
+          <button ref={cancel} className={secondary} disabled={busy} onClick={() => setConfirm(null)}>
+            {confirm.type === "cancel" ? "Keep it" : "Cancel"}
+          </button>
         </div>
       </div>
     </Panel>}

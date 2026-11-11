@@ -27,7 +27,7 @@ export type CardActions = {
   agentOff: boolean;
   onRetry: (jobId: string) => void;
   onDismiss: (jobId: string, name: string) => void;
-  onCancel: (jobId: string) => void;
+  onCancel: (jobId: string, name: string) => void;
 };
 
 const box =
@@ -94,7 +94,7 @@ export default function KnowledgeCard({
                   )}
                   {jobTodo.canCancel && (
                     <button type="button" className={secondary} data-testid={`${testId}-cancel`}
-                      disabled={busy} onClick={() => actions.onCancel(job.id)}>Cancel</button>
+                      disabled={busy} onClick={() => actions.onCancel(job.id, card.title)}>Cancel</button>
                   )}
                   {card.chip === "needs_attention" && !job.original_stored && (
                     busy || !writable ? (
