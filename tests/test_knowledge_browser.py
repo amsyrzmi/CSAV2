@@ -246,6 +246,13 @@ class Stub:
     unexpected: list[str] = field(default_factory=list)
     queries: dict[str, list[dict[str, list[str]]]] = field(default_factory=dict)
 
+    def drop_job_files(self, job: dict[str, Any]) -> None:
+        """The real routes delete the stored files of the job that no document uses."""
+        own = {entry["file_id"] for entry in job["files"] if entry["file_id"] is not None}
+        self.files = [
+            row for row in self.files if row["id"] not in own or row["document_id"] is not None
+        ]
+
     async def route(self, request_route: Any) -> None:
         request = request_route.request
         parts = urlsplit("http://x/" + request.url.split("/console/v1/")[1])
@@ -312,8 +319,11 @@ class Stub:
             self.posts.append(path)
             ended = ("failed", "partial", "cancelled")
             count = sum(job["status"] in ended for job in self.jobs)
+            for job in self.jobs:
+                if job["status"] in ended:
+                    self.drop_job_files(job)
             self.jobs = [job for job in self.jobs if job["status"] not in ended]
-            data = {"dismissed": count}
+            data = {"dismissed": count, "storage_cleanup": self.storage_cleanup}
         elif request.method == "POST" and re.fullmatch(
             r"kb/ingest-jobs/[\w-]+/(retry|dismiss|cancel)", path
         ):
@@ -334,14 +344,17 @@ class Stub:
                 if job["status"] != "queued":
                     await request_route.fulfill(status=409, json={"detail": "not_cancellable"})
                     return
+                self.drop_job_files(job)
                 self.jobs = [row for row in self.jobs if row["id"] != item]
-                data = {**job, "status": "cancelled"}
+                data = {**job, "status": "cancelled", "storage_cleanup": self.storage_cleanup}
             else:
                 if job["status"] in ("queued", "processing"):
                     await request_route.fulfill(status=409, json={"detail": "job_still_running"})
                     return
+                # Remove deletes the job's own stored files too, as the real route does.
+                self.drop_job_files(job)
                 self.jobs = [row for row in self.jobs if row["id"] != item]
-                status, data = 204, None
+                data = {"storage_cleanup": self.storage_cleanup}
         elif request.method == "POST" and re.fullmatch(r"kb/gaps/[\w-]+/resolve", path):
             self.posts.append(path)
             item = path.split("/")[2]
@@ -634,9 +647,7 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
             ).to_be_visible()
 
             # A failed job: the error and the original job line sit behind its arrow.
-            await expect(card(page, "job-failed")).to_contain_text(
-                "We couldn't read this file. You can try again or remove it."
-            )
+            await expect(card(page, "job-failed")).to_contain_text(FAILED_NOTE)
             failed = await open_card(page, "job-failed")
             await expect(failed).to_contain_text("job-failed: failed (attempts: 3)")
             await expect(failed).to_contain_text("Could not read any text in this PDF")
@@ -1640,12 +1651,28 @@ async def test_read_only_sees_no_add_an_answer(site: Site) -> None:
 
 # --- Failed, waiting and removed uploads: plain notes, Try again, Remove, Cancel, Clear all ---
 
-FAILED_NOTE = "We couldn't read this file. You can try again or remove it."
-GONE_NOTE = "The original was removed, so this can't be tried again. Remove it."
-REMOVE_CONFIRM = "This takes the message off your list. Nothing your assistant knows changes."
-CLEAR_CONFIRM = (
-    "This takes every failed upload off your list. Nothing your assistant knows changes."
+FAILED_NOTE = (
+    "We couldn't read this file. You can try again, or remove it, which also deletes "
+    "the uploaded file."
 )
+GONE_NOTE = "The original was removed, so this can't be tried again. Remove it."
+REMOVE_CONFIRM = (
+    "This takes the message off your list and deletes the uploaded file. "
+    "Nothing your assistant already learned changes."
+)
+CANCEL_CONFIRM = (
+    "This stops the upload before it is read and deletes the uploaded file. "
+    "Nothing is added to your assistant."
+)
+CLEAR_CONFIRM = (
+    "This takes every failed upload off your list and deletes the uploaded files. "
+    "Nothing your assistant already learned changes."
+)
+PARTIAL_NOTE = (
+    "Some of this file couldn't be read. The rest is in your assistant. "
+    "Removing this deletes the uploaded file that couldn't be read."
+)
+FILE_PENDING = "We'll finish clearing the stored file shortly."
 PAUSED_NOTE = "Paused: the knowledge assistant is switched off."
 
 
@@ -1681,9 +1708,7 @@ async def test_a_failed_card_shows_the_plain_note_and_try_again_and_remove(site:
             await expect(failed.get_by_text("Choose the file again")).to_have_count(0)
             # A partly read file says what was kept; the same two buttons apply.
             partial = card(page, "job-2")
-            await expect(partial).to_contain_text(
-                "Some of this file couldn't be read. The rest is in your assistant."
-            )
+            await expect(partial).to_contain_text(PARTIAL_NOTE)
             await expect(button(page, partial, "Try again")).to_be_enabled()
             # The server's own words stay behind Technical details.
             await expect(page.get_by_test_id("kb-card-job-0-tech-details")).to_be_hidden()
@@ -1707,10 +1732,61 @@ async def test_remove_asks_first_then_the_card_disappears(site: Site) -> None:
             await expect(card(page, "job-0")).to_have_count(0)
             await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
             assert stub.posts == ["kb/ingest-jobs/job-0/dismiss"]
-            await expect(page.get_by_text("Removed from your list.")).to_be_visible()
+            await expect(
+                page.get_by_text(
+                    "Removed from your list. The uploaded file is deleted too.", exact=True
+                )
+            ).to_be_visible()
             await expect(page.get_by_test_id("kb-status")).to_contain_text(
                 "Nothing needs your attention"
             )
+            # The uploaded file is gone from the page too, not left under "Other uploaded files".
+            assert stub.files == []
+
+    await with_browser(body)
+
+
+async def test_remove_says_plainly_when_the_stored_file_is_still_being_cleared(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1, storage_cleanup="pending")
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await button(page, card(page, "job-0"), "Remove").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Remove").click()
+            await expect(
+                page.get_by_text(f"Removed from your list. {FILE_PENDING}", exact=True)
+            ).to_be_visible()
+            await expect(page.get_by_text("The uploaded file is deleted too.")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_cancel_and_clear_all_say_plainly_when_the_stored_files_are_still_being_cleared(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            files=[make_file("file-wait", "price-list.pdf", 900, None)],
+            documents=[],
+            jobs=[make_job("job-wait", "queued", "price-list.pdf", "file-wait", attempts=0)],
+            storage_cleanup="pending",
+        )
+        async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
+            await button(page, card(page, "job-wait"), "Cancel").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Cancel upload").click()
+            await expect(
+                page.get_by_text(f"Cancelled. Nothing was added. {FILE_PENDING}", exact=True)
+            ).to_be_visible()
+        pending = attention_stub(count=2, storage_cleanup="pending")
+        async with knowledge_page(browser, site, pending, wait="kb-attention") as page:
+            await page.get_by_role("button", name="Clear all that failed").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Clear all").click()
+            await expect(
+                page.get_by_text(
+                    f"Removed 2 failed uploads from your list. {FILE_PENDING}", exact=True
+                )
+            ).to_be_visible()
 
     await with_browser(body)
 
@@ -1787,8 +1863,12 @@ async def test_clear_all_that_failed_removes_every_attention_card(site: Site) ->
             await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
             assert stub.posts == ["kb/ingest-jobs/dismiss-failed"]
             await expect(
-                page.get_by_text("Removed 3 failed uploads from your list.")
+                page.get_by_text(
+                    "Removed 3 failed uploads from your list. The uploaded files are deleted too.",
+                    exact=True,
+                )
             ).to_be_visible()
+            assert stub.files == []
 
     await with_browser(body)
 
@@ -1832,8 +1912,22 @@ async def test_a_queued_job_with_the_agent_off_shows_paused_and_cancel(site: Sit
             # The visible line is the paused one (the raw job state stays behind Technical details).
             await expect(waiting.get_by_text("Waiting to be read")).to_be_hidden()
             await button(page, waiting, "Cancel").click()
+            confirm = page.get_by_test_id("kb-confirm")
+            await expect(confirm).to_contain_text(CANCEL_CONFIRM)
+            # Keeping it posts nothing; cancelling deletes the uploaded file with it.
+            await button(page, confirm, "Keep it").click()
+            await expect(confirm).to_have_count(0)
+            assert stub.posts == []
+            await button(page, waiting, "Cancel").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Cancel upload").click()
             await expect(waiting).to_have_count(0)
             assert stub.posts == ["kb/ingest-jobs/job-wait/cancel"]
+            assert stub.files == []
+            await expect(
+                page.get_by_text(
+                    "Cancelled. Nothing was added, and the uploaded file is deleted.", exact=True
+                )
+            ).to_be_visible()
 
         # With the assistant on, the same job is simply waiting.
         stub = Stub(
@@ -2003,6 +2097,7 @@ async def test_a_refused_cancel_or_remove_says_so_in_plain_words_and_reloads(sit
             next(job for job in stub.jobs if job["id"] == "job-wait")["status"] = "processing"
             reads = stub.reads["jobs"]
             await button(page, card(page, "job-wait"), "Cancel").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Cancel upload").click()
             moved_on = "This one has already moved on. The list has been refreshed."
             await expect(page.get_by_text(moved_on, exact=True).first).to_be_visible()
             await expect(page.get_by_text("not_cancellable")).to_have_count(0)

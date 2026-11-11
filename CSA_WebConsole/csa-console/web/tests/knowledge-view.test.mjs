@@ -326,7 +326,7 @@ test("cancelled makes no card", () => {
 test("attentionNote for each of the three states", () => {
   assert.equal(
     attentionNote(job("j1", "failed", { original_stored: true })),
-    "We couldn't read this file. You can try again or remove it.",
+    "We couldn't read this file. You can try again, or remove it, which also deletes the uploaded file.",
   );
   assert.equal(
     attentionNote(job("j2", "failed", { original_stored: false })),
@@ -334,7 +334,7 @@ test("attentionNote for each of the three states", () => {
   );
   assert.equal(
     attentionNote(job("j3", "partial")),
-    "Some of this file couldn't be read. The rest is in your assistant.",
+    "Some of this file couldn't be read. The rest is in your assistant. Removing this deletes the uploaded file that couldn't be read.",
   );
   assert.equal(
     attentionNote(job("j4", "partial", { original_stored: false })),

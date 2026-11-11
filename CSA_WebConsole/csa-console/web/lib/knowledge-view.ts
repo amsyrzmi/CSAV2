@@ -143,8 +143,10 @@ export function couldNotReadText(attempts: number): string {
 /** The plain note on a card that needs attention. The exact server line stays in Technical details. */
 export function attentionNote(job: KbJob): string {
   if (!job.original_stored) return "The original was removed, so this can't be tried again. Remove it.";
-  if (job.status === "partial") return "Some of this file couldn't be read. The rest is in your assistant.";
-  return "We couldn't read this file. You can try again or remove it.";
+  if (job.status === "partial") {
+    return "Some of this file couldn't be read. The rest is in your assistant. Removing this deletes the uploaded file that couldn't be read.";
+  }
+  return "We couldn't read this file. You can try again, or remove it, which also deletes the uploaded file.";
 }
 
 export type JobActions = { canRetry: boolean; canRemove: boolean; canCancel: boolean };
