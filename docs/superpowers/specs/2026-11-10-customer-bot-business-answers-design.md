@@ -1,6 +1,6 @@
 # Customer bot: answers about subscriptions and products, then the escalation ladder
 
-Status: design for the owner's approval, 2026-11-10. Pull request 2 of the business surfaces programme
+Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 2 of the business surfaces programme
 (`2026-11-10-business-surfaces-programme.md`), and PR B of `2026-11-10-customer-bot-conversation-design.md`.
 Migrations 0560 to 0569 (0560 adds the staff note column).
 
@@ -92,7 +92,7 @@ Chosen: B.
 Subscriptions
 
 - New action `mine` on `SubscriptionAgent` (a wider `list` plus the plans join): reads the contact's
-  subscriptions that are active or paused, plus one that is cancelled with `cancel_at_period_end` and a
+  subscriptions that are active, paused or pending (read as "waiting for payment", added by the onboarding design), plus one that is cancelled with `cancel_at_period_end` and a
   `renews_at` still in the future (shown as "ends on <date>"), joined to `plans` for name, price, interval and
   `features`; returns one fact per subscription with exact figures and dates (renew date, pending plan
   and effective date, cancel-at-period-end). The contact comes from the turn context, not from the

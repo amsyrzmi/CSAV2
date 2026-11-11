@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO
+from typing import Annotated, Any, BinaryIO, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 from starlette.types import Receive, Scope, Send
 
 from csa.agents.kb.extract import KbFileError, extract_document, file_kind_for
-from csa.agents.kb.lifecycle import delete_document, lock
+from csa.agents.kb.lifecycle import close_jobs_for_files, delete_document, lock
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.multipart import MAX_FILE_BYTES, upload_form
@@ -66,6 +66,11 @@ class UploadOut(BaseModel):
 
 class ReconcileOut(BaseModel):
     removed_files: int
+
+
+class RemovedOut(BaseModel):
+    # pending: the record is gone but the storage sweep failed; a later reconcile finishes it.
+    storage_cleanup: Literal["done", "pending"]
 
 
 class SourceDownload(StreamingResponse):
@@ -135,14 +140,23 @@ async def cleanup_storage(pool: AsyncConnectionPool, store: ObjectStore, client_
 
 async def cleanup_after_remove(
     pool: AsyncConnectionPool, store: ObjectStore | None, client_id: UUID
-) -> None:
-    """Sweep after a committed removal; the row is gone, so a later reconcile can finish."""
+) -> bool:
+    """Sweep after a committed removal; the row is gone, so a later reconcile can finish.
+
+    True when the sweep succeeded or there is no store to sweep; False (logged) when it raised.
+    """
     if store is None:
-        return
+        return True
     try:
         await cleanup_storage(pool, store, client_id)
     except Exception:
         logger.exception("kb_storage_cleanup_failed", client_id=str(client_id))
+        return False
+    return True
+
+
+def removed(swept: bool) -> RemovedOut:
+    return RemovedOut(storage_cleanup="done" if swept else "pending")
 
 
 def build_upload_router(store: ObjectStore | None) -> APIRouter:
@@ -342,16 +356,15 @@ def build_upload_router(store: ObjectStore | None) -> APIRouter:
             handles.pop_all()
             return response
 
-    @router.delete(
-        "/kb/files/{file_id}", status_code=204, dependencies=[Depends(writer), Depends(enabled)]
-    )
+    # Removal works with the knowledge agent switched off: it only takes knowledge away.
+    @router.delete("/kb/files/{file_id}", response_model=RemovedOut, dependencies=[Depends(writer)])
     async def remove_file(
         file_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(writer)],
         objects: Annotated[ObjectStore, Depends(storage)],
-    ) -> None:
+    ) -> RemovedOut:
         async with tx(db_pool, str(client_id)) as conn:
             await lock(conn, client_id)
             row = await db.q.fetch_one("kb/file_delete.sql", (client_id, file_id), conn=conn)
@@ -359,25 +372,26 @@ def build_upload_router(store: ObjectStore | None) -> APIRouter:
                 raise HTTPException(404, "source file not found")
             if row["document_id"]:
                 await delete_document(conn, client_id, row["document_id"])
+            await close_jobs_for_files(conn, client_id, [file_id])
             await audit(conn, actor, client_id, "kb.source_deleted", str(file_id))
-        await cleanup_after_remove(db_pool, objects, client_id)
+        return removed(await cleanup_after_remove(db_pool, objects, client_id))
 
     @router.delete(
         "/kb/documents/{document_id}",
-        status_code=204,
-        dependencies=[Depends(writer), Depends(enabled)],
+        response_model=RemovedOut,
+        dependencies=[Depends(writer)],
     )
     async def remove_document(
         document_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
         db_pool: Annotated[AsyncConnectionPool, Depends(pool)],
         actor: Annotated[ConsoleActor, Depends(writer)],
-    ) -> None:
+    ) -> RemovedOut:
         async with tx(db_pool, str(client_id)) as conn:
             if not await delete_document(conn, client_id, document_id):
                 raise HTTPException(404, "document not found")
             await audit(conn, actor, client_id, "kb.document_deleted", str(document_id))
-        await cleanup_after_remove(db_pool, store, client_id)
+        return removed(await cleanup_after_remove(db_pool, store, client_id))
 
     @router.post("/kb/storage/reconcile", response_model=ReconcileOut)
     async def reconcile(

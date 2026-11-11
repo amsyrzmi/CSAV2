@@ -597,3 +597,48 @@ async def test_missing_product_list_is_empty_only_for_integer_zero_total(
         with pytest.raises(TikTokReadError) as caught:
             await adapter.search_product_snapshot_page(uuid4(), limit=5)
         assert caught.value.code == "invalid_response"
+
+
+def live_search_product() -> dict[str, Any]:
+    """The shape a real shop's product search returned (structure copied from the staging probe,
+    values synthetic): the price object carries `tax_exclusive_price`, not `sale_price`."""
+    return {
+        "create_time": 1_700_000_000,
+        "id": "1234567890123456789",
+        "product_tags": [],
+        "recommended_categories": [],
+        "sales_regions": ["MY"],
+        "skus": [
+            {
+                "id": "9876543210987654321",
+                "inventory": [{"quantity": 7, "warehouse_id": "1111111111111111111"}],
+                "price": {"currency": "MYR", "tax_exclusive_price": "12.50"},
+                "seller_sku": "",
+            }
+        ],
+        "status": "ACTIVATE",
+        "title": "Plain thing",
+        "update_time": 1_700_000_100,
+    }
+
+
+def test_the_live_search_shape_prices_from_the_tax_exclusive_price() -> None:
+    product = TikTokProductSnapshot.model_validate(live_search_product())
+    sku = product.skus[0]
+    assert sku.price == Decimal("12.50") and sku.currency == "MYR"
+    assert sku.seller_sku is None and sku.variant_name == "" and sku.stock_qty == 7
+    assert product.status == "ACTIVATE" and product.image_url is None
+
+
+def test_the_sale_price_wins_when_the_provider_sends_both() -> None:
+    payload = live_search_product()
+    payload["skus"][0]["price"]["sale_price"] = "9.90"
+    product = TikTokProductSnapshot.model_validate(payload)
+    assert product.skus[0].price == Decimal("9.90")
+
+
+def test_a_price_object_with_no_price_at_all_is_still_rejected() -> None:
+    payload = live_search_product()
+    del payload["skus"][0]["price"]["tax_exclusive_price"]
+    with pytest.raises(ValidationError):
+        TikTokProductSnapshot.model_validate(payload)

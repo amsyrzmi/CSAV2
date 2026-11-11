@@ -415,6 +415,24 @@ rolling back to an image older than this release: the older policy model rejects
 would fail every turn of that company. The owner's retest rows are in
 [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
 
+## Stuck knowledge uploads
+
+A failed or half-read upload shows a card under Needs attention on the Business knowledge page. **Try
+again** re-queues it from the stored original (no new upload; the tries counter and the error are
+reset) and needs the knowledge assistant switched on; it is offered only while the original is still
+stored. **Remove** takes the message off the list (the job gets `dismissed_at`); it never changes what the
+assistant knows, and **Clear all that failed** does the same for every failed, partly read or cancelled
+upload of the company. **Cancel** is for a job still `queued` (for example while the assistant is
+switched off); a job a worker is reading cannot be cancelled and finishes, fails or is requeued by the
+reaper. Deleting a source or a document closes every job that only that file kept alive: the job ends
+`cancelled` and dismissed, so no card is left behind, and a worker that finds its source deleted stores
+no document. Delete works with the assistant switched off; when the answer says the storage sweep is
+`pending`, **Clean up leftover files** on the Maintenance page finishes it. Migration 0550 cleaned up
+the cards already stuck before this release (failed, partial, queued or processing jobs whose
+files were all deleted became `cancelled` and dismissed). To check a company by hand, list its jobs
+with `dismissed_at IS NULL` in `kb_ingest_jobs`; every audit row for these actions is named
+`kb.job_dismissed`, `kb.job_retried`, `kb.job_cancelled` or `kb.jobs_dismissed`.
+
 ## Gotchas
 
 - `make db-reset` is destructive: it regenerates the webhook id, so rerun `make setup-dev-telegram` and

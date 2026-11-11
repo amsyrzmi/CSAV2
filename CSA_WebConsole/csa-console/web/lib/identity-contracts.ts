@@ -72,6 +72,8 @@ export interface KbJob {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** False when a source file was deleted or the job failed because its content was deleted; such a job cannot be retried. */
+  original_stored: boolean;
 }
 export interface KbGap {
   id: string;

@@ -47,6 +47,8 @@ from pydantic import (
 #   product.update_time                            unix seconds -> update_time
 #   product.skus[].id / seller_sku                 -> skus[].id / seller_sku ("" -> None)
 #   product.skus[].price.sale_price / .currency    -> skus[].price / currency
+#                                                     (a live search sends tax_exclusive_price, no
+#                                                     sale_price: used when sale_price is absent)
 #   product.skus[].sales_attributes[].value_name   -> skus[].variant_name, joined " / "
 #                                                     ("Black / M"; no attributes -> "")
 #   product.skus[].inventory[].quantity            -> skus[].stock_qty, the SUM across
@@ -269,7 +271,10 @@ class TikTokSkuSnapshot(_TikTokSnapshot):
         mapped = dict(data)
         price = mapped.get("price")
         if isinstance(price, dict):
-            mapped["price"] = price.get("sale_price")
+            # A real shop's product search sends the pre-tax `tax_exclusive_price`; the documented
+            # `sale_price` wins when both are present.
+            sale = price.get("sale_price")
+            mapped["price"] = sale if sale is not None else price.get("tax_exclusive_price")
             mapped.setdefault("currency", price.get("currency"))
         if "variant_name" not in mapped and "sales_attributes" in mapped:
             mapped["variant_name"] = _variant_label(mapped["sales_attributes"])

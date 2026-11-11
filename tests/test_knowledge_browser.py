@@ -123,6 +123,7 @@ def make_job(
     attempts: int = 1,
     error: str | None = None,
     results: list[dict[str, Any]] | None = None,
+    original_stored: bool = True,
 ) -> dict[str, Any]:
     return {
         "id": job_id,
@@ -135,6 +136,7 @@ def make_job(
         "created_at": "2026-11-02T03:00:00Z",
         "started_at": None,
         "finished_at": None,
+        "original_stored": original_stored,
     }
 
 
@@ -159,7 +161,7 @@ def default_documents() -> list[dict[str, Any]]:
 def default_jobs() -> list[dict[str, Any]]:
     return [
         make_job("job-queued", "queued", "price-list.pdf", "file-queued", attempts=0),
-        make_job("job-running", "running", "returns-policy.docx", "file-running"),
+        make_job("job-running", "processing", "returns-policy.docx", "file-running"),
         make_job(
             "job-failed",
             "failed",
@@ -185,6 +187,19 @@ def default_jobs() -> list[dict[str, Any]]:
             ],
         ),
     ]
+
+
+def gone_job() -> dict[str, Any]:
+    """A failed upload whose stored original is gone: it cannot be tried again."""
+    return make_job(
+        "job-failed",
+        "failed",
+        "scanned-menu.pdf",
+        "file-failed",
+        attempts=3,
+        error="Could not read any text in this PDF",
+        original_stored=False,
+    )
 
 
 def default_gaps() -> list[dict[str, Any]]:
@@ -224,6 +239,7 @@ class Stub:
     answers: list[dict[str, Any]] = field(default_factory=list)
     fail: dict[str, tuple[int, dict[str, Any]]] = field(default_factory=dict)
     reads: dict[str, int] = field(default_factory=lambda: {name: 0 for name in LISTS})
+    storage_cleanup: str = "done"
     deletes: list[str] = field(default_factory=list)
     posts: list[str] = field(default_factory=list)
     upload_keys: list[str] = field(default_factory=list)
@@ -282,7 +298,50 @@ class Stub:
                 # Deleting a document removes its linked sources too, as the real route does.
                 self.documents = [row for row in self.documents if row["id"] != item]
                 self.files = [row for row in self.files if row["document_id"] != item]
-            status, data = 204, None
+            # The real routes close every job whose files are all deleted; those are not listed.
+            live = {row["id"] for row in self.files}
+            self.jobs = [
+                job
+                for job in self.jobs
+                if any(
+                    entry["file_id"] is None or entry["file_id"] in live for entry in job["files"]
+                )
+            ]
+            status, data = 200, {"storage_cleanup": self.storage_cleanup}
+        elif request.method == "POST" and path == "kb/ingest-jobs/dismiss-failed":
+            self.posts.append(path)
+            ended = ("failed", "partial", "cancelled")
+            count = sum(job["status"] in ended for job in self.jobs)
+            self.jobs = [job for job in self.jobs if job["status"] not in ended]
+            data = {"dismissed": count}
+        elif request.method == "POST" and re.fullmatch(
+            r"kb/ingest-jobs/[\w-]+/(retry|dismiss|cancel)", path
+        ):
+            self.posts.append(path)
+            _, _, item, verb = path.split("/")
+            job = next((row for row in self.jobs if row["id"] == item), None)
+            if job is None:
+                await request_route.fulfill(status=404, json={"detail": "ingest job not found"})
+                return
+            if verb == "retry":
+                if job["status"] not in ("failed", "partial") or not job["original_stored"]:
+                    await request_route.fulfill(status=409, json={"detail": "original_removed"})
+                    return
+                # No worker has run yet: the old results stay on the row, as in the real route.
+                job.update(status="queued", attempts=0, error=None)
+                data = job
+            elif verb == "cancel":
+                if job["status"] != "queued":
+                    await request_route.fulfill(status=409, json={"detail": "not_cancellable"})
+                    return
+                self.jobs = [row for row in self.jobs if row["id"] != item]
+                data = {**job, "status": "cancelled"}
+            else:
+                if job["status"] in ("queued", "processing"):
+                    await request_route.fulfill(status=409, json={"detail": "job_still_running"})
+                    return
+                self.jobs = [row for row in self.jobs if row["id"] != item]
+                status, data = 204, None
         elif request.method == "POST" and re.fullmatch(r"kb/gaps/[\w-]+/resolve", path):
             self.posts.append(path)
             item = path.split("/")[2]
@@ -501,7 +560,7 @@ async def test_refresh_stops_when_nothing_is_reading(site: Site) -> None:
             ), stub.reads
 
             for job in stub.jobs:
-                if job["status"] in ("queued", "running"):
+                if job["status"] in ("queued", "processing"):
                     job["status"] = "done"
             seen = stub.reads["jobs"]
             await until(lambda: stub.reads["jobs"] > seen, "poll did not pick up the finished jobs")
@@ -576,7 +635,7 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
 
             # A failed job: the error and the original job line sit behind its arrow.
             await expect(card(page, "job-failed")).to_contain_text(
-                "Could not be read after 3 tries. Add the file again to try once more."
+                "We couldn't read this file. You can try again or remove it."
             )
             failed = await open_card(page, "job-failed")
             await expect(failed).to_contain_text("job-failed: failed (attempts: 3)")
@@ -586,13 +645,6 @@ async def test_cards_open_details_with_original_actions(site: Site) -> None:
                 failed_actions.get_by_role("link", name="Download original")
             ).to_have_attribute("href", re.compile(r"/kb/files/file-failed/download"))
             await expect(failed_actions.get_by_role("button", name="Delete source")).to_be_enabled()
-            # The retry: add the file again, on the Add page.
-            await card(page, "job-failed").get_by_role("link", name="Choose the file again").click()
-            await expect(page).to_have_url(re.compile(r"/portal/faq/add$"), timeout=WAIT)
-            await expect(page.get_by_test_id("kb-add")).to_be_visible()
-            await page.go_back()
-            await expect(page).to_have_url(re.compile(r"/portal/faq$"), timeout=WAIT)
-            await expect(card(page, "job-failed")).to_be_visible()
             loose_toggle = page.get_by_test_id("kb-other-files-toggle")
             await loose_toggle.click()
 
@@ -681,12 +733,15 @@ async def test_maintenance_disclosure_holds_reconcile_and_embedding_panel(site: 
             await expect(page.locator("#kb-files")).to_be_disabled()
             await expect(page.get_by_test_id("kb-add")).to_contain_text("switched off")
         async with knowledge_page(browser, site, off) as page:
-            # The failed card says why choosing the file again is paused, with the same reason.
+            # The failed card says why trying again is paused; Remove still works.
             paused = page.get_by_test_id("kb-card-job-failed-paused")
             await expect(paused).to_contain_text("switched off")
             await expect(
-                card(page, "job-failed").get_by_role("button", name="Choose the file again")
+                card(page, "job-failed").get_by_role("button", name="Try again")
             ).to_be_disabled()
+            await expect(
+                card(page, "job-failed").get_by_role("button", name="Remove", exact=True)
+            ).to_be_enabled()
 
         # Read-only members see the lists and downloads, never the controls.
         async with knowledge_page(browser, site, Stub(), role="read_only") as page:
@@ -1200,7 +1255,7 @@ async def test_section_bar_names_the_four_pages(site: Site) -> None:
 
 async def test_choose_the_file_again_links_to_the_add_page(site: Site) -> None:
     async def body(browser: Any) -> None:
-        async with knowledge_page(browser, site, Stub()) as page:
+        async with knowledge_page(browser, site, Stub(jobs=[gone_job()])) as page:
             link = card(page, "job-failed").get_by_role("link", name="Choose the file again")
             await expect(link).to_have_attribute("href", "/portal/faq/add")
             await link.click()
@@ -1431,7 +1486,7 @@ async def test_progress_moves_waiting_reading_ready_and_stops_polling(
             word = page.get_by_test_id("kb-progress-job-new-word")
             await expect(word).to_have_text("Waiting")
             for job in stub.jobs:
-                job["status"] = "running"
+                job["status"] = "processing"
             await expect(word).to_have_text("Reading", timeout=15_000)
             for job in stub.jobs:
                 job["status"] = "done"
@@ -1579,5 +1634,392 @@ async def test_read_only_sees_no_add_an_answer(site: Site) -> None:
         ) as page:
             await expect(page.get_by_test_id("kb-gap-gap-sunday")).to_be_visible()
             await expect(page.get_by_role("button", name="Add an answer")).to_have_count(0)
+
+    await with_browser(body)
+
+
+# --- Failed, waiting and removed uploads: plain notes, Try again, Remove, Cancel, Clear all ---
+
+FAILED_NOTE = "We couldn't read this file. You can try again or remove it."
+GONE_NOTE = "The original was removed, so this can't be tried again. Remove it."
+REMOVE_CONFIRM = "This takes the message off your list. Nothing your assistant knows changes."
+CLEAR_CONFIRM = (
+    "This takes every failed upload off your list. Nothing your assistant knows changes."
+)
+PAUSED_NOTE = "Paused: the knowledge assistant is switched off."
+
+
+def attention_stub(*, count: int = 1, **kwargs: Any) -> Stub:
+    """A tenant whose only uploads are failed ones (no library, nothing reading)."""
+    names = [
+        ("scanned-menu.pdf", "failed"),
+        ("blurry-invoice.pdf", "failed"),
+        ("old-prices.pdf", "partial"),
+    ]
+    files = [make_file(f"file-{i}", name, 300, None) for i, (name, _) in enumerate(names[:count])]
+    jobs = [
+        make_job(f"job-{i}", status, name, f"file-{i}", attempts=3, error="Could not read any text")
+        for i, (name, status) in enumerate(names[:count])
+    ]
+    return Stub(files=files, documents=[], jobs=jobs, gaps=[], **kwargs)
+
+
+def button(page: Page, scope: Any, name: str) -> Any:
+    return scope.get_by_role("button", name=name, exact=True)
+
+
+async def test_a_failed_card_shows_the_plain_note_and_try_again_and_remove(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=3)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            failed = card(page, "job-0")
+            await expect(failed).to_contain_text(FAILED_NOTE)
+            await expect(failed).not_to_contain_text("Add the file again")
+            await expect(button(page, failed, "Try again")).to_be_enabled()
+            await expect(button(page, failed, "Remove")).to_be_enabled()
+            # The original is stored, so there is no "Choose the file again" detour.
+            await expect(failed.get_by_text("Choose the file again")).to_have_count(0)
+            # A partly read file says what was kept; the same two buttons apply.
+            partial = card(page, "job-2")
+            await expect(partial).to_contain_text(
+                "Some of this file couldn't be read. The rest is in your assistant."
+            )
+            await expect(button(page, partial, "Try again")).to_be_enabled()
+            # The server's own words stay behind Technical details.
+            await expect(page.get_by_test_id("kb-card-job-0-tech-details")).to_be_hidden()
+
+    await with_browser(body)
+
+
+async def test_remove_asks_first_then_the_card_disappears(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await button(page, card(page, "job-0"), "Remove").click()
+            confirm = page.get_by_test_id("kb-confirm")
+            await expect(confirm).to_contain_text(REMOVE_CONFIRM)
+            assert stub.posts == []
+            await button(page, confirm, "Cancel").click()
+            await expect(confirm).to_have_count(0)
+            assert stub.posts == []
+            await button(page, card(page, "job-0"), "Remove").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Remove").click()
+            await expect(card(page, "job-0")).to_have_count(0)
+            await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-0/dismiss"]
+            await expect(page.get_by_text("Removed from your list.")).to_be_visible()
+            await expect(page.get_by_test_id("kb-status")).to_contain_text(
+                "Nothing needs your attention"
+            )
+
+    await with_browser(body)
+
+
+async def test_try_again_turns_the_card_into_reading(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1)
+        # The old failure stays on the row until a worker runs; the card must not show it.
+        stub.jobs[0]["meta"] = {
+            "results": [
+                {
+                    "file": "scanned-menu.pdf",
+                    "status": "failed",
+                    "error": "stale synthetic failure",
+                    "document_id": None,
+                    "chunks": None,
+                    "version": None,
+                }
+            ]
+        }
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await button(page, card(page, "job-0"), "Try again").click()
+            await expect(page.get_by_test_id("kb-card-job-0-chip")).to_have_text("Reading")
+            await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
+            await expect(page.get_by_test_id("kb-reading")).to_contain_text("scanned-menu.pdf")
+            assert stub.posts == ["kb/ingest-jobs/job-0/retry"]
+            await expect(page.get_by_text("Trying again.")).to_be_visible()
+            await open_card(page, "job-0")
+            await expect(card(page, "job-0")).not_to_contain_text("stale synthetic failure")
+            await expect(card(page, "job-0")).to_contain_text("None yet")
+
+    await with_browser(body)
+
+
+async def test_a_failed_card_whose_original_is_gone_offers_remove_only(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(files=[], documents=[], jobs=[gone_job()])
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            gone = card(page, "job-failed")
+            await expect(gone).to_contain_text(GONE_NOTE)
+            await expect(button(page, gone, "Try again")).to_have_count(0)
+            await expect(button(page, gone, "Remove")).to_be_enabled()
+            # The one other way forward is to add the file again, which is a link, not a retry.
+            await expect(gone.get_by_role("link", name="Choose the file again")).to_have_attribute(
+                "href", "/portal/faq/add"
+            )
+            await button(page, gone, "Remove").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Remove").click()
+            await expect(gone).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-failed/dismiss"]
+
+    await with_browser(body)
+
+
+async def test_clear_all_that_failed_removes_every_attention_card(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # One failed card has no bulk action: Remove is enough.
+        async with knowledge_page(
+            browser, site, attention_stub(count=1), wait="kb-attention"
+        ) as page:
+            await expect(page.get_by_role("button", name="Clear all that failed")).to_have_count(0)
+
+        stub = attention_stub(count=3)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            clear = page.get_by_role("button", name="Clear all that failed")
+            await expect(clear).to_be_enabled()
+            await clear.click()
+            confirm = page.get_by_test_id("kb-confirm")
+            await expect(confirm).to_contain_text(CLEAR_CONFIRM)
+            await button(page, confirm, "Cancel").click()
+            assert stub.posts == []
+            await clear.click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Clear all").click()
+            await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/dismiss-failed"]
+            await expect(
+                page.get_by_text("Removed 3 failed uploads from your list.")
+            ).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_a_processing_job_shows_reading_not_needs_attention_and_refreshes(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            files=[make_file("file-busy", "big-catalogue.pdf", 900, None)],
+            documents=[],
+            gaps=[],
+            jobs=[make_job("job-busy", "processing", "big-catalogue.pdf", "file-busy", attempts=1)],
+        )
+        async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
+            await expect(page.get_by_test_id("kb-card-job-busy-chip")).to_have_text("Reading")
+            await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
+            await expect(page.get_by_test_id("kb-status")).to_contain_text(
+                "Nothing needs your attention"
+            )
+            # Nothing to retry, remove or cancel while a worker has it.
+            for name in ("Try again", "Remove", "Cancel"):
+                await expect(button(page, card(page, "job-busy"), name)).to_have_count(0)
+            start = stub.reads["jobs"]
+            await until(lambda: stub.reads["jobs"] > start, "no poll while a job is processing")
+            stub.jobs[0]["status"] = "done"
+            await expect(page.get_by_test_id("kb-reading")).to_have_count(0, timeout=15_000)
+
+    await with_browser(body)
+
+
+async def test_a_queued_job_with_the_agent_off_shows_paused_and_cancel(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            files=[make_file("file-wait", "price-list.pdf", 900, None)],
+            documents=[],
+            jobs=[make_job("job-wait", "queued", "price-list.pdf", "file-wait", attempts=0)],
+            agent_active=False,
+        )
+        async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
+            waiting = card(page, "job-wait")
+            await expect(waiting).to_contain_text(PAUSED_NOTE)
+            # The visible line is the paused one (the raw job state stays behind Technical details).
+            await expect(waiting.get_by_text("Waiting to be read")).to_be_hidden()
+            await button(page, waiting, "Cancel").click()
+            await expect(waiting).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-wait/cancel"]
+
+        # With the assistant on, the same job is simply waiting.
+        stub = Stub(
+            files=[make_file("file-wait", "price-list.pdf", 900, None)],
+            documents=[],
+            jobs=[make_job("job-wait", "queued", "price-list.pdf", "file-wait", attempts=0)],
+        )
+        async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
+            await expect(card(page, "job-wait")).to_contain_text("Waiting to be read")
+            await expect(card(page, "job-wait")).not_to_contain_text("Paused")
+            await expect(button(page, card(page, "job-wait"), "Cancel")).to_be_enabled()
+
+    await with_browser(body)
+
+
+async def test_deleting_a_source_makes_no_attention_card(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await open_plain(page, "job-0")
+            await (
+                page.get_by_test_id("kb-card-job-0-actions")
+                .get_by_role("button", name="Delete source")
+                .click()
+            )
+            confirm = page.get_by_test_id("kb-confirm")
+            # A failed upload has no document: no talk of documents or duplicates.
+            await expect(confirm).to_contain_text("Delete scanned-menu.pdf?")
+            await expect(confirm).not_to_contain_text("document")
+            await expect(confirm).not_to_contain_text("duplicate")
+            await button(page, confirm, "Confirm delete").click()
+            await expect(page.get_by_test_id("kb-attention")).to_have_count(0)
+            await expect(card(page, "job-0")).to_have_count(0)
+            assert stub.deletes == ["kb/files/file-0"]
+            await expect(page.get_by_text("Deleted.", exact=False).first).to_be_visible()
+            await expect(page.get_by_test_id("kb-status")).to_contain_text(
+                "Nothing needs your attention"
+            )
+            await expect(
+                page.get_by_text("We'll finish clearing the stored file shortly.")
+            ).to_have_count(0)
+
+        # A storage sweep that is still pending is said, not hidden.
+        pending = attention_stub(count=1)
+        pending.storage_cleanup = "pending"
+        async with knowledge_page(browser, site, pending, wait="kb-attention") as page:
+            await open_plain(page, "job-0")
+            await (
+                page.get_by_test_id("kb-card-job-0-actions")
+                .get_by_role("button", name="Delete source")
+                .click()
+            )
+            await button(page, page.get_by_test_id("kb-confirm"), "Confirm delete").click()
+            await expect(
+                page.get_by_text(
+                    "Deleted. We'll finish clearing the stored file shortly.", exact=True
+                )
+            ).to_be_visible()
+            await expect(page.get_by_text("The stored file is gone.")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_delete_still_works_when_the_agent_is_off(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(agent_active=False)
+        async with knowledge_page(browser, site, stub) as page:
+            actions = page.get_by_test_id("kb-card-doc-hours-actions")
+            await open_plain(page, "doc-hours")
+            await expect(button(page, actions, "Delete document")).to_be_enabled()
+            await expect(button(page, actions, "Delete source")).to_be_enabled()
+            await button(page, actions, "Delete document").click()
+            confirm = page.get_by_test_id("kb-confirm")
+            await button(page, confirm, "Confirm delete").click()
+            await expect(card(page, "doc-hours")).to_have_count(0)
+            assert stub.deletes == ["kb/documents/doc-hours"]
+            await expect(
+                page.get_by_text("Deleted. Your assistant no longer uses this file.")
+            ).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_the_attention_flow_works_on_the_admin_twin(site: Site) -> None:
+    """The administrator's page shares these components; the tenant rides along on every call."""
+
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=2)
+        async with knowledge_page(
+            browser,
+            site,
+            stub,
+            path=f"/knowledge-base?client_id={TENANT}",
+            role="platform_admin",
+            wait="kb-attention",
+        ) as page:
+            await expect(card(page, "job-0")).to_contain_text(FAILED_NOTE)
+            await button(page, card(page, "job-0"), "Try again").click()
+            await expect(page.get_by_test_id("kb-card-job-0-chip")).to_have_text("Reading")
+            await button(page, card(page, "job-1"), "Remove").click()
+            await expect(page.get_by_test_id("kb-confirm")).to_contain_text(REMOVE_CONFIRM)
+            await button(page, page.get_by_test_id("kb-confirm"), "Remove").click()
+            await expect(card(page, "job-1")).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-0/retry", "kb/ingest-jobs/job-1/dismiss"]
+            for verb in ("retry", "dismiss"):
+                assert stub.queries[f"kb/ingest-jobs/job-{0 if verb == 'retry' else 1}/{verb}"][
+                    -1
+                ].get("client_id") == [TENANT]
+
+    await with_browser(body)
+
+
+async def test_try_again_on_a_job_whose_original_vanished_says_so_and_refreshes(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = attention_stub(count=1)
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            await expect(button(page, card(page, "job-0"), "Try again")).to_be_enabled()
+            # Another tab removed the original after this page loaded; the server now refuses.
+            stub.jobs[0]["original_stored"] = False
+            reads = stub.reads["jobs"]
+            await button(page, card(page, "job-0"), "Try again").click()
+            sentence = "The original was removed, so this can't be tried again. Remove it."
+            await expect(page.get_by_text(sentence, exact=True).first).to_be_visible()
+            await expect(page.get_by_text("original_removed")).to_have_count(0)
+            await until(lambda: stub.reads["jobs"] > reads, "the list was not read again")
+            # The refreshed card now offers Remove only.
+            await expect(button(page, card(page, "job-0"), "Try again")).to_have_count(0)
+            assert stub.posts == ["kb/ingest-jobs/job-0/retry"]
+
+    await with_browser(body)
+
+
+async def test_a_partial_card_whose_original_is_gone_says_so_and_offers_remove_only(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        job = gone_job()
+        job["status"] = "partial"
+        stub = Stub(files=[], documents=[], jobs=[job])
+        async with knowledge_page(browser, site, stub, wait="kb-attention") as page:
+            gone = card(page, "job-failed")
+            await expect(gone).to_contain_text(GONE_NOTE)
+            await expect(gone).not_to_contain_text("The rest is in your assistant")
+            await expect(button(page, gone, "Try again")).to_have_count(0)
+            await expect(button(page, gone, "Remove")).to_be_enabled()
+
+    await with_browser(body)
+
+
+async def test_a_refused_cancel_or_remove_says_so_in_plain_words_and_reloads(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub(
+            files=[
+                make_file("file-wait", "price-list.pdf", 900, None),
+                make_file("file-bad", "scanned-menu.pdf", 300, None),
+            ],
+            documents=[],
+            jobs=[
+                make_job("job-wait", "queued", "price-list.pdf", "file-wait", attempts=0),
+                make_job("job-bad", "failed", "scanned-menu.pdf", "file-bad", attempts=3),
+            ],
+        )
+        async with knowledge_page(browser, site, stub, wait="kb-reading") as page:
+            # A worker picked the queued job up after this page loaded: Cancel is refused.
+            next(job for job in stub.jobs if job["id"] == "job-wait")["status"] = "processing"
+            reads = stub.reads["jobs"]
+            await button(page, card(page, "job-wait"), "Cancel").click()
+            moved_on = "This one has already moved on. The list has been refreshed."
+            await expect(page.get_by_text(moved_on, exact=True).first).to_be_visible()
+            await expect(page.get_by_text("not_cancellable")).to_have_count(0)
+            await until(lambda: stub.reads["jobs"] > reads, "the list was not read again")
+            await expect(button(page, card(page, "job-wait"), "Cancel")).to_have_count(0)
+            # The failed job was retried elsewhere and is being read: Remove is refused.
+            next(job for job in stub.jobs if job["id"] == "job-bad")["status"] = "processing"
+            reads = stub.reads["jobs"]
+            await button(page, card(page, "job-bad"), "Remove").click()
+            await button(page, page.get_by_test_id("kb-confirm"), "Remove").click()
+            running = "This one is being read right now. The list has been refreshed."
+            await expect(page.get_by_text(running, exact=True).first).to_be_visible()
+            await expect(page.get_by_text("job_still_running")).to_have_count(0)
+            await until(lambda: stub.reads["jobs"] > reads, "the list was not read again")
+            assert stub.posts == [
+                "kb/ingest-jobs/job-wait/cancel",
+                "kb/ingest-jobs/job-bad/dismiss",
+            ]
 
     await with_browser(body)

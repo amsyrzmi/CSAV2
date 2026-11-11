@@ -8358,6 +8358,10 @@
           "meta": {
             "$ref": "#/components/schemas/JobMetaOut"
           },
+          "original_stored": {
+            "title": "Original Stored",
+            "type": "boolean"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -8389,7 +8393,8 @@
           "error",
           "created_at",
           "started_at",
-          "finished_at"
+          "finished_at",
+          "original_stored"
         ],
         "title": "JobOut",
         "type": "object"
@@ -8455,6 +8460,19 @@
           "status"
         ],
         "title": "JobResultOut",
+        "type": "object"
+      },
+      "JobsDismissedOut": {
+        "properties": {
+          "dismissed": {
+            "title": "Dismissed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dismissed"
+        ],
+        "title": "JobsDismissedOut",
         "type": "object"
       },
       "JsonValue": {},
@@ -12246,6 +12264,23 @@
           "competencies"
         ],
         "title": "RecruitmentInput",
+        "type": "object"
+      },
+      "RemovedOut": {
+        "properties": {
+          "storage_cleanup": {
+            "enum": [
+              "done",
+              "pending"
+            ],
+            "title": "Storage Cleanup",
+            "type": "string"
+          }
+        },
+        "required": [
+          "storage_cleanup"
+        ],
+        "title": "RemovedOut",
         "type": "object"
       },
       "ReplyDecision": {
@@ -28418,7 +28453,14 @@
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedOut"
+                }
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
@@ -28565,7 +28607,14 @@
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedOut"
+                }
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
@@ -28905,6 +28954,70 @@
         "summary": "List Kb Ingest Jobs"
       }
     },
+    "/console/v1/kb/ingest-jobs/dismiss-failed": {
+      "post": {
+        "operationId": "dismiss_failed_kb_ingest_jobs_console_v1_kb_ingest_jobs_dismiss_failed_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobsDismissedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Failed Kb Ingest Jobs"
+      }
+    },
     "/console/v1/kb/ingest-jobs/{job_id}": {
       "get": {
         "operationId": "get_kb_ingest_job_console_v1_kb_ingest_jobs__job_id__get",
@@ -28977,6 +29090,221 @@
           }
         },
         "summary": "Get Kb Ingest Job"
+      }
+    },
+    "/console/v1/kb/ingest-jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_kb_ingest_job_console_v1_kb_ingest_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Kb Ingest Job"
+      }
+    },
+    "/console/v1/kb/ingest-jobs/{job_id}/dismiss": {
+      "post": {
+        "operationId": "dismiss_kb_ingest_job_console_v1_kb_ingest_jobs__job_id__dismiss_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dismiss Kb Ingest Job"
+      }
+    },
+    "/console/v1/kb/ingest-jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "retry_kb_ingest_job_console_v1_kb_ingest_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Kb Ingest Job"
       }
     },
     "/console/v1/kb/storage/reconcile": {
