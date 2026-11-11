@@ -705,7 +705,9 @@ class LLMProvider:
             "question, say so"
             + (
                 ""
-                if _handoff_told(compose_ctx) or strategy == "ask_clarifying"
+                if _handoff_told(compose_ctx)
+                or strategy in ("ask_clarifying", "partial_answer")
+                or (state.plan and state.plan.intent == Intent.CHITCHAT)
                 else " and offer to pass it to a team member"
             )
             + "; never say a team member was told when no fact says so. "

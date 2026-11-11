@@ -5,7 +5,8 @@ by default) it calls the real ``LLMProvider.classify``, then ``LLMProvider.compo
 ``LLMProvider.compose_handoff`` when the classifier says the customer asks for a person, with a
 hand-built ``Context``: ``recent`` is the replay's own earlier turns, clipped as the worker clips
 them (``clip_message``), and ``flags["handoff_recent"]`` turns on after a handoff. Every compose
-gets the script's fixed synthetic facts (or the conversation's own, when it lists them), except
+gets the script's fixed synthetic facts (or the conversation's own, per conversation or per
+turn, tagged with the agent that would write them), except
 a greeting or thanks (chitchat), which runs no agent on a real turn either. A handoff text that
 fails the light check (grounded, as on a real turn, only in the replay's earlier assistant
 replies) is replaced by the template, as on a real turn. A handoff also prints the staff note
@@ -69,7 +70,7 @@ from csa.turn.texts import (
     resolve_language,
     staff_note_ok,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SCRIPT_FILE = Path(__file__).resolve().parent / "customer_bot_replay_cases.json"
 # compose's own default when the company set no tone (csa.decide.llm.LLMProvider.compose).
@@ -103,6 +104,22 @@ class Conversation(_Strict):
     # Replaces the script's facts for this conversation (an empty list means no facts): the
     # subscription and stock conversations are told what those agents' facts say.
     facts: list[str] | None = None
+    # Facts that differ turn by turn, one list per message: the plan facts on the first turns, the
+    # cancel request fact only after the customer asks to cancel. Instead of ``facts``, not with it.
+    facts_by_turn: list[list[str]] | None = None
+    # The agent the facts come from (a real fact carries its agent's name): the dates rule is said
+    # only for a ``subscription_agent`` or ``booking_agent`` fact. Default the knowledge base.
+    facts_source: str = Field(default="kb_agent", min_length=1)
+
+    @model_validator(mode="after")
+    def _facts_by_turn_fits(self) -> Conversation:
+        if self.facts_by_turn is None:
+            return self
+        if self.facts is not None:
+            raise ValueError("give facts or facts_by_turn, not both")
+        if len(self.facts_by_turn) != len(self.messages):
+            raise ValueError("facts_by_turn needs one list of facts per message")
+        return self
 
 
 class ReplayScript(_Strict):
@@ -225,6 +242,14 @@ async def _reply(
     return draft.text, draft.composer or "primary", answers, None
 
 
+def _facts_for_turn(conversation: Conversation, shared: Sequence[str], turn: int) -> list[Fact]:
+    texts = shared if conversation.facts_by_turn is None else conversation.facts_by_turn[turn]
+    return [
+        Fact(id=f"fact_{index}", text=text, source=conversation.facts_source)
+        for index, text in enumerate(texts, start=1)
+    ]
+
+
 async def replay(
     llm: LLMProvider,
     script: ReplayScript,
@@ -243,17 +268,13 @@ async def replay(
     for conversation in conversations:
         out(f"== conversation {conversation.id} (language {conversation.language})")
         out(f"brand_tone: {tone}")
-        facts = [
-            Fact(id=f"fact_{index}", text=text, source="kb_agent")
-            for index, text in enumerate(
-                script.facts if conversation.facts is None else conversation.facts, start=1
-            )
-        ]
+        shared = script.facts if conversation.facts is None else conversation.facts
         recent: list[RecentMessage] = []
         replies: list[str] = []
         handoff_told = False
         for turn, text in enumerate(conversation.messages):
             envelope = _envelope(conversation, text, turn)
+            facts = _facts_for_turn(conversation, shared, turn)
             ctx = Context(recent=recent[-RECENT_WINDOW:], flags={"handoff_recent": handoff_told})
             out(f"[{turn + 1}] customer: {text}")
             try:

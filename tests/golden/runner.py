@@ -47,8 +47,13 @@ CASE_ZONE = ZoneInfo("Asia/Kuala_Lumpur")
 _DATE_TOKEN = re.compile(r"\{\{date([+-]\d+)\}\}")
 
 
+# Today, fixed once at import: the placeholders (collection) and the seed (run) must agree on the
+# day even when a run crosses local midnight.
+CASE_TODAY = datetime.now(CASE_ZONE).date()
+
+
 def case_day(days: int) -> date:
-    return datetime.now(CASE_ZONE).date() + timedelta(days=days)
+    return CASE_TODAY + timedelta(days=days)
 
 
 def case_noon(days: int) -> datetime:

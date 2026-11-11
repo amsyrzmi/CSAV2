@@ -2651,7 +2651,9 @@ _NO_FACT_NO_OFFER = (
 )
 
 
-async def _compose_system_with(strategy: str, ctx: Context | None) -> str:
+async def _compose_system_with(
+    strategy: str, ctx: Context | None, intent: Intent | None = None
+) -> str:
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2660,20 +2662,39 @@ async def _compose_system_with(strategy: str, ctx: Context | None) -> str:
 
     base = _guide_state()
     assert base.plan is not None
-    state = base.model_copy(
-        update={"plan": base.plan.model_copy(update={"reply_strategy": strategy}), "ctx": ctx}
-    )
+    plan_update: dict[str, object] = {"reply_strategy": strategy}
+    if intent is not None:
+        plan_update["intent"] = intent
+    state = base.model_copy(update={"plan": base.plan.model_copy(update=plan_update), "ctx": ctx})
     await _provider(handler).compose(state)
     (system,) = seen
     return system
 
 
-async def test_the_no_fact_sentence_offers_a_handoff_for_a_reply_and_a_partial_answer() -> None:
-    for strategy in ("auto_reply", "partial_answer"):
-        for ctx in (None, Context(flags={"handoff_recent": False})):
-            system = await _compose_system_with(strategy, ctx)
-            assert _NO_FACT_OFFER in system
-            assert _NO_FACT_NO_OFFER not in system
+async def test_the_no_fact_sentence_offers_a_handoff_for_an_ordinary_reply() -> None:
+    for ctx in (None, Context(flags={"handoff_recent": False})):
+        system = await _compose_system_with("auto_reply", ctx)
+        assert _NO_FACT_OFFER in system
+        assert _NO_FACT_NO_OFFER not in system
+
+
+async def test_the_no_fact_sentence_offers_no_handoff_on_a_partial_answer() -> None:
+    # Rung 2 asks one targeted question; an offer there would let a "ya" skip to a handoff.
+    for ctx in (None, Context(flags={"handoff_recent": False}), _recent_ctx(("customer", "hmm"))):
+        system = await _compose_system_with("partial_answer", ctx)
+        assert _PARTIAL_TEXT in system
+        assert _NO_FACT_NO_OFFER in system
+        assert _NO_FACT_OFFER not in system
+        assert "offer to pass it to a team member" not in system.split("Use ONLY the provided")[1]
+
+
+async def test_the_no_fact_sentence_offers_no_handoff_on_a_chitchat_turn() -> None:
+    # The chitchat sentence says not to mention a team member: the two must not contradict.
+    system = await _compose_system_with("auto_reply", None, Intent.CHITCHAT)
+    assert "Do NOT mention a team member." in system
+    assert _NO_FACT_NO_OFFER in system
+    assert _NO_FACT_OFFER not in system
+    assert "offer to pass it to a team member" not in system.split("Use ONLY the provided")[1]
 
 
 async def test_the_no_fact_sentence_offers_no_handoff_after_a_team_member_was_told() -> None:

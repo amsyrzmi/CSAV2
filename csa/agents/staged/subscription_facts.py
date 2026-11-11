@@ -45,7 +45,11 @@ def plan_facts(rows: Sequence[Mapping[str, Any]]) -> list[Fact]:
     for n, row in enumerate(rows, start=1):
         price = money(row["price"], row["currency"])
         text = f"{row['name']}: {price}{_per(row.get('billing_interval'))}."
-        features = [str(f).strip() for f in row.get("features") or [] if str(f).strip()]
+        raw = row.get("features") or []
+        # A bare string is one feature, not a list of characters; a trailing '.' is dropped so
+        # joining and the sentence's own '.' never print '..'.
+        items = [raw] if isinstance(raw, str) else raw
+        features = [t for t in (str(f).strip().rstrip(".").strip() for f in items) if t]
         if features:
             text += f" Includes: {'; '.join(features)}."
         facts.append(_fact(f"subscription_plan_{n}", text))

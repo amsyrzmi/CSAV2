@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from csa.contracts.state import Context, RecentMessage
-from csa.decide.llm import ClientBrand
+from csa.decide.llm import _BOOKING_COMPOSE_RULE, ClientBrand
 from csa.turn.deps import build_llm_provider
 from scripts.customer_bot_replay import (
     Conversation,
@@ -141,6 +141,7 @@ class _Facts:
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.systems: list[str] = []
 
     async def json_completion(self, schema: Any, **kwargs: Any) -> Any:
         if schema.__name__ == "Classification":
@@ -155,6 +156,7 @@ class _Facts:
                 }
             )
         self.prompts.append(kwargs["user"])
+        self.systems.append(kwargs["system"])
         return schema.model_validate({"reply": "Okay.", "used_fact_ids": []})
 
 
@@ -189,10 +191,17 @@ def test_the_shipped_script_has_the_subscription_and_stock_conversations() -> No
     for conversation_id in ("ms-subscription", "ms-stock"):
         conversation = by_id[conversation_id]
         assert conversation.language == "ms"
-        assert conversation.facts, conversation_id
-    subscription = " ".join(by_id["ms-subscription"].facts or [])
-    assert "Your plan: " in subscription and "It renews on " in subscription
-    assert "was passed to our staff to decide. Nothing has changed yet." in subscription
+        assert conversation.facts or conversation.facts_by_turn, conversation_id
+    subscription_turns = by_id["ms-subscription"].facts_by_turn
+    assert subscription_turns is not None
+    # Turns 1-3 (up to and including the customer's ask to cancel) see only the plan fact; the
+    # request fact comes on the turn after, and stays.
+    for turn, facts in enumerate(subscription_turns):
+        assert "Your plan: " in facts[0] and "It renews on " in facts[0]
+        has_request = any("was passed to our staff to decide." in f for f in facts)
+        assert has_request == (turn >= 3), turn
+    assert by_id["ms-subscription"].facts_source == "subscription_agent"
+    assert by_id["ms-stock"].facts_source == "order_agent"
     stock = " ".join(by_id["ms-stock"].facts or [])
     assert "available in our shop." in stock and "on our TikTok Shop" in stock
     # The two conversations carry their own facts; the older ones keep the script's.
@@ -211,3 +220,59 @@ def test_the_shipped_script_has_the_decline_then_ok_conversations() -> None:
     assert english.messages[-1] == "ok" and malay.messages[-1] == "ya"
     assert len(english.messages) == len(malay.messages) == 3
     assert english.facts is None and malay.facts is None
+
+
+async def test_facts_differ_per_turn_and_carry_their_agent_as_source() -> None:
+    from scripts.customer_bot_replay import ReplayScript, replay
+
+    model = _Facts()
+    script = ReplayScript.model_validate(
+        {
+            "brand": {"brand_name": "Acme"},
+            "facts": ["SCRIPT-FACT"],
+            "conversations": [
+                {
+                    "id": "sub",
+                    "language": "en",
+                    "messages": ["when does my plan renew", "cancel it", "did it go through"],
+                    "facts_source": "subscription_agent",
+                    "facts_by_turn": [["PLAN-FACT"], ["PLAN-FACT"], ["PLAN-FACT", "REQUEST-FACT"]],
+                }
+            ],
+        }
+    )
+    await replay(build_llm_provider(model), script, list(script.conversations), lambda _: None)
+    first, second, third = model.prompts
+    assert "PLAN-FACT" in first and "REQUEST-FACT" not in first and "SCRIPT-FACT" not in first
+    assert "REQUEST-FACT" not in second
+    assert "REQUEST-FACT" in third
+    # The dates rule is said only for a subscription or booking fact: the source is the agent's.
+    assert all(_BOOKING_COMPOSE_RULE in system for system in model.systems)
+
+
+async def test_a_conversation_without_facts_by_turn_keeps_one_kb_fact_set_for_every_turn() -> None:
+    from scripts.customer_bot_replay import ReplayScript, replay
+
+    model = _Facts()
+    script = ReplayScript.model_validate(
+        {
+            "facts": ["SCRIPT-FACT"],
+            "conversations": [{"id": "c", "language": "en", "messages": ["hi", "and now"]}],
+        }
+    )
+    await replay(build_llm_provider(model), script, list(script.conversations), lambda _: None)
+    assert len(model.prompts) == 2
+    assert all("SCRIPT-FACT" in p for p in model.prompts)
+    assert not any(_BOOKING_COMPOSE_RULE in system for system in model.systems)
+
+
+def test_facts_by_turn_needs_one_list_per_message_and_excludes_facts() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    base: dict[str, Any] = {"id": "c", "language": "en", "messages": ["a", "b"]}
+    with pytest.raises(ValidationError):
+        Conversation.model_validate({**base, "facts_by_turn": [["x"]]})
+    with pytest.raises(ValidationError):
+        Conversation.model_validate({**base, "facts": ["x"], "facts_by_turn": [["x"], ["y"]]})
+    Conversation.model_validate({**base, "facts_by_turn": [["x"], []]})

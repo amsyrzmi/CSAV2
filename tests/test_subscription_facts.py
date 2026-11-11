@@ -78,6 +78,29 @@ def test_plan_facts_one_per_plan_with_features_and_interval() -> None:
     assert {f.source for f in facts} == {SUBSCRIPTION_SOURCE}
 
 
+def _plan(features: Any) -> dict[str, Any]:
+    return {
+        "code": "basic",
+        "name": "Basic",
+        "price": Decimal("10"),
+        "currency": "MYR",
+        "billing_interval": "month",
+        "features": features,
+    }
+
+
+def test_a_feature_ending_in_a_full_stop_does_not_double_it() -> None:
+    (fact,) = plan_facts([_plan(["5 GB data.", "Calls. ", "Texts"])])
+    assert fact.text == "Basic: MYR 10.00 a month. Includes: 5 GB data; Calls; Texts."
+    (only_stops,) = plan_facts([_plan(["."])])
+    assert only_stops.text == "Basic: MYR 10.00 a month."
+
+
+def test_a_bare_string_features_value_is_one_feature() -> None:
+    (fact,) = plan_facts([_plan("5 GB data.")])
+    assert fact.text == "Basic: MYR 10.00 a month. Includes: 5 GB data."
+
+
 def test_an_active_plan_renews_and_a_period_end_cancel_ends() -> None:
     assert texts([row()]) == ["Your plan: Basic, MYR 10.00 a month. It renews on 01 Dec 2026."]
     assert texts([row(cancel_at_period_end=True)]) == [
