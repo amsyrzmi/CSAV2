@@ -37,6 +37,8 @@ Reserved ranges (client growth program, 2026-10-27):
 - `0550`–`0559`: knowledge cleanup. 0550 adds the `cancelled` status to
   `kb_ingest_jobs_status_check` (read from the live list as 0540 does) and `kb_ingest_jobs.dismissed_at`,
   and cancels and dismisses the existing jobs whose files were all removed.
+- `0560`–`0569`: customer bot answers. 0560 adds `escalations.note` (staff context note, at most 500
+  characters) and the `escalations_conversation_created` index.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
