@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -232,3 +233,41 @@ async def test_both_context_reads_failing_still_give_a_context(
     assert ctx.flags["handoff_recent"] is False and ctx.clarify_count == 0
     categories = {entry.get("category") for entry in logs}
     assert {"recent_messages_failed", "booking_context_failed"} <= categories
+
+
+async def _loaded_count(shop: Shop, *, stored: int, hours_ago: float | None) -> int:
+    """The unresolved-turns count `load_context` hands the turn, for a chat that stores `stored`
+    and whose previous message is `hours_ago` old (None: no earlier message)."""
+    contact = await shop.customer()
+    chat = await conversation(shop, contact)
+    if hours_ago is not None:
+        await say(
+            shop, chat, 0, "inbound", "earlier", at=datetime.now(UTC) - timedelta(hours=hours_ago)
+        )
+    own_trace = uuid.uuid4()
+    await say(shop, chat, 1, "inbound", "the message being answered", trace=own_trace)
+    await shop.w.q("UPDATE conversations SET clarify_count = %s WHERE id = %s", stored, str(chat))
+    envelope = envelope_for(shop, contact, chat).model_copy(update={"trace_id": own_trace})
+    ctx = await deps.PostgresTurnDependencies(shop.w.pool).load_context(envelope)
+    return ctx.clarify_count
+
+
+async def test_the_ladder_count_is_zero_when_the_previous_message_is_over_a_day_old(
+    shop: Shop,
+) -> None:
+    assert deps.LADDER_STALE_AFTER == timedelta(hours=24)
+    assert await _loaded_count(shop, stored=2, hours_ago=25) == 0
+
+
+async def test_the_ladder_count_is_kept_when_the_previous_message_is_recent(shop: Shop) -> None:
+    assert await _loaded_count(shop, stored=2, hours_ago=1) == 2
+
+
+async def test_the_ladder_count_is_kept_when_there_is_no_earlier_message(shop: Shop) -> None:
+    assert await _loaded_count(shop, stored=2, hours_ago=None) == 2
+    assert await _loaded_count(shop, stored=0, hours_ago=None) == 0
+
+
+async def test_the_ladder_count_goes_stale_with_memory_off_too(shop: Shop) -> None:
+    await shop.policy({"conversation_memory": False})
+    assert await _loaded_count(shop, stored=2, hours_ago=25) == 0

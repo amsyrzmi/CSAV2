@@ -66,7 +66,11 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
-from csa.graph.policy.plan_rules import LADDER_REASON, next_unresolved
+from csa.graph.policy.plan_rules import (
+    LADDER_REASON,
+    LADDER_STALE_AFTER,
+    next_unresolved,
+)
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
@@ -294,7 +298,12 @@ class PostgresTurnDependencies:
         async with tx(self._pool, str(envelope.client_id)) as conn:
             row = await db.q.fetch_one(
                 "turn/get_conversation_state.sql",
-                (conversation_id, envelope.client_id),
+                {
+                    "conversation_id": conversation_id,
+                    "client_id": envelope.client_id,
+                    "trace_id": envelope.trace_id,
+                    "stale_after": LADDER_STALE_AFTER,
+                },
                 conn=conn,
             )
         if row is None:
@@ -312,7 +321,8 @@ class PostgresTurnDependencies:
             flags["memory_off"] = True
         return Context(
             summary=row["summary"],
-            clarify_count=row["clarify_count"],
+            # Only the loaded value: finalize still writes the new absolute count.
+            clarify_count=0 if row["ladder_stale"] else row["clarify_count"],
             active_order_ids=row["active_order_ids"],
             flags=flags,
             booking=booking,

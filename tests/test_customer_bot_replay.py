@@ -194,16 +194,20 @@ def test_the_shipped_script_has_the_subscription_and_stock_conversations() -> No
         assert conversation.facts or conversation.facts_by_turn, conversation_id
     subscription_turns = by_id["ms-subscription"].facts_by_turn
     assert subscription_turns is not None
-    # Turns 1-3 (up to and including the customer's ask to cancel) see only the plan fact; the
-    # request fact comes on the turn after, and stays.
+    # Turns 1-2 see only the plan fact; the request is prepared in the turn in which the customer
+    # asks to cancel (turn 3), so its fact is there from that turn on.
     for turn, facts in enumerate(subscription_turns):
         assert "Your plan: " in facts[0] and "It renews on " in facts[0]
         has_request = any("was passed to our staff to decide." in f for f in facts)
-        assert has_request == (turn >= 3), turn
+        assert has_request == (turn >= 2), turn
     assert by_id["ms-subscription"].facts_source == "subscription_agent"
     assert by_id["ms-stock"].facts_source == "order_agent"
     stock = " ".join(by_id["ms-stock"].facts or [])
     assert "available in our shop." in stock and "on our TikTok Shop" in stock
+    # A TikTok price is never quoted: the TikTok line carries no price, the shop lines keep theirs.
+    tiktok = [f for f in by_id["ms-stock"].facts or [] if "TikTok Shop" in f]
+    assert tiktok and not any("MYR" in f for f in tiktok)
+    assert "MYR 25.00, 12 available in our shop." in stock
     # The two conversations carry their own facts; the older ones keep the script's.
     assert by_id["ms-plans"].facts is None
 

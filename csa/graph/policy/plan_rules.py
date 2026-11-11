@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from csa.contracts.facts import AgentError
 from csa.contracts.plan import Intent, Plan, Task
@@ -37,6 +38,10 @@ _CONFIDENCE_FLOOR = 0.35
 LADDER_REASON = "unresolved_turns"
 PARTIAL_AT = 2
 HANDOFF_AT = 3
+# The count is only meaningful inside one conversation spell: when the chat's previous message is
+# older than this, the turn starts the ladder over (the loaded count reads 0). The memory window
+# is a message count, so this duration is its own ruling.
+LADDER_STALE_AFTER = timedelta(hours=24)
 UNRESOLVED = frozenset({"ask_clarifying", "partial_answer"})
 
 
