@@ -1,8 +1,8 @@
 # Product management: one list for local and marketplace products
 
 Status: APPROVED by the owner on 2026-11-10 (every section 8 decision answered yes, defaults as written). Pull request 4 of the business surfaces programme
-(`2026-11-10-business-surfaces-programme.md`). Migrations 0570 to 0579. Part B (TikTok write-back) is a
-separate, later pull request that waits on the owner.
+(`2026-11-10-business-surfaces-programme.md`). Migrations 0570 to 0579. Part B (TikTok write-back) is
+DROPPED: the owner decided on 2026-11-11 that TikTok stays read-only.
 
 ## 1. Intent
 
@@ -46,7 +46,7 @@ Part A (this pull request)
 - Assistant actions for the same operations as confirm cards: create product, change price, adjust
   stock (the owner's rule: whatever a screen can do, the assistant can be asked to).
 
-Part B (separate pull request, waits on the owner)
+Part B (DROPPED on 2026-11-11: TikTok stays read-only; kept for the record)
 
 - Push a stock level from local to TikTok Shop, only through a confirmation, a queued job and an audit
   row.
@@ -125,7 +125,7 @@ Assistant
   Product actions are single actions, not steps inside a plan (a later change). Planner rules and
   Malay examples; a planner prompt change means the full `assistant_smoke` after rollout.
 
-Part B outline (a later design amends the TikTok Shop connect design's read-only anti-goal)
+Part B outline (DROPPED 2026-11-11; it would have amended the TikTok Shop connect design's read-only anti-goal)
 
 - Preconditions: a verified Partner Center write scope; the owner's decision on stock authority
   (local pushes to TikTok, or TikTok remains separate); a confirmation card that shows the old and new
@@ -155,7 +155,7 @@ paging; whether `GET /products` replaces the old routes or sits beside them in t
 2. The explicit link, with SKU equality offered as a suggestion.
 3. The assistant gets create product, change price and adjust stock in this pull request (this adds a
    planner prompt change and the full smoke run), or they follow in a small later pull request.
-4. Part B waits for the Partner Center write scope and the stock-authority decision.
+4. Part B is dropped (owner decision 2026-11-11).
 
 ## 9. Builder check (2026-11-10): calls made by the designer
 

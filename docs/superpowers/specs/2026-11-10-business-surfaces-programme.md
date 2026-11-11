@@ -37,12 +37,20 @@ request count at five, plus two that wait on the owner.
 Recommended order after pull request 3 (owner may reorder): 2, 2b, P1, P2, 4, then the assistant pull request. Payments
 and onboarding come before products because customer growth is what the owner expects to scale.
 
-Waiting on the owner:
+Decided by the owner on 2026-11-11 (these were waiting on the owner):
 
-- **TikTok stock write-back** (Product management part B). Needs a verified Partner Center write scope
-  and the owner's decision to reverse the read-only rule of the TikTok Shop connect design.
-- **Single Google connection.** Needs one consent screen declaring the Gmail and Calendar scopes and
-  Google's verification. Pull request 3 leaves the seam for it (a single Google card).
+- **TikTok stock write-back: no.** The TikTok Shop connection stays read-only. Product management part B
+  is dropped, and no write package is enabled in Partner Center.
+- **Single Google connection: yes.** One Google sign-in covers Gmail and Calendar, with one consent
+  screen declaring both scopes. It still needs Google's verification (see the Google bullet below), so
+  it ships after that. Pull request 3 leaves the seam for it (a single Google card).
+- **Production origin: `https://mito.fourstacks.my`**, not `staging-console.fourstacks.my`. Every
+  redirect URL for production uses it: the TikTok connect callback
+  (`/console/v1/business/stores/tiktok/callback`), the email OAuth callback
+  (`/console/v1/email/oauth/callback`) and the bookings calendar callback
+  (`/console/v1/bookings/calendar/callback`), until the single Google callback replaces the last two.
+  Staging keeps `staging-console.fourstacks.my`.
+- **Cancel on a knowledge job keeps its confirm step** (the behaviour shipped in #101).
 
 The HR programme (attendance, claims, payroll, recruitment, onboarding, leave self-service) keeps its
 order and its migration range (0520–0529 and later) and runs after pull request 5. It shares no files
@@ -72,11 +80,11 @@ These block specific parts and are listed in the matching designs.
 - **TikTok Partner Center** (`deploy/STAGING_PIPELINE.md` 12.7 to 12.11): confirm whether a shop that is
   not the owner's can authorize the app; read the real scope keys, webhook event type numbers, the
   signature recipe, the refresh refusal codes and the product status word for "on sale"; fix the
-  saved redirect URL (still the old hooks URL); enable a product write package only if write-back is
-  wanted.
+  saved redirect URL (still the old hooks URL; production uses `mito.fourstacks.my`); no product write
+  package (write-back was decided against on 2026-11-11).
 - **Google**: the OAuth client is External and in Testing (test users only, seven-day grants). A
   production release of the Gmail scopes needs Google's verification and a yearly security
-  assessment; the Calendar scope is non-sensitive. The single Google connection waits for this.
+  assessment; the Calendar scope is non-sensitive. The single Google connection (decided 2026-11-11) waits for this.
 - **Knowledge content for the telco example company**: the bot cannot answer "how do I sign up", "how do
   I pay" or "which plan for whom" until those facts are in the knowledge base. This is content, not
   code; pull request 2 makes the bot say so honestly and record the gap.
