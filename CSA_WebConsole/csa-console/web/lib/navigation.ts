@@ -4,7 +4,7 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password" | "subscriptions" | "bookings" | "training_library";
+  | "team" | "password" | "subscriptions" | "bookings" | "training_library" | "connections";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
 export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
@@ -155,6 +155,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     // Every member reads the library, read-only included; only managers see its edit controls.
     // "Training library", not "Training": HR's own Training tab keeps that name.
     { key: "training_library", label: "Training library", href: to("training") },
+    // Every member sees Connections, read-only included; each card gates itself by package and role.
+    { key: "connections", label: "Connections", href: to("connections") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },

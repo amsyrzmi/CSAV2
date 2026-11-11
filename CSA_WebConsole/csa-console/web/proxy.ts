@@ -47,6 +47,8 @@ const adoptedPages = new Set([
   "/portal/bookings",
   "/portal/bookings/types",
   "/portal/bookings/people-and-rooms",
+  "/connections",
+  "/portal/connections",
   "/workspace",
   "/portal/workspace",
   "/email",
