@@ -1,0 +1,49 @@
+{
+  "id": "cs_sub_two_plans_asks_which",
+  "matrix": "Subscriptions: two plans on the chat, the bot asks which one before it prepares anything",
+  "description": "A cancel request with no plan named, on a chat with two plans: nothing is prepared and the reply asks which. Naming one then prepares one request for that plan.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "subscriptions": [
+      {"plan": "kecil", "price": "15.00", "renews_in_days": 9},
+      {"plan": "sederhana", "price": "35.00", "renews_in_days": 21}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "Please cancel my plan",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "request_cancel"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "You have two plans on this chat, Plan Kecil and Plan Sederhana. Which one would you like to cancel?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Plan Kecil", "Plan Sederhana", "Which one"], "compose_sees": ["This chat has more than one plan: ", "Which one do you mean?"],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    },
+    {
+      "say": "The Plan Kecil one",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "request_cancel", "current_plan": "Plan Kecil"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "I've passed your request to cancel Plan Kecil to our staff, who will decide. Nothing has changed yet."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Plan Kecil", "staff"], "reply_excludes": ["cancelled"],
+        "compose_sees": ["Your request to cancel Plan Kecil was passed to our staff to decide. Nothing has changed yet."], "prepared_requests": 1, "agent_errors": [],
+        "escalations": 0
+      }
+    }
+  ]
+}

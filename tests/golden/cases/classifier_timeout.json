@@ -8,7 +8,7 @@
     "expect": {
       "agents": [], "outbound_count": 1, "reply_contains": ["something went wrong on our side"],
       "reply_excludes": ["team member"],
-      "escalations": 1, "llm_not_called": ["PlanOut", "ComposeOut", "ReviewOut"]
+      "escalations": 1, "llm_not_called": ["HandoffOut", "PlanOut", "ComposeOut", "ReviewOut"]
     }
   }]
 }

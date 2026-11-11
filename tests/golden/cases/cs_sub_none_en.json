@@ -1,0 +1,29 @@
+{
+  "id": "cs_sub_none_en",
+  "matrix": "Subscriptions: a chat with no subscription is told so",
+  "description": "No subscription is linked to the chat: the fact says so and nothing is prepared.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "What plan am I on?",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "I can't find a subscription linked to this chat. Would you like me to pass this to a team member to check?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["can't find a subscription"], "compose_sees": ["I can't find a subscription linked to this chat."],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}

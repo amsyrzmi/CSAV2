@@ -1,0 +1,47 @@
+{
+  "id": "cs_sub_mine_then_renew_en",
+  "matrix": "Subscriptions: the customer's own plan, then its renewal date",
+  "description": "Synthetic Plan Kecil tenant. 'What plan am I on?' reads the chat's own subscription (the planner names no id), and the next question gets the renewal date exactly as the fact writes it.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "subscriptions": [
+      {"plan": "sederhana", "price": "35.00", "renews_in_days": 21}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "What plan am I on?",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "You're on Plan Sederhana, MYR 35.00 a month. Anything else I can help with?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Plan Sederhana", "MYR 35.00"], "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on {{date+21}}."],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    },
+    {
+      "say": "When does it renew?",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "It renews on {{date+21}}."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["It renews on {{date+21}}"], "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on {{date+21}}."],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}

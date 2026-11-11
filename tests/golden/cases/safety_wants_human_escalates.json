@@ -12,7 +12,7 @@
       "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
       "outbound_count": 1, "reply_contains": ["team member"],
       "llm_not_called": ["PlanOut", "ReviewOut"], "escalations": 1,
-      "escalation_note_contains": ["The customer asked for a person."], "kb_gap_queries": []
+      "escalation_note_contains": ["has not answered anything yet"], "kb_gap_queries": []
     }
   }]
 }

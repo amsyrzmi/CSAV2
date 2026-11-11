@@ -165,13 +165,16 @@ def staff_note_ok(text: str, sources: Iterable[str]) -> bool:
 
 def gap_topic_or_none(text: str | None) -> str | None:
     """A model-written gap topic cleaned up, or None: lower case, spaces collapsed, 3 to 60
-    characters, at most six words, letters, spaces, apostrophes and hyphens only."""
+    characters, at most six words, letters, spaces, apostrophes and hyphens only, and at least
+    one letter (punctuation alone is not a topic)."""
     if text is None:
         return None
     topic = " ".join(text.lower().split())
     if not _GAP_TOPIC_MIN_CHARS <= len(topic) <= _GAP_TOPIC_MAX_CHARS:
         return None
     if len(topic.split(" ")) > _GAP_TOPIC_MAX_WORDS or not _GAP_TOPIC_CHARS.fullmatch(topic):
+        return None
+    if not any(char.isalpha() for char in topic):
         return None
     return topic
 

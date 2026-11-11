@@ -20,7 +20,7 @@
         "llm_not_called": ["PlanOut", "ReviewOut"],
         "llm_calls": {"Classification": 1, "HandoffOut": 1},
         "handoff_sent": true, "human_muted": true, "escalations": 1,
-        "escalation_note_contains": ["The customer asked for a person."]
+        "escalation_note_contains": ["Nothing else was said"]
       }
     },
     {

@@ -132,3 +132,68 @@ async def test_replay_prints_the_staff_note_of_a_handoff() -> None:
     await replay(bad, script, [conversation], lines.append)
     assert any("staff note: The customer asked for a person." in line for line in lines)
     assert not any("RM500" in line for line in lines)
+
+
+class _Facts:
+    """A model that records the facts compose was shown, answering with an empty reply text."""
+
+    model = "fake-model"
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def json_completion(self, schema: Any, **kwargs: Any) -> Any:
+        if schema.__name__ == "Classification":
+            return schema.model_validate(
+                {
+                    "intent": "product_info",
+                    "language": "en",
+                    "sentiment": "neutral",
+                    "wants_human": False,
+                    "injection": False,
+                    "urgent": False,
+                }
+            )
+        self.prompts.append(kwargs["user"])
+        return schema.model_validate({"reply": "Okay.", "used_fact_ids": []})
+
+
+async def test_a_conversation_with_its_own_facts_uses_them() -> None:
+    from scripts.customer_bot_replay import ReplayScript, replay
+
+    model = _Facts()
+    script = ReplayScript.model_validate(
+        {
+            "brand": {"brand_name": "Acme"},
+            "facts": ["SCRIPT-FACT the shop opens at nine."],
+            "conversations": [
+                {"id": "own", "language": "en", "messages": ["hi"], "facts": ["OWN-FACT 7."]},
+                {"id": "shared", "language": "en", "messages": ["hi"]},
+                {"id": "none", "language": "en", "messages": ["hi"], "facts": []},
+            ],
+        }
+    )
+    await replay(build_llm_provider(model), script, list(script.conversations), lambda _: None)
+    own, shared, none = model.prompts
+    assert "OWN-FACT 7." in own and "SCRIPT-FACT" not in own
+    assert "SCRIPT-FACT" in shared and "OWN-FACT" not in shared
+    # An empty list replaces the script's facts too: this conversation is told no facts at all.
+    assert "SCRIPT-FACT" not in none and "OWN-FACT" not in none
+
+
+def test_the_shipped_script_has_the_subscription_and_stock_conversations() -> None:
+    from scripts.customer_bot_replay import SCRIPT_FILE, load_script
+
+    script = load_script(SCRIPT_FILE)
+    by_id = {c.id: c for c in script.conversations}
+    for conversation_id in ("ms-subscription", "ms-stock"):
+        conversation = by_id[conversation_id]
+        assert conversation.language == "ms"
+        assert conversation.facts, conversation_id
+    subscription = " ".join(by_id["ms-subscription"].facts or [])
+    assert "Your plan: " in subscription and "It renews on " in subscription
+    assert "was passed to our staff to decide. Nothing has changed yet." in subscription
+    stock = " ".join(by_id["ms-stock"].facts or [])
+    assert "available in our shop." in stock and "on our TikTok Shop" in stock
+    # The two conversations carry their own facts; the older ones keep the script's.
+    assert by_id["ms-plans"].facts is None

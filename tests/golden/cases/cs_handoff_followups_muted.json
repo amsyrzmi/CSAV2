@@ -21,7 +21,7 @@
       "say": "Any update about my parcel?",
       "expect": {
         "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
-        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "llm_not_called": ["Classification", "HandoffOut", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
         "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
       }
     },
@@ -29,7 +29,7 @@
       "say": "Please check again",
       "expect": {
         "route": "muted", "agents": [], "outbound_count": 0, "deliveries": 0,
-        "llm_not_called": ["Classification", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
+        "llm_not_called": ["Classification", "HandoffOut", "PlanOut", "StepOut", "ComposeOut", "ReviewOut"],
         "escalations": 0, "human_muted": true, "ticket_statuses": ["open"]
       }
     }

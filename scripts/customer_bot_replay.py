@@ -5,11 +5,12 @@ by default) it calls the real ``LLMProvider.classify``, then ``LLMProvider.compo
 ``LLMProvider.compose_handoff`` when the classifier says the customer asks for a person, with a
 hand-built ``Context``: ``recent`` is the replay's own earlier turns, clipped as the worker clips
 them (``clip_message``), and ``flags["handoff_recent"]`` turns on after a handoff. Every compose
-gets the script's fixed synthetic facts, except a greeting or thanks (chitchat), which runs no
-agent on a real turn either. A handoff text that fails the light check (grounded, as on a real
-turn, only in the replay's earlier assistant replies) is replaced by the template, as on a real
-turn. A handoff also prints the staff note (the model's when it passes the real turn's check,
-else the fixed note for a person asked for) and the gap topic when the model gave one.
+gets the script's fixed synthetic facts (or the conversation's own, when it lists them), except
+a greeting or thanks (chitchat), which runs no agent on a real turn either. A handoff text that
+fails the light check (grounded, as on a real turn, only in the replay's earlier assistant
+replies) is replaced by the template, as on a real turn. A handoff also prints the staff note
+(the model's when it passes the real turn's check, else the fixed note for a person asked for)
+and the gap topic when the model gave one.
 
 It does not run the graph (routing, agents, gate and delivery are what the golden cases test),
 touches no database and needs only the model key. It runs inside the staging gateway container::
@@ -99,6 +100,9 @@ class Conversation(_Strict):
     id: str = Field(min_length=1)
     language: Literal["en", "ms", "zh", "ta"]
     messages: list[str] = Field(min_length=1)
+    # Replaces the script's facts for this conversation (an empty list means no facts): the
+    # subscription and stock conversations are told what those agents' facts say.
+    facts: list[str] | None = None
 
 
 class ReplayScript(_Strict):
@@ -234,15 +238,17 @@ async def replay(
         persona_name=script.brand.persona_name,
     )
     tone = script.brand.brand_tone or f"{DEFAULT_TONE} (default)"
-    facts = [
-        Fact(id=f"fact_{index}", text=text, source="kb_agent")
-        for index, text in enumerate(script.facts, start=1)
-    ]
     problems = 0
     first = True
     for conversation in conversations:
         out(f"== conversation {conversation.id} (language {conversation.language})")
         out(f"brand_tone: {tone}")
+        facts = [
+            Fact(id=f"fact_{index}", text=text, source="kb_agent")
+            for index, text in enumerate(
+                script.facts if conversation.facts is None else conversation.facts, start=1
+            )
+        ]
         recent: list[RecentMessage] = []
         replies: list[str] = []
         handoff_told = False

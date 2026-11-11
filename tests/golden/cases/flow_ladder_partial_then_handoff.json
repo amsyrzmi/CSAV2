@@ -1,7 +1,7 @@
 {
   "id": "flow_ladder_partial_then_handoff",
   "matrix": "Flow: the escalation ladder asks twice, answers in part, then hands off to human support",
-  "description": "Three unresolved turns in a row: two clarifying questions (the second built on what the first asked), a partial answer with one targeted question, then a handoff to staff with a note. Nothing escalates before the fourth turn.",
+  "description": "Three unresolved turns in a row: two clarifying questions (the second built on what the first asked), a partial answer with one targeted question, then a handoff to staff with a note. Nothing escalates before the fourth turn. The unresolved count after each turn is 1, 2 and 3, and 0 once the chat has been handed off.",
   "turns": [
     {
       "say": "something ambiguous",
@@ -16,7 +16,7 @@
         "route": "clarify", "agents": [], "gate": "send",
         "outbound_count": 1, "reply_contains": ["Could you please specify"],
         "compose_sees": ["Ask exactly one short clarifying question about the one thing you still need"],
-        "escalations": 0
+        "escalations": 0, "clarify_count": 1
       }
     },
     {
@@ -32,7 +32,7 @@
         "route": "clarify", "agents": [], "gate": "send",
         "outbound_count": 1, "reply_contains": ["order, a plan or a booking"],
         "compose_sees": ["Could you please specify how I can help you today?", "never ask a question an earlier assistant message already asked"],
-        "escalations": 0
+        "escalations": 0, "clarify_count": 2
       }
     },
     {
@@ -48,7 +48,7 @@
         "route": "clarify", "agents": [], "gate": "send",
         "outbound_count": 1, "reply_contains": ["What is the order number or the plan name?"],
         "compose_sees": ["The customer still has no answer after earlier questions", "Is this about an order, a plan or a booking?"],
-        "escalations": 0
+        "escalations": 0, "clarify_count": 3
       }
     },
     {
@@ -62,7 +62,7 @@
         "route": "clarify", "agents": ["escalation_agent"], "gate": "send",
         "outbound_count": 1, "reply_contains": ["team member"],
         "llm_not_called": ["ReviewOut"],
-        "escalations": 1,
+        "escalations": 1, "escalation_reason": "unresolved_turns", "clarify_count": 0,
         "escalation_note_contains": ["stayed unclear"]
       }
     }

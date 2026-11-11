@@ -33,6 +33,36 @@
       ]
     },
     {
+      "id": "ms-subscription",
+      "language": "ms",
+      "facts": [
+        "Your plan: Plan Sederhana, MYR 35.00 a month. It renews on 12 Dec 2026.",
+        "Your request to cancel Plan Sederhana was passed to our staff to decide. Nothing has changed yet."
+      ],
+      "messages": [
+        "hi, saya tengah guna plan apa eh sekarang?",
+        "bila plan saya renew?",
+        "saya nak stop plan ni bulan depan",
+        "dah stop ke tu?",
+        "ok terima kasih"
+      ]
+    },
+    {
+      "id": "ms-stock",
+      "language": "ms",
+      "facts": [
+        "Kad SIM Pro (SIM-PRO-01): MYR 25.00, 12 available in our shop.",
+        "Kad SIM Pro (Prepaid), MYR 25.00: 8 available on our TikTok Shop.",
+        "Pek Data Tambahan (ADD-DATA-02): MYR 10.00, out of stock in our shop."
+      ],
+      "messages": [
+        "hi, ada stok kad sim pro x?",
+        "kat tiktok ada jugak ke?",
+        "pek data tambahan pulak ada lagi tak?",
+        "ok nanti saya beli, terima kasih"
+      ]
+    },
+    {
       "id": "en-plans",
       "language": "en",
       "messages": [

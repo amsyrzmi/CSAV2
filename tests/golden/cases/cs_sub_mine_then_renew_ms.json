@@ -1,0 +1,49 @@
+{
+  "id": "cs_sub_mine_then_renew_ms",
+  "matrix": "Subscriptions: the customer's own plan, then its renewal date, in Malay",
+  "description": "Malay twin of cs_sub_mine_then_renew_en: casual Malay replies, the date copied as the fact writes it.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "subscriptions": [
+      {"plan": "sederhana", "price": "35.00", "renews_in_days": 21}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "plan saya sekarang apa eh?",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Sekarang Plan Sederhana, MYR 35.00 sebulan. Ada apa-apa lagi yang saya boleh tolong?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["Plan Sederhana", "MYR 35.00"], "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on {{date+21}}.", "Malay register"],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    },
+    {
+      "say": "bila plan saya renew?",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Plan tu renew pada {{date+21}}."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["renew pada {{date+21}}"], "compose_sees": ["Your plan: Plan Sederhana, MYR 35.00 a month. It renews on {{date+21}}.", "Malay register"],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "cs_stock_tiktok_only_en",
+  "matrix": "Products: stock found only on our TikTok Shop",
+  "description": "Our own shop has no such product but the TikTok Shop lists it: the reply gives the TikTok number and does not claim stock in our shop.",
+  "seed": {
+    "listings": [
+      {"product_name": "Travel SIM", "variant_name": "Prepaid", "seller_sku": "SIM-TRV-01", "stock_qty": 8, "price": "25.00"}
+    ],
+    "services": ["ecommerce_agent"]
+  },
+  "turns": [
+    {
+      "say": "Do you have the Travel SIM in stock?",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.9}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "product_availability", "query": "Travel SIM"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Yes, 8 on our TikTok Shop as of 10 minutes ago."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["8", "TikTok"], "reply_excludes": ["in our shop"],
+        "compose_sees": ["Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago."], "model_never_sees": ["available in our shop"], "agent_errors": [],
+        "escalations": 0
+      }
+    }
+  ]
+}

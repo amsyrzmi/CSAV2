@@ -247,6 +247,7 @@ async def test_compose_handoff_never_repeats_a_customers_figure_as_a_promise() -
     draft = await _deps(model)._compose(state)
     assert len(model.calls) == 1  # the model was asked, and its reply was refused
     assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []
 
 
 async def test_compose_handoff_does_not_ground_a_figure_from_a_fact() -> None:
@@ -257,6 +258,7 @@ async def test_compose_handoff_does_not_ground_a_figure_from_a_fact() -> None:
     draft = await _deps(model)._compose(_handoff("agent_failure", route="plan_args", facts=[fact]))
     assert len(model.calls) == 1 and "Plan Kecil costs RM15" not in model.calls[0][1]
     assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []  # the fact is not carried over
 
 
 async def test_compose_handoff_template_when_model_errors() -> None:
@@ -265,12 +267,18 @@ async def test_compose_handoff_template_when_model_errors() -> None:
     assert model.calls  # it was asked
     assert draft.text == handoff_template("ms") and draft.language == "ms"
     assert draft.handoff and draft.composer == "template"
+    assert draft.fact_ids == []
+    # The model gave nothing, so the fixed note of the reason is stored.
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "angry_customer")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_without_a_model_is_the_template() -> None:
     plain = deps.PostgresTurnDependencies(None)  # type: ignore[arg-type]
     draft = await plain._compose(_handoff())
     assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.language == "en" and draft.fact_ids == []
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
 
 
 async def test_an_escalate_plan_without_a_required_handoff_is_still_a_handoff_draft() -> None:
@@ -437,6 +445,11 @@ def test_gap_topic_or_none_table() -> None:
     assert gap_topic_or_none("") is None
     assert gap_topic_or_none("   ") is None
     assert gap_topic_or_none(None) is None
+    # At least one letter: punctuation alone is not a topic.
+    assert gap_topic_or_none("---") is None
+    assert gap_topic_or_none("'''") is None
+    assert gap_topic_or_none("- - -") is None
+    assert gap_topic_or_none("a-b") == "a-b"
 
 
 async def test_a_note_is_kept_when_only_the_reply_fails_its_check() -> None:
@@ -468,6 +481,8 @@ async def test_compose_handoff_template_when_the_model_is_slower_than_the_budget
     made._llm.compose_handoff = slow  # type: ignore[union-attr, method-assign]
     draft = await made._compose(_handoff())
     assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_template_when_the_model_raises() -> None:
@@ -479,6 +494,8 @@ async def test_compose_handoff_template_when_the_model_raises() -> None:
     made._llm.compose_handoff = broken  # type: ignore[union-attr, method-assign]
     draft = await made._compose(_handoff())
     assert draft.text == _KIND and draft.handoff and draft.composer == "template"
+    assert draft.staff_note == fallback_staff_note("hard_escalate", "human_requested")
+    assert draft.gap_topic is None
 
 
 async def test_compose_handoff_template_when_the_brand_read_fails() -> None:

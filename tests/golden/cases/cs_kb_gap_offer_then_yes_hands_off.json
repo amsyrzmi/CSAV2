@@ -1,0 +1,43 @@
+{
+  "id": "cs_kb_gap_offer_then_yes_hands_off",
+  "matrix": "Customer service: no fact, the bot offers a handoff, a yes hands off with the gap recorded",
+  "description": "'How do I pay?' has no fact: the reply says so and offers to pass the question to a team member without claiming anyone was told. 'ya boleh' is a yes to that offer, so the chat is handed off for the reason human_requested with a staff note, and the question is recorded as a knowledge gap topic.",
+  "seed": {
+    "knowledge": [
+      {"title": "Foreign payment guide", "content": "FOREIGN-ONLY Other company payment guide.", "other_tenant": true}
+    ]
+  },
+  "turns": [
+    {
+      "say": "How do I pay for the plan?",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "en", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"kb_agent": 0.9}},
+        "PlanOut": {"tasks": [{"agent": "kb_agent", "input": {"action": "query", "query": "how to pay for the plan"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "I don't have that information here. Do you want me to pass your question to a team member?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "agents": ["kb_agent"], "gate": "send", "outbound_count": 1,
+        "reply_contains": ["don't have that information", "team member?"], "reply_excludes": ["I've passed", "has been told", "will follow up"], "compose_sees": ["No matching knowledge base documentation found"],
+        "kb_gaps": 1, "kb_gap_queries": ["how to pay for the plan"], "agent_errors": [],
+        "escalations": 0, "handoff_sent": false
+      }
+    },
+    {
+      "say": "ya boleh",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "human_request", "language": "ms", "sentiment": "neutral", "wants_human": true, "injection": false, "urgent": false},
+        "HandoffOut": {"reply": "Baik, saya dah bagitahu team. Mereka akan balas kat sini nanti.", "staff_note": "The customer asked how to pay for the plan. The assistant had no answer and offered to pass the question to a team member, and the customer said yes.", "gap_topic": "how to pay"}
+      },
+      "expect": {
+        "route": "hard_escalate", "agents": ["escalation_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["bagitahu team"], "compose_sees": ["Do you want me to pass your question to a team member?", "ya boleh"],
+        "llm_not_called": ["PlanOut", "ReviewOut"], "llm_calls": {"Classification": 1, "HandoffOut": 1}, "escalations": 1,
+        "escalation_reason": "human_requested", "escalation_note_contains": ["offered to pass the question"], "kb_gaps": 2,
+        "kb_gap_queries": ["how to pay", "how to pay for the plan"], "handoff_sent": true, "human_muted": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "cs_sub_cancel_request_ms",
+  "matrix": "Subscriptions: a cancel request only goes to staff, in Malay",
+  "description": "Malay twin of cs_sub_cancel_request_en.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "subscriptions": [
+      {"plan": "sederhana", "price": "35.00", "renews_in_days": 21}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "nak stop plan saya bulan depan",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "request_cancel"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Saya dah hantar permintaan nak stop Plan Sederhana tu kat staff kami untuk diputuskan. Belum ada apa-apa yang berubah lagi."},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["staff"], "reply_excludes": ["cancelled", "dibatalkan"],
+        "compose_sees": ["Your request to cancel Plan Sederhana was passed to our staff to decide. Nothing has changed yet.", "Malay register"], "prepared_requests": 1, "agent_errors": [],
+        "escalations": 0
+      }
+    }
+  ]
+}

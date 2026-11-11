@@ -1,0 +1,30 @@
+{
+  "id": "cs_sub_none_ms",
+  "matrix": "Subscriptions: a chat with no subscription is told so, in Malay",
+  "description": "Malay twin of cs_sub_none_en.",
+  "seed": {
+    "plans": [
+      {"code": "kecil", "name": "Plan Kecil", "price": "15.00", "features": ["5GB data"]},
+      {"code": "sederhana", "name": "Plan Sederhana", "price": "35.00", "features": ["20GB data"]}
+    ],
+    "services": ["subscription_agent"]
+  },
+  "turns": [
+    {
+      "say": "saya guna plan apa eh sekarang?",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "subscription", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"subscription_agent": 0.95}},
+        "PlanOut": {"tasks": [{"agent": "subscription_agent", "input": {"action": "mine"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Saya tak jumpa plan yang berkait dengan chat ni. Nak saya hantar pada team untuk semak?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["subscription_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["tak jumpa plan"], "compose_sees": ["I can't find a subscription linked to this chat.", "Malay register"],
+        "prepared_requests": 0, "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}

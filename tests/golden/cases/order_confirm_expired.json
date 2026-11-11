@@ -16,7 +16,7 @@
     },
     {
       "say": "", "tap": {"from_turn": 0, "button": "accept", "expired": true},
-      "expect": {"route": "callback", "agents": ["escalation_agent"], "outbound_count": 1, "reply_excludes": ["confirmed"], "order_statuses": ["draft"], "reserved_qty": 2, "action_status": "open", "escalations": 1, "llm_not_called": ["Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
+      "expect": {"route": "callback", "agents": ["escalation_agent"], "outbound_count": 1, "reply_excludes": ["confirmed"], "order_statuses": ["draft"], "reserved_qty": 2, "action_status": "open", "escalations": 1, "llm_not_called": ["HandoffOut", "Classification", "PlanOut", "ComposeOut", "ReviewOut"]}
     }
   ]
 }

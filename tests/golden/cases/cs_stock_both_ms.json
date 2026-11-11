@@ -1,0 +1,32 @@
+{
+  "id": "cs_stock_both_ms",
+  "matrix": "Products: one stock answer from our shop and our TikTok Shop, in Malay",
+  "description": "Malay twin of cs_stock_both_en.",
+  "seed": {
+    "products": [
+      {"sku": "SIM-TRV-01", "name": "Travel SIM", "price": "25.00", "stock_qty": 12}
+    ],
+    "listings": [
+      {"product_name": "Travel SIM", "variant_name": "Prepaid", "seller_sku": "SIM-TRV-01", "stock_qty": 8, "price": "25.00"}
+    ],
+    "services": ["ecommerce_agent"]
+  },
+  "turns": [
+    {
+      "say": "ada stok travel sim x?",
+      "language": "ms",
+      "cassette": {
+        "Classification": {"intent": "product_info", "language": "ms", "sentiment": "neutral", "wants_human": false, "injection": false, "urgent": false, "needs": {"order_agent": 0.9}},
+        "PlanOut": {"tasks": [{"agent": "order_agent", "input": {"action": "product_availability", "query": "Travel SIM"}}], "reply_strategy": "auto_reply"},
+        "StepOut": {"done": true},
+        "ComposeOut": {"reply": "Ada, 12 kat kedai kami dan 8 kat TikTok Shop. Nak ambil yang mana?"},
+        "ReviewOut": {"ok": true}
+      },
+      "expect": {
+        "route": "plan_args", "agents": ["order_agent"], "gate": "send",
+        "outbound_count": 1, "reply_contains": ["12", "kedai kami", "8", "TikTok"], "compose_sees": ["Travel SIM (SIM-TRV-01): MYR 25.00, 12 available in our shop.", "Travel SIM (Prepaid), MYR 25.00 on our TikTok Shop: 8 were available as of 10 minutes ago.", "Malay register"],
+        "agent_errors": [], "escalations": 0
+      }
+    }
+  ]
+}
