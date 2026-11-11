@@ -378,7 +378,7 @@ async def test_tiktok_only_item_checked_live_and_copy_updated(
         result = await stock_answer(pool, live, make_ctx(pool, client), "mug-blk-m")
     (fact,) = result.facts
     assert fact.id == "tiktok_stock"
-    assert fact.text == "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop."
+    assert fact.text == "Synthetic mug (Black / M): 8 available on our TikTok Shop."
     assert [kind for kind, _, _ in tiktok.requests] == ["shops", "product_detail"]
     rows = await fetch(
         migrated_dsn,
@@ -473,8 +473,7 @@ async def test_live_failure_with_fresh_copy_and_with_stale_copy(
     with capture_logs() as logs:
         result = await stock_answer(pool, live, make_ctx(pool, client), "FRESH-1")
         assert result.facts[0].text == (
-            "Fresh mug (Black / M), MYR 19.90 on our TikTok Shop: "
-            "8 were available as of 2 hours ago."
+            "Fresh mug (Black / M) on our TikTok Shop: 8 were available as of 2 hours ago."
         )
         result = await stock_answer(pool, live, make_ctx(pool, client), "STALE-1")
         assert (
@@ -691,7 +690,7 @@ async def test_a_copy_under_a_minute_old_is_not_read_live(
     live = LiveReadAccess(load_app=any_app_loader(pool), decrypt=decrypt)
     result = await stock_answer(pool, live, make_ctx(pool, client), "MUG-BLK-M")
     assert result.facts[0].text == (
-        "Synthetic mug (Black / M), MYR 19.90 on our TikTok Shop: "
+        "Synthetic mug (Black / M) on our TikTok Shop: "
         "10 were available as of less than a minute ago."
     )
     assert tiktok.requests == []

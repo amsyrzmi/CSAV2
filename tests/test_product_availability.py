@@ -136,7 +136,7 @@ async def test_a_product_only_on_tiktok_is_answered_from_tiktok(
         pool, make_ctx(pool, client), "mug-blk-m", capability=on, live=live_access(pool)
     )
     assert pairs(result) == [
-        ("tiktok_stock", "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop.")
+        ("tiktok_stock", "Synthetic mug (Black / M): 8 available on our TikTok Shop.")
     ]
     assert [kind for kind, _, _ in tiktok.requests] == ["shops", "product_detail"]
 
@@ -157,7 +157,7 @@ async def test_a_product_in_both_shows_both_numbers_with_their_sources(
     )
     assert pairs(result) == [
         ("shop_product_0", "Synthetic mug (MUG-BLK-M): MYR 9.50, 5 available in our shop."),
-        ("tiktok_stock", "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop."),
+        ("tiktok_stock", "Synthetic mug (Black / M): 8 available on our TikTok Shop."),
     ]
 
 
@@ -211,8 +211,7 @@ async def test_out_of_stock_in_our_shop_says_out_of_stock(
     [
         (
             timedelta(hours=2, minutes=1),
-            "Synthetic mug (Black / M), MYR 19.90 on our TikTok Shop: "
-            "10 were available as of 2 hours ago.",
+            "Synthetic mug (Black / M) on our TikTok Shop: 10 were available as of 2 hours ago.",
         ),
         (
             timedelta(hours=7),

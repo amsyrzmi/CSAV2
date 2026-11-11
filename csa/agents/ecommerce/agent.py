@@ -29,7 +29,6 @@ from csa.agents.ecommerce.models import (
     OrderStatusFact,
     StockLookup,
 )
-from csa.agents.facts import money
 from csa.contracts.facts import (
     AgentError,
     AgentResult,
@@ -181,7 +180,9 @@ def tiktok_stock_fact(lookup: StockLookup, now: datetime) -> Fact:
 
     Fail closed: a listing that is not selling, or a SKU that is gone, is never described as
     available. A stored copy younger than ``COPY_QUOTABLE_FOR`` is quoted with its age when the
-    live read failed; an older one only says staff will confirm.
+    live read failed; an older one only says staff will confirm. Never a price: TikTok's search
+    price is pre-tax and the detail read is unverified, so the customer hears only our own price
+    (owner decision, 2026-11-11).
     """
     if lookup.outcome == "choices":
         return Fact(
@@ -192,13 +193,12 @@ def tiktok_stock_fact(lookup: StockLookup, now: datetime) -> Fact:
     if stock is None or sku is None or not stock.sellable:
         return Fact(id=STOCK_NOT_FOUND_FACT, text=STOCK_NOT_FOUND_TEXT, source=ECOMMERCE_SOURCE)
     label = _label(stock.product_name, sku.variant_name)
-    price = f", {money(sku.price, sku.currency)}" if sku.price is not None else ""
     qty = sku.stock_qty
     if stock.checked_live and qty is not None:
-        text = f"{label}{price}: {qty} available on our TikTok Shop."
+        text = f"{label}: {qty} available on our TikTok Shop."
     elif qty is not None and now - stock.as_of < COPY_QUOTABLE_FOR:
         age = _age(now - stock.as_of)
-        text = f"{label}{price} on our TikTok Shop: {qty} were available as of {age} ago."
+        text = f"{label} on our TikTok Shop: {qty} were available as of {age} ago."
     else:
         text = f"{label} on our TikTok Shop: {STOCK_UNCHECKED_TEXT}"
     return Fact(id=STOCK_FACT, text=text, source=ECOMMERCE_SOURCE, as_of=stock.as_of)

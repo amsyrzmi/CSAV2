@@ -57,7 +57,7 @@ from tests.test_coordinator import make_envelope
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 LISTING = UUID("00000000-0000-4000-8000-000000000019")
 LUHN_ORDER = "576461413038785750"  # passes the card check, so redact() masks it
-COPY_HEAD = "Synthetic mug (Black / M), MYR 19.90 on our TikTok Shop: "
+COPY_HEAD = "Synthetic mug (Black / M) on our TikTok Shop: "
 
 
 def _sample_creds() -> TikTokShopCredentials:
@@ -299,10 +299,10 @@ def stock(
     )
 
 
-def test_live_stock_reply_has_count_price_and_shop() -> None:
+def test_live_stock_reply_has_count_and_shop_and_no_price() -> None:
     only = tiktok_stock_fact(stock(8, live=True), NOW)
     assert only.id == "tiktok_stock"
-    assert only.text == "Synthetic mug (Black / M), MYR 19.90: 8 available on our TikTok Shop."
+    assert only.text == "Synthetic mug (Black / M): 8 available on our TikTok Shop."
     assert only.as_of == NOW
 
 
@@ -335,6 +335,19 @@ def test_copy_reply_by_age_when_the_live_check_failed(age: timedelta, text: str)
     fact = tiktok_stock_fact(stock(8, live=False, as_of=NOW - age), NOW)
     assert fact.text == text
     assert STOCK_UNCHECKED_TEXT == "I can't check right now. Our staff will confirm."
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        stock(8, live=True),
+        stock(8, live=False, as_of=NOW - timedelta(minutes=40)),
+        stock(8, live=False, as_of=NOW - timedelta(days=3)),
+    ],
+)
+def test_a_tiktok_fact_never_carries_a_price(lookup: StockLookup) -> None:
+    text = tiktok_stock_fact(lookup, NOW).text
+    assert "19.90" not in text and "MYR" not in text
 
 
 def test_choices_reply_lists_the_matches() -> None:
