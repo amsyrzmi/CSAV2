@@ -1,10 +1,12 @@
--- One customer conversation with its contact fields. Named parameters: client_id, conversation_id.
+-- One customer conversation with its contact fields and the newest staff note an escalation
+-- left on it (detail only: the list and the action receipts never read it). Named parameters: client_id, conversation_id.
 SELECT c.id, c.channel, c.status, c.owned_by, c.ai_muted_until, c.inbox_version,
        c.opened_at,
        (c.owned_by = 'human_support' AND
         (c.ai_muted_until IS NULL OR c.ai_muted_until > now())) IS TRUE AS human_muted,
        k.full_name, k.phone, k.telegram_username, k.contact_kind AS kind, kn.known,
-       lm.body AS last_body, lm.created_at AS last_at, pa.n AS pending_approvals
+       lm.body AS last_body, lm.created_at AS last_at, pa.n AS pending_approvals,
+       hn.note AS handoff_note, hn.created_at AS handoff_note_at
 FROM public.conversations c
 JOIN public.contacts k ON k.client_id = c.client_id AND k.id = c.contact_id
 LEFT JOIN LATERAL (
@@ -13,6 +15,12 @@ LEFT JOIN LATERAL (
     WHERE m.client_id = c.client_id AND m.conversation_id = c.id
     ORDER BY m.created_at DESC, m.id DESC LIMIT 1
 ) lm ON true
+LEFT JOIN LATERAL (
+    SELECT e.note, e.created_at
+    FROM public.escalations e
+    WHERE e.client_id = c.client_id AND e.conversation_id = c.id AND e.note IS NOT NULL
+    ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+) hn ON true
 CROSS JOIN LATERAL (
     SELECT (EXISTS (SELECT 1 FROM public.orders o
                     WHERE o.client_id = c.client_id AND o.contact_id = c.contact_id)

@@ -165,6 +165,8 @@ class Inbox:
     reply_delay: float = 0.0
     # Off by default: the older tests type into the search box without caring about the rows.
     filter_search: bool = False
+    # The assistant's handoff note per conversation; only the single-conversation read has it.
+    notes: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -181,7 +183,9 @@ class Inbox:
             return None
         # Only the single-conversation read carries the full number.
         phone = FULL_PHONE if identifier == UNNAMED else None
-        return {**row, "contact": {**row["contact"], "phone": phone}}
+        note = self.notes.get(identifier)
+        extra = {"handoff_note": note} if note else {}
+        return {**row, "contact": {**row["contact"], "phone": phone}, **extra}
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
@@ -1202,3 +1206,27 @@ async def test_queue_reply_points_at_its_question_only_while_open_and_a_release_
         await expect(confirm).to_have_count(0, timeout=15_000)
         await expect(page.get_by_label("Human reply", exact=True)).to_have_count(0)
         assert state.replies == []
+
+
+async def test_the_thread_shows_the_assistants_note(shell: Shell) -> None:
+    # Model text shaped by a customer's message: it must come out as inert text, never markup.
+    hostile = '<img src=x onerror="window.__noted=1"> [open](https://evil.example) **bold**'
+    state = Inbox(notes={NAMED: {"text": hostile, "at": ago(3)}})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, UNNAMED)
+        await expect(page.get_by_test_id("inbox-handoff-note")).to_have_count(0)
+        await open_thread(page, NAMED)
+        note = page.get_by_test_id("inbox-handoff-note")
+        await expect(note).to_be_visible(timeout=WAIT)
+        text = await note.inner_text()
+        assert text.startswith("Note from the assistant (")
+        assert text.endswith(f"): {hostile}")
+        # One line under "who is replying", inside the thread header.
+        header = page.get_by_test_id("inbox-thread").locator("header")
+        assert await header.get_by_test_id("inbox-handoff-note").count() == 1
+        # Text only: no element, link or image was made from the note.
+        assert await note.locator("*").count() == 0
+        assert await page.evaluate("window.__noted === undefined")
+        # The list rows never show it.
+        await expect(row(page, NAMED)).not_to_contain_text("Note from the assistant")

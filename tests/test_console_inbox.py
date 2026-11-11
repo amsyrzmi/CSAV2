@@ -623,7 +623,15 @@ async def test_delivery_lock_waits_before_takeover_and_preserves_human_reply(
         await owner.close()
 
 
-PERSONAL_KEYS = {"phone", "phone_masked", "display_name", "telegram_username", "preview", "contact"}
+PERSONAL_KEYS = {
+    "phone",
+    "phone_masked",
+    "display_name",
+    "telegram_username",
+    "preview",
+    "contact",
+    "handoff_note",
+}
 
 
 def personal_values(node: Any) -> list[str]:
@@ -705,10 +713,79 @@ async def test_list_returns_contact_last_message_and_pending_count(
     assert stored["conversation"]["last_message"] is None
     assert stored["conversation"]["pending_approvals"] == 0
     assert personal_values(stored) == []
+    assert result.get("handoff_note") is None
+    assert stored["conversation"].get("handoff_note") is None
     # Distinctive literals only: ids and timestamps in the JSON can contain any digit string.
     text = json.dumps(stored)
     for personal in ("Nur Aisyah", "EMAIL", "synthetic@example.test"):
         assert personal not in text
+
+
+async def escalate(
+    w: SessionWorld,
+    conversation: str,
+    note: str | None,
+    *,
+    at: datetime,
+    tenant: int = 0,
+) -> None:
+    """One escalation row (the trace id is unique per company), optionally with a staff note."""
+    await w.q(
+        "INSERT INTO escalations(client_id,trace_id,conversation_id,reason,note,created_at) "
+        "VALUES (%s,%s,%s,'unresolved_turns',%s,%s)",
+        UUID(w.tenants[tenant]),
+        uuid4(),
+        UUID(conversation),
+        note,
+        at,
+    )
+
+
+async def test_detail_shows_the_newest_note_and_the_list_never_does(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    _, conversation = await seed(w)
+    base = datetime.now(UTC).replace(microsecond=0)
+    await escalate(w, conversation, "Older note.", at=base - timedelta(hours=2))
+    await escalate(w, conversation, "Newest note.", at=base - timedelta(hours=1))
+    # A newer escalation without a note must not hide the note, or blank the line.
+    await escalate(w, conversation, None, at=base)
+    single = await w.admin.get(path(w, f"/conversations/{conversation}"))
+    assert single.status_code == 200
+    note = single.json()["handoff_note"]
+    assert note["text"] == "Newest note."
+    assert datetime.fromisoformat(note["at"]) == base - timedelta(hours=1)
+    [item] = (await listing(w))["items"]
+    assert "handoff_note" not in item or item["handoff_note"] is None
+    assert "Newest note." not in json.dumps(await listing(w))
+    # A mutation result and its stored receipt never carry the note.
+    taken = await takeover(w, conversation)
+    assert taken.status_code == 200
+    assert taken.json()["conversation"].get("handoff_note") is None
+    assert "Newest note." not in taken.text
+    [receipt] = await w.q(
+        "SELECT result FROM console_inbox_actions WHERE client_id=%s", w.tenants[0]
+    )
+    assert "Newest note." not in json.dumps(receipt["result"])
+
+
+async def test_a_note_of_another_company_or_conversation_never_shows(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    _, mine = await seed(w)
+    _, other_chat = await seed(w)
+    _, foreign_chat = await seed(w, tenant=1)
+    now = datetime.now(UTC)
+    await escalate(w, other_chat, "Another chat's note.", at=now)
+    await escalate(w, foreign_chat, "Another company's note.", at=now, tenant=1)
+    # A foreign row that points at this conversation id (a stray or forged id) must not show.
+    await escalate(w, mine, "Forged cross-company note.", at=now, tenant=1)
+    single = await w.admin.get(path(w, f"/conversations/{mine}"))
+    assert single.status_code == 200
+    assert single.json().get("handoff_note") is None
+    assert "note." not in single.text
 
 
 async def test_known_versus_new_sender(sessions: SessionWorld) -> None:

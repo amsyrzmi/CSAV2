@@ -44,6 +44,13 @@ class InboxLastMessage(Contract):
     at: datetime
 
 
+class InboxHandoffNote(Contract):
+    """The assistant's note to staff, written when it handed the chat over (detail read only)."""
+
+    text: str
+    at: datetime
+
+
 class InboxConversation(Contract):
     id: UUID
     channel: Literal["telegram", "whatsapp"]
@@ -56,6 +63,7 @@ class InboxConversation(Contract):
     contact: InboxContact | None = None
     last_message: InboxLastMessage | None = None
     pending_approvals: int = 0
+    handoff_note: InboxHandoffNote | None = None
 
 
 class InboxConversationPage(Contract):
@@ -172,6 +180,11 @@ def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> I
         if row["last_at"] is not None
         else None
     )
+    note = (
+        InboxHandoffNote(text=row["handoff_note"], at=row["handoff_note_at"])
+        if row.get("handoff_note") is not None
+        else None
+    )
     return InboxConversation(
         id=row["id"],
         channel=row["channel"],
@@ -184,6 +197,7 @@ def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> I
         contact=contact,
         last_message=last,
         pending_approvals=row["pending_approvals"],
+        handoff_note=note,
     )
 
 
