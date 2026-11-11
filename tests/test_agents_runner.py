@@ -109,6 +109,15 @@ async def test_web_sandbox_allows_only_knowledge_and_product_reads(name: str, ac
     assert result.ok and agent.calls == 1
 
 
+async def test_the_sandbox_allows_product_availability() -> None:
+    agent = _Agent(["ok"])
+    agent.name = "order_agent"
+    result = await _runner(agent).execute(
+        _task("order_agent", n=1, action="product_availability"), replace(_ctx(), channel="web")
+    )
+    assert result.ok and agent.calls == 1
+
+
 @pytest.mark.parametrize("action", ["create_draft", "status", ["search_products"], None])
 async def test_web_denial_is_recorded_without_agent_execution(action: object) -> None:
     agent = _Agent(["ok"])

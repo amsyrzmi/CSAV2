@@ -66,7 +66,6 @@ from csa.decide.jev import JevProvider
 from csa.decide.llm import ClientBrand, LLMProvider, _memory_messages
 from csa.decide.providers import DecideMode, DecisionRecord, classify_with
 from csa.graph.policy.gate import Policy, evaluate
-from csa.graph.policy.plan_rules import tiktok_stock_fallback
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from csa.staff.ownership import automation_allowed, replies_off
@@ -114,12 +113,14 @@ _SANDBOX_ACCOUNT_INTENTS = frozenset(
 
 
 CAPABILITIES = {
-    "order_agent": "Order status, product search and details, creating order drafts",
+    "order_agent": (
+        "Order status, product availability in our shop and on our TikTok Shop, product "
+        "details, creating order drafts"
+    ),
     "ticket_agent": "Support tickets: create, look up, list, add a note, cancel, reopen",
     "ecommerce_agent": (
         "Read-only TikTok Shop answers: the status and tracking of an order by its TikTok "
-        "order number, and the stock of items found only on our TikTok Shop (checked after "
-        "order_agent finds no match in our own catalogue)"
+        "order number"
     ),
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
     "invoice_agent": "Invoice lookup, status check, and signed download links",
@@ -143,10 +144,6 @@ _PLANNABLE: dict[str, Any] = {
     "booking_agent": BookingAgent,
     "subscription_agent": SubscriptionAgent,
 }
-# Spec 6.7: the client's own catalogue answers stock first. The TikTok stock check runs only
-# as the deterministic fallback in ``next_step`` (plan_rules.tiktok_stock_fallback), so the
-# model's look-ahead may not propose it.
-_NOT_FOR_THE_MODEL_LOOP = frozenset({("ecommerce_agent", "stock_check")})
 
 
 def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
@@ -208,11 +205,7 @@ def build_llm_provider(
         capabilities=CAPABILITIES,
         inputs={name: agent.Input for name, agent in _PLANNABLE.items()},
         read_actions={
-            name: [
-                action
-                for action, risk in agent.ACTION_RISK.items()
-                if risk == "read" and (name, action) not in _NOT_FOR_THE_MODEL_LOOP
-            ]
+            name: [action for action, risk in agent.ACTION_RISK.items() if risk == "read"]
             for name, agent in _PLANNABLE.items()
         },
         compose_fallback=compose_fallback,
@@ -272,7 +265,12 @@ class PostgresTurnDependencies:
         self._runner = SpokeRunner(
             {
                 "escalation_agent": EscalationAgent(),
-                "order_agent": OrderAgent(),
+                "order_agent": OrderAgent(
+                    marketplace,
+                    marketplace_on=lambda client_id: self._capabilities.allows_execution(
+                        client_id, "ecommerce_agent"
+                    ),
+                ),
                 "ticket_agent": TicketAgent(),
                 "order_approval": OrderApprovalAgent(),
                 "ecommerce_agent": EcommerceAgent(marketplace),
@@ -469,14 +467,6 @@ class PostgresTurnDependencies:
         policy = await self._policy(state.envelope.client_id)
         if state.step >= policy.agent_loop_max_steps:
             return []
-        # Local catalogue first (spec 6.7): only a stock question our own products could not
-        # answer goes to the TikTok copy, and only for a company with the E-commerce service.
-        # The web sandbox answers product questions from the catalogue only.
-        fallback = [] if state.envelope.channel == Channel.WEB else tiktok_stock_fallback(state)
-        if fallback and await self._capabilities.allows_execution(
-            state.envelope.client_id, "ecommerce_agent"
-        ):
-            return fallback
         return await self._llm.next_step(state)
 
     def task_risk(self, task: Task) -> RiskClass | None:

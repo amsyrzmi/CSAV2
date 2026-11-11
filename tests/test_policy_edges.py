@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import pytest
-from csa.contracts.facts import AgentError, AgentResult, Fact
+from csa.agents.ecommerce.models import EcommerceInput
+from csa.agents.orders.agent import OrderAgent, OrderInput
+from csa.contracts.facts import AgentError, AgentResult
 from csa.contracts.plan import Intent, Plan, Task
 from csa.contracts.state import Context, TurnState
 from csa.graph.policy.handoff import decide_handoff
 from csa.graph.policy.plan_rules import (
     resolve_order_status,
-    tiktok_stock_fallback,
     validate_plan,
 )
 from csa.graph.policy.routing import route_turn
+from pydantic import ValidationError
 
 from tests.test_coordinator import make_envelope, make_result, make_signals
 
@@ -151,7 +153,7 @@ def test_a_hard_failure_stays_an_agent_failure() -> None:
     assert handoff.priority == "high"
 
 
-# -- TikTok routing (spec 6.7): order numbers to ecommerce_agent, stock local first -----------
+# -- TikTok routing (spec 6.7): order numbers to ecommerce_agent, stock by product_availability --
 
 
 def _plan_of(*tasks: Task) -> Plan:
@@ -164,91 +166,26 @@ def _plan_of(*tasks: Task) -> Plan:
     )
 
 
-def _stock_check(query: str, task_id: str = "t0-ecommerce_agent") -> Task:
-    return Task(
-        task_id=task_id, agent="ecommerce_agent", input={"action": "stock_check", "query": query}
-    )
-
-
-def _search(query: str, task_id: str = "t0-order_agent") -> Task:
-    return Task(
-        task_id=task_id, agent="order_agent", input={"action": "search_products", "query": query}
-    )
-
-
-AGENTS = frozenset({"order_agent", "ecommerce_agent"})
-
-
-def test_a_planned_tiktok_stock_check_becomes_a_local_search() -> None:
-    plan, errors = validate_plan(
-        _plan_of(_stock_check("mug")), known_agents=AGENTS, clarify_count=0
-    )
-    assert not errors
-    assert [(t.agent, t.input) for t in plan.tasks] == [
-        ("order_agent", {"action": "search_products", "query": "mug"})
-    ]
-    # Planned next to the same local search, it is simply dropped.
-    plan, _ = validate_plan(
-        _plan_of(_search("mug"), _stock_check("mug", "t1-ecommerce_agent")),
-        known_agents=AGENTS,
-        clarify_count=0,
-    )
-    assert [(t.task_id, t.agent) for t in plan.tasks] == [("t0-order_agent", "order_agent")]
-    # An order-number lookup is left alone.
+def test_the_planner_cannot_ask_for_a_tiktok_stock_check() -> None:
+    with pytest.raises(ValidationError):
+        EcommerceInput.model_validate({"action": "stock_check", "query": "mug"})
+    asked = OrderInput.model_validate({"action": "product_availability", "query": "mug"})
+    assert asked.query == "mug"
+    assert OrderAgent().risk(asked) == "read"
+    with pytest.raises(ValidationError):
+        OrderInput.model_validate({"action": "product_availability"})
+    # An order-number lookup is left alone by plan validation.
     lookup = Task(
         task_id="t0",
         agent="ecommerce_agent",
         input={"action": "order_status", "order_number": "576461413038785752"},
     )
-    plan, _ = validate_plan(_plan_of(lookup), known_agents=AGENTS, clarify_count=0)
-    assert plan.tasks == [lookup]
-
-
-def _no_products(task: Task) -> AgentResult:
-    result = make_result(task)
-    result.data.facts = [
-        Fact(id="no_products", text="No matching products were found.", source="order_agent")
-    ]
-    return result
-
-
-def _not_found(task: Task) -> AgentResult:
-    result = make_result(task, error=True)
-    result.error = AgentError(code="product_not_found", category="not_found", message="x")
-    return result
-
-
-def _state(tasks: list[Task], results: list[AgentResult], loop: list[Task] | None = None):
-    return TurnState(
-        envelope=make_envelope("is it in stock?"),
-        plan=_plan_of(*tasks),
-        results=results,
-        loop_tasks=loop or [],
+    plan, errors = validate_plan(
+        _plan_of(lookup),
+        known_agents=frozenset({"order_agent", "ecommerce_agent"}),
+        clarify_count=0,
     )
-
-
-def test_tiktok_stock_is_asked_only_after_the_local_catalogue_found_nothing() -> None:
-    search = _search("  mug  ")
-    (follow_up,) = tiktok_stock_fallback(_state([search], [_no_products(search)]))
-    assert follow_up.agent == "ecommerce_agent"
-    assert follow_up.input == {"action": "stock_check", "query": "mug"}
-
-    detail = Task(
-        task_id="t1-order_agent",
-        agent="order_agent",
-        input={"action": "product_detail", "sku": "MUG-BLK-M"},
-    )
-    (follow_up,) = tiktok_stock_fallback(_state([detail], [_not_found(detail)]))
-    assert follow_up.input == {"action": "stock_check", "query": "MUG-BLK-M"}
-
-    # A local answer, a failed search and another agent's empty answer stay local.
-    assert tiktok_stock_fallback(_state([search], [make_result(search)])) == []
-    assert tiktok_stock_fallback(_state([search], [make_result(search, error=True)])) == []
-    other = Task(task_id="t2-kb_agent", agent="kb_agent", input={"action": "query", "query": "x"})
-    assert tiktok_stock_fallback(_state([other], [_no_products(other)])) == []
-    # Asked once only.
-    asked = _stock_check("mug", "s1-0-ecommerce_agent")
-    assert tiktok_stock_fallback(_state([search], [_no_products(search)], [asked])) == []
+    assert not errors and plan.tasks == [lookup]
 
 
 @pytest.mark.parametrize(

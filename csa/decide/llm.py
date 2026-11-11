@@ -53,19 +53,19 @@ WHATSAPP_PLANNER_NOTE = (
     "the customer to tap a button; answer in words instead."
 )
 
-# Spec 6.7: TikTok answers are read-only. A TikTok order number goes to ecommerce_agent; stock
-# questions always start in the client's own catalogue (order_agent). The TikTok stock check is
-# never planned by the model: code runs it when the local lookup found nothing
-# (plan_rules.local_stock_first and tiktok_stock_fallback enforce this).
+# Spec 6.7: TikTok answers are read-only. A TikTok order number goes to ecommerce_agent; stock,
+# price and availability questions go to order_agent 'product_availability', which reads our
+# own catalogue and (for a company with the ecommerce_agent service, never on the web sandbox)
+# our TikTok listings together, each fact naming its source.
 MARKETPLACE_PLANNER_RULE = (
     "A question about a TikTok Shop order that gives its TikTok order number (a long number) "
     "uses ecommerce_agent action 'order_status' with that number as order_number (when the "
     "number shows as a placeholder such as [CARD_0] or [PHONE_0], use that placeholder exactly "
     "as order_number); our own "
     "order ids use order_agent. Stock, price or availability questions use order_agent "
-    "'search_products' (or 'product_detail' for a SKU the customer gave); never plan "
-    "ecommerce_agent 'stock_check' yourself, our TikTok Shop is checked automatically when "
-    "our own catalogue has no match."
+    "'product_availability' with the product words as query: it checks our shop and our "
+    "TikTok Shop together. Use 'search_products' or 'product_detail' only to find the SKU "
+    "for an order."
 )
 
 _DATA_RULE = (

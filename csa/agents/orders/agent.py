@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
@@ -14,7 +15,9 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from csa.agents.base import AgentContext, SideEffects
+from csa.agents.ecommerce.agent import MarketplaceReader
 from csa.agents.facts import day, items_text, money
+from csa.agents.orders.availability import availability_facts
 from csa.contracts.facts import (
     AgentError,
     AgentResult,
@@ -45,7 +48,13 @@ class OrderLine(BaseModel):
 class OrderInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal[
-        "status", "search_products", "product_detail", "create_draft", "confirm", "cancel"
+        "status",
+        "search_products",
+        "product_availability",
+        "product_detail",
+        "create_draft",
+        "confirm",
+        "cancel",
     ]
     order_id: str | None = Field(default=None, max_length=64)
     query: str | None = Field(default=None, max_length=100)
@@ -57,6 +66,7 @@ class OrderInput(BaseModel):
     def check_action_fields(self) -> OrderInput:
         needs = {
             "search_products": bool(self.query),
+            "product_availability": bool(self.query),
             "product_detail": bool(self.sku),
             "create_draft": bool(self.items),
             "confirm": self.order_id is not None and self.callback_id is not None,
@@ -76,11 +86,24 @@ class OrderAgent:
     ACTION_RISK: dict[str, RiskClass] = {
         "status": "read",
         "search_products": "read",
+        "product_availability": "read",
         "product_detail": "read",
         "create_draft": "draft",
         "confirm": "commit",
         "cancel": "commit",
     }
+
+    def __init__(
+        self,
+        marketplace: MarketplaceReader | None = None,
+        *,
+        marketplace_on: Callable[[UUID], Awaitable[bool]] | None = None,
+    ) -> None:
+        # Both are needed to read the TikTok Shop: the reader, and the company's own answer to
+        # "has the ecommerce_agent service been switched on" (the turn passes the capability
+        # registry's). Without either, product_availability answers from our shop alone.
+        self._marketplace = marketplace
+        self._marketplace_on = marketplace_on
 
     def risk(self, inp: BaseModel) -> RiskClass:
         assert isinstance(inp, OrderInput)
@@ -96,6 +119,7 @@ class OrderAgent:
         handler = {
             "status": self._status,
             "search_products": self._search,
+            "product_availability": self._availability,
             "product_detail": self._detail,
             "create_draft": self._create_draft,
             "confirm": self._confirm,
@@ -204,6 +228,31 @@ class OrderAgent:
                 for r in rows
             ],
         )
+
+    async def _availability(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
+        """Our shop's rows and our TikTok Shop listings, as facts that each name their source."""
+        query = (inp.query or "").strip()
+        words = query.replace("%", "").replace("_", "").strip()
+        if not words:
+            # Nothing to look for: never a wildcard that lists the catalogue.
+            return self._ok(ctx, availability_facts([], None, ctx.now()))
+        pattern = f"%{words}%"
+        async with tx(ctx.pool, str(ctx.client_id)) as conn:
+            rows = await db.q.fetch_all(
+                "orders/search_products.sql",
+                (ctx.client_id, pattern, pattern, pattern),
+                conn=conn,
+            )
+        lookup = None
+        # The web sandbox reads the catalogue only; a company without the service is not read.
+        if (
+            self._marketplace is not None
+            and self._marketplace_on is not None
+            and ctx.channel != "web"
+            and await self._marketplace_on(ctx.client_id)
+        ):
+            lookup = await self._marketplace.stock_check(ctx, query)
+        return self._ok(ctx, availability_facts(rows, lookup, ctx.now()))
 
     async def _detail(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:

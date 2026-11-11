@@ -505,7 +505,8 @@ This is common-pattern redaction, not a promise to remove all personal informati
 The fingerprint distinguishes different original text even if redaction would match.
 Same-key changed text returns 409; no client-provided identity becomes authority.
 
-Only `kb_agent.query`, `order_agent.search_products` and `order_agent.product_detail`
+Only `kb_agent.query`, `order_agent.search_products`, `order_agent.product_availability`
+(our own catalogue only: no TikTok Shop read on the web) and `order_agent.product_detail`
 can execute for web turns. The shared spoke runner denies everything else **before
 agent execution**, including order status/customer history, KB administration,
 invoice/payment/marketplace, booking/subscription/ticket, escalation and business writes.

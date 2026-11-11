@@ -327,6 +327,18 @@ async def test_status_search_detail_and_unknown(world: World) -> None:
         world.ctx("sr"),
     )
     assert len(search.data.facts) == 2
+    # Without a marketplace reader the availability read answers from our shop alone.
+    availability = await world.runner.execute(
+        Task(
+            task_id="av",
+            agent="order_agent",
+            input={"action": "product_availability", "query": "Product"},
+        ),
+        world.ctx("av"),
+    )
+    assert availability.ok
+    assert [f.id for f in availability.data.facts] == ["shop_product_0", "shop_product_1"]
+    assert all(f.text.endswith(" in our shop.") for f in availability.data.facts)
     detail = await world.runner.execute(
         Task(task_id="d", agent="order_agent", input={"action": "product_detail", "sku": "ZZ"}),
         world.ctx("pd"),

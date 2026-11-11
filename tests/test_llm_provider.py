@@ -1291,14 +1291,31 @@ async def test_planner_routes_tiktok_numbers_and_offers_no_marketplace_write() -
     ]
     (system,) = systems
     assert MARKETPLACE_PLANNER_RULE in system
-    assert "order_agent 'search_products'" in system
-    assert "never plan ecommerce_agent 'stock_check' yourself" in system
+    assert "order_agent 'product_availability'" in system
+    assert "stock_check" not in system
     schemas = json.loads(system.split("Agent input schemas: ", 1)[1].split(". Agent purposes")[0])
     ecommerce = schemas["ecommerce_agent"]
-    assert sorted(ecommerce["properties"]["action"]["enum"]) == ["order_status", "stock_check"]
+    assert ecommerce["properties"]["action"]["const"] == "order_status"
+    assert "query" not in ecommerce["properties"]
     for write in ("fulfill_order", "sync_inventory", "cancel_order", "approve_refund", "shopee"):
         assert write not in json.dumps(ecommerce)
-    assert "Read-only TikTok Shop" in CAPABILITIES["ecommerce_agent"]
+    assert CAPABILITIES["ecommerce_agent"] == (
+        "Read-only TikTok Shop answers: the status and tracking of an order by its TikTok "
+        "order number"
+    )
+    assert CAPABILITIES["order_agent"] == (
+        "Order status, product availability in our shop and on our TikTok Shop, product "
+        "details, creating order drafts"
+    )
+    assert MARKETPLACE_PLANNER_RULE == (
+        "A question about a TikTok Shop order that gives its TikTok order number (a long "
+        "number) uses ecommerce_agent action 'order_status' with that number as order_number "
+        "(when the number shows as a placeholder such as [CARD_0] or [PHONE_0], use that "
+        "placeholder exactly as order_number); our own order ids use order_agent. Stock, price "
+        "or availability questions use order_agent 'product_availability' with the product "
+        "words as query: it checks our shop and our TikTok Shop together. Use "
+        "'search_products' or 'product_detail' only to find the SKU for an order."
+    )
 
 
 @pytest.mark.parametrize(
@@ -1343,79 +1360,32 @@ async def test_next_step_never_offers_the_tiktok_stock_check_to_the_model() -> N
     assert allowed["ecommerce_agent"] == ["order_status"]
 
 
-async def test_tiktok_stock_fallback_runs_only_with_the_capability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from unittest.mock import AsyncMock
-
-    from csa.contracts.facts import AgentResult, AgentResultData, ResultMeta
-    from csa.graph.policy.gate import Policy
-    from csa.turn.deps import PostgresTurnDependencies
-
-    calls: list[str] = []
+async def test_the_look_ahead_may_propose_product_availability() -> None:
+    step = {
+        "done": False,
+        "tasks": [
+            {"agent": "order_agent", "input": {"action": "product_availability", "query": "mug"}},
+            {"agent": "ecommerce_agent", "input": {"action": "stock_check", "query": "mug"}},
+        ],
+    }
+    seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append("llm")
-        return _ok({"done": True, "tasks": []})(request)
+        seen.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok(step)(request)
 
-    deps = PostgresTurnDependencies(None, _provider(handler))  # type: ignore[arg-type]
-    monkeypatch.setattr(deps, "_policy", AsyncMock(return_value=Policy()))
-    allows = AsyncMock(return_value=True)
-    monkeypatch.setattr(deps._capabilities, "allows_execution", allows)  # noqa: SLF001
-    search = Task(
-        task_id="t0-order_agent",
-        agent="order_agent",
-        input={"action": "search_products", "query": "mug"},
-    )
-    envelope = make_envelope("is the mug in stock?")
-    state = TurnState(
-        envelope=envelope,
-        plan=Plan(
-            tasks=[search],
-            reply_strategy="auto_reply",
-            intent=Intent.ORDER,
-            confidence=1,
-            source="llm",
-        ),
-        results=[
-            AgentResult(
-                ok=True,
-                status="ok",
-                task_id=search.task_id,
-                agent="order_agent",
-                data=AgentResultData(
-                    facts=[
-                        Fact(
-                            id="no_products",
-                            text="No matching products were found.",
-                            source="order_agent",
-                        )
-                    ]
-                ),
-                meta=ResultMeta(trace_id=envelope.trace_id, latency_ms=1),
-            )
-        ],
-    )
-    tasks = await deps.next_step(state)
-    assert [(t.agent, t.input) for t in tasks] == [
-        ("ecommerce_agent", {"action": "stock_check", "query": "mug"})
+    tasks = await _provider(handler).next_step(TurnState(envelope=make_envelope("mug?")))
+    assert [(t.agent, t.input["action"], t.input["query"]) for t in tasks] == [
+        ("order_agent", "product_availability", "mug")
     ]
-    assert calls == []
-    allows.assert_awaited_once_with(envelope.client_id, "ecommerce_agent")
-    # A company without the E-commerce service never gets a TikTok answer.
-    allows.return_value = False
-    assert await deps.next_step(state) == []
-    assert calls == ["llm"]
-    # Nor does the web sandbox, which answers from the catalogue only.
-    allows.return_value = True
-    web = envelope.model_copy(
-        update={
-            "channel": Channel.WEB,
-            "contact": envelope.contact.model_copy(update={"channel": Channel.WEB}),
-        }
+    allowed = json.loads(
+        seen[0]
+        .split("Allowed actions per agent (no others): ", 1)[1]
+        .split(". Agent input schemas")[0]
     )
-    assert await deps.next_step(state.model_copy(update={"envelope": web})) == []
-    assert calls == ["llm", "llm"]
+    assert "product_availability" in allowed["order_agent"]
+    assert not {"create_draft", "confirm", "cancel"} & set(allowed["order_agent"])
+    assert allowed["ecommerce_agent"] == ["order_status"]
 
 
 async def test_the_model_sees_only_the_placeholder_of_a_card_like_order_number() -> None:
@@ -1898,10 +1868,10 @@ _OLD_PLAN_HEAD = (
     "uses ecommerce_agent action 'order_status' with that number as order_number "
     "(when the number shows as a placeholder such as [CARD_0] or [PHONE_0], use "
     "that placeholder exactly as order_number); our own order ids use order_agent. "
-    "Stock, price or availability questions use order_agent 'search_products' (or "
-    "'product_detail' for a SKU the customer gave); never plan ecommerce_agent "
-    "'stock_check' yourself, our TikTok Shop is checked automatically when our own "
-    "catalogue has no match. If a required value is missing, return no tasks and "
+    "Stock, price or availability questions use order_agent 'product_availability' "
+    "with the product words as query: it checks our shop and our TikTok Shop together. "
+    "Use 'search_products' or 'product_detail' only to find the SKU for an order. "
+    "If a required value is missing, return no tasks and "
     'reply_strategy "ask_clarifying". Never use order_agent actions "confirm" or '
     '"cancel" (they need a button). '
 )
