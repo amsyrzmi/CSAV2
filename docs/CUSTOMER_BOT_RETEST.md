@@ -43,6 +43,51 @@ docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --langua
 | Provider-failure holding text | The golden cases only (`fail_safe` expects the localized holding text, and a review error degrades to grounding). Do not break a staging key to test it | In a real outage the customer gets the short holding text in their own language; a handoff reply never fails the turn | golden only |
 | Memory kill switch | Staging test company; the runbook SQL under "Customer bot conversation memory" in [RUNBOOK.md](RUNBOOK.md). In a chat, say your name and a plan you want, then switch memory off, then ask "what did I ask for?" | With memory off the bot does not know the earlier turn and asks again, without an error. Switch it back on (or clear the key): the next message uses the earlier turns again. Read the setting back with the runbook SELECT each time | manual |
 
+## Business answers and the escalation ladder
+
+Run this after the rollout that carries migration 0560 (the customer bot answers subscription and stock
+questions and hands off through a ladder with a staff note). The staging test company needs a contact with
+a subscription (made through the console), a TikTok Shop connection for the stock rows, and Telegram or
+the web chat to write from. Use synthetic customers only. The replay needs the model key and no database:
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --dry-run
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-subscription
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-stock
+```
+
+The replay does not run the ladder, the agents or the inbox; it checks the wording the model gives
+against synthetic facts. The golden cases cover the rest and cannot show the real model's choices.
+
+| Check | Setup | Expected | Kind |
+| --- | --- | --- | --- |
+| Subscription replay read-through | `--conversation ms-subscription` | Exit 0. Read every reply: casual Malay, the plan name, price and renew date exactly as the fact writes them, the cancel request described as passed to staff with nothing changed (never "dah stop"), and the cancel request not mentioned on turn 1 | manual |
+| Stock replay read-through | `--conversation ms-stock` | Exit 0. Read every reply: each number names its source (our shop or TikTok Shop), "out of stock" for the pack with none, no invented stock or price | manual |
+| "plan apa saya?" with one plan | A contact with one active subscription; ask which plan they are on and when it renews | The plan, price and interval, and the renew date, from the subscription row | manual |
+| The same with two plans | A contact with two active subscriptions | One sentence naming both plans and asking which one; no date or price guessed | manual |
+| The same with none | A contact with no subscription | "I can't find a subscription linked to this chat." (or its Malay), no plan name | manual |
+| The same with a plan ending at period end | An active subscription set to cancel at period end | "It ends on <date> and will not renew", never "renews" | manual |
+| "nak cancel plan" | A contact with one active plan; ask to cancel | The reply says the request was passed to staff and nothing has changed; the request appears in the console under Subscriptions as waiting for a decision; the subscription itself is unchanged | manual |
+| Cancel with two plans | A contact with two plans; "cancel my plan", then name one of them | The first message prepares nothing and asks which; the second prepares exactly one request, on the plan named | manual |
+| Stock for a product in both | A product in our shop and as a TikTok Shop listing | Both numbers, each named by source. Known: the two prices can differ (ours, TikTok's pre-tax); the owner decides whether to keep that | manual |
+| Stock for a TikTok-only product | A listing that is not in the shop catalogue | The answer comes from TikTok and says so; an unpublished or deactivated listing is never called available | manual |
+| Stock with TikTok switched off | Switch the TikTok Shop (Marketplaces) service off for the company, then ask about a shop product and a TikTok-only product | The shop product is answered from the shop; the TikTok-only one gets "I couldn't find that item in our shop."; the model does not mention TikTok | manual |
+| Three vague messages, then a fourth | Write a vague message ("tolong"), a second one that adds nothing, a third, then a fourth | The first two get a clarifying question each, none repeated; the third gets a partial answer with one targeted question; the fourth hands off. In the inbox thread the line "Note from the assistant (...)" is there, in English, one or two sentences, with no figure the customer never wrote; the customer never sees it | manual |
+| Asking for a person on the second vague message | "nak cakap dengan orang" after one vague message | Handoff at once with the "asked for a person" reply (reason `human_requested`); the ladder does not run | manual |
+| A question with no fact ("how do I pay") | A company whose knowledge base has no payment answer; ask how to pay, then say "ya" or "boleh" to the offer | The bot says it does not have that information and offers to pass it to a team member; a gap row with a short topic appears in `kb_gaps` (read it with the runbook SELECT); "ya" hands off, and the thread note names the topic | manual |
+| "ok" after a normal answer must not hand off | After a reply that did not offer a handoff (a plan answer, a stock answer), send a plain "ok" and "ya" | The bot closes politely or asks if there is more; no handoff, no staff alert, no note | manual |
+| Memory switched off | The memory kill switch (see [RUNBOOK.md](RUNBOOK.md)), then three vague messages and a fourth | The ladder still hands off on the fourth message | manual |
+| Another contact's subscription id | Golden only (`cs_sub_other_contacts_id_finds_nothing`): another contact's id typed into the message | The no-subscription sentence, no other plan name, no request row. Do not try it with real ids | golden only |
+| An unsellable listing | Golden only (`cs_stock_tiktok_only_*` and the availability tests): a listing that is not on sale | Never described as available | golden only |
+
+Malay calibration of the new copy. The new answers use the casual register of the PR A examples, and the
+Malay lines of the new cases ("kat", "nak", "tu", "bagitahu") are the builder's own wording. After the
+two replay conversations the owner (1) lists the phrases that sound wrong or stiff in the plan, renew,
+stock and handoff-offer replies, and (2) approves or rewrites the exact copy: the subscription and product
+facts, the fixed staff notes and the inbox line. A change to wording edits only the text in
+`csa/agents/staged/subscription_facts.py`, `csa/agents/orders/availability.py`, `csa/turn/texts.py` or the
+Malay examples, then re-runs `tests/test_golden.py` and `tests/test_llm_provider.py` in full.
+
 ## Calibration
 
 The Malay register (a glossary and 12 examples in `_MS_GLOSSARY` and `_MS_EXAMPLES`, in

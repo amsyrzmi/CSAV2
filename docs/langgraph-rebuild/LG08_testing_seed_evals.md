@@ -118,7 +118,7 @@ isolated database before writing. Never point these commands at production.
 | Flow | greeting/thanks/goodbye | no agent, no planner LLM |
 | Flow | empty message / sticker / unsupported attachment | clarify or review |
 | Flow | voice message ok / transcription failure | normal / escalate |
-| Flow | clarify twice | second time escalates |
+| Flow | vague messages | two clarifying questions, then a partial answer with one targeted question, then a handoff with reason `unresolved_turns` and a staff note; a request for a person hands off at once |
 | Flow | 3 tasks in one message / unknown agent / agent returns bad shape | parallel / escalate / `AGENT_BAD_RESULT` handled |
 | Flow | angry customer | handoff + high priority; turn completes (n8n bug #1) |
 | Resilience | Jev down / LLM timeout / both | cascade / deterministic fallback; never silence |
@@ -143,7 +143,7 @@ isolated database before writing. Never point these commands at production.
 | Escalation | second escalation in same conversation | reuses the open escalation ticket |
 | Context | customer with a draft and a cancelled order asks "where is my order" | drafts/cancelled not listed as orders (bug #20) |
 | Context | outbound reply containing the customer's own email, then next turn | model context shows placeholder, not raw email (bug #21) |
-| Context | 3 clarifying turns in a row | second `ask_clarifying` escalates (bug #18) |
+| Context | 3 clarifying turns in a row | third unresolved turn gets a partial answer, the fourth hands off (bug #18; ladder) |
 | Language | "Can you take this to the manager" | English (not Malay) |
 | Language | Thai, Hindi, Indonesian | `other`/unsupported path, escalation fact |
 | Language | "ok", "thanks" after a Malay conversation | stays Malay (contact locale prior) |
