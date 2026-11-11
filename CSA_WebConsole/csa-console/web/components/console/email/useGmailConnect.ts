@@ -5,7 +5,7 @@ import { ApiError } from "@/lib/api";
 import type { emailClient } from "@/lib/email-api";
 import { emailErrorSentence } from "@/lib/email-recipients";
 
-/** What Disconnect asks before it acts, on the Email page and on the Connections tab. */
+/** What Disconnect asks before it acts, on the Connections tab. */
 export const GMAIL_DISCONNECT_QUESTION =
   "Disconnect Gmail? Emails already loaded stay readable. Connect Gmail again to sync or send.";
 
@@ -18,8 +18,8 @@ export function errorFor(reason: unknown): string {
 }
 
 /**
- * Connect Gmail and Disconnect for the signed-in member's own mailbox, shared by the Connections tab
- * and the Email page. Connect ends by leaving for Google. After a disconnect `reload` reads what the
+ * Connect Gmail and Disconnect for the signed-in member's own mailbox, for the Connections tab.
+ * Connect ends by leaving for Google. After a disconnect `reload` reads what the
  * caller shows again, and only then is the success sentence set. One request runs at a time.
  */
 export function useGmailConnect(client: ReturnType<typeof emailClient>, reload: () => Promise<void>) {

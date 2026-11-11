@@ -8,8 +8,8 @@ export const DISCONNECT_CONFIRM = "Stop syncing this shop? Orders stay visible f
 export const CONNECT_PATH = "/console/v1/business/stores/tiktok/connect";
 
 /**
- * Connect, Reconnect and Disconnect for a TikTok shop, shared by the Connections tab and the
- * Store connections page. `query` is the tenant query ("client_id=..." for a platform admin,
+ * Connect, Reconnect and Disconnect for a TikTok shop, for the Connections tab (the Store connections
+ * page only links there). `query` is the tenant query ("client_id=..." for a platform admin,
  * "" otherwise); `onChanged` runs after a disconnect so the caller can read the stores again.
  * Connect and Reconnect end by leaving for TikTok's own page, and only through `navigate`,
  * which follows nothing but a checked authorize URL.

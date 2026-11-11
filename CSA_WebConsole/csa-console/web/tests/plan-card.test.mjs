@@ -35,8 +35,8 @@ test("a finished step has no reason; a changed or timed-out one says why, in bot
 });
 
 test("a refusal code with a sentence elsewhere reuses that sentence", () => {
-  assert.equal(plan.stepReason(step("failed", "mailbox_not_connected"), "en"), "Connect your Gmail on the Email assistant tab first.");
-  assert.equal(plan.stepReason(step("failed", "mailbox_not_connected"), "ms"), "Sambungkan Gmail anda di tab Email assistant dahulu.");
+  assert.equal(plan.stepReason(step("failed", "mailbox_not_connected"), "en"), "Connect your Gmail on the Connections tab first.");
+  assert.equal(plan.stepReason(step("failed", "mailbox_not_connected"), "ms"), "Sambungkan Gmail anda di tab Connections dahulu.");
   assert.equal(plan.stepReason(step("failed", "draft_changed"), "en"), "This email changed after you opened it. Review it and send again.");
   assert.equal(plan.stepReason(step("failed", "draft_changed"), "ms"), "E-mel ini telah berubah selepas anda membukanya. Semak dan hantar semula.");
   assert.match(plan.stepReason(step("failed", "package_inactive"), "en"), /not part of your organisation's active service packages/);

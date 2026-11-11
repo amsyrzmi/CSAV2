@@ -932,7 +932,7 @@ async def test_executed_plan_shows_a_badge_per_step(
             await expect(steps.nth(index)).to_have_attribute("data-status", state)
         reasons = [
             None,
-            "Connect your Gmail on the Email assistant tab first.",
+            "Connect your Gmail on the Connections tab first.",
             "It changed since you reviewed it.",
             "It was never started.",
             "This step could not be completed.",

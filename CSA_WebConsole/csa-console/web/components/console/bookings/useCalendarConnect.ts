@@ -7,8 +7,8 @@ export const DISCONNECT_CONFIRM =
   "Stop sending bookings to your Google Calendar? Your Bookings calendar and its events stay in your Google account.";
 
 /**
- * Connect, Reconnect and Disconnect for the signed-in member's own Google Calendar, shared by the
- * Connections tab and the Google Calendar panel. `tenantId` is null for a member (the session names
+ * Connect, Reconnect and Disconnect for the signed-in member's own Google Calendar, for the
+ * Connections tab (the Calendar page only links there). `tenantId` is null for a member (the session names
  * the company). Connect and Reconnect end by leaving for Google; Disconnect asks first and then
  * reads the status again through `calendar.reload`.
  */
