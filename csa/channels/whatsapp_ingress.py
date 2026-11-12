@@ -115,17 +115,7 @@ class WhatsAppIngress:
                 "display_name": event.profile_name or f"+{event.wa_id}",
             }
             await db.q.fetch_one("ingress/lock_whatsapp_contact.sql", params, conn=conn)
-            resolved = await self._resolve(conn, params)
-            try:
-                resolved = await self._verify(conn, client_id, params, resolved)
-            except HTTPException as exc:
-                if exc.detail != "contact_merged":
-                    raise
-                # A link merged the contact after the resolver chose it. The link moved the
-                # identity, so resolving once more finds the survivor.
-                resolved = await self._verify(
-                    conn, client_id, params, await self._resolve(conn, params)
-                )
+            resolved = await self._resolve_and_verify(conn, client_id, params)
             contact_id: UUID = resolved["contact_id"]
             conversation = await db.q.fetch_one(
                 "ingress/insert_conversation.sql",
@@ -219,6 +209,34 @@ class WhatsAppIngress:
                 unsupported_type=event.unsupported_type,
             )
         return IngressReceipt(accepted=True, duplicate=duplicate, trace_id=trace_id)
+
+    async def _resolve_and_verify(
+        self, conn: AsyncConnection[Any], client_id: UUID, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve and verify the sender, once more if a link merged the contact meanwhile.
+
+        Each attempt is a savepoint. A link can merge the contact the resolver chose after the
+        resolver's snapshot (and after its identity insert queued behind the link's row lock), so
+        the identity may sit on the merged shell. The failed attempt is rolled back, identity
+        insert included, and the next one cannot choose the shell: the resolver skips merged
+        contacts. The wa_id advisory lock was taken by the caller, outside the savepoints, and is
+        kept. Locks an attempt took inside its savepoint are released with it, so the retry takes
+        the phone and contact locks afresh, in the order verify_phone and live_contact define.
+        """
+        for attempt in (1, 2):
+            try:
+                async with conn.transaction():
+                    resolved = await self._resolve(conn, params)
+                    return await self._verify(conn, client_id, params, resolved)
+            except HTTPException as exc:
+                if exc.detail != "contact_merged":
+                    raise
+                logger.warning(
+                    "whatsapp_contact_merged_retry", client_id=str(client_id), attempt=attempt
+                )
+        logger.error("whatsapp_contact_merged_twice", client_id=str(client_id))
+        # 503: Meta redelivers the message, and the link has long finished by then.
+        raise IngressError(503, "contact was merged while the message was received; retry")
 
     async def _resolve(self, conn: AsyncConnection[Any], params: dict[str, Any]) -> dict[str, Any]:
         """The contact of the sender; the statement runs a second time if its insert lost a race."""

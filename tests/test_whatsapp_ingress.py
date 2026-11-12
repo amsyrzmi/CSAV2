@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,7 +21,9 @@ from csa.channels.whatsapp_ingress import WhatsAppIngress
 from csa.contacts.linking import link_contacts, verify_phone
 from csa.core.db import build_pool
 from csa.core.tenancy import tx
+from fastapi import HTTPException
 from psycopg_pool import AsyncConnectionPool
+from structlog.testing import capture_logs
 
 from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_console_identity_gateway import application
@@ -1036,3 +1039,70 @@ async def test_a_contact_merged_between_resolve_and_verify_is_resolved_again(
     assert _owner_rows(
         pg_container, "SELECT phone_verified_at IS NOT NULL FROM contacts WHERE id = %s", survivor
     ) == [(True,)]
+
+
+@requires_docker
+async def test_a_link_racing_the_first_message_cannot_strand_the_identity(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    """A link row-locks the phone match before the resolver's identity insert and then commits.
+
+    The resolver chose the match from a snapshot that still saw it as live, and its identity
+    lands on the shell. The attempt is rolled back and made again: the identity, the conversation
+    and the event end on a live contact, and Meta gets a 2xx.
+    """
+    ingress, _, client_id, number, _ = whatsapp_context
+    survivor = _add_contact(
+        pg_container, client_id, days_old=9, phone="+60111111111", full_name="Older"
+    )
+    loser = _add_contact(pg_container, client_id, days_old=1, phone="0123456789", full_name="Newer")
+    link = psycopg.connect(owner_dsn_for(pg_container))
+    try:
+        link.execute("SELECT id FROM contacts WHERE id = ANY(%s) FOR UPDATE", ([survivor, loser],))
+        link.execute("UPDATE contacts SET merged_into = %s WHERE id = %s", (survivor, loser))
+        task = asyncio.create_task(
+            ingress.receive(*signed(_delivery(number, messages=[_text("wamid.R1")])))
+        )
+        await asyncio.sleep(1.5)  # the resolver is now blocked on the identity's key-share check
+        assert not task.done()
+        link.commit()
+    finally:
+        link.close()
+    receipts = await asyncio.wait_for(task, timeout=30)
+    assert len(receipts) == 1 and not receipts[0].duplicate
+    identities = _owner_rows(
+        pg_container,
+        "SELECT i.contact_id, c.merged_into FROM contact_identities AS i "
+        "JOIN contacts AS c ON c.id = i.contact_id "
+        "WHERE i.client_id = %s AND i.channel = 'whatsapp'",
+        client_id,
+    )
+    assert len(identities) == 1 and identities[0][1] is None
+    live = identities[0][0]
+    assert live != loser
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+    ) == [(live,)]
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM ingress_events WHERE client_id = %s", client_id
+    ) == [(live,)]
+
+
+@requires_docker
+async def test_a_contact_merged_on_both_attempts_is_logged_and_retried_by_meta(
+    whatsapp_context: WhatsAppContext, pg_container: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+
+    async def always_merged(*_a: Any, **_k: Any) -> Any:
+        raise HTTPException(409, "contact_merged")
+
+    monkeypatch.setattr(whatsapp_ingress, "verify_phone", always_merged)
+    with capture_logs() as logs, pytest.raises(IngressError) as excinfo:
+        await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.R2")])))
+    assert excinfo.value.status_code == 503  # a status Meta retries
+    assert [e["event"] for e in logs if e["log_level"] == "error"] == [
+        "whatsapp_contact_merged_twice"
+    ]
+    assert _count(pg_container, "conversations", client_id) == 0
+    assert _count(pg_container, "ingress_events", client_id) == 0
