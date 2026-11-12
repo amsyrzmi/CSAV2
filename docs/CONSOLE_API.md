@@ -1,7 +1,7 @@
 # Console API contract (v1)
 
-Current release/domain continuation:
-[handoff and prompt](archive/handoffs/2026-10-19-domain-release-next-session.md).
+Current release state: see [PROGRESS.md](./PROGRESS.md) and
+[deploy/RELEASE.md](../deploy/RELEASE.md).
 M6 remains incomplete; this contract is not public deployment approval. M6A local
 records are not a live provider feed, and the new M6B verifier has no supported
 console callback/runtime registration. Mounted legacy marketplace OAuth routes are
@@ -13,15 +13,14 @@ acceptance; public browser/ingress and staging have not. See
 
 M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
-See the [migration plan](archive/handoffs/2026-10-15-console-source-migration-plan.md) and
-[frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
+See the [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
 Offline M6B TikTok order-page validation is internal adapter groundwork only: it adds no
 console routes or live connection claims. Complete provider response-contract verification,
 tenant/store-bound credential resolution and safe browser projections remain required;
 the normalized internal ecommerce order is not a console response model.
 Official v202309 request paths, pagination placement and detail envelope have since been
 verified/corrected; line-item quantity/price normalization still blocks provider readiness.
-See the [verified scope and remaining response/grant gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
+The verified scope notes lived in the original migration plan, since removed from the repository (see git history).
 
 ## Staff HR contract (source implementation, 2026-10-21)
 
@@ -572,7 +571,7 @@ The user subsequently accepted **functional M4 closeout with a laptop-dev perfor
 exception**, carrying latency work forward. Laptop hardware is reported context, not a
 proven cause. Benchmarks and `<200 ms` remain unchanged; release performance acceptance
 is still required. M5 may begin as a separate staff surface, not expanded sandbox
-authority. See [the closeout and M5 prompt](archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
+authority. The closeout and M5 prompt were removed from the repository (see git history).
 See [current evidence](./PROGRESS.md). Offline tests/build are not live-browser evidence.
 Future replacements still require scoped approval. No public rollout is implied.
 
@@ -1350,7 +1349,7 @@ Local update timestamps are not marketplace-sync evidence. Product local active 
 is not a published listing; stock is not synchronized and is not cross-store authority.
 These pages do not claim live tracking, connection health or import completeness.
 Tickets, invoices/PDFs, preparation and provider-backed operations remain staged in the
-[expanded M6 plan](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+expanded M6 plan (removed from the repository; see git history).
 Implementation is offline; the last approved M5 services have not been replaced.
 
 Order filters match persisted `channel` (`telegram`, `web`, `tiktok_shop`, `shopee`,
@@ -2338,7 +2337,7 @@ tests. Regenerate/review this snapshot with contract changes; automated TypeScri
 from this versioned artifact is the follow-on strategy rather than fetching machine-protected
 runtime OpenAPI during builds. Do not infer authentication from a successful schema build.
 
-## Not built yet (planned, see LG15)
+## Not built yet (planned)
 Wave 2/3 preparation libraries are now available under `csa/agents/staged/` (2026-10-15).
 Booking/subscription customer agents have local reads and unexecuted requests. Staff email,
 web-research and invoice-draft preparation are **not HTTP endpoints**. A future authenticated

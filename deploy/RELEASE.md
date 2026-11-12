@@ -1286,8 +1286,8 @@ image-build fixture with verified OCI imports, leaving all acceptance tests unch
 It verifies the GitHub ZIP digest, file checksums and source/platform/origin metadata
 before loading, and checks the exact imported manifest IDs and revision labels.
 All 22 OCI blob hashes were independently checked before import.
-The initial adapter's config-versus-manifest ID setup error is retained in the
-[handoff](../docs/archive/handoffs/2026-10-19-domain-release-next-session.md), alongside
-exact digests, commands and scope. No application images were rebuilt for this run.
+The initial adapter's config-versus-manifest ID setup error, with the exact digests,
+commands and scope, was recorded in a session handoff since removed from the repository
+(see git history). No application images were rebuilt for this run.
 This closes the exact-artifact runtime gap only; public browser/ingress, live
 providers, workers/uploads and separately approved staging remain unverified.

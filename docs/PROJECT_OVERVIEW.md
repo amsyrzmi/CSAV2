@@ -11,17 +11,16 @@ services are running or deployed.
 | Rules and safe commands | [AGENTS.md](../AGENTS.md), then [README](../README.md) |
 | Words on screen | [Writing guide](./WRITING_GUIDE.md) |
 | Current implementation status and validation | [PROGRESS.md](./PROGRESS.md) |
-| Continue the current bounded task | [Active release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) |
+| Continue the current bounded task | [PROGRESS.md](./PROGRESS.md), then the newest dated plan under `docs/superpowers/` |
 | Full architecture, trust boundaries and limitations | [Architecture reference](./ARCHITECTURE.md) |
 | Runtime request flow | [Architecture summary](./ARCHITECTURE.md) |
 | Console HTTP contract | [CONSOLE_API.md](./CONSOLE_API.md) and [OpenAPI snapshot](./console_openapi.json) |
-| Phase requirements | [LG00–LG15 plans](./langgraph-rebuild/) and the linked milestone plan |
 | Local development operations | [Development runbook](./RUNBOOK.md) |
 | Build-only release and staged deployment gates | [Release contract](../deploy/RELEASE.md) |
 
-Do not load every historical handoff or phase plan as general context. Start
-with the active handoff and read only the plan and tests relevant to the requested
-change. Older handoffs and evaluation reports preserve dated evidence, not current
+Do not load every historical handoff or plan as general context. Start
+with PROGRESS.md and read only the plan and tests relevant to the requested
+change. Older handoffs and plans preserve dated evidence, not current
 service state or authorization.
 
 ## What CSA is
@@ -150,9 +149,7 @@ See [console API](./CONSOLE_API.md#services-and-packages).
 | `deploy/` | Dockerfiles, development/legacy manifests, and inert gated staging/release proposals. |
 | `.github/workflows/` | Hosted CI and build-only artifact workflow; promotion/deployment is disabled. |
 | `.agents/skills/` | Task-specific engineering workflows; load the relevant skill before work. |
-| `docs/langgraph-rebuild/` | LG phase plans: intent, acceptance criteria and staged roadmap. |
 | `docs/handoffs/` | Dated decisions, milestone evidence and continuation records. Read the current one only. |
-| `docs/evals/` | Dated synthetic evaluation/load reports; not live provider guarantees. |
 | `docs/runbooks/` | Operator references; read its status index before using any procedure. |
 
 The former `CSA_WebConsole/Docs/` tree contained a deferred project-management
@@ -167,16 +164,17 @@ Resolve disagreements in this order:
 
 1. Executable source, ordered migrations, tests and generated API schema establish
    what is implemented and its observable contract.
-2. `docs/PROGRESS.md` and the active handoff establish dated validation and
-   current continuation state.
+2. `docs/PROGRESS.md` and the newest dated handoff or plan establish dated
+   validation and current continuation state.
 3. `docs/CONSOLE_API.md`, `deploy/RELEASE.md` and maintained runbooks describe
    supported interface and operator boundaries.
-4. LG phase plans define intended scope and acceptance criteria, not shipped status.
-5. Dated handoffs/evals/reviews preserve historical evidence. Deferred UI/PM specs
+4. Dated plans and specs under `docs/superpowers/` define intended scope and
+   acceptance criteria, not shipped status.
+5. Dated handoffs/reviews preserve historical evidence. Deferred UI/PM specs
    are references only unless a current task explicitly adopts them.
 
-For every implementation slice: read `AGENTS.md`, current progress, the active
-handoff and relevant phase criteria; inspect source and tests; make the smallest
+For every implementation slice: read `AGENTS.md`, current progress, the newest
+handoff and the relevant plan; inspect source and tests; make the smallest
 complete change; run focused isolated checks and repository-required validation;
 record exact outcomes and unmet gates. Keep failures, skips and timing thresholds
 visible. Do not use production data/secrets or persistent dev/production services

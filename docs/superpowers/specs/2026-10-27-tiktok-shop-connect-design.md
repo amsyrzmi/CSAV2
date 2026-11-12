@@ -126,7 +126,7 @@ These would make this a failure even if it technically worked:
 - Lookups across tenants (webhook to tenant) use the same owner-pool or definer pattern as WhatsApp's phone-number routing.
 
 **M6B rules carried forward:**
-These come from the M6B handoffs `docs/archive/handoffs/2026-10-18-m6b-verifier-next-session.md` and the console-source migration plan's M6B sections. Where this design deliberately changes one, it says so (§6.2).
+These come from the M6B handoffs `docs/archive/handoffs/2026-10-18-m6b-verifier-next-session.md` and the console-source migration plan's M6B sections (both since removed from the repo; see git history). Where this design deliberately changes one, it says so (§6.2).
 - **App identity.** The app key and secret come from a trusted registry with an exact app ID, revision and enabled state. The mapping is never inferred from credential `meta`.
 - **Credential fencing.**
   - Credentials are fenced by `credential_generation`.
@@ -519,4 +519,4 @@ Reconnecting the same shop within 30 days resumes, with a catch-up from the curs
 
 - [TikTok Shop authorization overview](https://partner.tiktokshop.com/docv2/page/authorization-overview-202407) (token exchange contract verified in M6B, 18 Oct 2026)
 - [Apideck: TikTok Shop configuration guide](https://developers.apideck.com/apis/ecommerce/tiktok/configuration) (Manage API package names)
-- M6B handoff: `docs/archive/handoffs/2026-10-18-m6b-verifier-next-session.md`
+- M6B handoff: `docs/archive/handoffs/2026-10-18-m6b-verifier-next-session.md` (removed from the repo; see git history)

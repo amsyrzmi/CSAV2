@@ -408,7 +408,7 @@ Caddy, tunnel, DNS, container or secret was changed; the three staging
 services kept running. Public auth/CSRF/logout/tenant acceptance and
 backup/restore remain open.
 Current continuation:
-[topology reconciliation](archive/handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-host-topology-reconciliation-2026-10-23).
+topology reconciliation (removed from the repo; see git history).
 
 Shared-host publishing correction (local proposal, 2026-10-23): #22 merged
 as `a9a212f`; final branch/PR/main CI passed. Approved staging startup left
@@ -417,7 +417,7 @@ HTTP 000). Requested Docker binding existed; actual binding was absent.
 Owner approved a frontend-only normal bridge correction and leaving services
 running privately. No Caddy/public route change or live correction applied.
 Current continuation:
-[host publishing correction](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-frontend-host-publishing-correction-2026-10-23).
+host publishing correction (removed from the repo; see git history).
 
 Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
 the existing host cloudflared service and explicitly approved local preparation
@@ -429,7 +429,7 @@ Database/gateway remain private; normal shared startup excludes dedicated
 connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
 need separate approval. Public-login safeguards remain open.
 Historical continuation:
-[shared hosting preparation](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-shared-tunnel-and-caddy-2026-10-23).
+shared hosting preparation (removed from the repo; see git history).
 Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
 Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
 evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged
@@ -447,7 +447,7 @@ dedicated tunnel or Access application was reported; wildcard/company routes
 remain untouched. Three staging services were last reported stopped, volumes
 retained. No runtime/Compose changes or infrastructure operations in this slice.
 Historical continuation at public-login revision:
-[public-login safeguards and remaining gates](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-public-login-demo-review-2026-10-23).
+public-login safeguards and remaining gates (removed from the repo; see git history).
 Batch remaining local evidence; ask before publication and each infrastructure
 operation. Public routing remains blocked pending safeguard approval.
 
@@ -463,7 +463,7 @@ operation was performed. Runtime steps remain separately approved; batch their
 outcomes into one evidence update. Protected executable CD follows live
 acceptance, not unproven procedure automation.
 Historical continuation at runbook proposal:
-[consolidated ingress readiness](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-consolidated-ingress-readiness-2026-10-23).
+consolidated ingress readiness (removed from the repo; see git history).
 
 Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
 as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
@@ -474,7 +474,7 @@ database with both volumes retained. See the
 This is private readiness, not browser authentication, tenant/public-ingress,
 recovery or end-to-end conversation acceptance.
 Historical continuation at private-readiness completion:
-[dedicated ingress planning](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-readiness-complete-2026-10-23).
+dedicated ingress planning (removed from the repo; see git history).
 No restart, tunnel/token provisioning, hostname, shared connector or Caddy
 change is authorized. Review the next plan before separately approved execution.
 
@@ -490,7 +490,7 @@ Private checks cover gateway readiness, login-page delivery and frontend-to-
 gateway reachability; stop commands retain data. No execution is authorized
 by this procedure, and no services were started during its preparation.
 Historical continuation at proposal time:
-[private startup procedure](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-staging-startup-procedure-2026-10-23).
+private startup procedure (removed from the repo; see git history).
 
 Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
 `a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
@@ -502,7 +502,7 @@ is stopped; both volumes remain. See the
 for results, the failed `stg` shortcut attempts and evidence limitations.
 
 Historical continuation at bootstrap completion:
-[bootstrap complete; private application startup is next](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-staging-bootstrap-complete-2026-10-23).
+bootstrap complete; private application startup is next (removed from the repo; see git history).
 Review a bounded gateway/frontend startup procedure before separately approved
 execution. Do not repeat bootstrap, delete volumes or activate ingress.
 
@@ -576,7 +576,7 @@ call was made. Next gates: workflow PR review/CI/merge, owner-created protected
 `staging-images` environment, then a separately approved dispatch of CI run
 39754225130 before its artifact expires 2026-10-29. See the
 [workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow)
-and [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and active handoff (removed from the repo; see git history).
 
 Staging connector configuration and exact-image mount probes: PR #11 merged as
 `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge CI
@@ -587,7 +587,7 @@ manifest/config digests, source revision, amd64 platform and runtime users were
 verified. Python runs as `1000:1000`; frontend's configured `node` resolves to
 `1000:1000`. Exact artifact identities and limits are in the
 [release evidence](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
-and [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and active handoff (removed from the repo; see git history).
 
 The exact reviewed Python/frontend OCI archives were imported and
 tested with explicit approval using synthetic files and network-disabled
@@ -632,7 +632,7 @@ with no root entrypoint; offline `--network none` probes with a fake token file
 showed `65532:65532` `0400` is readable while UID-1000-owned `0400` is denied.
 No connector, real token, tunnel, DNS, dashboard, Caddy or service change. See
 [RELEASE.md](../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22)
-and the [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and the active handoff (removed from the repo; see git history).
 
 Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
 as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main
@@ -646,7 +646,7 @@ Final focused command covering all golden cases, KB tests and staff-path tests:
 Repository lint/types/import checks passed. The initial four-case run was
 **2 passed / 2 failed** because core-only seeding did not register/enable KB;
 the synthetic fixture now explicitly registers/enables it with the current schema.
-See [LG08 evidence and limits](./langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
+See LG08 evidence and limits (removed from the repo; see git history).
 No live model/TEI/provider requests, delivery worker, persistent database action or
 deployment. Scripted model verdicts prove orchestration/guard behavior, not
 independent model accuracy or multilingual quality. Full hosted CI remains the
@@ -679,7 +679,7 @@ current-grant directory/training guide to the staff workspace and fixed HR deep
 links. HR retains session/grant/resource authority; no employee records, new
 mutations, model calls, workspace-history changes or migrations are added.
 See [HR evidence](./hr/PROGRESS.md#workspace-hr-guidance) and the
-[active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+active handoff (removed from the repo; see git history).
 
 At the user's request, use focused local validation through customer-service,
 subscription and interactive-voice completion, with broader checks for shared
@@ -731,7 +731,7 @@ Workspace A0/A1 merged (2026-10-21): PR #3 merged to `main` as `b3b84c7`
 API, `/workspace` and `/portal/workspace` pages, deterministic page guidance,
 one tenant-scoped order read and migration 0370 (RLS, no FORCE); gateway
 readiness now expects schema 0370. No HR, voice, mutation or provider call.
-Details: [A1 handoff](archive/handoffs/2026-10-21-workspace-a1-implementation.md).
+Details: A1 handoff (removed from the repo; see git history).
 Evidence: local lint passed; local full suite had 1 known load-latency failure
 plus 4 Node-PATH errors; local browser acceptance could not run (host Chromium
 missing `libatk-1.0.so.0`). PR CI run 39607346826 first failed only
@@ -745,7 +745,7 @@ the flaky load assertion with approval. Persistent dev was not migrated.
 Product planning priority change (2026-10-21): the user requested business web
 chat, HR, refined customer service and interactive voice as the first four
 priorities, with Teach-a-task last. The
-[two-developer roadmap](archive/handoffs/2026-10-21-workspace-agents-roadmap.md)
+two-developer roadmap (removed from the repo; see git history)
 records proposed domain grouping, permission/workflow gaps, staged acceptance
 and independent
 workspace / HR continuation prompts (since retired).
@@ -858,7 +858,7 @@ and aggregate CPU was not saturated. Laptop/shared-host variability remains
 plausible, not a proven sole cause. No application/test source or thresholds
 changed. These diagnostics do not supersede the failed load run. Exact scope,
 metrics and next action are in the
-[TCP diagnosis](archive/handoffs/2026-10-19-domain-release-next-session.md#tcp-diagnosis-2026-10-20).
+TCP diagnosis (removed from the repo; see git history).
 
 Focused performance check (2026-10-20, source `39de725`): the single
 `NO_LOCAL_ENV=1 ENV=ci make load-test` run finished **3 passed, 1 failed,
@@ -873,7 +873,7 @@ were disposable Testcontainers; no provider, persistent migration or service
 restart was used. No timing retry, threshold change or full-suite rerun occurred.
 LG15 performance remains open. Next: diagnose TCP latency without treating
 diagnostic reruns as acceptance or assuming host contention. See the
-[latest performance handoff](archive/handoffs/2026-10-19-domain-release-next-session.md#latest-slice-focused-performance-check-2026-10-20).
+latest performance handoff (removed from the repo; see git history).
 
 Documentation audit/release review (2026-10-20): the approved 54-path audit is
 committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e`; the follow-on synthetic
@@ -919,7 +919,7 @@ covers authenticated UI/session behavior, admin switches and persistence,
 read-only controls, tenant-scoped activity/polling, visible refresh failure and
 recovery, same-origin requests, denied browser egress and no page errors. The
 exact command and scope are in the
-[active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20)
+active handoff (removed from the repo; see git history)
 and [frontend README](../CSA_WebConsole/csa-console/web/README.md). The current
 `NO_LOCAL_ENV=1 ENV=ci make lint test` first attempt passed lint but ended with
 **2,546 passed, 136 warnings, 4 setup errors in 2,101.43 s**. Each error was a
@@ -1025,7 +1025,7 @@ Important: hosted Gitleaks scanned **only one commit** in the latest push.
 The initial large candidate scan had failed; the separate offline candidate-range
 scan above now supplies that missing evidence. No merge, publication or deployment.
 
-Latest continuation: [Fourstacks domain/release handoff and next-session prompt](archive/handoffs/2026-10-19-domain-release-next-session.md).
+Latest continuation: Fourstacks domain/release handoff and next-session prompt (removed from the repo; see git history).
 Current development: M6 incomplete; source expects **0360**, while **0300** is the last
 approved recorded persistent-dev schema, not a fresh probe. Latest M6D focused evidence:
 **1,457 inventory tests passed**, one existing Testcontainers warning, **114.59 s**;
@@ -1105,7 +1105,7 @@ contents metadata endpoints returned 403; that is not proof of package visibilit
 No run validates the dirty frontend/package jobs or OCI artifact path. Next gate is
 owner approval to select changes for a clean review branch and confirmation that
 GHCR grants this repo Actions read access. Do not commit/push/trigger/publish/deploy
-without approval. See the [release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+without approval. See the release handoff (removed from the repo; see git history).
 That source-selection approval was subsequently granted: review candidate c2e5376
 contains the approved snapshot (118 files; the earlier 92 status entries included
 directories). The user published the DB image, updated its three active digest
@@ -1122,7 +1122,7 @@ See the [release contract](../deploy/RELEASE.md) for operator gates.
 
 ## Historical acceptance context
 
-M4 history starts at [the prior closeout](archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
+M4 history starts at the prior closeout (removed from the repo; see git history).
 M4 is **functionally closed with an explicitly accepted laptop-dev performance exception**;
 M5's Telegram-only staff slice was reviewed and rolled out on explicitly approved guarded
 dev at **0300**; platform-admin UI and synthetic Telegram acceptance are verified.
@@ -1142,7 +1142,7 @@ test-only scope, so the full suite was not rerun.
 The preceding **1052 passed / 1 TCP latency failure** remains historical evidence, not
 the latest result; one passing run is not a stable-capacity claim. For next-session
 M6B-specific scope, see the dated
-[M6B verifier handoff](archive/handoffs/2026-10-18-m6b-verifier-next-session.md); the current
+M6B verifier handoff (removed from the repo; see git history); the current
 continuation prompt is in the domain/release handoff above.
 The preceding **971 passed / 1 TCP latency failure**
 (ack p95 **213.232 ms**, unchanged **<200 ms**) remains recorded.
@@ -1166,7 +1166,7 @@ user-owned review reports and UI-guide material remain preserved.
   warehouse and future tenant-admin count/adjustment records with required reasons.
   Documented the per-variant authority model, quantity/reservation vocabulary, idempotent
   order ownership, report-only provider reconciliation and write-freeze conflict handling in
-  the [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6d-inventory-authority-and-reconciliation-design-2026-10-18-user-selected-direction).
+  the M6 roadmap (removed from the repo; see git history).
   This separates existing `products.reserved_qty` local order repair from physical or
   provider stock reconciliation. Design only: no stock mutation, schema, sync or runtime
   behavior was wired. A separate immutable in-memory prototype in
@@ -1272,7 +1272,7 @@ user-owned review reports and UI-guide material remain preserved.
   database/n8n dump is needed. Existing-row audits, deployed holding statuses/writers and
   physical counts gate persistent rollout/cutover, not synthetic development or proposal
   review. Migration-proposal review completed in the
-  [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md).
+  M6 roadmap (removed from the repo; see git history).
   Recommends an identity-only first stage: necessary tenant-composite unique anchors
   and empty warehouse registry with RLS, tenant reads and no runtime mutation grants.
   Preserve existing global PKs, text order IDs, UUID product/item IDs and `qty`; no seeds,
@@ -1337,7 +1337,7 @@ user-owned review reports and UI-guide material remain preserved.
   audit storage and transaction design, with a real trusted actor adapter and freeze
   concurrency still required before writable integration.
 - Count persistence review (2026-10-19): **not ready for writable persistence**.
-  [Review findings and transaction sequence](archive/handoffs/2026-10-15-console-source-migration-plan.md)
+  Review findings and transaction sequence (removed from the repo; see git history)
   identify shape-versus-transition validation, pending-freeze serialization independent
   of ledger version, transaction-bound actor revalidation/revocation, missing immutable
   audit envelope/enforcement, and stale rejection recovery versus approval fencing.
@@ -1536,7 +1536,7 @@ user-owned review reports and UI-guide material remain preserved.
   Documentation-only; latest975 full pass remains prior implementation evidence.
   Attached env snapshot unopened; no credentials, login, API Testing Tool, live request,
   persistent DB/service/webhook/frontend/UI-guide change. Source0350/persistent0300.
-  See [verified contract and implementation prerequisites](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-public-token-exchange-contract-verification-2026-10-18).
+  See verified contract and implementation prerequisites (removed from the repo; see git history).
 - Staff connection-status continuation (2026-10-18): existing staff-only store list,
   detail and exact-binding reads now expose a narrow `connection` metadata projection.
   A single tenant/record-bounded batch query checks latest exact-store grant lifecycle,
@@ -1571,7 +1571,7 @@ user-owned review reports and UI-guide material remain preserved.
   No schema/dependency change; source still requires0350, persistent dev remains0300.
   Attached environment snapshots were not opened. No existing secrets/key access,
   provider HTTP, persistent migration/reset, service/webhook or UI-guide change.
-  See [staff connection status](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-staff-connection-status-2026-10-18).
+  See staff connection status (removed from the repo; see git history).
 - Authorization-attempt continuation (2026-10-18): user cannot proceed beyond Partner
   Center account registration. Partner review/publishing/seller authorization remain
   an external live gate, not a blocker for synthetic development. No custom-app/own-shop
@@ -1614,7 +1614,7 @@ user-owned review reports and UI-guide material remain preserved.
   or threshold relaxation. The945 full pass below belongs to the preceding slice.
   Gateway source now requires0350; persistent dev remains0300. No existing credentials/
   keys, live HTTP, persistent migration/reset, services, frontend or UI-guide changed.
-  See [offline authorization choreography](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-offline-authorization-attempts-and-reconnection-2026-10-18).
+  See offline authorization choreography (removed from the repo; see git history).
 - App-lifecycle continuation (2026-10-18): user selected a global non-secret app gate
   across all tenants, with external app secrets remaining external. Added empty0340
   app state/audit metadata and immutable grant `app_revision`. Registration is always
@@ -1649,7 +1649,7 @@ user-owned review reports and UI-guide material remain preserved.
   and unverified host-capacity/root-cause caveats remain; no latency-only retry occurred.
   Gateway source now requires0340; persistent dev remains0300. No real credential/key
   lookup, live HTTP, persistent migration/reset, service or UI-guide change.
-  See [global app lifecycle](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-global-app-lifecycle-fence-2026-10-18).
+  See global app lifecycle (removed from the repo; see git history).
 - Trusted-storage continuation (2026-10-18): user selected external app secrets plus
   explicit PostgreSQL app/shop binding evidence, not arbitrary credential metadata.
   Added empty0330 immutable tenant-scoped bindings linked to immutable grants.
@@ -1683,7 +1683,7 @@ user-owned review reports and UI-guide material remain preserved.
   Gateway source now requires0330; persistent dev remains0300, with no migration,
   reset, real credential/key read, provider call, service change or UI-guide edit.
   The **907 passed** full result below belongs to the preceding resolver-contract slice.
-  See [trusted storage scope](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-trusted-shop-binding-storage-2026-10-18).
+  See trusted storage scope (removed from the repo; see git history).
 - Offline resolver-contract continuation (2026-10-18): added explicit injected trusted
   app/credential loaders, decryptor and caller-owned HTTP client, with immutable
   secret-masked material contracts. Exact context/app/generation and token-expiry
@@ -1709,7 +1709,7 @@ user-owned review reports and UI-guide material remain preserved.
   No schema/SQL/dependency/frontend change, live request, persistent reset/migration,
   service replacement, console/agent wiring or UI-guide edit. Eligibility and actual
   trusted storage/loader/decryption deployment remain gated.
-  See [offline resolver contract](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-offline-credential-resolver-contract-2026-10-18).
+  See offline resolver contract (removed from the repo; see git history).
 - Bound-reader continuation (2026-10-18): added server-only composition of an injected
   trusted bound reader, fresh shop verification under credential/grant fences, revised
   evidence provenance `fresh_authorized_shop_with_stored_grant_scopes`, and one native
@@ -1739,7 +1739,7 @@ user-owned review reports and UI-guide material remain preserved.
   Developer/app eligibility is an external unresolved live-acceptance gate. No own-shop/
   unpublished exception has been verified for this market/account; individual seller
   eligibility or general TikTok developer sandbox access does not prove Shop API access.
-  See [server-bound composition and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-bound-reader-composition-2026-10-18-offline-continuation).
+  See server-bound composition and remaining gates (removed from the repo; see git history).
 - Authorized-shop continuation (2026-10-18): user revised per-operation policy to
   **fresh shop match + stored verified grant scopes**, with current order permission
   enforced by the actual order endpoint. Shop lookup is not fresh order-scope evidence;
@@ -1764,7 +1764,7 @@ user-owned review reports and UI-guide material remain preserved.
   remain unimplemented. Existing evidence labels must not be treated as proof of fresh
   scopes from this primitive. No real seller request/account/credential inspection,
   schema/dependency/frontend change, persistent migration/reset, rollout or UI-guide edit.
-  See [revised policy and verified shop primitive](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-fresh-authorized-shop-primitive-2026-10-18-offline-continuation).
+  See revised policy and verified shop primitive (removed from the repo; see git history).
 - Credential/read-fence continuation: user selected conservative fenced ordering and
   no automatic replay. Added0320 with DB-managed credential generations, atomic grant
   disconnection on material credential change/deletion, and tenant-scoped immutable
@@ -1795,7 +1795,7 @@ user-owned review reports and UI-guide material remain preserved.
   Delay occurs before HTTP entry as well as inside measured ack; p95 values cannot be
   subtracted to isolate a stage. Standalone workers start only after ingress. Current
   logs do not establish host/CPU/DB/pool cause; no latency retry or threshold change.
-  See [fencing design, tests and latency limits](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-credentialread-fences-2026-10-17-offline-continuation).
+  See fencing design, tests and latency limits (removed from the repo; see git history).
 - Durable-grant continuation: added forward-only **0310**, internal async repository
   and parameterized SQL for verified grant metadata, exact local-store creation
   matching, tenant-scoped reads and compare-and-swap terminal invalidation.
@@ -1911,7 +1911,7 @@ user-owned review reports and UI-guide material remain preserved.
   invented quantity1. Request correction is not full response compatibility or live wiring.
   No account/credential inspection, seller API call/testing tool, migration, restart,
   persistent reset, infrastructure/webhook or UI-guide change. See
-  [official references, corrections and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
+  official references, corrections and remaining gates (removed from the repo; see git history).
 - Store-identity continuation: added staff-only local store-record list/detail and UI,
   platform filters, bounded stable UUID pagination, and immutable exact tenant/record/
   platform/store binding. Queries select identity/expiry/update columns only, never
@@ -1936,7 +1936,7 @@ user-owned review reports and UI-guide material remain preserved.
   No live account/credential inspection, provider call, persistent-dev reset/restart,
   migration, infrastructure/webhook or UI-guide edit. No new browser acceptance claimed.
   This is metadata binding, not a provider credential resolver or a legacy adapter fix.
-  See [local store-identity scope and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-local-store-identities-and-binding-offline-continuation).
+  See local store-identity scope and remaining gates (removed from the repo; see git history).
 - Local source/store-filter continuation: order list/detail/cursors now enforce tenant
   plus exact persisted channel and optional platform-scoped store ID. Store-only
   queries fail400; invalid channel/store bounds422; mismatched resources/cursors404.
@@ -1958,7 +1958,7 @@ user-owned review reports and UI-guide material remain preserved.
   were stopped and the one-shot helper removed; no forwarding/infrastructure changes.
   No shared TikTok account/credential inspection, provider call, persistent reset,
   service replacement, migration or UI-guide edit. Provider/store credential binding
-  remains pending, not implied by local matching. See the [local filter evidence](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-local-sourcestore-filters-offline-continuation).
+  remains pending, not implied by local matching. See the local filter evidence (removed from the repo; see git history).
 - M6B continuation: offline TikTok order-read contract groundwork is implemented.
   Detail/search now reject provider errors, incomplete/malformed orders, mismatched
   detail IDs and invalid pages rather than fabricate successful default data.
@@ -1979,10 +1979,10 @@ user-owned review reports and UI-guide material remain preserved.
   Full validation remains **not green**; no new M6 performance waiver is implied.
   No console/provider wiring, live credentials, store claims or product/write changes.
   Current official API compatibility and tenant/store credential binding remain gates,
-  not assumed complete. See the [M6B groundwork and verification gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-order-read-contract-groundwork-offline-not-provider-verification).
+  not assumed complete. See the M6B groundwork and verification gates (removed from the repo; see git history).
 - User requested a multi-platform seller workspace, TikTok-first, and approved **staff-only
   business reads** plus **read-only local stock with no synchronization authority**.
-  Expanded [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
+  Expanded M6 roadmap (removed from the repo; see git history)
   stages local reads, verified seller reads/connections, separately authorized TikTok
   operations, multi-platform inventory decisions, and original invoice/staff preparation work.
 - Implemented separate `/business` and `/portal/business` UI plus typed local
@@ -2045,7 +2045,7 @@ user-owned review reports and UI-guide material remain preserved.
 - The checkout was clean at `d8f7149` on entry. Existing user review files and UI-guide
   state are preserved. No commit was requested or made.
 - Post-review offline validation passes. Final exact results belong in
-  [the M5 evidence record](archive/handoffs/2026-10-17-m5-telegram-inbox.md).
+  the M5 evidence record (removed from the repo; see git history).
   M4's accepted laptop-dev exception remains; no threshold or release waiver changed.
 - Implementation review fixed three coupled gaps before rollout:
   - Takeover of an existing timed escalation must clear its expiry and establish
@@ -2533,7 +2533,7 @@ change remains pending, and the historical hang/500 causes are not proven.
   files were identified as safe redundant deletions. Retained the old recovery handoff
   as incident history and updated it to point forward; replaced the old M2/M3 kickoff
   prompt with a canonical M5 handoff link.
-- [M4 closeout / M5 kickoff](archive/handoffs/2026-10-16-m4-closeout-m5-start.md) contains the
+- M4 closeout / M5 kickoff (removed from the repo; see git history) contains the
   acceptance matrix, exact remaining performance debt, environment/service/fixture
   state, M5 authority question, implementation order and ready-to-paste session prompt.
   M5 must remain separate from owner-private sandbox history/holds; its original
@@ -2564,7 +2564,7 @@ change remains pending, and the historical hang/500 causes are not proven.
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
 | LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
 | LG15 Console turnover (n8n → CSA) | M0–M3 implemented; M4 functionally closed with accepted laptop-dev performance exception. M5 Telegram slice approved/running on guarded dev0300 with platform-admin UI, synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff replay verified. M3 tenant-role replay and broader M5–M8 pending. | Latest full lint/tests **692 passed**, ASGI/TCP ack p95 **108.284 / 174.623 ms**, unchanged <200 ms. Frontend 12+2/lint/types/build pass; controlled live response-loss retry, ownership, approve/edit/reject, scoped denials and fresh post-release delivery verified. No production-capacity waiver or public deployment. |
-| LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
+| LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | plan removed from the repo; see git history |
 
 
-Entries dated before 2026-10-20 are archived in [archive/PROGRESS-2026-10-early.md](./archive/PROGRESS-2026-10-early.md).
+Entries dated before 2026-10-20 were moved to an early-progress archive that has since been removed from the repo (see git history).

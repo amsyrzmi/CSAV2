@@ -10,7 +10,7 @@ plans; a feature appearing in a plan or UI is not proof it is live.
 1. Read [repository rules](AGENTS.md).
 2. Read the [project orientation, architecture and workflow](docs/PROJECT_OVERVIEW.md).
 3. For continuation, check [current progress](docs/PROGRESS.md) and the linked
-   active handoff; read only the relevant [phase plan](docs/langgraph-rebuild/).
+   handoff or plan under `docs/handoffs/` and `docs/superpowers/`.
 4. Inspect executable source, migrations, tests and the API contract before changing
    behavior. Load the matching skill under `.agents/skills/` when applicable.
 
@@ -22,7 +22,6 @@ Detailed references:
 - [Development runbook](docs/RUNBOOK.md)
 - [Build-only release contract and gated staging proposal](deploy/RELEASE.md)
 - [Operational runbook status/index](docs/runbooks/README.md)
-- [LG00–LG15 phase plans](docs/langgraph-rebuild/)
 
 ## Current boundaries
 

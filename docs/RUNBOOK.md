@@ -4,9 +4,8 @@ Never point any of this at production databases, credentials, bots, services, or
 The development environment may share a physical host with production; verify the private dev
 configuration and use only the isolated dev stack.
 
-For the latest guarded console runtime and recovery constraints, start with the
-[domain/release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) and retained
-[runtime history](archive/handoffs/2026-10-16-runtime-stabilization.md). The generic
+For the latest guarded console runtime and recovery constraints, start with
+[PROGRESS.md](./PROGRESS.md) and the [release contract](../deploy/RELEASE.md). The generic
 first-time commands below are not instructions to reset or reprovision the recovered dev.
 Repository-only CI/image packaging is implemented; see the
 [release contract and inert staging proposal](../deploy/RELEASE.md). Public hosting,
@@ -19,7 +18,7 @@ for this release. Preserve the existing `fourstacks.my`/`www` landing service.
 Exact dependency versions are maintained in [pyproject.toml](../pyproject.toml) and
 [uv.lock](../uv.lock), not a duplicated version table. The combined PostGIS/pgvector
 image is built from [deploy/db.Dockerfile](../deploy/db.Dockerfile).
-Historical LG01 publication recorded
+The original publication recorded
 `ghcr.io/amsyrzmi/csa-pg16-postgis-vector` at
 `sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223`.
 That digest was superseded in the current CI and staging-proposal source on
@@ -94,8 +93,8 @@ ENV=ci uv run pytest -q tests/test_golden.py tests/test_decide_providers.py test
 Policy coverage: `make coverage` enforces at least 90% with branch instrumentation.
 Synthetic load: `make load-test` exercises real ingress SQL and durable queue/outbox in disposable
 testcontainers (no external provider or Telegram calls). Do not run timing tests under coverage
-or alongside builds. See the [LG08 validation report](archive/evals/lg08_validation_report.md) for
-steady-state results, cold-pool failures, queue throughput and measurement limitations.
+or alongside builds. Measured steady-state results, cold-pool failures and queue throughput from
+2026-10-12 are summarized in [ARCHITECTURE.md](./ARCHITECTURE.md#evaluation-and-regression-evidence).
 
 The gateway now opens all eight existing pool connections before accepting traffic. Startup
 fails explicitly if those connections cannot open; pool cleanup also runs on failure. Allow
@@ -184,7 +183,7 @@ Optional live evaluation (sends **synthetic** case text to the configured extern
 ENV=dev uv run python -m csa.evals.decisions --provider both --concurrency 1 --out docs/evals/decision_report.md
 ```
 
-See [decision_report.md](archive/evals/decision_report.md) for the measured comparison. Review Jev
+See [ARCHITECTURE.md](./ARCHITECTURE.md#evaluation-and-regression-evidence) for the measured comparison. Review Jev
 retention and operational terms before real-client rollout. This evaluation does not calibrate
 all decision thresholds or prove production throughput.
 

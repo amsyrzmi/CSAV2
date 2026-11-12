@@ -471,7 +471,6 @@ The HR implementation includes configurable and reviewable workflows, but it sho
 This brief reflects the repository's implementation and progress documentation, not a live readiness check of a particular customer deployment.
 
 - [HR implementation progress and feature matrix](PROGRESS.md)
-- [Current domain and release handoff](../archive/handoffs/2026-10-19-domain-release-next-session.md)
 - [Current product progress](../PROGRESS.md)
 - [Runtime agent catalogue](../../csa/console/agents.py)
 - [Customer runtime capability registration](../../csa/turn/deps.py)
@@ -480,6 +479,4 @@ This brief reflects the repository's implementation and progress documentation, 
 - [Local voice implementation (Sandbox assistant only)](../../CSA_WebConsole/csa-console/web/lib/hr-voice.ts)
 - [Assistant dock](../../CSA_WebConsole/csa-console/web/components/console/AssistantDock.tsx) (the separate HR chat was retired)
 - [HR interface (shell and tabs)](../../CSA_WebConsole/csa-console/web/components/console/hr/HrShell.tsx)
-- [Agent catalogue and console roadmap](../langgraph-rebuild/LG13_agent_catalog_and_console.md)
-- [Voice ingress and transcription design](../langgraph-rebuild/LG03_ingress_gateway_channels.md)
 
