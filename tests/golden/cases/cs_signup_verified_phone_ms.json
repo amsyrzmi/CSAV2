@@ -1,0 +1,156 @@
+{
+  "id": "cs_signup_verified_phone_ms",
+  "matrix": "Sign-up: a phone the channel verified is used and never asked",
+  "description": "The contact's phone was verified by its channel: the read-back says the number already on this chat (never its digits), no number is asked and no share button is shown; 'ya' right after the read-back files one request.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "besar",
+        "name": "Plan Besar",
+        "price": "50.00",
+        "features": [
+          "Unlimited data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent"
+    ],
+    "contact": {
+      "phone": "0123456789",
+      "phone_verified": true
+    }
+  },
+  "turns": [
+    {
+      "say": "nak daftar plan Besar, nama saya Ali Bin Abu",
+      "language": "ms",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "ms",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Ali Bin Abu"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Ok, ni details daftar: Plan Besar, nama Ali Bin Abu, guna nombor yang dah ada kat chat ni. Betul ke? Kami simpan nama dan nombor phone kat rekod contact supaya team boleh setup plan."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask the customer to confirm, and file nothing yet.",
+          "Malay register"
+        ],
+        "model_never_sees": [
+          "0123456789",
+          "+60123456789"
+        ],
+        "signup_requests": 0,
+        "request_phone": false
+      }
+    },
+    {
+      "say": "ya",
+      "language": "ms",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "ms",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.9
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Ali Bin Abu",
+                "confirmed": true
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Dah terima pendaftaran Plan Besar awak. Team akan semak dan bagitahu apa seterusnya. Belum aktif lagi, dan takde caj apa-apa."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."
+        ],
+        "model_never_sees": [
+          "0123456789",
+          "+60123456789"
+        ],
+        "reply_excludes": [
+          "approved",
+          "is now active",
+          "has been activated"
+        ],
+        "signup_requests": 1
+      }
+    }
+  ]
+}

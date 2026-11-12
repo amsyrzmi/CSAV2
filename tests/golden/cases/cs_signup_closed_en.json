@@ -1,0 +1,86 @@
+{
+  "id": "cs_signup_closed_en",
+  "matrix": "Sign-up: a plan closed to new sign-ups files nothing",
+  "description": "Plan Besar is closed to new sign-ups: the reply says so at once, asks for no details and files nothing.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "besar",
+        "name": "Plan Besar",
+        "price": "50.00",
+        "features": [
+          "Unlimited data"
+        ],
+        "is_signup_open": false
+      }
+    ],
+    "services": [
+      "subscription_agent"
+    ]
+  },
+  "turns": [
+    {
+      "say": "I want to sign up for Plan Besar",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Sorry, Plan Besar isn't taking new sign-ups right now."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "reply_contains": [
+          "isn't taking new sign-ups"
+        ],
+        "compose_sees": [
+          "Plan Besar is not taking new sign-ups right now."
+        ],
+        "signup_requests": 0,
+        "request_phone": false
+      }
+    }
+  ]
+}

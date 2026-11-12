@@ -68,6 +68,17 @@ MARKETPLACE_PLANNER_RULE = (
     "for an order."
 )
 
+# Said instead of MARKETPLACE_PLANNER_RULE to a company without the TikTok Shop service.
+_SHOP_STOCK_RULE = (
+    "Stock, price or availability questions use order_agent 'product_availability' with the "
+    "product words as query. Use 'search_products' or 'product_detail' only to find the SKU for "
+    "an order."
+)
+# Shown to the classifier and the planner (with their rules) only for a company that has them
+# switched on (Context.capabilities), so the bot fits a company that sells only TikTok Shop
+# products as well as one that sells plans. Every other agent is shown to all.
+_COMPANY_AGENTS = frozenset({"subscription_agent", "ecommerce_agent"})
+
 # Subscriptions (spec 6): the planner is told which action each kind of question uses, that the
 # server (not the model) finds the customer's subscriptions, and that a pause, cancel or change
 # only passes a request to staff.
@@ -82,11 +93,33 @@ _SUBSCRIPTION_PLAN_RULE = (
     "sekarang?' and 'bila plan saya renew?' are 'mine', 'nak stop plan bulan depan' is "
     "request_cancel, 'ada plan apa?' is 'plans'. "
 )
-# Said to the classifier every turn.
+# Sign-up (customer onboarding): collected over several messages, read back, filed on a typed yes.
+# The server checks the yes answers its own read-back; the rule keeps the model from guessing one.
+_SIGNUP_PLAN_RULE = (
+    "Signing up: when the customer asks to sign up for, subscribe to or join a plan (for example "
+    "'I want to sign up', 'nak daftar plan Besar'), and on each later message of that sign-up, "
+    "use subscription_agent 'request_signup' with plan_code as the plan they want. Put full_name "
+    "and phone only from the customer's own words in <recent_messages> or this message, never "
+    "invented; copy a phone exactly as it shows, a placeholder such as [PHONE_0] included. The "
+    "server asks for what is still missing, one thing at a time, and reads the sign-up back. "
+    "'[shared phone number]' means the customer shared their number with the button: plan "
+    "request_signup again with the plan and name, and no phone. Set confirmed true only when the "
+    "latest assistant message in <recent_messages> read back a sign-up and this message clearly "
+    "says yes to it, in any language (for example yes, ok, ya, betul, boleh); anything else is "
+    "not a yes, so leave confirmed out. A different plan restarts the read-back: plan "
+    "request_signup with the new plan and no confirmed. "
+)
+# Said to the classifier every turn of a company with subscription_agent.
 _SUBSCRIPTION_CLASSIFY_RULE = (
     " A question about the customer's own plan, its renewal, or pausing, cancelling or changing "
     "it has intent subscription and subscription_agent should be scored (for example 'plan saya "
     "habis bila?', 'nak tukar plan')."
+)
+_SIGNUP_CLASSIFY_RULE = (
+    " Asking to sign up for, subscribe to or join a plan, and a short answer that continues a "
+    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]' or a yes), has "
+    "intent subscription and subscription_agent should be scored (for example 'nak daftar plan "
+    "Besar')."
 )
 # Anger sends a chat to a person at once, so only the strong cases are `angry`.
 _SENTIMENT_RULE = (
@@ -336,6 +369,25 @@ def _memory_messages(ctx: Context) -> list[RecentMessage]:
     return [] if ctx.flags.get("memory_off") else _recent_messages(ctx)
 
 
+def _offers(ctx: Context, name: str) -> bool:
+    """Whether the company has this capability switched on."""
+    return name in ctx.capabilities
+
+
+def _subscription_plan_rule(ctx: Context) -> str:
+    return (
+        f"{_SUBSCRIPTION_PLAN_RULE}{_SIGNUP_PLAN_RULE}"
+        if _offers(ctx, "subscription_agent")
+        else ""
+    )
+
+
+def _subscription_classify_rule(ctx: Context) -> str:
+    if not _offers(ctx, "subscription_agent"):
+        return ""
+    return f"{_SUBSCRIPTION_CLASSIFY_RULE}{_SIGNUP_CLASSIFY_RULE}"
+
+
 def _data_rule(ctx: Context, *, memory: bool = False) -> str:
     shown = _memory_messages(ctx) if memory else _recent_messages(ctx)
     return f"{_DATA_RULE} {_RECENT_RULE}" if shown else _DATA_RULE
@@ -448,6 +500,14 @@ class LLMProvider:
     def version(self) -> str:
         return f"groq:{self._client.model}"
 
+    def _offered(self, ctx: Context) -> dict[str, str]:
+        """The capabilities to name to the model for this company (see `_COMPANY_AGENTS`)."""
+        return {
+            name: purpose
+            for name, purpose in self._capabilities.items()
+            if name not in _COMPANY_AGENTS or _offers(ctx, name)
+        }
+
     async def _json(
         self,
         schema: type[T],
@@ -505,8 +565,8 @@ class LLMProvider:
             "the system), urgent (true if time-critical or an emergency), "
             "needs (object mapping each capability name to a 0-1 score for how strongly the "
             "message asks for it). Capabilities: "
-            f"{json.dumps(self._capabilities)}. Greetings and thanks are chitchat."
-            f"{_SUBSCRIPTION_CLASSIFY_RULE}{_SENTIMENT_RULE}"
+            f"{json.dumps(self._offered(ctx))}. Greetings and thanks are chitchat."
+            f"{_subscription_classify_rule(ctx)}{_SENTIMENT_RULE}"
             f"{_BOOKING_CLASSIFY_RULE if ctx.booking is not None else ''}"
             f"{_RECENT_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
             f"{_HANDOFF_OFFER_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
@@ -521,7 +581,7 @@ class LLMProvider:
         scores = {
             name: max(0.0, min(1.0, score))
             for name, score in out.needs.items()
-            if name in self._capabilities and score >= MIN_CAPABILITY_SCORE
+            if name in self._offered(ctx) and score >= MIN_CAPABILITY_SCORE
         }
         return Signals(
             intent=out.intent,
@@ -538,8 +598,11 @@ class LLMProvider:
         )
 
     async def plan(self, envelope: Envelope, ctx: Context, signals: Signals) -> Plan:
+        offered = self._offered(ctx)
         schemas = {
-            name: _strip_callback(model.model_json_schema()) for name, model in self._inputs.items()
+            name: _strip_callback(model.model_json_schema())
+            for name, model in self._inputs.items()
+            if name in offered
         }
         system = (
             "You choose which business agents to run for a customer message and fill their "
@@ -558,14 +621,14 @@ class LLMProvider:
             "mutation; preserve required inputs and human/confirmation safeguards. "
             "For example, 'What is the return window?' needs a KB query, whereas "
             "'Refund my order' must not be treated as an informational policy question. "
-            f"{MARKETPLACE_PLANNER_RULE} "
-            f"{_SUBSCRIPTION_PLAN_RULE}"
+            f"{MARKETPLACE_PLANNER_RULE if _offers(ctx, 'ecommerce_agent') else _SHOP_STOCK_RULE} "
+            f"{_subscription_plan_rule(ctx)}"
             "If a required value is missing, return "
             'no tasks and reply_strategy "ask_clarifying". Never use order_agent actions '
             '"confirm" or "cancel" (they need a button). '
             f"{_BOOKING_PLAN_RULE if ctx.booking is not None else ''}"
             f"Agent input schemas: {json.dumps(schemas)}. "
-            f"Agent purposes: {json.dumps(self._capabilities)}."
+            f"Agent purposes: {json.dumps(offered)}."
         )
         user = (
             _dumps(
@@ -633,11 +696,13 @@ class LLMProvider:
         """Observe the results so far and propose read-only follow-up lookups."""
         if not self._read_actions:
             return []
+        offered = self._offered(state.ctx or Context())
+        read_actions = {k: v for k, v in self._read_actions.items() if k in offered}
         schemas = {
             name: _restrict_actions(
                 _strip_callback(self._inputs[name].model_json_schema()), actions
             )
-            for name, actions in self._read_actions.items()
+            for name, actions in read_actions.items()
             if name in self._inputs
         }
         system = (
@@ -645,7 +710,7 @@ class LLMProvider:
             "already ran; their results are the facts and failures below. Decide whether one "
             "more round of READ-ONLY lookups would let the reply answer the customer better. "
             f"{_DATA_RULE} Allowed actions per agent (no others): "
-            f"{json.dumps(self._read_actions)}. Agent input schemas: {json.dumps(schemas)}. "
+            f"{json.dumps(read_actions)}. Agent input schemas: {json.dumps(schemas)}. "
             "Use only ids, SKUs and values that appear in the message or the facts; never "
             "invent them. Do not repeat a lookup listed in already_ran. Return done=true with "
             "no tasks when the facts already answer the message, when the customer must choose "
@@ -680,7 +745,7 @@ class LLMProvider:
             return []
         tasks: list[Task] = []
         for index, planned in enumerate(out.tasks):
-            if planned.input.get("action") not in self._read_actions.get(planned.agent, []):
+            if planned.input.get("action") not in read_actions.get(planned.agent, []):
                 logger.info("llm_step_not_read_only", agent=planned.agent)
                 continue
             task = self._validated_task(index, planned)

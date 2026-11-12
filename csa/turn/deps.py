@@ -134,8 +134,9 @@ CAPABILITIES = {
         "appointments, and looking up their bookings"
     ),
     "subscription_agent": (
-        "The plans on offer, the customer's own plan (found from this chat), and requests to "
-        "pause, cancel or change it that staff decide; no billing changes"
+        "The plans on offer, the customer's own plan (found from this chat), signing the "
+        "customer up for a plan, and requests to pause, cancel or change it that staff decide; "
+        "no billing changes"
     ),
 }
 
@@ -196,6 +197,42 @@ def with_real_email(task: Task, raw: str) -> Task | None:
         payload["customer_email"] = address
     elif task.input.get("action") == "save_details" and not payload.get("customer_name"):
         return None
+    return task.model_copy(update={"input": payload})
+
+
+_PHONE_PLACEHOLDER = re.compile(r"\[PHONE_[0-9]{1,3}\]")
+# A run of digits as a person types a number: '+44 7911 123456', '(012) 345-6789'.
+_TYPED_NUMBER = re.compile(r"\+?\d[\d ()-]*\d")
+
+
+def with_real_phone(task: Task, raw: str, redacted: str) -> Task:
+    """The sign-up task with its phone as the customer typed it in this message, or without one.
+
+    The planner sees a Malaysian number only as a placeholder such as ``[PHONE_0]``; it resolves
+    only in the message that holds it (the raw body redacted again must give the stored redacted
+    body, as for a TikTok order number). A number written out (shown raw, an international one) is
+    kept only when its digits are a number the customer typed here. Anything else is dropped: the
+    agent then keeps the number an earlier turn collected, or asks for it. A model can name a
+    number but never invent one.
+    """
+    if task.agent != "subscription_agent" or task.input.get("action") != "request_signup":
+        return task
+    given = task.input.get("phone")
+    if given is None:
+        return task
+    payload = {k: v for k, v in task.input.items() if k != "phone"}
+    value = str(given).strip()
+    typed: str | None = None
+    if _PHONE_PLACEHOLDER.fullmatch(value):
+        again, values = redact_with_values(raw)
+        if again == redacted:
+            typed = values.get(value)
+    else:
+        digits = "".join(c for c in value if c.isdigit())
+        found = {"".join(c for c in m.group() if c.isdigit()) for m in _TYPED_NUMBER.finditer(raw)}
+        typed = value if digits and digits in found else None
+    if typed is not None:
+        payload["phone"] = typed
     return task.model_copy(update={"input": payload})
 
 
@@ -308,6 +345,8 @@ class PostgresTurnDependencies:
             )
         if row is None:
             raise RuntimeError("conversation_not_found")
+        # Cached per company for 30 s; which agents (and their rules) the model is told of.
+        switched_on = await self._capabilities.load(envelope.client_id)
         # Side by side: each read has its own budget and never raises (both degrade to empty), so
         # together they stay inside the node's limit, which one after the other they need not.
         (recent, handoff_recent, memory_off), booking = await asyncio.gather(
@@ -327,6 +366,7 @@ class PostgresTurnDependencies:
             flags=flags,
             booking=booking,
             recent=recent,
+            capabilities=sorted({capability.name for capability in switched_on}),
         )
 
     async def _recent_messages(
@@ -516,6 +556,7 @@ class PostgresTurnDependencies:
             if real is None:
                 return reply(ctx, [EMAIL_NOT_SEEN]).model_copy(update={"task_id": task.task_id})
             task = real
+        task = with_real_phone(task, envelope.message.body_raw, envelope.message.body_redacted)
         return await self._runner.execute(_resolve_order_number(task, envelope), ctx)
 
     async def handle_muted(

@@ -107,6 +107,15 @@ class PlanSeed(Strict):
     price: Decimal
     billing_interval: Literal["month", "year"] = "month"
     features: list[str] = Field(default_factory=list)
+    signup_mode: Literal["staff", "auto"] = "staff"
+    is_signup_open: bool = True
+
+
+class ContactSeed(Strict):
+    """The chat's own contact: a phone, and whether its channel verified it."""
+
+    phone: str | None = None
+    phone_verified: bool = False
 
 
 class SubscriptionSeed(Strict):
@@ -147,6 +156,7 @@ class Seed(Strict):
     plans: list[PlanSeed] = Field(default_factory=list)
     subscriptions: list[SubscriptionSeed] = Field(default_factory=list)
     listings: list[ListingSeed] = Field(default_factory=list)
+    contact: ContactSeed = Field(default_factory=ContactSeed)
     # Capability rows switched on for the company (as ``kb_agent`` is when it has knowledge).
     services: list[Literal["subscription_agent", "ecommerce_agent"]] = Field(default_factory=list)
 
@@ -189,6 +199,10 @@ class Expect(Strict):
     escalation_reason: str | None = None
     # The conversation's unresolved-turn count (the escalation ladder) after this turn.
     clarify_count: int | None = None
+    # The company's sign-up requests (signup_requests, any status) after this turn.
+    signup_requests: int | None = None
+    # Whether this turn's reply offers Telegram's "share my number" button.
+    request_phone: bool | None = None
 
 
 class Tap(Strict):
@@ -332,8 +346,16 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             (tenant.endpoint_id, cid, f"golden-{uuid.uuid4().hex}", credential_id),
         )
         conn.execute(
-            "INSERT INTO contacts (id, client_id, telegram_id, full_name) VALUES (%s, %s, %s, %s)",
-            (tenant.contact_id, cid, int(tenant.external_id), "Golden Contact"),
+            "INSERT INTO contacts (id, client_id, telegram_id, full_name, phone, "
+            "phone_verified_at) VALUES (%s, %s, %s, %s, %s, CASE WHEN %s THEN now() END)",
+            (
+                tenant.contact_id,
+                cid,
+                int(tenant.external_id),
+                "Golden Contact",
+                case.seed.contact.phone,
+                case.seed.contact.phone_verified,
+            ),
         )
         conn.execute(
             "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread) "
@@ -372,8 +394,8 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             )
         for plan in case.seed.plans:
             conn.execute(
-                "INSERT INTO plans (client_id,code,name,price,billing_interval,features) "
-                "VALUES (%s,%s,%s,%s,%s,%s)",
+                "INSERT INTO plans (client_id,code,name,price,billing_interval,features,"
+                "signup_mode,is_signup_open) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     cid,
                     plan.code,
@@ -381,6 +403,8 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                     plan.price,
                     plan.billing_interval,
                     Jsonb(plan.features),
+                    plan.signup_mode,
+                    plan.is_signup_open,
                 ),
             )
         for index, sub in enumerate(case.seed.subscriptions):
@@ -595,6 +619,7 @@ class Observed(BaseModel):
     escalation_reasons: list[str]
     prepared_requests: int
     clarify_count: int
+    signup_requests: int
 
 
 def observe(
@@ -688,6 +713,9 @@ def observe(
             "SELECT clarify_count FROM conversations WHERE client_id=%s AND id=%s",
             (tenant.client_id, tenant.conversation_id),
         ).fetchone()
+        signups = conn.execute(
+            "SELECT count(*) FROM signup_requests WHERE client_id=%s", (tenant.client_id,)
+        ).fetchone()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -717,6 +745,7 @@ def observe(
         escalation_reasons=[row[0] for row in reasons],
         prepared_requests=prepared[0] if prepared else 0,
         clarify_count=clarify[0] if clarify else 0,
+        signup_requests=signups[0] if signups else 0,
     )
 
 
@@ -745,6 +774,7 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         "handoff_sent",
         "prepared_requests",
         "clarify_count",
+        "signup_requests",
     ):
         expected = getattr(expect, field)
         if expected is not None:
@@ -777,6 +807,9 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
     if expect.confirmation is not None:
         has = any(ui.get("confirmation") for ui in seen.uis)
         assert has is expect.confirmation, detail
+    if expect.request_phone is not None:
+        offered = any(ui.get("request_phone") for ui in seen.uis)
+        assert offered is expect.request_phone, detail
     if expect.escalations is not None:
         assert seen.escalations - escalations_before == expect.escalations, detail
     for text in expect.compose_sees:

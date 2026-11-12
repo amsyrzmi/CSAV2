@@ -43,6 +43,7 @@ from csa.agents.staged.models import (
     ResearchInput,
     SubscriptionInput,
 )
+from csa.agents.staged.signup import request_signup
 from csa.agents.staged.subscription_facts import (
     REQUESTABLE_STATUSES,
     SUBSCRIPTION_SOURCE,
@@ -55,7 +56,7 @@ from csa.bookings import service as core
 from csa.bookings.bot import BotOutcome
 from csa.bookings.service import BookingRecord
 from csa.console.mailer import Mailer
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
+from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta, Ui
 from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.pii import is_email_placeholder
@@ -588,6 +589,7 @@ class SubscriptionAgent:
         "request_pause": "draft",
         "request_cancel": "draft",
         "request_change": "draft",
+        "request_signup": "draft",
     }
 
     def risk(self, inp: BaseModel) -> RiskClass:
@@ -606,6 +608,14 @@ class SubscriptionAgent:
                 )
             if not await contact_exists(conn, ctx):
                 return result(ctx, self.name, "Contact not found.", code="contact_not_found")
+            if inp.action == "request_signup":
+                turn = await request_signup(conn, ctx, inp)
+                signed = answer(ctx, turn.facts)
+                if not turn.request_phone:
+                    return signed
+                # Telegram shows the "share my number" button with this reply.
+                ui = Ui(request_phone=True)
+                return signed.model_copy(update={"data": signed.data.model_copy(update={"ui": ui})})
             if inp.action == "plans":
                 plans = await db.q.fetch_all(
                     "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn

@@ -148,7 +148,14 @@ class BookingInput(DraftModel):
 
 class SubscriptionInput(DraftModel):
     action: Literal[
-        "plans", "mine", "list", "status", "request_pause", "request_cancel", "request_change"
+        "plans",
+        "mine",
+        "list",
+        "status",
+        "request_pause",
+        "request_cancel",
+        "request_change",
+        "request_signup",
     ] = Field(
         description=(
             "plans: the plans on offer, with prices and features. mine: the customer's own "
@@ -156,7 +163,8 @@ class SubscriptionInput(DraftModel):
             "change, paused or waiting for payment). list: every subscription of the customer, "
             "cancelled ones too. status: one of the customer's plans. request_pause, "
             "request_cancel, request_change: pass the customer's request to staff, who decide; "
-            "nothing changes until they do."
+            "nothing changes until they do. request_signup: sign the customer up for a plan; "
+            "the server asks for what is missing and reads the sign-up back before filing it."
         )
     )
     subscription_id: UUID | None = Field(
@@ -180,8 +188,8 @@ class SubscriptionInput(DraftModel):
         min_length=1,
         max_length=120,
         description=(
-            "request_change only: the plan they want, by its name as in a plans fact or their "
-            "own words."
+            "request_change and request_signup: the plan they want, by its name as in a plans "
+            "fact or their own words."
         ),
     )
     reason: str | None = Field(
@@ -189,6 +197,35 @@ class SubscriptionInput(DraftModel):
         min_length=1,
         max_length=1000,
         description="The customer's reason, only if they gave one.",
+    )
+    full_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description=(
+            "request_signup only: the customer's full name, only as they wrote it in this "
+            "message or in <recent_messages>. Never invent one."
+        ),
+    )
+    # The planner sees a Malaysian number only as a placeholder; the server swaps it for the
+    # number in the customer's own message (`csa.turn.deps.with_real_phone`).
+    phone: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=40,
+        description=(
+            "request_signup only: the phone number the customer typed, copied exactly as it "
+            "shows, a placeholder such as [PHONE_0] included. Leave it out when they gave none; "
+            "never write one yourself."
+        ),
+    )
+    confirmed: bool = Field(
+        default=False,
+        description=(
+            "request_signup only: true only when the latest assistant message in "
+            "<recent_messages> read back a sign-up and this message clearly says yes to it, in "
+            "any language. Otherwise leave it out: the server then reads the sign-up back first."
+        ),
     )
 
     @field_validator("*", mode="before")
