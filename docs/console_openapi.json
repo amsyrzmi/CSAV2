@@ -5358,6 +5358,25 @@
         "title": "DecideIn",
         "type": "object"
       },
+      "DeclineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "DeclineIn",
+        "type": "object"
+      },
       "DepartmentList": {
         "additionalProperties": false,
         "properties": {
@@ -11663,6 +11682,11 @@
             "title": "Features",
             "type": "array"
           },
+          "is_signup_open": {
+            "default": true,
+            "title": "Is Signup Open",
+            "type": "boolean"
+          },
           "name": {
             "maxLength": 120,
             "minLength": 1,
@@ -11680,6 +11704,15 @@
               }
             ],
             "title": "Price"
+          },
+          "signup_mode": {
+            "default": "staff",
+            "enum": [
+              "staff",
+              "auto"
+            ],
+            "title": "Signup Mode",
+            "type": "string"
           },
           "sort_order": {
             "default": 0,
@@ -11725,12 +11758,24 @@
             "title": "Is Active",
             "type": "boolean"
           },
+          "is_signup_open": {
+            "title": "Is Signup Open",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
           },
           "price": {
             "title": "Price",
+            "type": "string"
+          },
+          "signup_mode": {
+            "enum": [
+              "staff",
+              "auto"
+            ],
+            "title": "Signup Mode",
             "type": "string"
           },
           "sort_order": {
@@ -11746,7 +11791,9 @@
           "billing_interval",
           "features",
           "sort_order",
-          "is_active"
+          "is_active",
+          "signup_mode",
+          "is_signup_open"
         ],
         "title": "PlanOut",
         "type": "object"
@@ -11795,6 +11842,17 @@
             ],
             "title": "Is Active"
           },
+          "is_signup_open": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Signup Open"
+          },
           "name": {
             "anyOf": [
               {
@@ -11822,6 +11880,21 @@
               }
             ],
             "title": "Price"
+          },
+          "signup_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signup Mode"
           },
           "sort_order": {
             "anyOf": [
@@ -13216,30 +13289,26 @@
         "title": "ServiceOut",
         "type": "object"
       },
-      "SettingsIn": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "SettingsIn",
-        "type": "object"
-      },
       "SettingsOut": {
         "additionalProperties": false,
         "properties": {
+          "pending_expiry_days": {
+            "title": "Pending Expiry Days",
+            "type": "integer"
+          },
           "timezone": {
             "title": "Timezone",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
-          "timezone"
+          "timezone",
+          "pending_expiry_days",
+          "version"
         ],
         "title": "SettingsOut",
         "type": "object"
@@ -13393,6 +13462,170 @@
           "expires_at"
         ],
         "title": "SignedDownloadLinkOut",
+        "type": "object"
+      },
+      "SignupOut": {
+        "additionalProperties": false,
+        "properties": {
+          "contact": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_via": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided Via"
+          },
+          "decline_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decline Reason"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "phone_verified": {
+            "title": "Phone Verified",
+            "type": "boolean"
+          },
+          "plan_code": {
+            "title": "Plan Code",
+            "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "source_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Channel"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "declined",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subscription_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Id"
+          }
+        },
+        "required": [
+          "id",
+          "contact",
+          "plan_code",
+          "plan_name",
+          "full_name",
+          "phone",
+          "phone_verified",
+          "status",
+          "decided_via",
+          "decline_reason",
+          "subscription_id",
+          "created_at",
+          "decided_at",
+          "source_channel"
+        ],
+        "title": "SignupOut",
+        "type": "object"
+      },
+      "SignupPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SignupOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SignupPage",
         "type": "object"
       },
       "SpecializedTabInfo": {
@@ -16026,6 +16259,20 @@
         "title": "ThreadPage",
         "type": "object"
       },
+      "csa__email__models__SettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SettingsIn",
+        "type": "object"
+      },
       "csa__email__models__ThreadOut": {
         "additionalProperties": false,
         "properties": {
@@ -16187,6 +16434,28 @@
           "last_sync_at"
         ],
         "title": "ThreadPage",
+        "type": "object"
+      },
+      "csa__subscriptions__contracts__SettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "pending_expiry_days": {
+            "maximum": 90.0,
+            "minimum": 0.0,
+            "title": "Pending Expiry Days",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending_expiry_days",
+          "version"
+        ],
+        "title": "SettingsIn",
         "type": "object"
       }
     }
@@ -23791,7 +24060,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SettingsIn"
+                "$ref": "#/components/schemas/csa__email__models__SettingsIn"
               }
             }
           },
@@ -31330,6 +31599,365 @@
           }
         },
         "summary": "Settings",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "put": {
+        "description": "Save the company's settings; a save from an older read is 409 `version_conflict`.",
+        "operationId": "save_settings_console_v1_subscriptions_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/csa__subscriptions__contracts__SettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Settings",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups": {
+      "get": {
+        "operationId": "signups_console_v1_subscriptions_signups_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "decided"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Signups",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups/{signup_id}/approve": {
+      "post": {
+        "description": "Approve a customer's sign-up: one pending subscription at the plan's price now.",
+        "operationId": "approve_signup_console_v1_subscriptions_signups__signup_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Signup Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Signup",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups/{signup_id}/decline": {
+      "post": {
+        "description": "Decline a sign-up; the reason is kept for staff and never sent to the customer.",
+        "operationId": "decline_signup_console_v1_subscriptions_signups__signup_id__decline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Signup Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclineIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decline Signup",
         "tags": [
           "Subscriptions"
         ]

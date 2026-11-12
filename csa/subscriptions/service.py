@@ -24,6 +24,7 @@ from csa.subscriptions.contracts import (
     PlanPatch,
     RequestOut,
     RequestPage,
+    SettingsIn,
     SettingsOut,
     Status,
     SubscriptionCreateIn,
@@ -37,6 +38,9 @@ from csa.workspace.registry import ProposalRegistry
 Conn = AsyncConnection[Any]
 
 PHONE_TERM = re.compile(r"[\d\s+().-]+")
+
+# What a company that has never saved its settings gets (the table's own default).
+DEFAULT_PENDING_EXPIRY_DAYS = 14
 
 
 def subscription_out(row: dict[str, Any]) -> SubscriptionOut:
@@ -70,12 +74,43 @@ def like_pattern(q: str) -> str:
 
 
 async def get_settings(conn: Conn, client_id: UUID) -> SettingsOut:
-    row = await db.q.fetch_one(
+    """The tenant's zone plus its saved settings; no row yet reads as the default, version 0."""
+    zone = await db.q.fetch_one(
         "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
     )
-    if row is None:
+    if zone is None:
         raise RuntimeError(f"tenant {client_id} has no clients row")
-    return SettingsOut.model_validate(row)
+    saved = await db.q.fetch_one(
+        "subscriptions/settings_get.sql", {"client_id": client_id}, conn=conn
+    )
+    return SettingsOut(
+        timezone=zone["timezone"],
+        pending_expiry_days=saved["pending_expiry_days"] if saved else DEFAULT_PENDING_EXPIRY_DAYS,
+        version=saved["version"] if saved else 0,
+    )
+
+
+async def put_settings(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: SettingsIn
+) -> SettingsOut:
+    """Replace the settings. The first save makes the row; a save from an older read is 409."""
+    await db.q.execute(
+        "subscriptions/advisory_lock.sql",
+        {"key": f"subscriptions:settings:{client_id}"},
+        conn=conn,
+    )
+    saved = await db.q.fetch_one(
+        "subscriptions/settings_get.sql", {"client_id": client_id}, conn=conn
+    )
+    if (saved["version"] if saved else 0) != data.version:
+        raise HTTPException(409, "version_conflict")
+    await db.q.fetch_one(
+        "subscriptions/settings_upsert.sql",
+        {"client_id": client_id, "pending_expiry_days": data.pending_expiry_days},
+        conn=conn,
+    )
+    await audit(conn, actor, client_id, "subscriptions.settings.updated", str(client_id))
+    return await get_settings(conn, client_id)
 
 
 async def list_plans(conn: Conn, client_id: UUID, *, include_archived: bool) -> list[PlanOut]:

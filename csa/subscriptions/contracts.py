@@ -13,6 +13,7 @@ from csa.console.contracts import Contract
 
 Status = Literal["pending", "active", "paused", "cancelled"]
 Interval = Literal["month", "year"]
+SignupMode = Literal["staff", "auto"]
 
 
 class PlanOut(Contract):
@@ -24,10 +25,19 @@ class PlanOut(Contract):
     features: list[str]
     sort_order: int
     is_active: bool
+    signup_mode: SignupMode  # staff decide a sign-up, or it is approved at once
+    is_signup_open: bool  # false: customers cannot sign up for the plan in the chat
 
 
 class SettingsOut(Contract):
     timezone: str  # the tenant's IANA zone (clients.timezone), for showing dates
+    pending_expiry_days: int  # days a pending subscription waits before it expires; 0 = never
+    version: int  # 0 until the company has saved settings; PUT /settings echoes it back
+
+
+class SettingsIn(Contract):
+    pending_expiry_days: int = Field(ge=0, le=90)
+    version: int = Field(ge=0)
 
 
 class PlanIn(Contract):
@@ -38,6 +48,8 @@ class PlanIn(Contract):
     billing_interval: Interval = "month"
     features: list[str] = Field(default_factory=list, max_length=20)
     sort_order: int = 0
+    signup_mode: SignupMode = "staff"
+    is_signup_open: bool = True
 
 
 class PlanPatch(Contract):
@@ -49,6 +61,8 @@ class PlanPatch(Contract):
     features: list[str] | None = Field(default=None, max_length=20)
     sort_order: int | None = None
     is_active: bool | None = None
+    signup_mode: SignupMode | None = None
+    is_signup_open: bool | None = None
 
 
 class CustomerRef(Contract):
@@ -190,3 +204,34 @@ class DecideIn(Contract):
         if self.resume_at is not None and self.decision != "approve":
             raise ValueError("resume_at applies to an approval")
         return self
+
+
+SignupStatus = Literal["pending", "approved", "declined", "expired"]
+
+
+class SignupOut(Contract):
+    id: UUID
+    contact: CustomerRef  # as the contact record stands, not as the customer typed it
+    plan_code: str
+    plan_name: str | None
+    full_name: str  # as typed in the sign-up
+    phone: str  # as typed in the sign-up (normalised); never copied to the contact
+    # The contact's phone is verified by its channel and is this number; a different typed number
+    # reads false.
+    phone_verified: bool
+    status: SignupStatus
+    decided_via: Literal["staff", "auto"] | None
+    decline_reason: str | None
+    subscription_id: UUID | None
+    created_at: datetime
+    decided_at: datetime | None
+    source_channel: str | None  # the channel of the contact's newest identity
+
+
+class SignupPage(Contract):
+    items: list[SignupOut]
+    next_cursor: UUID | None
+
+
+class DeclineIn(Contract):
+    reason: str | None = Field(default=None, max_length=300)

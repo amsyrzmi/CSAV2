@@ -11,17 +11,21 @@ from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.services import package_gate
 from csa.core.tenancy import tx
-from csa.subscriptions import service
+from csa.subscriptions import service, signup
 from csa.subscriptions.contracts import (
     ActionIn,
     CustomerRef,
     DecideIn,
+    DeclineIn,
     PlanIn,
     PlanOut,
     PlanPatch,
     RequestOut,
     RequestPage,
+    SettingsIn,
     SettingsOut,
+    SignupOut,
+    SignupPage,
     Status,
     SubscriptionCreateIn,
     SubscriptionDetail,
@@ -68,8 +72,8 @@ def build_subscriptions_router() -> APIRouter:
         require_subscriptions_write(actor, client_id)
         return actor
 
-    # `/settings` and `/plans` routes are declared before `/{subscription_id}`, which is also
-    # typed UUID.
+    # `/settings`, `/plans`, `/signups`, `/requests` and `/customers` are declared before
+    # `/{subscription_id}`, which is also typed UUID.
     @router.get("/settings", response_model=SettingsOut)
     async def settings(
         request: Request, client_id: Annotated[UUID, Depends(tenant)]
@@ -77,6 +81,15 @@ def build_subscriptions_router() -> APIRouter:
         reader(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await service.get_settings(conn, client_id)
+
+    @router.put("/settings", response_model=SettingsOut)
+    async def save_settings(
+        request: Request, payload: SettingsIn, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> SettingsOut:
+        """Save the company's settings; a save from an older read is 409 `version_conflict`."""
+        actor = writer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await service.put_settings(conn, client_id, actor, payload)
 
     @router.get("/plans", response_model=list[PlanOut])
     async def plans(
@@ -106,6 +119,42 @@ def build_subscriptions_router() -> APIRouter:
         actor = writer(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await service.update_plan(conn, client_id, actor, code, payload)
+
+    @router.get("/signups", response_model=SignupPage)
+    async def signups(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        status: Literal["pending", "decided"] = "pending",
+        before: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> SignupPage:
+        reader(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await signup.list_signups(
+                conn, client_id, status=status, before=before, limit=limit
+            )
+
+    @router.post("/signups/{signup_id}/approve", response_model=SignupOut)
+    async def approve_signup(
+        request: Request, signup_id: UUID, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> SignupOut:
+        """Approve a customer's sign-up: one pending subscription at the plan's price now."""
+        actor = writer(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await signup.approve_signup(conn, client_id, signup_id, actor.user_id)
+
+    @router.post("/signups/{signup_id}/decline", response_model=SignupOut)
+    async def decline_signup(
+        request: Request,
+        signup_id: UUID,
+        client_id: Annotated[UUID, Depends(tenant)],
+        payload: DeclineIn | None = None,
+    ) -> SignupOut:
+        """Decline a sign-up; the reason is kept for staff and never sent to the customer."""
+        actor = writer(request, client_id)
+        reason = payload.reason if payload else None
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await signup.decline_signup(conn, client_id, signup_id, actor.user_id, reason)
 
     # `/requests` routes are declared before `/{subscription_id}`, which is also typed UUID.
     @router.get("/requests", response_model=RequestPage)

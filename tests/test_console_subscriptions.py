@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.subscriptions import signup
 from csa.subscriptions.api import build_subscriptions_router
 
 from tests.conftest import requires_docker
@@ -74,8 +75,16 @@ async def test_settings_return_the_tenant_time_zone_to_every_role(sessions: Sess
     await w.q("UPDATE clients SET timezone='UTC' WHERE id=%s", w.tenants[1])
 
     shown = await reader.get(f"{BASE}/settings")
-    assert shown.status_code == 200 and shown.json() == {"timezone": "Asia/Kuching"}
-    assert (await other.get(f"{BASE}/settings")).json() == {"timezone": "UTC"}
+    assert shown.status_code == 200 and shown.json() == {
+        "timezone": "Asia/Kuching",
+        "pending_expiry_days": 14,
+        "version": 0,
+    }
+    assert (await other.get(f"{BASE}/settings")).json() == {
+        "timezone": "UTC",
+        "pending_expiry_days": 14,
+        "version": 0,
+    }
 
 
 async def test_plans_crud_roles_and_isolation(sessions: SessionWorld) -> None:
@@ -97,6 +106,8 @@ async def test_plans_crud_roles_and_isolation(sessions: SessionWorld) -> None:
         "features": ["priority"],
         "sort_order": 0,
         "is_active": True,
+        "signup_mode": "staff",
+        "is_signup_open": True,
     }
     duplicate = await w.mutate(admin, f"{BASE}/plans", body)
     assert duplicate.status_code == 409 and duplicate.json()["detail"] == "plan_exists"
@@ -571,3 +582,244 @@ async def test_create_with_renews_at_anchors_on_it(sessions: SessionWorld) -> No
     )
     assert stored["renewal_anchor"] == datetime(2026, 12, 15, 2, 0, tzinfo=UTC)
     assert stored["renews_at"] == datetime(2026, 12, 15, 2, 0, tzinfo=UTC)
+
+
+async def file_signup_for(
+    w: SessionWorld, tenant: str, contact: str, plan: str = "basic", phone: str = "+60199990000"
+) -> Any:
+    async with tx(w.pool, tenant) as conn:
+        filed = await signup.file_signup(
+            conn, uuid.UUID(tenant), uuid.UUID(contact), plan, "Aisha Rahman", phone
+        )
+    assert filed.request is not None
+    return filed.request
+
+
+async def test_plan_sign_up_switches_travel_through_the_plan_routes(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    reader, _ = await w.member(role="read_only")
+    body = {"code": "gold", "name": "Gold", "price": "59.90", "signup_mode": "auto"}
+    created = await w.mutate(staff, f"{BASE}/plans", {**body, "is_signup_open": False})
+    assert created.status_code == 201, created.text
+    assert created.json()["signup_mode"] == "auto" and created.json()["is_signup_open"] is False
+
+    patched = await w.mutate(staff, f"{BASE}/plans/gold", {"is_signup_open": True}, method="PATCH")
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["is_signup_open"] is True and patched.json()["signup_mode"] == "auto"
+    patched = await w.mutate(staff, f"{BASE}/plans/gold", {"signup_mode": "staff"}, method="PATCH")
+    assert patched.json()["signup_mode"] == "staff" and patched.json()["is_signup_open"] is True
+    kept = await w.mutate(staff, f"{BASE}/plans/gold", {"price": "49.90"}, method="PATCH")
+    assert kept.json()["signup_mode"] == "staff" and kept.json()["is_signup_open"] is True
+
+    listed = await reader.get(f"{BASE}/plans")
+    assert [(p["signup_mode"], p["is_signup_open"]) for p in listed.json()] == [("staff", True)]
+    for bad in ({"signup_mode": "robot"}, {"is_signup_open": "maybe"}):
+        refused = await w.mutate(staff, f"{BASE}/plans/gold", bad, method="PATCH")
+        assert refused.status_code == 422
+    refused = await w.mutate(staff, f"{BASE}/plans", {**body, "code": "x", "signup_mode": "robot"})
+    assert refused.status_code == 422
+
+
+async def test_pending_filter_and_a_signup_subscription_reads_without_a_renewal(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic")
+    alive = await seed_customer(w, w.tenants[0], name="Alive", email="alive@example.test")
+    waiting = await seed_customer(w, w.tenants[0], name="Waiting", email="waiting@example.test")
+    made = await w.mutate(staff, BASE, {"contact_id": alive, "plan_code": "basic"})
+    assert made.status_code == 201, made.text
+    request = await file_signup_for(w, w.tenants[0], waiting)
+    approved = await w.mutate(staff, f"{BASE}/signups/{request.id}/approve")
+    assert approved.status_code == 200, approved.text
+
+    pending = await staff.get(f"{BASE}?status=pending")
+    assert pending.status_code == 200, pending.text
+    items = pending.json()["items"]
+    assert [i["customer"]["full_name"] for i in items] == ["Waiting"]
+    assert items[0]["status"] == "pending" and items[0]["renews_at"] is None
+    assert [
+        i["customer"]["full_name"]
+        for i in (await staff.get(f"{BASE}?status=active")).json()["items"]
+    ] == ["Alive"]
+
+
+async def test_signups_list_approve_decline_roles_and_scope(sessions: SessionWorld) -> None:
+    w = sessions
+    admin, _ = await w.member(role="tenant_admin")
+    staff, _ = await w.member(role="tenant_staff")
+    reader, _ = await w.member(role="read_only")
+    other, _ = await w.member(role="tenant_admin", tenant=w.tenants[1])
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    first = await seed_customer(w, w.tenants[0], name="First", email="first@example.test")
+    second = await seed_customer(w, w.tenants[0], name="Second", email="second@example.test")
+    one = await file_signup_for(w, w.tenants[0], first)
+    two = await file_signup_for(w, w.tenants[0], second)
+
+    # The static path is not mistaken for a subscription id, and every member reads.
+    listed = await reader.get(f"{BASE}/signups")
+    assert listed.status_code == 200, listed.text
+    page = listed.json()
+    assert page["next_cursor"] is None
+    assert [item["id"] for item in page["items"]] == [str(two.id), str(one.id)]
+    shown = page["items"][1]
+    assert shown["status"] == "pending" and shown["plan_code"] == "basic"
+    assert shown["plan_name"] == "Basic" and shown["full_name"] == "Aisha Rahman"
+    assert shown["phone"] == "+60199990000" and shown["phone_verified"] is False
+    assert shown["source_channel"] is None and shown["decided_via"] is None
+    assert shown["contact"]["id"] == first and shown["contact"]["full_name"] == "First"
+    assert shown["contact"]["phone"] == "+60 12-345 6789"
+    assert (await reader.get(f"{BASE}/signups?limit=1")).json()["next_cursor"] == str(two.id)
+    assert (await reader.get(f"{BASE}/signups?status=nope")).status_code == 422
+    assert (await reader.get(f"{BASE}/signups?limit=101")).status_code == 422
+
+    for verb, body in (("approve", None), ("decline", {"reason": "no"})):
+        refused = await w.mutate(reader, f"{BASE}/signups/{one.id}/{verb}", body)
+        assert refused.status_code == 403
+    still = await reader.get(f"{BASE}/signups")
+    assert [item["status"] for item in still.json()["items"]] == ["pending", "pending"]
+
+    approved = await w.mutate(staff, f"{BASE}/signups/{one.id}/approve")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved" and approved.json()["decided_via"] == "staff"
+    sub = approved.json()["subscription_id"]
+    detail = await staff.get(f"{BASE}/{sub}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["subscription"]["status"] == "pending"
+    assert [e["action"] for e in detail.json()["events"]] == ["signup_approved"]
+    again = await w.mutate(admin, f"{BASE}/signups/{one.id}/approve")
+    assert again.status_code == 409 and again.json()["detail"] == "signup_not_pending"
+
+    declined = await w.mutate(admin, f"{BASE}/signups/{two.id}/decline", {"reason": "Out of area"})
+    assert declined.status_code == 200, declined.text
+    assert declined.json()["status"] == "declined"
+    assert declined.json()["decline_reason"] == "Out of area"
+    again = await w.mutate(admin, f"{BASE}/signups/{two.id}/decline", {"reason": "x"})
+    assert again.status_code == 409 and again.json()["detail"] == "signup_not_pending"
+    long = await w.mutate(admin, f"{BASE}/signups/{two.id}/decline", {"reason": "x" * 301})
+    assert long.status_code == 422
+
+    assert [i["id"] for i in (await reader.get(f"{BASE}/signups")).json()["items"]] == []
+    decided = await reader.get(f"{BASE}/signups?status=decided")
+    assert [i["status"] for i in decided.json()["items"]] == ["declined", "approved"]
+
+    # Another company sees nothing, cannot act, and a crossing client_id is refused.
+    assert (await other.get(f"{BASE}/signups?status=decided")).json()["items"] == []
+    for verb, body in (("approve", None), ("decline", {"reason": "no"})):
+        missing = await w.mutate(other, f"{BASE}/signups/{two.id}/{verb}", body)
+        assert missing.status_code == 404 and missing.json()["detail"] == "signup_not_found"
+    crossing = await admin.get(f"{BASE}/signups?client_id={w.tenants[1]}")
+    assert crossing.status_code == 403
+    crossing = await w.mutate(admin, f"{BASE}/signups/{two.id}/approve?client_id={w.tenants[1]}")
+    assert crossing.status_code == 403
+    named = await w.admin.get(f"{BASE}/signups?client_id={w.tenants[1]}")
+    assert named.status_code == 200 and named.json()["items"] == []
+
+    audited = await w.q(
+        "SELECT action FROM console_audit WHERE client_id=%s AND action LIKE %s "
+        "ORDER BY created_at",
+        w.tenants[0],
+        "subscriptions.signup.%",
+    )
+    assert [r["action"] for r in audited] == [
+        "subscriptions.signup.approved",
+        "subscriptions.signup.declined",
+    ]
+
+
+async def test_signup_routes_need_the_package(sessions: SessionWorld) -> None:
+    w = sessions
+    created = await w.mutate(
+        w.admin,
+        "/console/v1/admin/clients",
+        {"slug": f"synthetic-{uuid.uuid4()}", "name": "No Package Tenant"},
+    )
+    assert created.status_code == 201, created.text
+    bare, _ = await w.member(role="tenant_admin", tenant=created.json()["id"])
+    for refused in (
+        await bare.get(f"{BASE}/signups"),
+        await w.mutate(bare, f"{BASE}/signups/{uuid.uuid4()}/approve"),
+        await w.mutate(
+            bare, f"{BASE}/settings", {"pending_expiry_days": 5, "version": 0}, method="PUT"
+        ),
+    ):
+        assert refused.status_code == 403 and refused.json()["detail"] == "package_inactive"
+
+
+async def test_put_settings_is_optimistic_bounded_audited_and_per_company(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    reader, _ = await w.member(role="read_only")
+    other, _ = await w.member(role="tenant_admin", tenant=w.tenants[1])
+    url = f"{BASE}/settings"
+
+    async def put(who: Any, days: int, version: int) -> Any:
+        return await w.mutate(
+            who, url, {"pending_expiry_days": days, "version": version}, method="PUT"
+        )
+
+    assert (await put(reader, 30, 0)).status_code == 403
+    first = await put(staff, 30, 0)  # the first save makes the row
+    assert first.status_code == 200, first.text
+    assert first.json() == {
+        "timezone": "Asia/Kuala_Lumpur",
+        "pending_expiry_days": 30,
+        "version": 1,
+    }
+    assert (await reader.get(url)).json()["pending_expiry_days"] == 30
+
+    stale = await put(staff, 7, 0)
+    assert stale.status_code == 409 and stale.json()["detail"] == "version_conflict"
+    ahead = await put(staff, 7, 5)
+    assert ahead.status_code == 409
+    assert (await reader.get(url)).json()["pending_expiry_days"] == 30
+
+    never = await put(staff, 0, 1)  # 0 means never expire
+    assert never.status_code == 200 and never.json()["pending_expiry_days"] == 0
+    assert never.json()["version"] == 2
+    top = await put(staff, 90, 2)
+    assert top.status_code == 200 and top.json()["version"] == 3
+    for days in (-1, 91):
+        assert (await put(staff, days, 3)).status_code == 422
+    assert (await put(staff, 5, -1)).status_code == 422
+    extra = await w.mutate(
+        staff, url, {"pending_expiry_days": 5, "version": 3, "timezone": "UTC"}, method="PUT"
+    )
+    assert extra.status_code == 422
+    assert (await reader.get(url)).json()["pending_expiry_days"] == 90
+
+    assert (await other.get(url)).json() == {
+        "timezone": "Asia/Kuala_Lumpur",
+        "pending_expiry_days": 14,
+        "version": 0,
+    }
+    rows = await w.q(
+        "SELECT client_id, pending_expiry_days, version FROM subscription_settings "
+        "WHERE client_id IN (%s, %s)",
+        *w.tenants[:2],
+    )
+    assert [(str(r["client_id"]), r["pending_expiry_days"], r["version"]) for r in rows] == [
+        (w.tenants[0], 90, 3)
+    ]
+    audited = await w.q(
+        "SELECT count(*) AS n FROM console_audit WHERE client_id=%s AND action=%s",
+        w.tenants[0],
+        "subscriptions.settings.updated",
+    )
+    assert audited[0]["n"] == 3
+
+
+async def test_customer_lookup_omits_a_merged_shell(sessions: SessionWorld) -> None:
+    w = sessions
+    reader, _ = await w.member(role="read_only")
+    live = await seed_customer(w, w.tenants[0], name="Ali Live", email="ali.live@example.test")
+    shell = await seed_customer(w, w.tenants[0], name="Ali Shell", email="ali.shell@example.test")
+    await w.q("UPDATE contacts SET merged_into=%s WHERE id=%s", live, shell)
+
+    found = await reader.get(f"{BASE}/customers?q=ali")
+    assert [c["id"] for c in found.json()] == [live]
+    assert [c["id"] for c in (await reader.get(f"{BASE}/customers")).json()] == [live]
