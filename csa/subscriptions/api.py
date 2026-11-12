@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from csa.console.access import authenticate, tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.console.services import package_gate
+from csa.contacts.api import build_links_router
 from csa.core.tenancy import tx
 from csa.subscriptions import service, signup
 from csa.subscriptions.contracts import (
@@ -73,7 +74,9 @@ def build_subscriptions_router() -> APIRouter:
         return actor
 
     # `/settings`, `/plans`, `/signups`, `/requests` and `/customers` are declared before
-    # `/{subscription_id}`, which is also typed UUID.
+    # `/{subscription_id}`, which is also typed UUID, and so are `/links` and `/link-reviews`.
+    router.include_router(build_links_router())
+
     @router.get("/settings", response_model=SettingsOut)
     async def settings(
         request: Request, client_id: Annotated[UUID, Depends(tenant)]

@@ -9021,6 +9021,83 @@
         "title": "LeavingOut",
         "type": "object"
       },
+      "LinkIn": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_a": {
+            "format": "uuid",
+            "title": "Contact A",
+            "type": "string"
+          },
+          "contact_b": {
+            "format": "uuid",
+            "title": "Contact B",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_a",
+          "contact_b"
+        ],
+        "title": "LinkIn",
+        "type": "object"
+      },
+      "LinkOut": {
+        "additionalProperties": false,
+        "properties": {
+          "can_unlink": {
+            "title": "Can Unlink",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "loser": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "reason": {
+            "enum": [
+              "verified_phone",
+              "staff"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "survivor": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "unlinked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unlinked At"
+          }
+        },
+        "required": [
+          "id",
+          "survivor",
+          "loser",
+          "reason",
+          "created_at",
+          "unlinked_at",
+          "can_unlink"
+        ],
+        "title": "LinkOut",
+        "type": "object"
+      },
       "LinkedAccount": {
         "additionalProperties": false,
         "properties": {
@@ -9046,6 +9123,54 @@
           "display_name"
         ],
         "title": "LinkedAccount",
+        "type": "object"
+      },
+      "LinkedContact": {
+        "additionalProperties": false,
+        "description": "A contact as the link screens show it: no email, no Telegram account, no prior values.",
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "phone",
+          "channels"
+        ],
+        "title": "LinkedContact",
         "type": "object"
       },
       "ListingPage": {
@@ -12763,6 +12888,24 @@
         "title": "RequestPage",
         "type": "object"
       },
+      "ResolveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "resolution": {
+            "enum": [
+              "dismissed",
+              "linked"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
       "ResolvedGrant": {
         "additionalProperties": false,
         "description": "Trusted permission resolution, NOT a login or a caller-selectable HR role.",
@@ -12788,6 +12931,72 @@
           "scope"
         ],
         "title": "ResolvedGrant",
+        "type": "object"
+      },
+      "ReviewOut": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_a": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "contact_b": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "several_matches",
+              "telegram_conflict",
+              "same_channel_identity",
+              "table_conflict",
+              "previously_unlinked"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "enum": [
+                  "linked",
+                  "dismissed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "contact_a",
+          "contact_b",
+          "reason",
+          "status",
+          "resolution",
+          "created_at"
+        ],
+        "title": "ReviewOut",
         "type": "object"
       },
       "ReviewedNote": {
@@ -15269,6 +15478,23 @@
           "next_cursor"
         ],
         "title": "TurnPage",
+        "type": "object"
+      },
+      "UnlinkResultOut": {
+        "additionalProperties": false,
+        "properties": {
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skipped"
+        ],
+        "title": "UnlinkResultOut",
         "type": "object"
       },
       "UploadOut": {
@@ -31092,6 +31318,447 @@
           }
         },
         "summary": "Customers",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/link-reviews": {
+      "get": {
+        "description": "Pairs of contacts the system could not link by itself, newest first.",
+        "operationId": "list_reviews_console_v1_subscriptions_link_reviews_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "open",
+              "enum": [
+                "open",
+                "resolved"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewOut"
+                  },
+                  "title": "Response List Reviews Console V1 Subscriptions Link Reviews Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reviews",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/link-reviews/{review_id}/resolve": {
+      "post": {
+        "description": "Dismiss a review, or link its pair as staff (a refusal is 409 ``link_refused:<code>``).\n\n404 ``review_not_found``; 409 ``review_not_open``. A pair with a merged contact cannot be\nlinked (409 ``contact_merged``); dismiss it instead.",
+        "operationId": "resolve_review_console_v1_subscriptions_link_reviews__review_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Review",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/links": {
+      "get": {
+        "description": "Links, newest first; with ``contact_id`` those where the contact is survivor or loser.\n\n``channels`` is the contact's identity channels now, plus, for the loser of a link not yet\nundone, the channels its identities had before the link moved them. 404\n``contact_not_found`` for a contact of another company.",
+        "operationId": "list_links_console_v1_subscriptions_links_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Contact Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LinkOut"
+                  },
+                  "title": "Response List Links Console V1 Subscriptions Links Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Links",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "post": {
+        "description": "Link two contacts of the company (reason ``staff``); the survivor is picked for them.",
+        "operationId": "create_link_console_v1_subscriptions_links_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Link",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/links/{link_id}/unlink": {
+      "post": {
+        "description": "Undo a link; ``skipped`` names the contact columns it could not put back.",
+        "operationId": "unlink_console_v1_subscriptions_links__link_id__unlink_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Link Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnlinkResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unlink",
         "tags": [
           "Subscriptions"
         ]
