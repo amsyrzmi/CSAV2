@@ -17,8 +17,12 @@
 --   public.contact_links: one row per link (survivor, loser, reason verified_phone or staff, the ids
 --     of the rows moved from the loser as jsonb, who and when, and unlinked_at/by when undone).
 --   public.contact_link_reviews: one row per pair of contacts that could not be linked on their own
---     (several_matches, telegram_conflict, same_channel_identity), open or resolved (linked or
---     dismissed), with a unique partial index so a pair, in either order, has at most one open review.
+--     (several_matches, telegram_conflict, same_channel_identity, table_conflict), open or resolved
+--     (linked or dismissed), with a unique partial index so a pair, in either order, has at most one
+--     open review.
+--   agent_preparation_requests: csa_app may UPDATE contact_id only (a link moves a staged request
+--     to the survivor with the rest of the customer's rows; every other column stays immutable),
+--     and trg_preparation_contact_tenant (0260) now also fires on UPDATE OF client_id, contact_id.
 --   public.contacts_belong_to_client(): BEFORE INSERT OR UPDATE trigger function on both link tables;
 --     its arguments name the two contact columns of the table and it refuses a contact of another
 --     company, as contact_identity_tenant_check (baseline) does for one column. Runs as the
@@ -36,6 +40,10 @@
 -- Rollback (as the database owner, in this order, with the services stopped): link rows moved the
 --   loser's data to the survivor, so unlink every live link in the console first if any exist
 --   (they cannot be undone after this).
+--   REVOKE UPDATE (contact_id) ON public.agent_preparation_requests FROM csa_app;
+--   DROP TRIGGER trg_preparation_contact_tenant ON public.agent_preparation_requests; CREATE TRIGGER
+--   trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW
+--   EXECUTE FUNCTION public.contact_identity_tenant_check();
 --   DROP TABLE public.contact_link_reviews; DROP TABLE public.contact_links;
 --   DROP FUNCTION public.contacts_belong_to_client();
 --   DROP INDEX public.contacts_verified_phone_uq; DROP INDEX public.contacts_client_phone_digits;
@@ -119,7 +127,9 @@ CREATE TABLE IF NOT EXISTS public.contact_link_reviews (
     contact_a uuid NOT NULL REFERENCES public.contacts(id),
     contact_b uuid NOT NULL REFERENCES public.contacts(id),
     reason text NOT NULL
-        CHECK (reason IN ('several_matches', 'telegram_conflict', 'same_channel_identity')),
+        CHECK (reason IN (
+            'several_matches', 'telegram_conflict', 'same_channel_identity', 'table_conflict'
+        )),
     status text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
     resolution text CHECK (resolution IN ('linked', 'dismissed')),
     resolved_by uuid REFERENCES public.console_users(id),
@@ -145,3 +155,10 @@ DROP TRIGGER IF EXISTS trg_contact_link_review_tenant ON public.contact_link_rev
 CREATE TRIGGER trg_contact_link_review_tenant
     BEFORE INSERT OR UPDATE OF client_id, contact_a, contact_b ON public.contact_link_reviews
     FOR EACH ROW EXECUTE FUNCTION public.contacts_belong_to_client('contact_a', 'contact_b');
+
+-- A link re-points a staged request to the survivor: contact_id only, and still tenant-checked.
+GRANT UPDATE (contact_id) ON public.agent_preparation_requests TO csa_app;
+DROP TRIGGER IF EXISTS trg_preparation_contact_tenant ON public.agent_preparation_requests;
+CREATE TRIGGER trg_preparation_contact_tenant
+    BEFORE INSERT OR UPDATE OF client_id, contact_id ON public.agent_preparation_requests
+    FOR EACH ROW EXECUTE FUNCTION public.contact_identity_tenant_check();

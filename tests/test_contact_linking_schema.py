@@ -288,7 +288,12 @@ def test_link_and_review_checks(migrated_dsn: str) -> None:
                 conn.execute(*_review(c, one, two, **extra))
         with pytest.raises(errors.CheckViolation):
             conn.execute(*_review(c, one, one))
-        for reason in ("several_matches", "telegram_conflict", "same_channel_identity"):
+        for reason in (
+            "several_matches",
+            "telegram_conflict",
+            "same_channel_identity",
+            "table_conflict",
+        ):
             conn.execute(
                 *_review(c, one, two, reason=reason, status="resolved", resolution="linked")
             )

@@ -45,7 +45,8 @@ Reserved ranges (client growth program, 2026-10-27):
   `subscriptions_status_chk` (read from the live list as 0531 does). 0581 adds
   `public.my_phone_digits(text)`, the generated `contacts.phone_digits` (rewrites `contacts`),
   `contacts.phone_verified_at` and `merged_into`, the unique `contacts_verified_phone_uq`, and the
-  `contact_links` and `contact_link_reviews` tables.
+  `contact_links` and `contact_link_reviews` tables, and lets `csa_app` update
+  `agent_preparation_requests.contact_id` only (a link moves staged requests to the survivor).
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

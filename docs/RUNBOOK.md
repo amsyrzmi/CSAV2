@@ -467,7 +467,11 @@ runner thinks it is still applied. Then start the older images.
 
 **Roll back migration 0581.** Needed when going back to an image older than this release. Stop the
 services. Unlink every live link in the console first (rows moved to a surviving contact stay there
-once the link audit is gone). Then, as the database owner and in this order: `DROP TABLE
+once the link audit is gone). Then, as the database owner and in this order: `REVOKE UPDATE
+(contact_id) ON public.agent_preparation_requests FROM csa_app;`, recreate
+`trg_preparation_contact_tenant` as `BEFORE INSERT` only (drop it, then `CREATE TRIGGER
+trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW
+EXECUTE FUNCTION public.contact_identity_tenant_check();`), `DROP TABLE
 public.contact_link_reviews;`, `DROP TABLE public.contact_links;`, `DROP FUNCTION
 public.contacts_belong_to_client();`, `DROP INDEX public.contacts_verified_phone_uq;`, `DROP INDEX
 public.contacts_client_phone_digits;`, `ALTER TABLE public.contacts DROP COLUMN merged_into, DROP
