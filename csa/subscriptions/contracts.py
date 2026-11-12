@@ -35,7 +35,7 @@ class SettingsOut(Contract):
     version: int  # 0 until the company has saved settings; PUT /settings echoes it back
 
 
-class SettingsIn(Contract):
+class SubscriptionSettingsIn(Contract):
     pending_expiry_days: int = Field(ge=0, le=90)
     version: int = Field(ge=0)
 

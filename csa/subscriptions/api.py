@@ -22,7 +22,6 @@ from csa.subscriptions.contracts import (
     PlanPatch,
     RequestOut,
     RequestPage,
-    SettingsIn,
     SettingsOut,
     SignupOut,
     SignupPage,
@@ -31,6 +30,7 @@ from csa.subscriptions.contracts import (
     SubscriptionDetail,
     SubscriptionOut,
     SubscriptionPage,
+    SubscriptionSettingsIn,
 )
 from csa.workspace.contracts import ProposalOut
 from csa.workspace.registry import ProposalRegistry
@@ -84,7 +84,9 @@ def build_subscriptions_router() -> APIRouter:
 
     @router.put("/settings", response_model=SettingsOut)
     async def save_settings(
-        request: Request, payload: SettingsIn, client_id: Annotated[UUID, Depends(tenant)]
+        request: Request,
+        payload: SubscriptionSettingsIn,
+        client_id: Annotated[UUID, Depends(tenant)],
     ) -> SettingsOut:
         """Save the company's settings; a save from an older read is 409 `version_conflict`."""
         actor = writer(request, client_id)

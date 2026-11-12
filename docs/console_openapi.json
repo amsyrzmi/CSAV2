@@ -13289,6 +13289,20 @@
         "title": "ServiceOut",
         "type": "object"
       },
+      "SettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "SettingsIn",
+        "type": "object"
+      },
       "SettingsOut": {
         "additionalProperties": false,
         "properties": {
@@ -14272,6 +14286,28 @@
           "next_cursor"
         ],
         "title": "SubscriptionPage",
+        "type": "object"
+      },
+      "SubscriptionSettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "pending_expiry_days": {
+            "maximum": 90.0,
+            "minimum": 0.0,
+            "title": "Pending Expiry Days",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending_expiry_days",
+          "version"
+        ],
+        "title": "SubscriptionSettingsIn",
         "type": "object"
       },
       "SummaryOut": {
@@ -16259,20 +16295,6 @@
         "title": "ThreadPage",
         "type": "object"
       },
-      "csa__email__models__SettingsIn": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled"
-        ],
-        "title": "SettingsIn",
-        "type": "object"
-      },
       "csa__email__models__ThreadOut": {
         "additionalProperties": false,
         "properties": {
@@ -16434,28 +16456,6 @@
           "last_sync_at"
         ],
         "title": "ThreadPage",
-        "type": "object"
-      },
-      "csa__subscriptions__contracts__SettingsIn": {
-        "additionalProperties": false,
-        "properties": {
-          "pending_expiry_days": {
-            "maximum": 90.0,
-            "minimum": 0.0,
-            "title": "Pending Expiry Days",
-            "type": "integer"
-          },
-          "version": {
-            "minimum": 0.0,
-            "title": "Version",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "pending_expiry_days",
-          "version"
-        ],
-        "title": "SettingsIn",
         "type": "object"
       }
     }
@@ -24060,7 +24060,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/csa__email__models__SettingsIn"
+                "$ref": "#/components/schemas/SettingsIn"
               }
             }
           },
@@ -31646,7 +31646,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/csa__subscriptions__contracts__SettingsIn"
+                "$ref": "#/components/schemas/SubscriptionSettingsIn"
               }
             }
           },

@@ -24,7 +24,6 @@ from csa.subscriptions.contracts import (
     PlanPatch,
     RequestOut,
     RequestPage,
-    SettingsIn,
     SettingsOut,
     Status,
     SubscriptionCreateIn,
@@ -32,6 +31,7 @@ from csa.subscriptions.contracts import (
     SubscriptionEventOut,
     SubscriptionOut,
     SubscriptionPage,
+    SubscriptionSettingsIn,
 )
 from csa.workspace.registry import ProposalRegistry
 
@@ -91,7 +91,7 @@ async def get_settings(conn: Conn, client_id: UUID) -> SettingsOut:
 
 
 async def put_settings(
-    conn: Conn, client_id: UUID, actor: ConsoleActor, data: SettingsIn
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: SubscriptionSettingsIn
 ) -> SettingsOut:
     """Replace the settings. The first save makes the row; a save from an older read is 409."""
     await db.q.execute(

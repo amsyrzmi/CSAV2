@@ -245,6 +245,112 @@ async def test_a_staff_approve_and_an_auto_approve_racing_give_one_subscription(
     assert await count(w, "subscriptions") == 1
 
 
+async def test_approve_after_staff_added_the_customer_by_hand_is_refused(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    request = (await file(w, contact)).request
+    assert request is not None
+    # Staff add the customer to the plan by hand before they get to the request.
+    await w.q(
+        "INSERT INTO subscriptions (client_id, contact_id, plan, status, price, started_at) "
+        "VALUES (%s,%s,'basic','active',29.90,now())",
+        w.tenants[0],
+        contact,
+    )
+
+    assert await refusal(approve(w, request.id)) == (409, "signup_has_plan")
+    assert await count(w, "subscriptions") == 1
+    assert await count(w, "subscription_events") == 0
+    stored = await w.q("SELECT status FROM signup_requests WHERE id=%s", request.id)
+    assert stored == [{"status": "pending"}]  # untouched: staff can decline it
+
+
+async def test_two_filings_at_once_on_an_auto_plan_give_one_subscription(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await w.q(
+        "UPDATE plans SET signup_mode='auto' WHERE client_id=%s AND code='basic'", w.tenants[0]
+    )
+    contacts = [
+        await seed_customer(w, w.tenants[0], phone=f"+6012345{n:04d}", email=f"c{n}@example.test")
+        for n in range(2)
+    ]
+
+    # Two customers, each filing twice at once (say, on Telegram and on WhatsApp). The test pool
+    # has four connections, so this is as many transactions as can overlap.
+    results = await asyncio.gather(*(file(w, c) for c in contacts for _ in range(2)))
+
+    for index, contact in enumerate(contacts):
+        pair = results[2 * index : 2 * index + 2]
+        assert sorted(r.outcome for r in pair) == ["filed", "has_plan"], contact
+    assert await count(w, "subscriptions") == len(contacts)
+    assert await count(w, "signup_requests") == len(contacts)
+    per_contact = await w.q(
+        "SELECT contact_id, count(*) AS n FROM subscriptions WHERE client_id=%s "
+        "GROUP BY contact_id HAVING count(*) > 1",
+        w.tenants[0],
+    )
+    assert per_contact == []
+
+
+async def test_two_filings_at_once_in_staff_mode_give_one_request(sessions: SessionWorld) -> None:
+    w = sessions
+    contact, _ = await world(w)
+
+    first, second = await asyncio.gather(file(w, contact), file(w, contact))
+
+    assert sorted((first.outcome, second.outcome)) == ["exists", "filed"]
+    assert first.request is not None and second.request is not None
+    assert first.request.id == second.request.id
+    assert await count(w, "signup_requests") == 1
+    assert await count(w, "subscriptions") == 0
+
+
+async def test_a_filing_racing_a_staff_approval_never_leaves_a_second_live_row(
+    sessions: SessionWorld,
+) -> None:
+    """Approve and file both take the per-(contact, plan) lock first, then the request row.
+
+    Filing a request beside a staff approval of the same one, for several customers at once:
+    every approval succeeds, no pair deadlocks, and no pending request is left beside a live
+    subscription (the state a later approve would turn into a duplicate).
+    """
+    w = sessions
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    contacts = [
+        await seed_customer(w, w.tenants[0], phone=f"+6012345{n:04d}", email=f"c{n}@example.test")
+        for n in range(2)
+    ]
+    requests = []
+    for contact in contacts:
+        filed = (await file(w, contact)).request
+        assert filed is not None
+        requests.append(filed)
+
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            *(approve(w, r.id) for r in requests),
+            *(file(w, c) for c in contacts),
+            return_exceptions=True,
+        ),
+        timeout=30,
+    )
+
+    assert not [r for r in results if isinstance(r, BaseException)], results
+    assert await count(w, "subscriptions") == len(contacts)
+    beside_live = await w.q(
+        "SELECT r.id FROM signup_requests r JOIN subscriptions s "
+        "ON s.client_id=r.client_id AND s.contact_id=r.contact_id AND s.plan=r.plan_code "
+        "WHERE r.client_id=%s AND r.status='pending' AND s.status IN ('active','paused','pending')",
+        w.tenants[0],
+    )
+    assert beside_live == []
+
+
 async def test_approve_after_the_plan_closed_or_was_archived_is_refused(
     sessions: SessionWorld,
 ) -> None:

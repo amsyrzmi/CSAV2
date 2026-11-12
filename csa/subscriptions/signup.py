@@ -83,6 +83,22 @@ async def list_signups(
     return SignupPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
 
 
+async def _lock_contact_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> None:
+    """Serialise everything that can give one contact a live subscription on one plan.
+
+    Filing and approving both call this first, before any request row is inserted or locked, so
+    they always take the locks in the same order (this advisory lock, then the request row) and
+    cannot deadlock. A decline takes only the row lock, so it cannot be part of a cycle. The lock
+    is held to the end of the transaction and is re-entrant, so an auto-approval inside
+    `file_signup` takes it again at no cost.
+    """
+    await db.q.execute(
+        "subscriptions/advisory_lock.sql",
+        {"key": f"subscriptions:signup:{client_id}:{contact_id}:{plan_code}"},
+        conn=conn,
+    )
+
+
 async def _audit(
     conn: Conn, actor_user_id: UUID | None, client_id: UUID, action: str, request_id: UUID
 ) -> None:
@@ -92,6 +108,15 @@ async def _audit(
         (actor_user_id, client_id, action, str(request_id), Jsonb({})),
         conn=conn,
     )
+
+
+async def _holds_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> bool:
+    held = await db.q.fetch_one(
+        "subscriptions/signup_live_subscription.sql",
+        {"client_id": client_id, "contact_id": contact_id, "plan_code": plan_code},
+        conn=conn,
+    )
+    return held is not None and bool(held["live"])
 
 
 async def file_signup(
@@ -121,12 +146,8 @@ async def file_signup(
         return SignupFiled(None, False, "unknown_plan")
     if not plan["is_signup_open"]:
         return SignupFiled(None, False, "closed")
-    held = await db.q.fetch_one(
-        "subscriptions/signup_live_subscription.sql",
-        {"client_id": client_id, "contact_id": contact_id, "plan_code": plan_code},
-        conn=conn,
-    )
-    if held is not None and held["live"]:
+    await _lock_contact_plan(conn, client_id, contact_id, plan_code)
+    if await _holds_plan(conn, client_id, contact_id, plan_code):
         return SignupFiled(None, False, "has_plan")
     inserted = await db.q.fetch_one(
         "subscriptions/signup_insert.sql",
@@ -165,8 +186,13 @@ async def _approve(
     """Approve under a row lock on the request.
 
     A staff approval racing an auto-approval (or a second staff approval) gives exactly one
-    subscription and one 409.
+    subscription and one 409. The contact and plan of a request never change, so they are read
+    first (no lock), the per-(contact, plan) advisory lock is taken, and only then the request row
+    is locked: the same order `file_signup` uses. A contact who already holds the plan by then
+    (added by hand, or approved through another request) is 409 `signup_has_plan`.
     """
+    seen = await get_signup(conn, client_id, request_id)
+    await _lock_contact_plan(conn, client_id, seen.contact.id, seen.plan_code)
     locked = await db.q.fetch_one(
         "subscriptions/signup_lock.sql",
         {"client_id": client_id, "request_id": request_id},
@@ -176,6 +202,8 @@ async def _approve(
         raise HTTPException(404, "signup_not_found")
     if locked["status"] != "pending":
         raise HTTPException(409, "signup_not_pending")
+    if await _holds_plan(conn, client_id, locked["contact_id"], locked["plan_code"]):
+        raise HTTPException(409, "signup_has_plan")
     # The plan as it is now, shared-locked so an archive or a close cannot land after this read.
     plan = await db.q.fetch_one(
         "subscriptions/plan_get_share.sql",
@@ -231,7 +259,8 @@ async def approve_signup(
     """Staff approve a request.
 
     409 `signup_not_pending` unless it is pending, 409 `plan_not_open` unless the plan is active
-    and open; otherwise one pending subscription at the plan's price now.
+    and open, 409 `signup_has_plan` when the contact already holds a live subscription on the plan;
+    otherwise one pending subscription at the plan's price now.
     """
     return await _approve(conn, client_id, request_id, via="staff", actor_user_id=actor_user_id)
 

@@ -1183,14 +1183,14 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 | `PUT /settings` | writers | Body `{pending_expiry_days (0-90), version}`; returns `SettingsOut`. The first save makes the row (send `version: 0`); a save from an older read is 409 `version_conflict`; out-of-range values are 422; audited `subscriptions.settings.updated` |
 | `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active, signup_mode, is_signup_open}` |
 | `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?, signup_mode?, is_signup_open?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`, `signup_mode` is `staff` (default: staff decide a sign-up) or `auto` (a sign-up is approved at once), `is_signup_open` (default true) says whether customers can sign up for the plan in the chat. 409 `plan_exists`; audited `subscriptions.plan.created` |
-| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
+| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active, paused or pending subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
 | `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
 | `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
 | `GET /signups?status=pending\|decided&before&limit` | any tenant member | `{items, next_cursor}` of `SignupOut` (newest first, keyset `before`, `limit` 1-100; `pending` is the default, `decided` is approved, declined and expired) |
-| `POST /signups/{id}/approve` | writers | No body; returns the approved `SignupOut`. Creates one `pending` subscription at the plan's price now. 404 `signup_not_found`; 409 `signup_not_pending`; 409 `plan_not_open` (the plan was archived or closed to sign-ups; the request stays pending); audited `subscriptions.signup.approved` |
+| `POST /signups/{id}/approve` | writers | No body; returns the approved `SignupOut`. Creates one `pending` subscription at the plan's price now. 404 `signup_not_found`; 409 `signup_not_pending`; 409 `signup_has_plan` (the customer already has an active, paused or pending subscription on the plan, for example added by hand; the request stays pending for staff to decline); 409 `plan_not_open` (the plan was archived or closed to sign-ups; the request stays pending); audited `subscriptions.signup.approved` |
 | `POST /signups/{id}/decline` | writers | Body `{reason?}` (at most 300 characters; optional body); returns the declined `SignupOut`. 404 `signup_not_found`; 409 `signup_not_pending`; audited `subscriptions.signup.declined` |
 | `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
 | `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
@@ -1285,10 +1285,12 @@ channel of the contact's newest identity (null when it has none). `status` is `p
 - One open request per customer and plan: a repeat returns the open one, and a live (active,
   paused or pending) subscription on the plan files nothing.
 - Approve (and the automatic approval) locks the request, refuses unless it is pending (409
-  `signup_not_pending`), reads the plan again (409 `plan_not_open` unless active and open for
-  sign-ups) and creates the `pending` subscription at the plan's price and currency then, with a
+  `signup_not_pending`), refuses (409 `signup_has_plan`) a customer who already holds the plan, reads
+  the plan again (409 `plan_not_open` unless active and open for sign-ups) and creates the `pending` subscription at the plan's price and currency then, with a
   `signup_approved` timeline event (actor the approving user, or `system:signup_auto`). Two
-  approvals at once, or a staff approval racing an automatic one, give one subscription and one 409.
+  approvals at once, or a staff approval racing an automatic one, give one subscription and one 409;
+  filing and approving take a per-customer-and-plan lock first, so two filings at once never leave
+  two live subscriptions.
 - Decline stores the optional reason for staff only; it is never sent to the customer.
 - Staff start a pending subscription with the `activate` action; otherwise it expires after the
   company's `pending_expiry_days`.
