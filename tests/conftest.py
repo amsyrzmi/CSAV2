@@ -64,13 +64,14 @@ def combined_pg_image() -> str:
     (postgis 3.7.0 on 16.15 fails with ``undefined symbol: heap_datum_check``).
     """
     import docker
+    from docker.errors import ImageNotFound
 
     client = docker.from_env()
     pinned = os.environ.get("CSA_DB_IMAGE")
     if pinned:
         try:
             image = client.images.get(pinned)
-        except docker.errors.ImageNotFound:
+        except ImageNotFound:
             image = client.images.pull(pinned)
         repository, tag = _IMAGE_TAG.rsplit(":", 1)
         image.tag(repository, tag)
