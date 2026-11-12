@@ -6,7 +6,7 @@ import { BrandMark } from "@/components/console/shell/BrandMark";
 
 /**
  * The Mito mark: two rounded lobes joined by a pinched waist, a cobalt nucleus in each, drawn
- * as vector geometry (the generated PNGs in docs/branding are the concept, this is the
+ * as vector geometry (the original concept art was generated PNGs, no longer in the repo; this is the
  * production drawing). The lobes are two circles run through a "gooey" filter inside a mask,
  * so the waist is organic and the shape stays connected; the two apertures are cut out of the
  * mask, so they show whatever is behind the mark.

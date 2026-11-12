@@ -5,15 +5,14 @@ description: Design or implement CSA PostgreSQL migrations, tenant-scoped SQL, R
 
 # Change the CSA database safely
 
-Read [AGENTS.md](../../../AGENTS.md), the relevant phase plan, and
-[LG11](../../../docs/langgraph-rebuild/LG11_schema_changes.md) before editing. Inspect
+Read [AGENTS.md](../../../AGENTS.md), including its migration and contract rules,
+and the relevant plan before editing. Inspect
 the dirty worktree and preserve unrelated changes. Current source, migration files and
 tests take precedence over dated schema numbers in handoffs.
 
 ## Design the change
 
-- Use the next ordered migration and keep it additive while legacy n8n uses the owner
-  role. Do not enable `FORCE` RLS. Record preconditions and rollback guidance where the
+- Use the next ordered migration and keep it additive. Do not enable `FORCE` RLS. Record preconditions and rollback guidance where the
   migration convention requires them.
 - Put runtime SQL in `db/sql/` and bind every value. Use psycopg 3 async APIs through
   the existing database helpers; do not add inline application SQL or asyncpg.
@@ -30,7 +29,7 @@ tests take precedence over dated schema numbers in handoffs.
 
 For constraints on populated tables, use a compatibility sequence appropriate to the
 actual data and locking risk. `NOT VALID` still enforces new writes, so do not describe it
-as consequence-free. Concurrent indexes require the migration runner's autocommit path.
+as consequence-free. The runner applies each migration in one transaction, so `CREATE INDEX CONCURRENTLY` is not available.
 
 ## Prove the database behavior
 

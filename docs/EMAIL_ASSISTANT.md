@@ -322,6 +322,15 @@ Mailbox push notifications (Pub/Sub), background sync, label changes,
 attachments, shared or team mailboxes, Outlook and reply-all. Those are later
 phases.
 
+Design notes for when push is built. Gmail push needs more than a Publisher grant
+on the Pub/Sub topic (`gmail-api-push@system.gserviceaccount.com`): the consumer
+needs its own subscriber permission (pull) or JWT validation of issuer, signature
+and audience (authenticated push), persisted and deduplicated history ids with a
+resync when history has expired, acknowledgement only after durable acceptance, and
+renewal of the mailbox `watch` before it expires (at least every seven days). Google
+Calendar does not use that topic: `events.watch` uses HTTPS webhook channels that
+must be stored, token-checked, synced incrementally and renewed before expiry.
+
 ## Validation
 
 - `tests/test_email_contracts.py`: parsing, PKCE, MIME, strict model outputs.

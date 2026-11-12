@@ -67,9 +67,8 @@ The lost session's implementation is saved in commit `72f0e30`
 changes were the existing deletions of two `docs/reviews/2026-10-17-*` documents.
 Those deletions were preserved. No voice source changes were pending.
 
-Read this record, [the voice contract](../CONSOLE_VOICE.md),
-[the workspace voice roadmap](../archive/handoffs/2026-10-21-workspace-agents-roadmap.md#voice-ingress-plus-conversational-rendering-not-a-privileged-agent),
-and [LG15](../langgraph-rebuild/LG15_console_turnover.md) before continuing.
+Read this record and [the voice contract](../CONSOLE_VOICE.md) before continuing
+(the workspace voice roadmap and LG15 it once cited were removed from the repo; see git history).
 The earlier voice entries in `PROGRESS.md` and `CONSOLE_VOICE.md` predate the final
 saved implementation: their statements that hands-free browser voice and Telegram
 transcription are absent are stale.
