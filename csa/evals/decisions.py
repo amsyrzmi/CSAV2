@@ -116,13 +116,18 @@ def to_prediction(case_id: str, provider: str, signals: Signals, latency_ms: flo
 async def run_provider(
     name: str, provider: Classifier, cases: Sequence[DecisionCase], *, concurrency: int = 4
 ) -> list[Prediction]:
+    # Imported here, as in main(): the turn dependencies are heavy for the pure scoring helpers.
+    from csa.turn.deps import CAPABILITIES
+
+    # Every capability on, as the replay script does: a bare Context hides the gated rules.
+    ctx = Context(capabilities=sorted(CAPABILITIES))
     gate = asyncio.Semaphore(concurrency)
 
     async def one(case: DecisionCase) -> Prediction:
         async with gate:
             started = time.monotonic()
             try:
-                signals = await provider.classify(envelope_for(case.text), Context())
+                signals = await provider.classify(envelope_for(case.text), ctx)
             except Exception as exc:
                 return Prediction(
                     case_id=case.id,

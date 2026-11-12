@@ -105,6 +105,54 @@
         "tak payah, takpe. ada plan apa je?",
         "ya"
       ]
+    },
+    {
+      "id": "en-signup",
+      "language": "en",
+      "facts_source": "subscription_agent",
+      "facts_by_turn": [
+        [
+          "To sign up for Plan Besar I still need your full name.",
+          "We keep your name and phone number on your contact record so the team can set up your plan."
+        ],
+        ["To sign up for Plan Besar I still need your phone number."],
+        [
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to confirm, and file nothing yet."
+        ],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."]
+      ],
+      "messages": [
+        "hi, I want to sign up for Plan Besar",
+        "Ali Bin Abu",
+        "0123456789",
+        "yes",
+        "thanks!"
+      ]
+    },
+    {
+      "id": "ms-signup",
+      "language": "ms",
+      "facts_source": "subscription_agent",
+      "facts_by_turn": [
+        [
+          "To sign up for Plan Besar I still need your full name.",
+          "We keep your name and phone number on your contact record so the team can set up your plan."
+        ],
+        ["To sign up for Plan Besar I still need your phone number."],
+        [
+          "Sign-up for Plan Besar: name Siti Binti Ahmad, phone +60123456789. Ask the customer to confirm, and file nothing yet."
+        ],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."]
+      ],
+      "messages": [
+        "hi, nak daftar plan Besar",
+        "Siti Binti Ahmad",
+        "0123456789",
+        "ya betul",
+        "ok terima kasih"
+      ]
     }
   ]
 }

@@ -88,6 +88,45 @@ facts, the fixed staff notes and the inbox line. A change to wording edits only 
 `csa/agents/staged/subscription_facts.py`, `csa/agents/orders/availability.py`, `csa/turn/texts.py` or the
 Malay examples, then re-runs `tests/test_golden.py` and `tests/test_llm_provider.py` in full.
 
+## Customer onboarding
+
+Run this after the rollout that carries migrations 0580 and 0581 (a customer signs up for a plan in the
+chat, and one person on WhatsApp and Telegram becomes one customer). The staging test company needs the
+Subscriptions package with the subscription agent switched on, two plans (one set to "Staff approve", one
+to "Sign up automatically"), a plan closed to new sign-ups, and a Telegram bot and a WhatsApp test number
+to write from. Use synthetic customers and made-up phone numbers only. What staff do with a sign-up, a
+link or a review is in [RUNBOOK.md](RUNBOOK.md), section "Customer onboarding: sign-ups and linked
+contacts". The replay checks only the wording the model gives for the sign-up facts (it needs the model key
+and no database):
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation en-signup
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-signup
+```
+
+| Check | Setup | Expected | Kind |
+| --- | --- | --- | --- |
+| Sign-up replay read-through | `--conversation en-signup`, then `--conversation ms-signup` | Exit 0. Read every reply: it asks for one missing thing at a time, reads the name and phone back before anything is filed, and says nothing is active and nothing has been charged once it is filed; casual Malay in the Malay run | manual |
+| Sign up in English on Telegram | A new Telegram chat: "I want to sign up for <plan>"; give a full name when asked; tap the share-my-number button | One question per message (plan, name, then the phone). The share button appears once, when the phone is asked for. After the share the bot does not ask for the phone again; it reads back the plan and name and refers to the number already on the chat. A "yes" files the sign-up: it appears in the console under Subscriptions, Sign-ups, with the phone marked "Verified" | manual |
+| Sign up in Malay on Telegram | The same in Malay ("nak daftar plan <plan>") with a new chat | The same steps in casual Malay, no `anda` or `sila`; the read-back and the filed confirmation are in Malay; the Sign-ups row is the same | manual |
+| Sign up in English on WhatsApp | A new WhatsApp chat from a synthetic number: sign up for the plan set to "Staff approve" | The bot never asks for the phone, because WhatsApp gave it; the read-back refers to the number already on the chat. A "yes" files the sign-up, marked "Verified"; the reply says the team will review it and nothing has been charged | manual |
+| Sign up in Malay on WhatsApp | The same in Malay | The same steps in casual Malay; the sign-up row is the same | manual |
+| A sign-up that needs no approval | Sign up for the plan set to "Sign up automatically" | The sign-up shows under "Decided sign-ups" as "Approved automatically" at once; a subscription "Waiting to start" appears under Customers; the customer is told it is waiting to be started, never that it is active or paid | manual |
+| An "ok" that does not answer the read-back files nothing | During a sign-up, when the bot has read the sign-up back, ask a question first (for example "what does the plan include?"), then reply "ok" to that answer | No sign-up is filed and nothing appears in the Sign-ups tab; the bot reads the sign-up back again. A yes (an "ok" included) files it only when it answers the read-back itself, as the latest reply; an "ok" with no read-back just before it files nothing (covered by the golden case `cs_signup_bare_ok_not_confirm_en`) | manual |
+| Another customer's number typed | In a Telegram chat that has not shared a number, type the phone number of an existing synthetic customer (one with a subscription) when asked | The sign-up is filed (or read back) with the number "Not verified"; the two contacts are not linked, no "Linked contacts" panel appears for either, and nothing about the other customer (name, plan) is said in the chat | manual |
+| Telegram share, then a WhatsApp message | An existing customer who has a WhatsApp chat with a subscription: from a new Telegram chat share the same number with the share button; then send a message from the WhatsApp number | One customer, not two: the subscription's "Linked contacts" panel lists both chats ("Matched by a verified phone number"), and both chats' messages appear on the one customer. A message from either chat reaches the bot without an error. In the console, Unlink (within 30 days) separates them again | manual |
+| A forwarded contact card is refused | In Telegram send a contact card that someone else shared (forward a contact card, or share the contact of another person) instead of using the share button | The bot answers "Please use the button to share your own number."; nothing is stored, no contact is created or changed and no phone is marked verified | manual |
+| A closed plan | Ask to sign up for the plan marked "Closed to new sign-ups" | The bot says at once that the plan is not taking new sign-ups and asks for no name or phone; no sign-up is filed and nothing appears in the Sign-ups tab | manual |
+| A company without subscriptions | A staging company with only the TikTok Shop service: "how do I sign up" and "what plan am I on" | An honest "I don't have that information" with an offer to pass it to a person; no sign-up wording and no plan names. Covered by `cs_signup_not_offered_tiktok_only_*` in the golden cases | manual |
+| Pending subscription expiry | Approve a sign-up, then (staging only, with the owner's agreement) lower "Pending sign-ups expire after" to 1 day and wait, or back-date `subscriptions.started_at` of the waiting subscription by two days | Within about five minutes of the job the subscription shows Cancelled, the sign-up shows "Expired", and the timeline has "Expired before it started, so it was cancelled."; nobody is messaged. Put the setting back to 14 | manual |
+| Callback taps and contact shares | Golden only: golden cases cannot send a button tap or a contact share. The ingress tests (`test_ingress.py`, `test_telegram.py`, `test_delivery_buttons.py`, `test_staged_agents.py`) cover them | The rows above are the only end-to-end check | golden only |
+
+Owner decision still open: the sign-up's data sentence ("We keep your name and phone number on your
+contact record so the team can set up your plan.") says "on your contact record", but a number the
+customer types stays on the sign-up request and is not written to the contact (only a number the channel
+verified is). Read it in the Telegram and WhatsApp runs above and decide whether the wording should say "on
+your sign-up request" or leave the promise as it is.
+
 ## Calibration
 
 The Malay register (a glossary and 12 examples in `_MS_GLOSSARY` and `_MS_EXAMPLES`, in

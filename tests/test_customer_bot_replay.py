@@ -226,6 +226,29 @@ def test_the_shipped_script_has_the_decline_then_ok_conversations() -> None:
     assert english.facts is None and malay.facts is None
 
 
+def test_the_shipped_script_has_the_sign_up_conversations() -> None:
+    # Ask, read back, a yes right after the read-back, then "received": the facts the subscription
+    # agent gives each turn, in English and in casual Malay.
+    from scripts.customer_bot_replay import SCRIPT_FILE, load_script
+
+    by_id = {c.id: c for c in load_script(SCRIPT_FILE).conversations}
+    for conversation_id, language in (("en-signup", "en"), ("ms-signup", "ms")):
+        conversation = by_id[conversation_id]
+        assert conversation.language == language
+        assert conversation.facts_source == "subscription_agent"
+        turns = conversation.facts_by_turn
+        assert turns is not None and len(turns) == len(conversation.messages) >= 4
+        joined = [" ".join(facts) for facts in turns]
+        assert "I still need your full name." in joined[0]
+        assert "We keep your name and phone number on your contact record" in joined[0]
+        assert "I still need your phone number." in joined[1]
+        assert joined[2].startswith("Sign-up for ") and "Ask the customer to confirm" in joined[2]
+        assert "was received. The team will review it" in joined[3]
+        assert not any("approved" in text for text in joined)
+        # Synthetic only: the number in the read-back is the test number.
+        assert "+60123456789" in joined[2]
+
+
 async def test_facts_differ_per_turn_and_carry_their_agent_as_source() -> None:
     from scripts.customer_bot_replay import ReplayScript, replay
 

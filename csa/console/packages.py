@@ -77,8 +77,8 @@ PACKAGES: tuple[Package, ...] = (
         key="subscriptions",
         title="Subscriptions",
         summary=(
-            "Keeps your plans and customers' subscriptions, "
-            "and lets staff change them or answer requests."
+            "Keeps your plans and customers' subscriptions, lets customers sign up from the "
+            "chat, and lets staff change them or answer requests."
         ),
         kind="addon",
         requires=("customer_support",),

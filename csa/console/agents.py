@@ -42,7 +42,8 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     "subscription_agent": (
         "Subscriptions",
         "prepared_only",
-        "Local plans/status and unexecuted requests. No payment or billing execution.",
+        "Local plans/status, sign-ups from the chat and unexecuted requests. "
+        "No payment or billing execution.",
     ),
     "ecommerce_agent": (
         "E-commerce",

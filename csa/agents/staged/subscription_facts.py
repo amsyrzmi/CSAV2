@@ -3,7 +3,8 @@
 Every fact states what the rows say, in words that read properly on their own, because when a
 reply cannot be checked they are sent as they stand. Fact ids are constants (with an index where
 there are several): never a subscription id, a plan code or anything of the contact's. A request
-fact never says the thing is done: staff decide, and nothing changes until they do.
+fact never says the thing is done: staff decide, and nothing changes until they do. A sign-up
+fact never says it is approved or active: it is received, or registered and waiting to start.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from csa.contracts.facts import Fact
 SUBSCRIPTION_SOURCE = "subscription_agent"
 # `pending` waits for the status a later change adds; the live SQL allowlist already names it.
 LIVE_STATUSES = ("active", "paused", "pending")
-# A customer's request acts only on these (a plan waiting for payment cannot be changed yet).
+# A customer's request acts only on these (a plan waiting to be started cannot be changed yet).
 REQUESTABLE_STATUSES = frozenset({"active", "paused"})
 
 NONE_TEXT = "I can't find a subscription linked to this chat."
@@ -68,7 +69,9 @@ def _line(row: Mapping[str, Any], timezone: str) -> str | None:
         until = f" until {resume.strftime('%d %b %Y')}" if resume else ""
         text = f"Your plan: {name} is paused{until}."
     elif status == "pending":
-        text = f"Your plan: {price}, is waiting for payment."
+        text = (
+            f"Your plan: {price}, is waiting to be started by the team. Nothing has been charged."
+        )
     elif status == "active":
         text = f"Your plan: {price}."
         if row.get("cancel_at_period_end"):
@@ -132,7 +135,75 @@ def request_fact(
     elif kind == "already_paused":
         text = f"{name} is already paused."
     elif kind == "waiting":
-        text = f"{name} is waiting for payment, so it can't be paused, cancelled or changed yet."
+        text = (
+            f"{name} is waiting to be started by the team and nothing has been charged, so it "
+            "can't be paused, cancelled or changed yet. The team can help with any question "
+            "about it."
+        )
     else:
         text = NONE_TEXT
     return _fact(f"subscription_{kind}", text)
+
+
+# Sign-up (request_signup). The composer rewrites these in the customer's language and register;
+# they still read properly when sent as they stand. They name the plan and, in the read-back, what
+# the customer typed: never anything of another contact, a decline reason or an id.
+SIGNUP_DATA_NOTE = (
+    "We keep your name and phone number on your contact record so the team can set up your plan."
+)
+# The read-back says this instead of the digits of a phone the channel verified.
+VERIFIED_PHONE = "the number already on this chat"
+
+SignupKind = Literal[
+    "missing",
+    "data_note",
+    "readback",
+    "phone_invalid",
+    "filed",
+    "filed_auto",
+    "exists",
+    "has_plan",
+    "closed",
+    "which",
+    "try_later",
+]
+
+
+def signup_fact(
+    kind: SignupKind,
+    n: int = 1,
+    *,
+    plan: str | None = None,
+    field: Literal["full name", "phone number"] | None = None,
+    name: str | None = None,
+    phone: str | None = None,
+) -> Fact:
+    """One sign-up fact; its id is the kind and its place in the result (`signup_missing_1`)."""
+    texts: dict[str, str] = {
+        "missing": f"To sign up for {plan} I still need your {field}.",
+        "data_note": SIGNUP_DATA_NOTE,
+        "readback": (
+            f"Sign-up for {plan}: name {name}, phone {phone}. Ask the customer to confirm, and "
+            "file nothing yet."
+        ),
+        "phone_invalid": (
+            "That phone number does not look right. Ask for it again with the area or country code."
+        ),
+        "filed": (
+            f"Your sign-up for {plan} was received. The team will review it and tell you what "
+            "happens next. Nothing is active yet and nothing has been charged."
+        ),
+        "filed_auto": (
+            f"Your sign-up for {plan} is registered and waiting to be started. Nothing has been "
+            "charged."
+        ),
+        "exists": f"You already have a sign-up for {plan} waiting for the team.",
+        "has_plan": f"You already have {plan}.",
+        "closed": f"{plan} is not taking new sign-ups right now.",
+        "which": "To sign up I still need to know which plan you want.",
+        "try_later": (
+            "The sign-up could not be filed just now, so nothing was filed. Ask the customer to "
+            "try again in a little while."
+        ),
+    }
+    return _fact(f"signup_{kind}_{n}", texts[kind])

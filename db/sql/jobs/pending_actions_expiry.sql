@@ -8,7 +8,10 @@ WITH expired AS (
   LIMIT %s
 ), upd AS (
   UPDATE pending_actions pa
-  SET status = 'expired'
+  SET status = 'expired',
+      -- A sign-up draft holds a typed name and phone: cleared when it expires. Other actions'
+      -- payloads are consumed elsewhere and stay.
+      payload = CASE WHEN pa.action = 'signup_draft' THEN '{}'::jsonb ELSE pa.payload END
   FROM expired e
   WHERE pa.id = e.id AND pa.client_id = %s
   RETURNING pa.id

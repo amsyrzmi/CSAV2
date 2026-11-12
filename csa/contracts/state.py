@@ -72,6 +72,10 @@ class Context(ContractModel):
     # The last messages of this conversation, oldest first, before the one being answered. Redacted
     # text, which the customer controls, so untrusted like the message itself.
     recent: list[RecentMessage] = Field(default_factory=list, max_length=RECENT_WINDOW)
+    # The company's capabilities that are switched on (capability_registry). The classifier and
+    # the planner are told of subscription_agent and ecommerce_agent, and their rules, only when
+    # they are here: a company that does not sell plans hears nothing of plans or sign-ups.
+    capabilities: list[str] = Field(default_factory=list, max_length=100)
 
 
 class GuardResult(ContractModel):

@@ -32,15 +32,17 @@ from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin
 
 # Which statuses each action may start from; the card refuses anything else.
 ALLOWED_FROM: dict[Action, frozenset[str]] = {
+    "activate": frozenset({"pending"}),
     "pause": frozenset({"active"}),
     "resume": frozenset({"paused"}),
     "change_plan": frozenset({"active", "paused"}),
     "cancel_at_period_end": frozenset({"active"}),
-    "cancel_now": frozenset({"active", "paused"}),
+    "cancel_now": frozenset({"active", "paused", "pending"}),
     "extend_renewal": frozenset({"active"}),
 }
 
 TITLES: dict[Action, str] = {
+    "activate": "Start the subscription",
     "pause": "Pause subscription",
     "resume": "Resume subscription",
     "change_plan": "Change plan",
@@ -51,6 +53,7 @@ TITLES: dict[Action, str] = {
 
 # Timeline event names, past tense like the due job's (``resumed``, ``plan_changed``).
 EVENTS: dict[Action, str] = {
+    "activate": "activated",
     "pause": "paused",
     "resume": "resumed",
     "change_plan": "plan_changed",
@@ -218,6 +221,8 @@ def _change(
 ) -> str:
     """One plain sentence saying what confirming the card will do."""
     match action.action:
+        case "activate":
+            return "Start now. The first renewal is one billing period from today."
         case "pause":
             if action.resume_at is None:
                 return "Pause now until someone resumes it."
@@ -464,6 +469,8 @@ class SubscriptionActionExecutor:
                 raise RuntimeError(f"subscription {action.subscription_id} apply matched no row")
             details: dict[str, Any] = {}
             match action.action:
+                case "activate":
+                    details = {"new_renews_at": _iso(applied["renews_at"])}
                 case "pause":
                     details = {"resume_at": _iso(action.resume_at)}
                 case "resume":

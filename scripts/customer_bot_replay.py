@@ -60,7 +60,7 @@ from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient
 from csa.decide.llm import ClientBrand, LLMProvider
-from csa.turn.deps import build_llm_provider
+from csa.turn.deps import CAPABILITIES, build_llm_provider
 from csa.turn.texts import (
     clip_message,
     fallback_staff_note,
@@ -275,7 +275,12 @@ async def replay(
         for turn, text in enumerate(conversation.messages):
             envelope = _envelope(conversation, text, turn)
             facts = _facts_for_turn(conversation, shared, turn)
-            ctx = Context(recent=recent[-RECENT_WINDOW:], flags={"handoff_recent": handoff_told})
+            # The script's company sells plans and has a TikTok Shop: every agent is on.
+            ctx = Context(
+                recent=recent[-RECENT_WINDOW:],
+                flags={"handoff_recent": handoff_told},
+                capabilities=sorted(CAPABILITIES),
+            )
             out(f"[{turn + 1}] customer: {text}")
             try:
                 reply, how, answers, staff = await _reply(llm, brand, facts, envelope, ctx)

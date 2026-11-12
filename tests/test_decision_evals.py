@@ -181,6 +181,19 @@ def test_agreement_and_report() -> None:
     assert "intent 50%" in report
 
 
+async def test_run_provider_classifies_with_every_capability_switched_on() -> None:
+    # A bare Context has no capabilities, which hides the gated rules (subscriptions, TikTok).
+    seen: list[list[str]] = []
+
+    class Recording:
+        async def classify(self, envelope: Any, ctx: Context) -> Signals:
+            seen.append(ctx.capabilities)
+            return Signals(provider="jev", version="v")
+
+    await run_provider("jev", Recording(), [_case("ok", "order")])
+    assert seen == [sorted(CAPABILITIES)]
+
+
 async def test_run_provider_records_errors_without_stopping() -> None:
     class Flaky:
         async def classify(self, envelope: Any, ctx: Context) -> Signals:

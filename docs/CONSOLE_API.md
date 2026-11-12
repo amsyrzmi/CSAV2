@@ -1178,29 +1178,40 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /settings` | any tenant member | `{timezone}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar |
-| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
-| `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
-| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
+| `GET /settings` | any tenant member | `{timezone, pending_expiry_days, version}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar, and the days a pending subscription waits before it expires (default 14 until the company saves a value; `0` means never; `version` is 0 until the first save) |
+| `PUT /settings` | writers | Body `{pending_expiry_days (0-90), version}`; returns `SettingsOut`. The first save makes the row (send `version: 0`); a save from an older read is 409 `version_conflict`; out-of-range values are 422; audited `subscriptions.settings.updated` |
+| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active, signup_mode, is_signup_open}` |
+| `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?, signup_mode?, is_signup_open?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`, `signup_mode` is `staff` (default: staff decide a sign-up) or `auto` (a sign-up is approved at once), `is_signup_open` (default true) says whether customers can sign up for the plan in the chat. 409 `plan_exists`; audited `subscriptions.plan.created` |
+| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active, paused or pending subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
 | `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
 | `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
+| `GET /signups?status=pending\|decided&before&limit` | any tenant member | `{items, next_cursor}` of `SignupOut` (newest first, keyset `before`, `limit` 1-100; `pending` is the default, `decided` is approved, declined and expired) |
+| `POST /signups/{id}/approve` | writers | No body; returns the approved `SignupOut`. Creates one `pending` subscription at the plan's price now. 404 `signup_not_found`; 409 `signup_not_pending`; 409 `signup_has_plan` (the customer already has an active, paused or pending subscription on the plan, for example added by hand; the request stays pending for staff to decline); 409 `plan_not_open` (the plan was archived or closed to sign-ups; the request stays pending); audited `subscriptions.signup.approved` |
+| `POST /signups/{id}/decline` | writers | Body `{reason?}` (at most 300 characters; optional body); returns the declined `SignupOut`. 404 `signup_not_found`; 409 `signup_not_pending`; audited `subscriptions.signup.declined` |
+| `GET /links?contact_id=&limit=` | any tenant member | `LinkOut[]` (newest first, `limit` 1-200, default 100): `{id, survivor, loser, reason (verified_phone\|staff), created_at, unlinked_at, can_unlink}`, `survivor` and `loser` being `{id, full_name, phone, channels}`. With `contact_id` only links where that contact is survivor or loser (404 `contact_not_found` for a contact of another company). `channels` is the distinct `contact_identities.channel` of the contact now; for the loser of a link not yet undone it also lists the channels its identities had before the link moved them to the survivor. `can_unlink` is true while the link is not undone, is under 30 days old and no later active link involves either contact: the same rule `unlink` enforces. Never returns what a link moved, email or a Telegram account |
+| `POST /links` | writers | Body `{contact_a, contact_b}`; 201 `LinkOut` with reason `staff`. The survivor is the contact holding a subscription, else the older. 404 `contact_not_found` (unknown contact or another company's); 422 `same_contact`; 409 `contact_merged` (either is already a merged shell); 409 `link_refused:<code>` with the refusal after the colon (`telegram_conflict`, `same_channel_identity`, `table_conflict`; nothing changed); audited `contacts.link.created` |
+| `POST /links/{id}/unlink` | writers | No body; 200 `{skipped}`, the contact columns the unlink left alone as `role.column` (for example `survivor.telegram_id`: changed since the link, or taken by another contact), `[]` for a plain unlink. 404 `link_not_found`; 409 `link_not_active` (already undone), `unlink_window_closed` (older than 30 days), `later_link_active` (undo the newer link first), `survivor_merged` (the survivor was linked into another contact since); audited `contacts.link.removed` |
+| `GET /link-reviews?status=open\|resolved&limit=` | any tenant member | `ReviewOut[]` (newest first, `limit` 1-200, `open` is the default): `{id, contact_a, contact_b, reason (several_matches\|telegram_conflict\|same_channel_identity\|table_conflict\|previously_unlinked), status, resolution (linked\|dismissed\|null), created_at}`, the contacts being `{id, full_name, phone, channels}` as in `LinkOut` |
+| `POST /link-reviews/{id}/resolve` | writers | Body `{resolution: dismissed\|linked}`; returns the settled `ReviewOut`. `dismissed` closes the review and links nothing; `linked` links the pair as staff (reason `staff`; 409 `link_refused:<code>` leaves the review open, and 409 `contact_merged` when one of the pair is already a merged shell: dismiss it). 404 `review_not_found`; 409 `review_not_open`; audited `contacts.review.dismissed` or `contacts.review.linked` |
 | `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
 | `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
 
 "Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
 who select a tenant with `?client_id=`. Every member of the tenant may read, including
 `read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
-paths (`/settings`, `/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+paths (`/settings`, `/plans`, `/signups`, `/links`, `/link-reviews`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
 "Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
 collection) with an active plan and an optional start date.
 
 ### Statuses and flags
 
-`status` is `active`, `paused` or `cancelled` (a database check since `0480`; legacy values
-become `cancelled` in the migration). `version` increases on every change and binds a card.
+`status` is `pending`, `active`, `paused` or `cancelled` (a database check since `0480`, `pending` since
+`0580`; legacy values become `cancelled` in the migration). A `pending` subscription is an approved
+customer sign-up that staff have not started: no `renews_at` and no renewal anchor, so it cannot be
+paused or renewed, only started (`activate`) or cancelled. `version` increases on every change and binds a card.
 Flags: `cancel_at_period_end` (cancel when `renews_at` passes), `pending_plan` with
 `pending_effective_at` (a scheduled plan change) and `resume_at` (a date on which a paused
 subscription resumes).
@@ -1213,15 +1224,16 @@ payload carries.
 
 | Action | From | Fields | Effect |
 |---|---|---|---|
+| `activate` | pending | none | "Start the subscription": active; `started_at` and `activated_at` are now; `renews_at` and the renewal anchor are one billing period on the tenant's calendar from now |
 | `pause` | active | optional `resume_at` (date, after today on the tenant's calendar) | paused; `resume_at` set when given |
 | `resume` | paused | none | active; `resume_at` cleared; a lapsed or missing (`NULL`) `renews_at` becomes one billing interval from now |
 | `change_plan` | active, paused | `plan_code` (required), `effective_at`, `price_override` | absent or past `effective_at` changes now at the new plan's current price; a future one sets `pending_plan` and `pending_effective_at` |
 | `cancel_at_period_end` | active, not already flagged, with a `renews_at` | none | sets `cancel_at_period_end` |
-| `cancel_now` | active, paused | none | cancelled immediately; `cancelled_at` set; pending plan, resume date and period-end flag cleared |
+| `cancel_now` | active, paused, pending | none | cancelled immediately; `cancelled_at` set; pending plan, resume date and period-end flag cleared |
 | `extend_renewal` | active | `renews_at` (required) | moves `renews_at`; must be after the current one |
 
-Each executed action records one timeline event keyed by the proposal id (`paused`,
-`resumed`, `plan_changed`, `plan_change_scheduled`, `cancel_scheduled`, `cancelled`,
+Each executed action records one timeline event keyed by the proposal id (`activated`,
+`paused`, `resumed`, `plan_changed`, `plan_change_scheduled`, `cancel_scheduled`, `cancelled`,
 `renewal_extended`), so a confirm replayed after commit returns the same receipt rather
 than acting twice. The card runs the same checks at create and again at confirm; a
 subscription that changed in between fails the confirm with 409 `proposal_stale`. An
@@ -1259,6 +1271,35 @@ existing subscription; the price a subscription pays moves only through a plan c
 timeline records `price_override: true` with the old and new price. A scheduled change is
 applied by the due job at the plan's price on the day, not the price quoted when it was
 scheduled.
+
+### Sign-ups
+
+A customer signs up for a plan in the chat; the bot files one `signup_requests` row (migration
+`0580`) and the request waits for staff, or for the plan: a plan with `signup_mode: "auto"`
+approves it in the same transaction as the filing. `SignupOut` is `{id, contact: {id, full_name,
+phone, email}, plan_code, plan_name, full_name, phone, phone_verified, status, decided_via,
+decline_reason, subscription_id, created_at, decided_at, source_channel}`. `contact` is the
+contact record as it stands. `full_name` and `phone` are what the customer typed (the phone
+normalised); the typed phone stays on the request and is never copied to the contact, and no
+route edits a contact's phone: when the customer already has another contact, staff link the two
+contacts by hand (`POST /links`). `phone_verified` is true only when the
+contact's phone was verified by its channel and equals the typed number. `source_channel` is the
+channel of the contact's newest identity (null when it has none). `status` is `pending`,
+`approved`, `declined` or `expired`; `decided_via` is `staff` or `auto`.
+
+- One open request per customer and plan: a repeat returns the open one, and a live (active,
+  paused or pending) subscription on the plan files nothing.
+- Approve (and the automatic approval) locks the request, refuses unless it is pending (409
+  `signup_not_pending`), refuses (409 `signup_has_plan`) a customer who already holds the plan,
+  reads the plan again (409 `plan_not_open` unless active and open for sign-ups) and creates the
+  `pending` subscription at the plan's price and currency then, with a `signup_approved` timeline
+  event (actor the approving user, or `system:signup_auto`). Two
+  approvals at once, or a staff approval racing an automatic one, give one subscription and one 409;
+  filing and approving take a per-customer-and-plan lock first, so two filings at once never leave
+  two live subscriptions.
+- Decline stores the optional reason for staff only; it is never sent to the customer.
+- Staff start a pending subscription with the `activate` action; otherwise it expires after the
+  company's `pending_expiry_days`.
 
 ### Request queue
 

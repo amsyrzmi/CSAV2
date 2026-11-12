@@ -718,6 +718,7 @@
         "properties": {
           "action": {
             "enum": [
+              "activate",
               "pause",
               "resume",
               "change_plan",
@@ -5357,6 +5358,25 @@
         "title": "DecideIn",
         "type": "object"
       },
+      "DeclineIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "DeclineIn",
+        "type": "object"
+      },
       "DepartmentList": {
         "additionalProperties": false,
         "properties": {
@@ -9001,6 +9021,83 @@
         "title": "LeavingOut",
         "type": "object"
       },
+      "LinkIn": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_a": {
+            "format": "uuid",
+            "title": "Contact A",
+            "type": "string"
+          },
+          "contact_b": {
+            "format": "uuid",
+            "title": "Contact B",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_a",
+          "contact_b"
+        ],
+        "title": "LinkIn",
+        "type": "object"
+      },
+      "LinkOut": {
+        "additionalProperties": false,
+        "properties": {
+          "can_unlink": {
+            "title": "Can Unlink",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "loser": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "reason": {
+            "enum": [
+              "verified_phone",
+              "staff"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "survivor": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "unlinked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unlinked At"
+          }
+        },
+        "required": [
+          "id",
+          "survivor",
+          "loser",
+          "reason",
+          "created_at",
+          "unlinked_at",
+          "can_unlink"
+        ],
+        "title": "LinkOut",
+        "type": "object"
+      },
       "LinkedAccount": {
         "additionalProperties": false,
         "properties": {
@@ -9026,6 +9123,54 @@
           "display_name"
         ],
         "title": "LinkedAccount",
+        "type": "object"
+      },
+      "LinkedContact": {
+        "additionalProperties": false,
+        "description": "A contact as the link screens show it: no email, no Telegram account, no prior values.",
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "phone",
+          "channels"
+        ],
+        "title": "LinkedContact",
         "type": "object"
       },
       "ListingPage": {
@@ -11662,6 +11807,11 @@
             "title": "Features",
             "type": "array"
           },
+          "is_signup_open": {
+            "default": true,
+            "title": "Is Signup Open",
+            "type": "boolean"
+          },
           "name": {
             "maxLength": 120,
             "minLength": 1,
@@ -11679,6 +11829,15 @@
               }
             ],
             "title": "Price"
+          },
+          "signup_mode": {
+            "default": "staff",
+            "enum": [
+              "staff",
+              "auto"
+            ],
+            "title": "Signup Mode",
+            "type": "string"
           },
           "sort_order": {
             "default": 0,
@@ -11724,12 +11883,24 @@
             "title": "Is Active",
             "type": "boolean"
           },
+          "is_signup_open": {
+            "title": "Is Signup Open",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
           },
           "price": {
             "title": "Price",
+            "type": "string"
+          },
+          "signup_mode": {
+            "enum": [
+              "staff",
+              "auto"
+            ],
+            "title": "Signup Mode",
             "type": "string"
           },
           "sort_order": {
@@ -11745,7 +11916,9 @@
           "billing_interval",
           "features",
           "sort_order",
-          "is_active"
+          "is_active",
+          "signup_mode",
+          "is_signup_open"
         ],
         "title": "PlanOut",
         "type": "object"
@@ -11794,6 +11967,17 @@
             ],
             "title": "Is Active"
           },
+          "is_signup_open": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Signup Open"
+          },
           "name": {
             "anyOf": [
               {
@@ -11821,6 +12005,21 @@
               }
             ],
             "title": "Price"
+          },
+          "signup_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signup Mode"
           },
           "sort_order": {
             "anyOf": [
@@ -12689,6 +12888,24 @@
         "title": "RequestPage",
         "type": "object"
       },
+      "ResolveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "resolution": {
+            "enum": [
+              "dismissed",
+              "linked"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
       "ResolvedGrant": {
         "additionalProperties": false,
         "description": "Trusted permission resolution, NOT a login or a caller-selectable HR role.",
@@ -12714,6 +12931,72 @@
           "scope"
         ],
         "title": "ResolvedGrant",
+        "type": "object"
+      },
+      "ReviewOut": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_a": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "contact_b": {
+            "$ref": "#/components/schemas/LinkedContact"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "several_matches",
+              "telegram_conflict",
+              "same_channel_identity",
+              "table_conflict",
+              "previously_unlinked"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "enum": [
+                  "linked",
+                  "dismissed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "contact_a",
+          "contact_b",
+          "reason",
+          "status",
+          "resolution",
+          "created_at"
+        ],
+        "title": "ReviewOut",
         "type": "object"
       },
       "ReviewedNote": {
@@ -13232,13 +13515,23 @@
       "SettingsOut": {
         "additionalProperties": false,
         "properties": {
+          "pending_expiry_days": {
+            "title": "Pending Expiry Days",
+            "type": "integer"
+          },
           "timezone": {
             "title": "Timezone",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
-          "timezone"
+          "timezone",
+          "pending_expiry_days",
+          "version"
         ],
         "title": "SettingsOut",
         "type": "object"
@@ -13392,6 +13685,170 @@
           "expires_at"
         ],
         "title": "SignedDownloadLinkOut",
+        "type": "object"
+      },
+      "SignupOut": {
+        "additionalProperties": false,
+        "properties": {
+          "contact": {
+            "$ref": "#/components/schemas/CustomerRef"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_via": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staff",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided Via"
+          },
+          "decline_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decline Reason"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "phone_verified": {
+            "title": "Phone Verified",
+            "type": "boolean"
+          },
+          "plan_code": {
+            "title": "Plan Code",
+            "type": "string"
+          },
+          "plan_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Name"
+          },
+          "source_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Channel"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "declined",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subscription_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subscription Id"
+          }
+        },
+        "required": [
+          "id",
+          "contact",
+          "plan_code",
+          "plan_name",
+          "full_name",
+          "phone",
+          "phone_verified",
+          "status",
+          "decided_via",
+          "decline_reason",
+          "subscription_id",
+          "created_at",
+          "decided_at",
+          "source_channel"
+        ],
+        "title": "SignupOut",
+        "type": "object"
+      },
+      "SignupPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SignupOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SignupPage",
         "type": "object"
       },
       "SpecializedTabInfo": {
@@ -13976,6 +14433,7 @@
           },
           "status": {
             "enum": [
+              "pending",
               "active",
               "paused",
               "cancelled"
@@ -14037,6 +14495,28 @@
           "next_cursor"
         ],
         "title": "SubscriptionPage",
+        "type": "object"
+      },
+      "SubscriptionSettingsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "pending_expiry_days": {
+            "maximum": 90.0,
+            "minimum": 0.0,
+            "title": "Pending Expiry Days",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending_expiry_days",
+          "version"
+        ],
+        "title": "SubscriptionSettingsIn",
         "type": "object"
       },
       "SummaryOut": {
@@ -14998,6 +15478,23 @@
           "next_cursor"
         ],
         "title": "TurnPage",
+        "type": "object"
+      },
+      "UnlinkResultOut": {
+        "additionalProperties": false,
+        "properties": {
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "skipped"
+        ],
+        "title": "UnlinkResultOut",
         "type": "object"
       },
       "UploadOut": {
@@ -30527,6 +31024,7 @@
               "anyOf": [
                 {
                   "enum": [
+                    "pending",
                     "active",
                     "paused",
                     "cancelled"
@@ -30820,6 +31318,447 @@
           }
         },
         "summary": "Customers",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/link-reviews": {
+      "get": {
+        "description": "Pairs of contacts the system could not link by itself, newest first.",
+        "operationId": "list_reviews_console_v1_subscriptions_link_reviews_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "open",
+              "enum": [
+                "open",
+                "resolved"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewOut"
+                  },
+                  "title": "Response List Reviews Console V1 Subscriptions Link Reviews Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reviews",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/link-reviews/{review_id}/resolve": {
+      "post": {
+        "description": "Dismiss a review, or link its pair as staff (a refusal is 409 ``link_refused:<code>``).\n\n404 ``review_not_found``; 409 ``review_not_open``. A pair with a merged contact cannot be\nlinked (409 ``contact_merged``); dismiss it instead.",
+        "operationId": "resolve_review_console_v1_subscriptions_link_reviews__review_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Review Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Review",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/links": {
+      "get": {
+        "description": "Links, newest first; with ``contact_id`` those where the contact is survivor or loser.\n\n``channels`` is the contact's identity channels now, plus, for the loser of a link not yet\nundone, the channels its identities had before the link moved them. 404\n``contact_not_found`` for a contact of another company.",
+        "operationId": "list_links_console_v1_subscriptions_links_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "contact_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Contact Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LinkOut"
+                  },
+                  "title": "Response List Links Console V1 Subscriptions Links Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Links",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "post": {
+        "description": "Link two contacts of the company (reason ``staff``); the survivor is picked for them.",
+        "operationId": "create_link_console_v1_subscriptions_links_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Link",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/links/{link_id}/unlink": {
+      "post": {
+        "description": "Undo a link; ``skipped`` names the contact columns it could not put back.",
+        "operationId": "unlink_console_v1_subscriptions_links__link_id__unlink_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Link Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnlinkResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unlink",
         "tags": [
           "Subscriptions"
         ]
@@ -31327,6 +32266,365 @@
           }
         },
         "summary": "Settings",
+        "tags": [
+          "Subscriptions"
+        ]
+      },
+      "put": {
+        "description": "Save the company's settings; a save from an older read is 409 `version_conflict`.",
+        "operationId": "save_settings_console_v1_subscriptions_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Settings",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups": {
+      "get": {
+        "operationId": "signups_console_v1_subscriptions_signups_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "decided"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Signups",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups/{signup_id}/approve": {
+      "post": {
+        "description": "Approve a customer's sign-up: one pending subscription at the plan's price now.",
+        "operationId": "approve_signup_console_v1_subscriptions_signups__signup_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Signup Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Signup",
+        "tags": [
+          "Subscriptions"
+        ]
+      }
+    },
+    "/console/v1/subscriptions/signups/{signup_id}/decline": {
+      "post": {
+        "description": "Decline a sign-up; the reason is kept for staff and never sent to the customer.",
+        "operationId": "decline_signup_console_v1_subscriptions_signups__signup_id__decline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signup_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Signup Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclineIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decline Signup",
         "tags": [
           "Subscriptions"
         ]

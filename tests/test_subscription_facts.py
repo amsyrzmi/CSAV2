@@ -11,9 +11,12 @@ from uuid import uuid4
 from csa.agents.staged.subscription_facts import (
     LIVE_STATUSES,
     REQUESTABLE_STATUSES,
+    SIGNUP_DATA_NOTE,
     SUBSCRIPTION_SOURCE,
+    VERIFIED_PHONE,
     plan_facts,
     request_fact,
+    signup_fact,
     subscription_facts,
 )
 
@@ -115,9 +118,10 @@ def test_paused_with_and_without_a_resume_date() -> None:
     ]
 
 
-def test_a_pending_plan_is_waiting_for_payment_with_no_date() -> None:
+def test_a_pending_plan_is_waiting_to_be_started_with_no_date() -> None:
     assert texts([row(status="pending", renews_at=None)]) == [
-        "Your plan: Basic, MYR 10.00 a month, is waiting for payment."
+        "Your plan: Basic, MYR 10.00 a month, is waiting to be started by the team. "
+        "Nothing has been charged."
     ]
 
 
@@ -185,7 +189,8 @@ def test_request_facts_use_the_exact_copy() -> None:
     )
     assert text("already_paused", name="Basic") == "Basic is already paused."
     assert text("waiting", name="Basic") == (
-        "Basic is waiting for payment, so it can't be paused, cancelled or changed yet."
+        "Basic is waiting to be started by the team and nothing has been charged, so it can't "
+        "be paused, cancelled or changed yet. The team can help with any question about it."
     )
     assert [request_fact(kind).id for kind in ("none", "which")] == [
         "subscription_none",
@@ -215,3 +220,63 @@ def test_the_live_sql_allowlist_names_pending() -> None:
     sql = (ROOT / "db/sql/agents/subscription_list.sql").read_text()
     assert "'active'" in sql and "'paused'" in sql and "'pending'" in sql
     assert "client_id" in sql and "contact_id" in sql
+
+
+def test_signup_facts_use_the_exact_copy() -> None:
+    def text(*args: Any, **kwargs: Any) -> str:
+        return signup_fact(*args, **kwargs).text
+
+    assert text("missing", plan="Plan Besar", field="full name") == (
+        "To sign up for Plan Besar I still need your full name."
+    )
+    assert text("missing", plan="Plan Besar", field="phone number") == (
+        "To sign up for Plan Besar I still need your phone number."
+    )
+    assert SIGNUP_DATA_NOTE == (
+        "We keep your name and phone number on your contact record so the team can set up "
+        "your plan."
+    )
+    assert text("data_note") == SIGNUP_DATA_NOTE
+    assert text("readback", plan="Plan Besar", name="Ali Bin Abu", phone="+60123456789") == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to "
+        "confirm, and file nothing yet."
+    )
+    assert VERIFIED_PHONE == "the number already on this chat"
+    assert text("readback", plan="Plan Besar", name="Ali Bin Abu", phone=VERIFIED_PHONE) == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask "
+        "the customer to confirm, and file nothing yet."
+    )
+    assert text("phone_invalid") == (
+        "That phone number does not look right. Ask for it again with the area or country code."
+    )
+    assert text("filed", plan="Plan Besar") == (
+        "Your sign-up for Plan Besar was received. The team will review it and tell you what "
+        "happens next. Nothing is active yet and nothing has been charged."
+    )
+    assert text("filed_auto", plan="Plan Besar") == (
+        "Your sign-up for Plan Besar is registered and waiting to be started. Nothing has been "
+        "charged."
+    )
+    assert text("exists", plan="Plan Besar") == (
+        "You already have a sign-up for Plan Besar waiting for the team."
+    )
+    assert text("has_plan", plan="Plan Besar") == "You already have Plan Besar."
+    assert text("closed", plan="Plan Besar") == "Plan Besar is not taking new sign-ups right now."
+    assert text("which") == "To sign up I still need to know which plan you want."
+    assert text("try_later") == (
+        "The sign-up could not be filed just now, so nothing was filed. Ask the customer to try "
+        "again in a little while."
+    )
+
+
+def test_signup_fact_ids_are_constants_with_an_index() -> None:
+    assert signup_fact("missing", plan="A", field="full name").id == "signup_missing_1"
+    assert signup_fact("data_note", n=2).id == "signup_data_note_2"
+    readback = signup_fact("readback", plan="A", name="Ali Bin Abu", phone="+60123456789")
+    assert readback.id == "signup_readback_1"
+    assert "Ali" not in readback.id and "60123" not in readback.id
+    assert readback.source == SUBSCRIPTION_SOURCE
+    # Approval is never claimed: no fact says approved, active or charged as done.
+    for kind in ("filed", "filed_auto", "exists"):
+        sentence = signup_fact(kind, plan="A").text  # type: ignore[arg-type]
+        assert "approved" not in sentence and "is now active" not in sentence

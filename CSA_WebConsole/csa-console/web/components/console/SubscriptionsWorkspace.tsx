@@ -2,13 +2,16 @@
 
 import { createContext, Fragment, useContext, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
-import { api } from "@/lib/api";
+import { LinkedContacts, NeedsReview, RecentLinks } from "@/components/console/ContactLinks";
+import { api, ApiError } from "@/lib/api";
 import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
+  approveSignup,
   availableActions,
   createSubscription,
   dayAfter,
+  declineSignup,
   decideRequest,
   eventSentence,
   formatDateTime,
@@ -17,8 +20,10 @@ import {
   getSubscription,
   listPlans,
   listRequests,
+  listSignups,
   money,
   proposeAction,
+  putSettings,
   requestSentence,
   searchCustomers,
   searchSubscriptions,
@@ -30,17 +35,26 @@ import {
   type CustomerRef,
   type PlanOut,
   type RequestOut,
+  type SignupMode,
+  type SignupOut,
   type SubscriptionAction,
   type SubscriptionDetail,
   type SubscriptionOut,
+  type SubscriptionSettings,
   type SubscriptionStatus,
 } from "@/lib/subscriptions-api";
 import type { ProposalOut } from "@/lib/workspace-api";
 import {
   customerChipOptions,
+  declineBody,
   filterCustomers,
   formatInTenantZone,
+  parseExpiryDays,
+  phoneMark,
   reviewSentence,
+  signupBadge,
+  signupModeLabel,
+  signupOutcome,
   summaryCounts,
   validTimeZone,
   type CustomerView,
@@ -51,13 +65,15 @@ import { DetailsRow, StatusChips } from "./kit";
 import { ProposalCard } from "./ProposalCard";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
-type Tab = "customers" | "plans" | "requests";
+type Tab = "customers" | "plans" | "requests" | "signups";
 const TABS: { key: Tab; label: string }[] = [
   { key: "customers", label: "Customers" },
   { key: "plans", label: "Plans" },
   { key: "requests", label: "Requests" },
+  { key: "signups", label: "Sign-ups" },
 ];
 const ACTION_LABELS: Record<SubscriptionAction, string> = {
+  activate: "Start subscription",
   pause: "Pause subscription",
   resume: "Resume subscription",
   change_plan: "Change plan",
@@ -71,6 +87,8 @@ const textarea =
 /** A short "what this does" line under a field that uses the business's own jargon. */
 const helpText = "mt-1 text-xs text-ink-600";
 const ACTION_HELP: Record<SubscriptionAction, string> = {
+  activate:
+    "The subscription starts now. Its first renewal is one billing period from today. Nothing is charged here.",
   pause: "The subscription is on hold until the day you choose, or until someone resumes it.",
   resume:
     "The subscription starts again. If its renewal date has passed, the next renewal is one billing period from today.",
@@ -149,6 +167,10 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const [plans, setPlans] = useState<PlanOut[]>([]);
   const [plansRevision, setPlansRevision] = useState(0);
   const [timeZone, setTimeZone] = useState<string | undefined>(undefined);
+  const [settings, setSettings] = useState<SubscriptionSettings | null>(null);
+  const [settingsFailed, setSettingsFailed] = useState(false);
+  // The open sign-ups give the tab its count. A failed read draws no count, never a zero.
+  const [openSignups, setOpenSignups] = useState<{ rows: SignupOut[]; more: boolean } | null>(null);
   usePublishContext({ tab: "subscriptions", section: tab });
   const [error, setError] = useState("");
   // The summary row reads the first page of every customer and the open requests (the same two
@@ -169,10 +191,22 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   const refreshSummary = () => setSummaryRevision((value) => value + 1);
   useEffect(() => {
     let live = true;
+    listSignups(tenantId, "pending")
+      .then((page) => { if (live) setOpenSignups({ rows: page.items, more: page.next_cursor !== null }); })
+      .catch(() => { if (live) setOpenSignups(null); });
+    return () => { live = false; };
+  }, [tenantId, summaryRevision]);
+  useEffect(() => {
+    let live = true;
     // Without it dates fall back to the browser's zone.
     getSettings(tenantId)
-      .then((settings) => { if (live) setTimeZone(validTimeZone(settings.timezone) ?? undefined); })
-      .catch(() => {});
+      .then((value) => {
+        if (!live) return;
+        setSettings(value);
+        setSettingsFailed(false);
+        setTimeZone(validTimeZone(value.timezone) ?? undefined);
+      })
+      .catch(() => { if (live) setSettingsFailed(true); });
     return () => { live = false; };
   }, [tenantId]);
   useEffect(() => {
@@ -185,13 +219,21 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
   }, [tenantId, plansRevision]);
   const names = new Map(plans.map((plan) => [plan.code, plan.name]));
   const planName: PlanName = (code) => names.get(code) ?? code;
+  const badge = signupBadge(openSignups?.rows, openSignups?.more ?? false);
   return (
     <TimeZoneContext.Provider value={timeZone}>
       <div role="tablist" aria-label="Subscription sections" className="mb-5 flex flex-wrap gap-2">
         {TABS.map(({ key, label }) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key}
             data-testid={`subscriptions-tab-${key}`}
-            className={tab === key ? action : secondary} onClick={() => setTab(key)}>{label}</button>
+            className={tab === key ? action : secondary} onClick={() => setTab(key)}>
+            {label}
+            {key === "signups" && badge && (
+              <span data-testid="signups-badge" className="ml-2 rounded-full bg-[var(--fs-surface)] px-2 text-xs font-semibold text-ink-900">
+                <span className="sr-only">Open: </span>{badge}
+              </span>
+            )}
+          </button>
         ))}
       </div>
       {error && <div className="mb-5"><Notice error>{error}</Notice></div>}
@@ -201,6 +243,9 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
       {tab === "plans" && <Plans tenantId={tenantId} writer={writer} plans={plans}
         onChanged={() => setPlansRevision((value) => value + 1)} />}
       {tab === "requests" && <Requests tenantId={tenantId} writer={writer} planName={planName}
+        onDataChanged={refreshSummary} />}
+      {tab === "signups" && <Signups tenantId={tenantId} writer={writer} planName={planName}
+        settings={settings} settingsFailed={settingsFailed} onSettingsSaved={setSettings}
         onDataChanged={refreshSummary} />}
     </TimeZoneContext.Provider>
   );
@@ -614,13 +659,16 @@ function Drawer({ tenantId, id, writer, plans, planName, returnFocusTo, onClose,
             </DetailSection>
             <DetailSection id="when" title="When">
               <Detail label="Started on" value={formatDay(subscription.started_at, timeZone)} />
-              {subscription.status !== "cancelled" && <Detail label="Renews on" value={formatDay(subscription.renews_at, timeZone)} />}
+              {subscription.status === "pending" && <Detail label="Renews on" value="Set when it starts" />}
+              {subscription.status !== "cancelled" && subscription.status !== "pending" && <Detail label="Renews on" value={formatDay(subscription.renews_at, timeZone)} />}
               {subscription.paused_at && <Detail label="Paused on" value={formatDay(subscription.paused_at, timeZone)} />}
               {subscription.status === "paused" && <Detail label="Resumes on"
                 value={subscription.resume_at ? formatDay(subscription.resume_at, timeZone) : "When someone resumes it"} />}
               {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at, timeZone)} />}
             </DetailSection>
           </div>
+          <LinkedContacts tenantId={tenantId} contactId={subscription.customer.id} writer={writer}
+            timeZone={timeZone} onChanged={() => { setRevision((value) => value + 1); onChanged(); }} />
           {writer && !pending && (
             <div className="mt-5">
               <h3 className="mb-2 font-semibold">Make a change</h3>
@@ -831,8 +879,13 @@ function ActionForm({ kind, subscription, plans, onSubmit, onCancel }: {
 
 // ---------------------------------------------------------------- Plans
 
-interface PlanDraft { code: string; name: string; price: string; interval: BillingInterval; features: string }
-const EMPTY_PLAN: PlanDraft = { code: "", name: "", price: "", interval: "month", features: "" };
+interface PlanDraft {
+  code: string; name: string; price: string; interval: BillingInterval; features: string;
+  signupMode: SignupMode; closedToSignups: boolean;
+}
+const EMPTY_PLAN: PlanDraft = {
+  code: "", name: "", price: "", interval: "month", features: "", signupMode: "staff", closedToSignups: false,
+};
 
 const featureList = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
@@ -862,7 +915,7 @@ function Plans({ tenantId, writer, plans, onChanged }: {
   function startEdit(plan: PlanOut) {
     setEditing(plan.code);
     setEdit({ code: plan.code, name: plan.name, price: String(plan.price), interval: plan.billing_interval,
-      features: plan.features.join("\n") });
+      features: plan.features.join("\n"), signupMode: plan.signup_mode, closedToSignups: !plan.is_signup_open });
   }
   return (
     <Panel title="Plans">
@@ -878,6 +931,7 @@ function Plans({ tenantId, writer, plans, onChanged }: {
             void run(() => createPlan(tenantId, {
               code: draft.code.trim(), name: draft.name.trim(), price: draft.price.trim(),
               billing_interval: draft.interval, features: featureList(draft.features),
+              signup_mode: draft.signupMode, is_signup_open: !draft.closedToSignups,
             }), () => setAdding(false));
           }}>
           <label className="block text-sm">Plan name
@@ -915,17 +969,19 @@ function Plans({ tenantId, writer, plans, onChanged }: {
           <table className="w-full min-w-[40rem] text-sm" data-testid="plans-table">
             <thead><tr>
               <th className={head}>Plan</th><th className={head}>Price</th><th className={head}>Features</th>
-              <th className={head}>Status</th>{writer && <th className={head}><span className="sr-only">Actions</span></th>}
+              <th className={head}>Status</th><th className={head}>Sign-ups</th>
+              {writer && <th className={head}><span className="sr-only">Actions</span></th>}
             </tr></thead>
             <tbody>
               {plans.map((plan) => editing === plan.code ? (
                 <tr key={plan.code} data-testid={`plan-row-${plan.code}`}>
-                  <td className={cell} colSpan={writer ? 5 : 4}>
+                  <td className={cell} colSpan={writer ? 6 : 5}>
                     <form className="grid gap-3 md:grid-cols-2" onSubmit={(event) => {
                       event.preventDefault();
                       void run(() => updatePlan(tenantId, plan.code, {
                         name: edit.name.trim(), price: edit.price.trim(), billing_interval: edit.interval,
                         features: featureList(edit.features),
+                        signup_mode: edit.signupMode, is_signup_open: !edit.closedToSignups,
                       }), () => setEditing(null));
                     }}>
                       <label className="block text-sm md:col-span-2">Plan name
@@ -948,6 +1004,9 @@ function Plans({ tenantId, writer, plans, onChanged }: {
                   <td className={cell}>{money(plan.price, plan.currency)} {INTERVALS[plan.billing_interval]}</td>
                   <td className={cell}>{plan.features.length ? plan.features.join(", ") : "—"}</td>
                   <td className={cell}>{plan.is_active ? "Available" : "Archived"}</td>
+                  <td className={cell} data-testid={`plan-signups-${plan.code}`}>
+                    {plan.is_signup_open ? signupModeLabel(plan.signup_mode) : "Closed to new sign-ups"}
+                  </td>
                   {writer && (
                     <td className={`${cell} whitespace-nowrap text-right`}>
                       <div className="flex justify-end gap-2">
@@ -992,6 +1051,30 @@ function PlanFields({ draft, onChange, prefix }: {
         <textarea className={textarea} data-testid={`${prefix}-features`} value={draft.features}
           onChange={(event) => onChange({ ...draft, features: event.target.value })} />
       </label>
+      <div>
+        <label className="block text-sm">Sign-ups
+          <select className={field} data-testid={`${prefix}-signup-mode`} value={draft.signupMode}
+            aria-describedby={`${prefix}-signup-help`}
+            onChange={(event) => onChange({ ...draft, signupMode: event.target.value as SignupMode })}>
+            <option value="staff">Staff approve</option>
+            <option value="auto">Sign up automatically</option>
+          </select>
+        </label>
+        <p id={`${prefix}-signup-help`} data-testid={`${prefix}-signup-help`} className={helpText}>
+          Staff approve: a customer&apos;s sign-up waits in the Sign-ups tab for you. Sign up automatically:
+          it is approved straight away and then waits to start.
+        </p>
+      </div>
+      <div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" data-testid={`${prefix}-closed`} checked={draft.closedToSignups}
+            onChange={(event) => onChange({ ...draft, closedToSignups: event.target.checked })} />
+          Closed to new sign-ups
+        </label>
+        <p className={helpText}>
+          Customers cannot sign up for this plan in the chat. People already on it keep it.
+        </p>
+      </div>
     </>
   );
 }
@@ -1157,6 +1240,251 @@ function DecidedRequest({ row, planName }: { row: RequestOut; planName: PlanName
         <p className="font-medium">{row.decision === "approved" ? "Approved" : "Declined"}</p>
         {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at, timeZone)}</p>}
         {row.note && <p className="text-ink-600">Note: {row.note}</p>}
+      </div>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------- Sign-ups
+
+function Signups({ tenantId, writer, planName, settings, settingsFailed, onSettingsSaved, onDataChanged }: {
+  tenantId: string | null; writer: boolean; planName: PlanName; settings: SubscriptionSettings | null;
+  settingsFailed: boolean; onSettingsSaved: (settings: SubscriptionSettings) => void; onDataChanged: () => void;
+}) {
+  const [revision, setRevision] = useState(0);
+  const [done, setDone] = useState("");
+  const timeZone = useTimeZone();
+  return (
+    <div className="space-y-5">
+      {done && <Notice>{done}</Notice>}
+      <ExpiryStrip tenantId={tenantId} writer={writer} settings={settings} failed={settingsFailed}
+        onStale={onSettingsSaved}
+        onSaved={(saved) => { onSettingsSaved(saved); setDone("Saved. Pending sign-ups will expire on the new schedule."); }} />
+      <Panel title="Open sign-ups">
+        <SignupList tenantId={tenantId} status="open" writer={writer} planName={planName} revision={revision}
+          onDecided={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }}
+          onStale={() => { setRevision((value) => value + 1); onDataChanged(); }} />
+      </Panel>
+      <Panel title="Needs review">
+        <NeedsReview tenantId={tenantId} writer={writer} timeZone={timeZone} revision={revision}
+          onResolved={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }} />
+      </Panel>
+      <Panel title="Recent links">
+        <RecentLinks tenantId={tenantId} writer={writer} timeZone={timeZone} revision={revision}
+          onChanged={() => { setRevision((value) => value + 1); onDataChanged(); }} />
+      </Panel>
+      <Panel title="Decided sign-ups">
+        <SignupList tenantId={tenantId} status="decided" writer={false} planName={planName} revision={revision}
+          onDecided={() => undefined} onStale={() => undefined} />
+      </Panel>
+    </div>
+  );
+}
+
+/** How long an approved sign-up may wait to be started before it expires. */
+function ExpiryStrip({ tenantId, writer, settings, failed, onSaved, onStale }: {
+  tenantId: string | null; writer: boolean; settings: SubscriptionSettings | null; failed: boolean;
+  onSaved: (settings: SubscriptionSettings) => void; onStale: (settings: SubscriptionSettings) => void;
+}) {
+  const helpId = useId();
+  // The box starts from the saved value and is only replaced by the person typing or a save.
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!settings) {
+    return failed ? <Notice error>The sign-up settings could not be read. Refresh the page.</Notice> : null;
+  }
+  const shown = text ?? String(settings.pending_expiry_days);
+  const days = parseExpiryDays(shown);
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (days === null || !settings) return;
+    setBusy(true);
+    setError("");
+    try {
+      onSaved(await putSettings(tenantId, { pending_expiry_days: days, version: settings.version }));
+      setText(null);
+    } catch (cause) {
+      setError(message(cause));
+      if (cause instanceof ApiError && cause.code === "version_conflict") {
+        // Someone saved first: the version held here is stale and every retry would be refused.
+        // Read the settings again so the next save carries the current version.
+        try {
+          onStale(await getSettings(tenantId));
+          setText(null);
+          setError("Someone else changed this setting. The box now shows the latest value. Check it and save again.");
+        } catch (reread) {
+          setError(message(reread));
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section aria-label="Sign-up expiry" data-testid="signup-settings"
+      className="rounded-[var(--fs-radius-control)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-4">
+      <form className="flex flex-wrap items-center gap-3 text-sm" onSubmit={(event) => void save(event)}>
+        <label className="flex flex-wrap items-center gap-2">
+          Pending sign-ups expire after
+          <input className={`${field} w-20`} type="number" min={0} max={90} step={1} inputMode="numeric"
+            data-testid="signup-expiry-days" value={shown} disabled={!writer || busy}
+            aria-describedby={helpId} onChange={(event) => setText(event.target.value)} />
+          days (0 = never)
+        </label>
+        {writer && (
+          <button className={action} data-testid="signup-expiry-save"
+            disabled={busy || days === null || days === settings.pending_expiry_days}>
+            {busy ? "Saving…" : "Save"}</button>
+        )}
+      </form>
+      <p id={helpId} className={helpText}>
+        A pending subscription is an approved sign-up that has not been started. If nobody starts it by then it is
+        cancelled and the sign-up shows as expired. Choose a whole number from 0 to 90.
+      </p>
+      {error && <div className="mt-3"><Notice error>{error}</Notice></div>}
+    </section>
+  );
+}
+
+function SignupList({ tenantId, status, writer, planName, revision, onDecided, onStale }: {
+  tenantId: string | null; status: "open" | "decided"; writer: boolean; planName: PlanName;
+  revision: number; onDecided: (text: string) => void; onStale: () => void;
+}) {
+  const [rows, setRows] = useState<SignupOut[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const query = status === "open" ? "pending" : "decided";
+  useEffect(() => {
+    let live = true;
+    listSignups(tenantId, query)
+      .then((page) => { if (live) { setRows(page.items); setNext(page.next_cursor); setError(""); } })
+      .catch((cause) => { if (live) setError(message(cause)); });
+    return () => { live = false; };
+  }, [tenantId, query, revision]);
+  async function more() {
+    if (!next) return;
+    try {
+      const page = await listSignups(tenantId, query, next);
+      setRows((current) => [...(current ?? []), ...page.items]);
+      setNext(page.next_cursor);
+    } catch (cause) {
+      setError(message(cause));
+    }
+  }
+  if (rows === null) return error ? <Notice error>{error}</Notice> : <Notice>Loading sign-ups…</Notice>;
+  return (
+    <>
+      {error && <div className="mb-4"><Notice error>{error}</Notice></div>}
+      {rows.length === 0 ? (
+        <Notice>{status === "open"
+          ? "When a customer signs up for a plan in the chat and the plan needs your approval, it will appear here."
+          : "Sign-ups that were approved, declined or expired will appear here."}</Notice>
+      ) : (
+        <ul className="divide-y divide-ink-100" data-testid={`signups-${status}`}>
+          {rows.map((row) => status === "open"
+            ? <OpenSignup key={row.id} row={row} tenantId={tenantId} writer={writer} planName={planName}
+                onDecided={onDecided} onStale={onStale} />
+            : <DecidedSignup key={row.id} row={row} planName={planName} />)}
+        </ul>
+      )}
+      {next && <div className="mt-4"><button type="button" className={secondary} onClick={() => void more()}>
+        Show more sign-ups</button></div>}
+    </>
+  );
+}
+
+function SignupSummary({ row, planName }: { row: SignupOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
+  // The typed name and number are what the customer wrote; the contact is the record as it stands.
+  const record = row.contact.full_name && row.contact.full_name !== row.full_name ? row.contact.full_name : null;
+  return (
+    <div className="min-w-0">
+      <p className="font-medium" data-testid="signup-name">{row.full_name}</p>
+      <p>Wants the {row.plan_name || planName(row.plan_code)} plan</p>
+      <p data-testid="signup-phone">
+        {row.phone}
+        <span data-testid="signup-phone-mark"
+          className={`ml-2 text-xs ${row.phone_verified ? "text-ink-700" : "text-ink-500"}`}>{phoneMark(row)}</span>
+      </p>
+      {record && <p className="text-xs text-ink-500">Customer record: {record}</p>}
+      <p className="text-xs text-ink-500">
+        Signed up {formatDateTime(row.created_at, timeZone)}{row.source_channel ? ` · ${row.source_channel}` : ""}
+      </p>
+    </div>
+  );
+}
+
+function OpenSignup({ row, tenantId, writer, planName, onDecided, onStale }: {
+  row: SignupOut; tenantId: string | null; writer: boolean; planName: PlanName;
+  onDecided: (text: string) => void; onStale: () => void;
+}) {
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const name = row.full_name;
+  async function run(call: () => Promise<unknown>, done: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await call();
+      onDecided(done);
+    } catch (cause) {
+      setError(message(cause));
+      setBusy(false);
+      // Someone else decided it first: the row is stale, so read the list again.
+      if (cause instanceof ApiError && cause.code === "signup_not_pending") onStale();
+    }
+  }
+  return (
+    <li className="py-3 text-sm" data-testid="signup-open">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <SignupSummary row={row} planName={planName} />
+        {writer && !declining && (
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={action} disabled={busy} data-testid="signup-approve"
+              onClick={() => void run(() => approveSignup(tenantId, row.id),
+                `Approved. ${name} is waiting to start on the ${row.plan_name || planName(row.plan_code)} plan. Start it from the Customers tab.`)}>
+              {busy ? "Approving…" : "Approve"}</button>
+            <button type="button" className={secondary} disabled={busy} data-testid="signup-decline"
+              onClick={() => setDeclining(true)}>Decline</button>
+          </div>
+        )}
+      </div>
+      {writer && declining && (
+        <form className="mt-3 space-y-3 rounded-md border border-ink-200 p-4" data-testid="signup-decline-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(() => declineSignup(tenantId, row.id, declineBody(reason)),
+              `Declined. ${name} was not signed up. The customer is not sent your reason.`);
+          }}>
+          <label className="block">Reason (optional; only staff see this)
+            <textarea className={textarea} maxLength={300} data-testid="signup-reason" value={reason}
+              onChange={(event) => setReason(event.target.value)} />
+          </label>
+          <p className={helpText}>Only staff see this. It is never sent to the customer.</p>
+          <div className="flex flex-wrap gap-2">
+            <button className={action} disabled={busy} data-testid="signup-decline-confirm">
+              {busy ? "Declining…" : "Decline sign-up"}</button>
+            <button type="button" className={secondary} disabled={busy} onClick={() => setDeclining(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+      {error && <div className="mt-3"><Notice error>{error}</Notice></div>}
+    </li>
+  );
+}
+
+function DecidedSignup({ row, planName }: { row: SignupOut; planName: PlanName }) {
+  const timeZone = useTimeZone();
+  return (
+    <li className="flex flex-wrap items-start justify-between gap-3 py-3 text-sm" data-testid="signup-decided">
+      <SignupSummary row={row} planName={planName} />
+      <div className="text-right">
+        <p className="font-medium" data-testid="signup-outcome">{signupOutcome(row)}</p>
+        {row.decided_at && <p className="text-xs text-ink-500">{formatDateTime(row.decided_at, timeZone)}</p>}
+        {row.decline_reason && <p className="text-ink-600">Reason (only staff see this): {row.decline_reason}</p>}
       </div>
     </li>
   );

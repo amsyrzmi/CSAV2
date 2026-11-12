@@ -42,7 +42,7 @@ async def test_0480_constraints_table_grants_and_rls(sessions: SessionWorld) -> 
     tenant = sessions.tenants[0]
     with pytest.raises(errors.CheckViolation):
         await _subscription(sessions, tenant, "trialing")
-    for status in ("active", "paused", "cancelled"):
+    for status in ("active", "paused", "cancelled", "pending"):
         await _subscription(sessions, tenant, status)
     [versioned] = await sessions.q(
         "SELECT version FROM subscriptions WHERE client_id = %s LIMIT 1", tenant

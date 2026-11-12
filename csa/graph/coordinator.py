@@ -853,7 +853,12 @@ def _merge_ui(left: Ui, right: Ui) -> Ui:
         for option in [*left.options, *right.options]
     }
     confirmation = right.confirmation or left.confirmation
-    return Ui(confirmation=confirmation, options=list(options_by_action.values()))
+    return Ui(
+        confirmation=confirmation,
+        options=list(options_by_action.values()),
+        # A sign-up asking for the phone on Telegram: the button goes with the turn's reply.
+        request_phone=left.request_phone or right.request_phone,
+    )
 
 
 async def _within(timeout: float, awaitable):

@@ -1,8 +1,9 @@
--- Customers (contacts) to put on a plan. %(like)s is an already-escaped ILIKE pattern or NULL
+-- Customers (contacts) to put on a plan; a merged shell (merged_into set) is not listed. %(like)s is an already-escaped ILIKE pattern or NULL
 -- (no term: everyone, by name); %(digits)s holds only 0-9 (empty = no phone match).
 SELECT c.id, c.full_name, c.phone, c.email
 FROM public.contacts c
 WHERE c.client_id = %(client_id)s
+  AND c.merged_into IS NULL
   AND (%(like)s::text IS NULL
        OR c.full_name ILIKE %(like)s
        OR c.email ILIKE %(like)s

@@ -112,4 +112,4 @@ def test_the_migration_is_safe_to_run_twice(migrated_dsn: str) -> None:
 def test_max_applied_version_is_the_expected_one(migrated_dsn: str) -> None:
     with _owner(migrated_dsn) as conn:
         [row] = conn.execute("SELECT max(version) AS v FROM schema_migrations")
-    assert row["v"] == EXPECTED_SCHEMA_VERSION == MIGRATION
+    assert row["v"] == EXPECTED_SCHEMA_VERSION

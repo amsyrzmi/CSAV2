@@ -9,7 +9,10 @@ import {
   formatDay,
   money,
   type ActionIn,
+  type DeclineIn,
   type RequestOut,
+  type SignupMode,
+  type SignupOut,
   type SubscriptionOut,
 } from "@/lib/subscriptions-api";
 
@@ -67,10 +70,11 @@ export function formatInTenantZone(iso: string, timeZone: string | null): string
 
 // ---- Customer chips (client side, over the rows that were loaded) ----
 
-export type CustomerView = "all" | "active" | "paused" | "cancelled" | "ending";
+export type CustomerView = "all" | "pending" | "active" | "paused" | "cancelled" | "ending";
 
 const VIEWS: { value: CustomerView; label: string }[] = [
   { value: "all", label: "All" },
+  { value: "pending", label: "Waiting to start" },
   { value: "active", label: "Active" },
   { value: "paused", label: "Paused" },
   { value: "cancelled", label: "Cancelled" },
@@ -152,10 +156,63 @@ export function reviewSentence(body: ActionIn, ctx: ReviewContext): string {
       const end = ctx.renewsAt ? ` on ${formatDay(ctx.renewsAt, ctx.timeZone ?? undefined)}` : "";
       return `This will cancel ${who}'s subscription when the current period ends${end}. They keep it until then.`;
     }
+    case "activate":
+      return `This will start ${who}'s subscription now. Its first renewal is one billing period from today.`;
     case "cancel_now":
       return `This will cancel ${who}'s subscription straight away. A cancelled subscription cannot be started again.`;
     case "extend_renewal":
       return `This will move the next renewal for ${who} from ${
         formatDay(ctx.renewsAt, ctx.timeZone ?? undefined)} to ${picked(body.renews_at)}.`;
   }
+}
+
+// ---- Sign-ups ----
+
+/**
+ * The open sign-up count for the tab badge: "3", or "50+" where a further page exists. Nothing
+ * (no badge) while the list is unread, failed or empty: a failure is never drawn as zero.
+ */
+export function signupBadge(
+  open: Pick<SignupOut, "id">[] | null | undefined,
+  hasMore: boolean,
+): string | null {
+  if (!open || open.length === 0) return null;
+  return `${open.length}${hasMore ? "+" : ""}`;
+}
+
+/** Whether the number the customer typed is the contact's phone, verified by its channel. */
+export function phoneMark(row: Pick<SignupOut, "phone_verified">): string {
+  return row.phone_verified ? "Verified" : "Not verified";
+}
+
+/** How a sign-up stands, in a few plain words. */
+export function signupOutcome(row: Pick<SignupOut, "status" | "decided_via">): string {
+  switch (row.status) {
+    case "pending":
+      return "Waiting for staff";
+    case "approved":
+      return row.decided_via === "auto" ? "Approved automatically" : "Approved by staff";
+    case "declined":
+      return "Declined";
+    case "expired":
+      return "Expired";
+  }
+}
+
+/** Whole days from 0 to 90 (the server's range), or null for anything else. */
+export function parseExpiryDays(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d{1,3}$/.test(trimmed)) return null;
+  const days = Number(trimmed);
+  return days <= 90 ? days : null;
+}
+
+/** The decline body: the reason as typed (trimmed), or no reason at all. */
+export function declineBody(reason: string): DeclineIn {
+  const trimmed = reason.trim();
+  return trimmed ? { reason: trimmed } : {};
+}
+
+export function signupModeLabel(mode: SignupMode): string {
+  return mode === "auto" ? "Sign up automatically" : "Staff approve";
 }
