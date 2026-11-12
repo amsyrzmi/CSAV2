@@ -20,7 +20,8 @@ The rules (spec "The pricing rules"):
   listed, per-agent and per-day prices all add up to it exactly.
 
 Closed cycles never change because every config and plan table is effective-dated and
-append-only; nothing here caches or freezes a figure.
+append-only; nothing is stored. A caller may pass ``memo`` (``csa.billing.memo``) to keep, in
+memory, the summaries of cycles closed for a full day under a fingerprint of those tables.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ import psycopg
 from csa.billing.agents import AGENT_TITLES, agent_for
 from csa.billing.config import BillingConfig, fee_for, load_config
 from csa.billing.cycles import KL, Cycle, cycle_containing, cycle_of, cycle_range, days_in
+from csa.billing.memo import Fingerprint, UsageMemo, cacheable, fingerprint
 from csa.billing.plans import Bundle, PlanRow, Stage, billed_plan, billed_window
 from csa.billing.pricing import (
     Bill,
@@ -420,30 +422,60 @@ async def _cycle_usage(
     )
 
 
+async def _memo_fingerprint(
+    conn: psycopg.AsyncConnection[Any], client_id: UUID, memo: UsageMemo | None
+) -> Fingerprint | None:
+    """The fingerprint when memoising, read before any config or plan row (see ``fingerprint``)."""
+    return None if memo is None else await fingerprint(conn, client_id)
+
+
 async def cycle_usage(
-    conn: psycopg.AsyncConnection[Any], client_id: UUID, cycle: Cycle, *, now: datetime
+    conn: psycopg.AsyncConnection[Any],
+    client_id: UUID,
+    cycle: Cycle,
+    *,
+    now: datetime,
+    memo: UsageMemo | None = None,
 ) -> CycleUsage:
     """The usage summary and bill of ``client_id`` for ``cycle``, as of ``now`` (aware).
 
     ``conn`` must be scoped to ``client_id`` (``tx(pool, str(client_id))``); another scope raises
-    ``RuntimeError``. A missing FX rate, fee or markup tier raises the config error.
+    ``RuntimeError``, also before a memo is read. A missing FX rate, fee or markup tier raises the
+    config error. With ``memo``, a cycle closed for a full day is served from it or kept in it; the
+    result is then shared and must not be mutated.
     """
     await _check_scope(conn, client_id)
+    fp = await _memo_fingerprint(conn, client_id, memo)
+    key = None
+    if memo is not None and fp is not None and cacheable(cycle, now):
+        key = (client_id, cycle.start, fp)
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
     config = await load_config(conn)
     history = await _history(conn, client_id)
-    return await _cycle_usage(conn, client_id, cycle, now, config, history)
+    usage = await _cycle_usage(conn, client_id, cycle, now, config, history)
+    if memo is not None and key is not None:
+        memo.put(key, usage)
+    return usage
 
 
 async def list_cycles(
-    conn: psycopg.AsyncConnection[Any], client_id: UUID, now: datetime
+    conn: psycopg.AsyncConnection[Any],
+    client_id: UUID,
+    now: datetime,
+    *,
+    memo: UsageMemo | None = None,
 ) -> list[CyclePick]:
     """Every cycle from the first plan row's or first ledger row's cycle to the current one.
 
     Newest first, each with its bill total (``None`` when not set up) and ``final`` flag. With no
     plan and no usage, just the current cycle. ``conn`` is scoped to ``client_id``, as for
-    ``cycle_usage``.
+    ``cycle_usage``. With ``memo``, cycles closed for a full day are served from it or kept in it,
+    so a company with many closed cycles costs a few queries; the open cycle is always computed.
     """
     await _check_scope(conn, client_id)
+    fp = await _memo_fingerprint(conn, client_id, memo)
     config = await load_config(conn)
     history = await _history(conn, client_id)
     current = cycle_of(now)
@@ -456,7 +488,15 @@ async def list_cycles(
     earliest = min(starts, key=lambda c: c.start)
     picks = []
     for cycle in reversed(cycle_range(earliest, current)):
-        usage = await _cycle_usage(conn, client_id, cycle, now, config, history)
+        key = None
+        usage = None
+        if memo is not None and fp is not None and cacheable(cycle, now):
+            key = (client_id, cycle.start, fp)
+            usage = memo.get(key)
+        if usage is None:
+            usage = await _cycle_usage(conn, client_id, cycle, now, config, history)
+            if memo is not None and key is not None:
+                memo.put(key, usage)
         total = None if usage.bill is None else usage.bill.total
         picks.append(CyclePick(cycle=cycle, total=total, final=usage.final))
     return picks
