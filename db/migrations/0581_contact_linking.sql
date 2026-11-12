@@ -17,7 +17,8 @@
 --   public.contact_links: one row per link (survivor, loser, reason verified_phone or staff, the ids
 --     of the rows moved from the loser as jsonb, who and when, and unlinked_at/by when undone).
 --   public.contact_link_reviews: one row per pair of contacts that could not be linked on their own
---     (several_matches, telegram_conflict, same_channel_identity, table_conflict), open or resolved
+--     (several_matches, telegram_conflict, same_channel_identity, table_conflict,
+--     previously_unlinked), open or resolved
 --     (linked or dismissed), with a unique partial index so a pair, in either order, has at most one
 --     open review.
 --   agent_preparation_requests: csa_app may UPDATE contact_id only (a link moves a staged request
@@ -128,7 +129,8 @@ CREATE TABLE IF NOT EXISTS public.contact_link_reviews (
     contact_b uuid NOT NULL REFERENCES public.contacts(id),
     reason text NOT NULL
         CHECK (reason IN (
-            'several_matches', 'telegram_conflict', 'same_channel_identity', 'table_conflict'
+            'several_matches', 'telegram_conflict', 'same_channel_identity', 'table_conflict',
+            'previously_unlinked'
         )),
     status text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
     resolution text CHECK (resolution IN ('linked', 'dismissed')),

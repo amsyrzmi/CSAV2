@@ -89,6 +89,20 @@ class VerifyResult:
 
 
 @dataclass(frozen=True)
+class UnlinkOutcome:
+    """An unlink done. ``skipped`` names the contact columns it left alone, as ``role.column``.
+
+    ``role`` is ``survivor`` or ``loser``, ``column`` is ``phone``, ``phone_verified_at`` or
+    ``telegram_id``, e.g. ``["loser.phone_verified_at", "loser.telegram_id"]``: a column is listed
+    when it does not hold its value from before the link afterwards (changed since the link, or
+    taken by another contact). A plain unlink gives ``[]``. Survivor entries come first, then the
+    loser's, each in the order phone, phone_verified_at, telegram_id.
+    """
+
+    skipped: list[str]
+
+
+@dataclass(frozen=True)
 class LinkOutcome:
     """A link made (``link_id``), or refused with the reason and nothing changed."""
 
@@ -110,13 +124,17 @@ async def verify_phone(
 
     No other live contact of the company has the same digits: the contact holds the phone,
     verified. Exactly one does (verified or staff-entered): the two are linked and the survivor
-    holds it. Several, or a refused link: one open review for the pair and nothing else changes.
+    holds it. Several, a refused link, or a pair staff unlinked before (``previously_unlinked``;
+    staff can still link it): one open review for the pair and nothing else changes (outcome
+    ``review``).
     A contact that already holds a different verified phone keeps it (``already``); a phone that
     does not normalise writes nothing (``invalid``).
 
     Takes the phone's lock, then the contact's and the other holders' in sorted id order. A
     caller that also writes a row for the contact calls this before :func:`live_contact`, never
     after: a contact lock held before a phone lock reverses the order and can deadlock.
+    Tasks 6 and 7: this runs before :func:`live_contact`, and a contact merged by a concurrent
+    link raises 409 ``contact_merged``, which the caller must catch and re-resolve.
     """
     del source  # Which channel proved it does not change what happens; the type is the gate.
     normalised = normalise_my_phone(phone)
@@ -143,6 +161,14 @@ async def verify_phone(
         return VerifyResult("set" if stamped is not None else "already", contact_id)
     if len(others) > 1:
         await _review(conn, client_id, contact_id, others[0], "several_matches")
+        return VerifyResult("review", contact_id)
+    undone = await db.q.fetch_one(
+        "contacts/link_previously_unlinked.sql",
+        {"client_id": client_id, "contact_a": contact_id, "contact_b": others[0]},
+        conn=conn,
+    )
+    if undone is not None and undone["was_unlinked"]:
+        await _review(conn, client_id, contact_id, others[0], "previously_unlinked")
         return VerifyResult("review", contact_id)
     out = await link_contacts(
         conn, client_id, contact_id, others[0], reason="verified_phone", actor_user_id=None
@@ -243,12 +269,15 @@ async def link_contacts(
     return LinkOutcome(True, link["id"], survivor["id"], None)
 
 
-async def unlink_contacts(conn: Conn, client_id: UUID, link_id: UUID, actor_user_id: UUID) -> None:
+async def unlink_contacts(
+    conn: Conn, client_id: UUID, link_id: UUID, actor_user_id: UUID
+) -> UnlinkOutcome:
     """Undo a link: every moved row, both identities and both contacts' columns go back.
 
     A contact's phone (with its stamp) or telegram_id goes back only while it still holds what
     the link left there; a value changed since stays, and a value another contact has taken
-    since is left out rather than raise on a unique index.
+    since is left out rather than raise on a unique index. The columns that did not come back
+    are returned in ``UnlinkOutcome.skipped`` as ``role.column`` (see :class:`UnlinkOutcome`).
 
     404 ``link_not_found``; 409 ``link_not_active`` when already undone,
     ``unlink_window_closed`` 30 days after the link, ``survivor_merged`` when the survivor was
@@ -279,8 +308,10 @@ async def unlink_contacts(conn: Conn, client_id: UUID, link_id: UUID, actor_user
     if later is not None and later["later_active"]:
         raise HTTPException(409, "later_link_active")
     # The reverse of the link: the survivor gives back first, then the loser is live again.
+    skipped: list[str] = []
     for role, contact_id in (("survivor", survivor_id), ("loser", loser_id)):
-        await _restore(conn, client_id, contact_id, recorded[role], recorded["linked"][role])
+        now = await _restore(conn, client_id, contact_id, recorded[role], recorded["linked"][role])
+        skipped += [f"{role}.{c}" for c in _CONTACT_COLUMNS if now[c] != _prior(recorded[role], c)]
     for table in LINKED_TABLES:
         await _move(
             conn, table, client_id, survivor_id, loser_id, only=link["moved"].get(table, [])
@@ -290,6 +321,7 @@ async def unlink_contacts(conn: Conn, client_id: UUID, link_id: UUID, actor_user
         {"client_id": client_id, "link_id": link_id, "unlinked_by": actor_user_id},
         conn=conn,
     )
+    return UnlinkOutcome(skipped)
 
 
 async def live_contact(conn: Conn, client_id: UUID, contact_id: UUID) -> UUID:
@@ -411,9 +443,12 @@ async def _restore(
     contact_id: UUID,
     prior: dict[str, Any],
     linked: dict[str, Any],
-) -> None:
-    """Put back a contact's prior columns where they still hold what the link left there."""
-    await db.q.execute(
+) -> dict[str, Any]:
+    """Put back a contact's prior columns where they still hold what the link left there.
+
+    Returns the contact's three columns as they are afterwards.
+    """
+    row = await db.q.fetch_one(
         "contacts/contact_restore.sql",
         {
             "client_id": client_id,
@@ -423,6 +458,8 @@ async def _restore(
         },
         conn=conn,
     )
+    assert row is not None  # _lock_pair found the contact
+    return row
 
 
 async def _stamp(
@@ -446,6 +483,14 @@ async def _review(conn: Conn, client_id: UUID, a: UUID, b: UUID, reason: str) ->
 
 def _columns(row: dict[str, Any]) -> dict[str, Any]:
     return {k: row[k] for k in _CONTACT_COLUMNS}
+
+
+def _prior(recorded: dict[str, Any], column: str) -> Any:
+    """A recorded column value as the database returns it (the stamp back from ISO text)."""
+    value = recorded[column]
+    if column == "phone_verified_at" and value is not None:
+        return datetime.fromisoformat(value)
+    return value
 
 
 def _recorded(columns: dict[str, Any]) -> dict[str, Any]:

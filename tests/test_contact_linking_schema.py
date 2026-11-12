@@ -293,6 +293,7 @@ def test_link_and_review_checks(migrated_dsn: str) -> None:
             "telegram_conflict",
             "same_channel_identity",
             "table_conflict",
+            "previously_unlinked",
         ):
             conn.execute(
                 *_review(c, one, two, reason=reason, status="resolved", resolution="linked")

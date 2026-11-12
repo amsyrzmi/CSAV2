@@ -39,4 +39,5 @@ UPDATE public.contacts c
            ELSE w.telegram_id END,
        merged_into = NULL
   FROM want w
- WHERE c.client_id = %(client_id)s AND c.id = w.id;
+ WHERE c.client_id = %(client_id)s AND c.id = w.id
+RETURNING c.phone, c.phone_verified_at, c.telegram_id;

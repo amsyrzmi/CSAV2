@@ -269,9 +269,9 @@ async def link(shop: Shop, a: UUID, b: UUID, *, client: UUID | None = None) -> A
         return await link_contacts(conn, cid, a, b, reason="staff", actor_user_id=shop.user)
 
 
-async def unlink(shop: Shop, link_id: UUID) -> None:
+async def unlink(shop: Shop, link_id: UUID) -> Any:
     async with tx(shop.pool, str(shop.client)) as conn:
-        await unlink_contacts(conn, shop.client, link_id, shop.user)
+        return await unlink_contacts(conn, shop.client, link_id, shop.user)
 
 
 async def verify(shop: Shop, contact_id: UUID, phone: str, *, client: UUID | None = None) -> Any:
@@ -688,6 +688,53 @@ async def test_unlink_of_a_verified_phone_link_takes_back_the_stamp(shop: Shop) 
     assert contact_row(shop, newcomer)["merged_into"] is None
 
 
+async def test_a_plain_unlink_reports_nothing_skipped(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    loser = contact(
+        shop,
+        days_old=1,
+        phone="+60123456789",
+        phone_verified_at="2026-11-01T00:00:00Z",
+        telegram_id=777040,
+    )
+    out = await link(shop, survivor, loser)
+
+    done = await unlink(shop, out.link_id)
+
+    assert done.skipped == []
+
+
+async def test_an_unlink_names_the_columns_it_left_alone(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    loser = contact(
+        shop,
+        days_old=10,
+        phone="+60123456789",
+        phone_verified_at="2026-11-01T00:00:00Z",
+        telegram_id=777041,
+    )
+    out = await link(shop, survivor, loser)
+    # The survivor's phone and Telegram account change after the link; a third contact proves
+    # the same number and takes the Telegram account the loser had.
+    set_columns(shop, survivor, phone="+60 19 888 7777", phone_verified_at=None, telegram_id=777042)
+    contact(
+        shop,
+        days_old=1,
+        phone="0123456789",
+        phone_verified_at="2026-11-06T00:00:00Z",
+        telegram_id=777041,
+    )
+
+    done = await unlink(shop, out.link_id)
+
+    assert done.skipped == [
+        "survivor.phone",
+        "survivor.telegram_id",
+        "loser.phone_verified_at",
+        "loser.telegram_id",
+    ]
+
+
 # ------------------------------------------------------------------------------------------------
 # verify_phone
 
@@ -746,6 +793,34 @@ async def test_verify_with_several_holders_opens_one_review_once(shop: Shop) -> 
         assert contact_row(shop, c)["merged_into"] is None
         assert contact_row(shop, c)["phone_verified_at"] is None
     assert contact_row(shop, me)["phone"] is None
+
+
+async def test_verify_never_relinks_a_pair_staff_unlinked(shop: Shop) -> None:
+    staff_entered = contact(shop, days_old=30, phone="012-345 6789")
+    newcomer = contact(shop, days_old=0)
+    assert (await verify(shop, newcomer, "60123456789")).outcome == "linked"
+    [made] = rows(shop, "SELECT id FROM contact_links WHERE client_id = %s", shop.client)
+    await unlink(shop, made["id"])
+
+    first = await verify(shop, newcomer, "60123456789")
+    second = await verify(shop, newcomer, "60123456789")
+
+    assert first.outcome == second.outcome == "review" and first.contact_id == newcomer
+    assert open_reviews(shop) == [
+        {"contact_a": newcomer, "contact_b": staff_entered, "reason": "previously_unlinked"}
+    ]
+    for c in (staff_entered, newcomer):
+        assert contact_row(shop, c)["merged_into"] is None
+    assert contact_row(shop, newcomer)["phone"] is None
+    assert contact_row(shop, staff_entered)["phone_verified_at"] is None
+    assert len(rows(shop, "SELECT id FROM contact_links WHERE client_id = %s", shop.client)) == 1
+
+    # Staff can still link the same pair, and that closes the review.
+    again = await link(shop, newcomer, staff_entered)
+    assert again.linked and again.refused is None
+    assert open_reviews(shop) == []
+    assert again.survivor_id == staff_entered
+    assert contact_row(shop, newcomer)["merged_into"] == staff_entered
 
 
 async def test_verify_with_a_refused_link_opens_a_review_with_that_reason(shop: Shop) -> None:
