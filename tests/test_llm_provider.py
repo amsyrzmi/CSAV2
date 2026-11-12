@@ -22,6 +22,7 @@ from csa.decide.grounding import ungrounded
 from csa.decide.llm import WHATSAPP_PLANNER_NOTE, LLMProvider
 from csa.graph.policy.plan_rules import validate_plan
 from csa.graph.policy.routing import route_turn
+from csa.metering.meter import NullMeter
 from csa.turn.deps import CAPABILITIES, build_llm_provider
 from structlog.testing import capture_logs
 
@@ -35,7 +36,7 @@ def _provider(
 ):
     http = httpx.AsyncClient(transport=httpx.MockTransport(reply))
     return build_llm_provider(
-        GroqClient("test-key", "test-model", http),
+        GroqClient("test-key", "test-model", http, meter=NullMeter()),
         compose_fallback=compose_fallback,
     )
 
@@ -63,7 +64,7 @@ CLASSIFY = {
 async def test_groq_error_codes() -> None:
     async def call(handler: Callable[[httpx.Request], httpx.Response]) -> str:
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        client = GroqClient("secret-key", "m", http)
+        client = GroqClient("secret-key", "m", http, meter=NullMeter())
         from csa.decide.llm import ComposeOut
 
         with pytest.raises(GroqError) as err:
@@ -249,7 +250,9 @@ async def test_compose_uses_gemini_when_groq_fails() -> None:
     fallback_http = httpx.AsyncClient(transport=httpx.MockTransport(fallback))
     provider = _provider(
         primary,
-        compose_fallback=GeminiClient("google-test-key", "gemini-test", fallback_http),
+        compose_fallback=GeminiClient(
+            "google-test-key", "gemini-test", fallback_http, meter=NullMeter()
+        ),
     )
     state = TurnState(
         envelope=make_envelope("status"),
@@ -273,7 +276,9 @@ async def test_compose_uses_safe_template_when_both_providers_fail() -> None:
     fallback_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
     provider = _provider(
         lambda _: httpx.Response(503),
-        compose_fallback=GeminiClient("google-test-key", "gemini-test", fallback_http),
+        compose_fallback=GeminiClient(
+            "google-test-key", "gemini-test", fallback_http, meter=NullMeter()
+        ),
     )
     state = TurnState(
         envelope=make_envelope("what is my order status"),
@@ -299,7 +304,9 @@ async def test_fallback_template_preserves_pending_confirmation_invariant() -> N
     fallback_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
     provider = _provider(
         lambda _: httpx.Response(503),
-        compose_fallback=GeminiClient("google-test-key", "gemini-test", fallback_http),
+        compose_fallback=GeminiClient(
+            "google-test-key", "gemini-test", fallback_http, meter=NullMeter()
+        ),
     )
     state = TurnState(
         envelope=make_envelope("I want to place the order"),
@@ -493,7 +500,7 @@ async def _groq_code(replies: list[Callable[[], httpx.Response]], calls: dict[st
     from csa.decide.llm import ComposeOut
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    client = GroqClient("secret-key", "m", http)
+    client = GroqClient("secret-key", "m", http, meter=NullMeter())
     with pytest.raises(GroqError) as err:
         await client.json_completion(ComposeOut, system="s", user="u", timeout=1)
     assert "SECRET-GENERATION" not in str(err.value)
@@ -703,7 +710,9 @@ async def test_gemini_attempt_gets_the_whole_budget_and_timeout_is_final() -> No
         seen.append(request.extensions["timeout"]["read"])
         raise httpx.ReadTimeout("slow", request=request)
 
-    client = GeminiClient("k", "m", httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    client = GeminiClient(
+        "k", "m", httpx.AsyncClient(transport=httpx.MockTransport(slow)), meter=NullMeter()
+    )
     with pytest.raises(CompletionError) as caught:
         await client.json_completion(ComposeOut, system="s", user="u", timeout=5.0)
     assert caught.value.code == "gemini_timeout"
@@ -2149,7 +2158,10 @@ async def test_compose_handoff_returns_none_on_a_model_error_without_a_fallback_
         return httpx.Response(200, json={"candidates": []})
 
     gemini = GeminiClient(
-        "k", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(fallback_handler))
+        "k",
+        "gemini-test",
+        httpx.AsyncClient(transport=httpx.MockTransport(fallback_handler)),
+        meter=NullMeter(),
     )
     provider = _provider(down, compose_fallback=gemini)
     assert await provider.compose_handoff(_handoff_state(), None) is None
@@ -2310,7 +2322,10 @@ def _gemini_capturing(text: str, bodies: list[dict[str, Any]]) -> GeminiClient:
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
 
     return GeminiClient(
-        "google-test-key", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        "google-test-key",
+        "gemini-test",
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        meter=NullMeter(),
     )
 
 
@@ -2385,7 +2400,10 @@ async def test_classify_and_plan_reach_a_real_gemini_fallback() -> None:
         )
 
     gemini = GeminiClient(
-        "google-test-key", "gemini-test", httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        "google-test-key",
+        "gemini-test",
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        meter=NullMeter(),
     )
     provider = build_llm_provider(primary, compose_fallback=gemini)
     signals = await provider.classify(make_envelope("where is my order"), Context())

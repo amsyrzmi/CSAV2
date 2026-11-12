@@ -8,6 +8,7 @@ import httpx
 import pytest
 from csa.core.settings import Settings
 from csa.decide.groq import GROQ_URL, GroqClient
+from csa.metering.meter import NullMeter
 from pydantic import BaseModel, ValidationError
 
 # Settings looks for /run/secrets even when told not to; the folder is absent off Docker.
@@ -42,7 +43,9 @@ async def post_once(client_url: str | None) -> str:
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(reply))
     client = (
-        GroqClient("k", "m", http) if client_url is None else GroqClient("k", "m", http, client_url)
+        GroqClient("k", "m", http, meter=NullMeter())
+        if client_url is None
+        else GroqClient("k", "m", http, client_url, meter=NullMeter())
     )
     await client.json_completion(Answer, system="s", user="u", timeout=5)
     return seen[0]

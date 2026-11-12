@@ -44,6 +44,7 @@ from csa.marketplace.processor import (
     marketplace_sync_loop,
 )
 from csa.marketplace.reads import LiveReadAccess, live_read_access
+from csa.metering.meter import LedgerMeter
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.storage.base import ObjectStore
@@ -713,6 +714,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     await app_pool.open(wait=True)
     await checkpoint_pool.open(wait=True)
     llm_http = httpx.AsyncClient()
+    # One ledger meter for the worker: every provider client below books its token usage to it.
+    # The trace-store mirror is wired separately.
+    meter = LedgerMeter(app_pool, mirror=None)
     # One mailer for the worker, built once: booking mail after a turn, and the reminder job.
     mailer = Mailer.from_settings(settings)
     coordinator: CoordinatorRuntime | None = None
@@ -723,6 +727,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 settings.GOOGLE_AI_API_KEY.get_secret_value(),
                 settings.GOOGLE_AI_MODEL,
                 llm_http,
+                meter=meter,
             )
             if settings.GOOGLE_AI_API_KEY is not None
             else None
@@ -733,6 +738,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 settings.GROQ_MODEL,
                 llm_http,
                 str(settings.GROQ_CHAT_URL),
+                meter=meter,
             ),
             compose_fallback=compose_fallback,
         )

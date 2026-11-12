@@ -35,6 +35,7 @@ from csa.contracts.envelope import (
 )
 from csa.core import crypto, db
 from csa.decide.groq import GroqClient, GroqError
+from csa.metering.meter import NullMeter
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -234,7 +235,7 @@ class CassetteGroq(GroqClient):
     """Replays recorded model answers; an unrecorded call fails like a provider error."""
 
     def __init__(self) -> None:
-        super().__init__("cassette-key", "cassette-model", httpx.AsyncClient())
+        super().__init__("cassette-key", "cassette-model", httpx.AsyncClient(), meter=NullMeter())
         self.cassette: dict[str, list[Any]] = {}
         self.calls: list[tuple[str, str]] = []
         self.missing: list[str] = []

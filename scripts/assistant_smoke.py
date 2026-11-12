@@ -46,6 +46,7 @@ from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.decide.groq import GroqClient
 from csa.email.models import validated_draft
 from csa.email.service import EmailService
+from csa.metering.meter import NullMeter
 from csa.workspace.contracts import (
     AnswerProposal,
     ClarificationProposal,
@@ -596,7 +597,7 @@ def _setup_error(text: str) -> int:
 
 async def _run_with_groq(key: str, model: str, cases: Sequence[SmokeCase], repeat: int) -> int:
     async with httpx.AsyncClient(trust_env=False) as http:
-        return await run(GroqClient(key, model, http), cases, repeat, print)
+        return await run(GroqClient(key, model, http, meter=NullMeter()), cases, repeat, print)
 
 
 def main(argv: Sequence[str] | None = None, *, client: JsonCompletionClient | None = None) -> int:

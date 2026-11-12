@@ -53,6 +53,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.marketplace.reads import live_read_access
+from csa.metering.meter import LedgerMeter
 from csa.storage.factory import build_stores, verify_stores
 from csa.subscriptions.api import build_subscriptions_router
 from csa.workspace.executors import build_proposal_registry
@@ -170,6 +171,9 @@ def create_app() -> FastAPI:
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # One ledger meter for the gateway: every Groq client below books its token usage to
+            # it. The trace-store mirror is wired separately.
+            meter = LedgerMeter(pool, mirror=None)
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on
@@ -240,6 +244,7 @@ def create_app() -> FastAPI:
                     settings.GROQ_MODEL,
                     training_http,
                     str(settings.GROQ_CHAT_URL),
+                    meter=meter,
                 )
                 if settings.HR_ASSISTANT_ENABLED:
                     hr_http = httpx.AsyncClient()
@@ -250,6 +255,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             hr_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         ),
                     )
                 if settings.EMAIL_ASSISTANT_ENABLED:
@@ -269,6 +275,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             email_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
                         # None unless the inbound injection area runs Jev (needs a key).
@@ -281,6 +288,7 @@ def create_app() -> FastAPI:
                                 settings.ASSISTANT_DRAFT_MODEL,
                                 email_http,  # closed with the email client at shutdown
                                 str(settings.GROQ_CHAT_URL),
+                                meter=meter,
                             )
                             if settings.ASSISTANT_DRAFT_MODEL
                             else None
@@ -296,6 +304,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             workspace_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         )
                     )
             elif (

@@ -10,6 +10,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from csa.decide.completion import CompletionError
+from csa.metering.meter import Usage, UsageMeter
 
 logger = structlog.get_logger(__name__)
 
@@ -38,6 +39,37 @@ def _json_validate_failed(response: httpx.Response) -> bool:
     return isinstance(error, dict) and error.get("code") == "json_validate_failed"
 
 
+def _count(value: object) -> int | None:
+    """A non-negative integer token count, or None (a bool is not a count)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _usage(response: httpx.Response, model: str, schema_name: str) -> Usage | None:
+    """The token usage a response reports, or None when it carries none.
+
+    A response with no ``usage`` block (a timeout body, most 5xx) is not an error. A block that is
+    present but unusable is logged by shape only, and never raises: reading usage must not break
+    the call it measures.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    block = body.get("usage") if isinstance(body, dict) else None
+    if block is None:
+        return None
+    prompt = _count(block.get("prompt_tokens")) if isinstance(block, dict) else None
+    completion = _count(block.get("completion_tokens")) if isinstance(block, dict) else None
+    if prompt is None or completion is None:
+        logger.warning(
+            "usage_block_unusable", provider="groq", model=model, status=response.status_code
+        )
+        return None
+    return Usage("groq", model, prompt, completion, schema_name)
+
+
 class GroqClient:
     def __init__(
         self,
@@ -45,11 +77,14 @@ class GroqClient:
         model: str,
         http_client: httpx.AsyncClient,
         url: str = GROQ_URL,
+        *,
+        meter: UsageMeter,
     ) -> None:
         self._api_key = api_key
         self.model = model
         self._http = http_client
         self._url = url
+        self._meter = meter
 
     async def json_completion(
         self,
@@ -60,6 +95,8 @@ class GroqClient:
         timeout: float,
         max_tokens: int = 1500,
     ) -> T:
+        # Fail before any spend: a call with no company bound to it never reaches the provider.
+        self._meter.require_context()
         body: dict[str, Any] = {
             "model": self.model,
             "temperature": 0,
@@ -92,6 +129,11 @@ class GroqClient:
                 if attempt + 1 < ATTEMPTS:
                     continue
                 raise GroqError("groq_transport_error") from exc
+            # Every response that reports usage was billed, including one that is retried or
+            # whose reply fails validation below.
+            usage = _usage(response, self.model, schema.__name__)
+            if usage is not None:
+                await self._meter.record(usage)
             retryable = response.status_code in _RETRYABLE or _json_validate_failed(response)
             if retryable and attempt + 1 < ATTEMPTS:
                 continue
