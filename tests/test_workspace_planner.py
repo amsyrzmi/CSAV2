@@ -3280,6 +3280,13 @@ def test_planner_prompt_describes_email_batch_and_plan_in_one_short_section() ->
     assert '"email_batch"' in schema and '"plan"' in schema and "use_knowledge_base" in schema
 
 
+def test_the_email_batch_bullet_gives_a_malay_personalised_example() -> None:
+    """Staging smoke: a Malay "their own renewal date" request came back shared in 5 of 6 runs."""
+    section = " ".join(_new_section().split())
+    assert 'in Malay "ingatkan pelanggan tarikh pembaharuan mereka sendiri"' in section
+    assert "even for a whole group" in section
+
+
 def test_the_new_section_repeats_no_existing_rule() -> None:
     """#86: a second bullet restating a rule moved an unrelated case. The #85/#86 wording stays
     exactly once and the new section restates none of it."""

@@ -376,7 +376,8 @@ ONE {{"kind": "group", "group": "active_subscribers"}} or {{"kind": "group", "gr
 "renewing_soon", "days": N}}; the server finds each person. Always set mode: "shared" when \
 everyone gets the same text ("send the same email to Farah, Imran and Wei: the lift is closed on \
 Monday"; separate messages alone are still "shared"), "personalised" when each email uses the \
-person's own details ("remind each subscriber of their own renewal date"); use_knowledge_base \
+person's own details ("remind each subscriber of their own renewal date", in Malay "ingatkan \
+pelanggan tarikh pembaharuan mereka sendiri"), even for a whole group; use_knowledge_base \
 is true when the email needs the business's policies or product information. \
 For "the rest" of a group, repeat the earlier email_batch with offset set to that history turn's \
 resume_offset. subject, instructions and send as for email_compose.
