@@ -1,5 +1,7 @@
 -- Callers must execute ingress/lock_whatsapp_contact.sql first, in the same tenant
--- transaction; after the lock this statement always returns exactly one row.
+-- transaction. A known identity wins; else exactly one live contact with the same normalised digits
+-- (0123... and +60123... are the same number) is linked; else a contact is created. A merged shell
+-- never matches. Zero rows only when the insert lost a race: the caller runs it once more.
 WITH known AS MATERIALIZED (
     SELECT c.id AS contact_id, c.full_name
     FROM public.contact_identities AS i
@@ -11,7 +13,8 @@ WITH known AS MATERIALIZED (
     SELECT c.id, c.full_name
     FROM public.contacts AS c
     WHERE c.client_id = %(client_id)s
-      AND regexp_replace(c.phone, '\D', '', 'g') = %(wa_id)s
+      AND c.merged_into IS NULL
+      AND c.phone_digits = public.my_phone_digits('+' || %(wa_id)s)
 ), linked AS MATERIALIZED (
     SELECT id AS contact_id, full_name
     FROM phone_matches
@@ -22,6 +25,7 @@ WITH known AS MATERIALIZED (
     SELECT %(client_id)s, '+' || %(wa_id)s, %(display_name)s
     WHERE NOT EXISTS (SELECT 1 FROM known)
       AND NOT EXISTS (SELECT 1 FROM linked)
+    ON CONFLICT DO NOTHING
     RETURNING id, full_name
 ), identity AS (
     INSERT INTO public.contact_identities (client_id, channel, external_id, contact_id)

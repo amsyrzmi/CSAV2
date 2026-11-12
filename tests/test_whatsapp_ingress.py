@@ -14,9 +14,12 @@ from typing import Any, LiteralString, cast
 import httpx
 import psycopg
 import pytest
+from csa.channels import whatsapp_ingress
 from csa.channels.ingress import IngressError
 from csa.channels.whatsapp_ingress import WhatsAppIngress
+from csa.contacts.linking import link_contacts, verify_phone
 from csa.core.db import build_pool
+from csa.core.tenancy import tx
 from psycopg_pool import AsyncConnectionPool
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -143,6 +146,27 @@ async def test_resolve_whatsapp_contact_links_exact_digits_or_creates(
         ).fetchone() == ("+60199999999",)
         # a near-miss number must not link to the existing contact
         assert run("6012345678", "Short")[2] is True
+        # a number typed in national form matches the international wa_id
+        conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) VALUES (%s, '0187654321', 'Nat')",
+            (client_id,),
+        )
+        national = run("60187654321", "Other")
+        assert national[1] == "Nat" and national[2] is False
+        # a merged shell never matches: the wa_id gets a new contact
+        survivor = conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name) VALUES (%s, '+60111111111', 'S') "
+            "RETURNING id",
+            (client_id,),
+        ).fetchone()
+        assert survivor is not None
+        conn.execute(
+            "INSERT INTO contacts (client_id, phone, full_name, merged_into) "
+            "VALUES (%s, '+60177777777', 'Shell', %s)",
+            (client_id, survivor[0]),
+        )
+        fresh = run("60177777777", "Fresh")
+        assert fresh[1] == "Fresh" and fresh[2] is True
 
 
 def _sql(name: str) -> LiteralString:
@@ -797,3 +821,218 @@ async def test_gateway_routes_hidden_when_unconfigured_and_verify_challenge(
         assert wrong.status_code == 403
         unsigned = await client.post("/channels/whatsapp", json={"entry": []})
         assert unsigned.status_code == 403
+
+
+# --- verified phones and link on first contact ------------------------------
+
+
+def _owner_rows(pg_container: object, query: str, *params: object) -> list[tuple[Any, ...]]:
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        return conn.execute(cast(LiteralString, query), params).fetchall()
+
+
+def _add_contact(
+    pg_container: object, client_id: str, *, days_old: float = 0, **cols: object
+) -> uuid.UUID:
+    row = {"id": uuid.uuid4(), "client_id": client_id, **cols}
+    names, slots = ", ".join(row), ", ".join(["%s"] * len(row))
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            cast(
+                LiteralString,
+                f"INSERT INTO contacts ({names}, created_at) "
+                f"VALUES ({slots}, now() - %s * interval '1 day')",
+            ),
+            (*row.values(), days_old),
+        )
+    return cast(uuid.UUID, row["id"])
+
+
+def _reviews(pg_container: object, client_id: str) -> list[tuple[Any, ...]]:
+    return _owner_rows(
+        pg_container,
+        "SELECT reason FROM contact_link_reviews WHERE client_id = %s AND status = 'open'",
+        client_id,
+    )
+
+
+def _links(pg_container: object, client_id: str) -> int:
+    return _count(pg_container, "contact_links", client_id)
+
+
+@requires_docker
+async def test_staff_contact_in_national_form_links_and_is_verified(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    staff = _add_contact(pg_container, client_id, phone="0123456789", full_name="Staff")
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.V1")])))
+    assert _count(pg_container, "contacts", client_id) == 1
+    [row] = _owner_rows(
+        pg_container,
+        "SELECT id, phone_digits, phone_verified_at FROM contacts WHERE client_id = %s",
+        client_id,
+    )
+    assert row[0] == staff and row[1] == "60123456789" and row[2] is not None
+    stamp = row[2]
+    assert _owner_rows(
+        pg_container,
+        "SELECT contact_id FROM contact_identities WHERE client_id = %s AND channel = 'whatsapp'",
+        client_id,
+    ) == [(staff,)]
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+    ) == [(staff,)]
+    # A repeat message changes nothing: same stamp, no link, no review.
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.V2")])))
+    assert _count(pg_container, "contacts", client_id) == 1
+    assert _owner_rows(
+        pg_container, "SELECT phone_verified_at FROM contacts WHERE id = %s", staff
+    ) == [(stamp,)]
+    assert _links(pg_container, client_id) == 0 and _reviews(pg_container, client_id) == []
+
+
+@requires_docker
+async def test_two_contacts_with_the_digits_open_one_review_and_no_link(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, _, client_id, number, _ = whatsapp_context
+    _add_contact(pg_container, client_id, phone="0123456789", full_name="A")
+    _add_contact(pg_container, client_id, phone="+60 12-345 6789", full_name="B")
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.R1")])))
+    assert _count(pg_container, "contacts", client_id) == 3
+    assert _reviews(pg_container, client_id) == [("several_matches",)]
+    assert _links(pg_container, client_id) == 0
+    [created] = _owner_rows(
+        pg_container,
+        "SELECT id, phone_verified_at FROM contacts WHERE client_id = %s AND full_name = 'Aina'",
+        client_id,
+    )
+    assert created[1] is None
+    # The repeat finds the same contact and opens no second review.
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.R2")])))
+    assert _count(pg_container, "contacts", client_id) == 3
+    assert _reviews(pg_container, client_id) == [("several_matches",)]
+    assert _links(pg_container, client_id) == 0
+    assert set(
+        _owner_rows(
+            pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+        )
+    ) == {(created[0],)}
+
+
+@requires_docker
+async def test_telegram_contact_that_verified_the_digits_is_the_match(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    ingress, pool, client_id, number, _ = whatsapp_context
+    telegram = _add_contact(pg_container, client_id, telegram_id="900001", full_name="Tele")
+    async with tx(pool, client_id) as conn:
+        done = await verify_phone(
+            conn, uuid.UUID(client_id), telegram, "+60123456789", source="telegram_share"
+        )
+    assert done.outcome == "set"
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.T1X")])))
+    assert _count(pg_container, "contacts", client_id) == 1
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+    ) == [(telegram,)]
+    assert _links(pg_container, client_id) == 0
+
+
+@requires_docker
+async def test_known_whatsapp_contact_is_linked_to_the_verified_telegram_one(
+    whatsapp_context: WhatsAppContext, pg_container: object
+) -> None:
+    """The conversation lands on the survivor, and a repeat changes nothing."""
+    ingress, pool, client_id, number, _ = whatsapp_context
+    telegram = _add_contact(
+        pg_container, client_id, days_old=5, telegram_id="900002", full_name="Tele"
+    )
+    whatsapp = _add_contact(pg_container, client_id, days_old=1, full_name="Wa")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO contact_identities (client_id, channel, external_id, contact_id) "
+            "VALUES (%s, 'whatsapp', %s, %s)",
+            (client_id, WA_ID, whatsapp),
+        )
+    async with tx(pool, client_id) as conn:
+        done = await verify_phone(
+            conn, uuid.UUID(client_id), telegram, "+60123456789", source="telegram_share"
+        )
+    assert done.outcome == "set"
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.K1")])))
+    assert _links(pg_container, client_id) == 1
+    assert _owner_rows(
+        pg_container, "SELECT merged_into FROM contacts WHERE id = %s", whatsapp
+    ) == [(telegram,)]
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+    ) == [(telegram,)]
+    assert _owner_rows(
+        pg_container,
+        "SELECT contact_id FROM contact_identities WHERE client_id = %s AND channel = 'whatsapp'",
+        client_id,
+    ) == [(telegram,)]
+    assert _owner_rows(
+        pg_container,
+        "SELECT raw -> 'envelope' -> 'contact' ->> 'id' FROM ingress_events WHERE client_id = %s",
+        client_id,
+    ) == [(str(telegram),)]
+    await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.K2")])))
+    assert _links(pg_container, client_id) == 1 and _reviews(pg_container, client_id) == []
+    assert _count(pg_container, "conversations", client_id) == 1
+
+
+@requires_docker
+async def test_a_contact_merged_between_resolve_and_verify_is_resolved_again(
+    whatsapp_context: WhatsAppContext, pg_container: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staff link lands after the resolver and before verify_phone: the message follows it."""
+    ingress, pool, client_id, number, _ = whatsapp_context
+    survivor = _add_contact(
+        pg_container, client_id, days_old=9, phone="+60111111111", full_name="Older"
+    )
+    loser = _add_contact(pg_container, client_id, days_old=1, phone="0123456789", full_name="Newer")
+    with psycopg.connect(owner_dsn_for(pg_container), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO contact_identities (client_id, channel, external_id, contact_id) "
+            "VALUES (%s, 'whatsapp', %s, %s)",
+            (client_id, WA_ID, loser),
+        )
+    real = whatsapp_ingress.verify_phone
+    calls: list[uuid.UUID] = []
+
+    async def merging_first(
+        conn: Any, cid: uuid.UUID, contact_id: uuid.UUID, *a: Any, **k: Any
+    ) -> Any:
+        calls.append(contact_id)
+        if len(calls) == 1:
+            async with tx(pool, client_id) as other:
+                out = await link_contacts(
+                    other, cid, survivor, contact_id, reason="staff", actor_user_id=None
+                )
+            assert out.linked and out.survivor_id == survivor
+        return await real(conn, cid, contact_id, *a, **k)
+
+    monkeypatch.setattr(whatsapp_ingress, "verify_phone", merging_first)
+    receipts = await ingress.receive(*signed(_delivery(number, messages=[_text("wamid.M1")])))
+    assert len(receipts) == 1 and not receipts[0].duplicate
+    assert calls == [loser, survivor]
+    assert _owner_rows(pg_container, "SELECT merged_into FROM contacts WHERE id = %s", loser) == [
+        (survivor,)
+    ]
+    assert _owner_rows(
+        pg_container, "SELECT contact_id FROM conversations WHERE client_id = %s", client_id
+    ) == [(survivor,)]
+    assert _owner_rows(
+        pg_container,
+        "SELECT contact_id FROM contact_identities WHERE client_id = %s AND channel = 'whatsapp'",
+        client_id,
+    ) == [(survivor,)]
+    assert _owner_rows(
+        pg_container, "SELECT count(*) FROM ingress_events WHERE contact_id = %s", loser
+    ) == [(0,)]
+    assert _owner_rows(
+        pg_container, "SELECT phone_verified_at IS NOT NULL FROM contacts WHERE id = %s", survivor
+    ) == [(True,)]
