@@ -168,3 +168,109 @@ These settle what the builder check found and supersede any earlier sentence the
   `escalations` (conversation-based).
 - The `subscription_agent` capability is seeded disabled per company, so sign-up inherits that switch; the company
   enables it with the Subscriptions package.
+
+## 10. Builder check 2 (2026-11-12): the settled design
+
+The build (one pull request, twelve tasks, migrations 0580 and 0581) departs from sections 5, 8 and 9 in the
+places below. Each is the design now; where a sentence above says otherwise, this section wins. Each ruling
+says what it costs if it was the wrong call.
+
+### 10.1 Deviations from the design and the survey
+
+1. **A link re-points every contact-owned row; there are no `merged_into` followers.** Section 9 re-points
+   only subscriptions, bookings and invoices and makes the console and inbox follow `merged_into`. The survey
+   found about thirty readers, and the Telegram ingress returns 409 when a conversation's contact differs from
+   the resolved contact, so that design breaks the next message after a link. Re-pointing conversations,
+   orders, tickets and the rest to the survivor keeps every reader and the ingress unchanged. The loser keeps
+   `merged_into` only to hide it from live lists. *If wrong:* a bigger link transaction and a heavier unlink
+   (ids per table in `moved`); an unlink after new activity leaves the new rows with the survivor.
+2. **Staff-entered phones count as a match; typed phones never do.** The Telegram share links to exactly one
+   contact with the same digits, whether that contact's number was verified or entered by staff (the WhatsApp
+   resolver already trusts staff numbers). *If wrong:* a mistyped staff number links two people; staff can
+   unlink within 30 days.
+3. **Unlink after 30 days is refused (409 `unlink_window_closed`), not offered "by hand".** Section 9 says by
+   hand only; no safe manual path exists once rows have moved. *If wrong:* an old wrong link can only be fixed
+   by linking the other way.
+4. **A typed read-back and a typed "yes" replace the confirm button.** No confirm button exists for this agent
+   and WhatsApp ignores `ui`; the booking cancel already confirms by a typed yes. The server requires the
+   "yes" to answer the chat's latest assistant message, and that message to be the read-back of the same plan,
+   name and phone. *If wrong:* a model that mistakes "ok" for a yes files an unwanted request; staff approval is
+   the default and a pending subscription never charges.
+5. **Staff activate until payments exist.** Nothing creates subscription invoices yet; the payments project
+   will. An automatically approved sign-up creates a pending subscription that staff still start, or that
+   expires after the company's days. *If wrong:* auto-approve saves less staff time than designed until the
+   payments project lands.
+6. **Archiving a plan stays unblocked.** `plan_in_use` runs only when the interval changes (and pending
+   subscriptions now count toward it); blocking archives would also change active and paused plans.
+   `is_signup_open` is how a company stops sign-ups.
+7. **No staff push notification for a new sign-up in this PR.** The tab shows an open count. If filing a
+   pause or cancel request notifies staff elsewhere, mirror it as a follow-up.
+8. **The "Link contacts" anchor is the subscription drawer plus a "Needs review" section in the Sign-ups
+   tab**, because the Customers view lists subscriptions, not contacts, and a contact with no subscription
+   never appears there.
+9. **A typed sign-up phone is never copied to `contacts.phone`.** Found by the Task 2 review: the copy plus
+   trusting staff-entered phones would let a typed number link its owner's contact to the typer. The typed
+   number lives on `signup_requests.phone` and is marked unverified unless the contact's own phone is
+   verified. *If wrong:* staff retype the number onto the contact when they want it there.
+10. **Corrections from the survey.** `renews_at > started_at` is a `WHERE` in `subscription_insert.sql`, not a
+    table check; the portal "twin" is the same `SubscriptionsWorkspace`; PR 2's `mine` read already handled
+    `pending`; no subscription settings table existed; golden cases cannot send a callback tap or a contact
+    share (those are covered in `test_ingress.py`, `test_telegram.py`, `test_delivery_buttons.py` and
+    `test_staged_agents.py`); `contact_verifications` is unused and unsuitable and stays untouched; the
+    baseline `subscription_requests` table is unused and left alone; a phone normaliser needs an IMMUTABLE
+    SQL function behind a generated column, because the unique index cannot call Python.
+
+### 10.2 Rulings made during the build
+
+- **Ruling A: `merged_into` is set before the survivor takes the phone.** The verified-phone unique index
+  ignores merged rows, so `link_contacts` marks the loser merged first and only then writes the survivor's
+  phone and `phone_verified_at`. `moved["contacts"]` records both contacts' phone, stamp and Telegram id
+  before and after the link, so an unlink restores them in reverse order.
+- **Ruling B: the re-point SQL is built from the `LINKED_TABLES` constant.** Table names come from that
+  constant only, never from input, and there is no `repoint_table.sql`. The constant has twelve tables
+  (eleven planned plus `signup_requests`); the 0581 trigger and grants cover `agent_preparation_requests`
+  (`UPDATE (contact_id)` for `csa_app`).
+- **Ruling C: the link and review routes live in `csa/contacts/api.py`.** `build_links_router()` is included
+  by `build_subscriptions_router()` ahead of the `/{subscription_id}` routes, so the prefix, the guards and
+  the static-before-dynamic order hold.
+- **Ruling D: see deviation 9.**
+- **Ruling E: the subscription and sign-up prompt rules are per company.** The planner and classifier rules
+  for subscriptions and sign-up (and the capability list, schemas and look-ahead) are included only for a
+  company with `subscription_agent` switched on. A company that sells only through TikTok Shop gets no
+  sign-up wording, and "how do I sign up" gets the honest no-information answer with an offer of a person.
+  A TikTok purchase never creates a subscriber or links a contact in this PR. *If wrong:* a company with the
+  capability off sees a sign-up offer it cannot honour.
+- **Ruling F: an unlink sticks.** An unlinked pair is never linked automatically again: when the pair has an
+  earlier undone link, `verify_phone` opens a review (reason `previously_unlinked`) and sets nothing. Staff
+  can still link that pair. `unlink_contacts` returns `UnlinkOutcome(skipped=[...])`, entries of the form
+  `role.column` for a phone, stamp or Telegram id it left alone because it changed since the link or another
+  contact now holds it; the console and the audit row show them. *If wrong:* a pair that really was re-merged
+  needs staff to link it by hand once.
+- **Review reasons.** `several_matches`, `telegram_conflict`, `same_channel_identity`, `table_conflict` (one
+  of the loser's rows would collide with a unique key of the survivor's, such as a waiting sign-up for the
+  same plan) and `previously_unlinked`. Staff cannot link a pair refused for `telegram_conflict`,
+  `same_channel_identity` or `table_conflict` (409 `link_refused:<reason>`) until the clash is gone.
+- **The WhatsApp ingress is race-safe.** Resolve and `verify_phone` run in a savepoint with one retry on
+  `contact_merged`, so a link racing the first message cannot strand the new identity on a merged shell. A
+  second merge returns a retryable 503 (`IngressError`) and is logged.
+- **A contact card is judged before the contact is resolved.** A foreign, missing-`user_id` or forwarded
+  card is refused before contact resolution: nothing is stored and the update is recorded as handled. The
+  stored payload hash of a share has `phone_number` and `vcard` scrubbed. The reply keyboard is dormant until
+  the bot asks (the sign-up agent emits `Ui(request_phone=True)`).
+- **The sign-up draft lives in `pending_actions`.** The planner only sees `[PHONE_n]` and inbound bodies are
+  stored redacted, so a typed number cannot be recovered on the "yes" turn. The bot keeps a one-hour per-chat
+  draft (action `signup_draft`, no migration), updated in place (one row per chat) and with its payload
+  blanked when it is closed or expires. The server requires the read-back to match plan, name and phone.
+  *If wrong:* typed name and phone sit in `pending_actions` for up to an hour.
+- **Pending subscriptions expire.** A fifth rule in the subscriptions-due job cancels a pending subscription
+  older than the company's `pending_expiry_days` (default 14, 0 never, 0 to 90) and marks the approved
+  sign-up it came from `expired`; each gets a `pending_expired` event. A company with no active
+  Subscriptions package is skipped, as for the other rules.
+
+### 10.3 Open owner decision
+
+The sign-up's data sentence ("We keep your name and phone number on your contact record so the team can set
+up your plan.", `SIGNUP_DATA_NOTE`) says "on your contact record", but by deviation 9 a typed phone stays on
+the sign-up request and only a channel-verified number reaches the contact. The builder did not decide
+whether the sentence should say "on your sign-up request" or keep the broader promise; the owner decides
+after reading it in the retest (`docs/CUSTOMER_BOT_RETEST.md`, "Customer onboarding").

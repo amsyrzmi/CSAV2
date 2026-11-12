@@ -465,9 +465,135 @@ escalations_note_length;`, then `ALTER TABLE public.escalations DROP COLUMN note
 written is lost), and last `DELETE FROM public.schema_migrations WHERE version = '0560';`, or the
 runner thinks it is still applied. Then start the older images.
 
-**Roll back migration 0581.** Needed when going back to an image older than this release. Stop the
-services. Unlink every live link in the console first (rows moved to a surviving contact stay there
-once the link audit is gone). Then, as the database owner and in this order: `REVOKE UPDATE
+**Replay the new conversations** (after the new image is on staging; synthetic facts, no database):
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-subscription
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-stock
+```
+
+For a handoff the replay also prints the staff note and the gap topic the model would write. The
+checklist for the whole release is "Business answers and the escalation ladder" in
+[CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
+
+## Customer onboarding: sign-ups and linked contacts
+
+PR 2b (migrations 0580 and 0581). Customers sign up for a plan in the chat, and the same person on
+WhatsApp and Telegram becomes one customer. The staff side is the Subscriptions page (its Sign-ups tab,
+the Customers tab and a subscription's "Linked contacts" panel); the bot side only exists for a company
+whose `subscription_agent` capability is on (a company that only sells through TikTok Shop gets no
+sign-up wording at all). The owner's checks are in [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md),
+section "Customer onboarding".
+
+**Read the Sign-ups list.** The tab badge is the number of open sign-ups ("50+" when a further page
+exists; no badge while the list is empty or could not be read). Nothing pushes a notification to staff
+for a new sign-up in this release, so someone has to open the tab. The tab has four parts, top to
+bottom: the expiry setting, "Open sign-ups", "Needs review" and "Decided sign-ups". An open row shows:
+
+- the name and phone number the customer typed, and the plan they asked for;
+- a mark beside the phone: "Verified" means the channel proved the number (the WhatsApp number the
+  customer writes from, or Telegram's share-my-number button); "Not verified" means the customer typed
+  it. A typed number is kept on the sign-up request only. It is never copied to the customer's contact
+  record and it never links two contacts, so check it before you rely on it (call or message the number
+  through the usual channel);
+- a "Customer record" line when the contact's own name differs from the typed name;
+- when the sign-up was made and on which channel.
+
+**Approve** makes one subscription with the status "Waiting to start" (pending) on that plan and marks
+the sign-up approved; the customer is not messaged and nothing is charged. **Decline** takes an optional
+reason that only staff see; it is never sent to the customer. If a colleague decided the same sign-up
+first, the answer is `signup_not_pending` and the list reloads. `signup_has_plan` means the customer
+already has a live subscription on that plan (added by hand, or approved from another sign-up): decline
+the extra sign-up. `plan_not_open` means the plan was archived or closed to sign-ups after the customer
+asked. "Decided sign-ups" shows each result as "Approved by staff", "Approved automatically",
+"Declined" or "Expired". A plan whose Sign-ups setting is "Sign up automatically" skips the open list:
+the sign-up is approved straight away and the subscription waits to start. "Closed to new sign-ups" on a
+plan stops the bot offering it; people already on it keep it. Archiving a plan is not blocked by open
+sign-ups; closing it to sign-ups is how a company stops them.
+
+**Start or cancel a pending subscription.** Until payments exist (a later project) nothing creates
+invoices for these subscriptions, so staff start them. Open Customers, choose the "Waiting to start"
+filter and open the subscription. "Start subscription" starts it now, sets its first renewal one billing
+period from today and charges nothing. "Cancel now" ends it at once; a cancelled subscription cannot be
+started again, so add a new subscription if the customer comes back. A pending subscription cannot be
+paused, resumed, changed or extended. A plan with a waiting subscription cannot change its billing
+interval; archiving it is not blocked.
+
+**The expiry setting.** Sign-ups tab, "Pending sign-ups expire after N days (0 = never)", one whole number
+from 0 to 90 for the company, default 14 when nothing was saved. The subscriptions-due job (every five
+minutes) cancels every pending subscription that was approved more than N days ago (rule five of that job, after
+the four renewal rules; it skips a company with no active Subscriptions package) and marks the sign-up
+it came from "Expired". Each cancelled subscription gets a `pending_expired` event on its timeline
+(actor `system:subscriptions_due`); nobody is messaged. Changing the setting applies to every pending
+subscription from the next run, including old ones. If two people save at the same moment the second gets
+a version conflict; the console reads the setting again and the person saves once more. To see the effect:
+
+```sql
+SELECT subscription_id, created_at FROM public.subscription_events
+WHERE client_id = '<client id>' AND action = 'pending_expired' ORDER BY created_at DESC LIMIT 20;
+```
+
+**Link and unlink.** One customer who writes on WhatsApp and on Telegram is two contacts until they are
+linked. The system links two contacts by itself in one case: a phone number a channel proved belongs to
+exactly one other live contact of the company (this happens when a customer writes on WhatsApp, and when
+a customer uses Telegram's share-my-number button), whether that other contact's number was verified or typed in by
+staff. A number a customer only typed in the chat never links anything. Staff link two contacts by hand
+from a subscription's "Linked contacts" panel ("Link another contact", then "Link contacts") or from a
+review ("Link them").
+
+- The survivor is the contact that already holds a subscription, otherwise the older one. The other
+  contact (the loser) stays in the database, hidden, and everything it owned moves to the survivor:
+  conversations, orders, tickets, subscriptions, bookings, invoices, sign-up requests and the rest.
+  Nothing is copied and nothing is deleted. Messages from either channel then land on the one customer.
+- Unlink is on the same panel and works for 30 days after the link, newest link first: while a newer
+  link on either contact is active the older one cannot be undone (`later_link_active`), and after 30
+  days it cannot be undone at all (`unlink_window_closed`; the only fix is to link the other way). A link
+  already undone is `link_not_active`, and `survivor_merged` means the survivor was linked into another
+  contact since: undo that link first. Unlink moves back only the rows the link moved; rows created after
+  the link (new messages, a new order) stay with the survivor.
+- "Skipped" is what unlink could not put back. The contact's phone number, phone verification and
+  Telegram account go back only while they still hold what the link left; a value staff changed since, or
+  one another contact now holds, is left alone instead of being overwritten or failing. The console says
+  "Unlinked. Not everything could be put back ..." and names each one; the API returns the same list as
+  `skipped` entries of the form `survivor.telegram_id` or `loser.phone` and the audit row
+  `contacts.link.removed` records it. Check those values on the two contacts afterwards.
+- An unlinked pair is never linked automatically again. If the same phone turns up for the pair, a review
+  is opened (reason `previously_unlinked`) and nothing else changes. Staff can still link that pair
+  themselves.
+- Audit rows: `contacts.link.created`, `contacts.link.removed`, `contacts.review.linked` and
+  `contacts.review.dismissed`.
+
+**What a review means.** The Sign-ups tab, "Needs review", lists pairs of contacts the system would not
+link by itself, with one plain sentence. At most one review is open per pair. "Not the same person" closes
+it and changes nothing; "Link them" links the pair as staff and is refused with the same reasons (409
+`link_refused:<reason>`) where a link is impossible. A review whose contact has since been merged
+elsewhere answers `contact_merged`: close it.
+
+| Reason | What happened | What staff should do |
+|---|---|---|
+| `several_matches` | More than one other live contact has the same phone number. | Look at the contacts (the sign-up list and Customers show names and numbers) and link the two that are the same person, from the panel or "Link them". Close the review if none are. The review names one pair, so check the other contacts with that number too. |
+| `telegram_conflict` | Both contacts already have their own Telegram account, so one person would own two. Neither the system nor staff can link them. | Close the review ("Not the same person"). If they are the same person, keep using the contact that holds the subscription and tell the customer to use one Telegram account; the other chat stays a separate customer. |
+| `same_channel_identity` | Both contacts already chat on the same channel with different accounts (two WhatsApp numbers, say). Staff cannot link them either. | Same as above: close the review and treat them as two customers, or ask the customer to use one account. |
+| `table_conflict` | One contact has a record that would clash with the other's if they were joined (a waiting sign-up or the same plan on both, for example). The link is refused and nothing moved. | Settle the clash first, by declining or cancelling the duplicate sign-up or subscription, then link the pair again from the panel. |
+| `previously_unlinked` | Staff unlinked this pair before and the same phone has appeared again. | Decide again: "Link them" if they really are one person (it was a mistake to unlink), otherwise "Not the same person". The system will not link them by itself. |
+
+Open reviews and links for one company:
+
+```sql
+SELECT reason, status, created_at FROM public.contact_link_reviews
+WHERE client_id = '<client id>' AND status = 'open' ORDER BY created_at DESC;
+SELECT survivor_id, loser_id, reason, created_at, unlinked_at FROM public.contact_links
+WHERE client_id = '<client id>' ORDER BY created_at DESC LIMIT 20;
+```
+
+**Roll back migrations 0581 and 0580.** Needed when going back to an image older than this release: its
+readiness check wants the highest applied version to equal its own. Roll back in reverse order: 0581
+first, then 0580.
+
+**Roll back migration 0581.** Stop the services. Unlink every live link in the console first: a link
+cannot be undone once its audit table is dropped, rows a link moved stay with the survivor, and a loser
+whose link is older than 30 days (so it could not be undone) comes back as an ordinary, empty contact
+when `merged_into` is dropped. Then, as the database owner and in this order: `REVOKE UPDATE
 (contact_id) ON public.agent_preparation_requests FROM csa_app;`, recreate
 `trg_preparation_contact_tenant` as `BEFORE INSERT` only (drop it, then `CREATE TRIGGER
 trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW
@@ -480,7 +606,7 @@ and every verified-phone stamp are lost), `DROP FUNCTION public.my_phone_digits(
 `DELETE FROM public.schema_migrations WHERE version = '0581';`, or the runner thinks it is still
 applied. Then start the older images.
 
-**Roll back migration 0580.** Same reason, after 0581 is rolled back. Stop the services, then, as the
+**Roll back migration 0580.** After 0581 is rolled back. Stop the services, then, as the
 database owner and in this order: `DELETE FROM public.subscriptions WHERE status = 'pending';` (or
 `UPDATE ... SET status = 'cancelled'`), `ALTER TABLE public.subscriptions DROP CONSTRAINT
 subscriptions_status_chk;` then `ALTER TABLE public.subscriptions ADD CONSTRAINT subscriptions_status_chk
@@ -489,17 +615,6 @@ activated_at;`, `ALTER TABLE public.plans DROP COLUMN is_signup_open, DROP COLUM
 TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (every sign-up request is
 lost), and last `DELETE FROM public.schema_migrations WHERE version = '0580';`, or the runner thinks it
 is still applied. Then start the older images.
-
-**Replay the new conversations** (after the new image is on staging; synthetic facts, no database):
-
-```bash
-docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-subscription
-docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-stock
-```
-
-For a handoff the replay also prints the staff note and the gap topic the model would write. The
-checklist for the whole release is "Business answers and the escalation ladder" in
-[CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
 
 ## Stuck knowledge uploads
 
