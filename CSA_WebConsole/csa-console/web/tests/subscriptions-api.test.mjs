@@ -281,3 +281,66 @@ test("the earliest resume date is tomorrow on the browser's calendar", () => {
   assert.equal(subs.dayAfter(new Date(2026, 11, 31, 0, 1)), "2027-01-01");
   assert.equal(subs.dayAfter(new Date(2028, 1, 28, 12, 0)), "2028-02-29");
 });
+
+test("link, unlink and review calls use the Task 5 routes with the right bodies", async () => {
+  const LINK = "66666666-6666-4666-8666-111111111111";
+  const REVIEW = "66666666-6666-4666-8666-222222222222";
+  const [, requests] = await capture(async () => {
+    await subs.listLinks(null, SUB);
+    await subs.linkContacts(null, subs.linkBody(SUB, REQ));
+    await subs.unlinkContacts(null, LINK);
+    await subs.listReviews(null);
+    await subs.listReviews(null, "resolved");
+    await subs.resolveReview(null, REVIEW, "linked");
+    await subs.resolveReview(null, REVIEW, "dismissed");
+    await subs.listLinks("a b/1", SUB);
+    await subs.unlinkContacts("t1", LINK);
+    await subs.resolveReview("t1", REVIEW, "dismissed");
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", `/console/v1/subscriptions/links?contact_id=${SUB}`],
+    ["POST", "/console/v1/subscriptions/links"],
+    ["POST", `/console/v1/subscriptions/links/${LINK}/unlink`],
+    ["GET", "/console/v1/subscriptions/link-reviews?status=open"],
+    ["GET", "/console/v1/subscriptions/link-reviews?status=resolved"],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve`],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve`],
+    ["GET", `/console/v1/subscriptions/links?client_id=a+b%2F1&contact_id=${SUB}`],
+    ["POST", `/console/v1/subscriptions/links/${LINK}/unlink?client_id=t1`],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve?client_id=t1`],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), { contact_a: SUB, contact_b: REQ });
+  // Unlink takes no body; resolve sends the resolution word the server expects.
+  assert.equal(requests[2][1].body, undefined);
+  assert.deepEqual(JSON.parse(requests[5][1].body), { resolution: "linked" });
+  assert.deepEqual(JSON.parse(requests[6][1].body), { resolution: "dismissed" });
+  assert.equal(requests[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+  assert.equal(requests[0][1].headers.has("X-CSRF-Token"), false);
+});
+
+test("link refusals are explained in plain words and keep their code", async () => {
+  const codes = [
+    "link_refused:telegram_conflict", "link_refused:same_channel_identity", "link_refused:table_conflict",
+    "unlink_window_closed", "link_not_active", "later_link_active", "survivor_merged", "contact_merged",
+    "link_not_found", "review_not_found", "review_not_open", "same_contact", "contact_not_found",
+  ];
+  const seen = new Set();
+  const original = globalThis.fetch;
+  try {
+    for (const code of codes) {
+      globalThis.fetch = async () => Response.json({ detail: code }, { status: 409 });
+      await assert.rejects(api("/console/v1/subscriptions/links"), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, code);
+        assert.notEqual(error.message, code, code);
+        assert.doesNotMatch(error.message, /_|:/, code);
+        assert.match(error.message, /\.$/, code);
+        seen.add(error.message);
+        return true;
+      });
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(seen.size, codes.length, "each code has its own sentence");
+});

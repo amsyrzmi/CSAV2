@@ -177,6 +177,56 @@ export interface DeclineIn {
   reason?: string | null;
 }
 
+/** Mirrors csa/contacts/contracts.py. A contact as the link screens show it: no email, no Telegram account. */
+export interface LinkedContact {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  /** Channel codes (telegram, whatsapp, ...), including those a not-yet-undone link moved off the loser. */
+  channels: string[];
+}
+
+export type LinkReason = "verified_phone" | "staff";
+export type ReviewReason =
+  | "several_matches"
+  | "telegram_conflict"
+  | "same_channel_identity"
+  | "table_conflict"
+  | "previously_unlinked";
+
+export interface LinkIn {
+  contact_a: string;
+  contact_b: string;
+}
+
+export interface LinkOut {
+  id: string;
+  survivor: LinkedContact;
+  loser: LinkedContact;
+  reason: LinkReason;
+  created_at: string;
+  unlinked_at: string | null;
+  /** Not undone, within 30 days, and no later active link on either contact. */
+  can_unlink: boolean;
+}
+
+export interface UnlinkResultOut {
+  /** Contact columns the unlink left alone, as "role.column" (for example "loser.telegram_id"). */
+  skipped: string[];
+}
+
+export type ReviewResolution = "linked" | "dismissed";
+
+export interface ReviewOut {
+  id: string;
+  contact_a: LinkedContact;
+  contact_b: LinkedContact;
+  reason: ReviewReason;
+  status: "open" | "resolved";
+  resolution: ReviewResolution | null;
+  created_at: string;
+}
+
 export interface SubscriptionQuery {
   q?: string;
   status?: SubscriptionStatus | "";
@@ -291,6 +341,39 @@ export function approveSignup(tenantId: string | null, signupId: string): Promis
 
 export function declineSignup(tenantId: string | null, signupId: string, body: DeclineIn): Promise<SignupOut> {
   return post(subscriptionsPath(tenantId, `/signups${id(signupId)}/decline`), body);
+}
+
+/** Links of one customer, newest first: those where the contact is the survivor or the loser. */
+export function listLinks(tenantId: string | null, contactId: string): Promise<LinkOut[]> {
+  return api(subscriptionsPath(tenantId, "/links", { contact_id: contactId }));
+}
+
+/** The two contacts, in the order the person picked them: the server chooses which one survives. */
+export function linkBody(contactA: string, contactB: string): LinkIn {
+  return { contact_a: contactA, contact_b: contactB };
+}
+
+export function linkContacts(tenantId: string | null, body: LinkIn): Promise<LinkOut> {
+  return post(subscriptionsPath(tenantId, "/links"), body);
+}
+
+/** Undoes a link; the route takes no body and names what it could not put back in `skipped`. */
+export function unlinkContacts(tenantId: string | null, linkId: string): Promise<UnlinkResultOut> {
+  return api(subscriptionsPath(tenantId, `/links${id(linkId)}/unlink`), { method: "POST" });
+}
+
+/** Pairs of contacts the system could not link by itself, newest first. */
+export function listReviews(tenantId: string | null, status: "open" | "resolved" = "open"): Promise<ReviewOut[]> {
+  return api(subscriptionsPath(tenantId, "/link-reviews", { status }));
+}
+
+/** `linked` links the pair as staff; `dismissed` closes the review and links nothing. */
+export function resolveReview(
+  tenantId: string | null,
+  reviewId: string,
+  resolution: ReviewResolution,
+): Promise<ReviewOut> {
+  return post(subscriptionsPath(tenantId, `/link-reviews${id(reviewId)}/resolve`), { resolution });
 }
 
 // ---- Display helpers (docs/WRITING_GUIDE.md: "RM 59.90", "27 Oct 2026, 09:15") ----

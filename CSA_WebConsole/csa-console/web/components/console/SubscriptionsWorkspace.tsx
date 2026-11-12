@@ -2,6 +2,7 @@
 
 import { createContext, Fragment, useContext, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
+import { LinkedContacts, NeedsReview } from "@/components/console/ContactLinks";
 import { api, ApiError } from "@/lib/api";
 import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
@@ -666,6 +667,8 @@ function Drawer({ tenantId, id, writer, plans, planName, returnFocusTo, onClose,
               {subscription.cancelled_at && <Detail label="Cancelled on" value={formatDay(subscription.cancelled_at, timeZone)} />}
             </DetailSection>
           </div>
+          <LinkedContacts tenantId={tenantId} contactId={subscription.customer.id} writer={writer}
+            timeZone={timeZone} onChanged={() => { setRevision((value) => value + 1); onChanged(); }} />
           {writer && !pending && (
             <div className="mt-5">
               <h3 className="mb-2 font-semibold">Make a change</h3>
@@ -1250,15 +1253,21 @@ function Signups({ tenantId, writer, planName, settings, settingsFailed, onSetti
 }) {
   const [revision, setRevision] = useState(0);
   const [done, setDone] = useState("");
+  const timeZone = useTimeZone();
   return (
     <div className="space-y-5">
       {done && <Notice>{done}</Notice>}
       <ExpiryStrip tenantId={tenantId} writer={writer} settings={settings} failed={settingsFailed}
+        onStale={onSettingsSaved}
         onSaved={(saved) => { onSettingsSaved(saved); setDone("Saved. Pending sign-ups will expire on the new schedule."); }} />
       <Panel title="Open sign-ups">
         <SignupList tenantId={tenantId} status="open" writer={writer} planName={planName} revision={revision}
           onDecided={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }}
           onStale={() => { setRevision((value) => value + 1); onDataChanged(); }} />
+      </Panel>
+      <Panel title="Needs review">
+        <NeedsReview tenantId={tenantId} writer={writer} timeZone={timeZone} revision={revision}
+          onResolved={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }} />
       </Panel>
       <Panel title="Decided sign-ups">
         <SignupList tenantId={tenantId} status="decided" writer={false} planName={planName} revision={revision}
@@ -1269,9 +1278,9 @@ function Signups({ tenantId, writer, planName, settings, settingsFailed, onSetti
 }
 
 /** How long an approved sign-up may wait to be started before it expires. */
-function ExpiryStrip({ tenantId, writer, settings, failed, onSaved }: {
+function ExpiryStrip({ tenantId, writer, settings, failed, onSaved, onStale }: {
   tenantId: string | null; writer: boolean; settings: SubscriptionSettings | null; failed: boolean;
-  onSaved: (settings: SubscriptionSettings) => void;
+  onSaved: (settings: SubscriptionSettings) => void; onStale: (settings: SubscriptionSettings) => void;
 }) {
   const helpId = useId();
   // The box starts from the saved value and is only replaced by the person typing or a save.
@@ -1293,6 +1302,17 @@ function ExpiryStrip({ tenantId, writer, settings, failed, onSaved }: {
       setText(null);
     } catch (cause) {
       setError(message(cause));
+      if (cause instanceof ApiError && cause.code === "version_conflict") {
+        // Someone saved first: the version held here is stale and every retry would be refused.
+        // Read the settings again so the next save carries the current version.
+        try {
+          onStale(await getSettings(tenantId));
+          setText(null);
+          setError("Someone else changed this setting. The box now shows the latest value. Check it and save again.");
+        } catch (reread) {
+          setError(message(reread));
+        }
+      }
     } finally {
       setBusy(false);
     }

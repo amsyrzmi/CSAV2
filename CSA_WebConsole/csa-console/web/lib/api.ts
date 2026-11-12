@@ -129,6 +129,24 @@ const explained: Record<string, string> = {
     "This customer already has that plan, so the request was not approved. Decline it.",
   signup_changed: "This sign-up changed while you were deciding it. Refresh the page and try again.",
   signup_not_found: "That sign-up no longer exists. Refresh the page.",
+  // Linking contacts (csa/contacts/api.py). A refused link is "link_refused:<reason>" and changed nothing.
+  "link_refused:telegram_conflict":
+    "These two contacts each have their own Telegram account, so they can't be linked.",
+  "link_refused:same_channel_identity":
+    "These two contacts already chat on the same channel with different accounts, so they can't be linked.",
+  "link_refused:table_conflict":
+    "These two contacts both have a record that would clash if they were linked, such as a waiting sign-up for the same plan. Decide that first and try again.",
+  unlink_window_closed: "This link is older than 30 days and can no longer be undone here.",
+  link_not_active: "This link has already been undone. Refresh the page.",
+  later_link_active: "A newer link on one of these contacts has to be undone first.",
+  survivor_merged:
+    "One of these contacts was linked into another contact since, so this link can't be undone here. Refresh the page.",
+  contact_merged:
+    "One of these contacts was already merged into another contact, so they can't be linked. If this is a review, choose Not the same person to close it.",
+  link_not_found: "That link no longer exists. Refresh the page.",
+  review_not_found: "That review no longer exists. Refresh the page.",
+  review_not_open: "Someone has already settled this review. Refresh the page.",
+  same_contact: "Choose a different contact to link.",
   // Bookings setup (csa/bookings/setup.py). Booking and calendar refusals carry their own sentence.
   "bookings setup requires an administrator": "Only an Admin can change the Bookings setup.",
   "bookings tenant is not authorized": "You can't open Bookings for this company.",
