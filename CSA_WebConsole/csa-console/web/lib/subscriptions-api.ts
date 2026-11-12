@@ -348,11 +348,6 @@ export function listLinks(tenantId: string | null, contactId: string): Promise<L
   return api(subscriptionsPath(tenantId, "/links", { contact_id: contactId }));
 }
 
-/** The two contacts, in the order the person picked them: the server chooses which one survives. */
-export function linkBody(contactA: string, contactB: string): LinkIn {
-  return { contact_a: contactA, contact_b: contactB };
-}
-
 export function linkContacts(tenantId: string | null, body: LinkIn): Promise<LinkOut> {
   return post(subscriptionsPath(tenantId, "/links"), body);
 }

@@ -684,7 +684,7 @@ def test_the_resolution_table() -> None:
     )
     assert resolve_subscription([newer, older], None, "pro")[0] == "which"  # type: ignore[index]
     assert resolve_subscription([pro, paused], None, "max") is paused
-    # A named plan that is waiting for payment is not requestable.
+    # A named plan that is waiting to be started is not requestable.
     assert resolve_subscription([waiting], None, "lite") == ("waiting", ["Lite"])
     # An id only picks among these rows; one that is not here finds nothing.
     assert resolve_subscription([pro, basic], pro["id"], None) is pro  # type: ignore[arg-type]

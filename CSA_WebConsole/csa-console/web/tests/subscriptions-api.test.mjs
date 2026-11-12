@@ -11,7 +11,12 @@ function moduleUrl(source) {
 }
 const apiUrl = moduleUrl(await readFile(new URL("../lib/api.ts", import.meta.url), "utf8"));
 const source = await readFile(new URL("../lib/subscriptions-api.ts", import.meta.url), "utf8");
-const subs = await import(moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl))));
+const subsUrl = moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl)));
+const subs = await import(subsUrl);
+// linkBody lives in lib/contact-links.ts, which imports the subscriptions client.
+const linksSource = await readFile(new URL("../lib/contact-links.ts", import.meta.url), "utf8");
+const { linkBody } = await import(
+  moduleUrl(linksSource.replace('"@/lib/subscriptions-api"', JSON.stringify(subsUrl))));
 const { api, ApiError } = await import(apiUrl);
 
 const SUB = "33333333-3333-4333-8333-333333333333";
@@ -287,7 +292,7 @@ test("link, unlink and review calls use the Task 5 routes with the right bodies"
   const REVIEW = "66666666-6666-4666-8666-222222222222";
   const [, requests] = await capture(async () => {
     await subs.listLinks(null, SUB);
-    await subs.linkContacts(null, subs.linkBody(SUB, REQ));
+    await subs.linkContacts(null, linkBody(SUB, REQ));
     await subs.unlinkContacts(null, LINK);
     await subs.listReviews(null);
     await subs.listReviews(null, "resolved");

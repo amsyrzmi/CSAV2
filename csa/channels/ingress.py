@@ -41,6 +41,9 @@ _MAX_UPDATE_BYTES = 1_000_000
 # What the graph reads in place of a shared contact card: the number stays inside verify_phone.
 SHARED_PHONE_BODY = "[shared phone number]"
 SHARED_PHONE_ACK = "Thanks, I have your number."
+# A share that stored no number (a review for staff, or digits that do not normalise).
+SHARED_PHONE_NEUTRAL_ACK = "Thanks."
+_STORED_OUTCOMES = frozenset({"set", "linked", "already"})
 SHARED_PHONE_REFUSAL = "Please use the button to share your own number."
 
 
@@ -368,8 +371,14 @@ class TelegramIngress:
                     payload_hash=_canonical_payload_hash(body, scrub_contact_card=True),
                     bot_token=self._bot_token(route, credential_id),
                 )
+            share_outcome: str | None = None
             if shared is not None and not await self._is_known(conn, client_id, event):
-                contact_id, first_contact, stored_display_name = await self._resolve_and_verify(
+                (
+                    contact_id,
+                    first_contact,
+                    stored_display_name,
+                    share_outcome,
+                ) = await self._resolve_and_verify(
                     conn, client_id=client_id, event=event, phone=shared.phone_number
                 )
             else:
@@ -481,7 +490,7 @@ class TelegramIngress:
             await self._answer_callback(answer_token, event.callback_query_id)
             await self._clear_buttons(answer_token, event)
         if shared is not None and not duplicate:
-            await self._acknowledge_share(route, credential_id, event)
+            await self._acknowledge_share(route, credential_id, event, share_outcome)
 
         return IngressReceipt(
             accepted=True,
@@ -490,14 +499,24 @@ class TelegramIngress:
         )
 
     async def _acknowledge_share(
-        self, route: Mapping[str, Any], credential_id: UUID, event: TelegramEvent
+        self,
+        route: Mapping[str, Any],
+        credential_id: UUID,
+        event: TelegramEvent,
+        outcome: str | None,
     ) -> None:
-        """Thank the customer and take the share keyboard away; the share is already stored."""
+        """Thank the customer and take the share keyboard away; the share is already handled.
+
+        Only a number verify_phone kept (``set``, ``linked``, ``already``) is acknowledged as
+        received; a review or an invalid number gets a plain thanks, so the next reply does not
+        contradict it.
+        """
+        text = SHARED_PHONE_ACK if outcome in _STORED_OUTCOMES else SHARED_PHONE_NEUTRAL_ACK
         try:
             await self._adapter.send_message(
                 self._bot_token(route, credential_id),
                 chat_id=event.chat_id,
-                text=SHARED_PHONE_ACK,
+                text=text,
                 http_client=self._http_client,
                 remove_keyboard=True,
             )
@@ -520,8 +539,11 @@ class TelegramIngress:
         client_id: UUID,
         event: TelegramEvent,
         phone: str,
-    ) -> tuple[UUID, bool, str | None]:
+    ) -> tuple[UUID, bool, str | None, str]:
         """Resolve the sender and record the shared phone as theirs, once more after a merge.
+
+        Returns the contact, whether it is a first contact, its stored name and verify_phone's
+        outcome.
 
         Each attempt is a savepoint. A link can merge the contact the resolver chose after the
         resolver's snapshot, and verify_phone then raises 409 ``contact_merged``; the failed
@@ -541,7 +563,7 @@ class TelegramIngress:
                     )
                     live = await live_contact(conn, client_id, verified.contact_id)
                     if live == contact_id:
-                        return contact_id, first_contact, stored_name
+                        return contact_id, first_contact, stored_name, verified.outcome
                     resolved_id, _, stored_name = await self._resolve_contact(
                         conn, client_id=client_id, event=event
                     )
@@ -550,7 +572,7 @@ class TelegramIngress:
                             "linked telegram contact does not resolve to the survivor"
                         )
                     # Linked into an existing customer: this is not a first contact.
-                    return live, False, stored_name
+                    return live, False, stored_name, verified.outcome
             except HTTPException as exc:
                 if exc.detail != "contact_merged":
                     raise

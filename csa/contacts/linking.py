@@ -34,8 +34,8 @@ from csa.core.phone import normalise_my_phone
 Conn = AsyncConnection[Any]
 Refusal = Literal["telegram_conflict", "same_channel_identity", "table_conflict"]
 
-# Every table whose rows belong to a contact and move with a link (ingress_events,
-# contact_verifications, console chat and the unused subscription_requests stay where they are).
+# Every table whose rows belong to a contact and move with a link (EXCLUDED_TABLES stay where
+# they are; tests/test_contact_linking.py checks the two cover every table pointing at a contact).
 LINKED_TABLES: tuple[str, ...] = (
     "conversations",
     "orders",
@@ -49,6 +49,19 @@ LINKED_TABLES: tuple[str, ...] = (
     "agent_preparation_requests",
     "signup_requests",
     "contact_identities",
+)
+
+# Tables with a contact_id column or a foreign key to contacts whose rows a link does not move.
+EXCLUDED_TABLES: tuple[str, ...] = (
+    "escalations",  # a record of one turn's handoff; read by conversation_id, which moves
+    "quotes",  # legacy baseline table, no code reads or writes it
+    "ingress_events",  # the raw inbound audit trail: who the message resolved to when it came in
+    "contact_verifications",  # legacy baseline table, no code reads or writes it
+    "subscription_requests",  # legacy baseline table, no code reads or writes it
+    "console_chat_participants",  # a staff member's own console sandbox contact, never a customer
+    "console_chat_threads",  # sandbox threads of that sandbox contact
+    "contact_links",  # the link records themselves (survivor and loser)
+    "contact_link_reviews",  # reviews name both contacts of a pair as they were
 )
 
 # Primary keys other than a single "id" column; the link records such a key as a JSON array.

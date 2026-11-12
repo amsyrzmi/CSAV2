@@ -502,7 +502,8 @@ async def test_review_resolved_as_linked_links_the_pair(sessions: SessionWorld) 
     assert done.json()["status"] == "resolved" and done.json()["resolution"] == "linked"
     assert await owner_of(w, "conversations", thread) == holder
     [link_row] = await w.q(
-        "SELECT survivor_id, loser_id, reason, created_by FROM contact_links WHERE client_id=%s",
+        "SELECT id, survivor_id, loser_id, reason, created_by FROM contact_links"
+        " WHERE client_id=%s",
         tenant,
     )
     assert (str(link_row["survivor_id"]), str(link_row["loser_id"])) == (holder, shell)
@@ -510,12 +511,12 @@ async def test_review_resolved_as_linked_links_the_pair(sessions: SessionWorld) 
     [row] = await w.q("SELECT resolved_by FROM contact_link_reviews WHERE id=%s", review)
     assert str(row["resolved_by"]) == me["user"]["id"]
     audited = await w.q(
-        "SELECT action, target_id FROM console_audit WHERE client_id=%s "
+        "SELECT action, target_id, details FROM console_audit WHERE client_id=%s "
         "AND action LIKE 'contacts.%%'",
         tenant,
     )
-    assert sorted((r["action"], str(r["target_id"])) for r in audited) == [
-        ("contacts.review.linked", review)
+    assert sorted((r["action"], str(r["target_id"]), r["details"]) for r in audited) == [
+        ("contacts.review.linked", review, {"link_id": str(link_row["id"])})
     ]
 
 

@@ -118,9 +118,10 @@ def test_paused_with_and_without_a_resume_date() -> None:
     ]
 
 
-def test_a_pending_plan_is_waiting_for_payment_with_no_date() -> None:
+def test_a_pending_plan_is_waiting_to_be_started_with_no_date() -> None:
     assert texts([row(status="pending", renews_at=None)]) == [
-        "Your plan: Basic, MYR 10.00 a month, is waiting for payment."
+        "Your plan: Basic, MYR 10.00 a month, is waiting to be started by the team. "
+        "Nothing has been charged."
     ]
 
 
@@ -188,7 +189,8 @@ def test_request_facts_use_the_exact_copy() -> None:
     )
     assert text("already_paused", name="Basic") == "Basic is already paused."
     assert text("waiting", name="Basic") == (
-        "Basic is waiting for payment, so it can't be paused, cancelled or changed yet."
+        "Basic is waiting to be started by the team and nothing has been charged, so it can't "
+        "be paused, cancelled or changed yet. The team can help with any question about it."
     )
     assert [request_fact(kind).id for kind in ("none", "which")] == [
         "subscription_none",

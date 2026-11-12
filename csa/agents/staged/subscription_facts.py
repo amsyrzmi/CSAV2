@@ -19,7 +19,7 @@ from csa.contracts.facts import Fact
 SUBSCRIPTION_SOURCE = "subscription_agent"
 # `pending` waits for the status a later change adds; the live SQL allowlist already names it.
 LIVE_STATUSES = ("active", "paused", "pending")
-# A customer's request acts only on these (a plan waiting for payment cannot be changed yet).
+# A customer's request acts only on these (a plan waiting to be started cannot be changed yet).
 REQUESTABLE_STATUSES = frozenset({"active", "paused"})
 
 NONE_TEXT = "I can't find a subscription linked to this chat."
@@ -69,7 +69,9 @@ def _line(row: Mapping[str, Any], timezone: str) -> str | None:
         until = f" until {resume.strftime('%d %b %Y')}" if resume else ""
         text = f"Your plan: {name} is paused{until}."
     elif status == "pending":
-        text = f"Your plan: {price}, is waiting for payment."
+        text = (
+            f"Your plan: {price}, is waiting to be started by the team. Nothing has been charged."
+        )
     elif status == "active":
         text = f"Your plan: {price}."
         if row.get("cancel_at_period_end"):
@@ -133,7 +135,11 @@ def request_fact(
     elif kind == "already_paused":
         text = f"{name} is already paused."
     elif kind == "waiting":
-        text = f"{name} is waiting for payment, so it can't be paused, cancelled or changed yet."
+        text = (
+            f"{name} is waiting to be started by the team and nothing has been charged, so it "
+            "can't be paused, cancelled or changed yet. The team can help with any question "
+            "about it."
+        )
     else:
         text = NONE_TEXT
     return _fact(f"subscription_{kind}", text)

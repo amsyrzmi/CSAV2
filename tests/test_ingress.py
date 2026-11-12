@@ -855,6 +855,36 @@ async def test_sharing_your_own_number_verifies_it_and_the_graph_never_sees_it(
 
 
 @requires_docker
+@pytest.mark.parametrize("outcome", ["invalid", "review"])
+async def test_a_share_that_stores_no_number_gets_a_neutral_thanks(
+    share: _Share, outcome: str
+) -> None:
+    if outcome == "review":
+        # Two contacts already hold the digits: a review opens and nothing is stored.
+        share.add_contact(days_old=5, phone=_PHONE)
+        share.add_contact(days_old=4, phone=_PHONE)
+    phone = "12345" if outcome == "invalid" else _PHONE
+
+    receipt = await share.post(_share_update(update_id=14, phone=phone))
+
+    assert receipt.accepted and not receipt.duplicate
+    [ack] = share.messages_sent()
+    assert ack["text"] == "Thanks."
+    assert ack["reply_markup"] == {"remove_keyboard": True}
+    assert (
+        share.rows(
+            "SELECT id FROM contacts WHERE client_id = %s AND phone_verified_at IS NOT NULL",
+            share.client_id,
+        )
+        == []
+    )
+    reviews = share.rows(
+        "SELECT reason FROM contact_link_reviews WHERE client_id = %s", share.client_id
+    )
+    assert reviews == ([("several_matches",)] if outcome == "review" else [])
+
+
+@requires_docker
 @pytest.mark.parametrize("variant", ["other_user", "no_user_id", "forwarded"])
 async def test_a_card_that_is_not_your_own_is_refused_and_nothing_is_stored(
     share: _Share, variant: str

@@ -17,6 +17,7 @@ from uuid import UUID
 
 import pytest
 from csa.contacts.linking import (
+    EXCLUDED_TABLES,
     LINKED_TABLES,
     link_contacts,
     live_contact,
@@ -346,6 +347,24 @@ def test_linked_tables_keys_and_grants_are_the_ones_the_service_knows(migrated_d
                 (table,),
             )
             assert grant["ok"], table
+
+
+def test_every_table_that_points_at_a_contact_is_linked_or_excluded(migrated_dsn: str) -> None:
+    """A new table with a contact_id column, or a foreign key to contacts, must be decided on."""
+    with _owner(migrated_dsn) as conn:
+        found = conn.execute(
+            "SELECT c.table_name AS t FROM information_schema.columns c"
+            " JOIN information_schema.tables t"
+            " ON t.table_schema = c.table_schema AND t.table_name = c.table_name"
+            " WHERE c.table_schema = 'public' AND c.column_name = 'contact_id'"
+            " AND t.table_type = 'BASE TABLE'"
+            " UNION SELECT conrelid::regclass::text FROM pg_constraint"
+            " WHERE contype = 'f' AND confrelid = 'public.contacts'::regclass"
+        ).fetchall()
+    # contacts itself (merged_into) is what a link changes, not a row that moves.
+    tables = {r["t"].removeprefix("public.") for r in found} - {"contacts"}
+    assert not set(LINKED_TABLES) & set(EXCLUDED_TABLES)
+    assert tables == set(LINKED_TABLES) | set(EXCLUDED_TABLES)
 
 
 def test_prepared_requests_stay_immutable_except_their_contact(migrated_dsn: str) -> None:
@@ -821,6 +840,55 @@ async def test_verify_never_relinks_a_pair_staff_unlinked(shop: Shop) -> None:
     assert open_reviews(shop) == []
     assert again.survivor_id == staff_entered
     assert contact_row(shop, newcomer)["merged_into"] == staff_entered
+
+
+async def test_a_dismissed_review_does_not_reopen_on_the_next_verify(shop: Shop) -> None:
+    holder = contact(shop, days_old=30, phone="0123456789", telegram_id=777008)
+    me = contact(shop, days_old=0, telegram_id=777009)
+    assert (await verify(shop, me, "60123456789")).outcome == "review"
+    [review] = rows(shop, "SELECT id FROM contact_link_reviews WHERE client_id = %s", shop.client)
+    async with tx(shop.pool, str(shop.client)) as conn:
+        dismissed = await db.q.fetch_one(
+            "contacts/review_dismiss.sql",
+            {"client_id": shop.client, "review_id": review["id"], "resolved_by": shop.user},
+            conn=conn,
+        )
+    assert dismissed is not None
+
+    # The customer writes again, in either order of the pair: staff's decision sticks.
+    assert (await verify(shop, me, "60123456789")).outcome == "review"
+    async with tx(shop.pool, str(shop.client)) as conn:
+        await db.q.execute(
+            "contacts/review_insert.sql",
+            {
+                "client_id": shop.client,
+                "contact_a": holder,
+                "contact_b": me,
+                "reason": "telegram_conflict",
+            },
+            conn=conn,
+        )
+
+    assert open_reviews(shop) == []
+    assert (
+        len(rows(shop, "SELECT id FROM contact_link_reviews WHERE client_id = %s", shop.client))
+        == 1
+    )
+    # Another reason for the same pair still opens a review.
+    async with tx(shop.pool, str(shop.client)) as conn:
+        await db.q.execute(
+            "contacts/review_insert.sql",
+            {
+                "client_id": shop.client,
+                "contact_a": me,
+                "contact_b": holder,
+                "reason": "table_conflict",
+            },
+            conn=conn,
+        )
+    assert open_reviews(shop) == [
+        {"contact_a": me, "contact_b": holder, "reason": "table_conflict"}
+    ]
 
 
 async def test_verify_with_a_refused_link_opens_a_review_with_that_reason(shop: Shop) -> None:

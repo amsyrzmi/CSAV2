@@ -235,6 +235,7 @@ def build_links_router() -> APIRouter:
                 raise HTTPException(404, "review_not_found")
             if review.status != "open":
                 raise HTTPException(409, "review_not_open")
+            details: dict[str, Any] = {}
             if payload.resolution == "dismissed":
                 dismissed = await db.q.fetch_one(
                     "contacts/review_dismiss.sql",
@@ -252,11 +253,12 @@ def build_links_router() -> APIRouter:
                 # link_contacts also marks the pair's open review resolved as ``linked``. The
                 # review row is not locked first: verify_phone takes contact locks and then writes
                 # a review, so the other order could deadlock.
-                await _link_pair(
+                link_id = await _link_pair(
                     conn, client_id, actor_user_id, review.contact_a.id, review.contact_b.id
                 )
                 action = "contacts.review.linked"
-            await _audit(conn, actor_user_id, client_id, action, review_id, {})
+                details = {"link_id": str(link_id)}
+            await _audit(conn, actor_user_id, client_id, action, review_id, details)
             [settled] = await _reviews(conn, client_id, review_id=review_id)
             return settled
 
