@@ -513,7 +513,7 @@ plan stops the bot offering it; people already on it keep it. Archiving a plan i
 sign-ups; closing it to sign-ups is how a company stops them.
 
 **Tell the customer.** Approve, decline and expiry do not message the customer, so after approving or
-declining a sign-up, message the customer from the Inbox yourself (an automatic notice is a follow-up).
+declining a sign-up, message the customer from the Inbox yourself (an automatic notice is a follow-up). If the customer's chat was moved by a link, the Inbox answers 409 "This conversation has no active channel to reply on." until the customer writes again on that channel (known follow-up); reply on the channel the customer last used, or wait for their next message.
 
 **Start or cancel a pending subscription.** Until payments exist (a later project) nothing creates
 invoices for these subscriptions, so staff start them. Open Customers, choose the "Waiting to start"
