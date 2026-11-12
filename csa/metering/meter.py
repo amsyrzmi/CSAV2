@@ -20,11 +20,23 @@ from csa.core import db
 from csa.core.tenancy import tx
 from csa.metering.context import MeterContext, current_context
 
-__all__ = ["GenerationMirror", "LedgerMeter", "NullMeter", "Usage", "UsageMeter"]
+__all__ = [
+    "LEDGER_PROVIDERS",
+    "GenerationMirror",
+    "LedgerMeter",
+    "NullMeter",
+    "Usage",
+    "UsageMeter",
+]
 
 logger = structlog.get_logger(__name__)
 
 _WRITE_ATTEMPTS = 2
+
+
+# The providers the clients record in the ledger (``Usage.provider``: csa/decide/groq.py and
+# csa/decide/gemini.py). A model price may only be added for one of these.
+LEDGER_PROVIDERS: frozenset[str] = frozenset({"groq", "gemini"})
 
 
 @dataclass(frozen=True)

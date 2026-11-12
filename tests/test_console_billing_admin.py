@@ -32,6 +32,7 @@ from csa.console.billing_admin import (
     BillingPriceOut,
 )
 from csa.core.tenancy import tx
+from csa.metering.meter import LEDGER_PROVIDERS
 from pydantic import BaseModel
 from scripts.export_console_openapi import contract
 
@@ -101,7 +102,7 @@ def model_name() -> str:
     return f"synthetic-model-{uuid.uuid4()}"
 
 
-def price_body(model: str, at: str, *, provider: str = "synthetic", **extra: Any) -> dict:
+def price_body(model: str, at: str, *, provider: str = "groq", **extra: Any) -> dict:
     return {
         "provider": provider,
         "model": model,
@@ -267,6 +268,9 @@ async def test_overview_carries_tokens_raw_cost_and_margin(
         "workbook_cost_per_message_rm": "0.0167",
         "unpriced_calls": 0,
         "unpriced_executions": 0,
+        "usage_without_plan": 0,
+        "usage_after_termination": 0,
+        "terminated_on": None,
         "warnings": [],
     }
     assert row["prompt_tokens"] == 1_234_567 + 2_000_000 + 1_000_000
@@ -317,14 +321,20 @@ async def test_overview_lists_every_company_by_name_with_each_warning(
         "workbook_cost_per_message_rm": "0.0167",
         "unpriced_calls": 0,
         "unpriced_executions": 0,
+        "usage_without_plan": 0,
+        "usage_after_termination": 0,
+        "terminated_on": None,
         "warnings": [],
     }
     no_plan = row_of(body, unplanned)
     assert (no_plan["status"], no_plan["warnings"]) == ("not_set_up", ["not_set_up_with_usage"])
+    assert (no_plan["usage_without_plan"], no_plan["terminated_on"]) == (1, None)
     pilot = row_of(body, ended)
     assert (pilot["status"], pilot["stage"], pilot["warnings"]) == ("ok", "pilot", ["pilot_ended"])
     gone = row_of(body, left)
     assert gone["warnings"] == ["usage_after_termination"]
+    assert (gone["terminated_on"], gone["usage_after_termination"]) == ("2026-10-10", 1)
+    assert gone["usage_without_plan"] == 0
     assert (gone["status"], gone["stage"], gone["executions"]) == ("ok", "collaborator", 1)
     late = row_of(body, pending)
     assert (late["status"], late["warnings"]) == ("pending_prices", ["pending_prices"])
@@ -516,8 +526,9 @@ async def test_a_termination_takes_the_prior_bundle_and_may_precede_a_scheduled_
     assert scheduled.status_code == 201
     ended = await post_plan(w, tenant, "terminated", "2026-10-25", None)
     assert ended.status_code == 201, ended.text
-    # The latest non-terminated row is the scheduled collaborator one.
-    assert (ended.json()["stage"], ended.json()["bundle"]) == ("terminated", "curated")
+    # The plan in force on 25 Oct is pilot/complete, not the later scheduled collaborator row,
+    # so the stored bundle matches the audit's "before".
+    assert (ended.json()["stage"], ended.json()["bundle"]) == ("terminated", "complete")
     [audit] = await w.q(
         "SELECT details FROM console_audit WHERE client_id = %s"
         " AND action = 'billing.plan_inserted' AND details->'after'->>'stage' = 'terminated'",
@@ -528,6 +539,25 @@ async def test_a_termination_takes_the_prior_bundle_and_may_precede_a_scheduled_
         "bundle": "complete",
         "effective_from": "2026-10-05",
     }
+    row = row_of(await overview(w), tenant)
+    assert (row["terminated_on"], row["stage"], row["bundle"]) == (
+        "2026-10-25",
+        "pilot",
+        "complete",
+    )
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_termination_before_the_join_date_is_refused_by_the_rules(
+    sessions: SessionWorld, pinned_clock: None
+) -> None:
+    w = sessions
+    tenant = await company(w, "Early Termination Sdn Bhd")
+    assert (await post_plan(w, tenant, "pilot", "2026-10-12", "curated")).status_code == 201
+    # No row is in force on 6 Oct: the bundle falls back to the latest row, and the rules refuse.
+    early = await post_plan(w, tenant, "terminated", "2026-10-06", None)
+    assert (early.status_code, early.json()) == (422, {"detail": "before_join_date"})
 
 
 # --- prices ----------------------------------------------------------------------------------
@@ -542,7 +572,7 @@ async def test_a_back_dated_price_prices_a_pending_closed_cycle_end_to_end(
     tenant = await company(w, "Unpriced Model Sdn Bhd")
     model = model_name()
     await plan(w, tenant, AUG.start)
-    await call(w, tenant, kl(9, 10), provider="synthetic", model=model)
+    await call(w, tenant, kl(9, 10), model=model)  # groq, on a model with no price yet
     await call(w, tenant, kl(9, 11))
     pending = row_of(await overview(w, "2026-09-05"), tenant)
     assert (pending["status"], pending["warnings"]) == ("pending_prices", ["pending_prices"])
@@ -556,7 +586,7 @@ async def test_a_back_dated_price_prices_a_pending_closed_cycle_end_to_end(
     back = await w.mutate(w.admin, PRICES, price_body(model, "2026-09-01T00:00:00+08:00"))
     assert back.status_code == 201, back.text
     assert back.json() == {
-        "provider": "synthetic",
+        "provider": "groq",
         "model": model,
         "input_usd_per_mtok": "0.15",
         "output_usd_per_mtok": "0.60",
@@ -599,11 +629,31 @@ async def test_price_shadow_rule_duplicates_and_invalid_numbers(
         price_body(model_name(), "2026-10-21T00:00:00"),  # naive
         price_body(model_name(), tomorrow, provider=""),
         price_body(" padded ", tomorrow),
+        price_body(model_name(), tomorrow, provider=" groq"),
         price_body(model_name(), tomorrow, extra="field"),
     ):
         assert (await w.mutate(w.admin, PRICES, bad_body)).status_code == 422, bad_body
     rows = await w.q("SELECT count(*) AS n FROM ai_model_prices WHERE model = %s", model)
     assert rows == [{"n": 1}]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_only_a_provider_the_ledger_records_may_be_priced(
+    sessions: SessionWorld, pinned_clock: None
+) -> None:
+    w = sessions
+    assert LEDGER_PROVIDERS == {"groq", "gemini"}
+    for provider in sorted(LEDGER_PROVIDERS):
+        body = price_body(model_name(), "2026-10-21T00:00:00+08:00", provider=provider)
+        response = await w.mutate(w.admin, PRICES, body)
+        assert response.status_code == 201, (provider, response.text)
+    model = model_name()
+    for provider in ("synthetic", "Groq", "GEMINI", "openai"):
+        body = price_body(model, "2026-10-21T00:00:00+08:00", provider=provider)
+        response = await w.mutate(w.admin, PRICES, body)
+        assert (response.status_code, response.json()) == (422, {"detail": "unknown_provider"})
+    assert await w.q("SELECT 1 FROM ai_model_prices WHERE model = %s", model) == []
 
 
 # --- FX --------------------------------------------------------------------------------------
@@ -666,7 +716,7 @@ async def test_price_and_fx_writes_are_audited_with_before_and_after(
     )
     assert [a["target_id"] for a in audits] == [s["id"] for s in stored]
     after_first = {
-        "provider": "synthetic",
+        "provider": "groq",
         "model": model,
         "input_usd_per_mtok": "0.15",
         "output_usd_per_mtok": "0.60",

@@ -841,7 +841,7 @@
       },
       "AdminCompanyOut": {
         "additionalProperties": false,
-        "description": "One company's cycle, for the platform admin only.\n\n``status`` is the service's (``ok``, ``pending_prices``, ``not_set_up``); ``stage`` and\n``bundle`` are the plan that bills the cycle, ``None`` when nothing is billed (not set up, or\nafter a termination). ``executions`` counts the billed window's executions, priced or not.\n``raw_cost_rm`` is the provider cost of the priced executions (RM0.0001, half up);\n``ai_margin_rm`` is ``ai_charge - raw_cost_rm`` computed exactly and rounded to RM0.01;\n``cost_per_execution_rm`` is the raw cost over the priced executions, ``None`` when none is\npriced, beside the workbook's assumed cost per message.",
+        "description": "One company's cycle, for the platform admin only.\n\n``status`` is the service's (``ok``, ``pending_prices``, ``not_set_up``); ``stage`` and\n``bundle`` are the plan that bills the cycle, ``None`` when nothing is billed (not set up, or\nafter a termination). ``executions`` counts the billed window's executions, priced or not.\n``raw_cost_rm`` is the provider cost of the priced executions (RM0.0001, half up);\n``ai_margin_rm`` is ``ai_charge - raw_cost_rm`` computed exactly and rounded to RM0.01;\n``cost_per_execution_rm`` is the raw cost over the priced executions, ``None`` when none is\npriced, beside the workbook's assumed cost per message.\n\n``terminated_on`` is the earliest termination date in the plan history (``None`` if none);\n``usage_after_termination`` and ``usage_without_plan`` count the cycle's executions from that\ndate, and before the plan starts (the whole cycle when not set up); neither is billed.\n``warnings``: ``pilot_ended`` is evaluated for today (the Kuala Lumpur date), not for the\nselected cycle, since it asks for an action now; the other three describe the selected cycle.",
         "properties": {
           "ai_charge": {
             "title": "Ai Charge",
@@ -936,12 +936,32 @@
             "title": "Status",
             "type": "string"
           },
+          "terminated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminated On"
+          },
           "unpriced_calls": {
             "title": "Unpriced Calls",
             "type": "integer"
           },
           "unpriced_executions": {
             "title": "Unpriced Executions",
+            "type": "integer"
+          },
+          "usage_after_termination": {
+            "title": "Usage After Termination",
+            "type": "integer"
+          },
+          "usage_without_plan": {
+            "title": "Usage Without Plan",
             "type": "integer"
           },
           "warnings": {
@@ -980,6 +1000,9 @@
           "workbook_cost_per_message_rm",
           "unpriced_calls",
           "unpriced_executions",
+          "usage_without_plan",
+          "usage_after_termination",
+          "terminated_on",
           "warnings"
         ],
         "title": "AdminCompanyOut",
@@ -1920,7 +1943,7 @@
       },
       "BillingPriceIn": {
         "additionalProperties": false,
-        "description": "A model price in USD per million tokens, from ``effective_from`` (timezone required).",
+        "description": "A model price in USD per million tokens, from ``effective_from`` (timezone required).\n\n``provider`` must be one the ledger records (``LEDGER_PROVIDERS``: ``groq``, ``gemini``), else\nthe route answers 422 ``unknown_provider``; ``model`` is matched exactly, case included.",
         "properties": {
           "effective_from": {
             "format": "date-time",
@@ -17625,7 +17648,7 @@
     },
     "/console/v1/billing/admin/clients/{client_id}/plan": {
       "post": {
-        "description": "Insert a plan row (audited). A broken plan rule is 422 with its code as ``detail``.\n\nA termination without ``bundle`` keeps the bundle of the latest non-terminated row.",
+        "description": "Insert a plan row (audited). A broken plan rule is 422 with its code as ``detail``.\n\nA termination without ``bundle`` keeps the bundle of the plan in force on its date (the\nlatest non-terminated row dated on or before it), or of the latest non-terminated row when\nnone is (the rules then refuse a termination before the join date).",
         "operationId": "add_plan_console_v1_billing_admin_clients__client_id__plan_post",
         "parameters": [
           {

@@ -18,6 +18,8 @@ Price and FX rows are global, so their audit row has no company. ``console_audit
 lets only the identity role write such a row, so it is written through
 ``IdentityService.audit_platform_write`` while the app transaction holding the new row is still
 open: a failed audit rolls the write back. Plan rows are audited by ``insert_plan`` itself.
+The reverse is possible: if the app transaction's own COMMIT fails after the audit committed, an
+audit row names a price or FX row that was never stored (its target id then matches no row).
 
 Money is ``Decimal`` throughout, with explicit contexts; display figures are fixed-point strings:
 RM0.01 for the bill and the margin, RM0.0001 for raw cost and cost per execution.
@@ -47,6 +49,7 @@ from csa.console.contracts import ConsoleActor
 from csa.console.identity import IdentityService
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.metering.meter import LEDGER_PROVIDERS
 
 __all__ = [
     "OVERVIEW_CONCURRENCY",
@@ -99,6 +102,12 @@ class AdminCompanyOut(BaseModel):
     ``ai_margin_rm`` is ``ai_charge - raw_cost_rm`` computed exactly and rounded to RM0.01;
     ``cost_per_execution_rm`` is the raw cost over the priced executions, ``None`` when none is
     priced, beside the workbook's assumed cost per message.
+
+    ``terminated_on`` is the earliest termination date in the plan history (``None`` if none);
+    ``usage_after_termination`` and ``usage_without_plan`` count the cycle's executions from that
+    date, and before the plan starts (the whole cycle when not set up); neither is billed.
+    ``warnings``: ``pilot_ended`` is evaluated for today (the Kuala Lumpur date), not for the
+    selected cycle, since it asks for an action now; the other three describe the selected cycle.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -120,6 +129,9 @@ class AdminCompanyOut(BaseModel):
     workbook_cost_per_message_rm: Money4
     unpriced_calls: int
     unpriced_executions: int
+    usage_without_plan: int
+    usage_after_termination: int
+    terminated_on: date | None
     warnings: list[AdminWarning]
 
 
@@ -172,7 +184,11 @@ class BillingPlanOut(BaseModel):
 
 
 class BillingPriceIn(BaseModel):
-    """A model price in USD per million tokens, from ``effective_from`` (timezone required)."""
+    """A model price in USD per million tokens, from ``effective_from`` (timezone required).
+
+    ``provider`` must be one the ledger records (``LEDGER_PROVIDERS``: ``groq``, ``gemini``), else
+    the route answers 422 ``unknown_provider``; ``model`` is matched exactly, case included.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -274,6 +290,11 @@ def company_out(
         workbook_cost_per_message_rm=WORKBOOK_COST_PER_MESSAGE_RM,
         unpriced_calls=sum(e.unpriced_calls for e in usage.executions),
         unpriced_executions=usage.unpriced_executions,
+        usage_without_plan=usage.usage_without_plan,
+        usage_after_termination=usage.usage_after_termination,
+        terminated_on=min(
+            (r.effective_from for r in history if r.stage == "terminated"), default=None
+        ),
         warnings=_warnings(usage, history, today),
     )
 
@@ -389,7 +410,9 @@ def build_billing_admin_router() -> APIRouter:
     ) -> BillingPlanOut:
         """Insert a plan row (audited). A broken plan rule is 422 with its code as ``detail``.
 
-        A termination without ``bundle`` keeps the bundle of the latest non-terminated row.
+        A termination without ``bundle`` keeps the bundle of the plan in force on its date (the
+        latest non-terminated row dated on or before it), or of the latest non-terminated row when
+        none is (the rules then refuse a termination before the join date).
         """
         async with tx(request.app.state.pool, str(client_id)) as conn:
             if await db.q.fetch_one("console/client_get.sql", (client_id,), conn=conn) is None:
@@ -405,7 +428,11 @@ def build_billing_admin_router() -> APIRouter:
                 prior = [PlanRow(**r) for r in rows if r["stage"] != "terminated"]
                 if not prior:
                     raise HTTPException(422, "first_row_must_be_pilot_or_collaborator")
-                bundle = prior[-1].bundle  # plans_history.sql is oldest first
+                # plans_history.sql is oldest first (effective_from, created_at, id), so the last
+                # row dated on or before the termination is the one in force then: the same row
+                # insert_plan audits as "before".
+                in_force = [r for r in prior if r.effective_from <= body.effective_from]
+                bundle = (in_force or prior)[-1].bundle
             try:
                 stored = await insert_plan(
                     conn,
@@ -438,6 +465,8 @@ def build_billing_admin_router() -> APIRouter:
         actor: Annotated[ConsoleActor, Depends(platform_admin)],
         now: Annotated[datetime, Depends(billing_now)],
     ) -> BillingPriceOut:
+        if body.provider not in LEDGER_PROVIDERS:
+            raise HTTPException(422, "unknown_provider")
         identity = _identity(request)
         key = {"provider": body.provider, "model": body.model}
         try:
