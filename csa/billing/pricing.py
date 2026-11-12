@@ -14,7 +14,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Context, Decimal
-from fractions import Fraction
 
 from csa.billing.config import BillingConfig, fx_at, price_at, tiers_at
 from csa.billing.plans import Bundle, Stage
@@ -45,7 +44,36 @@ class NoMarkupTierError(ValueError):
 
 
 def _round_cent(value: Decimal) -> Decimal:
-    return value.quantize(_CENT, rounding=ROUND_HALF_UP)
+    """Round half-up to RM0.01 under ``_CTX``, not the ambient 28-digit context."""
+    return value.quantize(_CENT, rounding=ROUND_HALF_UP, context=_CTX)
+
+
+def _finite(value: Decimal, name: str) -> tuple[int, int]:
+    """``(coefficient, exponent)`` of a finite ``value``, the coefficient signed."""
+    if not value.is_finite():
+        raise ValueError(f"{name} must be a finite number, not {value}")
+    exponent = int(value.as_tuple().exponent)
+    if value.adjusted() - exponent < _CTX.prec:
+        # Fast path: moving the exponent to 0 rounds nothing while the digits fit ``_CTX``.
+        return int(_CTX.scaleb(value, -exponent)), exponent
+    sign, digits, _ = value.as_tuple()
+    coefficient = int("".join(map(str, digits)))
+    return (-coefficient if sign else coefficient), exponent
+
+
+def _scaled(values: Sequence[Decimal], name: str) -> tuple[list[int], int]:
+    """Every value as an exact int over one common power of ten: ``(ints, exponent)``.
+
+    Each value equals ``int x 10**exponent``; no rounding, whatever the number of digits.
+    """
+    parts = [_finite(v, name) for v in values]
+    exponent = min((e for c, e in parts if c), default=0)
+    return [c * 10 ** (e - exponent) if c else 0 for c, e in parts], exponent
+
+
+def _decimal(units: int, exponent: int) -> Decimal:
+    """``units x 10**exponent`` built from its string, so no context rounds it."""
+    return Decimal(f"{units}E{exponent}")
 
 
 def prorated_fee(full_fee: Decimal, days_billed: int, days_in_cycle: int) -> Decimal:
@@ -88,9 +116,9 @@ def markup_pct(
 
     The row is the one with the smallest ``up_to_executions`` at least ``executions``.
 
-    ``None`` is open-ended. No default: ``NoMarkupTierError`` for a terminated stage,
+    ``None`` is open-ended. There is no default markup.
 
-    when no tier set is in force, or when no row covers the count.
+    ``NoMarkupTierError`` for a terminated stage, no tier set in force, or no covering row.
     """
     if executions < 0:
         raise ValueError(f"executions must not be negative, not {executions}")
@@ -154,30 +182,43 @@ def allocate_prices(exact: Sequence[Decimal], total: Decimal) -> list[Decimal]:
 
     ``total`` must be a non-negative multiple of 0.0001 (the AI charge, a multiple of 0.01, is).
 
-    Empty input gives ``[]``; all-zero input gives zeros but needs ``total == 0``.
+    Empty or all-zero input gives ``[]`` or zeros and needs ``total == 0``: money never vanishes.
+
+    Pure integer arithmetic, so exact for any number of digits.
+
+    CPU-bound and linear (a fraction of a second for 20,000 executions): callers in async code
+
+    should still run it off the event loop when the list is large.
     """
     if total < 0:
         raise ValueError(f"total must not be negative, not {total}")
     if any(e < 0 for e in exact):
         raise ValueError("exact prices must not be negative")
-    units, remainder = divmod(total, _UNIT)
-    if remainder != 0:
-        raise ValueError(f"total {total} is not a multiple of {_UNIT}")
-    if not exact:
-        return []
-    weight = sum((Fraction(e) for e in exact), Fraction(0))
+    total_int, total_exp = _finite(total, "total")
+    if total_exp >= -4:
+        total_units = total_int * 10 ** (total_exp + 4)
+    else:
+        total_units, off_grid = divmod(total_int, 10 ** (-4 - total_exp))
+        if off_grid:
+            raise ValueError(f"total {total} is not a multiple of {_UNIT}")
+    zero = _decimal(0, -4)
+    ints, _ = _scaled(exact, "exact price")
+    weight = sum(ints)
     if weight == 0:
-        if total != 0:
-            raise ValueError(f"all exact prices are zero but total is {total}")
-        return [Decimal(0).scaleb(-4)] * len(exact)
-    total_units = int(units)
-    shares = [Fraction(e) * total_units / weight for e in exact]
-    floors = [s.numerator // s.denominator for s in shares]
-    leftover = total_units - sum(floors)
-    order = sorted(range(len(shares)), key=lambda i: (-(shares[i] - floors[i]), i))
-    for i in order[:leftover]:
-        floors[i] += 1
-    return [Decimal(u).scaleb(-4) for u in floors]
+        if total_units != 0:
+            raise ValueError(f"nothing to allocate over: total is {total}")
+        return [zero] * len(exact)
+    shares, remainders = [], []
+    for e in ints:
+        share, remainder = divmod(e * total_units, weight)
+        shares.append(share)
+        remainders.append(remainder)
+    leftover = total_units - sum(shares)
+    if leftover:
+        order = sorted(range(len(ints)), key=lambda i: (-remainders[i], i))
+        for i in order[:leftover]:
+            shares[i] += 1
+    return [_decimal(u, -4) for u in shares]
 
 
 @dataclass(frozen=True)
@@ -199,5 +240,6 @@ def bill(*, fee: Decimal, exact_prices: Sequence[Decimal]) -> Bill:
     if any(p < 0 for p in exact_prices):
         raise ValueError("exact prices must not be negative")
     platform_fee = _round_cent(fee)
-    ai_charge = _round_cent(sum(exact_prices, Decimal(0)))
+    ints, exponent = _scaled(exact_prices, "exact price")
+    ai_charge = _round_cent(_decimal(sum(ints), exponent))
     return Bill(platform_fee, ai_charge, platform_fee + ai_charge)

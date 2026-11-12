@@ -7,8 +7,10 @@ migration seeds exactly those values), so the numbers live in one place. All dat
 from __future__ import annotations
 
 import random
+import time
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from fractions import Fraction
 from typing import get_args
 
 import pytest
@@ -364,6 +366,83 @@ def test_bill_total_is_the_sum_of_the_rounded_figures() -> None:
     result = bill(fee=Decimal("0.004"), exact_prices=[Decimal("0.004")])
     assert result.total == Decimal("0.00")  # 0.008 unrounded would be 0.01; the figures give 0.00
     assert result.total == result.platform_fee + result.ai_charge
+
+
+def _reference_allocation(exact: list[Decimal], total: Decimal) -> list[Decimal]:
+    """The slow, obviously correct largest-remainder allocation, with ``Fraction`` arithmetic."""
+    total_units = int(total / UNIT)
+    weight = sum((Fraction(e) for e in exact), Fraction(0))
+    shares = [Fraction(e) * total_units / weight for e in exact]
+    floors = [s.numerator // s.denominator for s in shares]
+    leftover = total_units - sum(floors)
+    order = sorted(range(len(shares)), key=lambda i: (-(shares[i] - floors[i]), i))
+    for i in order[:leftover]:
+        floors[i] += 1
+    return [Decimal(f"{u}E-4") for u in floors]
+
+
+def test_allocate_matches_the_fraction_reference_over_200_seeded_cases() -> None:
+    rng = random.Random(7_654_321)
+    for _ in range(200):
+        n = rng.randint(1, 80)
+        exact = [
+            Decimal(rng.randint(0, 10 ** rng.randint(1, 30))).scaleb(-rng.randint(0, 35))
+            for _ in range(n)
+        ]
+        if not any(exact):
+            exact[rng.randrange(n)] = Decimal("0.000000000000000000001")
+        total = Decimal(rng.randint(0, 10**9)).scaleb(-2)
+        got = allocate_prices(exact, total)
+        want = _reference_allocation(exact, total)
+        assert got == want
+        assert [str(g) for g in got] == [str(w) for w in want]  # same exponent, bit for bit
+
+
+def test_allocate_20000_executions_is_fast() -> None:
+    rng = random.Random(42)
+    exact = [
+        execution_price(Decimal(rng.randint(1, 10**14)).scaleb(-20), Decimal("77.5"))
+        for _ in range(20_000)
+    ]
+    total = Decimal("594.15")
+    started = time.perf_counter()
+    out = allocate_prices(exact, total)
+    elapsed = time.perf_counter() - started
+    assert sum(out, Decimal(0)) == total
+    assert elapsed < 1.5, f"allocate_prices took {elapsed:.2f}s for 20,000 executions"
+
+
+def test_allocate_empty_input_needs_a_zero_total() -> None:
+    assert allocate_prices([], Decimal("0")) == []
+    with pytest.raises(ValueError):
+        allocate_prices([], Decimal("0.01"))
+
+
+def _units(value: Decimal) -> int:
+    """``value`` in units of 0.0001 as an int, read from its exact decimal string."""
+    whole, _, frac = format(value, "f").partition(".")
+    return int(whole + frac.ljust(4, "0")[:4])
+
+
+def test_allocate_handles_totals_and_prices_beyond_28_digits() -> None:
+    total = Decimal("100000000000000000000000000.01")  # 29 significant digits
+    exact = [Decimal("1.000000000000000000000000000000000000001"), Decimal("1")]
+    out = allocate_prices(exact, total)
+    assert sum(_units(o) for o in out) == _units(total)
+    # A 70-digit price takes the slow digit path; the allocation is still exact.
+    wide = [Decimal("1." + "0" * 68 + "1"), Decimal("2")]
+    assert sum(_units(o) for o in allocate_prices(wide, total)) == _units(total)
+    assert allocate_prices(wide, Decimal("3.00")) == [Decimal("1.0000"), Decimal("2.0000")]
+
+
+def test_bill_sums_exact_prices_beyond_28_significant_digits() -> None:
+    # The true sum is 0.004999...9 (30 nines): a 28-digit sum would round it up to 0.005.
+    below_half_a_cent = Decimal("0.004999999999999999999999999999999")
+    assert bill(fee=Decimal("0"), exact_prices=[below_half_a_cent]).ai_charge == Decimal("0.00")
+    # A 28-digit base plus 3,000 prices of 1e-32: a 28-digit sum drops every 1e-32 and stays
+    # below half a cent; the exact sum is 0.005000000000000000000000000029.
+    many = [Decimal("0.004999999999999999999999999999")] + [Decimal("1E-32")] * 3000
+    assert bill(fee=Decimal("0"), exact_prices=many).ai_charge == Decimal("0.01")
 
 
 def test_bill_with_no_executions() -> None:
