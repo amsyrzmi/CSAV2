@@ -23,6 +23,7 @@ __all__ = [
     "MeteringContextMissing",
     "current_context",
     "meter_context",
+    "meter_context_unless_bound",
 ]
 
 # The closed set of jobs that make model calls. The same list is the CHECK in migration 0570.
@@ -83,6 +84,20 @@ def meter_context(ctx: MeterContext) -> Iterator[None]:
         yield
     finally:
         _CURRENT.reset(token)
+
+
+@contextmanager
+def meter_context_unless_bound(ctx: MeterContext) -> Iterator[None]:
+    """Bind ``ctx`` only when nothing is bound; inside an enclosing binding, inherit it.
+
+    For model work that is an execution of its own when called directly but part of the caller's
+    execution when another entry point called into it (one assistant request is one execution).
+    """
+    if _CURRENT.get() is not None:
+        yield
+        return
+    with meter_context(ctx):
+        yield
 
 
 def current_context() -> MeterContext:

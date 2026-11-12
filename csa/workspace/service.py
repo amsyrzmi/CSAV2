@@ -2627,9 +2627,9 @@ async def create_planned_turn(
     if known is not None:
         return known  # a replay never re-plans or re-prepares
     facts = await planner_facts(request, actor, client_id, thread_id, turn)
-    # One execution per request: the planner's calls (and its one correction) share a new trace.
-    # The model work the plan resolves into binds its own job (an email draft, an inbox summary)
-    # inside EmailService, so it is booked to that job, not to this one.
+    # One execution per request: the planner's calls (and its one correction) share a new trace,
+    # and so does the model work the plan resolves into (an email draft, a batch, an inbox
+    # summary): EmailService inherits this binding rather than starting an execution of its own.
     planning = MeterContext(client_id=client_id, trace_id=uuid4(), job="workspace_assistant")
     with meter_context(planning):
         proposal, planned = await _plan_and_resolve(

@@ -25,6 +25,7 @@ from csa.metering.context import (
     MeteringContextMissing,
     current_context,
     meter_context,
+    meter_context_unless_bound,
 )
 from csa.metering.meter import LedgerMeter, NullMeter, Usage
 from psycopg_pool import AsyncConnectionPool
@@ -100,6 +101,43 @@ def test_context_resets_when_the_body_raises() -> None:
             raise RuntimeError("boom")
     with pytest.raises(MeteringContextMissing):
         current_context()
+
+
+def test_unless_bound_binds_when_nothing_is_bound_and_resets() -> None:
+    own = _ctx(job="email_analysis")
+    with meter_context_unless_bound(own):
+        assert current_context() is own
+    with pytest.raises(MeteringContextMissing):
+        current_context()
+
+
+def test_unless_bound_inherits_an_enclosing_binding() -> None:
+    outer, own = _ctx(job="workspace_assistant"), _ctx(job="email_compose")
+    with meter_context(outer):
+        with meter_context_unless_bound(own):
+            assert current_context() is outer
+            # A plain binding inside still nests and resets to the inherited one.
+            inner = _ctx(job="customer_turn")
+            with meter_context(inner):
+                assert current_context() is inner
+            assert current_context() is outer
+        assert current_context() is outer
+    with pytest.raises(MeteringContextMissing):
+        current_context()
+
+
+def test_unless_bound_resets_when_the_body_raises() -> None:
+    with pytest.raises(RuntimeError, match="boom"):
+        with meter_context_unless_bound(_ctx()):
+            raise RuntimeError("boom")
+    with pytest.raises(MeteringContextMissing):
+        current_context()
+    outer = _ctx()
+    with meter_context(outer):
+        with pytest.raises(RuntimeError, match="boom"):
+            with meter_context_unless_bound(_ctx()):
+                raise RuntimeError("boom")
+        assert current_context() is outer
 
 
 def test_job_maps_cover_closed_set() -> None:

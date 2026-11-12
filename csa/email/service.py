@@ -80,7 +80,7 @@ from csa.email.models import (
     validated_draft,
 )
 from csa.email.recipients import classify, dedupe, has_staff_placeholder, staff_placeholders
-from csa.metering.context import Job, MeterContext, meter_context
+from csa.metering.context import Job, MeterContext, meter_context_unless_bound
 
 STATE_TTL_SECONDS = 600
 TOKEN_REFRESH_MARGIN = timedelta(seconds=90)
@@ -106,12 +106,15 @@ def _allowed(values: tuple[str, ...]) -> str:
 
 
 def _metered(session: EmailSession, job: Job) -> AbstractContextManager[None]:
-    """One execution: this request's model calls, booked to the session's company on a new trace.
+    """One execution for this model work, booked to the session's company on a new trace.
 
-    Bound here even when the workspace assistant asked for the work, so a draft or a summary is
-    booked to its own email job; a retry after a failure is a new execution.
+    Called from the Email tab, each analysis, reply draft or compose is its own execution (a
+    retry after a failure is a new one). Called by another entry point that already bound a
+    context (the workspace assistant drafting or summarising), it inherits that binding: the
+    work is part of that one execution, under that job.
     """
-    return meter_context(MeterContext(client_id=session.tenant_id, trace_id=uuid4(), job=job))
+    ctx = MeterContext(client_id=session.tenant_id, trace_id=uuid4(), job=job)
+    return meter_context_unless_bound(ctx)
 
 
 # The provider's JSON mode carries no schema, so the allowed values are spelled out here, built
@@ -1051,11 +1054,10 @@ class EmailService:
         if pending and self.model is None:
             skipped, failure = len(pending), EmailPolicyError("model_not_configured")
         elif pending:
-            # One execution for the request's analyses; the gathered tasks copy the binding.
-            with _metered(session, "email_analysis"):
-                results = await asyncio.gather(
-                    *(self._analyse_with_model(row) for row in pending), return_exceptions=True
-                )
+            results = await asyncio.gather(
+                *(self._analyse_with_model(session, row) for row in pending),
+                return_exceptions=True,
+            )
             async with tx(self.pool, str(session.tenant_id)) as conn:
                 await self._session(conn, session)
                 for row, result in zip(pending, results, strict=True):
@@ -1130,8 +1132,7 @@ class EmailService:
             if row["latest_body"] is None and replay is None:
                 raise EmailPolicyError("thread_body_unavailable")
             return self._detail(row)
-        with _metered(session, "email_analysis"):
-            analysis = await self._analyse_with_model(row)
+        analysis = await self._analyse_with_model(session, row)
         async with tx(self.pool, str(session.tenant_id)) as conn:
             await self._session(conn, session)
             replay = await self._replay(conn, session, key, "thread.analyse", fingerprint)
@@ -1162,7 +1163,10 @@ class EmailService:
             await self._session(conn, session)
         return self._detail(row)
 
-    async def _analyse_with_model(self, row: dict[str, Any]) -> ThreadAnalysis:
+    async def _analyse_with_model(
+        self, session: EmailSession, row: dict[str, Any]
+    ) -> ThreadAnalysis:
+        """One thread's analysis: its own execution, unless an enclosing one is bound."""
         assert self.model is not None
         system = ANALYSIS_SYSTEM
         user = json.dumps(
@@ -1174,14 +1178,15 @@ class EmailService:
             },
             ensure_ascii=False,
         )
-        async with asyncio.timeout(MODEL_TIMEOUT_SECONDS + 5):
-            return await self.model.json_completion(
-                ThreadAnalysis,
-                system=system,
-                user=user,
-                timeout=MODEL_TIMEOUT_SECONDS,
-                max_tokens=1500,
-            )
+        with _metered(session, "email_analysis"):
+            async with asyncio.timeout(MODEL_TIMEOUT_SECONDS + 5):
+                return await self.model.json_completion(
+                    ThreadAnalysis,
+                    system=system,
+                    user=user,
+                    timeout=MODEL_TIMEOUT_SECONDS,
+                    max_tokens=1500,
+                )
 
     async def draft(
         self, session: EmailSession, thread_id: str, request: DraftRequest, key: UUID
@@ -1438,7 +1443,8 @@ class EmailService:
             brand = await q.fetch_one("turn/get_client_brand.sql", (session.tenant_id,), conn=conn)
             await self._session(conn, session)
         to, cc_list, bcc_list = self._recipient_lists(addresses, cc_addresses, bcc_addresses)
-        # The batch check's review call runs inside this binding: one execution per draft.
+        # The batch check's review call runs inside this binding: called directly, one execution
+        # per draft; inside an assistant request, part of that request's one execution.
         with _metered(session, "email_compose"):
             if batch is None:
                 proposal = await self._compose_with_model(

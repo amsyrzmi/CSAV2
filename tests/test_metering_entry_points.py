@@ -311,7 +311,7 @@ async def test_redelivered_turn_reuses_trace(
 
 
 @requires_docker
-async def test_workspace_turn_books_the_planner_and_the_drafter_as_two_jobs(
+async def test_workspace_turn_that_drafts_an_email_is_one_execution(
     proposals_app: tuple[SessionWorld, Any],  # noqa: F811
     migrated_dsn: str,
 ) -> None:
@@ -342,9 +342,10 @@ async def test_workspace_turn_books_the_planner_and_the_drafter_as_two_jobs(
     turn = await _turn(w, browser, thread, asked, "email", key=key)
     assert turn.status_code == 201, turn.text
     planned, drafted = _ledger(migrated_dsn, tenant)
+    # The draft EmailService wrote inherits the request's binding: one execution, one job.
     assert (planned["job"], planned["schema_name"]) == ("workspace_assistant", "PlannerOutput")
-    assert (drafted["job"], drafted["schema_name"]) == ("email_compose", "DraftProposal")
-    assert planned["trace_id"] != drafted["trace_id"]
+    assert (drafted["job"], drafted["schema_name"]) == ("workspace_assistant", "DraftProposal")
+    assert planned["trace_id"] == drafted["trace_id"]
     assert planned["conversation_id"] is None and drafted["conversation_id"] is None
     # A replayed turn re-plans nothing and books nothing.
     again = await _turn(w, browser, thread, asked, "email", key=key)
@@ -478,7 +479,7 @@ async def test_email_tab_jobs_each_book_their_own_execution(
 
 
 @requires_docker
-async def test_attention_books_its_analyses_to_one_execution(
+async def test_attention_books_each_thread_analysis_as_its_own_execution(
     world: World,  # noqa: F811
     migrated_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -489,9 +490,27 @@ async def test_attention_books_its_analyses_to_one_execution(
     attention = await world.call("staff", "GET", "/console/v1/email/attention")
     assert attention.status_code == 200, attention.text
     rows = _ledger(migrated_dsn, world.tenant)
-    assert rows and len(rows) == len(metered.seen)
+    assert len(rows) == len(metered.seen) >= 2
     assert {row["job"] for row in rows} == {"email_analysis"}
-    assert len({row["trace_id"] for row in rows}) == 1
+    # No enclosing context: each thread's analysis is one execution with its own trace.
+    assert len({row["trace_id"] for row in rows}) == len(rows)
+
+
+@requires_docker
+async def test_two_direct_analyses_are_two_executions(
+    world: World,  # noqa: F811
+    migrated_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _meter_email(world)
+    await _enable_and_connect(world, monkeypatch)
+    assert (await world.call("staff", "POST", "/console/v1/email/sync")).status_code == 200
+    for thread in ("t1", "t1"):  # the same thread twice, two requests
+        analysed = await world.call("staff", "POST", f"/console/v1/email/threads/{thread}/analyse")
+        assert analysed.status_code == 200, analysed.text
+    first, second = _ledger(migrated_dsn, world.tenant)
+    assert first["job"] == second["job"] == "email_analysis"
+    assert first["trace_id"] != second["trace_id"]
 
 
 # --------------------------------------------------------------------------- batch drafting
@@ -532,3 +551,32 @@ async def test_batch_review_inherits_compose_job(
     calls = zip(metered.seen, model.calls, strict=True)
     [review_ctx] = [ctx for ctx, call in calls if call[0] == "DraftReview"]
     assert review_ctx.trace_id == review["trace_id"] and review_ctx.job == "email_compose"
+
+
+@requires_docker
+async def test_batch_inside_an_assistant_request_is_that_one_execution(
+    world: World,  # noqa: F811
+    migrated_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = BatchModel(
+        lambda user: "Hi,\n\nYour plan includes free delivery.\n\nThe team",
+        review=DraftReview(ok=False, unsupported=["Your plan includes free delivery."]),
+    )
+    await _ready(world, monkeypatch, Metered(model, LedgerMeter(world.app.state.pool)))  # type: ignore[arg-type]
+    for i in range(3):
+        contact = await _customer(world, f"Batch Customer {i}", f"batch{i}@example.test")
+        await _subscription(world, contact, renews_in_days=9)
+    expanded = await _expanded(world, [{"kind": "group", "group": "active_subscribers"}])
+    decision = EmailDecision(mode="personalised", sources=frozenset({"subscription"}), send=True)
+    request = MeterContext(
+        client_id=UUID(str(world.tenant)), trace_id=uuid4(), job="workspace_assistant"
+    )
+    # create_planned_turn binds this around the plan; _batch_step runs the drafter inside it.
+    with meter_context(request):
+        await _build(world, expanded, decision)
+    rows = _ledger(migrated_dsn, world.tenant)
+    assert sorted(row["schema_name"] for row in rows) == ["DraftProposal"] * 3 + ["DraftReview"] * 3
+    assert {(row["job"], row["trace_id"]) for row in rows} == {
+        ("workspace_assistant", request.trace_id)
+    }
