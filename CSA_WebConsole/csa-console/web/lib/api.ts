@@ -121,6 +121,14 @@ const explained: Record<string, string> = {
   subscription_not_found: "That subscription no longer exists. Refresh the page.",
   request_not_found: "That request no longer exists. Refresh the page.",
   contact_not_found: "That customer no longer exists. Refresh the page.",
+  // Customer sign-ups (csa/subscriptions/signup.py).
+  plan_not_open:
+    "That plan is closed to new sign-ups or archived, so the request was not approved. Open the plan to sign-ups, or decline the request.",
+  signup_not_pending: "Someone has already decided this sign-up. Refresh the page.",
+  signup_has_plan:
+    "This customer already has that plan, so the request was not approved. Decline it.",
+  signup_changed: "This sign-up changed while you were deciding it. Refresh the page and try again.",
+  signup_not_found: "That sign-up no longer exists. Refresh the page.",
   // Bookings setup (csa/bookings/setup.py). Booking and calendar refusals carry their own sentence.
   "bookings setup requires an administrator": "Only an Admin can change the Bookings setup.",
   "bookings tenant is not authorized": "You can't open Bookings for this company.",

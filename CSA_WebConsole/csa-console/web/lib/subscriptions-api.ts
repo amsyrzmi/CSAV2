@@ -2,7 +2,9 @@ import { api, patch, post } from "./api";
 import type { ProposalOut } from "./workspace-api";
 
 /** Mirrors of csa/subscriptions/contracts.py. Decimals arrive as JSON strings. */
-export type SubscriptionStatus = "active" | "paused" | "cancelled";
+export type SubscriptionStatus = "pending" | "active" | "paused" | "cancelled";
+/** How a sign-up for a plan is decided: staff approve it, or it is approved at once. */
+export type SignupMode = "staff" | "auto";
 export type BillingInterval = "month" | "year";
 type Amount = string | number;
 
@@ -15,6 +17,9 @@ export interface PlanOut {
   features: string[];
   sort_order: number;
   is_active: boolean;
+  signup_mode: SignupMode;
+  /** False: customers cannot sign up for the plan in the chat. */
+  is_signup_open: boolean;
 }
 
 export interface PlanIn {
@@ -25,6 +30,8 @@ export interface PlanIn {
   billing_interval?: BillingInterval;
   features?: string[];
   sort_order?: number;
+  signup_mode?: SignupMode;
+  is_signup_open?: boolean;
 }
 
 export interface PlanPatch {
@@ -34,6 +41,8 @@ export interface PlanPatch {
   features?: string[] | null;
   sort_order?: number | null;
   is_active?: boolean | null;
+  signup_mode?: SignupMode | null;
+  is_signup_open?: boolean | null;
 }
 
 export interface CustomerRef {
@@ -90,6 +99,7 @@ export interface SubscriptionCreateIn {
 }
 
 export type SubscriptionAction =
+  | "activate"
   | "pause"
   | "resume"
   | "change_plan"
@@ -136,6 +146,37 @@ export interface DecideIn {
   resume_at?: string | null;
 }
 
+export type SignupStatus = "pending" | "approved" | "declined" | "expired";
+
+/** Mirrors SignupOut: `full_name` and `phone` are what the customer typed; `contact` is the record as it stands. */
+export interface SignupOut {
+  id: string;
+  contact: CustomerRef;
+  plan_code: string;
+  plan_name: string | null;
+  full_name: string;
+  phone: string;
+  /** The contact's phone was verified by its channel and is the typed number. */
+  phone_verified: boolean;
+  status: SignupStatus;
+  decided_via: "staff" | "auto" | null;
+  /** Staff only: never sent to the customer. */
+  decline_reason: string | null;
+  subscription_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+  source_channel: string | null;
+}
+
+export interface SignupPage {
+  items: SignupOut[];
+  next_cursor: string | null;
+}
+
+export interface DeclineIn {
+  reason?: string | null;
+}
+
 export interface SubscriptionQuery {
   q?: string;
   status?: SubscriptionStatus | "";
@@ -165,10 +206,24 @@ const id = (value: string) => `/${encodeURIComponent(value)}`;
 export interface SubscriptionSettings {
   /** The tenant's IANA time zone (clients.timezone). */
   timezone: string;
+  /** Days a pending subscription waits before it expires; 0 means never. */
+  pending_expiry_days: number;
+  /** 0 until the company has saved settings; sent back on the save. */
+  version: number;
+}
+
+export interface SettingsIn {
+  pending_expiry_days: number;
+  version: number;
 }
 
 export function getSettings(tenantId: string | null): Promise<SubscriptionSettings> {
   return api(subscriptionsPath(tenantId, "/settings"));
+}
+
+/** Saves the settings as a whole. Send the version that was read (0 before the first save). */
+export function putSettings(tenantId: string | null, body: SettingsIn): Promise<SubscriptionSettings> {
+  return api(subscriptionsPath(tenantId, "/settings"), { method: "PUT", body: JSON.stringify(body) });
 }
 
 export function listPlans(tenantId: string | null, includeArchived: boolean): Promise<PlanOut[]> {
@@ -221,6 +276,23 @@ export function decideRequest(tenantId: string | null, requestId: string, body: 
   return post(subscriptionsPath(tenantId, `/requests${id(requestId)}/decide`), body);
 }
 
+export function listSignups(
+  tenantId: string | null,
+  status: "pending" | "decided",
+  before?: string | null,
+): Promise<SignupPage> {
+  return api(subscriptionsPath(tenantId, "/signups", { status, before }));
+}
+
+/** Approving makes one pending subscription; the route takes no body. */
+export function approveSignup(tenantId: string | null, signupId: string): Promise<SignupOut> {
+  return api(subscriptionsPath(tenantId, `/signups${id(signupId)}/approve`), { method: "POST" });
+}
+
+export function declineSignup(tenantId: string | null, signupId: string, body: DeclineIn): Promise<SignupOut> {
+  return post(subscriptionsPath(tenantId, `/signups${id(signupId)}/decline`), body);
+}
+
 // ---- Display helpers (docs/WRITING_GUIDE.md: "RM 59.90", "27 Oct 2026, 09:15") ----
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -269,6 +341,7 @@ export function formatDateTime(value: unknown, timeZone?: string): string {
 }
 
 export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  pending: "Waiting to start",
   active: "Active",
   paused: "Paused",
   cancelled: "Cancelled",
@@ -276,11 +349,12 @@ export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
 
 // Mirrors csa/subscriptions/executor.py ALLOWED_FROM; the server refuses anything else.
 const ALLOWED_FROM: Record<SubscriptionAction, SubscriptionStatus[]> = {
+  activate: ["pending"],
   pause: ["active"],
   resume: ["paused"],
   change_plan: ["active", "paused"],
   cancel_at_period_end: ["active"],
-  cancel_now: ["active", "paused"],
+  cancel_now: ["active", "paused", "pending"],
   extend_renewal: ["active"],
 };
 
@@ -306,6 +380,7 @@ export function dayAfter(today: Date = new Date()): string {
 }
 
 const SYSTEM_ACTOR = "system:subscriptions_due";
+const SIGNUP_AUTO_ACTOR = "system:signup_auto";
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -332,6 +407,16 @@ export function eventSentence(
   switch (event.action) {
     case "created":
       sentence = `Subscription started on the ${plan("plan")} plan.`;
+      break;
+    case "signup_approved":
+      sentence = `Sign-up approved ${event.actor === SIGNUP_AUTO_ACTOR ? "automatically" : "by staff"} for the ${
+        plan("plan")} plan. Waiting to start.`;
+      break;
+    case "activated":
+      sentence = "Subscription started.";
+      break;
+    case "pending_expired":
+      sentence = "Expired before it started, so it was cancelled.";
       break;
     case "paused":
       sentence = str(p.resume_at) ? `Paused until ${day("resume_at")}.` : "Paused until someone resumes it.";

@@ -113,6 +113,7 @@ test("subscription refusals are explained in plain words and keep their code", a
     "request_has_no_plan", "request_action_mismatch", "resume_at_applies_to_pause_only",
     "request_in_progress", "proposal_stale", "plan_exists", "proposal_not_executed",
     "resume_at_not_after_today", "plan_in_use", "proposal_registry_unavailable",
+    "plan_not_open", "signup_not_pending", "signup_has_plan", "signup_changed", "signup_not_found",
   ];
   const original = globalThis.fetch;
   try {
@@ -130,6 +131,80 @@ test("subscription refusals are explained in plain words and keep their code", a
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("sign-up and settings calls use the Task 4 routes with the right bodies", async () => {
+  const SIGNUP = "55555555-5555-4555-8555-555555555555";
+  const [, requests] = await capture(async () => {
+    await subs.getSettings(null);
+    await subs.putSettings(null, { pending_expiry_days: 7, version: 0 });
+    await subs.listSignups(null, "pending");
+    await subs.listSignups(null, "decided", SIGNUP);
+    await subs.approveSignup(null, SIGNUP);
+    await subs.declineSignup(null, SIGNUP, { reason: "Not a customer" });
+    await subs.declineSignup(null, SIGNUP, {});
+    await subs.updatePlan(null, "basic", { signup_mode: "auto", is_signup_open: false });
+    await subs.createPlan(null, { code: "gold", name: "Gold", price: "10.00", signup_mode: "auto" });
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/subscriptions/settings"],
+    ["PUT", "/console/v1/subscriptions/settings"],
+    ["GET", "/console/v1/subscriptions/signups?status=pending"],
+    ["GET", `/console/v1/subscriptions/signups?status=decided&before=${SIGNUP}`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/approve`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/decline`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/decline`],
+    ["PATCH", "/console/v1/subscriptions/plans/basic"],
+    ["POST", "/console/v1/subscriptions/plans"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), { pending_expiry_days: 7, version: 0 });
+  // Approve takes no body; decline sends the reason as typed, or an empty object.
+  assert.equal(requests[4][1].body, undefined);
+  assert.deepEqual(JSON.parse(requests[5][1].body), { reason: "Not a customer" });
+  assert.deepEqual(JSON.parse(requests[6][1].body), {});
+  assert.deepEqual(JSON.parse(requests[7][1].body), { signup_mode: "auto", is_signup_open: false });
+  assert.equal(requests[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+  assert.equal(requests[2][1].headers.has("X-CSRF-Token"), false);
+});
+
+test("a platform admin names the tenant on sign-up and settings calls", async () => {
+  const SIGNUP = "55555555-5555-4555-8555-555555555555";
+  const [, requests] = await capture(async () => {
+    await subs.putSettings("t1", { pending_expiry_days: 0, version: 2 });
+    await subs.listSignups("t1", "pending");
+    await subs.approveSignup("t1", SIGNUP);
+    await subs.declineSignup("t1", SIGNUP, { reason: "x" });
+  });
+  assert.deepEqual(requests.map(([path]) => path), [
+    "/console/v1/subscriptions/settings?client_id=t1",
+    "/console/v1/subscriptions/signups?client_id=t1&status=pending",
+    `/console/v1/subscriptions/signups/${SIGNUP}/approve?client_id=t1`,
+    `/console/v1/subscriptions/signups/${SIGNUP}/decline?client_id=t1`,
+  ]);
+});
+
+test("pending is a status of its own, labelled Waiting to start", () => {
+  assert.equal(subs.STATUS_LABELS.pending, "Waiting to start");
+  assert.deepEqual(Object.keys(subs.STATUS_LABELS), ["pending", "active", "paused", "cancelled"]);
+  const sub = (status, renews_at = null) => ({ status, cancel_at_period_end: false, renews_at });
+  // Mirrors the executor: a pending subscription can be started or cancelled, nothing else.
+  assert.deepEqual(subs.availableActions(sub("pending")), ["activate", "cancel_now"]);
+  assert.ok(!subs.availableActions(sub("active", "2026-11-27T01:15:00Z")).includes("activate"));
+  assert.ok(!subs.availableActions(sub("paused")).includes("activate"));
+  assert.deepEqual(subs.availableActions(sub("cancelled")), []);
+});
+
+test("sign-up and expiry events read as plain sentences", () => {
+  const say = (action, actor = "22222222-2222-4222-8222-222222222222", payload = {}) =>
+    subs.eventSentence({ id: 1, actor, action, from_status: null, to_status: null, payload,
+      created_at: "2026-10-27T01:15:00Z" }, (code) => ({ basic: "Basic" })[code] ?? code);
+  assert.equal(say("signup_approved", undefined, { plan: "basic" }),
+    "Sign-up approved by staff for the Basic plan. Waiting to start.");
+  assert.equal(say("signup_approved", "system:signup_auto", { plan: "basic" }),
+    "Sign-up approved automatically for the Basic plan. Waiting to start.");
+  assert.equal(say("activated"), "Subscription started.");
+  assert.equal(say("pending_expired", "system:subscriptions_due"),
+    "Expired before it started, so it was cancelled.");
 });
 
 test("money and dates follow the writing guide", () => {

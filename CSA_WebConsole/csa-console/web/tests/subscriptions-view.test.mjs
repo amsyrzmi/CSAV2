@@ -18,6 +18,7 @@ const subsUrl = moduleUrl(subsSource.replace('"./api"', JSON.stringify(apiUrl)))
 const viewSource = await readFile(new URL("../lib/subscriptions-view.ts", import.meta.url), "utf8");
 const {
   summaryCounts, isEndingSoon, formatInTenantZone, validTimeZone, customerChipOptions, filterCustomers, reviewSentence,
+  signupBadge, phoneMark, signupOutcome, parseExpiryDays, declineBody, signupModeLabel,
 } = await import(moduleUrl(viewSource.replace('"@/lib/subscriptions-api"', JSON.stringify(subsUrl))));
 
 const NOW = new Date("2026-11-02T02:00:00Z");
@@ -66,6 +67,58 @@ test("summaryCounts exact, plus-suffix and null", () => {
   assert.equal(summaryCounts(undefined, undefined, false, false, NOW), null);
 });
 
+test("pending is never counted as active, and has its own chip", () => {
+  const customers = [sub(), sub({ status: "pending", renews_at: null }), sub({ status: "pending", renews_at: null })];
+  assert.deepEqual(summaryCounts(customers, [], false, false, NOW), {
+    active: "1", endingSoon: "0", requestsWaiting: "0",
+  });
+  assert.equal(isEndingSoon(sub({ status: "pending", cancel_at_period_end: true })), false);
+  const options = customerChipOptions(customers, false);
+  assert.deepEqual(options.map((o) => [o.value, o.label, o.count]), [
+    ["all", "All", 3], ["pending", "Waiting to start", 2], ["active", "Active", 1],
+    ["paused", "Paused", 0], ["cancelled", "Cancelled", 0], ["ending", "Ending soon", 0],
+  ]);
+  assert.equal(filterCustomers(customers, "pending").length, 2);
+  assert.equal(filterCustomers(customers, "active").length, 1);
+});
+
+test("the sign-ups badge counts the open list and adds a plus for a further page", () => {
+  assert.equal(signupBadge(null, false), null);
+  assert.equal(signupBadge(undefined, false), null);
+  assert.equal(signupBadge([], false), null);
+  assert.equal(signupBadge([{ id: "a" }, { id: "b" }], false), "2");
+  assert.equal(signupBadge([{ id: "a" }, { id: "b" }], true), "2+");
+});
+
+test("a sign-up shows whether the phone was verified, and how it ended", () => {
+  assert.equal(phoneMark({ phone_verified: true }), "Verified");
+  assert.equal(phoneMark({ phone_verified: false }), "Not verified");
+  const row = (overrides) => ({ status: "pending", decided_via: null, decline_reason: null, ...overrides });
+  assert.equal(signupOutcome(row({})), "Waiting for staff");
+  assert.equal(signupOutcome(row({ status: "approved", decided_via: "staff" })), "Approved by staff");
+  assert.equal(signupOutcome(row({ status: "approved", decided_via: "auto" })), "Approved automatically");
+  assert.equal(signupOutcome(row({ status: "declined", decided_via: "staff" })), "Declined");
+  assert.equal(signupOutcome(row({ status: "expired" })), "Expired");
+});
+
+test("the pending-expiry box takes whole days from 0 to 90 only", () => {
+  assert.equal(parseExpiryDays("14"), 14);
+  assert.equal(parseExpiryDays(" 0 "), 0);
+  assert.equal(parseExpiryDays("90"), 90);
+  for (const bad of ["", " ", "91", "-1", "1.5", "abc", "1e1"]) assert.equal(parseExpiryDays(bad), null, bad);
+});
+
+test("decline sends the reason trimmed, or nothing", () => {
+  assert.deepEqual(declineBody("  Not a customer  "), { reason: "Not a customer" });
+  assert.deepEqual(declineBody("   "), {});
+  assert.deepEqual(declineBody(""), {});
+});
+
+test("plan sign-up mode has plain labels", () => {
+  assert.equal(signupModeLabel("staff"), "Staff approve");
+  assert.equal(signupModeLabel("auto"), "Sign up automatically");
+});
+
 test("endingSoon means set to cancel at the end of the period", () => {
   const soon = (overrides) => isEndingSoon(sub(overrides));
   assert.equal(soon({ cancel_at_period_end: true }), true);
@@ -107,7 +160,7 @@ test("customer chips count only a complete list and filter the loaded rows", () 
   ];
   const whole = customerChipOptions(rows, false);
   assert.deepEqual(whole.map((o) => [o.value, o.label, o.count]), [
-    ["all", "All", 5], ["active", "Active", 3], ["paused", "Paused", 1],
+    ["all", "All", 5], ["pending", "Waiting to start", 0], ["active", "Active", 3], ["paused", "Paused", 1],
     ["cancelled", "Cancelled", 1], ["ending", "Ending soon", 1],
   ]);
   // A paged list: the figures would only describe the loaded page, so none are drawn.

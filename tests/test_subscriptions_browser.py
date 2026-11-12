@@ -58,6 +58,8 @@ PLANS = [
         "features": ["Weekly delivery"],
         "sort_order": 0,
         "is_active": True,
+        "signup_mode": "staff",
+        "is_signup_open": True,
     },
     {
         "code": "pro",
@@ -68,8 +70,37 @@ PLANS = [
         "features": [],
         "sort_order": 1,
         "is_active": True,
+        "signup_mode": "staff",
+        "is_signup_open": True,
     },
 ]
+
+PENDING_SUB = "33333333-3333-4333-8333-aaaaaaaaaaaa"
+SIGNUP_VERIFIED = "99999999-9999-4999-8999-111111111111"
+SIGNUP_TYPED = "99999999-9999-4999-8999-222222222222"
+SIGNUP_DECIDED = "99999999-9999-4999-8999-333333333333"
+
+
+def signup_row(
+    sign_id: str, who: dict[str, Any], plan: str, typed_name: str, typed_phone: str, **changes: Any
+) -> dict[str, Any]:
+    return {
+        "id": sign_id,
+        "contact": who,
+        "plan_code": plan,
+        "plan_name": plan.title(),
+        "full_name": typed_name,
+        "phone": typed_phone,
+        "phone_verified": False,
+        "status": "pending",
+        "decided_via": None,
+        "decline_reason": None,
+        "subscription_id": None,
+        "created_at": "2026-10-30T02:00:00Z",
+        "decided_at": None,
+        "source_channel": "telegram",
+        **changes,
+    }
 
 
 def tomorrow_in_kuala_lumpur() -> str:
@@ -151,6 +182,30 @@ class World:
             request_row(REQUEST_ORPHAN, None, aisyah),
         ]
         self.plans = copy.deepcopy(PLANS)
+        self.settings: dict[str, Any] = {
+            "timezone": "Asia/Kuala_Lumpur",
+            "pending_expiry_days": 14,
+            "version": 0,
+        }
+        chen = self.contacts[2]
+        self.signups = [
+            signup_row(
+                SIGNUP_VERIFIED, chen, "basic", "Chen Wei", "+60111222333", phone_verified=True
+            ),
+            signup_row(SIGNUP_TYPED, aisyah, "pro", "Aisyah R.", "+60100000000"),
+            signup_row(
+                SIGNUP_DECIDED,
+                ben,
+                "pro",
+                "Ben Tan",
+                "+60198765432",
+                status="declined",
+                decided_via="staff",
+                decline_reason="Duplicate request",
+                decided_at="2026-10-31T02:00:00Z",
+            ),
+        ]
+        self.approve_error: str | None = None
         self.proposal: dict[str, Any] | None = None
         self.calls: list[dict[str, Any]] = []
         self.unexpected: list[str] = []
@@ -159,7 +214,7 @@ class World:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         params = {key: values[0] for key, values in parse_qs(query).items()}
-        body = request.post_data_json if request.method in {"POST", "PATCH"} else None
+        body = request.post_data_json if request.method in {"POST", "PATCH", "PUT"} else None
         self.calls.append(
             {
                 "method": request.method,
@@ -194,7 +249,44 @@ class World:
             return 400, {"detail": "tenant mismatch"}
         writer = self.upstream.me["role"] != "read_only"
         if path == "subscriptions/settings" and method == "GET":
-            return 200, {"timezone": "Asia/Kuala_Lumpur"}
+            return 200, self.settings
+        if path == "subscriptions/settings" and method == "PUT" and writer:
+            if body["version"] != self.settings["version"]:
+                return 409, {"detail": "version_conflict"}
+            self.settings = {
+                **self.settings,
+                "pending_expiry_days": body["pending_expiry_days"],
+                "version": self.settings["version"] + 1,
+            }
+            return 200, self.settings
+        if path == "subscriptions/signups" and method == "GET":
+            decided = params.get("status") == "decided"
+            rows = [r for r in self.signups if (r["status"] != "pending") == decided]
+            return 200, {"items": rows, "next_cursor": None}
+        if path.startswith("subscriptions/signups/") and method == "POST" and writer:
+            _, _, sign_id, verb = path.split("/")
+            row = next(r for r in self.signups if r["id"] == sign_id)
+            if row["status"] != "pending":
+                return 409, {"detail": "signup_not_pending"}
+            if verb == "approve":
+                if body not in (None, {}):
+                    return 422, {"detail": "approve takes no body"}
+                if self.approve_error:
+                    return 409, {"detail": self.approve_error}
+                row.update(
+                    status="approved",
+                    decided_via="staff",
+                    decided_at="2026-11-02T02:00:00Z",
+                    subscription_id=PENDING_SUB,
+                )
+            else:
+                row.update(
+                    status="declined",
+                    decided_via="staff",
+                    decided_at="2026-11-02T02:00:00Z",
+                    decline_reason=(body or {}).get("reason"),
+                )
+            return 200, row
         if path == "subscriptions/plans" and method == "GET":
             return 200, self.plans
         if path.startswith("subscriptions/plans/") and method == "PATCH" and writer:
@@ -1195,6 +1287,210 @@ PLACEHOLDER_FITS_JS = """() => {
     const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     return { need: context.measureText(input.placeholder).width, room };
 }"""
+
+
+async def test_signups_tab_approves_declines_and_sets_the_expiry(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            # Two sign-ups wait: the tab says how many.
+            badge = page.get_by_test_id("signups-badge")
+            await expect(badge).to_have_text("Open: 2", timeout=WAIT)
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            open_rows = page.get_by_test_id("signup-open")
+            await expect(open_rows).to_have_count(2, timeout=WAIT)
+
+            # The phone mark follows phone_verified; the name is the one the customer typed.
+            chen = open_rows.filter(has_text="Chen Wei")
+            await expect(chen.get_by_test_id("signup-phone-mark")).to_have_text("Verified")
+            aisyah = open_rows.filter(has_text="Aisyah R.")
+            await expect(aisyah.get_by_test_id("signup-phone-mark")).to_have_text("Not verified")
+            await expect(aisyah).to_contain_text("Customer record: Aisyah Rahman")
+            await expect(aisyah).to_contain_text("Wants the Pro plan")
+
+            # A decided sign-up keeps its reason, marked staff only.
+            decided = page.get_by_test_id("signup-decided")
+            await expect(decided).to_have_count(1)
+            await expect(decided.get_by_test_id("signup-outcome")).to_have_text("Declined")
+            await expect(decided).to_contain_text("Reason (only staff see this): Duplicate request")
+
+            # The expiry strip: whole days only, saved with version 0 on the first save.
+            strip = page.get_by_test_id("signup-settings")
+            await expect(strip).to_contain_text("Pending sign-ups expire after")
+            await expect(strip).to_contain_text("days (0 = never)")
+            days = strip.get_by_test_id("signup-expiry-days")
+            save = strip.get_by_test_id("signup-expiry-save")
+            await expect(days).to_have_value("14")
+            await expect(save).to_be_disabled()
+            await days.fill("91")
+            await expect(save).to_be_disabled()
+            await days.fill("7")
+            await save.click()
+            await expect(page.get_by_text("Saved. Pending sign-ups will expire")).to_be_visible()
+            puts = [c for c in world.calls if c["method"] == "PUT"]
+            assert [(c["path"], c["body"], c["csrf"]) for c in puts] == [
+                (
+                    "subscriptions/settings",
+                    {"pending_expiry_days": 7, "version": 0},
+                    "synthetic-csrf",
+                )
+            ], puts
+            await expect(days).to_have_value("7")
+            await expect(save).to_be_disabled()
+
+            # Approve sends no body and moves the sign-up to the decided list.
+            await chen.get_by_test_id("signup-approve").click()
+            await expect(page.get_by_text("Approved. Chen Wei is waiting to start")).to_be_visible()
+            await expect(open_rows).to_have_count(1, timeout=WAIT)
+            await expect(badge).to_have_text("Open: 1", timeout=WAIT)
+            approves = [c for c in world.calls if c["path"].endswith("/approve")]
+            assert [(c["path"], c["body"], c["csrf"]) for c in approves] == [
+                (f"subscriptions/signups/{SIGNUP_VERIFIED}/approve", None, "synthetic-csrf")
+            ], approves
+            await expect(decided).to_have_count(2)
+            await expect(
+                decided.filter(has_text="Chen Wei").get_by_test_id("signup-outcome")
+            ).to_have_text("Approved by staff")
+
+            # Decline opens a reason box that says who sees it, and sends the trimmed reason.
+            await open_rows.first.get_by_test_id("signup-decline").click()
+            form = page.get_by_test_id("signup-decline-form")
+            await expect(form).to_contain_text("only staff see this")
+            await form.get_by_test_id("signup-reason").fill("  Not a customer  ")
+            await form.get_by_test_id("signup-decline-confirm").click()
+            await expect(open_rows).to_have_count(0, timeout=WAIT)
+            await expect(badge).to_have_count(0)
+            await expect(
+                page.get_by_text("When a customer signs up for a plan in the chat")
+            ).to_be_visible()
+            declines = [c for c in world.calls if c["path"].endswith("/decline")]
+            assert [(c["path"], c["body"]) for c in declines] == [
+                (f"subscriptions/signups/{SIGNUP_TYPED}/decline", {"reason": "Not a customer"})
+            ], declines
+            await expect(decided).to_have_count(3)
+
+    await with_browser(body)
+
+
+async def test_a_refused_approval_says_why_and_the_sign_up_stays(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.approve_error = "plan_not_open"
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            row = page.get_by_test_id("signup-open").filter(has_text="Chen Wei")
+            await expect(row).to_be_visible(timeout=WAIT)
+            await row.get_by_test_id("signup-approve").click()
+            await expect(row).to_contain_text("closed to new sign-ups or archived")
+            await expect(page.get_by_test_id("signup-open")).to_have_count(2)
+            await expect(row.get_by_test_id("signup-approve")).to_be_enabled()
+
+    await with_browser(body)
+
+
+async def test_read_only_members_see_sign_ups_without_controls(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, role="read_only", wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            await expect(page.get_by_test_id("signup-open")).to_have_count(2, timeout=WAIT)
+            await expect(page.get_by_test_id("signup-approve")).to_have_count(0)
+            await expect(page.get_by_test_id("signup-decline")).to_have_count(0)
+            await expect(page.get_by_test_id("signup-expiry-days")).to_be_disabled()
+            await expect(page.get_by_test_id("signup-expiry-save")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_plan_sign_up_switches_are_saved_with_the_plan(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Staff approve", timeout=WAIT
+            )
+            await page.get_by_test_id("plan-edit-basic").click()
+            mode = page.get_by_test_id("plan-edit-signup-mode")
+            await expect(mode).to_have_value("staff")
+            await expect(page.get_by_test_id("plan-edit-closed")).not_to_be_checked()
+            await expect(mode.locator("option")).to_have_text(
+                ["Staff approve", "Sign up automatically"]
+            )
+            await mode.select_option("auto")
+            await page.get_by_test_id("plan-edit-save").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Sign up automatically"
+            )
+            await page.get_by_test_id("plan-edit-basic").click()
+            await page.get_by_test_id("plan-edit-closed").check()
+            await page.get_by_test_id("plan-edit-save").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Closed to new sign-ups"
+            )
+            patches = [c for c in world.calls if c["method"] == "PATCH"]
+            assert [(c["body"]["signup_mode"], c["body"]["is_signup_open"]) for c in patches] == [
+                ("auto", True),
+                ("auto", False),
+            ], patches
+
+            # A new plan can start closed and automatic.
+            await page.get_by_test_id("plan-add").click()
+            form = page.get_by_test_id("plan-form")
+            await expect(form.get_by_test_id("plan-signup-mode")).to_have_value("staff")
+            await expect(form.get_by_test_id("plan-closed")).not_to_be_checked()
+            await expect(form).to_contain_text("Closed to new sign-ups")
+
+    await with_browser(body)
+
+
+async def test_pending_subscriptions_wait_to_start_and_are_not_active(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        who = customer("88888888-8888-4888-8888-aaaaaaaaaaaa", "Imran Aziz", "+60130000005")
+        world.subs[PENDING_SUB] = {
+            **subscription(PENDING_SUB, who, "basic", "59.90"),
+            "status": "pending",
+            "renews_at": None,
+        }
+        world.events[PENDING_SUB] = [
+            {
+                "id": 1,
+                "actor": "system:signup_auto",
+                "action": "signup_approved",
+                "from_status": None,
+                "to_status": "pending",
+                "payload": {"plan": "basic", "request_id": SIGNUP_VERIFIED},
+                "created_at": "2026-09-27T01:00:00Z",
+            }
+        ]
+        async with subs_page(browser, site, world) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(7)
+            # Pending is its own chip and is never counted as active.
+            await expect(page.get_by_test_id("customers-view-pending")).to_have_text(
+                "Waiting to start (1)"
+            )
+            await expect(page.get_by_test_id("customers-view-active")).to_have_text("Active (4)")
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("4")
+            await page.get_by_test_id("customers-view-pending").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.first.get_by_test_id("subscription-status")).to_have_text(
+                "Waiting to start"
+            )
+
+            # The drawer offers Start and Cancel now, and nothing else.
+            drawer = await open_customer(page, "Imran Aziz")
+            await expect(drawer.get_by_test_id("subscription-detail-status")).to_have_text(
+                "Waiting to start"
+            )
+            actions = drawer.get_by_test_id("subscription-actions").get_by_role("button")
+            await expect(actions).to_have_text(["Start subscription", "Cancel now"])
+            await expect(drawer.get_by_test_id("subscription-timeline")).to_contain_text(
+                "Sign-up approved automatically for the Basic plan. Waiting to start."
+            )
+
+    await with_browser(body)
 
 
 @pytest.mark.parametrize("theme", THEMES)
