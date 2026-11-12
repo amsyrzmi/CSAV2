@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import httpx
 import pytest
 from csa.channels.telegram import (
+    SharedPhone,
     TelegramAdapter,
     TelegramDeliveryError,
     TelegramUpdateError,
@@ -229,3 +231,90 @@ def test_username_is_parsed_and_invalid_values_become_none(
 def test_missing_username_is_none() -> None:
     event = TelegramAdapter.parse(_message_update(text="Hi"), public_id="devbotendpoint0001")
     assert event.username is None
+
+
+def test_contact_card_is_read_into_shared_phone() -> None:
+    event = TelegramAdapter.parse(
+        _message_update(
+            contact={"phone_number": "+60123456789", "first_name": "Test", "user_id": 12345}
+        ),
+        public_id="devbotendpoint0001",
+    )
+
+    assert event.shared_phone == SharedPhone(phone_number="+60123456789", user_id=12345)
+    assert event.shared_phone is not None and event.shared_phone.forwarded is False
+
+
+def test_message_without_a_contact_card_has_no_shared_phone() -> None:
+    event = TelegramAdapter.parse(
+        _message_update(text="my number is 0123456789"), public_id="devbotendpoint0001"
+    )
+
+    assert event.shared_phone is None
+
+
+def test_contact_card_of_someone_else_keeps_its_own_user_id() -> None:
+    event = TelegramAdapter.parse(
+        _message_update(
+            contact={"phone_number": "0123456789", "first_name": "Other", "user_id": 99}
+        ),
+        public_id="devbotendpoint0001",
+    )
+
+    assert event.shared_phone == SharedPhone(phone_number="0123456789", user_id=99)
+
+
+def test_contact_card_without_user_id_and_a_forwarded_card_are_marked() -> None:
+    bare = TelegramAdapter.parse(
+        _message_update(contact={"phone_number": "0123456789", "first_name": "Other"}),
+        public_id="devbotendpoint0001",
+    )
+    forwarded = TelegramAdapter.parse(
+        _message_update(
+            contact={"phone_number": "0123456789", "first_name": "Test", "user_id": 12345},
+            forward_origin={"type": "user", "date": 1791676000},
+        ),
+        public_id="devbotendpoint0001",
+    )
+
+    assert bare.shared_phone == SharedPhone(phone_number="0123456789", user_id=None)
+    assert forwarded.shared_phone is not None
+    assert forwarded.shared_phone.user_id == 12345 and forwarded.shared_phone.forwarded is True
+
+
+@pytest.mark.parametrize("contact", [{"first_name": "No number"}, {"phone_number": ""}, "0123"])
+def test_contact_card_without_a_usable_number_is_rejected(contact: object) -> None:
+    with pytest.raises(TelegramUpdateError):
+        TelegramAdapter.parse(_message_update(contact=contact), public_id="devbotendpoint0001")
+
+
+@pytest.mark.asyncio
+async def test_send_message_builds_the_share_my_number_keyboard() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 82}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await TelegramAdapter.send_message(
+            "12345:test-token",
+            chat_id="12345",
+            text="Which number?",
+            http_client=client,
+            request_phone_label="Share my number / Kongsi nombor saya",
+        )
+        await TelegramAdapter.send_message(
+            "12345:test-token",
+            chat_id="12345",
+            text="Thanks",
+            http_client=client,
+            remove_keyboard=True,
+        )
+
+    assert json.loads(requests[0].read())["reply_markup"] == {
+        "keyboard": [[{"text": "Share my number / Kongsi nombor saya", "request_contact": True}]],
+        "one_time_keyboard": True,
+        "resize_keyboard": True,
+    }
+    assert json.loads(requests[1].read())["reply_markup"] == {"remove_keyboard": True}

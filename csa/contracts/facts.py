@@ -55,6 +55,7 @@ class UiConfirmation(ContractModel):
 class Ui(ContractModel):
     confirmation: UiConfirmation | None = None
     options: list[UiOption] = Field(default_factory=list, max_length=20)
+    request_phone: bool = False  # Telegram: offer the "share my number" button with this message
 
 
 class AgentError(ContractModel):

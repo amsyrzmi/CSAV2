@@ -1094,7 +1094,7 @@ async def _insert_outbound(
     if handoff:
         await db.q.execute("staff/set_handoff.sql", (envelope.client_id, row["id"]), conn=conn)
     ui = message.ui.model_dump(mode="json", exclude_none=True)
-    if ui.get("confirmation") or ui.get("options"):
+    if ui.get("confirmation") or ui.get("options") or ui.get("request_phone"):
         await db.q.fetch_one(
             "worker/set_message_ui.sql",
             (Jsonb(ui), row["id"], envelope.client_id),

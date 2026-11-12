@@ -14,6 +14,8 @@ from uuid import UUID, uuid4
 
 import httpx
 import structlog
+from fastapi import HTTPException
+from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -24,7 +26,8 @@ from csa.channels.telegram import (
     TelegramEvent,
     TelegramUpdateError,
 )
-from csa.contracts.envelope import Channel, Contact, ConversationRef, Envelope, Meta
+from csa.contacts.linking import live_contact, verify_phone
+from csa.contracts.envelope import Channel, Contact, ConversationRef, Envelope, Message, Meta
 from csa.core import crypto, db
 from csa.core.tenancy import tx
 from csa.staff.callbacks import NOT_AUTHORISED_TEXT, handle_staff_action, submit_staff_edit
@@ -34,6 +37,11 @@ logger = structlog.get_logger(__name__)
 TELEGRAM_WEBHOOK_SECRET_META_KEY = "telegram_webhook_secret_enc"
 TELEGRAM_WEBHOOK_SECRET_AAD_COLUMN = "meta.telegram_webhook_secret_enc"
 _MAX_UPDATE_BYTES = 1_000_000
+
+# What the graph reads in place of a shared contact card: the number stays inside verify_phone.
+SHARED_PHONE_BODY = "[shared phone number]"
+SHARED_PHONE_ACK = "Thanks, I have your number."
+SHARED_PHONE_REFUSAL = "Please use the button to share your own number."
 
 
 class IngressError(Exception):
@@ -113,6 +121,28 @@ class _StaffEdit(Exception):
         self.bot_token = bot_token
 
 
+class _ShareRefused(Exception):
+    """Internal control flow: a contact card that is not the sender's own number."""
+
+    def __init__(
+        self,
+        *,
+        client_id: UUID,
+        endpoint_id: UUID,
+        trace_id: UUID,
+        event: TelegramEvent,
+        payload_hash: str,
+        bot_token: str,
+    ) -> None:
+        super().__init__("share refused")
+        self.client_id = client_id
+        self.endpoint_id = endpoint_id
+        self.trace_id = trace_id
+        self.event = event
+        self.payload_hash = payload_hash
+        self.bot_token = bot_token
+
+
 class TelegramIngress:
     """Verify, normalize, tenant-bind, and persist Telegram webhook updates."""
 
@@ -184,6 +214,44 @@ class TelegramIngress:
             except TelegramDeliveryError as exc:
                 logger.error("staff_edit_reply_failed", error=exc.error_code)
             return IngressReceipt(accepted=True, duplicate=False, trace_id=edit.trace_id)
+        except _ShareRefused as refused:
+            return await self._refuse_share(refused)
+
+    async def _refuse_share(self, refused: _ShareRefused) -> IngressReceipt:
+        """Record the update as handled (a Telegram retry is then a duplicate) and say why."""
+        trace_id = refused.trace_id
+        async with tx(self._pool, str(refused.client_id)) as conn:
+            inserted = await db.q.fetch_one(
+                "ingress/insert_handled_event.sql",
+                (
+                    refused.client_id,
+                    refused.endpoint_id,
+                    refused.event.idempotency_key,
+                    refused.payload_hash,
+                    trace_id,
+                ),
+                conn=conn,
+            )
+            if inserted is None:
+                previous = await db.q.fetch_one(
+                    "ingress/get_event_hash.sql",
+                    (refused.client_id, refused.event.idempotency_key),
+                    conn=conn,
+                )
+                if previous is None:
+                    raise RuntimeError("conflicting ingress event disappeared during lookup")
+                trace_id = previous["trace_id"]
+        if inserted is not None:
+            try:
+                await self._adapter.send_message(
+                    refused.bot_token,
+                    chat_id=refused.event.chat_id,
+                    text=SHARED_PHONE_REFUSAL,
+                    http_client=self._http_client,
+                )
+            except TelegramDeliveryError as exc:
+                logger.error("telegram_share_refusal_failed", error=exc.error_code)
+        return IngressReceipt(accepted=True, duplicate=inserted is None, trace_id=trace_id)
 
     async def _receive(
         self,
@@ -287,11 +355,30 @@ class TelegramIngress:
             if event.is_group:
                 raise IngressError(422, "only private Telegram chats are enabled")
 
-            contact_id, first_contact, stored_display_name = await self._resolve_contact(
-                conn,
-                client_id=client_id,
-                event=event,
-            )
+            shared = event.shared_phone
+            if shared is not None and (
+                shared.forwarded or shared.user_id is None or str(shared.user_id) != event.sender_id
+            ):
+                # Only the sender's own card proves the number; nothing has been written yet.
+                raise _ShareRefused(
+                    client_id=client_id,
+                    endpoint_id=endpoint_id,
+                    trace_id=trace_id,
+                    event=event,
+                    payload_hash=_canonical_payload_hash(body, scrub_contact_card=True),
+                    bot_token=self._bot_token(route, credential_id),
+                )
+            if shared is not None and not await self._is_known(conn, client_id, event):
+                contact_id, first_contact, stored_display_name = await self._resolve_and_verify(
+                    conn, client_id=client_id, event=event, phone=shared.phone_number
+                )
+            else:
+                # A Telegram retry of a share already handled verifies nothing a second time.
+                contact_id, first_contact, stored_display_name = await self._resolve_contact(
+                    conn,
+                    client_id=client_id,
+                    event=event,
+                )
             conversation = await self._resolve_conversation(
                 conn,
                 client_id=client_id,
@@ -316,11 +403,17 @@ class TelegramIngress:
                     turn_count=conversation["turn_count"],
                     status=conversation["status"],
                 ),
-                message=event.message,
+                message=(
+                    event.message
+                    if shared is None
+                    else Message(
+                        body_raw=SHARED_PHONE_BODY, body_redacted=SHARED_PHONE_BODY, language="und"
+                    )
+                ),
                 callback=event.callback,
                 meta=Meta(is_first_contact=first_contact),
             )
-            payload_hash = _canonical_payload_hash(body)
+            payload_hash = _canonical_payload_hash(body, scrub_contact_card=shared is not None)
             raw = {
                 "envelope": envelope.model_dump(mode="json"),
                 "source": {
@@ -387,12 +480,86 @@ class TelegramIngress:
         if event.callback_query_id and answer_token:
             await self._answer_callback(answer_token, event.callback_query_id)
             await self._clear_buttons(answer_token, event)
+        if shared is not None and not duplicate:
+            await self._acknowledge_share(route, credential_id, event)
 
         return IngressReceipt(
             accepted=True,
             duplicate=duplicate,
             trace_id=trace_id,
         )
+
+    async def _acknowledge_share(
+        self, route: Mapping[str, Any], credential_id: UUID, event: TelegramEvent
+    ) -> None:
+        """Thank the customer and take the share keyboard away; the share is already stored."""
+        try:
+            await self._adapter.send_message(
+                self._bot_token(route, credential_id),
+                chat_id=event.chat_id,
+                text=SHARED_PHONE_ACK,
+                http_client=self._http_client,
+                remove_keyboard=True,
+            )
+        except TelegramDeliveryError as exc:
+            logger.error("telegram_share_ack_failed", error=exc.error_code)
+        except IngressError as exc:
+            logger.error("telegram_share_ack_failed", error=exc.detail)
+
+    @staticmethod
+    async def _is_known(conn: Any, client_id: UUID, event: TelegramEvent) -> bool:
+        row = await db.q.fetch_one(
+            "ingress/get_event_hash.sql", (client_id, event.idempotency_key), conn=conn
+        )
+        return row is not None
+
+    async def _resolve_and_verify(
+        self,
+        conn: AsyncConnection[Any],
+        *,
+        client_id: UUID,
+        event: TelegramEvent,
+        phone: str,
+    ) -> tuple[UUID, bool, str | None]:
+        """Resolve the sender and record the shared phone as theirs, once more after a merge.
+
+        Each attempt is a savepoint. A link can merge the contact the resolver chose after the
+        resolver's snapshot, and verify_phone then raises 409 ``contact_merged``; the failed
+        attempt is rolled back and the next resolves the live contact. verify_phone runs before
+        live_contact (the lock order linking.py defines) and may link the contact to another, so
+        the contact the message is for is the survivor, whose row now holds the telegram_id and
+        the identity.
+        """
+        for attempt in (1, 2):
+            try:
+                async with conn.transaction():
+                    contact_id, first_contact, stored_name = await self._resolve_contact(
+                        conn, client_id=client_id, event=event
+                    )
+                    verified = await verify_phone(
+                        conn, client_id, contact_id, phone, source="telegram_share"
+                    )
+                    live = await live_contact(conn, client_id, verified.contact_id)
+                    if live == contact_id:
+                        return contact_id, first_contact, stored_name
+                    resolved_id, _, stored_name = await self._resolve_contact(
+                        conn, client_id=client_id, event=event
+                    )
+                    if resolved_id != live:
+                        raise RuntimeError(
+                            "linked telegram contact does not resolve to the survivor"
+                        )
+                    # Linked into an existing customer: this is not a first contact.
+                    return live, False, stored_name
+            except HTTPException as exc:
+                if exc.detail != "contact_merged":
+                    raise
+                logger.warning(
+                    "telegram_contact_merged_retry", client_id=str(client_id), attempt=attempt
+                )
+        logger.error("telegram_contact_merged_twice", client_id=str(client_id))
+        # 503: Telegram redelivers the update, and the link has long finished by then.
+        raise IngressError(503, "contact was merged while the message was received; retry")
 
     async def _resolve_endpoint(self, public_id: str) -> dict[str, Any] | None:
         async with self._pool.connection() as conn:
@@ -583,11 +750,28 @@ class TelegramIngress:
             )
 
 
-def _canonical_payload_hash(body: bytes) -> str:
-    """Hash canonical JSON so whitespace or key-order differences are harmless."""
+def _canonical_payload_hash(body: bytes, *, scrub_contact_card: bool = False) -> str:
+    """Hash canonical JSON so whitespace or key-order differences are harmless.
+
+    ``scrub_contact_card`` leaves the shared number (and its vCard) out of what is hashed: the
+    hash is stored, and a number must not be recoverable from anything kept.
+    """
     try:
         parsed = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TelegramUpdateError("request body is not valid JSON") from exc
+    if scrub_contact_card and isinstance(parsed, dict):
+        message = parsed.get("message")
+        card = message.get("contact") if isinstance(message, dict) else None
+        if isinstance(message, dict) and isinstance(card, dict):
+            parsed = {
+                **parsed,
+                "message": {
+                    **message,
+                    "contact": {
+                        k: v for k, v in card.items() if k not in ("phone_number", "vcard")
+                    },
+                },
+            }
     canonical = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
