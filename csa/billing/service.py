@@ -100,7 +100,7 @@ class AllocatedExecution:
 
 @dataclass(frozen=True)
 class AgentTotal:
-    """One AI agent's priced executions in the cycle and the sum of their allocated prices."""
+    """One AI agent's executions in the cycle (priced or not) and their allocated prices' sum."""
 
     agent_id: str
     title: str
@@ -136,9 +136,10 @@ class CycleUsage:
     ``executions`` (every execution in the window, priced or not) and ``priced`` (those with a raw
     cost) are newest first by ``(first_at, trace_id)``. ``price_by_trace`` maps each priced
     execution to its allocated price; an unpriced one is absent (its price is ``None``).
-    ``by_agent`` lists the agents with priced executions, highest price first then agent id;
-    ``daily`` has one entry per KL date of the window, zero where nothing ran. Both are sums of the
-    allocated prices, so each adds up to ``bill.ai_charge`` exactly.
+    ``by_agent`` lists every agent with an execution in the window and counts all of them, priced
+    or not (an agent whose executions are all unpriced has price zero), highest price first then
+    agent id; ``daily`` has one entry per KL date of the window, zero where nothing ran. Both are
+    sums of the allocated prices, so each adds up to ``bill.ai_charge`` exactly.
 
     Admin warnings: ``usage_without_plan`` counts executions in the cycle before the plan starts
     (the whole cycle when not set up), ``usage_after_termination`` those at or after the termination
@@ -278,14 +279,18 @@ def _summarise(
         for e, x, p in zip(priced_rows, exact, shares, strict=True)
     ]
 
+    # Every execution counts toward its agent, priced or not; only priced ones add to its price,
+    # so an agent whose executions are all unpriced is listed at zero.
     agent_prices: dict[str, Decimal] = {}
     agent_counts: dict[str, int] = {}
+    for e in executions:
+        agent_prices.setdefault(e.agent_id, _ZERO)
+        agent_counts[e.agent_id] = agent_counts.get(e.agent_id, 0) + 1
     days = (window[1] - window[0]).days
     daily = {window[0] + timedelta(days=i): _ZERO for i in range(days)}
     for p in priced:
         agent = p.execution.agent_id
-        agent_prices[agent] = _CTX.add(agent_prices.get(agent, _ZERO), p.price)
-        agent_counts[agent] = agent_counts.get(agent, 0) + 1
+        agent_prices[agent] = _CTX.add(agent_prices[agent], p.price)
         day = p.execution.first_at.astimezone(KL).date()
         if day not in daily:
             raise RuntimeError(f"execution {p.execution.trace_id} lies outside the billed window")

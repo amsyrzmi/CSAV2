@@ -153,7 +153,8 @@ def _assert_sums_exact(usage: CycleUsage) -> None:
     assert sum((p.price for p in usage.priced), Decimal(0)) == charge
     assert sum((a.price for a in usage.by_agent), Decimal(0)) == charge
     assert sum((d.price for d in usage.daily), Decimal(0)) == charge
-    assert sum(a.executions for a in usage.by_agent) == len(usage.priced)
+    # by_agent counts every execution of the window, priced or not (Task 9 ruling).
+    assert sum(a.executions for a in usage.by_agent) == len(usage.executions)
 
 
 def _near(value: Decimal, expected: str) -> bool:
@@ -364,7 +365,7 @@ async def test_unpriced_calls_leave_the_cycle_pending_and_are_never_priced_at_ze
 ) -> None:
     client = _company(migrated_dsn)
     _plan(migrated_dsn, client, "pilot", "individual", date(2026, 8, 5))
-    pending = uuid.uuid4()
+    pending, hr_only = uuid.uuid4(), uuid.uuid4()
     _ledger(
         migrated_dsn,
         client,
@@ -373,13 +374,18 @@ async def test_unpriced_calls_leave_the_cycle_pending_and_are_never_priced_at_ze
             _row(_kl(2026, 8, 11), prompt=1_000_000),
             _row(_kl(2026, 8, 12), pending, prompt=1_000_000),
             _row(_kl(2026, 8, 12, 13), pending, model=UNPRICED),
+            _row(_kl(2026, 8, 13), hr_only, job="hr_assistant", model=UNPRICED),
         ],
     )
     usage = await _usage(app_dsn, client, AUG, _kl(2026, 8, 20))
     assert usage.status == "pending_prices"
-    assert usage.unpriced_executions == 1
+    assert usage.unpriced_executions == 2
     by_trace = {e.trace_id: e for e in usage.executions}
-    assert len(by_trace) == 3
+    assert len(by_trace) == 4
+    # by_agent counts unpriced executions too; an agent with only unpriced ones shows at zero.
+    agents = {a.agent_id: (a.executions, a.price) for a in usage.by_agent}
+    assert agents == {"support": (3, Decimal("14.29")), "hr": (1, Decimal(0))}
+    assert [a.agent_id for a in usage.by_agent] == ["support", "hr"]
     assert by_trace[pending].raw_rm is None
     assert by_trace[pending].unpriced_calls == 1
     assert by_trace[pending].prompt_tokens == 1_001_000
