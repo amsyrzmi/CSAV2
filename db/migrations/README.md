@@ -44,7 +44,11 @@ Reserved ranges (client growth program, 2026-10-27):
   the global, append-only billing tables `ai_model_prices`, `billing_fx_rates`, `billing_stage_fees`
   and `billing_markup_tiers` (effective-dated; a trigger refuses UPDATE and DELETE even for the
   owner, `csa_app` has select and insert only) and seeds the fees, markup tiers, the two default
-  models' prices and the USD to MYR rate.
+  models' prices and the USD to MYR rate. 0572 adds `client_billing_plans`, each company's
+  append-only plan history (stage and bundle from a Kuala Lumpur date; tenant isolated, `csa_app`
+  select and insert only, `csa_ro` select, a trigger refuses UPDATE and DELETE even for the
+  owner; inserted by platform admins through `csa.billing.plans.insert_plan`, which enforces the
+  plan rules and audits each row in `console_audit`).
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
