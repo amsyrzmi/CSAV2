@@ -144,7 +144,8 @@ These settle what the builder check found and supersede any earlier sentence the
   so a plan with pending sign-ups cannot be archived or have its interval changed, the customer lists, the bot's
   `status` read). Staff can cancel a pending subscription. An unpaid pending subscription expires to `cancelled`
   after 14 days (a company setting, default 14, `0` = never) with an event row. PR 2's `mine` read includes `pending`
-  and says "waiting for payment" (the PR 2 design is amended).
+  and says "waiting for payment" (the PR 2 design is amended). *Settled in the final review:* nothing can be paid
+  until payments P1, so both facts say the plan is waiting to be started by the team and nothing has been charged.
 - **What a link moves.** Nothing is re-pointed except subscriptions, bookings and invoices of the losing contact;
   conversations, orders, tickets and the rest stay on the old contact row, which gets `merged_into` so the console's
   customer card and inbox follow it to the survivor. The survivor is the contact that already holds a subscription,
@@ -207,11 +208,16 @@ says what it costs if it was the wrong call.
    pause or cancel request notifies staff elsewhere, mirror it as a follow-up.
 8. **The "Link contacts" anchor is the subscription drawer plus a "Needs review" section in the Sign-ups
    tab**, because the Customers view lists subscriptions, not contacts, and a contact with no subscription
-   never appears there.
+   never appears there. The final review added "Recent links" to the Sign-ups tab (every link of the
+   company, newest first, with Unlink), so a link between contacts with no subscription can be seen and
+   undone. A company without the Subscriptions package still has no console path to its links (open owner
+   decision: should automatic linking run only for companies with that package?).
 9. **A typed sign-up phone is never copied to `contacts.phone`.** Found by the Task 2 review: the copy plus
    trusting staff-entered phones would let a typed number link its owner's contact to the typer. The typed
    number lives on `signup_requests.phone` and is marked unverified unless the contact's own phone is
-   verified. *If wrong:* staff retype the number onto the contact when they want it there.
+   verified. No route lets staff edit `contacts.phone` (and nothing calls `verify_phone` with source
+   `staff`), so when the typer already has another contact, staff link the two contacts by hand. *If
+   wrong:* a typed number never reaches the contact record; staff link the contacts instead.
 10. **Corrections from the survey.** `renews_at > started_at` is a `WHERE` in `subscription_insert.sql`, not a
     table check; the portal "twin" is the same `SubscriptionsWorkspace`; PR 2's `mine` read already handled
     `pending`; no subscription settings table existed; golden cases cannot send a callback tap or a contact
@@ -261,7 +267,10 @@ says what it costs if it was the wrong call.
   stored redacted, so a typed number cannot be recovered on the "yes" turn. The bot keeps a one-hour per-chat
   draft (action `signup_draft`, no migration), updated in place (one row per chat) and with its payload
   blanked when it is closed or expires. The server requires the read-back to match plan, name and phone.
-  *If wrong:* typed name and phone sit in `pending_actions` for up to an hour.
+  The typed number is therefore not only on the sign-up request: the read-back reply that shows it is an
+  outbound message, so the typed digits are also stored in `messages.body` of the customer's own chat
+  (`redacted_body` masks them), as any reply is. *If wrong:* typed name and phone sit in
+  `pending_actions` for up to an hour, and the read-back stays in the chat history.
 - **Pending subscriptions expire.** A fifth rule in the subscriptions-due job cancels a pending subscription
   older than the company's `pending_expiry_days` (default 14, 0 never, 0 to 90) and marks the approved
   sign-up it came from `expired`; each gets a `pending_expired` event. A company with no active

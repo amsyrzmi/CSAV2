@@ -38,9 +38,9 @@
 --   rollout stops all four services for a migration anyway). The index creation fails, and the
 --   migration with it, if one company already has two live verified contacts with the same digits;
 --   none can exist before this migration because phone_verified_at is new and always NULL.
--- Rollback (as the database owner, in this order, with the services stopped): link rows moved the
---   loser's data to the survivor, so unlink every live link in the console first if any exist
---   (they cannot be undone after this).
+-- Rollback: link rows moved the loser's data to the survivor, so first, with the services still
+--   running, unlink every live link (console "Recent links" or POST .../links/{id}/unlink; they
+--   cannot be undone after this). Then stop the services and, as the database owner, in this order:
 --   REVOKE UPDATE (contact_id) ON public.agent_preparation_requests FROM csa_app;
 --   DROP TRIGGER trg_preparation_contact_tenant ON public.agent_preparation_requests; CREATE TRIGGER
 --   trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW

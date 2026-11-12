@@ -27,8 +27,9 @@
 --   status check is re-added with a full-table check of subscriptions, a small table.
 -- Rollback (as the database owner, in this order, with the services stopped; the older image's
 --   readiness check wants the highest applied version to equal its own):
---   DELETE FROM public.subscriptions WHERE status = 'pending' (or set them to 'cancelled'), then
---   drop subscriptions_status_chk and add it again as CHECK (status IN ('active', 'paused',
+--   UPDATE public.subscriptions SET status = 'cancelled', cancelled_at = now()
+--   WHERE status = 'pending' (not a DELETE: each has a signup_approved event and
+--   subscription_events_subscription_id_fkey does not cascade), then drop subscriptions_status_chk and add it again as CHECK (status IN ('active', 'paused',
 --   'cancelled')) (0480), or any list a later migration set minus 'pending';
 --   ALTER TABLE public.subscriptions DROP COLUMN activated_at;
 --   ALTER TABLE public.plans DROP COLUMN is_signup_open, DROP COLUMN signup_mode;

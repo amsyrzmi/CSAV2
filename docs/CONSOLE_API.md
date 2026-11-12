@@ -1281,8 +1281,9 @@ approves it in the same transaction as the filing. `SignupOut` is `{id, contact:
 phone, email}, plan_code, plan_name, full_name, phone, phone_verified, status, decided_via,
 decline_reason, subscription_id, created_at, decided_at, source_channel}`. `contact` is the
 contact record as it stands. `full_name` and `phone` are what the customer typed (the phone
-normalised); the typed phone stays on the request and is never copied to the contact, so staff
-set the contact's phone by hand when they want it there. `phone_verified` is true only when the
+normalised); the typed phone stays on the request and is never copied to the contact, and no
+route edits a contact's phone: when the customer already has another contact, staff link the two
+contacts by hand (`POST /links`). `phone_verified` is true only when the
 contact's phone was verified by its channel and equals the typed number. `source_channel` is the
 channel of the contact's newest identity (null when it has none). `status` is `pending`,
 `approved`, `declined` or `expired`; `decided_via` is `staff` or `auto`.
@@ -1290,9 +1291,10 @@ channel of the contact's newest identity (null when it has none). `status` is `p
 - One open request per customer and plan: a repeat returns the open one, and a live (active,
   paused or pending) subscription on the plan files nothing.
 - Approve (and the automatic approval) locks the request, refuses unless it is pending (409
-  `signup_not_pending`), refuses (409 `signup_has_plan`) a customer who already holds the plan, reads
-  the plan again (409 `plan_not_open` unless active and open for sign-ups) and creates the `pending` subscription at the plan's price and currency then, with a
-  `signup_approved` timeline event (actor the approving user, or `system:signup_auto`). Two
+  `signup_not_pending`), refuses (409 `signup_has_plan`) a customer who already holds the plan,
+  reads the plan again (409 `plan_not_open` unless active and open for sign-ups) and creates the
+  `pending` subscription at the plan's price and currency then, with a `signup_approved` timeline
+  event (actor the approving user, or `system:signup_auto`). Two
   approvals at once, or a staff approval racing an automatic one, give one subscription and one 409;
   filing and approving take a per-customer-and-plan lock first, so two filings at once never leave
   two live subscriptions.

@@ -487,8 +487,9 @@ section "Customer onboarding".
 
 **Read the Sign-ups list.** The tab badge is the number of open sign-ups ("50+" when a further page
 exists; no badge while the list is empty or could not be read). Nothing pushes a notification to staff
-for a new sign-up in this release, so someone has to open the tab. The tab has four parts, top to
-bottom: the expiry setting, "Open sign-ups", "Needs review" and "Decided sign-ups". An open row shows:
+for a new sign-up in this release, so someone has to open the tab. The tab has five parts, top to
+bottom: the expiry setting, "Open sign-ups", "Needs review", "Recent links" and "Decided sign-ups". An
+open row shows:
 
 - the name and phone number the customer typed, and the plan they asked for;
 - a mark beside the phone: "Verified" means the channel proved the number (the WhatsApp number the
@@ -510,6 +511,9 @@ asked. "Decided sign-ups" shows each result as "Approved by staff", "Approved au
 the sign-up is approved straight away and the subscription waits to start. "Closed to new sign-ups" on a
 plan stops the bot offering it; people already on it keep it. Archiving a plan is not blocked by open
 sign-ups; closing it to sign-ups is how a company stops them.
+
+**Tell the customer.** Approve, decline and expiry do not message the customer, so after approving or
+declining a sign-up, message the customer from the Inbox yourself (an automatic notice is a follow-up).
 
 **Start or cancel a pending subscription.** Until payments exist (a later project) nothing creates
 invoices for these subscriptions, so staff start them. Open Customers, choose the "Waiting to start"
@@ -536,16 +540,24 @@ WHERE client_id = '<client id>' AND action = 'pending_expired' ORDER BY created_
 **Link and unlink.** One customer who writes on WhatsApp and on Telegram is two contacts until they are
 linked. The system links two contacts by itself in one case: a phone number a channel proved belongs to
 exactly one other live contact of the company (this happens when a customer writes on WhatsApp, and when
-a customer uses Telegram's share-my-number button), whether that other contact's number was verified or typed in by
-staff. A number a customer only typed in the chat never links anything. Staff link two contacts by hand
-from a subscription's "Linked contacts" panel ("Link another contact", then "Link contacts") or from a
-review ("Link them").
+a customer uses Telegram's share-my-number button), whether that other contact's number was verified or
+already on the contact. A number a customer only typed in the chat never links anything, and no console
+page edits a contact's phone: when two contacts are the same person, staff link them by hand from a
+subscription's "Linked contacts" panel ("Link another contact", then "Link contacts") or from a review
+("Link them").
+
+- "Recent links" on the Sign-ups tab lists the company's 20 newest links, newest first, whoever the
+  contacts are (also a link between two contacts with no subscription, which no drawer shows): both
+  contacts' names and channels, how they were linked ("Matched by a verified phone number" or "Linked by
+  staff"), the date, and Unlink while the link can still be undone. Read-only members see the list without
+  Unlink.
 
 - The survivor is the contact that already holds a subscription, otherwise the older one. The other
   contact (the loser) stays in the database, hidden, and everything it owned moves to the survivor:
   conversations, orders, tickets, subscriptions, bookings, invoices, sign-up requests and the rest.
   Nothing is copied and nothing is deleted. Messages from either channel then land on the one customer.
-- Unlink is on the same panel and works for 30 days after the link, newest link first: while a newer
+- Unlink is on the same panel (and in "Recent links") and works for 30 days after the link, newest link
+  first: while a newer
   link on either contact is active the older one cannot be undone (`later_link_active`), and after 30
   days it cannot be undone at all (`unlink_window_closed`; the only fix is to link the other way). A link
   already undone is `link_not_active`, and `survivor_merged` means the survivor was linked into another
@@ -565,7 +577,8 @@ review ("Link them").
 
 **What a review means.** The Sign-ups tab, "Needs review", lists pairs of contacts the system would not
 link by itself, with one plain sentence. At most one review is open per pair. "Not the same person" closes
-it and changes nothing; "Link them" links the pair as staff and is refused with the same reasons (409
+it and changes nothing, and the same pair is not reviewed again for the same reason (a different reason
+opens a new review); "Link them" links the pair as staff and is refused with the same reasons (409
 `link_refused:<reason>`) where a link is impossible. A review whose contact has since been merged
 elsewhere answers `contact_merged`: close it.
 
@@ -574,7 +587,7 @@ elsewhere answers `contact_merged`: close it.
 | `several_matches` | More than one other live contact has the same phone number. | Look at the contacts (the sign-up list and Customers show names and numbers) and link the two that are the same person, from the panel or "Link them". Close the review if none are. The review names one pair, so check the other contacts with that number too. |
 | `telegram_conflict` | Both contacts already have their own Telegram account, so one person would own two. Neither the system nor staff can link them. | Close the review ("Not the same person"). If they are the same person, keep using the contact that holds the subscription and tell the customer to use one Telegram account; the other chat stays a separate customer. |
 | `same_channel_identity` | Both contacts already chat on the same channel with different accounts (two WhatsApp numbers, say). Staff cannot link them either. | Same as above: close the review and treat them as two customers, or ask the customer to use one account. |
-| `table_conflict` | One contact has a record that would clash with the other's if they were joined (a waiting sign-up or the same plan on both, for example). The link is refused and nothing moved. | Settle the clash first, by declining or cancelling the duplicate sign-up or subscription, then link the pair again from the panel. |
+| `table_conflict` | Both contacts have a record that may exist only once per customer: a waiting (open) sign-up for the same plan, or a staged customer request with the same key. The link is refused and nothing moved. Two subscriptions on the same plan do not clash. | Settle the clash first, usually by declining one of the two open sign-ups for that plan, then link the pair again from the panel. |
 | `previously_unlinked` | Staff unlinked this pair before and the same phone has appeared again. | Decide again: "Link them" if they really are one person (it was a mistake to unlink), otherwise "Not the same person". The system will not link them by itself. |
 
 Open reviews and links for one company:
@@ -586,14 +599,35 @@ SELECT survivor_id, loser_id, reason, created_at, unlinked_at FROM public.contac
 WHERE client_id = '<client id>' ORDER BY created_at DESC LIMIT 20;
 ```
 
-**Roll back migrations 0581 and 0580.** Needed when going back to an image older than this release: its
+**Links for a company without the Subscriptions package.** Linking runs for every company (WhatsApp and
+Telegram shares link contacts whatever the packages), but the link pages and routes are part of
+Subscriptions. A company without an active Subscriptions package has no console path to its links, and the
+routes answer 403 `package_inactive` for it, a platform admin included. Read its links with the SQL above.
+To undo one, the operator either switches the Subscriptions package on for the company, unlinks from
+"Recent links" and switches it off again (while it is on, the bot also offers that company's plans and
+sign-ups), or asks a developer to run `csa.contacts.linking.unlink_contacts` for the link on the server.
+With the package on, the routes are (add `?client_id=<client id>` as a platform admin):
+
+```
+GET  /console/v1/subscriptions/links?limit=20              every link, newest first
+GET  /console/v1/subscriptions/links?contact_id=<contact>  the links of one contact
+POST /console/v1/subscriptions/links/<link id>/unlink      undo one (writers, within 30 days)
+```
+
+Whether automatic linking should run only for companies with the Subscriptions package is an open owner
+decision.
+
+**Roll back migrations 0580 and 0581.** Needed when going back to an image older than this release: its
 readiness check wants the highest applied version to equal its own. Roll back in reverse order: 0581
 first, then 0580.
 
-**Roll back migration 0581.** Stop the services. Unlink every live link in the console first: a link
-cannot be undone once its audit table is dropped, rows a link moved stay with the survivor, and a loser
-whose link is older than 30 days (so it could not be undone) comes back as an ordinary, empty contact
-when `merged_into` is dropped. Then, as the database owner and in this order: `REVOKE UPDATE
+**Roll back migration 0581.** First, with the services still running, unlink every live link: from
+"Recent links" on the Sign-ups tab (its 20 newest), or with the routes above (`GET
+.../links?limit=200`, then `POST .../links/<link id>/unlink` for each one with `can_unlink`, newest
+first). A link cannot be undone once its
+table is dropped, rows a link moved stay with the survivor, and a loser whose link is older than 30 days
+(so it could not be undone) comes back as an ordinary, empty contact when `merged_into` is dropped. Then
+stop the services and, as the database owner and in this order: `REVOKE UPDATE
 (contact_id) ON public.agent_preparation_requests FROM csa_app;`, recreate
 `trg_preparation_contact_tenant` as `BEFORE INSERT` only (drop it, then `CREATE TRIGGER
 trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW
@@ -607,9 +641,10 @@ and every verified-phone stamp are lost), `DROP FUNCTION public.my_phone_digits(
 applied. Then start the older images.
 
 **Roll back migration 0580.** After 0581 is rolled back. Stop the services, then, as the
-database owner and in this order: `DELETE FROM public.subscriptions WHERE status = 'pending';` (or
-`UPDATE ... SET status = 'cancelled'`), `ALTER TABLE public.subscriptions DROP CONSTRAINT
-subscriptions_status_chk;` then `ALTER TABLE public.subscriptions ADD CONSTRAINT subscriptions_status_chk
+database owner and in this order: `UPDATE public.subscriptions SET status = 'cancelled', cancelled_at =
+now() WHERE status = 'pending';` (not a `DELETE`: every pending subscription has a `signup_approved`
+event and `subscription_events_subscription_id_fkey` does not cascade, so a delete fails),
+`ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_status_chk;` then `ALTER TABLE public.subscriptions ADD CONSTRAINT subscriptions_status_chk
 CHECK (status IN ('active', 'paused', 'cancelled'));`, `ALTER TABLE public.subscriptions DROP COLUMN
 activated_at;`, `ALTER TABLE public.plans DROP COLUMN is_signup_open, DROP COLUMN signup_mode;`, `DROP
 TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (every sign-up request is
