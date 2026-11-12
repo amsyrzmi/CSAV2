@@ -21,7 +21,14 @@ pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_
 
 ACTOR = "system:subscriptions_due"
 NOW = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-ZERO = {"cancelled": 0, "plan_changed": 0, "resumed": 0, "renewed": 0, "pending_skipped": 0}
+ZERO = {
+    "cancelled": 0,
+    "plan_changed": 0,
+    "resumed": 0,
+    "renewed": 0,
+    "pending_skipped": 0,
+    "pending_expired": 0,
+}
 
 
 def at(text: str) -> datetime:
@@ -589,3 +596,167 @@ async def test_scheduled_interval_change_resets_the_anchor(
         row = await fetch_subscription(conn, no_renewal)
         assert row["plan"] == "annual"
         assert row["renewal_anchor"] is None and row["renews_at"] is None
+
+
+async def add_pending(
+    conn: psycopg.AsyncConnection[Any], client: uuid.UUID, days_old: int, **fields: Any
+) -> uuid.UUID:
+    """An unpaid pending subscription approved ``days_old`` days before the job clock."""
+    return await add_subscription(
+        conn,
+        client,
+        status="pending",
+        started_at=NOW - timedelta(days=days_old),
+        renews_at=None,
+        **fields,
+    )
+
+
+async def add_signup(
+    conn: psycopg.AsyncConnection[Any], client: uuid.UUID, sub: uuid.UUID, status: str = "approved"
+) -> uuid.UUID:
+    cursor = await conn.execute(
+        "INSERT INTO contacts (client_id, full_name) VALUES (%s, 'Siti Contoh') RETURNING id",
+        (client,),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    contact = row[0]
+    cursor = await conn.execute(
+        "INSERT INTO signup_requests (client_id, contact_id, plan_code, full_name, phone, status,"
+        " subscription_id) VALUES (%s, %s, 'basic', 'Siti Contoh', '+60123456789', %s, %s)"
+        " RETURNING id",
+        (client, contact, status, sub),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    return uuid.UUID(str(row[0]))
+
+
+async def signup_status(conn: psycopg.AsyncConnection[Any], signup: uuid.UUID) -> str:
+    cursor = await conn.execute("SELECT status FROM signup_requests WHERE id=%s", (signup,))
+    row = await cursor.fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+async def set_expiry_days(conn: psycopg.AsyncConnection[Any], client: uuid.UUID, days: int) -> None:
+    await conn.execute(
+        "INSERT INTO subscription_settings(client_id, pending_expiry_days) VALUES (%s, %s)",
+        (client, days),
+    )
+
+
+async def test_pending_past_the_default_fourteen_days_expires_with_its_signup_request(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        old = await add_pending(conn, tenant, 15, version=3)
+        fresh = await add_pending(conn, tenant, 13)
+        old_signup = await add_signup(conn, tenant, old)
+        fresh_signup = await add_signup(conn, tenant, fresh)
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        gone = await fetch_subscription(conn, old)
+        assert gone["status"] == "cancelled" and gone["cancelled_at"] == NOW
+        assert gone["version"] == 4
+        events = await fetch_events(conn, old)
+        assert [(e["actor"], e["action"], e["from_status"], e["to_status"]) for e in events] == [
+            (ACTOR, "pending_expired", "pending", "cancelled")
+        ]
+        assert events[0]["proposal_id"] is None
+        assert await signup_status(conn, old_signup) == "expired"
+        kept = await fetch_subscription(conn, fresh)
+        assert kept["status"] == "pending" and kept["version"] == 1
+        assert await fetch_events(conn, fresh) == []
+        assert await signup_status(conn, fresh_signup) == "approved"
+        assert await run(app_dsn, tenant) == ZERO
+
+
+async def test_pending_expiry_setting_zero_never_expires_and_thirty_keeps_a_twenty_day_row(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        never, thirty = await seed_tenants(conn)
+        await set_expiry_days(conn, never, 0)
+        await set_expiry_days(conn, thirty, 30)
+        ancient = await add_pending(conn, never, 400)
+        twenty = await add_pending(conn, thirty, 20)
+        thirty_one = await add_pending(conn, thirty, 31)
+
+        assert await run(app_dsn, never) == ZERO
+        assert await run(app_dsn, thirty) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, ancient))["status"] == "pending"
+        assert (await fetch_subscription(conn, twenty))["status"] == "pending"
+        assert (await fetch_subscription(conn, thirty_one))["status"] == "cancelled"
+
+
+async def test_only_unpaid_pending_rows_expire_and_only_their_approved_request_changes(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        active = await add_subscription(conn, tenant, started_at=NOW - timedelta(days=200))
+        paused = await add_subscription(
+            conn, tenant, status="paused", started_at=NOW - timedelta(days=200)
+        )
+        old = await add_pending(conn, tenant, 40)
+        declined = await add_signup(conn, tenant, old, status="declined")
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, active))["status"] == "active"
+        assert (await fetch_subscription(conn, paused))["status"] == "paused"
+        assert (await fetch_subscription(conn, old))["status"] == "cancelled"
+        assert await signup_status(conn, declined) == "declined"
+
+
+async def test_pending_expiry_is_per_company_and_never_crosses_tenants(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        short, long = await seed_tenants(conn)
+        await set_expiry_days(conn, short, 7)
+        await set_expiry_days(conn, long, 60)
+        short_row = await add_pending(conn, short, 10)
+        long_row = await add_pending(conn, long, 10)
+        short_signup = await add_signup(conn, short, short_row)
+        long_signup = await add_signup(conn, long, long_row)
+
+        assert await run(app_dsn, short) == ZERO | {"pending_expired": 1}
+        assert (await fetch_subscription(conn, short_row))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, long_row))["status"] == "pending"
+        assert await signup_status(conn, short_signup) == "expired"
+        assert await signup_status(conn, long_signup) == "approved"
+
+        assert await run(app_dsn, long) == ZERO
+        assert (await fetch_subscription(conn, long_row))["status"] == "pending"
+        assert await fetch_events(conn, long_row) == []
+
+
+async def test_pending_expiry_respects_batch_size(pg_container: object, app_dsn: str) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        oldest = await add_pending(conn, tenant, 30)
+        middle = await add_pending(conn, tenant, 25)
+        newest = await add_pending(conn, tenant, 20)
+
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO | {"pending_expired": 2}
+        assert (await fetch_subscription(conn, oldest))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, middle))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, newest))["status"] == "pending"
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO | {"pending_expired": 1}
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO

@@ -15,7 +15,14 @@ from csa.jobs.clock import Clock
 # suspended package changes nothing.
 PACKAGE_KEYS = ["subscriptions"]
 PACKAGE_STATUSES = ["active"]
-NOTHING_DUE = {"cancelled": 0, "plan_changed": 0, "resumed": 0, "renewed": 0, "pending_skipped": 0}
+NOTHING_DUE = {
+    "cancelled": 0,
+    "plan_changed": 0,
+    "resumed": 0,
+    "renewed": 0,
+    "pending_skipped": 0,
+    "pending_expired": 0,
+}
 
 
 async def run_subscriptions_due(
@@ -27,9 +34,12 @@ async def run_subscriptions_due(
 ) -> dict[str, Any]:
     """Apply the due subscription changes of one tenant; nothing is charged.
 
-    Four rules run in order, each as one SQL statement claiming up to ``batch_size`` rows with
+    Five rules run in order, each as one SQL statement claiming up to ``batch_size`` rows with
     ``FOR UPDATE SKIP LOCKED``: period-end cancellations first (so a cancelling subscription is
-    never renewed in the same pass), then scheduled plan changes, resume dates and renewals.
+    never renewed in the same pass), then scheduled plan changes,
+    resume dates and renewals, and last the expiry of unpaid ``pending`` subscriptions older than
+    the company's ``pending_expiry_days`` (14 by default, 0 means never), which cancels them and
+    marks their sign-up request ``expired``.
     The rules run once per call, so a row advances by at most one renewal interval per run.
     A tenant without an active ``subscriptions`` package gets zero counts and no changes.
     """
@@ -45,12 +55,14 @@ async def run_subscriptions_due(
     plan = await _one("jobs/subscriptions_due_plan.sql", params, conn)
     resumed = await _one("jobs/subscriptions_due_resume.sql", params, conn)
     renewed = await _one("jobs/subscriptions_due_renew.sql", params, conn)
+    expired = await _one("jobs/subscriptions_due_expire_pending.sql", params, conn)
     return {
         "cancelled": cancelled["cancelled"],
         "plan_changed": plan["plan_changed"],
         "resumed": resumed["resumed"],
         "renewed": renewed["renewed"],
         "pending_skipped": plan["pending_skipped"],
+        "pending_expired": expired["pending_expired"],
     }
 
 
