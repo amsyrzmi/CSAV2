@@ -56,10 +56,25 @@ requires_docker = pytest.mark.skipif(
 
 @pytest.fixture(scope="session")
 def combined_pg_image() -> str:
-    """Build (once) the combined PostGIS+pgvector image and return its tag."""
+    """Return the tag of the combined PostGIS+pgvector image (built or pinned, once).
+
+    When ``CSA_DB_IMAGE`` is set (CI, pinned by digest) that exact image is used and tagged
+    ``_IMAGE_TAG``, so the extension versions cannot drift. Building ``deploy/db.Dockerfile`` fresh
+    installs the newest PGDG PostGIS, which can need a newer Postgres than the base image has
+    (postgis 3.7.0 on 16.15 fails with ``undefined symbol: heap_datum_check``).
+    """
     import docker
 
     client = docker.from_env()
+    pinned = os.environ.get("CSA_DB_IMAGE")
+    if pinned:
+        try:
+            image = client.images.get(pinned)
+        except docker.errors.ImageNotFound:
+            image = client.images.pull(pinned)
+        repository, tag = _IMAGE_TAG.rsplit(":", 1)
+        image.tag(repository, tag)
+        return _IMAGE_TAG
     client.images.build(
         # The image needs no application files. Never send environment files,
         # copied checkouts or archives in Docker's build context.
