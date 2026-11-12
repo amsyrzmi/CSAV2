@@ -40,7 +40,11 @@ Reserved ranges (client growth program, 2026-10-27):
 - `0560`–`0569`: customer bot answers. 0560 adds `escalations.note` (staff context note, at most 500
   characters) and the `escalations_conversation_created` index.
 - `0570`–`0579`: credit monitoring. 0570 adds `ai_usage_events`, the ledger of model calls
-  (tenant isolated, `csa_app` insert and select, `csa_ro` select, never updated or purged).
+  (tenant isolated, `csa_app` insert and select, `csa_ro` select, never updated or purged). 0571 adds
+  the global, append-only billing tables `ai_model_prices`, `billing_fx_rates`, `billing_stage_fees`
+  and `billing_markup_tiers` (effective-dated; a trigger refuses UPDATE and DELETE even for the
+  owner, `csa_app` has select and insert only) and seeds the fees, markup tiers, the two default
+  models' prices and the USD to MYR rate.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
