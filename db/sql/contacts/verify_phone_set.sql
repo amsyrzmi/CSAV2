@@ -11,4 +11,4 @@ UPDATE public.contacts
    AND id = %(contact_id)s
    AND merged_into IS NULL
    AND (phone_verified_at IS NULL OR phone_digits = public.my_phone_digits(%(phone)s))
-RETURNING id;
+RETURNING id, phone, phone_verified_at, telegram_id;

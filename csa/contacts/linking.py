@@ -7,7 +7,9 @@ primary key of every moved row per table plus both contacts' prior columns, whic
 unlink (within 30 days) puts back. Rows written after the link stay with the survivor.
 
 Every function runs inside the caller's :func:`csa.core.tenancy.tx`. Lock order, everywhere: the
-phone being verified, then the contacts' advisory locks in sorted id order, then their rows.
+phone being verified, then the contacts' advisory locks in sorted id order, then their rows. A
+caller that both verifies a phone and writes a row for the contact (WhatsApp and Telegram
+ingress) calls :func:`verify_phone` first and :func:`live_contact` after it, never the reverse.
 
 Only a channel that proved the number may verify a phone (``source``): a WhatsApp inbound, a
 Telegram share of the sender's own number, or a phone staff entered. A number the customer typed
@@ -71,6 +73,9 @@ _UNIQUES: dict[str, tuple[_Unique, ...]] = {
 }
 
 
+# The columns a link changes on a contact and an unlink puts back.
+_CONTACT_COLUMNS = ("phone", "phone_verified_at", "telegram_id")
+
 # merged_into chains are short (a survivor later linked as a loser); this only bounds a cycle.
 _MAX_HOPS = 8
 
@@ -108,6 +113,10 @@ async def verify_phone(
     holds it. Several, or a refused link: one open review for the pair and nothing else changes.
     A contact that already holds a different verified phone keeps it (``already``); a phone that
     does not normalise writes nothing (``invalid``).
+
+    Takes the phone's lock, then the contact's and the other holders' in sorted id order. A
+    caller that also writes a row for the contact calls this before :func:`live_contact`, never
+    after: a contact lock held before a phone lock reverses the order and can deadlock.
     """
     del source  # Which channel proved it does not change what happens; the type is the gate.
     normalised = normalise_my_phone(phone)
@@ -115,11 +124,12 @@ async def verify_phone(
         return VerifyResult("invalid", contact_id)
     digits = normalised.removeprefix("+")
     await _lock(conn, f"phone:{client_id}:{digits}")
-    rows = await db.q.fetch_all(
-        "contacts/phone_holders.sql",
-        {"client_id": client_id, "contact_id": contact_id, "digits": digits},
-        conn=conn,
-    )
+    params = {"client_id": client_id, "contact_id": contact_id, "digits": digits}
+    rows = await db.q.fetch_all("contacts/phone_holders.sql", params, conn=conn)
+    # The contact and the holders read without a lock, locked in sorted id order, read again.
+    for held in sorted({contact_id, *(r["id"] for r in rows)}):
+        await _lock(conn, f"contact:{held}")
+    rows = await db.q.fetch_all("contacts/phone_holders.sql", params, conn=conn)
     me = next((r for r in rows if r["is_self"]), None)
     if me is None:
         raise HTTPException(404, "contact_not_found")
@@ -129,10 +139,8 @@ async def verify_phone(
         return VerifyResult("already", contact_id)
     others = [r["id"] for r in rows if not r["is_self"]]
     if not others:
-        return VerifyResult(
-            "set" if await _stamp(conn, client_id, contact_id, normalised) else "already",
-            contact_id,
-        )
+        stamped = await _stamp(conn, client_id, contact_id, normalised)
+        return VerifyResult("set" if stamped is not None else "already", contact_id)
     if len(others) > 1:
         await _review(conn, client_id, contact_id, others[0], "several_matches")
         return VerifyResult("review", contact_id)
@@ -142,7 +150,13 @@ async def verify_phone(
     if out.refused is not None:
         await _review(conn, client_id, contact_id, others[0], out.refused)
         return VerifyResult("review", contact_id)
-    await _stamp(conn, client_id, out.survivor_id, normalised)
+    stamped = await _stamp(conn, client_id, out.survivor_id, normalised)
+    if stamped is not None:
+        await db.q.execute(
+            "contacts/link_linked_survivor.sql",
+            {"client_id": client_id, "link_id": out.link_id, "columns": Jsonb(_recorded(stamped))},
+            conn=conn,
+        )
     return VerifyResult("linked", out.survivor_id)
 
 
@@ -179,31 +193,30 @@ async def link_contacts(
     takes_phone = not (survivor["phone"] or "").strip()
     # The loser leaves the live set (the verified-phone index ignores merged rows) and gives up
     # its Telegram account (unique per company) before the survivor takes either.
-    await _set_contact(
-        conn,
-        client_id,
-        loser["id"],
-        {**prior["loser"], "telegram_id": None if takes_telegram else loser["telegram_id"]},
-        merged_into=survivor["id"],
-    )
-    await _set_contact(
-        conn,
-        client_id,
-        survivor["id"],
-        {
+    linked = {
+        "loser": {
+            **prior["loser"],
+            "telegram_id": None if takes_telegram else loser["telegram_id"],
+        },
+        "survivor": {
             "phone": loser["phone"] if takes_phone else survivor["phone"],
             "phone_verified_at": (
                 loser["phone_verified_at"] if takes_phone else survivor["phone_verified_at"]
             ),
             "telegram_id": loser["telegram_id"] if takes_telegram else survivor["telegram_id"],
         },
-        merged_into=None,
-    )
+    }
+    await _set_contact(conn, client_id, loser["id"], linked["loser"], merged_into=survivor["id"])
+    await _set_contact(conn, client_id, survivor["id"], linked["survivor"], merged_into=None)
     moved: dict[str, Any] = {
         table: await _move(conn, table, client_id, loser["id"], survivor["id"])
         for table in LINKED_TABLES
     }
-    moved["contacts"] = {k: {**v, "phone_verified_at": _iso(v)} for k, v in prior.items()}
+    # Each contact's columns before the link, and as the link left them (an unlink compares).
+    moved["contacts"] = {
+        **{k: _recorded(v) for k, v in prior.items()},
+        "linked": {k: _recorded(v) for k, v in linked.items()},
+    }
     link = await db.q.fetch_one(
         "contacts/link_insert.sql",
         {
@@ -233,9 +246,14 @@ async def link_contacts(
 async def unlink_contacts(conn: Conn, client_id: UUID, link_id: UUID, actor_user_id: UUID) -> None:
     """Undo a link: every moved row, both identities and both contacts' columns go back.
 
+    A contact's phone (with its stamp) or telegram_id goes back only while it still holds what
+    the link left there; a value changed since stays, and a value another contact has taken
+    since is left out rather than raise on a unique index.
+
     404 ``link_not_found``; 409 ``link_not_active`` when already undone,
     ``unlink_window_closed`` 30 days after the link, ``survivor_merged`` when the survivor was
-    since linked into another.
+    since linked into another, ``later_link_active`` while a later link on either contact is
+    active (links are undone newest first).
     """
     link = await db.q.fetch_one(
         "contacts/link_get.sql", {"client_id": client_id, "link_id": link_id}, conn=conn
@@ -247,13 +265,22 @@ async def unlink_contacts(conn: Conn, client_id: UUID, link_id: UUID, actor_user
     if link["window_closed"]:
         raise HTTPException(409, "unlink_window_closed")
     survivor_id, loser_id = link["survivor_id"], link["loser_id"]
+    recorded = link["moved"]["contacts"]
+    # The verified phones this may give back are locked first, as verify_phone does.
+    phones = {_phone_key(client_id, recorded[role]) for role in ("survivor", "loser")}
+    for key in sorted(k for k in phones if k is not None):
+        await _lock(conn, key)
     pair = {row["id"]: row for row in await _lock_pair(conn, client_id, survivor_id, loser_id)}
     if pair[survivor_id]["merged_into"] is not None:
         raise HTTPException(409, "survivor_merged")
-    prior = link["moved"]["contacts"]
+    later = await db.q.fetch_one(
+        "contacts/link_later_active.sql", {"client_id": client_id, "link_id": link_id}, conn=conn
+    )
+    if later is not None and later["later_active"]:
+        raise HTTPException(409, "later_link_active")
     # The reverse of the link: the survivor gives back first, then the loser is live again.
-    await _set_contact(conn, client_id, survivor_id, prior["survivor"], merged_into=None)
-    await _set_contact(conn, client_id, loser_id, prior["loser"], merged_into=None)
+    for role, contact_id in (("survivor", survivor_id), ("loser", loser_id)):
+        await _restore(conn, client_id, contact_id, recorded[role], recorded["linked"][role])
     for table in LINKED_TABLES:
         await _move(
             conn, table, client_id, survivor_id, loser_id, only=link["moved"].get(table, [])
@@ -269,20 +296,30 @@ async def live_contact(conn: Conn, client_id: UUID, contact_id: UUID) -> UUID:
     """Lock the contact as a link does and return the live contact its rows belong to now.
 
     A writer that resolved a contact earlier (an inbound message) calls this before writing a row
-    for it, so a link running at the same time cannot leave that row on a merged shell.
+    for it, so a link running at the same time cannot leave that row on a merged shell. Each step
+    reads ``merged_into`` without a lock, locks the contact and its target in sorted id order (as
+    a link and an unlink do), reads again and follows the chain. A caller that also verifies a
+    phone calls :func:`verify_phone` first: a phone lock taken after this one can deadlock.
     """
     current = contact_id
     for _ in range(_MAX_HOPS):
-        await _lock(conn, f"contact:{current}")
-        row = await db.q.fetch_one(
-            "contacts/contact_live.sql", {"client_id": client_id, "contact_id": current}, conn=conn
-        )
-        if row is None:
-            raise HTTPException(404, "contact_not_found")
-        if row["merged_into"] is None:
+        seen = await _merged_into(conn, client_id, current)
+        for held in sorted({current} if seen is None else {current, seen}):
+            await _lock(conn, f"contact:{held}")
+        now = await _merged_into(conn, client_id, current)
+        if now is None:
             return current
-        current = row["merged_into"]
+        current = now
     raise RuntimeError(f"contact {contact_id} has a merged_into cycle")
+
+
+async def _merged_into(conn: Conn, client_id: UUID, contact_id: UUID) -> UUID | None:
+    row = await db.q.fetch_one(
+        "contacts/contact_live.sql", {"client_id": client_id, "contact_id": contact_id}, conn=conn
+    )
+    if row is None:
+        raise HTTPException(404, "contact_not_found")
+    return row["merged_into"]
 
 
 async def _lock(conn: Conn, key: str) -> None:
@@ -368,13 +405,35 @@ async def _set_contact(
     )
 
 
-async def _stamp(conn: Conn, client_id: UUID, contact_id: UUID, phone: str) -> bool:
-    row = await db.q.fetch_one(
+async def _restore(
+    conn: Conn,
+    client_id: UUID,
+    contact_id: UUID,
+    prior: dict[str, Any],
+    linked: dict[str, Any],
+) -> None:
+    """Put back a contact's prior columns where they still hold what the link left there."""
+    await db.q.execute(
+        "contacts/contact_restore.sql",
+        {
+            "client_id": client_id,
+            "id": contact_id,
+            **{k: prior[k] for k in _CONTACT_COLUMNS},
+            **{f"linked_{k}": linked[k] for k in _CONTACT_COLUMNS},
+        },
+        conn=conn,
+    )
+
+
+async def _stamp(
+    conn: Conn, client_id: UUID, contact_id: UUID, phone: str
+) -> dict[str, Any] | None:
+    """Stamp the verified phone; the contact's columns after it, or None when left alone."""
+    return await db.q.fetch_one(
         "contacts/verify_phone_set.sql",
         {"client_id": client_id, "contact_id": contact_id, "phone": phone},
         conn=conn,
     )
-    return row is not None
 
 
 async def _review(conn: Conn, client_id: UUID, a: UUID, b: UUID, reason: str) -> None:
@@ -386,7 +445,20 @@ async def _review(conn: Conn, client_id: UUID, a: UUID, b: UUID, reason: str) ->
 
 
 def _columns(row: dict[str, Any]) -> dict[str, Any]:
-    return {k: row[k] for k in ("phone", "phone_verified_at", "telegram_id")}
+    return {k: row[k] for k in _CONTACT_COLUMNS}
+
+
+def _recorded(columns: dict[str, Any]) -> dict[str, Any]:
+    """The contact columns as contact_links.moved stores them (the stamp as ISO text)."""
+    return {**_columns(columns), "phone_verified_at": _iso(columns)}
+
+
+def _phone_key(client_id: UUID, columns: dict[str, Any]) -> str | None:
+    """The verify_phone lock key of a recorded phone that was verified, else None."""
+    if columns["phone_verified_at"] is None or not columns["phone"]:
+        return None
+    normalised = normalise_my_phone(columns["phone"])
+    return None if normalised is None else f"phone:{client_id}:{normalised.removeprefix('+')}"
 
 
 def _iso(columns: dict[str, Any]) -> str | None:

@@ -280,6 +280,31 @@ async def verify(shop: Shop, contact_id: UUID, phone: str, *, client: UUID | Non
         return await verify_phone(conn, cid, contact_id, phone, source="whatsapp")
 
 
+LOCK = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+
+
+async def until_waiting(shop: Shop) -> bool:
+    """Whether some transaction comes to wait for an advisory lock within about three seconds."""
+    for _ in range(30):
+        [row] = rows(
+            shop, "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+        )
+        if row["n"]:
+            return True
+        await asyncio.sleep(0.1)
+    return False
+
+
+def set_columns(shop: Shop, contact_id: UUID, **cols: Any) -> None:
+    """A later change to a contact (staff or ingress), written as the owner."""
+    names = ", ".join(f"{k} = %s" for k in cols)
+    with _owner(shop.owner_dsn) as conn:
+        conn.execute(
+            f"UPDATE contacts SET {names} WHERE id = %s",  # type: ignore[arg-type]
+            (*cols.values(), contact_id),
+        )
+
+
 def open_reviews(shop: Shop) -> list[dict[str, Any]]:
     return rows(
         shop,
@@ -368,7 +393,8 @@ async def test_link_repoints_every_linked_table_and_records_the_ids(shop: Shop) 
     assert audit["reason"] == "staff" and audit["created_by"] == shop.user
     for table in LINKED_TABLES:
         assert audit["moved"][table] == moved[table], table
-    assert set(audit["moved"]["contacts"]) == {"survivor", "loser"}
+    assert set(audit["moved"]["contacts"]) == {"survivor", "loser", "linked"}
+    assert set(audit["moved"]["contacts"]["linked"]) == {"survivor", "loser"}
     assert contact_row(shop, loser)["merged_into"] == survivor
 
 
@@ -552,6 +578,116 @@ async def test_unlink_of_another_companys_link_is_not_found(shop: Shop) -> None:
     assert err.value.status_code == 404 and err.value.detail == "link_not_found"
 
 
+async def test_stacked_links_unlink_newest_first_only(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    first_loser = contact(
+        shop,
+        days_old=10,
+        phone="+60123456789",
+        phone_verified_at="2026-11-01T00:00:00Z",
+        telegram_id=777010,
+    )
+    second_loser = contact(shop, days_old=1)
+    first = await link(shop, survivor, first_loser)
+    second = await link(shop, survivor, second_loser)
+    assert first.survivor_id == second.survivor_id == survivor
+    assert contact_row(shop, survivor)["phone"] == "+60123456789"
+
+    # The older link cannot be undone while a later one on the same survivor is active.
+    with pytest.raises(HTTPException) as err:
+        await unlink(shop, first.link_id)
+    assert err.value.status_code == 409 and err.value.detail == "later_link_active"
+    assert contact_row(shop, first_loser)["merged_into"] == survivor
+
+    await unlink(shop, second.link_id)
+    await unlink(shop, first.link_id)
+
+    assert contact_row(shop, second_loser)["merged_into"] is None
+    back = contact_row(shop, first_loser)
+    assert back["merged_into"] is None and back["telegram_id"] == 777010
+    assert back["phone"] == "+60123456789" and back["phone_verified_at"] is not None
+    s = contact_row(shop, survivor)
+    assert s["phone"] is None and s["phone_verified_at"] is None and s["telegram_id"] is None
+
+
+async def test_unlink_keeps_a_phone_set_on_the_survivor_after_the_link(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    loser = contact(
+        shop, days_old=1, phone="+60123456789", phone_verified_at="2026-11-01T00:00:00Z"
+    )
+    out = await link(shop, survivor, loser)
+    set_columns(shop, survivor, phone="+60 19 888 7777", phone_verified_at="2026-11-05T00:00:00Z")
+    newer = contact_row(shop, survivor)
+
+    await unlink(shop, out.link_id)
+
+    s = contact_row(shop, survivor)
+    assert (s["phone"], s["phone_verified_at"]) == (newer["phone"], newer["phone_verified_at"])
+    back = contact_row(shop, loser)
+    assert back["merged_into"] is None and back["phone"] == "+60123456789"
+    assert back["phone_verified_at"] is not None
+
+
+async def test_unlink_keeps_a_telegram_id_set_on_the_survivor_after_the_link(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    loser = contact(shop, days_old=1, telegram_id=777020)
+    out = await link(shop, survivor, loser)
+    set_columns(shop, survivor, telegram_id=777021)
+
+    await unlink(shop, out.link_id)
+
+    assert contact_row(shop, survivor)["telegram_id"] == 777021
+    back = contact_row(shop, loser)
+    assert back["telegram_id"] == 777020 and back["merged_into"] is None
+
+
+async def test_unlink_leaves_out_a_value_another_contact_took_since(shop: Shop) -> None:
+    survivor = contact(shop, days_old=30)
+    loser = contact(
+        shop,
+        days_old=10,
+        phone="+60123456789",
+        phone_verified_at="2026-11-01T00:00:00Z",
+        telegram_id=777030,
+    )
+    out = await link(shop, survivor, loser)
+    # After the link the survivor changes both, and a third contact proves the same number and
+    # takes the Telegram account the loser had.
+    set_columns(shop, survivor, phone="+60 19 888 7777", phone_verified_at=None, telegram_id=777031)
+    other = contact(
+        shop,
+        days_old=1,
+        phone="0123456789",
+        phone_verified_at="2026-11-06T00:00:00Z",
+        telegram_id=777030,
+    )
+
+    await unlink(shop, out.link_id)
+
+    back = contact_row(shop, loser)
+    assert back["merged_into"] is None and back["phone"] == "+60123456789"
+    assert back["phone_verified_at"] is None and back["telegram_id"] is None
+    o = contact_row(shop, other)
+    assert o["phone_verified_at"] is not None and o["telegram_id"] == 777030
+    s = contact_row(shop, survivor)
+    assert s["phone"] == "+60 19 888 7777" and s["telegram_id"] == 777031
+    assert owned(shop, survivor)["contact_identities"] == []
+
+
+async def test_unlink_of_a_verified_phone_link_takes_back_the_stamp(shop: Shop) -> None:
+    staff_entered = contact(shop, days_old=30, phone="012-345 6789")
+    newcomer = contact(shop, days_old=0)
+    assert (await verify(shop, newcomer, "60123456789")).outcome == "linked"
+    assert contact_row(shop, staff_entered)["phone_verified_at"] is not None
+    [made] = rows(shop, "SELECT id FROM contact_links WHERE client_id = %s", shop.client)
+
+    await unlink(shop, made["id"])
+
+    s = contact_row(shop, staff_entered)
+    assert s["phone"] == "012-345 6789" and s["phone_verified_at"] is None
+    assert contact_row(shop, newcomer)["merged_into"] is None
+
+
 # ------------------------------------------------------------------------------------------------
 # verify_phone
 
@@ -702,3 +838,53 @@ async def test_a_link_racing_a_new_conversation_leaves_nothing_on_the_loser(
     assert target == (survivor if first == "link" else loser)
     assert owned(shop, loser)["conversations"] == []
     assert len(owned(shop, survivor)["conversations"]) == 1
+
+
+async def test_live_contact_holds_no_lock_while_it_waits_for_the_lower_one(shop: Shop) -> None:
+    low, high = sorted((uuid.uuid4(), uuid.uuid4()))
+    survivor, loser = contact(shop, days_old=30, id=low), contact(shop, days_old=1, id=high)
+    await link(shop, survivor, loser)
+    holding, probe = asyncio.Event(), {}
+
+    async def unlink_side() -> None:
+        # An unlink of (survivor, loser) takes the survivor's lock, then the loser's.
+        async with tx(shop.pool, str(shop.client)) as conn:
+            await conn.execute(LOCK, (f"contact:{low}",))
+            holding.set()
+            probe["waited"] = await until_waiting(shop)
+            cur = await conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS ok",
+                (f"contact:{high}",),
+            )
+            row = await cur.fetchone()
+            probe["loser_free"] = row is not None and row["ok"]
+
+    async def message_side() -> UUID:
+        await holding.wait()
+        async with tx(shop.pool, str(shop.client)) as conn:
+            return await live_contact(conn, shop.client, loser)
+
+    _, target = await asyncio.gather(unlink_side(), message_side())
+
+    assert probe == {"waited": True, "loser_free": True}
+    assert target == survivor
+
+
+async def test_verify_phone_takes_the_contacts_lock_after_the_phones(shop: Shop) -> None:
+    me = contact(shop, days_old=1)
+    holding, seen = asyncio.Event(), {}
+
+    async def holder() -> None:
+        async with tx(shop.pool, str(shop.client)) as conn:
+            await conn.execute(LOCK, (f"contact:{me}",))
+            holding.set()
+            seen["waited"] = await until_waiting(shop)
+
+    async def verifier() -> Any:
+        await holding.wait()
+        return await verify(shop, me, "0123456789")
+
+    _, out = await asyncio.gather(holder(), verifier())
+
+    assert seen["waited"] and out.outcome == "set"
+    assert contact_row(shop, me)["phone_verified_at"] is not None
