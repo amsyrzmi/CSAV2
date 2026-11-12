@@ -323,6 +323,18 @@ test("link, unlink and review calls use the Task 5 routes with the right bodies"
   assert.equal(requests[0][1].headers.has("X-CSRF-Token"), false);
 });
 
+test("recent links are every link of the company, newest first, without a contact", async () => {
+  const [, requests] = await capture(async () => {
+    await subs.listRecentLinks(null);
+    await subs.listRecentLinks("t1", 5);
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", `/console/v1/subscriptions/links?limit=${subs.RECENT_LINKS_LIMIT}`],
+    ["GET", "/console/v1/subscriptions/links?client_id=t1&limit=5"],
+  ]);
+  assert.equal(subs.RECENT_LINKS_LIMIT, 20);
+});
+
 test("link refusals are explained in plain words and keep their code", async () => {
   const codes = [
     "link_refused:telegram_conflict", "link_refused:same_channel_identity", "link_refused:table_conflict",

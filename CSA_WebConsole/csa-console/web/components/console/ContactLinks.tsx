@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/lib/api";
 import {
   channelsText,
@@ -16,6 +16,7 @@ import {
   formatDay,
   linkContacts,
   listLinks,
+  listRecentLinks,
   listReviews,
   resolveReview,
   searchCustomers,
@@ -49,26 +50,24 @@ function Who({ contact, mark }: { contact: LinkedContact; mark?: string }) {
 }
 
 /**
- * The contacts linked to one customer, with Unlink while the server allows it, and a way for staff
- * to link another contact. Read-only members see the list and none of the controls.
+ * One list of links read with `read` (a stable callback: a new one, or a new `outer` revision, reads
+ * again), and Unlink on any of them: what both link lists share. `onUnlinked` runs after an unlink.
  */
-export function LinkedContacts({ tenantId, contactId, writer, timeZone, onChanged }: {
-  tenantId: string | null; contactId: string; writer: boolean; timeZone: string | undefined;
-  onChanged: () => void;
-}) {
+function useLinks(
+  read: () => Promise<LinkOut[]>, tenantId: string | null, onUnlinked: () => void, outer = 0,
+) {
   const [links, setLinks] = useState<LinkOut[] | null>(null);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  const [picking, setPicking] = useState(false);
   useEffect(() => {
     let live = true;
-    listLinks(tenantId, contactId)
+    read()
       .then((rows) => { if (live) { setLinks(rows); setError(""); } })
       .catch((cause) => { if (live) setError(message(cause)); });
     return () => { live = false; };
-  }, [tenantId, contactId, revision]);
+  }, [read, revision, outer]);
   const reread = () => setRevision((value) => value + 1);
   async function unlink(link: LinkOut) {
     setBusy(link.id);
@@ -78,7 +77,7 @@ export function LinkedContacts({ tenantId, contactId, writer, timeZone, onChange
       const result = await unlinkContacts(tenantId, link.id);
       setDone(skippedSentence(result.skipped, link) ?? "Unlinked. The two contacts are separate again.");
       reread();
-      onChanged();
+      onUnlinked();
     } catch (cause) {
       setError(message(cause));
       if (cause instanceof ApiError && STALE.has(cause.code)) reread();
@@ -86,6 +85,49 @@ export function LinkedContacts({ tenantId, contactId, writer, timeZone, onChange
       setBusy(null);
     }
   }
+  return { links, error, done, setDone, busy, unlink, reread };
+}
+
+/** One link: both contacts, how and when they were linked, and Unlink while the server allows it. */
+function LinkRow({ link, contactId, writer, busy, now, timeZone, onUnlink }: {
+  link: LinkOut; contactId?: string; writer: boolean; busy: string | null; now: Date;
+  timeZone: string | undefined; onUnlink: (link: LinkOut) => void;
+}) {
+  const note = unlinkNote(link, now, timeZone);
+  const mark = (id: string) => (id === contactId ? "This customer" : undefined);
+  return (
+    <li data-testid="link-row"
+      className={`rounded-md border border-ink-200 p-3 ${link.unlinked_at ? "opacity-70" : ""}`}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Who contact={link.survivor} mark={mark(link.survivor.id)} />
+        <Who contact={link.loser} mark={mark(link.loser.id)} />
+      </div>
+      <p className="mt-2 text-xs text-ink-500" data-testid="link-meta">
+        {linkReasonText(link.reason)} · {formatDay(link.created_at, timeZone)}
+      </p>
+      {note ? <p className="mt-2 text-ink-600" data-testid="link-note">{note}</p>
+        : writer && (
+          <div className="mt-2">
+            <button type="button" className={secondary} data-testid="link-unlink"
+              disabled={busy !== null} onClick={() => onUnlink(link)}>
+              {busy === link.id ? "Unlinking…" : "Unlink"}</button>
+          </div>
+        )}
+    </li>
+  );
+}
+
+/**
+ * The contacts linked to one customer, with Unlink while the server allows it, and a way for staff
+ * to link another contact. Read-only members see the list and none of the controls.
+ */
+export function LinkedContacts({ tenantId, contactId, writer, timeZone, onChanged }: {
+  tenantId: string | null; contactId: string; writer: boolean; timeZone: string | undefined;
+  onChanged: () => void;
+}) {
+  const read = useCallback(() => listLinks(tenantId, contactId), [tenantId, contactId]);
+  const { links, error, done, setDone, busy, unlink, reread } = useLinks(read, tenantId, onChanged);
+  const [picking, setPicking] = useState(false);
   const now = new Date();
   return (
     <section aria-label="Linked contacts" data-testid="linked-contacts" className="mt-5">
@@ -100,29 +142,10 @@ export function LinkedContacts({ tenantId, contactId, writer, timeZone, onChange
         <p className="text-sm text-ink-500" data-testid="link-empty">This customer is not linked to any other contact.</p>
       ) : (
         <ul className="space-y-3 text-sm" data-testid="link-list">
-          {links.map((link) => {
-            const note = unlinkNote(link, now, timeZone);
-            return (
-              <li key={link.id} data-testid="link-row"
-                className={`rounded-md border border-ink-200 p-3 ${link.unlinked_at ? "opacity-70" : ""}`}>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Who contact={link.survivor} mark={link.survivor.id === contactId ? "This customer" : undefined} />
-                  <Who contact={link.loser} mark={link.loser.id === contactId ? "This customer" : undefined} />
-                </div>
-                <p className="mt-2 text-xs text-ink-500" data-testid="link-meta">
-                  {linkReasonText(link.reason)} · {formatDay(link.created_at, timeZone)}
-                </p>
-                {note ? <p className="mt-2 text-ink-600" data-testid="link-note">{note}</p>
-                  : writer && (
-                    <div className="mt-2">
-                      <button type="button" className={secondary} data-testid="link-unlink"
-                        disabled={busy !== null} onClick={() => void unlink(link)}>
-                        {busy === link.id ? "Unlinking…" : "Unlink"}</button>
-                    </div>
-                  )}
-              </li>
-            );
-          })}
+          {links.map((link) => (
+            <LinkRow key={link.id} link={link} contactId={contactId} writer={writer} busy={busy} now={now}
+              timeZone={timeZone} onUnlink={(row) => void unlink(row)} />
+          ))}
         </ul>
       )}
       {writer && links !== null && (picking ? (
@@ -223,6 +246,38 @@ function LinkPicker({ tenantId, contactId, links, onCancel, onLinked }: {
 
 function customerLabel(who: CustomerRef) {
   return who.full_name || who.phone || who.email || "Unnamed customer";
+}
+
+/**
+ * Every link of the company, newest first, whoever the contacts are: the place to see and undo a
+ * link made by a verified phone, also for customers without a subscription. Read-only members see
+ * the list and no Unlink.
+ */
+export function RecentLinks({ tenantId, writer, timeZone, revision, onChanged }: {
+  tenantId: string | null; writer: boolean; timeZone: string | undefined; revision: number;
+  onChanged: () => void;
+}) {
+  // `revision` changes when the tab decides a review or a sign-up: the list is read again.
+  const read = useCallback(() => listRecentLinks(tenantId), [tenantId]);
+  const { links, error, done, busy, unlink } = useLinks(read, tenantId, onChanged, revision);
+  const now = new Date();
+  return (
+    <section aria-label="Recent links" data-testid="recent-links">
+      {done && <div className="mb-3"><Notice testId="link-done">{done}</Notice></div>}
+      {error && <div className="mb-3"><Notice error>{error}</Notice></div>}
+      {links === null ? (!error && <Notice>Loading links…</Notice>) : links.length === 0 ? (
+        <Notice>No contacts have been linked yet. When one person&apos;s contacts are linked, by a verified phone
+          number or by staff, the link appears here and can be undone for 30 days.</Notice>
+      ) : (
+        <ul className="space-y-3 text-sm" data-testid="recent-link-list">
+          {links.map((link) => (
+            <LinkRow key={link.id} link={link} writer={writer} busy={busy} now={now} timeZone={timeZone}
+              onUnlink={(row) => void unlink(row)} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 }
 
 /** Pairs of contacts the system could not link by itself: staff link them or say they differ. */

@@ -348,6 +348,14 @@ export function listLinks(tenantId: string | null, contactId: string): Promise<L
   return api(subscriptionsPath(tenantId, "/links", { contact_id: contactId }));
 }
 
+/** How many links the Sign-ups tab lists; the route allows up to 200. */
+export const RECENT_LINKS_LIMIT = 20;
+
+/** Every link of the company, newest first, whoever the contacts are (the Sign-ups tab list). */
+export function listRecentLinks(tenantId: string | null, limit = RECENT_LINKS_LIMIT): Promise<LinkOut[]> {
+  return api(subscriptionsPath(tenantId, "/links", { limit: String(limit) }));
+}
+
 export function linkContacts(tenantId: string | null, body: LinkIn): Promise<LinkOut> {
   return post(subscriptionsPath(tenantId, "/links"), body);
 }

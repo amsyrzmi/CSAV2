@@ -345,8 +345,11 @@ class World:
                 )
             return 200, row
         if path == "subscriptions/links" and method == "GET":
-            who = params["contact_id"]
-            return 200, [r for r in self.links if who in (r["survivor"]["id"], r["loser"]["id"])]
+            newest = sorted(self.links, key=lambda r: r["created_at"], reverse=True)
+            who = params.get("contact_id")
+            if who is None:  # every link of the company (the Sign-ups tab's Recent links)
+                return 200, newest[: int(params.get("limit", "100"))]
+            return 200, [r for r in newest if who in (r["survivor"]["id"], r["loser"]["id"])]
         if path == "subscriptions/links" and method == "POST" and writer:
             if self.link_error:
                 return 409, {"detail": f"link_refused:{self.link_error}"}
@@ -1912,6 +1915,87 @@ async def test_a_merged_pair_tells_staff_to_dismiss_the_review(site: Site) -> No
     await with_browser(body)
 
 
+# Two contacts on no subscription at all: a link between them shows only under Recent links.
+LONE_A = "77777777-7777-4777-8777-aaaaaaaaaaaa"
+LONE_B = "77777777-7777-4777-8777-bbbbbbbbbbbb"
+
+
+def lone_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        {
+            "id": LONE_A,
+            "full_name": "Intan Lone",
+            "phone": "+60111000001",
+            "channels": ["whatsapp"],
+        },
+        {"id": LONE_B, "full_name": None, "phone": None, "channels": ["telegram"]},
+    )
+
+
+async def test_recent_links_show_every_link_and_unlink_from_the_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben, _chen = world.contacts
+        first, second = lone_pair()
+        world.links = [
+            link_row(
+                LINK_OLD,
+                linked(aisyah, ["telegram"]),
+                linked(ben, ["email"]),
+                created_at="2026-10-20T02:00:00Z",
+                can_unlink=False,
+                unlinked_at="2026-10-21T02:00:00Z",
+            ),
+            link_row(LINK_RECENT, first, second, reason="verified_phone"),
+        ]
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            panel = page.get_by_test_id("recent-links")
+            rows = panel.get_by_test_id("link-row")
+            await expect(rows).to_have_count(2, timeout=WAIT)
+            # Every link of the company, newest first, read without a contact.
+            reads = [c for c in world.calls if c["path"] == "subscriptions/links"]
+            assert reads and all(c["params"] == {"limit": "20"} for c in reads), reads
+            lone = rows.nth(0)
+            await expect(lone).to_contain_text("Intan Lone")
+            await expect(lone).to_contain_text("Unnamed customer")
+            await expect(lone.get_by_test_id("link-channels")).to_have_text(
+                ["WhatsApp", "Telegram"]
+            )
+            await expect(lone.get_by_test_id("link-meta")).to_have_text(
+                "Matched by a verified phone number · 30 Oct 2026"
+            )
+            older = rows.nth(1)
+            await expect(older).to_contain_text("Aisyah Rahman")
+            await expect(older.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(older.get_by_test_id("link-note")).to_have_text("Undone on 21 Oct 2026.")
+
+            await lone.get_by_test_id("link-unlink").click()
+            await expect(panel.get_by_test_id("link-done")).to_have_text(
+                "Unlinked. The two contacts are separate again."
+            )
+            posts = [(c["path"], c["body"], c["csrf"]) for c in link_calls(world)]
+            assert posts == [
+                (f"subscriptions/links/{LINK_RECENT}/unlink", None, "synthetic-csrf")
+            ], posts
+            await expect(lone.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(lone.get_by_test_id("link-note")).to_have_text("Undone on 2 Nov 2026.")
+
+    await with_browser(body)
+
+
+async def test_recent_links_say_so_when_there_are_none(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            await expect(page.get_by_test_id("recent-links")).to_contain_text(
+                "No contacts have been linked yet.", timeout=WAIT
+            )
+
+    await with_browser(body)
+
+
 async def test_read_only_members_see_links_and_reviews_without_controls(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World(site.upstream)
@@ -1939,6 +2023,9 @@ async def test_read_only_members_see_links_and_reviews_without_controls(site: Si
             await expect(page.get_by_test_id("review-open")).to_have_count(1, timeout=WAIT)
             await expect(page.get_by_test_id("review-link")).to_have_count(0)
             await expect(page.get_by_test_id("review-dismiss")).to_have_count(0)
+            recent = page.get_by_test_id("recent-links")
+            await expect(recent.get_by_test_id("link-row")).to_have_count(1)
+            await expect(recent.get_by_test_id("link-unlink")).to_have_count(0)
         assert link_calls(world) == []
 
     await with_browser(body)

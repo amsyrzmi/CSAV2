@@ -2,7 +2,7 @@
 
 import { createContext, Fragment, useContext, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
-import { LinkedContacts, NeedsReview } from "@/components/console/ContactLinks";
+import { LinkedContacts, NeedsReview, RecentLinks } from "@/components/console/ContactLinks";
 import { api, ApiError } from "@/lib/api";
 import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
@@ -1268,6 +1268,10 @@ function Signups({ tenantId, writer, planName, settings, settingsFailed, onSetti
       <Panel title="Needs review">
         <NeedsReview tenantId={tenantId} writer={writer} timeZone={timeZone} revision={revision}
           onResolved={(text) => { setDone(text); setRevision((value) => value + 1); onDataChanged(); }} />
+      </Panel>
+      <Panel title="Recent links">
+        <RecentLinks tenantId={tenantId} writer={writer} timeZone={timeZone} revision={revision}
+          onChanged={() => { setRevision((value) => value + 1); onDataChanged(); }} />
       </Panel>
       <Panel title="Decided sign-ups">
         <SignupList tenantId={tenantId} status="decided" writer={false} planName={planName} revision={revision}
