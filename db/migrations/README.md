@@ -39,6 +39,8 @@ Reserved ranges (client growth program, 2026-10-27):
   and cancels and dismisses the existing jobs whose files were all removed.
 - `0560`–`0569`: customer bot answers. 0560 adds `escalations.note` (staff context note, at most 500
   characters) and the `escalations_conversation_created` index.
+- `0570`–`0579`: credit monitoring. 0570 adds `ai_usage_events`, the ledger of model calls
+  (tenant isolated, `csa_app` insert and select, `csa_ro` select, never updated or purged).
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
