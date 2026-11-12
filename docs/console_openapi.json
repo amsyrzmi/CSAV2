@@ -1155,6 +1155,36 @@
         "title": "AgentSwitch",
         "type": "object"
       },
+      "AgentUsageOut": {
+        "additionalProperties": false,
+        "description": "One AI agent's executions in the cycle (priced or not) and their allocated price.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "title",
+          "executions",
+          "price"
+        ],
+        "title": "AgentUsageOut",
+        "type": "object"
+      },
       "AnswerResult": {
         "additionalProperties": false,
         "properties": {
@@ -5315,6 +5345,66 @@
         "title": "CustomerRepliesOut",
         "type": "object"
       },
+      "CyclePickOut": {
+        "additionalProperties": false,
+        "description": "A cycle for the picker: its bill total (``None`` when not set up) and whether it is final.",
+        "properties": {
+          "end": {
+            "format": "date",
+            "title": "End",
+            "type": "string"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          },
+          "start": {
+            "format": "date",
+            "title": "Start",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "total",
+          "final"
+        ],
+        "title": "CyclePickOut",
+        "type": "object"
+      },
+      "DailyUsageOut": {
+        "additionalProperties": false,
+        "description": "The allocated price of the executions that started on ``day`` (Kuala Lumpur date).",
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "price"
+        ],
+        "title": "DailyUsageOut",
+        "type": "object"
+      },
       "DecideIn": {
         "additionalProperties": false,
         "properties": {
@@ -6277,6 +6367,79 @@
           "created_at"
         ],
         "title": "EventOut",
+        "type": "object"
+      },
+      "ExecutionOut": {
+        "additionalProperties": false,
+        "description": "One execution: when it started, its agent, its job in plain words, its price.\n\n``price`` is ``None`` while the execution is still being priced.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "agent_title": {
+            "title": "Agent Title",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "job_label": {
+            "title": "Job Label",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          }
+        },
+        "required": [
+          "at",
+          "agent_id",
+          "agent_title",
+          "job_label",
+          "price"
+        ],
+        "title": "ExecutionOut",
+        "type": "object"
+      },
+      "ExecutionsPageOut": {
+        "additionalProperties": false,
+        "description": "A page of executions, newest first; ``next_cursor`` fetches the next, ``None`` at the end.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExecutionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ExecutionsPageOut",
         "type": "object"
       },
       "FieldChange": {
@@ -15019,6 +15182,105 @@
         "title": "UploadOut",
         "type": "object"
       },
+      "UsageOut": {
+        "additionalProperties": false,
+        "description": "One cycle's usage and bill for the Credit tab.\n\n``billed_from`` and ``billed_to`` (exclusive) are the billed window, ``None`` when billing is\nnot set up or the company was terminated before the cycle. ``executions`` counts every\nexecution in the window, priced or not. ``final`` is false for the open cycle (the bill so\nfar). ``status`` ``pending_prices`` means some usage is still being priced and is left out of\n``ai_usage_price``; ``not_set_up`` has every figure zero.",
+        "properties": {
+          "ai_usage_price": {
+            "title": "Ai Usage Price",
+            "type": "string"
+          },
+          "billed_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed From"
+          },
+          "billed_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed To"
+          },
+          "by_agent": {
+            "items": {
+              "$ref": "#/components/schemas/AgentUsageOut"
+            },
+            "title": "By Agent",
+            "type": "array"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/DailyUsageOut"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          },
+          "platform_fee": {
+            "title": "Platform Fee",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "pending_prices",
+              "not_set_up"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cycle_start",
+          "cycle_end",
+          "billed_from",
+          "billed_to",
+          "executions",
+          "ai_usage_price",
+          "platform_fee",
+          "total",
+          "final",
+          "status",
+          "by_agent",
+          "daily"
+        ],
+        "title": "UsageOut",
+        "type": "object"
+      },
       "UserOut": {
         "additionalProperties": false,
         "properties": {
@@ -16922,6 +17184,265 @@
         "tags": [
           "console identity"
         ]
+      }
+    },
+    "/console/v1/billing/usage": {
+      "get": {
+        "operationId": "usage_console_v1_billing_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage"
+      }
+    },
+    "/console/v1/billing/usage/cycles": {
+      "get": {
+        "operationId": "cycles_console_v1_billing_usage_cycles_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CyclePickOut"
+                  },
+                  "title": "Response Cycles Console V1 Billing Usage Cycles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cycles"
+      }
+    },
+    "/console/v1/billing/usage/executions": {
+      "get": {
+        "operationId": "executions_console_v1_billing_usage_executions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionsPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Executions"
       }
     },
     "/console/v1/bookings/availability": {
