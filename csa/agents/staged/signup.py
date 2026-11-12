@@ -265,8 +265,25 @@ async def _load(conn: Conn, ctx: AgentContext, contact_id: UUID) -> Draft:
 
 
 async def _save(conn: Conn, ctx: AgentContext, contact_id: UUID, draft: Draft) -> None:
-    """Replace this chat's open draft with `draft` (a chat with no conversation keeps none)."""
+    """Update this chat's one open draft in place with `draft`, or open it if the chat has none.
+
+    A chat with no conversation keeps none. An open draft past its hour that the expiry job has
+    not reached yet is not readable: it is closed (and cleared) before the new one is opened.
+    """
     if ctx.conversation_id is None:
+        return
+    updated = await db.q.fetch_one(
+        "agents/signup_draft_update.sql",
+        {
+            "client_id": ctx.client_id,
+            "contact_id": contact_id,
+            "conversation_id": ctx.conversation_id,
+            "payload": Jsonb(draft.model_dump(mode="json")),
+            "life": DRAFT_LIFE,
+        },
+        conn=conn,
+    )
+    if updated is not None:
         return
     await _close(conn, ctx, contact_id, "cancelled")
     saved = await db.q.fetch_one(
@@ -288,6 +305,7 @@ async def _save(conn: Conn, ctx: AgentContext, contact_id: UUID, draft: Draft) -
 
 
 async def _close(conn: Conn, ctx: AgentContext, contact_id: UUID, status: str) -> None:
+    """Close this chat's open draft; its typed data is cleared with it (see the SQL)."""
     if ctx.conversation_id is None:
         return
     await db.q.execute(

@@ -1394,3 +1394,181 @@ async def test_a_switched_off_subscription_agent_signs_up_nobody(world: World) -
     result = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED, confirmed=True)
     assert result.error and result.error.code == "disabled"
     assert await signups(world) == []
+
+
+# --- the sign-up draft: one row, updated in place, cleared when it closes ------------------------
+
+
+async def drafts(world: World) -> list[dict[str, object]]:
+    """Every sign-up draft row of the company (any chat), oldest first."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            await cursor.execute(
+                "SELECT id, contact_id, conversation_id, status, payload, expires_at "
+                "FROM pending_actions WHERE client_id=%s AND action='signup_draft' "
+                "ORDER BY created_at, id",
+                (world.ctx.client_id,),
+            )
+            return list(await cursor.fetchall())
+
+
+async def all_pending_text(world: World) -> str:
+    """Every pending_actions row of the company as one string, to search for typed data."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT pa::text FROM pending_actions pa WHERE client_id=%s", (world.ctx.client_id,)
+            )
+        ).fetchall()
+    return " ".join(str(row[0]) for row in rows)
+
+
+@requires_docker
+async def test_a_multi_turn_collection_keeps_one_open_draft_row(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR)
+    [first] = await drafts(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)  # the read-back
+    await signup_turn(world, ctx, **BESAR, **ALI)  # a question in between
+    [row] = await drafts(world)
+    # The same row, updated in place: still open, holding what was collected so far.
+    assert row["id"] == first["id"] and row["status"] == "open"
+    assert row["payload"]["full_name"] == "Ali Bin Abu"  # type: ignore[index]
+    assert row["payload"]["phone"] == TYPED_E164  # type: ignore[index]
+    assert (
+        row["contact_id"] == world.ctx.contact_id and row["conversation_id"] == ctx.conversation_id
+    )
+
+
+@requires_docker
+async def test_an_update_in_place_restarts_the_hour_from_the_latest_save(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE pending_actions SET expires_at = now() + interval '1 minute' "
+            "WHERE client_id=%s AND action='signup_draft'",
+            (world.ctx.client_id,),
+        )
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    [row] = await drafts(world)
+    assert row["expires_at"] > datetime.now(UTC) + timedelta(minutes=50)  # type: ignore[operator]
+
+
+@requires_docker
+async def test_a_filed_sign_up_closes_its_draft_with_the_data_cleared(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    [open_draft] = await drafts(world)
+    assert open_draft["status"] == "open"
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    [row] = await drafts(world)
+    assert row["status"] == "used" and row["payload"] == {}
+    assert len(await signups(world)) == 1
+    # The typed name and number now live on the request only, in no pending_actions row.
+    text = await all_pending_text(world)
+    for typed in ("Ali Bin Abu", TYPED, TYPED_E164):
+        assert typed not in text
+    # A yes said again after filing is answered from the request, not from the cleared draft.
+    again = await signup_turn(world, ctx, **BESAR, confirmed=True)
+    assert _kinds(again) == ["signup_exists"]
+    assert len(await signups(world)) == 1
+    assert [r["payload"] for r in await drafts(world)] == [{}]
+
+
+@requires_docker
+async def test_a_plan_switch_updates_the_same_draft_and_a_closed_plan_clears_it(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    switched = await signup_turn(world, ctx, plan_code="Plan Kecil", confirmed=True)
+    assert _kinds(switched) == ["signup_readback"]
+    [row] = await drafts(world)
+    assert row["status"] == "open" and row["payload"]["plan_code"] == "kecil"  # type: ignore[index]
+    # Then the customer asks for a plan that has closed since: the draft ends with its data gone.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE plans SET is_signup_open=false WHERE client_id=%s AND code='besar'",
+            (world.ctx.client_id,),
+        )
+    closed = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(closed) == ["signup_closed"]
+    [ended] = await drafts(world)
+    assert ended["status"] == "used" and ended["payload"] == {}
+    text = await all_pending_text(world)
+    for typed in ("Ali Bin Abu", TYPED, TYPED_E164):
+        assert typed not in text
+
+
+@requires_docker
+async def test_a_plan_already_held_ends_the_draft_with_its_data_cleared(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    await add_subscription(world, plan="besar")
+    held = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(held) == ["signup_has_plan"]
+    [row] = await drafts(world)
+    assert row["status"] == "used" and row["payload"] == {}
+    assert "Ali Bin Abu" not in await all_pending_text(world)
+
+
+@requires_docker
+async def test_a_stale_open_draft_is_cancelled_cleared_and_replaced(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    # An hour passed and the expiry job has not run yet: the row is still open but not readable.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE pending_actions SET expires_at = now() - interval '1 minute' "
+            "WHERE client_id=%s AND action='signup_draft'",
+            (world.ctx.client_id,),
+        )
+    fresh = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(fresh) == ["signup_missing", "signup_data_note"]  # started again, name asked
+    old, new = await drafts(world)
+    assert (old["status"], old["payload"]) == ("cancelled", {})
+    assert new["status"] == "open" and new["payload"]["plan_code"] == "besar"  # type: ignore[index]
+    text = await all_pending_text(world)
+    assert "Ali Bin Abu" not in text and TYPED_E164 not in text
+
+
+@requires_docker
+async def test_a_draft_of_another_contact_or_conversation_is_not_read(world: World) -> None:
+    ctx = await signup_chat(world)
+    elsewhere = uuid4()
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO conversations (id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,'telegram',%s)",
+            (elsewhere, world.ctx.client_id, world.ctx.contact_id, str(elsewhere)),
+        )
+        await conn.execute(
+            "INSERT INTO conversations (id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,'telegram',%s)",
+            (uuid4(), world.ctx.client_id, world.other_contact, "other-chat"),
+        )
+        payload = json.dumps(
+            {"plan_code": "besar", "full_name": "Someone Else", "phone": "+60111111111"}
+        )
+        for contact, conversation in (
+            (world.ctx.contact_id, elsewhere),  # my other conversation
+            (world.other_contact, ctx.conversation_id),  # another contact, this conversation id
+        ):
+            await conn.execute(
+                "INSERT INTO pending_actions (client_id,conversation_id,contact_id,agent,action,"
+                "payload,expires_at) VALUES (%s,%s,%s,'subscription_agent','signup_draft',%s,"
+                "now() + interval '1 hour')",
+                (world.ctx.client_id, conversation, contact, payload),
+            )
+    result = await signup_turn(world, ctx, **BESAR)
+    # Nothing was picked up from the other drafts: the name is still asked, nothing is read back.
+    assert _kinds(result) == ["signup_missing", "signup_data_note"]
+    shown = " ".join(f.text for f in result.facts)
+    assert "Someone Else" not in shown and "+60111111111" not in shown
+    mine = (world.ctx.contact_id, ctx.conversation_id)
+    others = [r for r in await drafts(world) if (r["contact_id"], r["conversation_id"]) != mine]
+    assert [r["payload"]["full_name"] for r in others] == ["Someone Else"] * 2  # type: ignore[index]
+    assert all(r["status"] == "open" for r in others)

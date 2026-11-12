@@ -2044,7 +2044,7 @@ _OLD_PLAN_USER = (
 _ALL_ON = Context(capabilities=sorted(CAPABILITIES))
 
 
-async def test_classify_and_plan_prompts_for_a_bare_context_are_unchanged() -> None:
+async def test_classify_and_plan_prompts_with_every_service_on_are_unchanged() -> None:
     classify_system, classify_user = await _prompts_for(_ALL_ON, "classify")
     assert classify_system == (_OLD_CLASSIFY_HEAD + json.dumps(CAPABILITIES) + _OLD_CLASSIFY_TAIL)
     assert classify_user == _OLD_CLASSIFY_USER

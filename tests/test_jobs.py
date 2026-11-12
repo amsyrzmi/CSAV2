@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -18,7 +19,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
-from csa.jobs.reapers import run_mute_expiry
+from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
 from csa.jobs.runner import JobRunner, build_default_registry
@@ -27,6 +28,72 @@ from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_worker import _configure_test_settings
 
 pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_setup_dsn")]
+
+
+async def test_pending_actions_expiry_clears_the_typed_data_of_sign_up_drafts_only(
+    pg_container: object, app_dsn: str
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    tenant, other, contact, other_contact = (uuid.uuid4() for _ in range(4))
+    conversation, other_conversation = uuid.uuid4(), uuid.uuid4()
+    typed = {"plan_code": "besar", "full_name": "Synthetic Typed", "phone": "+60123456780"}
+    button = {"order_id": "synthetic-order"}
+    stale_draft, live_draft, stale_button, foreign_draft = (uuid.uuid4() for _ in range(4))
+    async with await psycopg.AsyncConnection.connect(owner_dsn, autocommit=True) as conn:
+        for client, who, chat in (
+            (tenant, contact, conversation),
+            (other, other_contact, other_conversation),
+        ):
+            await conn.execute(
+                "INSERT INTO clients(id,slug,name,status,platform_version) "
+                "VALUES (%s,%s,'Synthetic expiry','active','lg10-test')",
+                (client, f"pa-expiry-{client}"),
+            )
+            await conn.execute(
+                "INSERT INTO contacts(id,client_id,full_name) VALUES (%s,%s,'Synthetic')",
+                (who, client),
+            )
+            await conn.execute(
+                "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread) "
+                "VALUES (%s,%s,%s,'telegram',%s)",
+                (chat, client, who, str(chat)),
+            )
+        for ident, client, who, chat, action, payload, offset in [
+            (stale_draft, tenant, contact, conversation, "signup_draft", typed, "-1 minute"),
+            (live_draft, tenant, contact, conversation, "signup_draft", typed, "+30 minutes"),
+            (stale_button, tenant, contact, conversation, "create_draft", button, "-1 minute"),
+            (
+                foreign_draft,
+                other,
+                other_contact,
+                other_conversation,
+                "signup_draft",
+                typed,
+                "-1 minute",
+            ),
+        ]:
+            agent = "subscription_agent" if action == "signup_draft" else "order_agent"
+            await conn.execute(
+                "INSERT INTO pending_actions(id,client_id,conversation_id,contact_id,agent,action,"
+                "payload,expires_at) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,now() + %s::interval)",
+                (ident, client, chat, who, agent, action, json.dumps(payload), offset),
+            )
+    async with db.build_pool(app_dsn, max_size=2, autocommit=True) as pool:
+        async with tx(pool, str(tenant)) as conn:
+            ran = await run_pending_actions_expiry(conn, tenant, FakeClock())
+    assert ran == {"expired_count": 2}
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        cursor = await conn.execute(
+            "SELECT id,status,payload FROM pending_actions WHERE id=ANY(%s)",
+            ([stale_draft, live_draft, stale_button, foreign_draft],),
+        )
+        rows = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    # The expired sign-up draft keeps no typed data; a draft still in its hour, another action's
+    # payload (consumed elsewhere) and another company's rows are untouched.
+    assert rows[stale_draft] == ("expired", {})
+    assert rows[live_draft] == ("open", typed)
+    assert rows[stale_button] == ("expired", button)
+    assert rows[foreign_draft] == ("open", typed)
 
 
 async def test_mute_expiry_batch_isolation_locks_and_idempotency(
