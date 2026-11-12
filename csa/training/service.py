@@ -48,6 +48,7 @@ from csa.console.multipart import upload_form
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError, JsonCompletionClient
+from csa.metering.context import MeterContext, meter_context
 from csa.storage.base import ObjectStore, StorageError, durable_put
 from csa.training import limits, summary
 from csa.training.access import can_manage
@@ -471,8 +472,13 @@ class TrainingLibrary:
             data = await self._read_object(client_id, item_id, row["storage_name"])
             fields = {"item_id": str(item_id), "client_id": str(client_id), "model": model.model}
             text, truncated = await _extract(data, fields)
+            # One execution per click that reaches the model; a retry after a failure is another.
+            summarising = MeterContext(
+                client_id=client_id, trace_id=uuid4(), job="training_summary"
+            )
             try:
-                draft = await summary.summarise(model, text)
+                with meter_context(summarising):
+                    draft = await summary.summarise(model, text)
             except (TimeoutError, CompletionError) as exc:
                 outcome = exc.code if isinstance(exc, CompletionError) else "timeout"
                 logger.error(

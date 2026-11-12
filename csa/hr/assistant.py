@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Literal, Self
-from uuid import UUID
+from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
@@ -25,6 +25,7 @@ from csa.hr.models import HrModel, TrainingAction
 from csa.hr.policy import HrPolicyError
 from csa.hr.records import HrSession
 from csa.hr.service import HrService, _fingerprint
+from csa.metering.context import MeterContext, meter_context
 
 
 class HrChatInput(HrModel):
@@ -104,24 +105,32 @@ class HrAssistant:
                     raise HrPolicyError("idempotency_conflict")
                 plan = HrChatPlan.model_validate(stored["plan"])
             else:
-                plan = await self.client.json_completion(
-                    HrChatPlan,
-                    system=HR_CHAT_SYSTEM,
-                    user=json.dumps(
-                        {
-                            "message": body.message,
-                            "self_employee_id": str(access.employee.employee_id)
-                            if access.employee
-                            else None,
-                            "current_date": self.service.now()
-                            .astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
-                            .date()
-                            .isoformat(),
-                        }
-                    ),
-                    timeout=7,
-                    max_tokens=1200,
+                # The plan is stored under this key, so the trace is derived from it: a retry
+                # of a request whose plan was never saved is the same execution, not a new one.
+                planning = MeterContext(
+                    client_id=session.tenant_id,
+                    trace_id=uuid5(key, f"hr-chat:{session.subject_id}"),
+                    job="hr_assistant",
                 )
+                with meter_context(planning):
+                    plan = await self.client.json_completion(
+                        HrChatPlan,
+                        system=HR_CHAT_SYSTEM,
+                        user=json.dumps(
+                            {
+                                "message": body.message,
+                                "self_employee_id": str(access.employee.employee_id)
+                                if access.employee
+                                else None,
+                                "current_date": self.service.now()
+                                .astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+                                .date()
+                                .isoformat(),
+                            }
+                        ),
+                        timeout=7,
+                        max_tokens=1200,
+                    )
                 await q.execute(
                     "hr/chat_plan_save.sql",
                     (

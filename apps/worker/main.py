@@ -44,6 +44,7 @@ from csa.marketplace.processor import (
     marketplace_sync_loop,
 )
 from csa.marketplace.reads import LiveReadAccess, live_read_access
+from csa.metering.context import MeterContext, meter_context
 from csa.metering.meter import LedgerMeter
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
@@ -261,12 +262,22 @@ class IngressWorker:
         if envelope.callback is None:
             async with tx(self._app_pool, str(item.client_id)) as conn:
                 await self._persist_inbound(conn, item, envelope)
-        await process_turn(
-            envelope,
-            runtime.deps,
-            checkpointer=runtime.checkpointer,
-            graph=runtime.graph,
+        # Every model call of the turn is booked to the event's own trace: a redelivered or
+        # resumed event reuses it, so the turn counts once however often it runs. The graph's
+        # nodes inherit this binding (LangGraph starts them as tasks, which copy the context).
+        turn = MeterContext(
+            client_id=item.client_id,
+            trace_id=envelope.trace_id,
+            job="customer_turn",
+            conversation_id=envelope.conversation.id,
         )
+        with meter_context(turn):
+            await process_turn(
+                envelope,
+                runtime.deps,
+                checkpointer=runtime.checkpointer,
+                graph=runtime.graph,
+            )
         async with tx(self._app_pool, str(item.client_id)) as conn:
             completed = await db.q.fetch_one(
                 "worker/complete_ingress.sql",

@@ -53,6 +53,7 @@ from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
 from csa.hr.service import HrService
+from csa.metering.context import MeterContext, meter_context
 from csa.workspace import email_batch, hr_people, stock
 from csa.workspace.contracts import (
     MAX_STEPS,
@@ -2626,9 +2627,14 @@ async def create_planned_turn(
     if known is not None:
         return known  # a replay never re-plans or re-prepares
     facts = await planner_facts(request, actor, client_id, thread_id, turn)
-    proposal, planned = await _plan_and_resolve(
-        request, actor, client_id, thread_id, turn, facts, planner, registry
-    )
+    # One execution per request: the planner's calls (and its one correction) share a new trace.
+    # The model work the plan resolves into binds its own job (an email draft, an inbox summary)
+    # inside EmailService, so it is booked to that job, not to this one.
+    planning = MeterContext(client_id=client_id, trace_id=uuid4(), job="workspace_assistant")
+    with meter_context(planning):
+        proposal, planned = await _plan_and_resolve(
+            request, actor, client_id, thread_id, turn, facts, planner, registry
+        )
     async with tx(pool, str(client_id)) as conn:
         await lock_request(conn, client_id, actor.user_id, turn.request_key)
         await get_thread(conn, client_id, actor.user_id, thread_id)
