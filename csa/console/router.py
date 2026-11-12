@@ -17,6 +17,7 @@ from csa.agents.kb.lifecycle import lock as kb_lock
 from csa.console import agents, capabilities, runtime, timeline
 from csa.console.access import authenticate, tenant
 from csa.console.billing import build_billing_router
+from csa.console.billing_admin import build_billing_admin_router
 from csa.console.business import build_business_router
 from csa.console.capabilities import CapabilityOut, CapabilityToggleIn, SpecializedTabInfo
 from csa.console.chat import build_chat_router
@@ -154,6 +155,7 @@ def build_router(
     router.include_router(build_inbox_router())
     router.include_router(build_business_router())
     router.include_router(build_billing_router())
+    router.include_router(build_billing_admin_router())
     router.include_router(build_services_router(kb_model, kb_tei_configured))
 
     async def kb_enabled(

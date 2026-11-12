@@ -2,4 +2,4 @@
 -- rule (csa.billing.config.check_new_price_date) is checked by the caller before this runs.
 INSERT INTO billing_fx_rates (usd_to_myr, effective_from)
 VALUES (%(usd_to_myr)s, %(effective_from)s)
-RETURNING id, created_at;
+RETURNING id, usd_to_myr, effective_from, created_at;

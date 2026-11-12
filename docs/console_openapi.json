@@ -839,6 +839,152 @@
         "title": "ActivateIn",
         "type": "object"
       },
+      "AdminCompanyOut": {
+        "additionalProperties": false,
+        "description": "One company's cycle, for the platform admin only.\n\n``status`` is the service's (``ok``, ``pending_prices``, ``not_set_up``); ``stage`` and\n``bundle`` are the plan that bills the cycle, ``None`` when nothing is billed (not set up, or\nafter a termination). ``executions`` counts the billed window's executions, priced or not.\n``raw_cost_rm`` is the provider cost of the priced executions (RM0.0001, half up);\n``ai_margin_rm`` is ``ai_charge - raw_cost_rm`` computed exactly and rounded to RM0.01;\n``cost_per_execution_rm`` is the raw cost over the priced executions, ``None`` when none is\npriced, beside the workbook's assumed cost per message.",
+        "properties": {
+          "ai_charge": {
+            "title": "Ai Charge",
+            "type": "string"
+          },
+          "ai_margin_rm": {
+            "title": "Ai Margin Rm",
+            "type": "string"
+          },
+          "billed_total": {
+            "title": "Billed Total",
+            "type": "string"
+          },
+          "bundle": {
+            "anyOf": [
+              {
+                "enum": [
+                  "individual",
+                  "curated",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_per_execution_rm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Execution Rm"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platform_fee": {
+            "title": "Platform Fee",
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "raw_cost_rm": {
+            "title": "Raw Cost Rm",
+            "type": "string"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pilot",
+                  "collaborator",
+                  "terminated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "pending_prices",
+              "not_set_up"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          },
+          "unpriced_executions": {
+            "title": "Unpriced Executions",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "enum": [
+                "pilot_ended",
+                "usage_after_termination",
+                "not_set_up_with_usage",
+                "pending_prices"
+              ],
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "workbook_cost_per_message_rm": {
+            "title": "Workbook Cost Per Message Rm",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "name",
+          "status",
+          "stage",
+          "bundle",
+          "executions",
+          "prompt_tokens",
+          "completion_tokens",
+          "raw_cost_rm",
+          "ai_charge",
+          "platform_fee",
+          "billed_total",
+          "ai_margin_rm",
+          "cost_per_execution_rm",
+          "workbook_cost_per_message_rm",
+          "unpriced_calls",
+          "unpriced_executions",
+          "warnings"
+        ],
+        "title": "AdminCompanyOut",
+        "type": "object"
+      },
       "AdminEmployee": {
         "additionalProperties": false,
         "properties": {
@@ -972,6 +1118,41 @@
           "employment_category"
         ],
         "title": "AdminEmployee",
+        "type": "object"
+      },
+      "AdminOverviewOut": {
+        "additionalProperties": false,
+        "description": "Every company for one cycle, ordered by name (``final`` is false for the open cycle).",
+        "properties": {
+          "companies": {
+            "items": {
+              "$ref": "#/components/schemas/AdminCompanyOut"
+            },
+            "title": "Companies",
+            "type": "array"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cycle_start",
+          "cycle_end",
+          "final",
+          "companies"
+        ],
+        "title": "AdminOverviewOut",
         "type": "object"
       },
       "AdminUserOut": {
@@ -1581,6 +1762,262 @@
           "remaining"
         ],
         "title": "BalanceRecord",
+        "type": "object"
+      },
+      "BillingFxIn": {
+        "additionalProperties": false,
+        "description": "A USD to MYR rate from ``effective_from`` (timezone required).",
+        "properties": {
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "usd_to_myr": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Usd To Myr"
+          }
+        },
+        "required": [
+          "usd_to_myr",
+          "effective_from"
+        ],
+        "title": "BillingFxIn",
+        "type": "object"
+      },
+      "BillingFxOut": {
+        "additionalProperties": false,
+        "description": "The stored FX row.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "usd_to_myr": {
+            "title": "Usd To Myr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usd_to_myr",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingFxOut",
+        "type": "object"
+      },
+      "BillingPlanIn": {
+        "additionalProperties": false,
+        "description": "A new plan row. ``bundle`` may be left out only for a termination, which then keeps the\nbundle of the company's latest non-terminated row.",
+        "properties": {
+          "bundle": {
+            "anyOf": [
+              {
+                "enum": [
+                  "individual",
+                  "curated",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pilot",
+              "collaborator",
+              "terminated"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "effective_from",
+          "reason"
+        ],
+        "title": "BillingPlanIn",
+        "type": "object"
+      },
+      "BillingPlanOut": {
+        "additionalProperties": false,
+        "description": "The stored plan row.",
+        "properties": {
+          "bundle": {
+            "enum": [
+              "individual",
+              "curated",
+              "complete"
+            ],
+            "title": "Bundle",
+            "type": "string"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pilot",
+              "collaborator",
+              "terminated"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "stage",
+          "bundle",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingPlanOut",
+        "type": "object"
+      },
+      "BillingPriceIn": {
+        "additionalProperties": false,
+        "description": "A model price in USD per million tokens, from ``effective_from`` (timezone required).",
+        "properties": {
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 100000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Input Usd Per Mtok"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Model",
+            "type": "string"
+          },
+          "output_usd_per_mtok": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 100000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Output Usd Per Mtok"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "effective_from"
+        ],
+        "title": "BillingPriceIn",
+        "type": "object"
+      },
+      "BillingPriceOut": {
+        "additionalProperties": false,
+        "description": "The stored price row.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "title": "Input Usd Per Mtok",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_usd_per_mtok": {
+            "title": "Output Usd Per Mtok",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingPriceOut",
         "type": "object"
       },
       "BookingActionIn": {
@@ -17184,6 +17621,183 @@
         "tags": [
           "console identity"
         ]
+      }
+    },
+    "/console/v1/billing/admin/clients/{client_id}/plan": {
+      "post": {
+        "description": "Insert a plan row (audited). A broken plan rule is 422 with its code as ``detail``.\n\nA termination without ``bundle`` keeps the bundle of the latest non-terminated row.",
+        "operationId": "add_plan_console_v1_billing_admin_clients__client_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingPlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPlanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Plan"
+      }
+    },
+    "/console/v1/billing/admin/fx": {
+      "post": {
+        "description": "Add a USD to MYR row (audited). Platform admin only. Shadow rule: ``effective_from`` may be before the earliest existing row (it then fills a gap of unpriced calls), or today or tomorrow (Kuala Lumpur days); anything else is 422 ``shadow_rule``. A row dated today is accepted at any time of day, so it also re-prices calls already made earlier today. A row with the same key and ``effective_from`` is 409.",
+        "operationId": "add_fx_console_v1_billing_admin_fx_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingFxIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingFxOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Fx"
+      }
+    },
+    "/console/v1/billing/admin/overview": {
+      "get": {
+        "description": "Every company's cycle: raw cost, tokens, bill and AI margin. Platform admin only.\n\n``cycle`` is the cycle's start date (a 5th; default the current cycle): 422 off a 5th,\n404 in the future.",
+        "operationId": "overview_console_v1_billing_admin_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Overview"
+      }
+    },
+    "/console/v1/billing/admin/prices": {
+      "post": {
+        "description": "Add a model price row (audited). Platform admin only. Shadow rule: ``effective_from`` may be before the earliest existing row (it then fills a gap of unpriced calls), or today or tomorrow (Kuala Lumpur days); anything else is 422 ``shadow_rule``. A row dated today is accepted at any time of day, so it also re-prices calls already made earlier today. A row with the same key and ``effective_from`` is 409.",
+        "operationId": "add_price_console_v1_billing_admin_prices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingPriceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPriceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Price"
       }
     },
     "/console/v1/billing/usage": {

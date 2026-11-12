@@ -13,6 +13,10 @@ dataclass or dict, and every model forbids extra fields. Nothing here logs. Mone
 fixed-point decimal string: 2 places for the fee, AI usage price and total, 4 for the allocated
 prices (each execution's, and the per-agent and per-day sums of them, which add up to the AI
 usage price exactly). A value that would need rounding to fit is an error, never rounded here.
+
+The platform-admin routes (Task 10: raw cost, tokens and margin) are in
+``csa.console.billing_admin`` under ``/billing/admin``, with models of their own; nothing here
+imports them.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ __all__ = [
     "billing_client",
     "billing_now",
     "build_billing_router",
+    "pick_cycle",
 ]
 
 DEFAULT_PAGE = 50
@@ -174,7 +179,7 @@ def billing_client(request: Request, client_id: Annotated[UUID, Depends(tenant)]
     return client_id
 
 
-def _pick_cycle(start: date | None, now: datetime) -> Cycle:
+def pick_cycle(start: date | None, now: datetime) -> Cycle:
     """The cycle starting on ``start``, or the current one; 422 off a 5th, 404 in the future."""
     current = cycle_of(now)
     if start is None:
@@ -285,7 +290,7 @@ def build_billing_router() -> APIRouter:
         now: Annotated[datetime, Depends(billing_now)],
         cycle: Annotated[date | None, Query()] = None,
     ) -> UsageOut:
-        picked = _pick_cycle(cycle, now)
+        picked = pick_cycle(cycle, now)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             summary = await cycle_usage(conn, client_id, picked, now=now, memo=USAGE_MEMO)
         return usage_out(summary)
@@ -299,7 +304,7 @@ def build_billing_router() -> APIRouter:
         cursor: Annotated[str | None, Query(max_length=_MAX_CURSOR)] = None,
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = DEFAULT_PAGE,
     ) -> ExecutionsPageOut:
-        picked = _pick_cycle(cycle, now)
+        picked = pick_cycle(cycle, now)
         after = None if cursor is None else _decode_cursor(cursor, picked)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             summary = await cycle_usage(conn, client_id, picked, now=now, memo=USAGE_MEMO)

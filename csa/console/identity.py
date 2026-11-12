@@ -850,6 +850,20 @@ class IdentityService:
             await self._exec(conn, "sessions_revoke", (user_id,))
             await self._audit(conn, actor.user_id, "identity.sessions_revoked", user_id)
 
+    async def audit_platform_write(
+        self, actor: ConsoleActor, action: str, target_id: str, details: dict[str, Any]
+    ) -> None:
+        """Audit a platform admin's write to a global table (no company), such as a model price.
+
+        ``console_audit`` row security lets only this role write a row without a company, so the
+        app pool cannot. The row commits in this pool's own transaction: a caller that must not
+        keep an unaudited write calls this before committing its own transaction.
+        """
+        self.require_platform(actor)
+        async with self.pool.connection() as conn, conn.transaction():
+            await self._context(conn, actor.user_id)
+            await self._audit(conn, actor.user_id, action, target_id, None, **details)
+
     async def audit(self, actor: ConsoleActor, limit: int, client_id: UUID | None) -> list[Any]:
         self.require_platform(actor)
         async with self.pool.connection() as conn, conn.transaction():
