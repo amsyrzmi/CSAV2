@@ -96,14 +96,25 @@ def _termination_date(history: Sequence[PlanRow]) -> date | None:
     return min((r.effective_from for r in history if r.stage == "terminated"), default=None)
 
 
+def _until_termination(history: Sequence[PlanRow]) -> list[PlanRow]:
+    """Termination is final: drop every row dated after the earliest termination date.
+
+    Rows on or before that date still count, and same-date rows follow newest-wins, so a row
+    scheduled for a date after the company left never applies.
+    """
+    terminated = _termination_date(history)
+    return [r for r in history if terminated is None or r.effective_from <= terminated]
+
+
 def plan_for_cycle(history: Sequence[PlanRow], cycle: Cycle) -> PlanRow | None:
     """The row that applies to ``cycle``: the latest whose ``effective_from`` is before its end.
 
     Terminated rows are included, so a cycle containing or after a termination yields the
-    ``terminated`` row; ``None`` only for cycles before the first row. Use ``billed_window`` for the
-    billed period and ``billed_plan`` for the stage and bundle that price it.
+    ``terminated`` row. Termination is final: rows dated after the earliest termination are ignored.
+    ``None`` only for cycles before the first row. Use ``billed_window`` for the billed period and
+    ``billed_plan`` for the stage and bundle that price it.
     """
-    return _latest([r for r in history if r.effective_from < cycle.end])
+    return _latest([r for r in _until_termination(history) if r.effective_from < cycle.end])
 
 
 def billed_window(history: Sequence[PlanRow], cycle: Cycle) -> tuple[date, date] | None:
@@ -112,8 +123,10 @@ def billed_window(history: Sequence[PlanRow], cycle: Cycle) -> tuple[date, date]
     Start is the cycle start or the join date, if later. End is the termination date when it falls
     inside the cycle, otherwise the cycle end. ``None`` when billing is not set up for the cycle (no
     row dated before its end) or nothing is billed because the company was terminated on or before
-    the window would start (a termination dated the cycle start, or the join date).
+    the window would start (a termination dated the cycle start, or the join date). Rows dated after
+    the earliest termination are ignored.
     """
+    history = _until_termination(history)
     join = _join_date(history)
     if join is None or join >= cycle.end:
         return None
@@ -136,7 +149,13 @@ def billed_plan(history: Sequence[PlanRow], cycle: Cycle) -> PlanRow | None:
     """
     if billed_window(history, cycle) is None:
         return None
-    return _latest([r for r in history if r.stage != "terminated" and r.effective_from < cycle.end])
+    return _latest(
+        [
+            r
+            for r in _until_termination(history)
+            if r.stage != "terminated" and r.effective_from < cycle.end
+        ]
+    )
 
 
 def validate_new_plan(history: Sequence[PlanRow], new: PlanRow, today: date) -> None:
@@ -146,23 +165,32 @@ def validate_new_plan(history: Sequence[PlanRow], new: PlanRow, today: date) -> 
     the most specific code wins:
 
     First row (empty history), spec rule 2:
+
     1. ``first_row_must_be_pilot_or_collaborator``: stage is ``terminated``.
-    2. ``first_row_outside_current_cycle``: the join date is not inside the current cycle
-       (earlier would create a closed cycle, later is not "any date within the current cycle").
+
+    2. ``first_row_outside_current_cycle``: the join date is not inside the current cycle (earlier
+    would create a closed cycle, later is not "any date within the current cycle").
 
     Any later row:
-    3. ``after_termination`` (rule 4): the history has a ``terminated`` row, whatever the new
-       row's date.
+
+    3. ``after_termination`` (rule 4): the history has a ``terminated`` row, whatever the new row's
+    date.
+
     4. ``before_current_cycle`` (rule 5): dated before the current cycle's start.
-    5. ``before_join_date`` (rule 2): dated before the first row's date. No plan existed then
-       to change or end, and the join date is where billing starts.
-    6. ``after_termination`` (rule 4), terminations only: dated before an existing row, which
-       would then take effect after the termination. Otherwise a termination is accepted.
-    7. ``change_not_on_a_fifth`` (rule 3): a pilot or collaborator row not dated a 5th. The
-       one exception is a same-date correction of the first row, which is dated the join date.
-    8. ``bundle_change_same_stage_only`` (rule 2): a pilot row may only follow a pilot row
-       (a bundle change, same stage); a row may not leave a later existing pilot row
-       following a collaborator. Collaborator and terminated rows may follow either stage.
+
+    5. ``before_join_date`` (rule 2): dated before the first row's date. No plan existed then to
+    change or end, and the join date is where billing starts.
+
+    A termination that passes 3 to 5 is accepted (rule 4: any day), even when a row is already
+    scheduled for a later date: termination is final, and the readers ignore every row dated after
+    the earliest termination.
+
+    6. ``change_not_on_a_fifth`` (rule 3): a pilot or collaborator row not dated a 5th. The one
+    exception is a same-date correction of the first row, which is dated the join date.
+
+    7. ``bundle_change_same_stage_only`` (rule 2): a pilot row may only follow a pilot row (a bundle
+    change, same stage); a row may not leave a later existing pilot row following a collaborator.
+    Collaborator and terminated rows may follow either stage.
 
     A row dated the same day as existing rows is a correction: it is checked against the plan in
     force before that day (the rows it replaces are ignored), and it wins because it is newest.
@@ -196,14 +224,8 @@ def validate_new_plan(history: Sequence[PlanRow], new: PlanRow, today: date) -> 
             "before_join_date", f"{day.isoformat()} is before the join date, {join.isoformat()}"
         )
     if new.stage == "terminated":
-        # Rule 4: any day from the current cycle's start, but no existing row may be left
-        # taking effect after it.
-        last_day = max(r.effective_from for r in history)
-        if day < last_day:
-            raise PlanRuleError(
-                "after_termination",
-                f"the row dated {last_day.isoformat()} would take effect after this termination",
-            )
+        # Rule 4: any day from the current cycle's start. Rows already scheduled after it stay
+        # in the history but are ignored by every reader: termination is final.
         return
 
     if day != join and day.day != 5:
@@ -292,9 +314,10 @@ async def insert_plan(
     in force from the new row's date before this insert, or null), ``after``, ``reason`` and
     ``created_by``. A ``PlanRuleError`` writes nothing.
     """
-    tenant = await db.q.fetch_one("billing/plans_tenant.sql", conn=conn)
+    # Before any query: a statement would itself open an implicit transaction.
     if conn.info.transaction_status != TransactionStatus.INTRANS:
         raise RuntimeError("insert_plan must run inside a transaction: use tx(pool, client_id)")
+    tenant = await db.q.fetch_one("billing/plans_tenant.sql", conn=conn)
     if tenant is None or tenant["client_id"] != client_id:
         raise RuntimeError(
             "insert_plan: app.client_id is not this company; open tx(pool, client_id) first"

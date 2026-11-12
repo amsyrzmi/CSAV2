@@ -13,8 +13,11 @@ from typing import Any, LiteralString, cast
 import psycopg
 import pytest
 from apps.gateway.main import EXPECTED_SCHEMA_VERSION
-from csa.billing.plans import PlanRow, PlanRuleError, insert_plan
+from csa.billing.cycles import cycle_containing
+from csa.billing.plans import PlanRow, PlanRuleError, insert_plan, plan_for_cycle
+from csa.core import db
 from psycopg import errors
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 from tests.conftest import CSA_RO_PASSWORD, _app_dsn, requires_docker
@@ -328,6 +331,57 @@ async def test_insert_plan_refuses_a_mismatched_tenant_setting(
                     date(2026, 8, 20),
                     actor_id=actor,
                 )
+
+
+async def test_insert_plan_refuses_before_any_query_outside_a_transaction(app_dsn: str) -> None:
+    async with await psycopg.AsyncConnection.connect(app_dsn) as conn:
+        with pytest.raises(RuntimeError, match="inside a transaction"):
+            await insert_plan(
+                conn,
+                "Synthetic Admin",
+                uuid.uuid4(),
+                _new("pilot", "individual", date(2026, 8, 15)),
+                "synthetic",
+                date(2026, 8, 20),
+                actor_id=uuid.uuid4(),
+            )
+        # No statement ran, so no implicit transaction was opened.
+        assert conn.info.transaction_status == TransactionStatus.IDLE
+
+
+async def test_two_inserts_in_one_transaction_order_by_insertion(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    # now() is the same for the whole transaction; created_at must still order the rows, so a
+    # same-date correction made right after the row it corrects wins.
+    client = _company(migrated_dsn)
+    actor = _console_user(migrated_dsn)
+    today = date(2026, 8, 20)
+    async with await psycopg.AsyncConnection.connect(app_dsn) as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.client_id', %s, true)", (client,))
+            first = await insert_plan(
+                conn,
+                "Synthetic Admin",
+                uuid.UUID(client),
+                _new("pilot", "individual", date(2026, 8, 15)),
+                "joined",
+                today,
+                actor_id=actor,
+            )
+            fix = await insert_plan(
+                conn,
+                "Synthetic Admin",
+                uuid.UUID(client),
+                _new("pilot", "curated", date(2026, 8, 15)),
+                "corrected",
+                today,
+                actor_id=actor,
+            )
+            rows = await db.q.fetch_all("billing/plans_history.sql", (client,), conn=conn)
+    assert fix.created_at > first.created_at
+    history = [PlanRow(**r) for r in rows]
+    assert plan_for_cycle(history, cycle_containing(today)) == fix
 
 
 def test_migration_is_recorded_and_the_expected_version_has_reached_it(

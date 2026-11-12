@@ -8,7 +8,15 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
-from csa.billing.cycles import KL, Cycle, cycle_containing, cycle_of, cycle_range, days_in
+from csa.billing.cycles import (
+    KL,
+    Cycle,
+    cycle_containing,
+    cycle_of,
+    cycle_range,
+    days_in,
+    kl_today,
+)
 
 
 def test_kl_is_kuala_lumpur() -> None:
@@ -34,6 +42,15 @@ def test_cycle_of_uses_the_local_date_of_any_aware_timestamp() -> None:
 def test_cycle_of_refuses_a_naive_timestamp() -> None:
     with pytest.raises(ValueError, match="timezone"):
         cycle_of(datetime(2026, 9, 5, 12, 0))
+
+
+def test_kl_today_is_the_kuala_lumpur_date() -> None:
+    assert kl_today(datetime(2026, 9, 4, 15, 59, 59, tzinfo=UTC)) == date(2026, 9, 4)
+    assert kl_today(datetime(2026, 9, 4, 16, 0, tzinfo=UTC)) == date(2026, 9, 5)
+    assert kl_today(datetime(2026, 9, 4, 17, 0, tzinfo=UTC)) == date(2026, 9, 5)
+    assert kl_today(datetime(2026, 12, 31, 16, 0, tzinfo=UTC)) == date(2027, 1, 1)
+    with pytest.raises(ValueError, match="timezone"):
+        kl_today(datetime(2026, 9, 4, 17, 0))
 
 
 def test_cycle_containing_a_date() -> None:

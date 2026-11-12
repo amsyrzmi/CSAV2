@@ -7,7 +7,8 @@
 --   public.client_billing_plans (id, client_id, stage, bundle, effective_from date, reason,
 --     created_by, created_at): client_id references clients; stage in (pilot, collaborator,
 --     terminated), bundle in (individual, curated, complete); reason and created_by non-empty.
---     effective_from is a Kuala Lumpur date taking effect at its 00:00.
+--     effective_from is a Kuala Lumpur date taking effect at its 00:00. created_at defaults to
+--     clock_timestamp(), the insert's own time, since newest-wins orders same-date rows by it.
 --   Index (client_id, effective_from, created_at) for one company's history in order.
 --   Row security with the same tenant_isolation policy as ai_usage_events (0570), ENABLE only,
 --     never FORCE.
@@ -43,7 +44,8 @@ CREATE TABLE public.client_billing_plans (
     effective_from date NOT NULL,
     reason text NOT NULL CHECK (reason <> ''),
     created_by text NOT NULL CHECK (created_by <> ''),
-    created_at timestamptz NOT NULL DEFAULT now()
+    -- clock_timestamp(), not now(): two rows inserted in one transaction still order by insertion.
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE INDEX client_billing_plans_client_effective

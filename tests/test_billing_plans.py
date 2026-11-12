@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from csa.billing.cycles import Cycle, cycle_containing
+from csa.billing.cycles import Cycle, cycle_containing, kl_today
 from csa.billing.plans import (
     PlanRow,
     PlanRuleError,
@@ -261,16 +261,42 @@ def test_rule4_termination_on_the_join_date_bills_nothing() -> None:
     assert billed_window([JOIN, term], AUG) is None
 
 
-def test_rule4_termination_may_not_precede_a_scheduled_row() -> None:
-    # A conversion is scheduled for 5 Oct; terminating on 20 Sep would leave it taking effect
-    # after the termination (a reinstatement). Terminating on or after 5 Oct is fine.
-    history = [JOIN, row("collaborator", "individual", date(2026, 10, 5), 1)]
+def test_rule4_termination_before_a_scheduled_row_is_accepted_and_final() -> None:
+    # A conversion is scheduled for 5 Oct and the company leaves on 20 Sep. Rule 4 allows any
+    # day from the current cycle's start; the termination is final, so the scheduled row is
+    # ignored by every reader.
+    scheduled = row("collaborator", "individual", date(2026, 10, 5), 1)
+    term = row("terminated", "individual", date(2026, 9, 20), 2)
     today = date(2026, 9, 10)
-    assert refused(history, row("terminated", "individual", date(2026, 9, 20), 2), today) == (
+    validate_new_plan([JOIN, scheduled], term, today)
+    history = [JOIN, scheduled, term]
+    assert billed_window(history, SEP) == (date(2026, 9, 5), date(2026, 9, 20))
+    assert billed_plan(history, SEP) == JOIN
+    assert billed_window(history, OCT) is None
+    assert billed_plan(history, OCT) is None
+    assert plan_for_cycle(history, OCT) == term
+    assert plan_for_cycle(history, NOV) == term
+    assert pilot_ended(history, date(2026, 12, 5)) is False
+    assert refused(history, row("collaborator", "individual", date(2026, 11, 5), 3), today) == (
         "after_termination"
     )
-    validate_new_plan(history, row("terminated", "individual", date(2026, 10, 5), 2), today)
-    validate_new_plan(history, row("terminated", "individual", date(2026, 10, 20), 2), today)
+
+
+def test_rule4_rows_on_the_termination_date_still_count_newest_wins() -> None:
+    # A scheduled row on the same date as a later termination: the newest row of that date wins.
+    scheduled = row("collaborator", "individual", date(2026, 10, 5), 1)
+    term = row("terminated", "individual", date(2026, 10, 5), 2)
+    validate_new_plan([JOIN, scheduled], term, date(2026, 9, 10))
+    history = [JOIN, scheduled, term]
+    assert plan_for_cycle(history, OCT) == term
+    assert billed_window(history, OCT) is None
+    assert billed_plan(history, SEP) == JOIN
+    # Readers stay correct whatever order a history arrives in, earliest termination first.
+    later_term = row("terminated", "individual", date(2026, 12, 20), 3)
+    assert plan_for_cycle([later_term, *history], DEC) == term
+    validate_new_plan(
+        [JOIN, scheduled], row("terminated", "individual", date(2026, 10, 20), 2), date(2026, 9, 10)
+    )
 
 
 def test_rule4_termination_earlier_than_the_current_cycle_is_refused() -> None:
@@ -318,13 +344,16 @@ def test_rule5_a_same_date_correction_of_a_closed_cycle_is_refused() -> None:
     )
 
 
-def test_rule5_today_is_the_kuala_lumpur_date_and_decides_the_current_cycle() -> None:
+def test_rule5_17_00_utc_on_the_4th_is_already_the_5th_in_kl_and_closes_the_cycle() -> None:
     history = [row("pilot", "individual", date(2026, 8, 5))]
     change = row("collaborator", "individual", date(2026, 8, 5), 1)
-    # On 4 Sep (KL) the August cycle is still open, so the join row may still be corrected;
-    # from 5 Sep that cycle is closed.
-    validate_new_plan(history, change, date(2026, 9, 4))
-    assert refused(history, change, date(2026, 9, 5)) == "before_current_cycle"
+    # 15:59:59Z on 4 Sep is still 4 Sep in Kuala Lumpur: the August cycle is open and the join
+    # row may be corrected. 17:00Z on 4 Sep is 01:00 on 5 Sep there: August is closed.
+    before_midnight = kl_today(datetime(2026, 9, 4, 15, 59, 59, tzinfo=UTC))
+    after_midnight = kl_today(datetime(2026, 9, 4, 17, 0, tzinfo=UTC))
+    assert (before_midnight, after_midnight) == (date(2026, 9, 4), date(2026, 9, 5))
+    validate_new_plan(history, change, before_midnight)
+    assert refused(history, change, after_midnight) == "before_current_cycle"
 
 
 def test_rule_order_is_documented_and_specific_codes_win() -> None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-__all__ = ["KL", "Cycle", "cycle_containing", "cycle_of", "cycle_range", "days_in"]
+__all__ = ["KL", "Cycle", "cycle_containing", "cycle_of", "cycle_range", "days_in", "kl_today"]
 
 KL = ZoneInfo("Asia/Kuala_Lumpur")
 _START_DAY = 5
@@ -52,11 +52,18 @@ def cycle_containing(d: date) -> Cycle:
     return Cycle(start, _next_fifth(start))
 
 
+def kl_today(now: datetime) -> date:
+    """The Kuala Lumpur date at ``now`` (the ``today`` the plan rules take). Aware only."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("kl_today needs a datetime with a timezone")
+    return now.astimezone(KL).date()
+
+
 def cycle_of(ts: datetime) -> Cycle:
     """The cycle containing ``ts``'s Kuala Lumpur local date. ``ts`` must carry a timezone."""
     if ts.tzinfo is None or ts.utcoffset() is None:
         raise ValueError("cycle_of needs a datetime with a timezone")
-    return cycle_containing(ts.astimezone(KL).date())
+    return cycle_containing(kl_today(ts))
 
 
 def days_in(cycle: Cycle) -> int:
