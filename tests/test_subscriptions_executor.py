@@ -814,3 +814,176 @@ async def test_interval_change_without_renewal_date_keeps_both_null(
     assert created.status_code == 201, created.text
     assert (await confirm(w, staff, created.json()["id"])).status_code == 200
     assert await anchored(w, sub) == {"renewal_anchor": None, "renews_at": None}
+
+
+async def pending_subscription(
+    w: SessionWorld, browser: httpx.AsyncClient, *, plan: str = "basic"
+) -> str:
+    """A sign-up the staff approved and nobody has started: no renewal date, an old start."""
+    sub = await subscribe(w, browser, plan=plan)
+    await w.q(
+        "UPDATE subscriptions SET status='pending', started_at = now() - interval '10 days',"
+        " renews_at = NULL, renewal_anchor = NULL WHERE id=%s",
+        sub,
+    )
+    return sub
+
+
+async def test_activate_starts_a_pending_subscription_on_the_tenant_calendar(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await w.q("UPDATE clients SET timezone='Asia/Kuala_Lumpur' WHERE id=%s", w.tenants[0])
+    sub = await pending_subscription(w, staff)
+    before = await row(w, sub)
+    assert before["status"] == "pending" and before["activated_at"] is None
+
+    created = await propose(w, staff, sub, {"action": "activate", "reason": "paid"})
+    assert created.status_code == 201, created.text
+    card = created.json()["card"]
+    assert card["title"] == "Start the subscription"
+    assert card["expected_version"] == "1"
+    done = await confirm(w, staff, created.json()["id"])
+    assert done.status_code == 200, done.text
+    [event] = await events(w, created.json()["id"])
+    assert done.json()["result"] == {
+        "subscription_id": sub,
+        "status": "active",
+        "version": 2,
+        "event_id": event["id"],
+    }
+    assert event["action"] == "activated" and event["actor"] == me["user"]["id"]
+    assert (event["from_status"], event["to_status"]) == ("pending", "active")
+    assert event["payload"]["reason"] == "paid" and event["payload"]["version"] == 2
+
+    current = await row(w, sub)
+    assert current["status"] == "active" and current["version"] == 2
+    assert current["cancelled_at"] is None and current["paused_at"] is None
+    # started_at and activated_at are the transaction's now(), shared with the event.
+    check = await w.q(
+        "SELECT s.started_at = e.created_at AS started_now,"
+        " s.activated_at = e.created_at AS activated_now,"
+        " s.renewal_anchor = e.created_at AS anchored_now,"
+        " s.renews_at = ((e.created_at AT TIME ZONE c.timezone) + interval '1 month')"
+        "     AT TIME ZONE c.timezone AS one_interval_later,"
+        " s.renews_at = subscription_next_renewal("
+        "     s.renewal_anchor, s.renewal_anchor, 'month', c.timezone) AS on_cycle"
+        " FROM subscriptions s JOIN subscription_events e ON e.subscription_id = s.id"
+        " AND e.proposal_id = %s JOIN clients c ON c.id = s.client_id WHERE s.id = %s",
+        created.json()["id"],
+        sub,
+    )
+    assert check == [
+        {
+            "started_now": True,
+            "activated_now": True,
+            "anchored_now": True,
+            "one_interval_later": True,
+            "on_cycle": True,
+        }
+    ]
+
+
+async def test_activate_uses_the_plans_billing_interval(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "annual", "299.00", billing_interval="year")
+    sub = await pending_subscription(w, staff, plan="annual")
+
+    created = await propose(w, staff, sub, {"action": "activate"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    check = await w.q(
+        "SELECT s.renews_at = ((s.activated_at AT TIME ZONE c.timezone) + interval '1 year')"
+        " AT TIME ZONE c.timezone AS ok FROM subscriptions s"
+        " JOIN clients c ON c.id = s.client_id WHERE s.id = %s",
+        sub,
+    )
+    assert check == [{"ok": True}]
+
+
+async def test_activate_is_refused_unless_the_subscription_is_pending(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    for status in ("active", "paused", "cancelled"):
+        sub = await subscribe(w, staff, status=status)
+        refused = await propose(w, staff, sub, {"action": "activate"})
+        assert refused.status_code == 422, (status, refused.text)
+        assert refused.json()["detail"] == "action_not_allowed"
+        assert (await row(w, sub))["status"] == status
+    assert await proposal_rows(w) == []
+
+
+async def test_cancel_now_cancels_a_pending_subscription(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await pending_subscription(w, staff)
+
+    created = await propose(w, staff, sub, {"action": "cancel_now", "reason": "changed mind"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    [event] = await events(w, created.json()["id"])
+    assert event["action"] == "cancelled"
+    assert (event["from_status"], event["to_status"]) == ("pending", "cancelled")
+    current = await row(w, sub)
+    assert current["status"] == "cancelled" and current["version"] == 2
+    assert current["cancelled_at"] is not None and current["activated_at"] is None
+    assert current["renews_at"] is None and current["renewal_anchor"] is None
+
+
+async def test_other_actions_are_refused_from_pending(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    sub = await pending_subscription(w, staff)
+    for body in (
+        {"action": "pause"},
+        {"action": "resume"},
+        {"action": "change_plan", "plan_code": "gold"},
+        {"action": "cancel_at_period_end"},
+        {"action": "extend_renewal", "renews_at": "2099-01-01T00:00:00Z"},
+    ):
+        refused = await propose(w, staff, sub, body)
+        assert refused.status_code == 422, (body, refused.text)
+        assert refused.json()["detail"] == "action_not_allowed"
+    assert await proposal_rows(w) == []
+    assert (await row(w, sub))["status"] == "pending"
+
+
+async def test_two_actors_activating_at_once_start_it_once(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await pending_subscription(w, staff)
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    payload = {"subscription_id": sub, "action": "activate"}
+
+    # Two different proposals, both bound to version 1: the row lock serialises them, and the
+    # loser finds the subscription already moved on.
+    results = await asyncio.gather(
+        direct_execute(w, me, payload, first, "1"),
+        direct_execute(w, me, payload, second, "1"),
+        return_exceptions=True,
+    )
+    won = [r for r in results if isinstance(r, dict)]
+    lost = [r for r in results if isinstance(r, BaseException)]
+    assert len(won) == 1 and len(lost) == 1, results
+    assert isinstance(lost[0], ProposalError) and lost[0].detail == "proposal_stale"
+    assert won[0]["status"] == "active" and won[0]["version"] == 2
+    assert len(await events(w, first)) + len(await events(w, second)) == 1
+    current = await row(w, sub)
+    assert current["status"] == "active" and current["version"] == 2
+
+    # A late activation of an already active subscription at its current version is refused by
+    # the state check, not applied twice.
+    with pytest.raises(HTTPException) as refused:
+        await direct_execute(w, me, payload, str(uuid.uuid4()), "2")
+    assert refused.value.status_code == 422 and refused.value.detail == "action_not_allowed"
+    assert (await row(w, sub))["version"] == 2

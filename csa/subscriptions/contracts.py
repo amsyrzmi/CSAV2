@@ -11,7 +11,7 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from csa.console.contracts import Contract
 
-Status = Literal["active", "paused", "cancelled"]
+Status = Literal["pending", "active", "paused", "cancelled"]
 Interval = Literal["month", "year"]
 
 
@@ -110,12 +110,19 @@ class SubscriptionCreateIn(Contract):
 
 
 Action = Literal[
-    "pause", "resume", "change_plan", "cancel_at_period_end", "cancel_now", "extend_renewal"
+    "activate",
+    "pause",
+    "resume",
+    "change_plan",
+    "cancel_at_period_end",
+    "cancel_now",
+    "extend_renewal",
 ]
 
 # The optional fields each action accepts; any other one is refused so a card never shows
 # less than the payload carries.
 ACTION_FIELDS: dict[str, frozenset[str]] = {
+    "activate": frozenset(),
     "pause": frozenset({"resume_at"}),
     "resume": frozenset(),
     "change_plan": frozenset({"plan_code", "effective_at", "price_override"}),

@@ -718,6 +718,7 @@
         "properties": {
           "action": {
             "enum": [
+              "activate",
               "pause",
               "resume",
               "change_plan",
@@ -13976,6 +13977,7 @@
           },
           "status": {
             "enum": [
+              "pending",
               "active",
               "paused",
               "cancelled"
@@ -30527,6 +30529,7 @@
               "anyOf": [
                 {
                   "enum": [
+                    "pending",
                     "active",
                     "paused",
                     "cancelled"

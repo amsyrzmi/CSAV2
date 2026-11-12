@@ -461,6 +461,14 @@ async def test_billing_interval_cannot_change_while_the_plan_is_in_use(
     same = await patch("basic", {"price": "39.90", "billing_interval": "month"})
     assert same.status_code == 200 and same.json()["price"] == "39.90"
     assert (await patch("spare", {"billing_interval": "year"})).json()["billing_interval"] == "year"
+    # A pending sign-up holds the plan too, and archiving the plan stays allowed.
+    await w.q("UPDATE subscriptions SET status='pending', renews_at=NULL WHERE id=%s", sub)
+    for code in ("basic", "pro"):
+        refused = await patch(code, {"billing_interval": "year"})
+        assert refused.status_code == 409 and refused.json()["detail"] == "plan_in_use"
+    archived = await patch("basic", {"is_active": False})
+    assert archived.status_code == 200 and archived.json()["is_active"] is False
+    assert (await patch("basic", {"is_active": True})).status_code == 200
     # A paused subscription still holds the plan; a cancelled one does not.
     await w.q("UPDATE subscriptions SET status='paused', paused_at=now() WHERE id=%s", sub)
     assert (await patch("basic", {"billing_interval": "year"})).status_code == 409

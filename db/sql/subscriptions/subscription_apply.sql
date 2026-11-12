@@ -2,6 +2,9 @@
 -- %(version)s; "now" is the transaction's now(). immediate_plan / scheduled_plan say whether a
 -- change_plan takes effect now (plan, price and currency replaced, pending cleared) or later
 -- (pending_plan and pending_effective_at set).
+-- activate (pending -> active) starts the subscription now: started_at and activated_at are now(),
+-- the anchor is now() and renews_at is one billing interval of the current plan after it on the
+-- tenant's calendar, as subscription_insert.sql computes a new subscription's first renewal.
 -- renewal_anchor is the instant renewals are counted from (subscription_next_renewal), so they keep
 -- the cycle's day of the month:
 --   extend_renewal         anchor = the new renews_at;
@@ -22,10 +25,13 @@ WITH tenant AS (
 )
 UPDATE public.subscriptions s
 SET status = CASE %(action)s
+        WHEN 'activate' THEN 'active'
         WHEN 'pause' THEN 'paused'
         WHEN 'resume' THEN 'active'
         WHEN 'cancel_now' THEN 'cancelled'
         ELSE s.status END,
+    started_at = CASE %(action)s WHEN 'activate' THEN now() ELSE s.started_at END,
+    activated_at = CASE %(action)s WHEN 'activate' THEN now() ELSE s.activated_at END,
     paused_at = CASE %(action)s
         WHEN 'pause' THEN now()
         WHEN 'resume' THEN NULL
@@ -37,13 +43,15 @@ SET status = CASE %(action)s
         ELSE s.resume_at END,
     renews_at = CASE
         WHEN %(action)s = 'extend_renewal' THEN %(renews_at)s::timestamptz
-        WHEN %(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now()) THEN
+        WHEN %(action)s = 'activate'
+             OR (%(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now())) THEN
             public.subscription_next_renewal(
                 now(), now(), current_plan.billing_interval, tenant.timezone)
         ELSE s.renews_at END,
     renewal_anchor = CASE
         WHEN %(action)s = 'extend_renewal' THEN %(renews_at)s::timestamptz
-        WHEN %(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now()) THEN now()
+        WHEN %(action)s = 'activate'
+             OR (%(action)s = 'resume' AND (s.renews_at IS NULL OR s.renews_at < now())) THEN now()
         WHEN %(immediate_plan)s
              AND coalesce(%(target_interval)s, 'month') <> current_plan.billing_interval THEN s.renews_at
         ELSE s.renewal_anchor END,

@@ -115,7 +115,7 @@ class SubscriptionSeed(Strict):
     # Fixed only when a case needs to type it (another contact's id in a customer message).
     id: uuid.UUID | None = None
     plan: str
-    status: Literal["active", "paused", "cancelled"] = "active"
+    status: Literal["pending", "active", "paused", "cancelled"] = "active"
     price: Decimal
     renews_in_days: int | None = None
     cancel_at_period_end: bool = False
