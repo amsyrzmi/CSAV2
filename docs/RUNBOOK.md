@@ -465,6 +465,27 @@ escalations_note_length;`, then `ALTER TABLE public.escalations DROP COLUMN note
 written is lost), and last `DELETE FROM public.schema_migrations WHERE version = '0560';`, or the
 runner thinks it is still applied. Then start the older images.
 
+**Roll back migration 0581.** Needed when going back to an image older than this release. Stop the
+services. Unlink every live link in the console first (rows moved to a surviving contact stay there
+once the link audit is gone). Then, as the database owner and in this order: `DROP TABLE
+public.contact_link_reviews;`, `DROP TABLE public.contact_links;`, `DROP FUNCTION
+public.contacts_belong_to_client();`, `DROP INDEX public.contacts_verified_phone_uq;`, `DROP INDEX
+public.contacts_client_phone_digits;`, `ALTER TABLE public.contacts DROP COLUMN merged_into, DROP
+COLUMN phone_verified_at, DROP COLUMN phone_digits;` (this rewrites `contacts` again; the link audit
+and every verified-phone stamp are lost), `DROP FUNCTION public.my_phone_digits(text);`, and last
+`DELETE FROM public.schema_migrations WHERE version = '0581';`, or the runner thinks it is still
+applied. Then start the older images.
+
+**Roll back migration 0580.** Same reason, after 0581 is rolled back. Stop the services, then, as the
+database owner and in this order: `DELETE FROM public.subscriptions WHERE status = 'pending';` (or
+`UPDATE ... SET status = 'cancelled'`), `ALTER TABLE public.subscriptions DROP CONSTRAINT
+subscriptions_status_chk;` then `ALTER TABLE public.subscriptions ADD CONSTRAINT subscriptions_status_chk
+CHECK (status IN ('active', 'paused', 'cancelled'));`, `ALTER TABLE public.subscriptions DROP COLUMN
+activated_at;`, `ALTER TABLE public.plans DROP COLUMN is_signup_open, DROP COLUMN signup_mode;`, `DROP
+TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (every sign-up request is
+lost), and last `DELETE FROM public.schema_migrations WHERE version = '0580';`, or the runner thinks it
+is still applied. Then start the older images.
+
 **Replay the new conversations** (after the new image is on staging; synthetic facts, no database):
 
 ```bash

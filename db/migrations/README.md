@@ -39,6 +39,13 @@ Reserved ranges (client growth program, 2026-10-27):
   and cancels and dismisses the existing jobs whose files were all removed.
 - `0560`–`0569`: customer bot answers. 0560 adds `escalations.note` (staff context note, at most 500
   characters) and the `escalations_conversation_created` index.
+- `0580`–`0589`: customer onboarding (sign-up from the chat, one customer across channels). 0580 adds
+  `signup_requests`, `subscription_settings` (pending expiry days), `plans.signup_mode` and
+  `plans.is_signup_open`, `subscriptions.activated_at`, and the `pending` status in
+  `subscriptions_status_chk` (read from the live list as 0531 does). 0581 adds
+  `public.my_phone_digits(text)`, the generated `contacts.phone_digits` (rewrites `contacts`),
+  `contacts.phone_verified_at` and `merged_into`, the unique `contacts_verified_phone_uq`, and the
+  `contact_links` and `contact_link_reviews` tables.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
