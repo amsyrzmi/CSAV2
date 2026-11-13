@@ -30,7 +30,7 @@ request count at five, plus two that wait on the owner.
 | 3 | Connections tab | `2026-11-10-connections-tab-design.md` | none | Console navigation changes here before the Overview-as-assistant pull request changes it again |
 | 4 | Product management | `2026-11-10-product-management-design.md` | 0570–0579 | Needs new write routes, a stock-authority rule and assistant actions |
 | 2b | Customer onboarding: sign-up from the chat, per-plan auto-approve, channel-verified linking | `2026-11-11-customer-onboarding-design.md` | 0580-0589 | Added 2026-11-11 (owner: customers must become customers and be recognised across channels); same graph as PR 2, so right after it. Done in build 2026-11-12 on `feat/customer-onboarding` (one pull request, 0580 and 0581; its settled design is section 10 of the design), awaiting review and merge |
-| P1 | Payments 1: invoices, payment methods, reminders, the bot's payment answers, the Payments tab | `2026-11-11-payments-design.md` | 0590-0599 | Added 2026-11-11 (owner: clients are paid by QR, transfer or cash, and it must be automated for thousands of customers); needs 2b for pending subscriptions |
+| P1 | Payments 1: invoices, payment methods, reminders, the bot's payment answers, the Payments tab | `2026-11-11-payments-design.md` | 0590-0599 | Added 2026-11-11 (owner: clients are paid by QR, transfer or cash, and it must be automated for thousands of customers); needs 2b for pending subscriptions. Built 2026-11-13 on `feat/payments-1` (one pull request, 0590 and 0591, plan `2026-11-13-payments-1.md`; its settled design is section 11 of the design), in review, not merged |
 | P2 | Payments 2: bank statement import with automatic matching, cash through Bookings | `2026-11-11-payments-design.md` | 0590-0599 | The scaling piece: staff handle exceptions only |
 | HR | HR refinement: a proper and practical HR flow | none yet; needs its own design round first | to be decided | Added by the owner 2026-11-12; after 4, before the assistant pull request |
 | 5 | Assistant PR 3 (Overview becomes the assistant, interactive dock, alive avatar) | already planned in the assistant refinement programme; its design is brainstormed when it starts | to be decided | Last, so it renders the cards that 4 adds |
@@ -115,5 +115,8 @@ programme as P1 and P2 (`2026-11-11-payments-design.md`).
   two, migrations 0580 and 0581) and waits for review and merge. The owner changed the order: 2b, payments P1
   and P2, PR 4 (product management), HR refinement (needs its own design round), then the assistant pull
   request.
+- 2026-11-13: P1 (Payments 1) is built on `feat/payments-1` (one pull request, migrations 0590 and 0591) and is in
+  review, not merged. Payments are off per company until an Admin switches them on; the DuitNow QR image is a
+  follow-up after P1 (text first). P2 (statement import, cash through Bookings) is not started.
 - Next: the plan for pull request 2 (customer bot business answers, migration 0560) is being written on
   `docs/customer-bot-answers-plan`; then the plans for 2b, P1, P2 and PR 4 in that order.
