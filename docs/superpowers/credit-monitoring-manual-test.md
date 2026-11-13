@@ -180,7 +180,7 @@ console.
 - The seed places its rows relative to the day it is run (the join date, the spread of executions
   and the cut-off ten minutes before now all move with it), so the execution counts, RM amounts
   and the "27 / 30 days" proration below are those of the 2026-11-13 run: your numbers will differ.
-  Check that the figures agree with each other (cards, table, list and charts), not that they
+  Check that the figures agree with each other (cards, table and charts), not that they
   match these.
 - Tier stepping (above 2,000 and above 10,000 executions in a cycle) is not exercised by the seed,
   which stays far below 2,000; it is covered by the Task 7 unit vectors

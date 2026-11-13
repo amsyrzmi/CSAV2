@@ -23,7 +23,7 @@ const phoneCell = "max-sm:border-b-0 max-sm:px-0 max-sm:py-0 max-sm:text-left ma
 const phoneRow = "max-sm:grid max-sm:grid-cols-2 max-sm:gap-x-3 max-sm:gap-y-2 max-sm:border-b max-sm:border-ink-100 max-sm:py-3";
 
 function message(cause: unknown): string {
-  return cause instanceof Error && cause.message ? cause.message : "We could not load your usage. Try again.";
+  return cause instanceof Error && cause.message ? cause.message : "We could not load your AI Usage Charges. Try again.";
 }
 
 /**
@@ -110,7 +110,7 @@ export function CreditWorkspace() {
           <button type="button" className={secondary} onClick={retry}>Try again</button>
         </div>
       ) : !usage ? (
-        <div role="status" aria-busy="true" data-testid="credit-loading"><Notice>Loading your usage...</Notice></div>
+        <div role="status" aria-busy="true" data-testid="credit-loading"><Notice>Loading your AI Usage Charges...</Notice></div>
       ) : (
         <div aria-busy={loading} className={loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
           <CycleView key={usage.cycle_start} usage={usage} />
