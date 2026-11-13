@@ -41,6 +41,7 @@ export const NAV_ICONS: Record<NavKey, string> = {
   bookings: "CalendarDays",
   training_library: "GraduationCap",
   connections: "Plug",
+  credit: "Wallet",
 };
 
 /** Home entries are prefixes of every page under them, so they only match exactly. */

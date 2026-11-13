@@ -15,6 +15,7 @@ import {
   Users,
   UserRoundCog,
   UsersRound,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { NAV_ICONS } from "@/lib/shell-state";
@@ -37,6 +38,7 @@ const BY_NAME: Record<string, LucideIcon> = {
   Users,
   UserRoundCog,
   UsersRound,
+  Wallet,
 };
 
 export function navIcon(key: NavKey): LucideIcon {

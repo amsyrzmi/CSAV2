@@ -49,6 +49,8 @@ const adoptedPages = new Set([
   "/portal/bookings/people-and-rooms",
   "/connections",
   "/portal/connections",
+  // The company's usage and bill (its Admin only; the page and the API both check).
+  "/portal/credit",
   "/workspace",
   "/portal/workspace",
   "/email",

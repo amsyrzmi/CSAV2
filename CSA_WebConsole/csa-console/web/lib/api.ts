@@ -184,6 +184,12 @@ const explained: Record<string, string> = {
   "KB capability is missing or disabled":
     "The knowledge assistant is switched off, so this can't be tried again right now.",
   "ingest job not found": "That upload is no longer on the list. The list has been refreshed.",
+  // The Credit tab (csa/console/billing.py).
+  billing_admin_required: "Only your company's Admin can see its usage and bill.",
+  cycle_not_found: "That billing cycle has not started yet. Choose another one.",
+  cycle_must_start_on_a_fifth: "Choose a billing cycle from the list.",
+  invalid_cursor: "The list of executions changed. Reload the page to see the latest.",
+  cursor_from_another_cycle: "The list of executions changed. Reload the page to see the latest.",
 };
 
 /** The English sentence for a server code, or undefined when none is written (own keys only). */

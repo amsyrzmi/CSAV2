@@ -150,6 +150,24 @@ test("Connections is in every role's rail after Training library, /connections f
   assert.equal(entryForPath(links, "/portal/connections")?.key, "connections");
 });
 
+test("Credit is for the company's Admin only, after Team, with no package and no sub-pages", () => {
+  for (const packages of [[], active("customer_support", "hr", "staff_email")]) {
+    const links = navigationFor({ ...staff, role: "tenant_admin" }, packages);
+    const link = links.find((l) => l.label === "Credit");
+    assert.equal(link?.key, "credit", JSON.stringify(packages));
+    assert.equal(link?.href, "/portal/credit");
+    assert.equal(link?.children, undefined);
+    const names = links.map((l) => l.label);
+    assert.equal(names.indexOf("Credit"), names.indexOf("Team") + 1);
+    assert.equal(entryForPath(links, "/portal/credit")?.key, "credit");
+  }
+  // Staff, read-only members and the platform team (its billing page is its own) never see it.
+  for (const role of ["tenant_staff", "read_only", "platform_admin"]) {
+    const links = navigationFor({ ...staff, role }, active("customer_support", "hr", "staff_email"));
+    assert.ok(!links.some((l) => l.key === "credit" || l.label === "Credit"), role);
+  }
+});
+
 test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
@@ -202,15 +220,15 @@ test("children never add a top-level key", () => {
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  // 16 since Connections joined.
-  assert.equal(keys.size, 16);
+  // 17 since Credit joined.
+  assert.equal(keys.size, 17);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
   const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
-    "activity", "bookings", "business", "connections", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "activity", "bookings", "business", "connections", "credit", "email", "hr", "inbox", "knowledge_base", "members", "overview",
     "password", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });
