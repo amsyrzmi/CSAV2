@@ -562,3 +562,53 @@ async def test_a_claim_with_several_claimed_and_none_waiting_repeats_each_claim(
         ("payment_claim_already_1", claimed_en(first, "MYR 29.90")),
         ("payment_claim_already_2", claimed_en(second, "MYR 39.90")),
     ]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_the_longest_instructions_reply_shows_four_methods_and_fits_one_message(
+    shop: Shop,
+) -> None:
+    """Five active methods with the longest details and instructions, five open invoices with the
+    longest plan name and amount: the first four methods by sort order are shown, and the reply
+    stays under one Telegram message (4096 characters) in both languages."""
+    await shop.w.q(
+        "DELETE FROM payment_methods WHERE client_id = %s AND kind = 'transfer'", shop.client
+    )
+    for order in range(5):
+        await shop.method(
+            "transfer",
+            {
+                "bank_name": "B" * 59 + str(order),
+                "account_name": "N" * 80,
+                "account_number": f"51200000000000000{order:03d}",
+            },
+            order=order + 1,
+        )
+    await shop.w.q(
+        "UPDATE payment_methods SET instructions = %s WHERE client_id = %s",
+        "I" * 500,
+        shop.client,
+    )
+    contact = await shop.ledger.contact()
+    for n in range(5):
+        invoice_id, _ = await shop.invoice(
+            contact, amount="9999999999.99", due_at=DUE + timedelta(days=n)
+        )
+        await shop.w.q(
+            "UPDATE invoices SET line_items = %s WHERE id = %s",
+            Jsonb([{"description": "P" * 120, "quantity": 1, "unit_price": "9999999999.99"}]),
+            invoice_id,
+        )
+    for locale in ("en", "ms"):
+        got = facts(await shop.run(contact, {"action": "instructions"}, locale=locale))
+        ids = [fact_id for fact_id, _ in got]
+        assert ids.count("payment_invoice_5") == 1
+        assert [i for i in ids if i.startswith("payment_method_")] == [
+            f"payment_method_{n}" for n in range(1, 5)
+        ]
+        text = "\n".join(t for _, t in got)
+        for order in range(4):
+            assert f"51200000000000000{order:03d}" in text
+        assert "51200000000000000004" not in text
+        assert len(text) < 4096, (locale, len(text))

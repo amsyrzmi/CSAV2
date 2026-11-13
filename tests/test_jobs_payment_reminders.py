@@ -171,12 +171,14 @@ async def invoice(
     due_at: datetime = DUE,
     subscription: uuid.UUID | None = None,
     reference: bool = True,
+    issued_at: datetime = NOW - timedelta(days=10),
+    period_start: datetime | None = None,
 ) -> str:
     invoice_id = new_invoice_id(NOW)
     await conn.execute(
         "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference, status,"
-        " amount, currency, issued_at, due_at, line_items)"
-        " VALUES (%s,%s,%s,%s,%s,%s,%s,'MYR',%s,%s,%s)",
+        " amount, currency, issued_at, due_at, line_items, period_start, period_end)"
+        " VALUES (%s,%s,%s,%s,%s,%s,%s,'MYR',%s,%s,%s,%s,%s)",
         (
             invoice_id,
             client,
@@ -185,12 +187,37 @@ async def invoice(
             new_reference() if reference else None,
             status,
             Decimal("1059.90"),
-            NOW - timedelta(days=10),
+            issued_at,
             due_at,
             Jsonb([{"description": "Pro Monthly"}]),
+            period_start,
+            period_start + timedelta(days=30) if period_start else None,
         ),
     )
     return invoice_id
+
+
+async def subscription(
+    conn: psycopg.AsyncConnection[Any],
+    client: uuid.UUID,
+    person: uuid.UUID,
+    *,
+    status: str = "active",
+    renews_at: datetime | None = NOW + timedelta(days=20),
+    cancel_at_period_end: bool = False,
+) -> uuid.UUID:
+    await conn.execute(
+        "INSERT INTO plans(client_id,code,name,price,billing_interval,is_active) "
+        "VALUES (%s,'pro','Pro Monthly',1059.90,'month',true) ON CONFLICT DO NOTHING",
+        (client,),
+    )
+    sub = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO subscriptions(id,client_id,contact_id,plan,status,price,started_at,"
+        "renews_at,cancel_at_period_end) VALUES (%s,%s,%s,'pro',%s,1059.90,%s,%s,%s)",
+        (sub, client, person, status, NOW - timedelta(days=40), renews_at, cancel_at_period_end),
+    )
+    return sub
 
 
 async def reference_of(conn: psycopg.AsyncConnection[Any], invoice_id: str) -> str:
@@ -667,6 +694,145 @@ async def test_with_no_payable_method_the_reminder_still_names_the_reference(
             f"Please put {ref} as the payment reference so we can match your payment.\n"
             "If you've already paid, reply here and tell us when."
         )
+
+
+async def test_only_the_first_four_payable_methods_are_shown(
+    pg_container: object, app_dsn: str
+) -> None:
+    accounts = [f"5120000001{n:02d}" for n in range(5)]
+    async with await owner(pg_container) as conn:
+        client = await seed_company(
+            conn,
+            methods=tuple(
+                ("transfer", TRANSFER | {"account_number": a}, True, n)
+                for n, a in enumerate(accounts)
+            ),
+        )
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        await invoice(conn, client, person)
+
+        await run(app_dsn, client)
+        (message,) = await outbound(conn, client)
+        assert [a for a in accounts if a in message["body"]] == accounts[:4]
+
+
+# --- cancelling at period end, and the opening invoice's first notice ----------------------------
+
+
+async def test_a_cancelling_subscriptions_next_period_invoice_is_not_reminded(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        renews = NOW + timedelta(days=3)
+        sub = await subscription(conn, client, person, renews_at=renews, cancel_at_period_end=True)
+        # The next period's invoice was issued before the customer chose to stop: step -7 is owed.
+        upcoming = await invoice(
+            conn, client, person, subscription=sub, due_at=renews, period_start=renews
+        )
+        running = await invoice(
+            conn, client, person, subscription=sub, period_start=NOW - timedelta(days=27)
+        )
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "sent": 1, "skipped": 1}
+        rows = await reminders(conn, client)
+        assert {r["invoice_id"] for r in rows} == {running}
+        assert upcoming not in json.dumps(await outbound(conn, client), default=str)
+
+
+async def test_a_reminder_stops_when_cancelling_is_set_after_the_page_was_read(
+    pg_container: object, app_dsn: str
+) -> None:
+    """The queue's own check, under the subscription lock: the listing said the invoice was owed,
+    then staff set cancel at period end before it was worked on."""
+    from csa.core.tenancy import tx
+    from csa.jobs.payment_reminders import _load_company, _remind
+
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        renews = NOW + timedelta(days=3)
+        sub = await subscription(conn, client, person, renews_at=renews, cancel_at_period_end=True)
+        upcoming = await invoice(
+            conn, client, person, subscription=sub, due_at=renews, period_start=renews
+        )
+        due = {
+            "id": upcoming,
+            "due_at": renews,
+            "subscription_id": sub,
+            "newest": -7,
+            "newest_open": True,
+            "older": [],
+        }
+        async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+            async with tx(pool, str(client)) as scoped:
+                company = await _load_company(scoped, client)
+                assert company is not None
+                assert await _remind(scoped, client, due, company, NOW) == {}
+        assert await reminders(conn, client) == [] and await outbound(conn, client) == []
+
+
+@pytest.mark.parametrize(
+    ("steps", "first"),
+    [([-7, 0, 3, 7], -7), ([0, 3], 0), ([3], 3)],
+)
+async def test_an_opening_invoice_gets_its_first_notice_when_it_is_issued(
+    pg_container: object, app_dsn: str, steps: list[int], first: int
+) -> None:
+    """lead_days 14: the opening invoice is due in 14 days, yet the earliest step goes at issue,
+    so a customer approved by staff learns how to pay at once."""
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, reminder_days=steps)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        sub = await subscription(conn, client, person, status="pending", renews_at=None)
+        opening = await invoice(
+            conn,
+            client,
+            person,
+            subscription=sub,
+            issued_at=NOW - timedelta(minutes=5),
+            due_at=NOW + timedelta(days=14),
+        )
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "sent": 1}
+        assert shape(await reminders(conn, client)) == {(opening, first, "telegram", None, "sent")}
+        (message,) = await outbound(conn, client)
+        assert message["key"] == f"invoice:{opening}:reminder:{first}"
+        assert "is due on 4 December 2026." in message["body"]
+        # Nothing more until the next step is owed from the due date.
+        assert await run(app_dsn, client, NOW + timedelta(days=1)) == ZERO
+
+
+async def test_a_period_invoice_still_waits_for_its_steps_from_the_due_date(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        renews = NOW + timedelta(days=14)
+        sub = await subscription(conn, client, person, renews_at=renews)
+        await invoice(
+            conn,
+            client,
+            person,
+            subscription=sub,
+            issued_at=NOW - timedelta(minutes=5),
+            due_at=renews,
+            period_start=renews,
+        )
+        # A non-subscription invoice with no period is not an opening invoice either.
+        await invoice(conn, client, person, issued_at=NOW - timedelta(minutes=5), due_at=renews)
+
+        assert await run(app_dsn, client) == ZERO
+        assert await reminders(conn, client) == []
+        # Step -7 is owed seven days before the due date, as before.
+        assert (await run(app_dsn, client, NOW + timedelta(days=7)))["sent"] == 1
 
 
 # --- failures -----------------------------------------------------------------------------------

@@ -145,7 +145,9 @@ class PaymentAgent:
         methods: list[MethodOut] = []
         if to_pay:
             rows = await db.q.fetch_all(
-                "payments/agent_methods.sql", {"client_id": ctx.client_id}, conn=conn
+                "payments/agent_methods.sql",
+                {"client_id": ctx.client_id, "limit": copy.CUSTOMER_METHODS},
+                conn=conn,
             )
             methods = [MethodOut.model_validate(row) for row in rows]
             if not methods:  # settings refuse this; never tell a customer to pay nowhere

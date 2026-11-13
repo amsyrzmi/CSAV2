@@ -74,6 +74,7 @@ from csa.graph.policy.plan_rules import (
 )
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
+from csa.payments.settings import get_settings
 from csa.staff.ownership import automation_allowed, replies_off
 from csa.turn.texts import (
     clip_message,
@@ -220,14 +221,30 @@ def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
     ]
 
 
+DRAFT_MAX = 8000  # Draft.text's limit
+
+
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
     a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
-    the coordinator's check is grounding alone."""
+    the coordinator's check is grounding alone.
+
+    Whole facts only, up to `DRAFT_MAX` characters: a fact that would not fit is left out, never
+    cut, so an account number or a reference is never sent half (a payment answer is far shorter:
+    `csa.payments.copy.CUSTOMER_METHODS`)."""
+    kept: list[tuple[str, Fact]] = []
+    size = 0
+    for fact_id, fact in written:
+        extra = len(fact.text) + (1 if kept else 0)
+        if size + extra > DRAFT_MAX:
+            break
+        kept.append((fact_id, fact))
+        size += extra
+    text = "\n".join(fact.text for _, fact in kept) or written[0][1].text[:DRAFT_MAX]
     return Draft(
-        text="\n".join(fact.text for _, fact in written)[:8000],
+        text=text,
         language=language if len(language) >= 2 else "en",
-        fact_ids=[fact_id for fact_id, _ in written][:100],
+        fact_ids=[fact_id for fact_id, _ in (kept or written[:1])][:100],
         composer="template",
     )
 
@@ -430,10 +447,20 @@ class PostgresTurnDependencies:
                 },
                 conn=conn,
             )
+            # Read every turn, never cached: switching payments off takes the payment agent (and
+            # its prompt rules) away at once.
+            payments_on = (await get_settings(conn, envelope.client_id)).enabled
         if row is None:
             raise RuntimeError("conversation_not_found")
         # Cached per company for 30 s; which agents (and their rules) the model is told of.
         switched_on = await self._capabilities.load(envelope.client_id)
+        names = {capability.name for capability in switched_on}
+        if not payments_on:
+            # The payment agent is offered only while the company's payments are on: with them
+            # off, a "how do I pay?" goes to the agents that answered it before (knowledge,
+            # orders, invoices). The agent's own `payment_not_set_up` answer stays for a turn
+            # that races a switch-off.
+            names.discard(PaymentAgent.name)
         # Side by side: each read has its own budget and never raises (both degrade to empty), so
         # together they stay inside the node's limit, which one after the other they need not.
         (recent, handoff_recent, memory_off), booking = await asyncio.gather(
@@ -453,7 +480,7 @@ class PostgresTurnDependencies:
             flags=flags,
             booking=booking,
             recent=recent,
-            capabilities=sorted({capability.name for capability in switched_on}),
+            capabilities=sorted(names),
         )
 
     async def _recent_messages(

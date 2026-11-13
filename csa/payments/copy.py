@@ -28,6 +28,12 @@ from csa.payments.invoices import InvoiceRecord
 Locale = Literal["en", "ms"]
 Channel = Literal["chat", "email"]
 
+# A customer is shown the company's first four active QR and transfer methods (sort order, then
+# label), in a reminder and in the agent's reply alike (payments/agent_methods.sql takes as many),
+# so the longest text (four methods with 500-character instructions and five open invoices) stays
+# one Telegram message (4096 characters). Staff are told in Settings.
+CUSTOMER_METHODS = 4
+
 _MONTHS: dict[Locale, tuple[str, ...]] = {
     "en": (
         "January", "February", "March", "April", "May", "June", "July", "August", "September",

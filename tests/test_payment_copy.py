@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from csa.payments.contracts import MethodOut
 from csa.payments.copy import (
+    CUSTOMER_METHODS,
     invoice_line,
     locale_of,
     method_line,
@@ -270,3 +271,36 @@ def test_the_closing_line_follows_the_channel(locale: str, chat_line: str, email
     # Only the closing line differs, and an email never says "reply here".
     assert email.splitlines()[:-1] == chat.splitlines()[:-1]
     assert "reply" not in email.lower() and "balas" not in email.lower()
+
+
+def test_the_longest_reminder_fits_one_telegram_message() -> None:
+    """Four methods (the most a customer is shown) with the longest details and 500-character
+    instructions, the longest plan name and amount: one Telegram message (4096 characters)."""
+    assert CUSTOMER_METHODS == 4
+    longest = replace(INVOICE, amount=Decimal("9999999999.99"), plan_name="P" * 120)
+    methods = [
+        TRANSFER.model_copy(
+            update={
+                "id": uuid.uuid4(),
+                "details": {
+                    "bank_name": "B" * 60,
+                    "account_number": "5" * 20,
+                    "account_name": "N" * 80,
+                },
+                "instructions": "I" * 500,
+            }
+        )
+        for _ in range(CUSTOMER_METHODS)
+    ]
+    for locale in ("en", "ms"):
+        for channel in ("chat", "email"):
+            text = reminder_text(
+                longest,
+                methods,
+                today=date(2026, 12, 1),
+                brand="K" * 120,
+                locale=locale,  # type: ignore[arg-type]
+                tz=TZ,
+                channel=channel,  # type: ignore[arg-type]
+            )
+            assert len(text) < 4096, (locale, channel, len(text))

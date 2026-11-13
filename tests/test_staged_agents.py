@@ -1443,6 +1443,28 @@ async def test_with_payments_on_a_staff_plan_sign_up_says_an_invoice_follows_app
 
 
 @requires_docker
+async def test_with_payments_on_a_free_staff_plan_promises_no_invoice(world: World) -> None:
+    """A zero-price plan gets no invoice at approval (issue_opening_invoice skips it), so the
+    customer is told what a payments-off company says, never "you'll get an invoice"."""
+    await payments_on(world)
+    ctx = await signup_chat(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE plans SET price = 0 WHERE client_id = %s AND code = 'besar'",
+            (world.ctx.client_id,),
+        )
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Besar was received. The team will review it and tell you "
+            "what happens next. Nothing is active yet.",
+        )
+    ]
+
+
+@requires_docker
 async def test_with_payments_on_an_auto_plan_names_its_opening_invoice(world: World) -> None:
     await payments_on(world)
     ctx = await signup_chat(world, signup_mode="auto")

@@ -738,4 +738,5 @@ async def test_registry_contains_payments_due_every_fifteen_minutes() -> None:
     assert job.every == timedelta(minutes=15)
     assert job.per_client is True
     assert job.own_transactions is False
+    assert job.timeout == 120.0
     assert job.fn is run_payments_due

@@ -39,6 +39,7 @@ from tests.test_jobs_payment_reminders import (
     owner,
     reference_of,
     seed_company,
+    subscription,
 )
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
@@ -271,6 +272,29 @@ async def test_an_invoice_no_longer_open_is_dropped_and_not_mailed(
         assert await status_of(conn, row) == ("dropped", None)
 
 
+async def test_a_cancelling_subscriptions_next_period_mail_is_dropped(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, support=None)
+        person = await contact(conn, client, email="stopping@example.test")
+        renews = NOW + timedelta(days=3)
+        sub = await subscription(conn, client, person, renews_at=renews)
+        upcoming = await invoice(
+            conn, client, person, subscription=sub, due_at=renews, period_start=renews
+        )
+        row = await queued(conn, client, upcoming, "stopping@example.test", step=-7)
+        # The customer chose to stop at period end after the email row was queued.
+        await conn.execute(
+            "UPDATE subscriptions SET cancel_at_period_end = true WHERE id = %s", (sub,)
+        )
+        relay = FakeTransport()
+
+        assert await send(pg_container, app_dsn, relay) == ZERO | {"claimed": 1, "dropped": 1}
+        assert relay.sent == []
+        assert await status_of(conn, row) == ("dropped", None)
+
+
 async def test_an_overdue_invoice_is_still_mailed(pg_container: object, app_dsn: str) -> None:
     async with await owner(pg_container) as conn:
         client = await seed_company(conn, support=None)
@@ -485,6 +509,28 @@ async def test_a_company_not_live_or_with_payments_off_is_skipped_and_its_rows_w
 
         assert await send(pg_container, app_dsn, relay) == ZERO
         assert relay.sent == [] and (await status_of(conn, row))[0] == "queued"
+
+
+async def test_a_company_with_an_invalid_time_zone_is_skipped_and_the_others_still_go(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        broken = await seed_company(conn, support=None)
+        fine = await seed_company(conn, support=None)
+        _, stuck = await a_customer(conn, broken, "broken@example.test")
+        await a_customer(conn, fine, "fine@example.test")
+        await conn.execute("UPDATE clients SET timezone = 'Not/A_Zone' WHERE id = %s", (broken,))
+        relay = FakeTransport()
+
+        with capture_logs() as logs:
+            stats = await send(pg_container, app_dsn, relay)
+        assert stats == ZERO | {"claimed": 1, "sent": 1, "errors": 1}
+        assert relay.to() == ["fine@example.test"]
+        assert (await status_of(conn, stuck))[0] == "queued"
+        (failure,) = [e for e in logs if e["event"] == "payment_reminder_list_failed"]
+        assert failure["client_id"] == str(broken)
+        assert failure["category"] == "ZoneInfoNotFoundError"
+        assert "example.test" not in str(logs)
 
 
 async def test_nothing_is_mailed_in_quiet_hours_and_it_goes_in_the_morning(

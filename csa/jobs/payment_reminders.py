@@ -2,7 +2,9 @@
 chat, or as an email row for the mail job; else a `no_channel` row for "Needs a nudge".
 
 Steps are days from an invoice's due date (`payment_settings.reminder_days`, before is negative).
-A step is owed once `due_at + step days <= now`, and each step is made once: one
+A step is owed once `due_at + step days <= now`; an opening invoice (a subscription's, no period
+yet) owes its earliest step from when it is issued, so a customer gets how to pay at once whatever
+`lead_days` is. Each step is made once: one
 `invoice_reminders` row per (invoice, step), `UNIQUE (client_id, invoice_id, step)`, and the chat
 message key `invoice:{id}:reminder:{step}`. Only the newest owed step is ever sent; older owed
 steps without a row (the worker was down, payments were just switched on) are recorded `skipped`,
@@ -21,6 +23,12 @@ every company, as booking reminder mail does (`csa.jobs.bookings.run_reminder_ma
 connection only lists which companies have rows, and each row is then claimed (`sending`,
 committed before the send, so it is never sent twice), checked again and settled in its own
 company's transaction, as `csa_app`. The mail is built at send time, from what is true then.
+
+An invoice for a period its subscription will not run (it cancels at period end and the period
+starts at or after `renews_at`) is never reminded: not listed, not queued, a queued mail dropped.
+At most `CUSTOMER_METHODS` (4) methods are shown. A `sent` row means the message was written for
+the delivery worker, not that it reached the customer (a failed delivery shows in the delivery
+dead letters and staff notices).
 
 Logs carry categories and ids only: never an address, an amount, a name or a message.
 """
@@ -49,7 +57,7 @@ from csa.jobs.clock import Clock
 from csa.jobs.subscriptions import PACKAGE_KEYS, PACKAGE_STATUSES
 from csa.payments import notices
 from csa.payments.contracts import MethodOut
-from csa.payments.copy import locale_of, reminder_text
+from csa.payments.copy import CUSTOMER_METHODS, locale_of, reminder_text
 from csa.payments.invoices import InvoiceRecord
 from csa.payments.settings import PAYABLE_KINDS, get_settings, list_methods
 
@@ -88,7 +96,7 @@ class _Company:
     steps: list[int]
     brand: str
     zone: ZoneInfo
-    methods: list[MethodOut]  # active QR and transfer methods, in the company's order
+    methods: list[MethodOut]  # the first CUSTOMER_METHODS active QR and transfer methods
     chats: bool  # an automatic message may go (bot.gate): Telegram and open WhatsApp chats
     email: bool  # customers may be mailed (customers_remindable)
 
@@ -137,7 +145,7 @@ async def _load_company(conn: Conn, client_id: UUID) -> _Company | None:
         steps=list(settings.reminder_days),
         brand=facts["brand"],
         zone=ZoneInfo(facts["timezone"]),
-        methods=[m for m in methods if m.kind in PAYABLE_KINDS],
+        methods=[m for m in methods if m.kind in PAYABLE_KINDS][:CUSTOMER_METHODS],
         chats=blocked is None,
         email=await customers_remindable(conn, client_id),
     )
@@ -184,8 +192,9 @@ async def _remind(
     invoice_id: str = due["id"]
     key = {"client_id": client_id, "invoice_id": invoice_id}
     # LOCK ORDER (invoice_lock.sql): the subscription first, then the invoice.
+    subscription = None
     if due["subscription_id"] is not None:
-        await db.q.fetch_one(
+        subscription = await db.q.fetch_one(
             "subscriptions/subscription_lock.sql",
             {"client_id": client_id, "subscription_id": due["subscription_id"]},
             conn=conn,
@@ -193,6 +202,16 @@ async def _remind(
     locked = await db.q.fetch_one("payments/invoice_lock.sql", key, conn=conn)
     # Paid, voided or claimed since the page was read, or moved off its contact: nothing is owed.
     if locked is None or locked["status"] not in REMINDABLE or locked["contact_id"] is None:
+        return done
+    # The subscription cancels at period end (set since the page was read): the invoice of the
+    # period that will not run is owed by nobody, and no row is written for it.
+    if (
+        subscription is not None
+        and subscription["cancel_at_period_end"]
+        and subscription["renews_at"] is not None
+        and locked["period_start"] is not None
+        and locked["period_start"] >= subscription["renews_at"]
+    ):
         return done
     contact = await db.q.fetch_one(
         "payments/reminder_contact.sql",
@@ -350,9 +369,9 @@ async def _compose(conn: Conn, row: Mapping[str, Any], now: datetime) -> Outgoin
     A row queued more than `STALE_AFTER` ago is dropped first. Everything else is read again
     here, as late as it can be, in the claim's transaction: the company's switches (subscriptions
     package active, payments on, `customers_remindable`), the invoice (still issued or overdue,
-    still with its contact), the contact, and the contact's address as it is now, which must be
-    the one the row was queued for. The text is built now, with today's local date, so a reminder
-    queued yesterday says what is true today.
+    still with its contact, not for a period its subscription will not run), the contact, and the
+    contact's address as it is now, which must be the one the row was queued for. The text is
+    built now, with today's local date, so a reminder queued yesterday says what is true today.
     """
     client_id: UUID = row["client_id"]
     if now - row["created_at"] > STALE_AFTER:
@@ -366,6 +385,13 @@ async def _compose(conn: Conn, row: Mapping[str, Any], now: datetime) -> Outgoin
         conn=conn,
     )
     if found is None or found["status"] not in REMINDABLE or found["contact_id"] is None:
+        return None
+    dropped = await db.q.fetch_one(
+        "payments/invoice_period_dropped.sql",
+        {"client_id": client_id, "invoice_id": row["invoice_id"]},
+        conn=conn,
+    )
+    if dropped is not None and dropped["dropped"]:
         return None
     contact = await db.q.fetch_one(
         "payments/reminder_contact.sql",
@@ -528,11 +554,12 @@ async def run_payment_reminder_mail(
         )
     lists: list[list[tuple[UUID, UUID]]] = []
     for company in companies:
-        sending = company["queued"] and not is_quiet(now, ZoneInfo(company["timezone"]))
-        room = batch_size if sending and len(lists) < batch_size else 0
-        if not room and not company["lost"]:
-            continue
+        # One company's bad data (an invalid clients.timezone) skips that company only.
         try:
+            sending = company["queued"] and not is_quiet(now, ZoneInfo(company["timezone"]))
+            room = batch_size if sending and len(lists) < batch_size else 0
+            if not room and not company["lost"]:
+                continue
             lost, queued = await _company_rows(
                 app_pool,
                 company["client_id"],
@@ -542,7 +569,11 @@ async def run_payment_reminder_mail(
             )
         except Exception as exc:
             stats["errors"] += 1
-            logger.error("payment_reminder_list_failed", category=type(exc).__name__)
+            logger.error(
+                "payment_reminder_list_failed",
+                client_id=str(company["client_id"]),
+                category=type(exc).__name__,
+            )
             continue
         stats["lost"] += lost
         if queued:

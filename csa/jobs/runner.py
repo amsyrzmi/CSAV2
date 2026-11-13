@@ -103,6 +103,8 @@ def build_default_registry(
             every=timedelta(minutes=15),
             fn=run_payments_due,
             per_client=True,
+            # A company's whole batch (issue, overdue, suspend) in one run: room past the default.
+            timeout=120.0,
         )
     )
     # Per company, each invoice in its own transaction on the app pool, like the booking reminders.
@@ -113,6 +115,7 @@ def build_default_registry(
             fn=run_payment_reminder_queue,
             per_client=True,
             own_transactions=True,
+            timeout=120.0,  # up to MAX_PER_RUN invoices, each in its own transaction
         )
     )
     registry.register(

@@ -261,6 +261,20 @@ async def test_a_payment_reply_still_leaves_out_other_tasks_reads() -> None:
     assert model.calls == []
 
 
+async def test_a_facts_reply_never_cuts_a_fact_in_half() -> None:
+    """Over Draft's 8000 characters, whole facts are kept and the rest left out: an account
+    number is never sent cut short."""
+    long_fact = ("write_1", Fact(id="write_1", text="x" * 7950, source="subscription_agent"))
+    account = ("pay:payment_method_1", Fact(id="payment_method_1", text=FACTS[1][1], source="p"))
+    draft = deps._facts_draft([long_fact, account], "en")
+    assert draft.text == "x" * 7950 and ACCOUNT not in draft.text
+    assert draft.fact_ids == ["write_1"]
+    whole = deps._facts_draft([account, long_fact], "en")
+    assert whole.text == FACTS[1][1] and whole.fact_ids == ["pay:payment_method_1"]
+    short = deps._facts_draft([account, account], "en")
+    assert short.text == f"{FACTS[1][1]}\n{FACTS[1][1]}" and len(short.fact_ids) == 2
+
+
 async def test_grounding_refuses_an_invented_account_number() -> None:
     state = _state(
         [_result("t1-kb_agent", "kb_agent", [("kb_1", "We take bank transfers.")])],
@@ -441,3 +455,32 @@ async def test_the_planner_is_told_of_the_payment_agent_and_its_input() -> None:
     assert "payment_agent" in PostgresTurnDependencies.known_agents
     provider = build_llm_provider(PaymentModel({}))
     assert provider._read_actions["payment_agent"] == ["instructions", "status"]
+
+
+@requires_docker
+async def test_the_payment_agent_is_offered_only_while_payments_are_on(shop: Shop) -> None:
+    """With payments off the classifier and planner never hear of the payment agent (or its
+    rules: the dispute escalation among them); switched on, it is offered on the next turn."""
+    from tests.test_booking_agent import conversation, envelope_for
+    from tests.test_llm_provider import _prompts_for
+
+    await activate_only(shop.w, shop.tenant, "subscriptions")
+    contact = await shop.customer()
+    envelope = envelope_for(shop, contact, await conversation(shop, contact))
+    real = PostgresTurnDependencies(shop.w.pool)
+
+    off = await real.load_context(envelope)
+    assert "payment_agent" not in off.capabilities and "subscription_agent" in off.capabilities
+    for call in ("classify", "plan"):
+        system, _ = await _prompts_for(off, call)
+        assert "payment_agent" not in system and "Plan payment tasks alone" not in system
+
+    ledger = Ledger(shop.w, shop.tenant, uuid4())
+    await ledger.payments_on()
+    on = await real.load_context(envelope)  # the same deps: the switch is never cached
+    assert "payment_agent" in on.capabilities
+    system, _ = await _prompts_for(on, "plan")
+    assert "payment_agent" in system and "Plan payment tasks alone" in system
+
+    await ledger.payments_on(enabled=False)
+    assert "payment_agent" not in (await real.load_context(envelope)).capabilities

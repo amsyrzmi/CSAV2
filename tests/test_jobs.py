@@ -541,6 +541,9 @@ async def test_registry_queues_payment_reminders_every_fifteen_minutes_per_compa
     assert job.every == timedelta(minutes=15)
     # Per company, each invoice in its own transaction on the app pool.
     assert job.per_client is True and job.own_transactions is True
+    assert job.timeout == 120.0
+    due = build_default_registry().get("payments_due")
+    assert due is not None and due.timeout == 120.0
 
 
 async def test_registry_sends_payment_reminder_mail_every_five_minutes_for_everyone() -> None:
