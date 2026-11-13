@@ -119,10 +119,43 @@ def test_paused_with_and_without_a_resume_date() -> None:
 
 
 def test_a_pending_plan_is_waiting_to_be_started_with_no_date() -> None:
+    # No opening invoice (payments off, or a free plan): the text is as before payments.
     assert texts([row(status="pending", renews_at=None)]) == [
         "Your plan: Basic, MYR 10.00 a month, is waiting to be started by the team. "
         "Nothing has been charged."
     ]
+
+
+def pending(invoice_status: str | None, reference: str | None = "KDMW-7AS") -> dict[str, Any]:
+    return row(
+        status="pending",
+        renews_at=None,
+        opening_invoice_status=invoice_status,
+        opening_invoice_reference=reference if invoice_status else None,
+    )
+
+
+def test_a_pending_plan_with_an_open_opening_invoice_waits_for_the_first_payment() -> None:
+    for status in ("issued", "overdue", "cash_pending"):
+        assert texts([pending(status)]) == [
+            "Your plan: Basic, MYR 10.00 a month, starts when your first payment is confirmed. "
+            "Invoice KDMW-7AS is waiting for payment."
+        ], status
+
+
+def test_a_pending_plan_whose_invoice_the_customer_says_is_paid_is_not_confirmed_yet() -> None:
+    assert texts([pending("proof_submitted")]) == [
+        "Your plan: Basic, MYR 10.00 a month, starts when your payment is confirmed. "
+        "You told us you paid; it isn't confirmed yet."
+    ]
+
+
+def test_a_pending_plan_never_says_nothing_was_charged_when_an_invoice_waits() -> None:
+    for status in ("issued", "overdue", "proof_submitted", "cash_pending"):
+        (text,) = texts([pending(status)])
+        assert "charged" not in text and "by the team" not in text, status
+    # Without a reference the invoice cannot be named: the text is the one without an invoice.
+    assert texts([pending("issued", reference=None)]) == texts([pending(None)])
 
 
 def test_a_cancelled_plan_says_so_and_an_unknown_status_gives_no_fact() -> None:
@@ -189,8 +222,8 @@ def test_request_facts_use_the_exact_copy() -> None:
     )
     assert text("already_paused", name="Basic") == "Basic is already paused."
     assert text("waiting", name="Basic") == (
-        "Basic is waiting to be started by the team and nothing has been charged, so it can't "
-        "be paused, cancelled or changed yet. The team can help with any question about it."
+        "Basic has not started yet, so it can't be paused, cancelled or changed yet. The team "
+        "can help with any question about it."
     )
     assert [request_fact(kind).id for kind in ("none", "which")] == [
         "subscription_none",
@@ -222,6 +255,13 @@ def test_the_live_sql_allowlist_names_pending() -> None:
     assert "client_id" in sql and "contact_id" in sql
 
 
+def test_both_subscription_reads_carry_the_opening_invoice() -> None:
+    for name in ("subscription_list.sql", "subscription_get.sql"):
+        sql = (ROOT / "db/sql/agents" / name).read_text()
+        assert "LATERAL" in sql, name
+        assert "opening_invoice_status" in sql and "opening_invoice_reference" in sql, name
+
+
 def test_signup_facts_use_the_exact_copy() -> None:
     def text(*args: Any, **kwargs: Any) -> str:
         return signup_fact(*args, **kwargs).text
@@ -251,11 +291,19 @@ def test_signup_facts_use_the_exact_copy() -> None:
     )
     assert text("filed", plan="Plan Besar") == (
         "Your sign-up for Plan Besar was received. The team will review it and tell you what "
-        "happens next. Nothing is active yet and nothing has been charged."
+        "happens next. Nothing is active yet."
+    )
+    assert text("filed", plan="Plan Besar", payments=True) == (
+        "Your sign-up for Plan Besar was received. The team will review it; once it is approved "
+        "you'll get an invoice with how to pay, and the plan starts when the payment is "
+        "confirmed. Nothing is active yet."
     )
     assert text("filed_auto", plan="Plan Besar") == (
-        "Your sign-up for Plan Besar is registered and waiting to be started. Nothing has been "
-        "charged."
+        "Your sign-up for Plan Besar is registered and waiting to be started by the team."
+    )
+    assert text("filed_auto_invoice", plan="Plan Besar", ref="KDMW-7AS") == (
+        "Your sign-up for Plan Besar is registered. Invoice KDMW-7AS is ready: ask me how to "
+        "pay. The plan starts when the payment is confirmed."
     )
     assert text("exists", plan="Plan Besar") == (
         "You already have a sign-up for Plan Besar waiting for the team."
@@ -280,3 +328,11 @@ def test_signup_fact_ids_are_constants_with_an_index() -> None:
     for kind in ("filed", "filed_auto", "exists"):
         sentence = signup_fact(kind, plan="A").text  # type: ignore[arg-type]
         assert "approved" not in sentence and "is now active" not in sentence
+    # Nothing claims a charge either way: a fact never says one was or was not made.
+    for kind in ("filed", "filed_auto", "filed_auto_invoice"):
+        for payments in (False, True):
+            fact = signup_fact(kind, plan="A", ref="KDMW-7AS", payments=payments)  # type: ignore[arg-type]
+            assert "charged" not in fact.text, (kind, payments)
+    assert signup_fact("filed_auto_invoice", plan="A", ref="KDMW-7AS").id == (
+        "signup_filed_auto_invoice_1"
+    )

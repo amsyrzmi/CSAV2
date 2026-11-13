@@ -125,7 +125,10 @@ def validate_plan(
             }
         )
 
-    if plan.intent in _ACCOUNT_INTENTS and not plan.tasks:
+    # The planner's own escalation (a disputed or double charge, `_PAYMENT_PLAN_RULE`) has no
+    # tasks by design: it goes to a person rather than asking the customer for a detail.
+    planner_escalates = plan.reply_strategy == "escalate" and plan.source == "llm"
+    if plan.intent in _ACCOUNT_INTENTS and not plan.tasks and not planner_escalates:
         if plan.reply_strategy == "auto_reply" and plan.intent == Intent.ORDER:
             return plan, errors
         plan = plan.model_copy(update={"reply_strategy": "ask_clarifying"})

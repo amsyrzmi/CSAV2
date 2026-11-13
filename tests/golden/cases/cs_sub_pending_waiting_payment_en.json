@@ -1,0 +1,176 @@
+{
+  "id": "cs_sub_pending_waiting_payment_en",
+  "matrix": "Subscriptions: a plan waiting for its first payment names its invoice, then how to pay it",
+  "description": "A pending Plan Sederhana with its open opening invoice: 'What plan am I on?' gets the fact that the plan starts when the first payment is confirmed and names the invoice (never that nothing was charged or that the team will start it), and 'how do I pay for it?' runs payment_agent 'instructions' with the exact reference, amount and account.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "PNMB-8QF",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 7,
+        "subscription": 0
+      }
+    ],
+    "subscriptions": [
+      {
+        "plan": "sederhana",
+        "status": "pending",
+        "price": "35.00"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "What plan am I on?",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "mine"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "You're on Plan Sederhana, MYR 35.00 a month. It starts when your first payment is confirmed; invoice PNMB-8QF is waiting for payment."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "compose_sees": [
+          "Your plan: Plan Sederhana, MYR 35.00 a month, starts when your first payment is confirmed. Invoice PNMB-8QF is waiting for payment."
+        ],
+        "model_never_sees": [
+          "Nothing has been charged",
+          "waiting to be started by the team"
+        ],
+        "reply_contains": [
+          "PNMB-8QF"
+        ],
+        "reply_excludes": [
+          "is active",
+          "charged"
+        ],
+        "prepared_requests": 0,
+        "agent_errors": [],
+        "escalations": 0,
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    },
+    {
+      "say": "how do I pay for it?",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "payment_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "instructions"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "prepared_requests": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Invoice PNMB-8QF: MYR 35.00 for Plan Sederhana",
+          "account 512000000021",
+          "Please put PNMB-8QF as the payment reference"
+        ],
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}

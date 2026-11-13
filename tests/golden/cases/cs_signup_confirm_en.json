@@ -118,7 +118,7 @@
           "done": true
         },
         "ComposeOut": {
-          "reply": "Thanks! Your sign-up for Plan Besar was received. The team will review it and let you know what happens next. Nothing is active yet and nothing has been charged."
+          "reply": "Thanks! Your sign-up for Plan Besar was received. The team will review it and let you know what happens next. Nothing is active yet."
         },
         "ReviewOut": {
           "ok": true
@@ -142,7 +142,7 @@
           "has been activated"
         ],
         "compose_sees": [
-          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."
+          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."
         ],
         "signup_requests": 1
       }

@@ -40,6 +40,7 @@ from csa.contacts.linking import live_contact
 from csa.contracts.facts import Fact
 from csa.core import db
 from csa.core.phone import normalise_my_phone
+from csa.payments.settings import get_settings
 from csa.subscriptions.signup import file_signup
 
 logger = structlog.get_logger(__name__)
@@ -225,8 +226,18 @@ async def _file(
         return SignupTurn(_Reply().add("which").facts(plan_facts(offered)))
     await _close(conn, ctx, contact_id, "used")
     if filed.outcome == "filed":
-        auto = filed.request is not None and filed.request.status == "approved"
-        return SignupTurn(_Reply().add("filed_auto" if auto else "filed", plan=plan_name).facts())
+        request = filed.request
+        if request is not None and request.status == "approved":
+            # An auto plan: approved at once, with its opening invoice while payments are on.
+            if request.invoice_reference:
+                reply = _Reply().add(
+                    "filed_auto_invoice", plan=plan_name, ref=request.invoice_reference
+                )
+            else:
+                reply = _Reply().add("filed_auto", plan=plan_name)
+            return SignupTurn(reply.facts())
+        payments = (await get_settings(conn, ctx.client_id)).enabled
+        return SignupTurn(_Reply().add("filed", plan=plan_name, payments=payments).facts())
     told: dict[str, SignupKind] = {"exists": "exists", "has_plan": "has_plan", "closed": "closed"}
     return SignupTurn(_Reply().add(told[filed.outcome], plan=plan_name).facts())
 

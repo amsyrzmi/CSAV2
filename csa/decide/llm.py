@@ -93,6 +93,12 @@ _SUBSCRIPTION_PLAN_RULE = (
     "sekarang?' and 'bila plan saya renew?' are 'mine', 'nak stop plan bulan depan' is "
     "request_cancel, 'ada plan apa?' is 'plans'. "
 )
+# Said after _SUBSCRIPTION_PLAN_RULE only to a company that also has payment_agent (its name is
+# never shown to a company without it).
+_SUBSCRIPTION_PAY_RULE = (
+    "How to pay for a plan waiting for payment uses payment_agent 'instructions', not "
+    "subscription_agent. "
+)
 # Sign-up (customer onboarding): collected over several messages, read back, filed on a typed yes.
 # The server checks the yes answers its own read-back; the rule keeps the model from guessing one.
 _SIGNUP_PLAN_RULE = (
@@ -120,6 +126,28 @@ _SIGNUP_CLASSIFY_RULE = (
     "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]' or a yes), has "
     "intent subscription and subscription_agent should be scored (for example 'nak daftar plan "
     "Besar')."
+)
+# Payments (payment_agent, said only to a company that has it): which action each kind of question
+# uses. The server finds the invoices and writes every amount, account number and reference, so the
+# planner never writes one the customer did not; a disputed or double charge goes to a person.
+_PAYMENT_PLAN_RULE = (
+    "Payments: asking how to pay, which bank account or DuitNow to pay to, or where to transfer "
+    "(for example 'how do I pay?', 'where do I transfer?', 'nak bayar macam mana?', 'akaun bank "
+    "apa?') uses payment_agent 'instructions'. Asking whether their payment was received (for "
+    "example 'did you receive my payment?', 'dah masuk ke?') is 'status'. Saying they have paid "
+    "(for example 'I've paid', 'dah transfer pagi tadi dari Maybank') is 'claim_paid', with note "
+    "copied from the customer's own words about when and from which bank they paid. The server "
+    "finds the customer's invoices from this chat and writes every amount, account number and "
+    "reference itself: put reference only when the customer wrote one, copied as they wrote it, "
+    "and never put an amount, account number or reference the customer did not write. Plan "
+    "payment tasks alone, with no other agent's task in the same reply. A customer who disputes "
+    'an amount or says they were charged twice gets no tasks and reply_strategy "escalate", so '
+    "a team member checks it. "
+)
+_PAYMENT_CLASSIFY_RULE = (
+    " Asking how or where to pay, whether a payment was received, saying they have paid, or "
+    "disputing a charge has intent billing_invoice and payment_agent should be scored (for "
+    "example 'nak bayar macam mana?', 'dah masuk ke?', 'dah transfer pagi tadi dari Maybank')."
 )
 # Anger sends a chat to a person at once, so only the strong cases are `angry`.
 _SENTIMENT_RULE = (
@@ -375,17 +403,24 @@ def _offers(ctx: Context, name: str) -> bool:
 
 
 def _subscription_plan_rule(ctx: Context) -> str:
-    return (
-        f"{_SUBSCRIPTION_PLAN_RULE}{_SIGNUP_PLAN_RULE}"
-        if _offers(ctx, "subscription_agent")
-        else ""
-    )
+    if not _offers(ctx, "subscription_agent"):
+        return ""
+    pay = _SUBSCRIPTION_PAY_RULE if _offers(ctx, "payment_agent") else ""
+    return f"{_SUBSCRIPTION_PLAN_RULE}{pay}{_SIGNUP_PLAN_RULE}"
 
 
 def _subscription_classify_rule(ctx: Context) -> str:
     if not _offers(ctx, "subscription_agent"):
         return ""
     return f"{_SUBSCRIPTION_CLASSIFY_RULE}{_SIGNUP_CLASSIFY_RULE}"
+
+
+def _payment_plan_rule(ctx: Context) -> str:
+    return _PAYMENT_PLAN_RULE if _offers(ctx, "payment_agent") else ""
+
+
+def _payment_classify_rule(ctx: Context) -> str:
+    return _PAYMENT_CLASSIFY_RULE if _offers(ctx, "payment_agent") else ""
 
 
 def _data_rule(ctx: Context, *, memory: bool = False) -> str:
@@ -434,7 +469,9 @@ class PlannedTask(BaseModel):
 
 class PlanOut(BaseModel):
     tasks: list[PlannedTask] = Field(default_factory=list, max_length=3)
-    reply_strategy: Literal["auto_reply", "ask_clarifying"]
+    # "escalate" is asked for only by the payment rule (a disputed or double charge); `plan`
+    # honours it only for a company with payment_agent.
+    reply_strategy: Literal["auto_reply", "ask_clarifying", "escalate"]
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
 
 
@@ -566,7 +603,7 @@ class LLMProvider:
             "needs (object mapping each capability name to a 0-1 score for how strongly the "
             "message asks for it). Capabilities: "
             f"{json.dumps(self._offered(ctx))}. Greetings and thanks are chitchat."
-            f"{_subscription_classify_rule(ctx)}{_SENTIMENT_RULE}"
+            f"{_subscription_classify_rule(ctx)}{_payment_classify_rule(ctx)}{_SENTIMENT_RULE}"
             f"{_BOOKING_CLASSIFY_RULE if ctx.booking is not None else ''}"
             f"{_RECENT_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
             f"{_HANDOFF_OFFER_CLASSIFY_RULE if _recent_messages(ctx) else ''}"
@@ -623,6 +660,7 @@ class LLMProvider:
             "'Refund my order' must not be treated as an informational policy question. "
             f"{MARKETPLACE_PLANNER_RULE if _offers(ctx, 'ecommerce_agent') else _SHOP_STOCK_RULE} "
             f"{_subscription_plan_rule(ctx)}"
+            f"{_payment_plan_rule(ctx)}"
             "If a required value is missing, return "
             'no tasks and reply_strategy "ask_clarifying". Never use order_agent actions '
             '"confirm" or "cancel" (they need a button). '
@@ -658,11 +696,15 @@ class LLMProvider:
             # they would run in (tasks run side by side).
             logger.warning("llm_plan_rejected", agent="booking_agent", reason="several_changes")
             return _clarify_plan(signals)
-        strategy = (
-            out.reply_strategy
-            if tasks or out.reply_strategy == "ask_clarifying"
-            else "ask_clarifying"
-        )
+        strategy: Literal["auto_reply", "ask_clarifying", "escalate"] = out.reply_strategy
+        if strategy == "escalate" and not _offers(ctx, "payment_agent"):
+            # Only the payment rule asks for it; elsewhere it is read as no answer to plan.
+            strategy = "ask_clarifying" if not tasks else "auto_reply"
+        if strategy == "escalate":
+            # A disputed or double charge: a person checks it, so nothing is run or noted first.
+            tasks = []
+        elif not tasks:
+            strategy = "ask_clarifying"
         confidence = max(signals.capability_scores.values(), default=0.6)
         sentiment: Any = signals.answers.get("sentiment", "neutral")
         return Plan(

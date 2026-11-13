@@ -5,6 +5,9 @@ reply cannot be checked they are sent as they stand. Fact ids are constants (wit
 there are several): never a subscription id, a plan code or anything of the contact's. A request
 fact never says the thing is done: staff decide, and nothing changes until they do. A sign-up
 fact never says it is approved or active: it is received, or registered and waiting to start.
+A pending plan that waits for payment names the invoice it waits for, and one whose invoice the
+customer says they paid says that is not confirmed yet; only one with no invoice says nothing has
+been charged. A sign-up fact never says whether anything was charged.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ REQUESTABLE_STATUSES = frozenset({"active", "paused"})
 NONE_TEXT = "I can't find a subscription linked to this chat."
 
 RequestKind = Literal["passed", "which", "none", "already_ending", "already_paused", "waiting"]
+# An opening invoice in these statuses is still waiting to be paid (`cash_pending`: in cash).
+_WAITING_FOR_PAYMENT = frozenset({"issued", "overdue", "cash_pending"})
 _VERBS = {"request_pause": "pause", "request_cancel": "cancel"}
 
 
@@ -69,9 +74,24 @@ def _line(row: Mapping[str, Any], timezone: str) -> str | None:
         until = f" until {resume.strftime('%d %b %Y')}" if resume else ""
         text = f"Your plan: {name} is paused{until}."
     elif status == "pending":
-        text = (
-            f"Your plan: {price}, is waiting to be started by the team. Nothing has been charged."
-        )
+        # The opening invoice (subscription_list.sql): open, with its reference, or none at all.
+        ref = row.get("opening_invoice_reference")
+        invoice = row.get("opening_invoice_status") if ref else None
+        if invoice == "proof_submitted":
+            text = (
+                f"Your plan: {price}, starts when your payment is confirmed. You told us you "
+                "paid; it isn't confirmed yet."
+            )
+        elif invoice in _WAITING_FOR_PAYMENT:
+            text = (
+                f"Your plan: {price}, starts when your first payment is confirmed. Invoice {ref} "
+                "is waiting for payment."
+            )
+        else:
+            text = (
+                f"Your plan: {price}, is waiting to be started by the team. "
+                "Nothing has been charged."
+            )
     elif status == "active":
         text = f"Your plan: {price}."
         if row.get("cancel_at_period_end"):
@@ -136,9 +156,8 @@ def request_fact(
         text = f"{name} is already paused."
     elif kind == "waiting":
         text = (
-            f"{name} is waiting to be started by the team and nothing has been charged, so it "
-            "can't be paused, cancelled or changed yet. The team can help with any question "
-            "about it."
+            f"{name} has not started yet, so it can't be paused, cancelled or changed yet. The "
+            "team can help with any question about it."
         )
     else:
         text = NONE_TEXT
@@ -162,6 +181,7 @@ SignupKind = Literal[
     "phone_invalid",
     "filed",
     "filed_auto",
+    "filed_auto_invoice",
     "exists",
     "has_plan",
     "closed",
@@ -178,8 +198,21 @@ def signup_fact(
     field: Literal["full name", "phone number"] | None = None,
     name: str | None = None,
     phone: str | None = None,
+    ref: str | None = None,
+    payments: bool = False,
 ) -> Fact:
-    """One sign-up fact; its id is the kind and its place in the result (`signup_missing_1`)."""
+    """One sign-up fact; its id is the kind and its place in the result (`signup_missing_1`).
+
+    `payments`: the company's payments are on, so an approved plan gets an invoice (`filed`).
+    `ref`: the reference of the opening invoice an auto plan's approval issued
+    (`filed_auto_invoice`).
+    """
+    filed_next = (
+        "The team will review it; once it is approved you'll get an invoice with how to pay, and "
+        "the plan starts when the payment is confirmed."
+        if payments
+        else "The team will review it and tell you what happens next."
+    )
     texts: dict[str, str] = {
         "missing": f"To sign up for {plan} I still need your {field}.",
         "data_note": SIGNUP_DATA_NOTE,
@@ -191,13 +224,13 @@ def signup_fact(
             "That phone number does not look right. Please type it again with the area or "
             "country code."
         ),
-        "filed": (
-            f"Your sign-up for {plan} was received. The team will review it and tell you what "
-            "happens next. Nothing is active yet and nothing has been charged."
-        ),
+        "filed": f"Your sign-up for {plan} was received. {filed_next} Nothing is active yet.",
         "filed_auto": (
-            f"Your sign-up for {plan} is registered and waiting to be started. Nothing has been "
-            "charged."
+            f"Your sign-up for {plan} is registered and waiting to be started by the team."
+        ),
+        "filed_auto_invoice": (
+            f"Your sign-up for {plan} is registered. Invoice {ref} is ready: ask me how to pay. "
+            "The plan starts when the payment is confirmed."
         ),
         "exists": f"You already have a sign-up for {plan} waiting for the team.",
         "has_plan": f"You already have {plan}.",

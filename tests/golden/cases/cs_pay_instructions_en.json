@@ -1,0 +1,109 @@
+{
+  "id": "cs_pay_instructions_en",
+  "matrix": "Payments: how to pay is answered from facts, with the exact reference, amount and account",
+  "description": "Synthetic shop with payments on and one bank transfer method. 'How do I pay?' runs payment_agent 'instructions'; the reply is the payment facts as they stand (no compose or review call), so the reference, the amount and the account number are exactly the stored ones.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "Hi, how do I pay for my plan? Which account do I transfer to?",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "payment_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "instructions"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "prepared_requests": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Invoice KDMW-7AS: MYR 35.00 for Plan Sederhana",
+          "Bank transfer: Bank Sintetik, account 512000000021, name Kedai Contoh Sdn Bhd.",
+          "Please put KDMW-7AS as the payment reference",
+          "After paying, tell me when and from which bank"
+        ],
+        "reply_excludes": [
+          "paid on",
+          "confirmed your payment"
+        ],
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}

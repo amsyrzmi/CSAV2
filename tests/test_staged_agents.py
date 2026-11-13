@@ -765,6 +765,73 @@ async def test_mine_with_zero_one_and_several_subscriptions(world: World) -> Non
     assert await mine(world, action="status") == await mine(world)
 
 
+async def payments_on(world: World) -> None:
+    """The world's company switches payments on (as its settings save would)."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO payment_settings (client_id, enabled) VALUES (%s, true)",
+            (world.ctx.client_id,),
+        )
+
+
+@requires_docker
+async def test_mine_on_a_pending_plan_without_an_invoice_is_waiting_for_the_team(
+    world: World,
+) -> None:
+    other = replace(world.ctx, contact_id=world.other_contact)
+    await add_subscription(world, plan="lite", contact=world.other_contact, status="pending")
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, is waiting to be started by the team. "
+        "Nothing has been charged."
+    ]
+
+
+@requires_docker
+async def test_mine_on_a_pending_plan_names_its_opening_invoice(world: World) -> None:
+    other = replace(world.ctx, contact_id=world.other_contact)
+    sub = await add_subscription(world, plan="lite", contact=world.other_contact, status="pending")
+    # The invoice is the other contact's own (theirs is the pending plan); a void one is never
+    # named, the open one is.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        for reference, status in (("SGCK-4PM", "void"), ("KDMW-7AS", "issued")):
+            await conn.execute(
+                "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference,"
+                " status, amount, currency, issued_at, due_at, period_start) "
+                "VALUES (%s,%s,%s,%s,%s,%s,15,'MYR',now(),now() + interval '7 days',"
+                " CASE WHEN %s = 'void' THEN now() - interval '1 day' END)",
+                (
+                    f"inv_{uuid4().hex}",
+                    world.ctx.client_id,
+                    world.other_contact,
+                    sub,
+                    reference,
+                    status,
+                    status,
+                ),
+            )
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, starts when your first payment is confirmed. "
+        "Invoice KDMW-7AS is waiting for payment."
+    ]
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE invoices SET status='proof_submitted' WHERE subscription_id=%s "
+            "AND reference='KDMW-7AS'",
+            (sub,),
+        )
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, starts when your payment is confirmed. "
+        "You told us you paid; it isn't confirmed yet."
+    ]
+    # A status read by the subscription's id says the same.
+    status = await SubscriptionAgent().run(
+        other, SubscriptionInput(action="status", subscription_id=sub)
+    )
+    assert [f.text for f in status.facts] == await mine(world, other)
+    # The chat's own contact sees only its own plan.
+    assert await mine(world) == ["Your plan: basic, MYR 10.00."]
+
+
 @requires_docker
 async def test_mine_never_returns_another_contacts_subscription(world: World) -> None:
     await add_subscription(world, plan="secret-plan", contact=world.other_contact, started_days=5)
@@ -1212,7 +1279,7 @@ async def test_details_are_read_back_and_filed_only_on_a_yes_to_that_read_back(
     assert [f.id for f in filed.facts] == ["signup_filed_1"]
     assert filed.facts[0].text == (
         "Your sign-up for Plan Besar was received. The team will review it and tell you what "
-        "happens next. Nothing is active yet and nothing has been charged."
+        "happens next. Nothing is active yet."
     )
     assert await signups(world) == [
         {
@@ -1339,8 +1406,7 @@ async def test_an_auto_plan_registers_a_pending_subscription(world: World) -> No
     assert [(f.id, f.text) for f in filed.facts] == [
         (
             "signup_filed_auto_1",
-            "Your sign-up for Plan Besar is registered and waiting to be started. Nothing has "
-            "been charged.",
+            "Your sign-up for Plan Besar is registered and waiting to be started by the team.",
         )
     ]
     [row] = await signups(world)
@@ -1354,6 +1420,54 @@ async def test_an_auto_plan_registers_a_pending_subscription(world: World) -> No
             )
         ).fetchall()
     assert subs == [("pending",)]
+
+
+@requires_docker
+async def test_with_payments_on_a_staff_plan_sign_up_says_an_invoice_follows_approval(
+    world: World,
+) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Besar was received. The team will review it; once it is "
+            "approved you'll get an invoice with how to pay, and the plan starts when the "
+            "payment is confirmed. Nothing is active yet.",
+        )
+    ]
+
+
+@requires_docker
+async def test_with_payments_on_an_auto_plan_names_its_opening_invoice(world: World) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world, signup_mode="auto")
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        invoices = await (
+            await conn.execute(
+                "SELECT reference, status FROM invoices WHERE client_id=%s AND contact_id=%s",
+                (world.ctx.client_id, world.ctx.contact_id),
+            )
+        ).fetchall()
+    [(reference, status)] = invoices
+    assert status == "issued"
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_auto_invoice_1",
+            f"Your sign-up for Plan Besar is registered. Invoice {reference} is ready: ask me "
+            "how to pay. The plan starts when the payment is confirmed.",
+        )
+    ]
+    # Asked after, the pending plan (the newest) names the same invoice.
+    assert await mine(world, ctx) == [
+        f"Your plan: Plan Besar, MYR 50.00 a month, starts when your first payment is "
+        f"confirmed. Invoice {reference} is waiting for payment.",
+        "Your plan: basic, MYR 10.00.",
+    ]
 
 
 @requires_docker

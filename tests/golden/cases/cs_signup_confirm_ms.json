@@ -119,7 +119,7 @@
           "done": true
         },
         "ComposeOut": {
-          "reply": "Dah terima pendaftaran Plan Kecil awak. Team akan semak dan bagitahu apa seterusnya. Belum aktif lagi, dan takde caj apa-apa."
+          "reply": "Dah terima pendaftaran Plan Kecil awak. Team akan semak dan bagitahu apa seterusnya. Belum aktif lagi."
         },
         "ReviewOut": {
           "ok": true
@@ -143,7 +143,7 @@
           "has been activated"
         ],
         "compose_sees": [
-          "Your sign-up for Plan Kecil was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged.",
+          "Your sign-up for Plan Kecil was received. The team will review it and tell you what happens next. Nothing is active yet.",
           "Malay register"
         ],
         "signup_requests": 1
