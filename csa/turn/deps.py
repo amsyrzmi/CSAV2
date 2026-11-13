@@ -182,8 +182,10 @@ def write_facts(state: TurnState) -> list[tuple[str, Fact]]:
 
     A write is a planned task whose action is not a read in its agent's `ACTION_RISK`: a booking
     made, moved or cancelled, a ticket opened or changed, a sign-up or plan request, an order
-    draft. Its facts are true whether it was done or refused. Payment tasks are left out
-    (`payment_facts`), and so is a follow-up task, which is only ever a read (`_admit`).
+    draft. Its facts say what was done, what was refused, or what waits for the customer's yes
+    (a sign-up read back, a cancel asked, a draft order to confirm). A task that failed (not
+    ok) is left out, whatever facts it carries. Payment tasks are left out (`payment_facts`),
+    and so is a follow-up task, which is only ever a read (`_admit`).
     """
     if state.plan is None:
         return []
@@ -625,9 +627,11 @@ class PostgresTurnDependencies:
         if paid and not _hands_off(state):
             # Facts only; the model is never asked. The payment facts are worded in the turn's
             # language where copy has it (English or Malay, else English); the draft is marked
-            # with the turn's language either way. What another task wrote this turn (a booking, a
-            # ticket, a request) has happened, so the customer is told it first, as its agent
-            # worded it; other tasks' reads are left out (the planner plans payment tasks alone).
+            # with the turn's language either way. What another task wrote this turn is told
+            # first, as its agent worded it: done (a booking, a ticket, a request), refused, or
+            # a question waiting for the customer's yes (a sign-up read back, a cancel asked, a
+            # draft order). Other tasks' reads are left out (the planner plans payment tasks
+            # alone).
             return _facts_draft([*write_facts(state), *paid], _turn_language(state.envelope))
         written = booking_write_facts(state)
         if not written:

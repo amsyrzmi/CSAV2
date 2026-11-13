@@ -1173,8 +1173,8 @@ async def test_a_verified_phone_is_used_and_never_asked(world: World) -> None:
     read = await signup_turn(world, ctx, **BESAR, **ALI, phone="0199999999")
     assert _kinds(read) == ["signup_readback", "signup_data_note"]
     assert read.facts[0].text == (
-        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask "
-        "the customer to confirm, and file nothing yet."
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is "
+        "that right? Reply yes to sign up. Nothing is filed until you do."
     )
     assert read.ui.request_phone is False
     filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
@@ -1189,7 +1189,7 @@ async def test_an_invalid_typed_phone_is_asked_again(world: World) -> None:
     result = await signup_turn(world, ctx, **BESAR, **ALI, phone="12345")
     assert _kinds(result) == ["signup_phone_invalid", "signup_data_note"]
     assert result.facts[0].text == (
-        "That phone number does not look right. Ask for it again with the area or country code."
+        "That phone number does not look right. Please type it again with the area or country code."
     )
     assert await signups(world) == []
 
@@ -1202,8 +1202,8 @@ async def test_details_are_read_back_and_filed_only_on_a_yes_to_that_read_back(
     read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
     assert _kinds(read) == ["signup_readback", "signup_data_note"]
     assert read.facts[0].text == (
-        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to "
-        "confirm, and file nothing yet."
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
     )
     assert await signups(world) == []
     # The "yes" turn: the planner's phone placeholder could not be resolved in "yes", so it is left
@@ -1374,8 +1374,8 @@ async def test_a_filing_error_is_try_later_and_files_nothing(
     assert [(f.id, f.text) for f in failed.facts] == [
         (
             "signup_try_later_1",
-            "The sign-up could not be filed just now, so nothing was filed. Ask the customer to "
-            "try again in a little while.",
+            "The sign-up could not be filed just now, so nothing was filed. Please try again in "
+            "a little while.",
         )
     ]
     assert "plan_not_open" not in failed.facts[0].text

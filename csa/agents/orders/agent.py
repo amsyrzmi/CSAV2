@@ -370,7 +370,7 @@ class OrderAgent:
             self._fact(
                 f"order_{order_id}",
                 f"Draft order {order_id}: {items_text(lines)}, total {money(total, currency)}. "
-                "Not placed until the customer confirms.",
+                "It is not placed until you confirm it.",
             )
         ]
         if status != "draft":

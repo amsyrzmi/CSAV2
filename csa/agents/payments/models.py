@@ -51,3 +51,12 @@ class PaymentInput(BaseModel):
         if isinstance(value, str) and "\x00" in value:
             raise ValueError("NUL characters cannot be persisted")
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("reference")
+    @classmethod
+    def nothing_printable_is_missing(cls, value: str | None) -> str | None:
+        """A reference of control characters only is no reference: echoed back it would read
+        as nothing ("I can't find invoice  on this chat.")."""
+        if value is None:
+            return None
+        return value if any(c.isprintable() and not c.isspace() for c in value) else None

@@ -316,7 +316,8 @@ class TicketAgent:
                 [
                     self._fact(
                         f"ticket_{ticket_id}",
-                        f"Ticket #{ticket_id} is NOT cancelled yet; the customer must confirm.",
+                        f'Cancel ticket #{ticket_id}? Tap "Yes, cancel it" to confirm. '
+                        "Nothing has been cancelled yet.",
                     )
                 ],
                 Ui(options=[UiOption(label="Yes, cancel it", action_id=yes)]),

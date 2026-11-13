@@ -75,8 +75,9 @@ def _disabled(ctx: AgentContext) -> AgentResult:
 
 def _echo(text: str) -> str:
     """The customer's text as it may be repeated in a reply: one line of printable characters
-    (whitespace runs collapse, control characters go), cut to 12 characters."""
-    return "".join(char for char in " ".join(text.split()) if char.isprintable())[:12]
+    (control characters go first, then whitespace runs collapse), cut to 12 characters."""
+    kept = "".join(char for char in text if char.isprintable() or char.isspace())
+    return " ".join(kept.split())[:12]
 
 
 class PaymentAgent:

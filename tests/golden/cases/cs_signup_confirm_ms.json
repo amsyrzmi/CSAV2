@@ -79,7 +79,7 @@
           "Betul ke?"
         ],
         "compose_sees": [
-          "Sign-up for Plan Kecil: name Siti Binti Ahmad, phone +60123456789. Ask the customer to confirm, and file nothing yet.",
+          "Sign-up for Plan Kecil: name Siti Binti Ahmad, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do.",
           "Malay register"
         ],
         "signup_requests": 0

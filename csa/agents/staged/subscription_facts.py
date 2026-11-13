@@ -146,8 +146,9 @@ def request_fact(
 
 
 # Sign-up (request_signup). The composer rewrites these in the customer's language and register;
-# they still read properly when sent as they stand. They name the plan and, in the read-back, what
-# the customer typed: never anything of another contact, a decline reason or an id.
+# they are also sent as they stand (a payment answer in the same turn), so each is said to the
+# customer, never to the composer. They name the plan and, in the read-back, what the customer
+# typed: never anything of another contact, a decline reason or an id.
 SIGNUP_DATA_NOTE = (
     "We keep your name and phone number on your contact record so the team can set up your plan."
 )
@@ -183,11 +184,12 @@ def signup_fact(
         "missing": f"To sign up for {plan} I still need your {field}.",
         "data_note": SIGNUP_DATA_NOTE,
         "readback": (
-            f"Sign-up for {plan}: name {name}, phone {phone}. Ask the customer to confirm, and "
-            "file nothing yet."
+            f"Sign-up for {plan}: name {name}, phone {phone}. Is that right? Reply yes to sign "
+            "up. Nothing is filed until you do."
         ),
         "phone_invalid": (
-            "That phone number does not look right. Ask for it again with the area or country code."
+            "That phone number does not look right. Please type it again with the area or "
+            "country code."
         ),
         "filed": (
             f"Your sign-up for {plan} was received. The team will review it and tell you what "
@@ -202,8 +204,8 @@ def signup_fact(
         "closed": f"{plan} is not taking new sign-ups right now.",
         "which": "To sign up I still need to know which plan you want.",
         "try_later": (
-            "The sign-up could not be filed just now, so nothing was filed. Ask the customer to "
-            "try again in a little while."
+            "The sign-up could not be filed just now, so nothing was filed. Please try again "
+            "in a little while."
         ),
     }
     return _fact(f"signup_{kind}_{n}", texts[kind])

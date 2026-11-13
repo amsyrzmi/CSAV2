@@ -238,16 +238,16 @@ def test_signup_facts_use_the_exact_copy() -> None:
     )
     assert text("data_note") == SIGNUP_DATA_NOTE
     assert text("readback", plan="Plan Besar", name="Ali Bin Abu", phone="+60123456789") == (
-        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to "
-        "confirm, and file nothing yet."
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
     )
     assert VERIFIED_PHONE == "the number already on this chat"
     assert text("readback", plan="Plan Besar", name="Ali Bin Abu", phone=VERIFIED_PHONE) == (
-        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask "
-        "the customer to confirm, and file nothing yet."
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is "
+        "that right? Reply yes to sign up. Nothing is filed until you do."
     )
     assert text("phone_invalid") == (
-        "That phone number does not look right. Ask for it again with the area or country code."
+        "That phone number does not look right. Please type it again with the area or country code."
     )
     assert text("filed", plan="Plan Besar") == (
         "Your sign-up for Plan Besar was received. The team will review it and tell you what "
@@ -264,8 +264,8 @@ def test_signup_facts_use_the_exact_copy() -> None:
     assert text("closed", plan="Plan Besar") == "Plan Besar is not taking new sign-ups right now."
     assert text("which") == "To sign up I still need to know which plan you want."
     assert text("try_later") == (
-        "The sign-up could not be filed just now, so nothing was filed. Ask the customer to try "
-        "again in a little while."
+        "The sign-up could not be filed just now, so nothing was filed. Please try again in a "
+        "little while."
     )
 
 

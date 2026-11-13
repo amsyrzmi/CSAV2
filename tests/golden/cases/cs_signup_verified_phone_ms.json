@@ -78,7 +78,7 @@
         "agent_errors": [],
         "escalations": 0,
         "compose_sees": [
-          "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask the customer to confirm, and file nothing yet.",
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is that right? Reply yes to sign up. Nothing is filed until you do.",
           "Malay register"
         ],
         "model_never_sees": [

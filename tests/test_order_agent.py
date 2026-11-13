@@ -161,6 +161,8 @@ async def test_runtime_denies_disabled_order_drafts_and_existing_callback_action
     )
     result = await first_worker.execute_spoke(draft_task, envelope, Context())
     assert result.ok and result.data.ui.confirmation is not None
+    # Sent as it stands on a payment turn: it reads to the customer.
+    assert result.data.facts[0].text.endswith(". It is not placed until you confirm it.")
     callback = result.data.ui.confirmation.accept.action_id
     assert callback is not None
     action_id = CallbackCodec.decode(callback)
@@ -442,7 +444,10 @@ async def test_ticket_lifecycle_with_confirmed_cancel(world: World) -> None:
     assert dup.meta.was_duplicate
     assert (await _ticket(world, "add_note", "t3", ticket_id=f"#{ticket_id}", note="hello")).ok
     ask = await _ticket(world, "delete", "t4", ticket_id=ticket_id)
-    assert "NOT cancelled" in ask.data.facts[0].text
+    assert ask.data.facts[0].text == (
+        f'Cancel ticket #{ticket_id}? Tap "Yes, cancel it" to confirm. '
+        "Nothing has been cancelled yet."
+    )
     assert world.q("SELECT status FROM tickets WHERE id=%s", ticket_id)[0][0] == "open"
     yes = ask.data.ui.options[0].action_id
     pa = await world.store.consume(yes, client_id=world.client_id, contact_id=world.contact_id)

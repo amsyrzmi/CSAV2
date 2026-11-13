@@ -242,7 +242,10 @@ def test_the_shipped_script_has_the_sign_up_conversations() -> None:
         assert "I still need your full name." in joined[0]
         assert "We keep your name and phone number on your contact record" in joined[0]
         assert "I still need your phone number." in joined[1]
-        assert joined[2].startswith("Sign-up for ") and "Ask the customer to confirm" in joined[2]
+        assert (
+            joined[2].startswith("Sign-up for ")
+            and "Reply yes to sign up. Nothing is filed until you do." in joined[2]
+        )
         assert "was received. The team will review it" in joined[3]
         assert not any("approved" in text for text in joined)
         # Synthetic only: the number in the read-back is the test number.

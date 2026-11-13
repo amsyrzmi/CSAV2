@@ -78,7 +78,7 @@
           "Is that right?"
         ],
         "compose_sees": [
-          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to confirm, and file nothing yet.",
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do.",
           "We keep your name and phone number on your contact record so the team can set up your plan."
         ],
         "signup_requests": 0,

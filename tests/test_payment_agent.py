@@ -89,6 +89,13 @@ def test_the_input_refuses_extra_fields_and_any_amount() -> None:
     # A model fills an unused field with a blank as often as it leaves it out.
     blank = PaymentInput.model_validate({"action": "status", "reference": " ", "note": ""})
     assert blank.reference is None and blank.note is None
+    # A reference with nothing printable in it is no reference: it would echo as nothing.
+    for junk in ("\x07", "\x07 \x1b", "\u200b"):
+        assert (
+            PaymentInput.model_validate({"action": "status", "reference": junk}).reference is None
+        )
+    kept = PaymentInput.model_validate({"action": "status", "reference": "\x07a"})
+    assert kept.reference == "\x07a"
 
 
 def test_reads_are_read_and_a_claim_is_a_draft() -> None:
@@ -436,6 +443,13 @@ async def test_another_customers_reference_is_not_found_and_not_touched(shop: Sh
     # Whitespace runs collapse and control characters go before the cut: one line, always.
     odd = facts(await shop.run(mine, {"action": "status", "reference": "ab\n\x07c\t\x1bd  e"}))
     assert odd == [("payment_reference_unknown_1", "I can't find invoice ab c d e on this chat.")]
+    # Control characters go first, then the spaces around them collapse.
+    spaced = facts(await shop.run(mine, {"action": "status", "reference": "a \x07 b"}))
+    assert spaced == [("payment_reference_unknown_1", "I can't find invoice a b on this chat.")]
+    # Nothing printable at all: answered as if no reference was given, never "invoice  ".
+    bare = facts(await shop.run(mine, {"action": "status"}))
+    junk = facts(await shop.run(mine, {"action": "status", "reference": "\x07\x1b"}))
+    assert junk == bare and bare[0][0] != "payment_reference_unknown_1"
 
 
 @requires_docker

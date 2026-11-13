@@ -230,7 +230,7 @@ async def test_a_payment_reply_keeps_what_the_turn_wrote(
 
 
 async def test_a_payment_reply_still_leaves_out_other_tasks_reads() -> None:
-    # Reads of other tasks (and a write that failed, which has no facts) stay out, as before.
+    # Reads of other tasks, and a write that failed (whatever facts it carries), stay out.
     model = Model({"reply": "We open at 9.", "used_fact_ids": []})
     reads = _state(
         [
@@ -243,7 +243,7 @@ async def test_a_payment_reply_still_leaves_out_other_tasks_reads() -> None:
     failed = _state(
         [
             _result("t0-ticket_agent", "ticket_agent", [("ticket_1", "TCK-2031 is open.")]),
-            _result("t1-booking_agent", "booking_agent", [], ok=False),
+            _result("t1-booking_agent", "booking_agent", [BOOKED], ok=False),
             _result("t2-payment_agent", "payment_agent", FACTS),
         ],
         actions={
