@@ -170,6 +170,8 @@ def create_app() -> FastAPI:
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # Video in the training library: while off, the upload routes answer 503.
+            app.state.training_video_enabled = settings.TRAINING_VIDEO_ENABLED
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on

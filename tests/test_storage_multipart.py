@@ -432,3 +432,88 @@ def test_video_limits_match_the_design() -> None:
     assert limits.PLAYBACK_MEDIA_TYPE[limits.VIDEO_EXTENSIONS[".webm"]] == "video/webm"
     assert sorted(limits.VIDEO_EXTENSIONS) == [".m4v", ".mov", ".mp4", ".webm"]
     assert os.path.splitext("a.m4v")[1] in limits.VIDEO_EXTENSIONS
+
+
+# Mappings the routes rely on: a hash mismatch, a missing upload and raw OS errors.
+
+
+def test_local_write_with_a_wrong_hash_raises_part_mismatch_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    store = LocalObjectStore(tmp_path / "uploads")
+    tenant, name = uuid4(), video_name()
+    store.start_upload(tenant, name, "video/mp4")
+    data = source_bytes(100)
+    with pytest.raises(PartMismatch) as raised:
+        store.write_part(tenant, name, None, 2, 64, data, hashlib.sha256(b"other").digest())
+    assert raised.value.numbers == [2]
+    assert (tmp_path / "uploads" / str(tenant) / f".{name}.part").stat().st_size == 0
+
+
+def test_s3_bad_digest_becomes_part_mismatch() -> None:
+    client = make_client()
+    store = S3ObjectStore(BUCKET, "training", client)
+    tenant, name = uuid4(), video_name()
+    data = source_bytes(10)
+    with Stubber(client) as stubber:
+        stubber.add_client_error(
+            "upload_part", service_error_code="BadDigest", http_status_code=400
+        )
+        with pytest.raises(PartMismatch) as raised:
+            store.write_part(tenant, name, "upload-1", 3, 0, data, hashlib.sha256(data).digest())
+        stubber.assert_no_pending_responses()
+    assert raised.value.numbers == [3]
+
+
+def test_s3_write_to_a_missing_upload_is_not_found() -> None:
+    client = make_client()
+    store = S3ObjectStore(BUCKET, "training", client)
+    tenant, name = uuid4(), video_name()
+    data = source_bytes(10)
+    with Stubber(client) as stubber:
+        stubber.add_client_error(
+            "upload_part", service_error_code="NoSuchUpload", http_status_code=404
+        )
+        with pytest.raises(StorageNotFound) as raised:
+            store.write_part(tenant, name, "upload-1", 1, 0, data, hashlib.sha256(data).digest())
+        stubber.assert_no_pending_responses()
+    assert name not in str(raised.value) and str(tenant) not in str(raised.value)
+
+
+def test_local_complete_counts_a_lost_replace_race_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = LocalObjectStore(tmp_path / "uploads")
+    tenant, name = uuid4(), video_name()
+    data = source_bytes(3 * 1024 + 7)
+    store.start_upload(tenant, name, "video/mp4")
+    parts = write_all(store, tenant, name, None, data, 1024, [1, 2, 3, 4])
+    real_replace = os.replace
+
+    def raced(source: Any, target: Any) -> None:
+        # Another completion published the file first; this one finds the source gone.
+        real_replace(source, target)
+        raise FileNotFoundError(2, "No such file or directory", str(source))
+
+    monkeypatch.setattr(os, "replace", raced)
+    store.complete_upload(tenant, name, None, parts, 1024, len(data))
+    assert (tmp_path / "uploads" / str(tenant) / name).read_bytes() == data
+
+
+def test_local_os_errors_carry_no_path(tmp_path: Path) -> None:
+    store = LocalObjectStore(tmp_path / "uploads")
+    tenant, name = uuid4(), video_name()
+    directory = tmp_path / "uploads" / str(tenant)
+    directory.mkdir(parents=True)
+    # A directory where the upload's file should be: every OS call on it fails.
+    (directory / f".{name}.part").mkdir()
+    data = source_bytes(10)
+    with pytest.raises(StorageError) as raised:
+        store.write_part(tenant, name, None, 1, 0, data, hashlib.sha256(data).digest())
+    assert not isinstance(raised.value, StorageNotFound)
+    with pytest.raises(StorageError) as completing:
+        store.complete_upload(
+            tenant, name, None, [Part(1, "e", hashlib.sha256(data).digest())], 1024, len(data)
+        )
+    for error in (raised.value, completing.value):
+        assert str(tmp_path) not in str(error) and name not in str(error)

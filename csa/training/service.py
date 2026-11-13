@@ -594,6 +594,12 @@ class TrainingLibrary:
         async with tx(self.pool, str(client_id)) as conn:
             return await db.q.fetch_one("training/get.sql", (client_id, item_id), conn=conn)
 
+    async def present(
+        self, client_id: UUID, rows: list[Mapping[str, Any]], *, manage: bool
+    ) -> list[ItemOut]:
+        """The rows as items, for the video upload routes (``_items``)."""
+        return await self._items(client_id, rows, manage=manage)
+
     async def _items(
         self, client_id: UUID, rows: list[Mapping[str, Any]], *, manage: bool
     ) -> list[ItemOut]:

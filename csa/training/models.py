@@ -11,6 +11,7 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
+    Field,
     StringConstraints,
     model_validator,
 )
@@ -93,6 +94,31 @@ class ItemOut(_Model):
     failure: str | None
     processing: Processing | None
     notice: Literal["hevc"] | None
+
+
+class VideoStart(_Model):
+    """Starting a video upload: the file's name (data only), its size and its media type."""
+
+    file_name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    byte_size: Annotated[int, Field(ge=1)]
+    media_type: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+
+
+class VideoUploadOut(_Model):
+    """An upload's plan: send pieces ``1..piece_count`` of ``piece_size`` bytes (the last one the
+    remainder); ``received`` lists the numbers already stored, for resuming."""
+
+    item: ItemOut
+    piece_size: int
+    piece_count: int
+    received: list[int]
+
+
+class PieceOut(_Model):
+    """A stored piece and how many pieces of the upload are stored now."""
+
+    number: int
+    received: int
 
 
 class ItemList(_Model):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from collections.abc import Sequence
@@ -72,18 +73,23 @@ class LocalObjectStore:
 
     def start_upload(self, tenant: UUID, name: str, media_type: str) -> str | None:
         temporary_name = _temporary_name(name)
-        temporary = self._tenant_directory(tenant) / temporary_name
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
         try:
-            descriptor = os.open(temporary, flags, 0o600)
-        except FileExistsError:
-            raise StorageError("object storage start failed: upload exists") from None
-        try:
-            os.fchmod(descriptor, 0o600)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _fsync_directory(temporary.parent)
+            temporary = self._tenant_directory(tenant) / temporary_name
+            try:
+                descriptor = os.open(temporary, flags, 0o600)
+            except FileExistsError:
+                raise StorageError("object storage start failed: upload exists") from None
+            try:
+                os.fchmod(descriptor, 0o600)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            _fsync_directory(temporary.parent)
+        except StorageError:
+            raise
+        except OSError as exc:
+            raise _os_failure("start", exc) from None
         return None
 
     def write_part(
@@ -106,12 +112,16 @@ class LocalObjectStore:
             descriptor = os.open(temporary, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         except FileNotFoundError:
             raise StorageNotFound("object storage write: upload not found") from None
+        except OSError as exc:
+            raise _os_failure("write", exc) from None
         try:
             view = memoryview(data)
             written = 0
             while written < len(view):
                 written += os.pwrite(descriptor, view[written:], offset + written)
             os.fsync(descriptor)
+        except OSError as exc:
+            raise _os_failure("write", exc) from None
         finally:
             os.close(descriptor)
         return sha256.hex()
@@ -134,6 +144,8 @@ class LocalObjectStore:
             if final.is_file() and not final.is_symlink():
                 return  # published by an earlier call whose answer was lost
             raise StorageNotFound("object storage complete: upload not found") from None
+        except OSError as exc:
+            raise _os_failure("complete", exc) from None
         try:
             if missing:
                 raise PartMismatch(missing)
@@ -147,10 +159,21 @@ class LocalObjectStore:
                 raise PartMismatch(changed)
             if os.fstat(descriptor).st_size != total_bytes:
                 raise StorageError("object storage complete failed: size mismatch")
+        except StorageError:
+            raise
+        except OSError as exc:
+            raise _os_failure("complete", exc) from None
         finally:
             os.close(descriptor)
-        os.replace(temporary, final)
-        _fsync_directory(final.parent)
+        try:
+            os.replace(temporary, final)
+            _fsync_directory(final.parent)
+        except FileNotFoundError:
+            if final.is_file() and not final.is_symlink():
+                return  # a concurrent call published it first
+            raise StorageNotFound("object storage complete: upload not found") from None
+        except OSError as exc:
+            raise _os_failure("complete", exc) from None
 
     def abort_upload(self, tenant: UUID, name: str, upload_id: str | None) -> None:
         temporary_name = _temporary_name(name)
@@ -231,6 +254,12 @@ def _temporary_name(name: str) -> str:
     if len(temporary_name.encode()) > MAX_FILE_NAME_BYTES:
         raise InvalidObjectName(f"object name too long for local storage: {name[:80]!r}")
     return temporary_name
+
+
+def _os_failure(operation: str, exc: OSError) -> StorageError:
+    """The operation and the error's code only: an ``OSError``'s text carries the local path."""
+    code = errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+    return StorageError(f"object storage {operation} failed: {code}")
 
 
 def _fsync_directory(directory: Path) -> None:
