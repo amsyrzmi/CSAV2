@@ -527,6 +527,30 @@ async def test_resume_with_no_renewal_date_starts_a_period(
         assert datetime.fromisoformat(event["payload"]["renews_at"]) == at("2026-04-10 20:00")
 
 
+async def test_resume_by_date_clears_the_unpaid_pause_reason(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(
+            conn,
+            tenant,
+            status="paused",
+            paused_at=NOW - timedelta(days=5),
+            pause_reason="unpaid",
+            resume_at=date(2026, 3, 10),
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"resumed": 1}
+
+        cursor = await conn.execute(
+            "SELECT status, pause_reason FROM subscriptions WHERE id=%s", (sub,)
+        )
+        assert await cursor.fetchone() == ("active", None)
+
+
 @pytest.mark.parametrize("package", [None, "requested", "suspended"])
 async def test_tenant_without_an_active_package_is_left_alone(
     pg_container: object, app_dsn: str, package: str | None

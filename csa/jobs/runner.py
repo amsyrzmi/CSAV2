@@ -25,6 +25,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
+from csa.jobs.payments import run_payments_due
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
@@ -92,6 +93,14 @@ def build_default_registry(
             name="subscriptions_due",
             every=timedelta(minutes=5),
             fn=run_subscriptions_due,
+            per_client=True,
+        )
+    )
+    registry.register(
+        Job(
+            name="payments_due",
+            every=timedelta(minutes=15),
+            fn=run_payments_due,
             per_client=True,
         )
     )
