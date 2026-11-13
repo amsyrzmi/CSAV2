@@ -772,8 +772,10 @@ owed. Staff "Start subscription" (see Customer onboarding) keeps the opening inv
   Subscriptions by hand.
 - "Extend renewal" voids the open invoices of periods that start from now on, "Customer says paid" ones
   included (`void_reason` `subscription_changed`); the opening invoice and the running period's invoice stay.
-  The job then makes the invoice for the new renewal date. If the customer had already paid or claimed the
-  voided one, settle it with them by hand.
+  The job then makes the invoice for the new renewal date. If the customer had claimed payment on a voided
+  invoice, settle it with them by hand. A paid invoice is never voided: if the next period's invoice was
+  already paid when you extend, the job still makes an invoice for the new date, so the customer is billed
+  twice. Void the newly issued one (the void invoice then stops the job making another for that date).
 - A pause from Subscriptions voids nothing. If the paused subscription will not run the period an open invoice
   is for, void that invoice (or collect it) yourself.
 - A payment that arrives for a void invoice cannot be recorded ("This invoice can't be paid: it is void.", 409
@@ -802,7 +804,8 @@ draft invoices:
 **Reminders.** The `payment_reminder_queue` job runs every 15 minutes for each company. A step is owed once its
 date has come (the due date plus the step's days). An opening invoice (a sign-up's first invoice) owes its
 earliest step as soon as it is made, so the customer learns how to pay at once whatever "Days before each
-renewal" and the reminder days are; its later steps count from the due date. Only the newest owed step is sent;
+renewal" and the reminder days are; its later steps count from the due date. A company whose reminder days
+are all after the due date gets that first step at issue, not after the due date. Only the newest owed step is sent;
 older owed steps are recorded as skipped and never sent late (a worker that was down, or payments just switched
 on). Each step is made once per invoice. Nothing is sent between 21:00 and 09:00 in the company's time zone (it
 goes in the morning), a customer gets at most one reminder a day (a second invoice's reminder goes the next
@@ -916,8 +919,9 @@ WHERE client_id = '<client id>' AND id = '<invoice id>' AND status = 'proof_subm
 INSERT INTO public.console_audit (client_id, action, target_id, details)
 VALUES ('<client id>', 'payments.invoice.claim_rejected', '<invoice id>',
         '{"by": "operator", "why": "<one line>"}');
-COMMIT;
 ```
+
+Check each statement reported one row, then `COMMIT;` or `ROLLBACK;`.
 
 Reminders, overdue and the pause rule then apply again from the next run. Tell the customer from the Inbox; if
 they say they paid again, the bot notes a new claim.

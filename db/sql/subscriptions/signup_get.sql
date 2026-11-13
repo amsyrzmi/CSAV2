@@ -2,9 +2,10 @@
 -- verified (0581) and is the number typed on the request; a different typed number is not.
 -- source_channel: the newest channel identity of the contact. invoice_reference: the reference of
 -- the approved subscription's opening invoice (the one issued at approval: no period yet, or the
--- earliest issued once paying it gave it one; drafts aside), NULL when there is none or it is
--- void (a later period's invoice is never shown in its place). email: the address the customer
--- gave at sign-up for payment reminders (NULL when none).
+-- earliest issued once paying it gave it one; drafts aside), NULL when it is void. A sign-up
+-- approved with payments off and then started by hand has no opening invoice, so its first
+-- period's invoice is shown; NULL when the subscription has no invoice at all. email: the address
+-- the customer gave at sign-up for payment reminders (NULL when none).
 SELECT r.id, r.contact_id, c.full_name AS contact_full_name, c.phone AS contact_phone,
        c.email AS contact_email, r.plan_code, p.name AS plan_name, r.full_name, r.phone,
        r.email,

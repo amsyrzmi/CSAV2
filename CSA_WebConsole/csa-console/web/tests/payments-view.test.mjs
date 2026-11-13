@@ -303,6 +303,10 @@ test("a new method's body has only the kind's details, trimmed; bad fields are n
   assert.deepEqual(Object.keys(view.checkMethod(tooLong)).sort(),
     ["account_name", "account_number", "bank_name", "instructions", "label"]);
   assert.equal(view.checkMethod(tooLong).instructions, "Keep the instructions to 500 characters.");
+  // A pasted 600-character instruction is refused whole, never cut to 500 (the text box has no maxLength).
+  assert.equal(view.checkMethod({ ...transfer, instructions: "i".repeat(600) }).instructions,
+    "Keep the instructions to 500 characters.");
+  assert.deepEqual(view.checkMethod({ ...transfer, instructions: "i".repeat(500) }), {});
   for (const id of ["DN1", "DN 512", "x".repeat(41), "DN_512"]) {
     assert.ok(view.checkMethod({ ...qr, duitnow_id: id }).duitnow_id, id);
   }

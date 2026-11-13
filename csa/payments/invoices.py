@@ -374,7 +374,7 @@ async def mark_paid(
                 },
                 conn=conn,
             )
-    except UniqueViolation as exc:  # the locks above make these unreachable; never a 500 if not
+    except UniqueViolation as exc:  # the locks above make these unreachable; known keys give a 409
         if exc.diag.constraint_name == "payments_idempotency_uq":
             raise HTTPException(409, "request_key_reused") from exc
         if exc.diag.constraint_name == "payments_one_per_invoice":

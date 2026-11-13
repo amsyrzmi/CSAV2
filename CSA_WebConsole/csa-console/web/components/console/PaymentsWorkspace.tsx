@@ -1003,8 +1003,9 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
       setBusy(false);
     }
   }
-  // No field here has a maxLength: a pasted label, name or number that is too long is refused whole by
-  // checkMethod, never cut short and saved as something else that customers would be shown.
+  // No method field (the instructions box included) has a maxLength: a pasted label, name, number or
+  // instruction that is too long is refused whole by checkMethod, never cut short and saved as something
+  // else that customers would be shown.
   const input = (name: Exclude<MethodField, "instructions">, extra: { autoComplete?: string }) => (
     <div>
       <label className="block text-sm" htmlFor={`${formId}-${name}`}>{FIELD_LABELS[name]}</label>
@@ -1040,7 +1041,7 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
       </>}
       <div>
         <label className="block text-sm" htmlFor={`${formId}-instructions`}>Extra instructions (optional)</label>
-        <textarea id={`${formId}-instructions`} className={textarea} maxLength={500} data-testid="method-instructions"
+        <textarea id={`${formId}-instructions`} className={textarea} data-testid="method-instructions"
           value={draft.instructions} aria-invalid={errors.instructions ? true : undefined}
           aria-describedby={`${formId}-instructions-help`}
           onChange={(event) => change({ instructions: event.target.value })} />

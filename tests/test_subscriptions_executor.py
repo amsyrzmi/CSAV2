@@ -1137,6 +1137,35 @@ async def test_extend_renewal_voids_the_next_period_invoices_and_the_job_reissue
     ]
 
 
+async def test_extend_after_a_missed_renewal_voids_the_stale_period_invoice(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await payments_on(w)
+    sub = await subscribe(w, staff)
+    now = datetime.now(UTC)
+    # The renewal date has passed and the invoice job has not renewed yet: the next period's
+    # invoice starts at that date, before now.
+    old_renewal = now - timedelta(minutes=2)
+    await w.q("UPDATE subscriptions SET renews_at = %s WHERE id=%s", old_renewal, sub)
+    earlier = await seed_invoice(w, sub, old_renewal - timedelta(days=30), "overdue")
+    stale = await seed_invoice(w, sub, old_renewal, "issued")
+
+    new_renewal = now + timedelta(days=7)
+    created = await propose(
+        w, staff, sub, {"action": "extend_renewal", "renews_at": new_renewal.isoformat()}
+    )
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    voided = await invoice_row(w, stale)
+    assert voided["status"] == "void" and voided["void_reason"] == "subscription_changed"
+    assert (await invoice_row(w, earlier))["status"] == "overdue"
+    assert [i["id"] for i in await open_invoices(w, sub)] == [earlier]
+
+
 async def test_pause_does_not_void_the_next_period_invoice(sessions: SessionWorld) -> None:
     w = sessions
     staff, _ = await w.member(role="tenant_staff")

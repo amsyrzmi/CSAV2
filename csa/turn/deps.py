@@ -229,9 +229,10 @@ def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
     the coordinator's check is grounding alone.
 
-    Whole facts only, up to `DRAFT_MAX` characters: a fact that would not fit is left out, never
-    cut, so an account number or a reference is never sent half (a payment answer is far shorter:
-    `csa.payments.copy.CUSTOMER_METHODS`)."""
+    Whole facts only, up to `DRAFT_MAX` characters: a later fact that would not fit is left out,
+    never cut, so an account number or a reference is never sent half. Only a first fact over
+    `DRAFT_MAX` characters is cut (it must give some reply); a payment answer is far shorter:
+    `csa.payments.copy.CUSTOMER_METHODS`."""
     kept: list[tuple[str, Fact]] = []
     size = 0
     for fact_id, fact in written:

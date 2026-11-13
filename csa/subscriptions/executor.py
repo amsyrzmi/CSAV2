@@ -487,12 +487,16 @@ class SubscriptionActionExecutor:
                 # The next period now starts later: an invoice already issued (or claimed) for a
                 # period from now on names the wrong dates. Void it; the invoice job issues the
                 # one for the new renewal date. The opening invoice and the running period's stay.
+                # The cut is the OLD renewal date: when it has already passed (the invoice job has
+                # not renewed yet) the next period's invoice starts there, before now, and must go
+                # too. With a renewal date still ahead it is the same as now: the running period
+                # always starts before it.
                 await void_for_subscription(
                     conn,
                     client_id,
                     action.subscription_id,
                     reason="subscription_changed",
-                    from_period=now,
+                    from_period=locked["renews_at"] or now,
                     include_opening=False,
                 )
             elif action.action == "activate":
