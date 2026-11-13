@@ -1,9 +1,11 @@
-"""The training library's video upload routes: start, piece, resume status and complete.
+"""The training library's video routes: start, piece, resume status, complete, and retry.
 
 Same dependencies as the library's routes (human sessions, the ``training_library`` package); every
 route is for managers (``access.can_manage``). The routes always exist: without a training store
-they answer 503 ``training_storage_unavailable``, and while ``TRAINING_VIDEO_ENABLED`` is off 503
-``training_video_unavailable``. Removing an upload is the library's ``DELETE /training/items/{id}``.
+they answer 503 ``training_storage_unavailable``, and while ``TRAINING_VIDEO_ENABLED`` is off the
+upload routes answer 503 ``training_video_unavailable``. Removing an upload is the library's
+``DELETE /training/items/{id}``. Retrying a failed video queues its job again for the training
+worker (``video_jobs.retry``).
 """
 
 # No ``from __future__ import annotations``: the store dependency is a closure here, and FastAPI
@@ -21,8 +23,9 @@ from csa.console.kb_uploads import human
 from csa.console.services import package_gate
 from csa.storage.base import ObjectStore
 from csa.storage.multipart import MultipartStore
+from csa.training import video_jobs
 from csa.training.models import ItemOut, PieceOut, VideoStart, VideoUploadOut
-from csa.training.service import STORAGE_UNAVAILABLE, VIDEO_UNAVAILABLE
+from csa.training.service import STORAGE_UNAVAILABLE, VIDEO_UNAVAILABLE, TrainingLibrary
 from csa.training.video_upload import VideoUploads
 
 Actor = Annotated[ConsoleActor, Depends(human)]
@@ -50,6 +53,16 @@ def build_training_video_router(store: ObjectStore | None) -> APIRouter:
         return VideoUploads(
             request.app.state.pool,
             store,
+            store,
+            identity_pool=identity.pool if isinstance(identity, IdentityService) else None,
+        )
+
+    def library(request: Request) -> TrainingLibrary:
+        if store is None:
+            raise HTTPException(503, STORAGE_UNAVAILABLE)
+        identity = getattr(request.app.state, "identity_service", None)
+        return TrainingLibrary(
+            request.app.state.pool,
             store,
             identity_pool=identity.pool if isinstance(identity, IdentityService) else None,
         )
@@ -97,5 +110,14 @@ def build_training_video_router(store: ObjectStore | None) -> APIRouter:
         videos: Annotated[VideoUploads, Depends(uploads)],
     ) -> ItemOut:
         return await videos.complete(actor, client_id, item_id)
+
+    @router.post("/training/items/{item_id}/retry", response_model=ItemOut)
+    async def retry_video(
+        item_id: UUID,
+        actor: Actor,
+        client_id: Company,
+        lib: Annotated[TrainingLibrary, Depends(library)],
+    ) -> ItemOut:
+        return await video_jobs.retry(lib, actor, client_id, item_id)
 
     return router

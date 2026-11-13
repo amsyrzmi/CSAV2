@@ -1924,6 +1924,7 @@ Who may call:
 | `PUT /training/videos/{id}/pieces/{n}` | manage | 200 `PieceOut` `{number, received}`. One piece, raw `application/octet-stream` with `X-Piece-SHA256` |
 | `GET /training/videos/{id}/upload` | manage | `VideoUploadOut`: the plan and the piece numbers already stored, for resuming |
 | `POST /training/videos/{id}/complete` | manage | 200 `ItemOut` with `status: uploaded`. No body. Idempotent |
+| `POST /training/items/{id}/retry` | manage | 200 `ItemOut`. No body. Only for a `failed` video whose `failure` is one worth trying again (`training_transcription_unavailable`, `training_summary_unavailable`, `training_storage_unavailable`): its processing goes back in the queue at the stage that failed, with its attempts reset, and the item's `status` becomes that stage (`transcribing` or `summarising`) with `failure` `null`. Any other item is 409 `training_retry_not_allowed` (a video that is not failed, or failed for a reason in the file itself, which needs a new upload). Works while `TRAINING_VIDEO_ENABLED` is off; the training worker picks the job up once it runs. See [Video processing](#video-processing) |
 | `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below. On a video it is 409 `training_summary_automatic` (a video's summary is made when it is processed), after the 403 for `regenerate: true` from a non-manager and the 404 for an item the caller cannot see |
 
 ### Limits
@@ -2045,6 +2046,29 @@ upload can resume. While `TRAINING_VIDEO_ENABLED` is off (the default) the four 
 The limits are constants in `csa/training/limits.py`; the count, byte and open-upload limits are
 checked under the company's lock, so two starts racing for the last slot give one 201 and one 409.
 
+### Video processing
+
+The training worker (`python -m apps.training_worker.main`, one process per deployment) processes a
+completed upload in two stages, transcribing then summarising, one video at a time and at most one
+per company at once, oldest first. A manager sees the progress in `processing` and the outcome in
+`status` and `failure`:
+
+- A failure worth trying again (the speech service, the model or storage did not answer) waits
+  60 seconds times the attempt number and tries again, up to 3 attempts per stage. After the third
+  the video is `failed` with `training_transcription_unavailable`, `training_summary_unavailable` or
+  `training_storage_unavailable`, and `POST /training/items/{id}/retry` starts that stage again. A
+  worker stopped mid-video carries on where it stopped (finished chunks are not sent again) once its
+  heartbeat is 10 minutes old.
+- A refusal of the file itself (`training_video_unreadable`, `training_video_too_long`,
+  `training_video_codec`) fails the video at once and deletes the stored file, so its bytes stop
+  counting against the 5 GiB; the row stays so the manager sees why. It cannot be retried.
+- At most 5 hours of video per company are processed in any 24 hours. The seconds are booked before
+  the first chunk is sent, and deleting a video does not give them back. A video past the limit
+  waits (`processing.waiting` is `true`) until enough booked time is more than 24 hours old.
+- Every hour the worker removes uploads with no new piece for 24 hours (audit
+  `training.upload_abandoned`, with no actor), aborts storage uploads that have no upload in
+  progress, removes stored files no item keeps, and deletes usage records older than 2 days.
+
 ### Detail codes
 
 Every refusal is `{"detail": "<code>"}`. The web client keeps the code on `ApiError.code` and shows
@@ -2056,11 +2080,12 @@ a plain sentence (see below).
 | 403 | `human session required` | A machine token on a `GET` route |
 | 403 | `machine principal has read-only access` | A machine token on `POST`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
 | 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` |
-| 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit or remove; anyone but a manager sending `regenerate: true` |
+| 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit, remove or retry; anyone but a manager sending `regenerate: true` |
 | 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |
 | 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company (PDFs only; videos are counted apart) |
 | 409 | `training_summary_automatic` | `POST .../summary` on a video |
+| 409 | `training_retry_not_allowed` | `POST .../retry` on an item that is not a `failed` video, or one that failed for a reason in the file itself |
 | 409 | `training_uploads_in_progress` | Starting a third video upload while two are open in the company |
 | 409 | `training_upload_closed` | A piece for a video that is no longer uploading (completed, or removed while the piece was sent), or sent while its completion runs |
 | 409 | `training_piece_missing` | Completing before every piece is stored with its size, or a stored piece no longer matches its hash (that piece is forgotten; send it again) |
@@ -2146,7 +2171,7 @@ file), `training_pdf_protected`, `training_pdf_active_content`, `training_file_t
 `training_storage_unavailable` and `training_parser_unavailable` (try again), `training_not_found`,
 `training_not_video`, `training_uploads_in_progress`, `training_upload_closed`,
 `training_piece_missing`, `training_piece_invalid`, `training_piece_corrupt`, `training_busy` (the
-page retries on its own), `training_video_unavailable`,
+page retries on its own), `training_video_unavailable`, `training_retry_not_allowed`,
 `training_no_text`, `training_assistant_unavailable`, `package_inactive`, `training_forbidden` and
 `write permission required` ("only admins and the HR owner can change the library").
 
@@ -2156,6 +2181,8 @@ One `console_audit` row per change, with the item id as target and empty details
 `training.video_upload_started` (a video upload was started; a retry with the same key writes none),
 `training.item_added` (a PDF stored, or a video's upload completed; a retry that returns the first
 item writes none), `training.item_edited`, `training.item_removed`,
+`training.video_retried` (a manager queued a failed video again), `training.upload_abandoned` (the
+training worker removed an upload with no new piece for 24 hours; `actor_id` is `null`),
 `training.summary_generated`, `training.summary_regenerated`. Views, downloads and reads of a summary
 are not logged. Log lines carry the item id, the company id, a byte count, the model name and an
 outcome, never a title, file name, PDF text or summary text.
