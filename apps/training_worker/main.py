@@ -32,13 +32,8 @@ from csa.storage.base import ObjectStore
 from csa.storage.factory import Stores, build_stores, verify_stores
 from csa.storage.multipart import MultipartStore
 from csa.training import limits
-from csa.training.video_jobs import (
-    SUMMARY_FAILED,
-    Claim,
-    JobHandle,
-    Transient,
-    VideoProcessor,
-)
+from csa.training.video_jobs import Claim, JobHandle, VideoProcessor
+from csa.training.video_summary import SummaryStage
 from csa.training.video_transcribe import TranscribeStage
 
 logger = structlog.get_logger(__name__)
@@ -51,21 +46,17 @@ POOL_SIZE = 2
 
 
 class WorkerStages:
-    """The worker's stages: transcribing runs; the summary is held until its stage exists.
+    """The worker's stages: transcribing and the summary, each in its own module."""
 
-    A summary job is retried later with the stage's retryable code, so nothing is lost: once the
-    summary stage ships, a manager's retry (or the next attempt) summarises the video.
-    """
-
-    def __init__(self, transcribing: TranscribeStage, model: GroqClient) -> None:
+    def __init__(self, transcribing: TranscribeStage, summarising: SummaryStage) -> None:
         self.transcribing = transcribing
-        self.model = model
+        self.summarising = summarising
 
     async def transcribe(self, claim: Claim, job: JobHandle) -> Literal["summarising", "ready"]:
         return await self.transcribing.transcribe(claim, job)
 
     async def summarise(self, claim: Claim, job: JobHandle) -> None:
-        raise Transient(SUMMARY_FAILED)
+        await self.summarising.summarise(claim, job)
 
 
 async def prepare_training_store(settings: Settings) -> ObjectStore:
@@ -155,11 +146,13 @@ async def main() -> None:
             ),
             DefaultKbEmbedder.from_settings(settings),
         ),
-        GroqClient(
-            settings.GROQ_API_KEY.get_secret_value(),
-            settings.GROQ_MODEL,
-            http,
-            str(settings.GROQ_CHAT_URL),
+        SummaryStage(
+            GroqClient(
+                settings.GROQ_API_KEY.get_secret_value(),
+                settings.GROQ_MODEL,
+                http,
+                str(settings.GROQ_CHAT_URL),
+            )
         ),
     )
     processor = VideoProcessor(owner_pool, app_pool, store, stages)
