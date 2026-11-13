@@ -21,8 +21,10 @@ for whoever sets the limit, neither changes the recommendation:
 - Production reality was not provided (below), so whether the 2 GB host can take one more container
   of this size is not established by this document.
 
-The production default chosen afterwards is 256m (`CSA_PROD_MEM_TRAINING_WORKER`, tunable from the
-host env file), not 160: the 160 was measured with the import set alone.
+**Decision:** the production default limit is 256m (`CSA_PROD_MEM_TRAINING_WORKER`, tunable from the
+host env file), not 160: the 160 was measured with the import set alone. The document's 160 MB is a
+measurement, not the shipped value. Whether the production host can take the container is still not
+established (see Production reality below).
 
 ## Limits on paper (`deploy/compose.production.yml`)
 

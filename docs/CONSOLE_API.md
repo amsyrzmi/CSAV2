@@ -866,8 +866,8 @@ assistant chat and tab-origin cards stay English.
 A turn with `page_context` is planned by one model call that returns exactly one typed
 proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
 `email_team`, `inbox_summary`, `training_submit`, `inbox_decision`, `clarification`, the
-people actions, `product_stock_read` or `training_ask`. The planner only proposes; role, package, switch and
-record-version gates are enforced afterwards by the turn service and the proposal
+people actions, `product_stock_read` or `training_ask`. The planner only proposes; role, package,
+switch and record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
 gateway then builds the planner from `GROQ_API_KEY` and `GROQ_MODEL`). Without a
@@ -1910,7 +1910,7 @@ and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are publish
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
 every role, a platform admin included, gets 403 `package_inactive` until it is activated) and for
 human sessions only: a machine token is refused, as on the KB and HR routes (a machine `POST`,
-`PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
+`PUT`, `PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
 authentication before the route runs; only a machine `GET` reaches the route's 403 `human session
 required`). A platform admin chooses the company with `?client_id=` (400 without it); a member of
 another company is refused (403 with `client_id`, 404 on an item id). An item of another company is
@@ -1920,11 +1920,12 @@ always 404 `training_not_found`, never 403. The file store is the `training` sto
 
 Who may call:
 
-- **Read** (list, file, read a summary, ask for a summary): any member of the company, every role
-  including `read_only`, and a platform admin who chose the company.
-- **Manage** (add, edit, remove, regenerate a summary, every video upload route): a platform admin who chose the company, a
-  tenant admin, and the company's HR owner when that person is a `tenant_staff` member. The HR owner
-  is asked again on every request, so a move takes effect on the next call (see
+- **Read** (list, file, playback, video, transcript, read a summary, ask for a summary): any member
+  of the company, every role including `read_only`, and a platform admin who chose the company.
+- **Manage** (add, edit, remove, regenerate a summary, every video upload route, retry): a platform
+  admin who chose the company, a tenant admin, and the company's HR owner when that person is a
+  `tenant_staff` member. The HR owner is asked again on every request, so a move takes effect on the
+  next call (see
   [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#the-hr-owner-dependency)). `can_manage` on the list
   says which a caller is. A plain staff member gets 403 `training_forbidden`.
 - A `read_only` member is refused every `POST`, `PUT`, `PATCH` and `DELETE` by the console's write rule
@@ -1954,19 +1955,22 @@ Who may call:
 
 ### Limits
 
+The PDF limits first; the video limits are in the table under [Video uploads](#video-uploads), and
+PDFs and videos are counted apart.
+
 | What | Limit |
 |---|---|
-| One file | 25 MB (`25 * 1024 * 1024` bytes); the whole body is bounded at that plus 64 KB of multipart framing |
+| One PDF | 25 MB (`25 * 1024 * 1024` bytes); the whole body is bounded at that plus 64 KB of multipart framing |
 | Pages in one PDF | 300 (at least one) |
-| Items in one company | 300 |
-| Total size of one company's items | 500 MB (counts `byte_size` of the rows) |
+| PDFs in one company | 300 |
+| Total size of one company's PDFs | 500 MB (counts `byte_size` of the PDF rows) |
 | `title` | 1 to 120 characters after trimming; no control characters |
 | `description` | 0 to 1000 characters after trimming; line breaks and tabs allowed, no other control characters |
 | `category` | 0 to 60 characters after trimming; no control characters; free text |
 | Text sent for a summary | the first 24,000 characters of the PDF's text |
 | `summary` / `key_points` stored | summary 1 to 1500 characters; at most 6 points of 1 to 200 characters |
 
-The four upload limits are constants in `csa/training/limits.py`. The count and byte limits are
+The PDF limits are constants in `csa/training/limits.py`. The count and byte limits are
 checked under the company's lock, so two uploads racing for the last slot give one 201 and one 409.
 
 ### Two-step upload
@@ -2103,10 +2107,10 @@ a plain sentence (see below).
 |---|---|---|
 | 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
 | 403 | `human session required` | A machine token on a `GET` route |
-| 403 | `machine principal has read-only access` | A machine token on `POST`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
+| 403 | `machine principal has read-only access` | A machine token on `POST`, `PUT`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
 | 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` |
 | 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit, remove or retry; anyone but a manager sending `regenerate: true` |
-| 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
+| 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made; a video a reader may not see yet (not `ready`); `playback` or `video` of a manager's video with no file to play; `file` of a video, or `playback`, `video` and `transcript` of a PDF |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |
 | 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company (PDFs only; videos are counted apart) |
 | 409 | `training_summary_automatic` | `POST .../summary` on a video |

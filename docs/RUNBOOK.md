@@ -655,7 +655,7 @@ video release: its readiness check wants the highest applied version to equal it
 reverse order: 0601 first, then 0600.
 
 **Roll back migration 0601.** Stop the services, then, as the database owner: `DROP TABLE
-public.training_video_usage;` (the monthly video-seconds count is lost), `DROP TABLE
+public.training_video_usage;` (the rolling 24-hour processing count is lost), `DROP TABLE
 public.training_transcript_windows, public.training_transcript_segments,
 public.training_video_jobs, public.training_video_pieces, public.training_video_uploads;` (every
 transcript and any upload in progress is lost; stored video files stay in the training store with no
@@ -701,6 +701,203 @@ the cards already stuck before this release (failed, partial, queued or processi
 files were all deleted became `cancelled` and dismissed). To check a company by hand, list its jobs
 with `dismissed_at IS NULL` in `kb_ingest_jobs`; every audit row for these actions is named
 `kb.job_dismissed`, `kb.job_retried`, `kb.job_cancelled` or `kb.jobs_dismissed`.
+
+## Training video: the training worker
+
+Video in the Training library is processed by one more service, the training worker
+(`python -m apps.training_worker.main`, the container `csa-staging-training-worker-1` on staging and
+`csa-prod-training-worker-1` on production). What it does and how a job moves is in
+[TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#video); the owner's steps and rollback notes for the
+rollout are in [deploy/PRODUCTION.md](../deploy/PRODUCTION.md#training-video). Everything here is
+read-only unless it says it changes something. Where a statement says "as the database owner", use
+the owner role on the staging database container: `docker exec -i csa-staging-staging-db-1 psql -U csa
+-d csa_staging` (production: `csa-prod-staging-db-1`). The owner role is not under row security
+(`ENABLE`, never `FORCE`), so it sees every company: it is for looking, not for editing by hand.
+
+**Turn the feature on.** `TRAINING_VIDEO_ENABLED` is off by default, and the worker idles (it opens
+nothing and only touches its liveness file) until it is on, so the service can ship first. The order
+of the owner's steps, from `deploy/PRODUCTION.md`:
+
+1. Production host capacity: `docker stats --no-stream`, `free -m` and `df -h /` from csa-prod at a
+   busy time, taken before the first production deploy of this change and again before the switch.
+2. The training worker's S3 key (`csa-prod-training`, policy in
+   [OBJECT_STORAGE.md](./OBJECT_STORAGE.md#iam-policy-for-the-training-worker-key)) and its two secret
+   files.
+3. The application key gains `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` on
+   `training/*`.
+4. The bucket's rule for incomplete multipart uploads goes from 1 day to 2.
+5. The two real-bucket checks in [OBJECT_STORAGE.md](./OBJECT_STORAGE.md) ("Checks only the real
+   bucket can answer").
+6. Review the speech provider's retention terms for training recordings.
+7. Staging only: check free disk on the staging host (below).
+8. The switch itself: a reviewed pull request that sets `CSA_STAGING_TRAINING_VIDEO=true` in
+   `deploy/staging-rollout.env`, and for production also in `deploy/production-rollout.env` with
+   `CSA_PROD_S3_TRAINING_KEY=prod_s3_training`. Production's plan refuses video on without the key.
+   Staging goes first; production only after steps 1 to 6 and the staging retest.
+9. After the switch: `docker exec csa-prod-gateway-1 python -m scripts.storage_smoke` (every line
+   PASS), then [TRAINING_RETEST.md](./TRAINING_RETEST.md).
+
+**Read the logs.** `docker logs csa-staging-training-worker-1` (or the production name). Lines are
+structured events: the event name, then `key=value` pairs. They carry ids (`client_id`, `item_id`),
+`stage`, `attempt`, chunk indexes, byte counts, durations and outcome codes, and never a title, a file
+name, a URL, transcript text or ffmpeg's own output. The events to know:
+
+| Event | Means |
+|---|---|
+| `training_worker_idle` (`outcome=video_off`) | Video is off: the worker is waiting, doing nothing |
+| `training_worker_started` | Video is on and both loops are running |
+| `training_video_job` | One attempt ended: `outcome` is `ready`, `summarising` (moved on to the summary), `queued` (will retry), `waiting` (daily cap), `failed` or `lost` (the item was removed or the job claimed again); `code` is the failure code; `duration_ms` |
+| `training_video_job_stale` (warning) | A job with no heartbeat for 10 minutes was requeued (`outcome=queued`) or failed (`outcome=failed`, attempts used up) |
+| `training_video_stage_error` (error) | An unexpected error inside a stage; the job is retried, then fails with the stage's retryable code. `outcome` is the exception class |
+| `training_video_job_error` (error) | A database error while claiming or running one company's job; the others go on |
+| `training_transcribe_probe`, `_chunk`, `_windows`, `_decided`, `_failed` | The steps of transcribing: the probe, each audio chunk (`chunk`, `chunks_total`, `audio_bytes`), the transcript windows (`segments`, `windows`, `model`), the speech verdict, a failure |
+| `training_media_child` | One ffprobe or ffmpeg child finished (duration and output size only) |
+| `training_sweep` | The hourly sweep's totals: `abandoned`, `removed`, `aborted`, `pruned` |
+| `training_upload_abandoned` | An upload with no piece for 24 hours was removed |
+| `training_abort_failed`, `training_file_delete_failed`, `training_sweep_failed`, `training_jobs_loop_error`, `training_sweep_loop_error` | Something failed and will be tried again (an abort or delete by the next sweep, a loop on its next turn) |
+
+A worker that dies is restarted by compose; its healthcheck is the liveness file
+(`/tmp/training-worker.alive`, touched every 5 seconds; the compose check allows 90). A loop that stops ends the process rather
+than hiding. A worker that refuses to start prints why (a missing speech endpoint, no training store,
+the placeholder S3 key) and exits.
+
+**See the jobs by status and age** (as the database owner; read-only):
+
+```sql
+-- How many jobs, by stage and status, and how long the oldest has been waiting.
+SELECT stage, status, count(*) AS jobs,
+       round(extract(epoch FROM now() - min(created_at))) AS oldest_job_age_s
+FROM public.training_video_jobs
+GROUP BY stage, status
+ORDER BY stage, status;
+
+-- Every job that is not done, with the heartbeat age and when a queued job is due.
+SELECT j.client_id, j.item_id, j.stage, j.status, j.attempts, j.chunks_done, j.chunks_total,
+       j.error_code,
+       round(extract(epoch FROM now() - j.created_at)) AS job_age_s,
+       round(extract(epoch FROM now() - j.locked_at)) AS heartbeat_age_s,
+       round(extract(epoch FROM j.next_attempt_at - now())) AS due_in_s,
+       i.status AS item_status, i.failure_code, i.duration_ms / 1000 AS video_s
+FROM public.training_video_jobs j
+JOIN public.training_items i ON i.client_id = j.client_id AND i.id = j.item_id
+WHERE j.status <> 'done'
+ORDER BY j.created_at;
+```
+
+Reading it: `processing` with a growing `chunks_done` is working. `queued` with a positive `due_in_s` is
+waiting out a backoff (60 s times the attempt number) or the daily cap (`error_code` is
+`training_processing_limit`). `failed` rows with a retryable code are what managers see "Try again" on.
+One worker handles one job at a time, so a long video delays every company's next job.
+
+**A job stuck in `processing`.** The worker refreshes `locked_at` (the heartbeat) after every chunk and
+every part. A job whose heartbeat is older than 600 seconds is taken for dead and requeued
+automatically: on the worker's next poll (every 5 seconds while idle) it goes back to `queued` and
+resumes at `chunks_done` or its saved summary parts, or fails with its retryable code when its three
+attempts are used (`training_video_job_stale` in the log). There is nothing to unstick by hand. Check,
+in this order: `heartbeat_age_s` above 600 on a `processing` row means no worker has beaten for it, so
+look at the container (`docker ps`, `docker logs`) and start it if it is down; a stopped worker's job
+costs one of its 3 attempts when it is requeued. A fresh heartbeat with no `chunks_done` movement for a
+long time is a slow provider or a very long chunk: the log shows the last `training_transcribe_chunk`.
+Do not edit `training_video_jobs` by hand while the worker runs.
+
+**"Try again" and its SQL equivalent.** A manager sees "Try again" on a failed video whose failure is
+`training_transcription_unavailable`, `training_summary_unavailable` or `training_storage_unavailable`
+(`POST /training/items/{id}/retry`): the job goes back to `queued` at the stage that failed with its
+attempts reset, the item shows that stage again, and the worker picks it up (it works even while video
+is off; the job then waits for the worker). A refusal of the file itself (`training_video_unreadable`,
+`training_video_too_long`, `training_video_codec`) cannot be retried: the file is deleted and a new one
+must be added. The same change by hand, as the database owner, in one transaction (it writes no
+`training.video_retried` audit row, which the route does; replace `<item id>`):
+
+```sql
+BEGIN;
+WITH job AS (
+    UPDATE public.training_video_jobs j
+    SET status = 'queued', attempts = 0, error_code = NULL, locked_at = NULL,
+        next_attempt_at = now()
+    FROM public.training_items i
+    WHERE j.item_id = '<item id>' AND j.status = 'failed'
+      AND i.client_id = j.client_id AND i.id = j.item_id
+      AND i.kind = 'video' AND i.status = 'failed'
+      AND i.failure_code IN ('training_transcription_unavailable',
+                             'training_summary_unavailable', 'training_storage_unavailable')
+    RETURNING j.client_id, j.item_id, j.stage
+)
+UPDATE public.training_items i
+SET status = job.stage, failure_code = NULL, updated_at = now()
+FROM job
+WHERE i.client_id = job.client_id AND i.id = job.item_id
+RETURNING i.id, i.status;
+COMMIT;
+```
+
+No row back means the item is not a failed video with a retryable code; roll back and look at it.
+
+**The daily cap.** A company's videos may use at most 5 hours of processing in any rolling 24 hours
+(`DAILY_PROCESSING_SECONDS`, a constant in `csa/training/limits.py`, not a setting). A video's
+duration is booked, rounded up to the second, before its first chunk is sent; deleting the video does
+not give it back, and a retry of an already booked video does not book it again until its usage row
+is pruned after 2 days. A video that does not fit waits: its job is `queued` with `error_code`
+`training_processing_limit`, `due_in_s` says when enough booked time has aged out, and managers see
+"Waiting to start". To see what each company has booked (as the database owner; read-only):
+
+```sql
+SELECT client_id, sum(seconds) AS booked_s, 18000 - sum(seconds) AS room_s,
+       min(processed_at) + interval '24 hours' AS oldest_booking_ages_out_at
+FROM public.training_video_usage
+WHERE processed_at > now() - interval '24 hours'
+GROUP BY client_id
+ORDER BY booked_s DESC;
+```
+
+Deleting a company's usage rows would lift its cap, and would also let a delete-and-upload loop run
+without limit: do it only as an owner decision, for that one company.
+
+**The hourly sweep.** The worker sweeps every active company when it starts and every hour after:
+uploads with no new piece for 24 hours are removed (audit `training.upload_abandoned`) and their store
+uploads aborted; stored files no row keeps are deleted; on S3, open multipart uploads with no
+`uploading` row are aborted; usage rows older than 2 days are deleted. The totals are in the
+`training_sweep` line. Restarting the worker runs one at once. To see what is open (as the database
+owner; read-only):
+
+```sql
+SELECT u.client_id, u.item_id, u.piece_count, u.declared_bytes,
+       (SELECT count(*) FROM public.training_video_pieces p
+         WHERE p.client_id = u.client_id AND p.item_id = u.item_id) AS pieces,
+       round(extract(epoch FROM now() - coalesce(u.last_piece_at, u.created_at))) AS idle_s
+FROM public.training_video_uploads u
+ORDER BY idle_s DESC;
+```
+
+A `training_abort_failed` line that repeats every hour on S3 means the key that tried lacks
+`s3:AbortMultipartUpload` on `training/*`: the gateway's application key (on a removal) or the
+training worker's key (the sweep). The bucket's lifecycle rule clears the upload after 2 days
+meanwhile.
+
+**Staging disk.** Staging keeps videos on the `staging-training-uploads` volume, up to 5 GiB per
+company (uploads in progress count at their declared size), and the worker writes one 5-minute audio
+chunk at a time under `/tmp`. The staging host's disk has run full before: check it before switching
+video on and after a retest with large files.
+
+```bash
+df -h /
+IMAGE=$(docker --host unix:///var/run/docker.sock inspect csa-staging-gateway-1 --format '{{.Image}}')
+docker --host unix:///var/run/docker.sock run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges:true --user 1000:1000 \
+  -v csa-staging_staging-training-uploads:/data:ro \
+  --entrypoint du "$IMAGE" -sh /data
+```
+
+The image the stack runs is 378 MB bigger than before video (901 MB against 523 MB), and the previous
+image stays on the host for a rollback. A staging reset empties the volume with the database
+(`scripts.staging_reset`).
+
+**Remove the idle training worker after a downgrade past this change.** A rollback to an image from
+before this change leaves the training worker container running, idle, on the newer image: staging's
+older runner does not know the service, and production's runner from `main` stops at `recreate
+training-worker` after the other services are back on the older images. Remove it by hand:
+`docker rm -f csa-staging-training-worker-1` on staging, `docker rm -f csa-prod-training-worker-1` on
+production. The migrations roll back as described above ("Roll back migrations 0600 and 0601").
 
 ## Gotchas
 
