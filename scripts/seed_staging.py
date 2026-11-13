@@ -4,7 +4,7 @@ Owner-approved, additive and idempotent. No reset, delete, provider call,
 worker, KB vector, delivery or runtime trace is produced.
 
 * Tenants are onboarded with the same SQL the console onboarding route uses,
-  including the nine capability rows and an attributed audit entry.
+  including the ten capability rows and an attributed audit entry.
 * Accounts are created through :class:`IdentityService` (invite then accept) as
   the existing platform administrator, so every role lands in
   ``console_memberships`` with normal identity audit. Generated passwords are
