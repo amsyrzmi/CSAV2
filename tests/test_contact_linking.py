@@ -206,7 +206,7 @@ def seed_everything(shop: Shop, contact_id: UUID) -> dict[str, list[Any]]:
         one(
             "invoices",
             "INSERT INTO invoices (id, client_id, contact_id, order_id, status, amount, issued_at)"
-            " VALUES (%s, %s, %s, %s, 'open', 10, now()) RETURNING id AS pk",
+            " VALUES (%s, %s, %s, %s, 'issued', 10, now()) RETURNING id AS pk",
             (f"INV-{tag}", c, k, order),
         )
         one(

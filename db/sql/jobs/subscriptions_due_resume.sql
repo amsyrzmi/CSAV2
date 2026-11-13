@@ -1,9 +1,11 @@
 -- Rule 3 of the subscriptions_due job: a paused subscription whose resume date has arrived
 -- (compared with today's date on the tenant's calendar, clients.timezone) becomes active again;
--- paused_at and resume_at are cleared. A renewal that lapsed while paused, or a missing one,
--- restarts the cycle: renewal_anchor = now, and renews_at is one billing interval of the current
--- plan after it on the tenant's calendar (subscription_next_renewal, as subscription_apply.sql
--- does for a manual resume); a renews_at still in the future is kept, with its anchor.
+-- paused_at, resume_at and pause_reason are cleared (the payments job pauses an unpaid
+-- subscription with no resume_at, so this rule never lifts that pause on its own). A renewal that
+-- lapsed while paused, or a missing one, restarts the cycle: renewal_anchor = now, and renews_at
+-- is one billing interval of the current plan after it on the tenant's calendar
+-- (subscription_next_renewal, as subscription_apply.sql does for a manual resume); a renews_at
+-- still in the future is kept, with its anchor.
 -- Action 'resumed' with {resume_at, renews_at}. Rows are claimed FOR UPDATE SKIP LOCKED (earliest
 -- resume date first, at most %(batch_size)s); version bumps.
 WITH tenant AS (
@@ -22,6 +24,7 @@ WITH tenant AS (
     SET status = 'active',
         paused_at = NULL,
         resume_at = NULL,
+        pause_reason = NULL,
         renews_at = CASE WHEN s.renews_at IS NULL OR s.renews_at < %(now)s::timestamptz THEN
             public.subscription_next_renewal(
                 %(now)s::timestamptz, %(now)s::timestamptz,

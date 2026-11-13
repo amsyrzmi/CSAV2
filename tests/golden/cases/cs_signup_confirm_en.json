@@ -78,7 +78,7 @@
           "Is that right?"
         ],
         "compose_sees": [
-          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Ask the customer to confirm, and file nothing yet.",
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do.",
           "We keep your name and phone number on your contact record so the team can set up your plan."
         ],
         "signup_requests": 0,
@@ -118,7 +118,7 @@
           "done": true
         },
         "ComposeOut": {
-          "reply": "Thanks! Your sign-up for Plan Besar was received. The team will review it and let you know what happens next. Nothing is active yet and nothing has been charged."
+          "reply": "Thanks! Your sign-up for Plan Besar was received. The team will review it and let you know what happens next. Nothing is active yet."
         },
         "ReviewOut": {
           "ok": true
@@ -142,7 +142,7 @@
           "has been activated"
         ],
         "compose_sees": [
-          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."
+          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."
         ],
         "signup_requests": 1
       }

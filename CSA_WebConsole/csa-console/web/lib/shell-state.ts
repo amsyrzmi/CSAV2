@@ -38,6 +38,7 @@ export const NAV_ICONS: Record<NavKey, string> = {
   team: "UserRoundCog",
   password: "KeyRound",
   subscriptions: "CreditCard",
+  payments: "Banknote",
   bookings: "CalendarDays",
   training_library: "GraduationCap",
   connections: "Plug",

@@ -19,6 +19,7 @@ from csa.subscriptions.contracts import (
     ActionIn,
     CustomerRef,
     DecideIn,
+    InvoiceBrief,
     PlanIn,
     PlanOut,
     PlanPatch,
@@ -229,14 +230,40 @@ async def get_subscription(
     conn: Conn, client_id: UUID, subscription_id: UUID
 ) -> SubscriptionDetail:
     subscription = await get_subscription_out(conn, client_id, subscription_id)
-    rows = await db.q.fetch_all(
-        "subscriptions/subscription_events.sql",
-        {"client_id": client_id, "subscription_id": subscription_id},
+    key = {"client_id": client_id, "subscription_id": subscription_id}
+    rows = await db.q.fetch_all("subscriptions/subscription_events.sql", key, conn=conn)
+    invoice = await db.q.fetch_one("subscriptions/open_invoice.sql", key, conn=conn)
+    return SubscriptionDetail(
+        subscription=subscription,
+        events=[SubscriptionEventOut.model_validate(row) for row in rows],
+        open_invoice=InvoiceBrief.model_validate(invoice) if invoice is not None else None,
+    )
+
+
+async def lock_contact_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> None:
+    """Serialise everything that can give one contact a live subscription on one plan.
+
+    Filing a sign-up, approving one and adding a subscription by hand all call this first, before
+    any request row is inserted or locked, so they always take the locks in the same order (this
+    advisory lock, then the request row) and cannot deadlock. A decline takes only the row lock,
+    so it cannot be part of a cycle. The lock is held to the end of the transaction and is
+    re-entrant, so an auto-approval inside `file_signup` takes it again at no cost.
+    """
+    await db.q.execute(
+        "subscriptions/advisory_lock.sql",
+        {"key": f"subscriptions:signup:{client_id}:{contact_id}:{plan_code}"},
         conn=conn,
     )
-    return SubscriptionDetail(
-        subscription=subscription, events=[SubscriptionEventOut.model_validate(row) for row in rows]
+
+
+async def holds_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> bool:
+    """Whether the contact holds a live (active, paused or pending) subscription on the plan."""
+    held = await db.q.fetch_one(
+        "subscriptions/signup_live_subscription.sql",
+        {"client_id": client_id, "contact_id": contact_id, "plan_code": plan_code},
+        conn=conn,
     )
+    return held is not None and bool(held["live"])
 
 
 async def record_event(
@@ -287,6 +314,11 @@ async def create_subscription(
     )
     if contact is None:
         raise HTTPException(404, "contact_not_found")
+    # The same lock a sign-up approval takes: a hand-made subscription racing an approval of the
+    # same customer and plan leaves one live subscription and one 409.
+    await lock_contact_plan(conn, client_id, data.contact_id, data.plan_code)
+    if await holds_plan(conn, client_id, data.contact_id, data.plan_code):
+        raise HTTPException(409, "subscription_exists")
     created = await db.q.fetch_one(
         "subscriptions/subscription_insert.sql",
         {

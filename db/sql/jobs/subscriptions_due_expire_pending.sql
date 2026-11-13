@@ -1,26 +1,24 @@
--- Rule 5 of the subscriptions_due job: a pending (approved, never started or paid) subscription
--- older than the company's subscription_settings.pending_expiry_days (no row means 14; 0 means
--- never expire) is cancelled, effective now. Age counts from started_at, the approval time of a
--- pending row. Active and paused rows are never touched. The sign-up request that points at the
--- subscription is marked expired in the same statement, only while it is still approved. Rows are
--- claimed FOR UPDATE SKIP LOCKED (oldest first, at most %(batch_size)s), version bumps, and each
--- row gets one 'pending_expired' timeline event. Nothing is charged and nobody is messaged.
--- %(now)s is the job clock, so a test clock and production use the same statement.
-WITH setting AS (
-    SELECT coalesce(
-        (SELECT pending_expiry_days FROM public.subscription_settings
-         WHERE client_id = %(client_id)s),
-        14) AS days
-), due AS (
+-- Rule 5 of the subscriptions_due job, second statement: the pending subscriptions that
+-- subscriptions_due_expire_pending_lock.sql claimed and locked (%(ids)s) are cancelled, effective
+-- now, unless one is no longer pending or now has a proof_submitted or cash_pending invoice (read
+-- here with this statement's own, later snapshot, so a customer's claim that committed while the
+-- claim statement ran is seen: such a subscription is kept). Active and paused rows are never
+-- touched. The sign-up request that points at the subscription is marked expired in the same
+-- statement, only while it is still approved, and the subscription's open invoices (its opening
+-- invoice) are voided with void_reason 'subscription_expired' and voided_by NULL. Version bumps,
+-- and each row gets one 'pending_expired' timeline event. Nothing is charged and nobody is
+-- messaged. %(now)s is the job clock, so a test clock and production use the same statement.
+WITH due AS (
     SELECT s.id, s.status AS from_status
-    FROM public.subscriptions s, setting
+    FROM public.subscriptions s
     WHERE s.client_id = %(client_id)s
+      AND s.id = ANY(%(ids)s::uuid[])
       AND s.status = 'pending'
-      AND setting.days > 0
-      AND s.started_at < %(now)s::timestamptz - make_interval(days => setting.days)
-    ORDER BY s.started_at, s.id
-    FOR UPDATE OF s SKIP LOCKED
-    LIMIT %(batch_size)s
+      AND NOT EXISTS (
+          SELECT 1 FROM public.invoices i
+          WHERE i.client_id = s.client_id AND i.subscription_id = s.id
+            AND i.status IN ('proof_submitted', 'cash_pending'))
+    FOR UPDATE OF s
 ), changed AS (
     UPDATE public.subscriptions s
     SET status = 'cancelled', cancelled_at = %(now)s::timestamptz, version = s.version + 1
@@ -40,5 +38,12 @@ WITH setting AS (
     FROM changed
     WHERE r.client_id = %(client_id)s AND r.subscription_id = changed.id AND r.status = 'approved'
     RETURNING r.id
+), voided AS (
+    UPDATE public.invoices i
+    SET status = 'void', void_reason = 'subscription_expired', voided_at = %(now)s::timestamptz
+    FROM changed
+    WHERE i.client_id = %(client_id)s AND i.subscription_id = changed.id
+      AND i.status IN ('issued', 'overdue', 'proof_submitted', 'cash_pending')
+    RETURNING i.id
 )
 SELECT count(*) AS pending_expired FROM logged;

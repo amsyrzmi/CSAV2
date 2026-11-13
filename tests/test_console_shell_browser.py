@@ -137,6 +137,7 @@ TENANT_LABELS = (
     "Email assistant",
     "Business management",
     "Subscriptions",
+    "Payments",
     "Connections",
     "Team",
     "Password",

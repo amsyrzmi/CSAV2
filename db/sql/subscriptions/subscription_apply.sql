@@ -2,6 +2,8 @@
 -- %(version)s; "now" is the transaction's now(). immediate_plan / scheduled_plan say whether a
 -- change_plan takes effect now (plan, price and currency replaced, pending cleared) or later
 -- (pending_plan and pending_effective_at set).
+-- pause_reason ('unpaid' when the payments job paused the subscription) is cleared by resume and
+-- cancel_now; every other action keeps it.
 -- activate (pending -> active) starts the subscription now: started_at and activated_at are now(),
 -- the anchor is now() and renews_at is one billing interval of the current plan after it on the
 -- tenant's calendar, as subscription_insert.sql computes a new subscription's first renewal.
@@ -36,6 +38,10 @@ SET status = CASE %(action)s
         WHEN 'pause' THEN now()
         WHEN 'resume' THEN NULL
         ELSE s.paused_at END,
+    pause_reason = CASE %(action)s
+        WHEN 'resume' THEN NULL
+        WHEN 'cancel_now' THEN NULL
+        ELSE s.pause_reason END,
     resume_at = CASE %(action)s
         WHEN 'pause' THEN %(resume_at)s::date
         WHEN 'resume' THEN NULL

@@ -1,9 +1,12 @@
 "use client";
 
 import { createContext, Fragment, useContext, useEffect, useId, useRef, useState, type RefObject } from "react";
+import Link from "next/link";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { LinkedContacts, NeedsReview, RecentLinks } from "@/components/console/ContactLinks";
 import { api, ApiError } from "@/lib/api";
+import { consoleHref } from "@/lib/navigation";
+import { STATUS_LABELS as INVOICE_STATUS_LABELS } from "@/lib/payments-api";
 import { usePublishContext } from "@/lib/page-context";
 import type { Client, Me } from "@/lib/identity-contracts";
 import {
@@ -650,6 +653,21 @@ function Drawer({ tenantId, id, writer, plans, planName, returnFocusTo, onClose,
                 value={`Moves to ${planName(subscription.pending_plan)} on ${formatDay(subscription.pending_effective_at, timeZone)}`} />}
               {subscription.cancel_at_period_end && <Detail label="Cancellation"
                 value={`Cancels when the period ends on ${formatDay(subscription.renews_at, timeZone)}`} />}
+              {detail?.open_invoice && (
+                <>
+                  <dt className="text-ink-500">Invoice</dt>
+                  <dd className="break-words" data-testid="subscription-open-invoice">
+                    Invoice {detail.open_invoice.reference || "without a reference"} · {
+                      INVOICE_STATUS_LABELS[detail.open_invoice.status]}
+                    {/* Read-only members get 403 on Payments, so only writers get the link. */}
+                    {writer && (
+                      <Link className="ml-2 font-medium text-brand-700 underline" data-testid="subscription-open-in-payments"
+                        href={consoleHref(tenantId !== null, "payments",
+                          { client_id: tenantId, invoice: detail.open_invoice.id })}>Open in Payments</Link>
+                    )}
+                  </dd>
+                </>
+              )}
             </DetailSection>
             <DetailSection id="price" title="Price">
               <Detail label="Price" value={money(subscription.price, subscription.currency)} />
@@ -1408,6 +1426,8 @@ function SignupSummary({ row, planName }: { row: SignupOut; planName: PlanName }
           className={`ml-2 text-xs ${row.phone_verified ? "text-ink-700" : "text-ink-500"}`}>{phoneMark(row)}</span>
       </p>
       {record && <p className="text-xs text-ink-500">Customer record: {record}</p>}
+      {/* The email the customer gave for payment reminders: staff see it here as plain text. */}
+      {row.email && <p className="break-words" data-testid="signup-email">{row.email}</p>}
       <p className="text-xs text-ink-500">
         Signed up {formatDateTime(row.created_at, timeZone)}{row.source_channel ? ` · ${row.source_channel}` : ""}
       </p>

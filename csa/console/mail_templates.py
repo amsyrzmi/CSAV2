@@ -1,4 +1,5 @@
-"""Invitation, reset and HR-owner email copy: plain text plus a minimal HTML part.
+"""Invitation, reset, HR-owner, booking and payment reminder email copy: plain text plus a
+minimal HTML part.
 
 Copy follows docs/WRITING_GUIDE.md. Every value is escaped in the HTML part, and the
 subject is kept to one line so a business name can never add a header.
@@ -40,9 +41,11 @@ def _one_line(value: str) -> str:
     return " ".join(value.split())
 
 
-def _html(paragraphs: list[str]) -> str:
+def _html(paragraphs: list[str], lang: str = "en") -> str:
     body = "".join(f"<p>{paragraph}</p>\n" for paragraph in paragraphs)
-    return f'<!DOCTYPE html>\n<html lang="en">\n<body style="{_BODY}">\n{body}</body>\n</html>\n'
+    return (
+        f'<!DOCTYPE html>\n<html lang="{lang}">\n<body style="{_BODY}">\n{body}</body>\n</html>\n'
+    )
 
 
 def _link_paragraphs(link: str, action: str) -> list[str]:
@@ -354,3 +357,37 @@ def customer_lapsed_mail(
     text = "\n\n".join([hello, headline, *footer, brand]) + "\n"
     html = _html([escape(hello), escape(headline), *map(escape, footer), escape(brand)])
     return OutgoingMail(to=to, subject=subject, text=text, html=html)
+
+
+def payment_reminder_mail(
+    *,
+    to: str,
+    name: str | None,
+    brand: str,
+    subject_ref: str,
+    text: str,
+    locale: Literal["en", "ms"] = "en",
+) -> OutgoingMail:
+    """A payment reminder by email: a greeting, the reminder `text` with each of its lines as a
+    paragraph, and the company's name, as booking reminders end.
+
+    `text` is the reminder the chats get (`csa.payments.copy.reminder_text`), built by the server
+    from the invoice and the company's payment methods, in the contact's language (`locale`); the
+    greeting and the subject follow it. The subject names only the company and the invoice's
+    reference, and is kept to one line.
+    """
+    hello = (
+        (f"Hai {name}," if name else "Hai,")
+        if locale == "ms"
+        else (f"Hello {name}," if name else "Hello,")
+    )
+    lines = [line for line in text.split("\n") if line.strip()]
+    paragraphs = [hello, *lines, brand]
+    word = "invois" if locale == "ms" else "invoice"
+    subject = f"{_one_line(brand)}: {word} {_one_line(subject_ref)}"
+    return OutgoingMail(
+        to=to,
+        subject=subject,
+        text="\n\n".join(paragraphs) + "\n",
+        html=_html([escape(p) for p in paragraphs], lang=locale),
+    )

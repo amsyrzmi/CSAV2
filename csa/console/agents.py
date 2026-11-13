@@ -31,7 +31,7 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
     "invoice_agent": (
         "Invoices",
         "local",
-        "Local lookup/status only. PDF delivery and invoice issuance are not implemented.",
+        "Looks up a customer's own invoices and their status. No PDF delivery or download link.",
     ),
     "booking_agent": (
         "Bookings",
@@ -44,6 +44,12 @@ CATALOG: dict[str, tuple[str, Stage, str]] = {
         "prepared_only",
         "Local plans/status, sign-ups from the chat and unexecuted requests. "
         "No payment or billing execution.",
+    ),
+    "payment_agent": (
+        "Payments",
+        "local",
+        "Tells customers how to pay their own invoices and whether a payment was recorded, and "
+        "notes when they say they paid. It never marks an invoice paid: staff do, in Payments.",
     ),
     "ecommerce_agent": (
         "E-commerce",

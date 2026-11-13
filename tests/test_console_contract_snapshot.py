@@ -72,3 +72,31 @@ def test_kb_job_projection_omits_internal_paths_requesters_and_metadata() -> Non
     assert job.files[0].name == "source.csv"
     assert job.meta.results[0].file == "source.csv"
     assert job.meta.results[0].error == "File processing failed; inspect the server logs."
+
+
+def test_payments_contract_hides_reminder_addresses_and_sends_money_as_strings() -> None:
+    document = contract()
+    schemas = document["components"]["schemas"]
+    paths = {path for path in document["paths"] if path.startswith("/console/v1/payments/")}
+    assert paths == {
+        "/console/v1/payments/settings",
+        "/console/v1/payments/methods",
+        "/console/v1/payments/methods/{method_id}",
+        "/console/v1/payments/invoices",
+        "/console/v1/payments/invoices/{invoice_id}",
+        "/console/v1/payments/invoices/{invoice_id}/mark-paid",
+        "/console/v1/payments/invoices/{invoice_id}/void",
+        "/console/v1/payments/attention",
+    }
+    assert set(schemas["ReminderOut"]["properties"]) == {
+        "step",
+        "channel",
+        "status",
+        "created_at",
+        "sent_at",
+    }
+    assert set(schemas["ContactBrief"]["properties"]) == {"id", "full_name", "channels"}
+    for name in ("InvoiceOut", "InvoiceDetail", "PaymentOut"):
+        assert schemas[name]["properties"]["amount"]["type"] == "string", name
+    # The email module's AttentionItem keeps its own name; payments' is named apart.
+    assert "AttentionItem" in schemas and "PaymentAttentionItem" in schemas

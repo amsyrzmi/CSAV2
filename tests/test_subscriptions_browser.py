@@ -105,6 +105,8 @@ def signup_row(
         "created_at": "2026-10-30T02:00:00Z",
         "decided_at": None,
         "source_channel": "telegram",
+        "invoice_reference": None,
+        "email": None,
         **changes,
     }
 
@@ -241,7 +243,13 @@ class World:
         chen = self.contacts[2]
         self.signups = [
             signup_row(
-                SIGNUP_VERIFIED, chen, "basic", "Chen Wei", "+60111222333", phone_verified=True
+                SIGNUP_VERIFIED,
+                chen,
+                "basic",
+                "Chen Wei",
+                "+60111222333",
+                phone_verified=True,
+                email="chen.wei@example.test",
             ),
             signup_row(SIGNUP_TYPED, aisyah, "pro", "Aisyah R.", "+60100000000"),
             signup_row(
@@ -264,6 +272,8 @@ class World:
         self.review_error: str | None = None
         self.unlink_skipped: list[str] = []
         self.proposal: dict[str, Any] | None = None
+        # The open invoice each subscription's drawer shows (Payments); none unless a test sets one.
+        self.open_invoices: dict[str, dict[str, Any]] = {}
         self.calls: list[dict[str, Any]] = []
         self.unexpected: list[str] = []
 
@@ -420,7 +430,11 @@ class World:
             return 200, {"items": rows, "next_cursor": None}
         if path in {f"subscriptions/{AISYAH}", f"subscriptions/{BEN}"} and method == "GET":
             sub_id = path.split("/")[1]
-            return 200, {"subscription": self.subs[sub_id], "events": self.events[sub_id]}
+            return 200, {
+                "subscription": self.subs[sub_id],
+                "events": self.events[sub_id],
+                "open_invoice": self.open_invoices.get(sub_id),
+            }
         if path == f"subscriptions/{AISYAH}/actions" and method == "POST" and writer:
             self.proposal = {
                 "id": PROPOSAL,
@@ -828,7 +842,11 @@ class RichWorld(World):
             and parts[1] in self.subs
             and parts[1] not in {AISYAH, BEN}
         ):
-            return 200, {"subscription": self.subs[parts[1]], "events": self.events[parts[1]]}
+            return 200, {
+                "subscription": self.subs[parts[1]],
+                "events": self.events[parts[1]],
+                "open_invoice": self.open_invoices.get(parts[1]),
+            }
         return super().answer(method, path, params, body)
 
 
@@ -1392,9 +1410,12 @@ async def test_signups_tab_approves_declines_and_sets_the_expiry(site: Site) -> 
 
             # The phone mark follows phone_verified; the name is the one the customer typed.
             chen = open_rows.filter(has_text="Chen Wei")
+            # The email the customer gave for payment reminders shows to staff; none, no line.
+            await expect(chen.get_by_test_id("signup-email")).to_have_text("chen.wei@example.test")
             await expect(chen.get_by_test_id("signup-phone-mark")).to_have_text("Verified")
             aisyah = open_rows.filter(has_text="Aisyah R.")
             await expect(aisyah.get_by_test_id("signup-phone-mark")).to_have_text("Not verified")
+            await expect(aisyah.get_by_test_id("signup-email")).to_have_count(0)
             await expect(aisyah).to_contain_text("Customer record: Aisyah Rahman")
             await expect(aisyah).to_contain_text("Wants the Pro plan")
 
@@ -1579,6 +1600,70 @@ async def test_pending_subscriptions_wait_to_start_and_are_not_active(site: Site
             await expect(drawer.get_by_test_id("subscription-timeline")).to_contain_text(
                 "Sign-up approved automatically for the Basic plan. Waiting to start."
             )
+
+    await with_browser(body)
+
+
+async def test_a_pending_subscription_names_its_invoice_and_links_to_payments(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        who = customer("88888888-8888-4888-8888-aaaaaaaaaaaa", "Imran Aziz", "+60130000005")
+        world.subs[PENDING_SUB] = {
+            **subscription(PENDING_SUB, who, "basic", "59.90"),
+            "status": "pending",
+            "renews_at": None,
+        }
+        world.events[PENDING_SUB] = [
+            {
+                "id": 1,
+                "actor": "system:signup_auto",
+                "action": "signup_approved",
+                "from_status": None,
+                "to_status": "pending",
+                "payload": {"plan": "basic", "request_id": SIGNUP_VERIFIED},
+                "created_at": "2026-09-27T01:00:00Z",
+            },
+            {
+                "id": 2,
+                "actor": "system:payments_due",
+                "action": "suspended_unpaid",
+                "from_status": "active",
+                "to_status": "paused",
+                "payload": {"invoice_id": "inv_0007"},
+                "created_at": "2026-09-28T01:00:00Z",
+            },
+        ]
+        world.open_invoices[PENDING_SUB] = {
+            "id": "inv_0007",
+            "reference": "K7QX-4MF",
+            "status": "issued",
+            "amount": "59.90",
+            "currency": "MYR",
+            "due_at": "2026-11-10T01:00:00Z",
+        }
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Imran Aziz")
+            line = drawer.get_by_test_id("subscription-open-invoice")
+            await expect(line).to_contain_text("Invoice K7QX-4MF · Waiting for payment")
+            link = line.get_by_test_id("subscription-open-in-payments")
+            await expect(link).to_have_text("Open in Payments")
+            await expect(link).to_have_attribute("href", "/portal/payments?invoice=inv_0007")
+            await expect(drawer.get_by_test_id("subscription-timeline")).to_contain_text(
+                "Paused because an invoice stayed unpaid."
+            )
+            # A subscription with no open invoice shows no invoice line.
+            await drawer.get_by_test_id("subscription-close").click()
+            other = await open_customer(page, "Aisyah Rahman")
+            await expect(other.get_by_test_id("subscription-details")).to_be_visible()
+            await expect(other.get_by_test_id("subscription-open-invoice")).to_have_count(0)
+
+        # Read-only members see the invoice line but no link: Payments refuses them.
+        async with subs_page(browser, site, world, role="read_only") as page:
+            drawer = await open_customer(page, "Imran Aziz")
+            await expect(drawer.get_by_test_id("subscription-open-invoice")).to_contain_text(
+                "Invoice K7QX-4MF · Waiting for payment"
+            )
+            await expect(drawer.get_by_test_id("subscription-open-in-payments")).to_have_count(0)
 
     await with_browser(body)
 

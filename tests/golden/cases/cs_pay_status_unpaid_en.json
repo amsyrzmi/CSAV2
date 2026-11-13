@@ -1,0 +1,107 @@
+{
+  "id": "cs_pay_status_unpaid_en",
+  "matrix": "Payments: 'did you receive my payment?' with nothing on the ledger says no payment is recorded",
+  "description": "The customer's invoice is open and no payment is on the ledger: the status fact says it is not paid and that no payment has been recorded, and never that anything was received or confirmed.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "did you receive my payment?",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "payment_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "status"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "prepared_requests": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Invoice KDMW-7AS (MYR 35.00) is not paid yet.",
+          "No payment has been recorded"
+        ],
+        "reply_excludes": [
+          "received",
+          "confirmed"
+        ],
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}

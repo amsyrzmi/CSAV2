@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -110,7 +111,7 @@ class InvoiceItemOut(BaseModel):
     contact_id: UUID | None
     order_id: str | None
     status: str
-    amount: float
+    amount: Decimal  # a string in JSON, never a float
     currency: str
     issued_at: datetime
     due_at: datetime | None
@@ -118,14 +119,6 @@ class InvoiceItemOut(BaseModel):
     payment_ref: str | None
     contact_email: str | None
     contact_name: str | None
-
-
-class SignedDownloadLinkOut(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    invoice_id: str
-    download_url: str
-    expires_at: int
 
 
 def pool(request: Request) -> AsyncConnectionPool:
@@ -532,7 +525,7 @@ def build_router(
                 "contact_id": r["contact_id"],
                 "order_id": r["order_id"],
                 "status": r["status"],
-                "amount": float(r["amount"]),
+                "amount": r["amount"],
                 "currency": r["currency"],
                 "issued_at": r["issued_at"],
                 "due_at": r["due_at"],
@@ -543,16 +536,5 @@ def build_router(
             }
             for r in rows
         ]
-
-    @router.get(
-        "/invoices/{invoice_id}/download-link",
-        response_model=SignedDownloadLinkOut,
-        dependencies=[Depends(orders)],
-    )
-    async def get_invoice_download_link(
-        invoice_id: str,
-        client_id: Annotated[UUID, Depends(tenant)],
-    ) -> SignedDownloadLinkOut:
-        raise HTTPException(501, "invoice artifacts are unavailable until the M6 delivery slice")
 
     return router
