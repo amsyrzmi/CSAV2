@@ -53,6 +53,8 @@ from csa.email.service import EmailService
 from csa.hr.api import hr_session_from
 from csa.hr.policy import HrPolicyError
 from csa.hr.service import HrService
+from csa.training import ask as training_ask
+from csa.training.access import can_manage
 from csa.workspace import email_batch, hr_people, stock
 from csa.workspace.contracts import (
     MAX_STEPS,
@@ -88,6 +90,7 @@ from csa.workspace.contracts import (
     ProposalResult,
     RecordRef,
     ResolvedWorkspaceAuthority,
+    TrainingAskProposal,
     TrainingSubmitProposal,
     VerifiedWorkspacePrincipal,
     WorkspaceActionResult,
@@ -145,8 +148,9 @@ logger = structlog.get_logger(__name__)
 _RESULT = TypeAdapter(WorkspaceActionResult)
 # The turn row's action column has a CHECK list (last set by migration 0521). A migration in the
 # TikTok range (0490-0499) runs before 0521 on a fresh database and cannot extend it, so a stock
-# read is stored as an answer; its stored result keeps the kind "product_stock_read".
-_STORED_ACTIONS = {"product_stock_read": "answer"}
+# read is stored as an answer; its stored result keeps the kind "product_stock_read". A
+# training video answer (training_ask) is stored the same way, so no migration touches that list.
+_STORED_ACTIONS = {"product_stock_read": "answer", "training_ask": "answer"}
 _GUIDANCE_KEYS: dict[
     str,
     Literal[
@@ -549,6 +553,7 @@ _RECORD_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "product": _TAB_GATES["business"],
     "training_request": _TAB_GATES["hr"],
     "draft": _TAB_GATES["email"],
+    "training_item": _TAB_GATES["training_library"],
 }
 _TEXT: dict[str, dict[str, str]] = {
     "en": {
@@ -664,6 +669,14 @@ _TEXT: dict[str, dict[str, str]] = {
         "stock_copy": "As of {age} (live check failed).",
         "stock_copy_fresh": "Synced from TikTok {age}.",
         "stock_none_listed": "No variants of this product are listed on TikTok Shop.",
+        # Questions about a training video (csa/training/ask.py).
+        "training_not_found": "I couldn't find a training video called {name}.",
+        "training_not_found_id": "I couldn't find that training video.",
+        "training_none": "There is no ready training video in the Training library yet.",
+        "training_which": "Several training videos match. Which one do you mean?",
+        "training_processing": "That video is still being processed.",
+        "training_no_speech": "That video has no speech, so I can't answer from it.",
+        "training_unavailable": "I can't search this video right now. Try again later.",
         "ago_now": "just now",
         "ago_minutes": "{n} min ago",
         "ago_hour": "1 hour ago",
@@ -803,6 +816,15 @@ _TEXT: dict[str, dict[str, str]] = {
         "stock_copy": "Setakat {age} (semakan langsung gagal).",
         "stock_copy_fresh": "Disegerakkan daripada TikTok {age}.",
         "stock_none_listed": "Tiada varian produk ini disenaraikan di TikTok Shop.",
+        "training_not_found": "Saya tidak menjumpai video latihan bernama {name}.",
+        "training_not_found_id": "Saya tidak menjumpai video latihan itu.",
+        "training_none": "Belum ada video latihan yang sedia dalam Training library.",
+        "training_which": "Beberapa video latihan sepadan. Yang mana satu anda maksudkan?",
+        "training_processing": "Video itu masih sedang diproses.",
+        "training_no_speech": "Video itu tiada percakapan, jadi saya tidak dapat menjawab "
+        "daripadanya.",
+        "training_unavailable": "Saya tidak dapat mencari dalam video ini sekarang. Cuba lagi "
+        "nanti.",
         "ago_now": "baru sahaja",
         "ago_minutes": "{n} minit lalu",
         "ago_hour": "1 jam lalu",
@@ -886,6 +908,16 @@ async def _summarize(
                 f"Held reply approval {approval['id']} (status {approval['status']}) on "
                 f"customer conversation {current.id}, inbox_version {current.inbox_version}."
             )
+        if record.kind == "training_item":
+            async with tx(pool, str(client_id)) as conn:
+                item = await training_ask.read_item(conn, client_id, UUID(record.id))
+                # A video that is not ready is the library's managers' business only.
+                manage = (
+                    item is not None
+                    and item["status"] != "ready"
+                    and await can_manage(conn, actor, client_id)
+                )
+            return training_ask.item_summary(item, manage=manage) or _unavailable(record.kind)
         if record.kind == "training_request":
             hr = getattr(request.app.state, "hr_service", None)
             if not isinstance(hr, HrService):
@@ -1947,6 +1979,8 @@ async def _resolve(
         return await _summary(request, actor, client_id, facts)
     if isinstance(proposal, ProductStockReadProposal):
         return await _stock_read(request, client_id, proposal, facts)
+    if isinstance(proposal, TrainingAskProposal):
+        return await _training_ask(request, actor, client_id, proposal, facts)
     if isinstance(proposal, hr_people.PEOPLE_PROPOSALS):
         return _people_planned(
             await hr_people.resolve(
@@ -2003,6 +2037,117 @@ async def _stock_read(
         live, stored = _clarification(outcome)
         return _Planned(result=live, stored=stored)
     return _Planned(result=outcome)
+
+
+def _open_training_item(facts: PlannerFacts) -> UUID | None:
+    record = facts.page_context.record if facts.page_context is not None else None
+    if record is None or record.kind != "training_item":
+        return None
+    try:
+        return UUID(record.id)
+    except ValueError:
+        return None
+
+
+async def _training_ask(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal: TrainingAskProposal,
+    facts: PlannerFacts,
+) -> _Planned:
+    """A question about one training video, answered from its transcript (csa/training/ask.py).
+
+    The Training library tab's role rule and package gate first; without the package it is
+    answered as a locked tab. The video is the picked ``item_id``, else the title words, else the
+    open ``training_item`` record, else the company's only ready video; it is found in the
+    caller's company only (an id of another company is not found). Several matches ask which one
+    (option values are item ids). Only a ready video with speech is answered from; a manager is
+    told when the video is still being processed. Logs carry ids, sizes, the model and outcome
+    codes only.
+    """
+    text = _TEXT[facts.language]
+    label = TAB_LABELS["training_library"]
+    log = logger.bind(client_id=str(client_id))
+
+    def said(markdown: str, outcome: str, **fields: Any) -> _Planned:
+        log.info("workspace_training_ask", outcome=outcome, **fields)
+        return _Planned(result=AnswerResult(action="answer", markdown=markdown))
+
+    if not role_allows_tab("training_library", facts.role):
+        return said(text["locked_role"].format(tab=label), "locked_role")
+    if not _unlocked(facts.packages, _TAB_GATES["training_library"]):
+        keys = _TAB_GATES["training_library"][0]
+        names = f" {text['or']} ".join(sorted(BY_KEY[k].title for k in keys))
+        return said(text["locked"].format(tab=label, packages=names), "locked")
+    # A picked id wins over words, and words over the open record.
+    item_id = proposal.item_id
+    words = None
+    if item_id is None and training_ask.title_words(proposal.item):
+        words = proposal.item
+    if item_id is None and words is None:
+        item_id = _open_training_item(facts)
+    pool = request.app.state.pool
+    async with tx(pool, str(client_id)) as conn:
+        found = await training_ask.find_videos(conn, client_id, item_id, words)
+        pending: list[training_ask.VideoRef] = []
+        if not found and (item_id is not None or words is not None):
+            # A manager sees videos in every state; anyone else only ready ones.
+            if await can_manage(conn, actor, client_id):
+                pending = await training_ask.find_videos(
+                    conn, client_id, item_id, words, states=training_ask.PROCESSING
+                )
+    if not found:
+        if pending:
+            return said(text["training_processing"], "processing", item_id=str(pending[0].id))
+        if words is not None:
+            name = " ".join(words.split())[:120]
+            return said(text["training_not_found"].format(name=name), "not_found")
+        key = "training_not_found_id" if item_id is not None else "training_none"
+        return said(text[key], "not_found")
+    if len(found) > 1:
+        options: list[ClarificationOption] = []
+        seen: dict[str, int] = {}
+        for video in found[: stock.PRODUCT_CHOICES]:
+            option = video.title[:90] or "?"
+            seen[option] = seen.get(option, 0) + 1
+            if seen[option] > 1:
+                option = f"{option} ({seen[option]})"
+            options.append(ClarificationOption(label=option, value=str(video.id)))
+        log.info("workspace_training_ask", outcome="which", options=len(options))
+        live, stored = _clarification(
+            ClarificationProposal(
+                action="clarification", question=text["training_which"], options=options
+            )
+        )
+        return _Planned(result=live, stored=stored)
+    [video] = found
+    ids = {"item_id": str(video.id)}
+    if video.speech != "speech":
+        return said(text["training_no_speech"], "no_speech", **ids)
+    model = getattr(request.app.state, "training_model", None)
+    if model is None:
+        return said(text["training_unavailable"], "model_unavailable", **ids)
+    embedder = getattr(request.app.state, "kb_embedder", None)
+    try:
+        context = await training_ask.build_context(
+            pool, client_id, video, proposal.question, embedder
+        )
+        if not context.lines:
+            return said(text["training_no_speech"], "no_transcript", **ids)
+        result = await training_ask.answer(model, context, proposal.question, facts.language)
+    except training_ask.AskUnavailable as exc:
+        return said(text["training_unavailable"], exc.code, **ids)
+    log.info(
+        "workspace_training_ask",
+        outcome="answered",
+        context_chars=context.chars,
+        whole=context.whole,
+        model=model.model,
+        sources=len(result.sources),
+        **ids,
+    )
+    return _Planned(result=result)
 
 
 def _people_planned(resolved: hr_people.Resolved | booking_executor.Resolved) -> _Planned:

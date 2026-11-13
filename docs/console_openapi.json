@@ -12617,7 +12617,7 @@
       },
       "RecordRef": {
         "additionalProperties": false,
-        "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
+        "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID) and a\n``training_item`` one item of the Training library (a video or a PDF, by its UUID).",
         "properties": {
           "id": {
             "maxLength": 100,
@@ -12633,7 +12633,8 @@
               "draft",
               "order",
               "employee",
-              "product"
+              "product",
+              "training_item"
             ],
             "title": "Kind",
             "type": "string"
@@ -15338,6 +15339,37 @@
         "title": "TrainingAction",
         "type": "string"
       },
+      "TrainingAnswerResult": {
+        "additionalProperties": false,
+        "description": "An answer from one training video's transcript (``training_ask``).\n\n``markdown`` is the answer and, when the video covers the question, \"From *title*, at 03:15\nand 12:40\"; ``sources`` are those times, each one the start of a line that was sent to the\nmodel. A video that does not cover the question has no sources.",
+        "properties": {
+          "action": {
+            "const": "training_ask",
+            "title": "Action",
+            "type": "string"
+          },
+          "markdown": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Markdown",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/TrainingSource"
+            },
+            "maxItems": 5,
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "markdown"
+        ],
+        "title": "TrainingAnswerResult",
+        "type": "object"
+      },
       "TrainingCommandInput": {
         "additionalProperties": false,
         "description": "Untrusted intent; request/employee/actor/grants come from verified state.",
@@ -15530,6 +15562,35 @@
           "request"
         ],
         "title": "TrainingReceipt",
+        "type": "object"
+      },
+      "TrainingSource": {
+        "additionalProperties": false,
+        "description": "One place in a training video the answer came from: a time the server checked.",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "start_seconds": {
+            "minimum": 0.0,
+            "title": "Start Seconds",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "title",
+          "start_seconds"
+        ],
+        "title": "TrainingSource",
         "type": "object"
       },
       "TrainingStatus": {
@@ -16689,6 +16750,9 @@
               },
               {
                 "$ref": "#/components/schemas/ProductStockResult"
+              },
+              {
+                "$ref": "#/components/schemas/TrainingAnswerResult"
               }
             ],
             "title": "Result"
@@ -35147,7 +35211,7 @@
                   },
                   "RecordRef": {
                     "additionalProperties": false,
-                    "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
+                    "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID) and a\n``training_item`` one item of the Training library (a video or a PDF, by its UUID).",
                     "properties": {
                       "id": {
                         "maxLength": 100,
@@ -35163,7 +35227,8 @@
                           "draft",
                           "order",
                           "employee",
-                          "product"
+                          "product",
+                          "training_item"
                         ],
                         "title": "Kind",
                         "type": "string"

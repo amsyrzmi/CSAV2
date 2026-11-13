@@ -866,7 +866,7 @@ assistant chat and tab-origin cards stay English.
 A turn with `page_context` is planned by one model call that returns exactly one typed
 proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
 `email_team`, `inbox_summary`, `training_submit`, `inbox_decision`, `clarification`, the
-people actions or `product_stock_read`. The planner only proposes; role, package, switch and
+people actions, `product_stock_read` or `training_ask`. The planner only proposes; role, package, switch and
 record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
@@ -931,6 +931,25 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   connected TikTok Shop, no match, or no package gives a plain `answer`. The turn row stores
   the action as `answer` (the action column's check list is set by migration 0521); the stored
   result keeps `product_stock_read`.
+- `training_ask` (`{question, item?, item_id?}`) answers a question about what one training
+  video says, from its stored transcript, with a `TrainingAnswerResult`: `{action:
+  "training_ask", markdown, sources: [{item_id, title, start_seconds}]}` (at most 5 sources).
+  It needs the Training library tab (its role rule, then the `training_library` package;
+  otherwise the locked-tab answer). The server finds the video in the caller's company only: the
+  picked `item_id`, else every one of the `item` words in the title (case-insensitive), else the
+  open record `{kind: "training_item", id}`, else the company's only ready video; several give a
+  `clarification` with up to 5 videos (option value: an item id). Only a `ready` video with
+  speech is answered from; a manager is told when a video is still being processed, anyone else
+  gets "I couldn't find a training video called ..." as for a missing one. A transcript of at
+  most 40,000 characters is sent whole as `[mm:ss] text` lines; a longer one sends the 8
+  windows nearest the question (embedded with the gateway's knowledge base embedder; the
+  windows must have been made by the same model, otherwise "I can't search this video right
+  now") in time order after the stored summary. The model's cited seconds are kept only when
+  they fall inside a line that was sent, snapped to that line's start; `markdown` ends with
+  "From *title*, at 03:15 and 12:40" in the turn's language. An answer that the video does not
+  cover has no sources. Transcripts are never in the knowledge base the customer bot searches.
+  The turn row stores the action as `answer`; the stored result keeps `training_ask`. The open
+  record's summary for the planner gives the title, the length and whether a transcript exists.
 - A failure of the email-drafting model (invalid output, provider error or timeout) on an
   `email_compose`, `email_reply` or `email_team` turn returns 503
   `email_model_unavailable`; nothing is drafted or stored.
