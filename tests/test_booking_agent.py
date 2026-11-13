@@ -1824,9 +1824,12 @@ async def test_a_company_without_bookings_gets_the_context_it_always_had(shop: S
         envelope_for(shop, contact, chat)
     )
     assert loaded.booking is None
-    assert loaded.model_dump(exclude={"booking"}) == Context(
+    # `capabilities` is the list of agents switched on for the company (it gates the prompt
+    # rules), so it is not part of "the context it always had": it must only lack booking_agent.
+    assert "booking_agent" not in loaded.capabilities
+    assert loaded.model_dump(exclude={"booking", "capabilities"}) == Context(
         flags={"human_muted": False, "handoff_recent": False}
-    ).model_dump(exclude={"booking"})
+    ).model_dump(exclude={"booking", "capabilities"})
 
 
 # --- the agent's declared shape -----------------------------------------------------------------
