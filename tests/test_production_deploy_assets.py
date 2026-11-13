@@ -2431,6 +2431,9 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
         "Rolled back:",
         "Stopped at smoke:",
         "Stopped at rollback:",
+        "older than the digest change",
+        "unrecognized arguments",
+        "concurrency group",
     ):
         assert needle in flat, needle
 
@@ -2501,6 +2504,25 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
     assert len(set(positions)) == 5
     assert "csa-production-plan" in after
     assert "csa-production-apply" in after
+    # The origin pre-check comes before the run starts, requests the origins as the smoke test
+    # does, and prints status codes only.
+    check = "set -a; . /srv/csa-prod/host.env; set +a"
+    assert after.index(secret) < after.index(check) < after.index(start)
+    for needle in (
+        "CSA_STAGING_CONSOLE_ORIGIN CSA_STAGING_HOOKS_ORIGIN",
+        "--write-out '%{http_code}\\n' --max-time 15 --url",
+        "https://<console-origin>/",
+        "do not start the run",
+        "already deployed is harmless",
+    ):
+        assert needle in " ".join(after.split()), needle
+    # An older revision cannot go through the workflow; it is a break-glass restore.
+    assert "unrecognized arguments" in deploying
+    assert "Rolling back to a revision older than the digest change" in break_glass
+    assert "has no such options" in break_glass
+    assert "csa-prod-deploy plan <full sha>" in break_glass
+    assert "Keep the token on the instance until production has run a commit" in setup
+    assert "holds the workflow's concurrency group" in deploying
     assert "fails closed" in after
     assert after.count("CloudShell") >= 2
     assert "Instance" in after
@@ -2570,3 +2592,5 @@ def test_spec_matches_the_tip_default_and_the_registry_method() -> None:
     assert "anonymous pull token" in flat
     assert "Digests are optional on the host CLI" in flat
     assert "break-glass" in flat
+    assert "finish in under a minute" not in flat
+    assert "110 seconds" in flat

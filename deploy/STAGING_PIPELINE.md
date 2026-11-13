@@ -95,6 +95,17 @@ recovery lines are:
   listed revisions and do the same.
 - **A failed check** stops the four services again and they stay stopped until investigated:
   investigate what the check found, then run `plan` and `apply` again.
+- **The smoke test** runs after the check files, read-only, and prints one `smoke <name>: ok`
+  line per passing check (`migrations`, `replicas`, `frontend`; the origin checks run only when a
+  host file lists both origins, so not on staging). A failure prints `Stopped at smoke: <reason>`
+  and leaves the new images running.
+- **Automatic rollback.** When the failure was at readiness or smoke, no migration was pending
+  or applied, and every previous app container was running on known registry image refs that
+  agree per app and differ from the new ones, `apply` puts the previous images back:
+  `Rolling back to <ref>…`, then `Rolled back: the previous images are running; <sha7> is not.`
+  and `Fix forward, then re-run plan and apply.` It still ends red (exit 1) and writes no
+  staged record. If the rollback itself fails it prints `Stopped at rollback: <reason>` and the
+  ordinary recovery lines above follow. Otherwise nothing is rolled back for you.
 
 **Forward-only data shape (assistant language).** From the rollout that brought the assistant's
 Malay support, new assistant turns store `result.language` and new proposal cards store

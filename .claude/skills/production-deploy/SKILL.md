@@ -71,8 +71,9 @@ Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the re
      not allowed (a migration, or unknown previous images). `Stopped at rollback:`: the
      rollback itself failed; production may be unhealthy. Report the lines verbatim and ask the
      owner; do not start another run yourself. If the lines include
-     `To roll back: git checkout <sha> ...`, that is the owner's decision: relay it, and a
-     rollback is then a new run with `sha` set, only after the owner's go.
+     `To roll back: git checkout <sha> ...`, that is the owner's decision: relay it. A rollback
+     is then a new run with `sha` set, only after the owner's go, and only to a commit that
+     includes the digest change.
 
 ## If something goes wrong
 
@@ -82,7 +83,17 @@ Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the re
 - Runner exit 124: the command may still be running on the instance. Tell the owner to check the
   host as the runbook says, and do not start another run. Instance exit 75: another deploy holds
   the lock.
-- A rollback to an older staged commit is a new run with `sha` set to it, after the owner's go.
+- A rollback to an older staged commit is a new run with `sha` set to it, after the owner's go,
+  but only if that commit includes the digest change: the entry script runs the target commit's
+  own rollout CLI with digests, and an older one fails at argument parsing (exit 2 with
+  `unrecognized arguments`). A revision older than the digest change (what production runs
+  before its first deploy after it) can only be restored with break-glass, which is the owner's
+  procedure (`deploy/PRODUCTION.md`, "Rolling back to a revision older than the digest change");
+  tell the owner, do not run it.
+- A run waiting for approval holds the workflow's concurrency group: a new dispatch queues
+  behind it and a third cancels the second. Before starting a new run, say if one is still
+  waiting; the owner rejects a stale one, and any run still waiting from before the digest
+  change merged. You never reject it yourself.
 - The run needs the secret `PROD_CONSOLE_ORIGIN` on `production`; if the apply job's
   `Require the deploy variables` step names it, tell the owner (`deploy/PRODUCTION.md`, "After the
   digest change merges"). Do not set it yourself.

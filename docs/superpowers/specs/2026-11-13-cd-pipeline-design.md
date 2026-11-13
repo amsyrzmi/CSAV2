@@ -192,7 +192,7 @@ a classic `read:packages` token that expires. The workflow's own token can read 
 ### Tests
 
 Both environments run read-only smoke checks. They never touch customer data, never call a model, and
-finish in under a minute. The list lives in the repository and runs on the instance as a rollout step
+finish in about 110 seconds in the worst case (the two origin checks retry up to 3 times, 5 s apart). The list lives in the repository and runs on the instance as a rollout step
 after readiness and the existing `0485.sql` check:
 
 - the gateway reports ready; the frontend answers on its port;
@@ -269,7 +269,7 @@ tests for the shell scripts, and structural tests that read the workflow and pol
 
 ## Calls I made (to check)
 
-- The smoke checks above, and keeping them read-only and under a minute.
+- The smoke checks above, and keeping them read-only and short (about 110 seconds worst case).
 - `PROD_AUTO_PLAN` defaults to off. Every merge would otherwise send both reviewers a review request.
 - Image-only automatic rollback, and only that.
 - The workflow enforces the staged gate; the instance no longer double-checks it.

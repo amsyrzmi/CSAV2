@@ -56,7 +56,10 @@ hand without digests keeps the old path (see Break-glass).
    empty to deploy the tip of `main`, the commit you just merged, and only that commit: if its
    staging rollout has not finished, the run fails and nothing older is picked. Or give the full
    40-character SHA of an older staged commit on `main` (a deliberate rollback; the plan shows the
-   downgrade warning). From a terminal:
+   downgrade warning). The commit must be one that includes the digest change (it runs that
+   commit's own rollout CLI, which must accept the digests the workflow sends); an older revision
+   can only be restored with break-glass, see "Rolling back to a revision older than the digest
+   change" below. From a terminal:
 
    ```bash
    gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
@@ -80,7 +83,11 @@ hand without digests keeps the old path (see Break-glass).
    so read the plan first: a migration stops gateway, frontend, both workers and delivery (console
    unavailable, bot replies delayed, not lost), and a downgrade warning means the target is older
    than what runs now. Reject to cancel; nothing on production has changed (only
-   the deploy checkout moved to the commit).
+   the deploy checkout moved to the commit). A run waiting for approval holds the workflow's
+   concurrency group: a new dispatch queues behind it, and a third dispatch cancels the queued
+   second. Reject a stale waiting run before you start a new one (the common case now that the
+   default is the tip of `main`), and after the digest change merges, reject any run still
+   waiting from before it.
 5. **Read the result** in the `apply` job's summary. `apply` first checks that `main` is still at
    the planned commit (a default run only; an explicit `sha` is not checked), checks out `main`
    again for its runner scripts, then sends the planned values; on the instance the rollout
@@ -163,7 +170,9 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   finish and start again. **64** means `csa-prod-deploy` refused its arguments. **73** means it
 could not write its log in `/var/log/csa-prod-deploy` (`cannot write the log file`); nothing ran,
 and the directory must be owned by `ubuntu`. **2** is a plan
-  that found missing secret files. **1** is a rollout stop, `commit is not on main`, or a failed
+  that found missing secret files or, with `unrecognized arguments` in the output, a commit older
+  than the digest change (its rollout CLI has no digest options): see Break-glass, "Rolling back
+  to a revision older than the digest change". **1** is a rollout stop, `commit is not on main`, or a failed
   `git fetch`. A `TimedOut` status also arrives as runner exit 1, not 124: either the instance did
   not pick the command up within 10 minutes (it never ran), or Systems Manager stopped it at its
   120-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
@@ -250,7 +259,10 @@ Refusals at the later steps:
 - Image-only stop after the recreate that was not rolled back automatically (see What a smoke
   stop or a rollback means): `To roll back: git checkout <sha> in /home/ubuntu/CSAV2, run
   plan and apply, then git checkout main.` On production that means: start `deploy-production`
-  with `sha` set to that revision (it is a staged commit); do not touch the checkout. On the first
+  with `sha` set to that revision (it is a staged commit); do not touch the checkout. This works
+  only for a revision that includes the digest change; for an older one (what production runs
+  before its first deploy after that change) use break-glass, "Rolling back to a revision older
+  than the digest change". On the first
   deploy the previous images are local tags: the text says `follow the manual rollback runbook`,
   which is "Rolling back to the local images" under Break-glass.
 
@@ -482,7 +494,9 @@ g. GitHub read access for `gh`, **for break-glass only**. A deploy started from 
    passes the image digests and needs no token on the instance. The `read:packages` token is needed only for break-glass:
    a host run by hand with no digests looks them up with `gh` (GitHub's package API needs a
    token even for public packages) and reads the `staging` deployments, so the staged gate still
-   holds. The token comes from the other developer: a classic token with only the `read:packages`
+   holds. Keep the token on the instance until production has run a commit after the digest
+   change that you would roll back to: an older revision can only be restored this way. The
+   token comes from the other developer: a classic token with only the `read:packages`
    scope. `gh auth login
    --with-token` insists on wider scopes, so write `gh`'s host file directly, with the token typed
    at a hidden prompt:
@@ -588,7 +602,7 @@ script and the documents must match, so update both before the next run. An old 
 by the new workflow is rejected by Systems Manager, which does not know the digest parameters (the run fails closed). A
 new entry script with an old document takes the break-glass path (the `gh` lookup) instead of
 failing. A new document sent to an old entry script is refused by the old script's argument-count
-check. Do the four steps in this order. `<name>` is
+check. Do the five steps in this order. `<name>` is
 `csa-production-plan` and then `csa-production-apply`; `<file>` is the matching
 `ssm-document-*.json` under `~/csa-deploy`.
 
@@ -623,7 +637,34 @@ check. Do the four steps in this order. `<name>` is
    gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production
    ```
 
-4. **Start a run** (the same machine) and read the plan.
+4. **Check the two origins** (Instance, SSH as `ubuntu`, then the owner's machine). The smoke
+   test asks both origins in `host.env` for an answer below 500, and a 5xx fails the smoke test
+   and, on an image-only deploy, rolls the deploy back. These checks have not yet run against
+   the real origins, so run them first. On the instance this requests them exactly as the smoke
+   test does (the same curl options, `--max-time 15`) and prints only the key name and the
+   status code, never an origin:
+
+   ```bash
+   ( set -a; . /srv/csa-prod/host.env; set +a
+     for K in CSA_STAGING_CONSOLE_ORIGIN CSA_STAGING_HOOKS_ORIGIN; do
+       printf '%s ' "$K"
+       curl --silent --output /dev/null --write-out '%{http_code}\n' --max-time 15 --url "${!K}"
+     done )
+   ```
+
+   Each line must end in three digits below 500 (`000` means curl got no answer). From outside
+   (CloudShell or the owner's machine), the public smoke test's check of the console origin must
+   give 2xx or 3xx:
+
+   ```bash
+   curl --silent --output /dev/null --write-out '%{http_code}\n' --max-time 15 https://<console-origin>/
+   ```
+
+   On a 5xx, `000` or any other status, do not start the run: fix the tunnel or the route first.
+5. **Start a run** (the same machine as step 3) and read the plan. Reject any run still waiting
+   for approval from before the change merged, or this one queues behind it. A plan for a tip
+   that is already deployed is harmless: it shows nothing to change, and a failure cannot roll
+   back onto identical images.
 
    ```bash
    gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
@@ -694,7 +735,9 @@ since the backup. Do step 1 first and keep the dump. Then, as `ubuntu`:
    they match, start the containers again with
    `docker start csa-prod-gateway-1 csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1`.
    If the dump is older, do not start them: start `deploy-production` with `sha` set to the commit
-   production runs, which applies the missing migrations and recreates the services.
+   production runs, which applies the missing migrations and recreates the services (if that
+   commit is older than the digest change, use break-glass instead, as in "Rolling back to a
+   revision older than the digest change").
 5. Check readiness (exit 0 and no output means ready; the gateway can take about 45 seconds):
    `docker exec csa-prod-gateway-1 python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)"`.
 6. Delete the dump: `rm -f /var/tmp/csa-restore.dump`.
@@ -748,6 +791,25 @@ manual Compose procedure below does not.
 
 A commit deployed this way has no staged record, so a later `deploy-production` of the same commit
 refuses until staging has run it.
+
+### Rolling back to a revision older than the digest change
+
+The workflow always sends image digests, and the entry script runs the target commit's own
+rollout CLI with `--python-digest` and `--frontend-digest`. A commit from before the digest change
+has no such options, so a workflow run for it fails at argument parsing (exit 2 with
+`unrecognized arguments`) and changes nothing. That includes the revision production runs today,
+before its first deploy after the change. Restore such a revision by hand on the instance, with no
+digests, as `ubuntu` through the entry script (never as root, see One-time setup, step 5h):
+
+```bash
+sudo runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy plan <full sha> "" ""
+sudo runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy apply <full sha> "<migrations>" "<host digest>"
+```
+
+Use the `Pending migrations:` and `Host settings digest:` values the plan printed (an empty
+migrations argument for none). This path uses the `read:packages` token and still enforces the
+staged gate, so the commit must have a staged record. Keep that token on the instance until
+production has run a commit after the digest change that you would roll back to.
 
 ### Rolling back to the local images
 
