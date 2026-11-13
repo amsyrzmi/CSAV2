@@ -186,10 +186,11 @@ def pick_cycle(start: date | None, now: datetime) -> Cycle:
         return current
     if start.day != _CYCLE_START_DAY:
         raise HTTPException(422, "cycle_must_start_on_a_fifth")
-    picked = cycle_containing(start)
-    if picked.start > current.start:
+    # A 5th is its own cycle's start, so a future cycle is refused before it is built: the
+    # cycle starting 9999-12-05 would end in year 10000, which ``date`` cannot hold.
+    if start > current.start:
         raise HTTPException(404, "cycle_not_found")
-    return picked
+    return cycle_containing(start)
 
 
 def _b64(raw: bytes) -> str:

@@ -96,7 +96,11 @@ _CENT = Decimal("0.01")
 _UNIT = Decimal("0.0001")
 
 AdminWarning = Literal[
-    "pilot_ended", "usage_after_termination", "not_set_up_with_usage", "pending_prices"
+    "pilot_ended",
+    "usage_after_termination",
+    "not_set_up_with_usage",
+    "usage_before_plan",
+    "pending_prices",
 ]
 # Only the on-demand Langfuse check raises this one; the overview never does.
 LangfuseWarning = Literal["langfuse_drift"]
@@ -127,7 +131,8 @@ class AdminCompanyOut(BaseModel):
     ``usage_after_termination`` and ``usage_without_plan`` count the cycle's executions from that
     date, and before the plan starts (the whole cycle when not set up); neither is billed.
     ``warnings``: ``pilot_ended`` is evaluated for today (the Kuala Lumpur date), not for the
-    selected cycle, since it asks for an action now; the other three describe the selected cycle.
+    selected cycle, since it asks for an action now; the others describe the selected cycle
+    (``usage_before_plan``: executions before the join date in a set-up cycle, not billed).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -306,6 +311,10 @@ def _warnings(usage: CycleUsage, history: Sequence[PlanRow], today: date) -> lis
         found.append("usage_after_termination")
     if usage.status == "not_set_up" and usage.usage_without_plan > 0:
         found.append("not_set_up_with_usage")
+    # A set-up cycle whose plan starts after the cycle does: usage before the join date is spent
+    # but not billed.
+    if usage.status != "not_set_up" and usage.usage_without_plan > 0:
+        found.append("usage_before_plan")
     if usage.status == "pending_prices":
         found.append("pending_prices")
     return found

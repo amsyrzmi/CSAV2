@@ -7,6 +7,7 @@ only reports, so every route test also proves the overview's billed figures do n
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import uuid
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from csa.billing import langfuse_check as langfuse_check_module
 from csa.billing.cycles import KL
 from csa.billing.langfuse_check import (
     METRICS_PATH,
@@ -89,9 +91,9 @@ def metrics_reply(data: list[dict[str, Any]]) -> Callable[[httpx.Request], httpx
 
 
 def recording(
-    handler: Callable[[httpx.Request], httpx.Response], seen: list[httpx.Request]
+    handler: Callable[[httpx.Request], Any], seen: list[httpx.Request]
 ) -> httpx.MockTransport:
-    def wrapped(request: httpx.Request) -> httpx.Response:
+    def wrapped(request: httpx.Request) -> Any:
         seen.append(request)
         return handler(request)
 
@@ -99,8 +101,9 @@ def recording(
 
 
 async def read(
-    handler: Callable[[httpx.Request], httpx.Response],
+    handler: Callable[[httpx.Request], Any],
     *,
+    base_url: str = LF_BASE + "/",
     public_key: str | None = PUBLIC,
     secret_key: str | None = SECRET,
     start: date = OCT.start,
@@ -112,7 +115,7 @@ async def read(
         with capture_logs() as logs:
             totals = await langfuse_tokens(
                 http,
-                base_url=LF_BASE + "/",
+                base_url=base_url,
                 public_key=public_key,
                 secret_key=secret_key,
                 client_id=CLIENT,
@@ -256,6 +259,54 @@ async def test_an_unexpected_reply_is_none_never_a_guess(body: bytes) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_over_long_digit_string_is_a_bad_reply_not_an_error() -> None:
+    # Python refuses int() of a string over 4,300 digits; the reply is off-shape, never a 500.
+    totals, _, logs = await read(
+        metrics_reply([{"sum_inputTokens": "9" * 5_000, "sum_outputTokens": 0}])
+    )
+    assert totals is None
+    assert logs == [{"event": "langfuse_check_bad_reply", "log_level": "error"}]
+    # Nineteen digits is past any real token total, and also refused.
+    totals, _, _ = await read(metrics_reply([{"sum_inputTokens": "1" * 19, "sum_outputTokens": 0}]))
+    assert totals is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_url", "error_type"),
+    [("https://[::1", "InvalidURL"), ("https://lang\x00fuse.example", "InvalidURL")],
+)
+async def test_a_malformed_base_url_is_none_and_logs_only_the_error_type(
+    base_url: str, error_type: str
+) -> None:
+    totals, seen, logs = await read(
+        metrics_reply([{"sum_inputTokens": 1, "sum_outputTokens": 1}]),
+        base_url=base_url,
+    )
+    assert (totals, seen) == (None, [])
+    assert logs == [
+        {"event": "langfuse_check_unreachable", "log_level": "error", "error_type": error_type}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_langfuse_is_cut_off_and_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(langfuse_check_module, "REQUEST_DEADLINE_S", 0.01)
+
+    async def stall(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(200, json={"data": []})
+
+    async with asyncio.timeout(5):  # the test fails rather than hangs if unbounded
+        totals, seen, logs = await read(stall)
+    assert totals is None
+    assert len(seen) == 1
+    assert logs == [
+        {"event": "langfuse_check_unreachable", "log_level": "error", "error_type": "TimeoutError"}
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("public_key", "secret_key"), [(None, SECRET), (PUBLIC, None), ("", SECRET), (PUBLIC, " ")]
 )
@@ -286,6 +337,7 @@ class FakeLangfuse:
         self.status: int | None = None
         self.requests: list[httpx.Request] = []
         self.public_key: str | None = PUBLIC
+        self.base_url: str = LF_BASE
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -304,7 +356,7 @@ def fake_langfuse(sessions: SessionWorld) -> Iterator[FakeLangfuse]:
     async def source() -> AsyncIterator[LangfuseSource]:
         async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
             yield LangfuseSource(
-                http=http, base_url=LF_BASE, public_key=fake.public_key, secret_key=SECRET
+                http=http, base_url=fake.base_url, public_key=fake.public_key, secret_key=SECRET
             )
 
     sessions.app.dependency_overrides[billing_now] = lambda: NOW
@@ -381,7 +433,7 @@ async def test_drift_adds_the_langfuse_drift_warning_and_a_past_cycle_can_be_che
 
 @requires_docker
 @pytest.mark.asyncio
-@pytest.mark.parametrize("down", ["status", "unconfigured"])
+@pytest.mark.parametrize("down", ["status", "unconfigured", "malformed_url"])
 async def test_langfuse_down_is_unavailable_and_the_billed_figures_do_not_move(
     sessions: SessionWorld, fake_langfuse: FakeLangfuse, down: str
 ) -> None:
@@ -391,6 +443,8 @@ async def test_langfuse_down_is_unavailable_and_the_billed_figures_do_not_move(
     assert before.status_code == 200
     if down == "status":
         fake_langfuse.status = 500
+    elif down == "malformed_url":
+        fake_langfuse.base_url = "https://[::1"
     else:
         fake_langfuse.public_key = None
     response = await w.admin.get(check_path(tenant))

@@ -307,6 +307,11 @@ async def test_overview_lists_every_company_by_name_with_each_warning(
     await plan(w, pending, OCT.start)
     await call(w, pending, kl(10, 6))
     await call(w, pending, kl(10, 7), provider="synthetic", model=UNPRICED)
+    joined = await company(w, "Af Joined Late Sdn Bhd")
+    await plan(w, joined, date(2026, 10, 10))
+    await call(w, joined, kl(10, 6))  # before the join date: not billed
+    await call(w, joined, kl(10, 7))
+    await call(w, joined, kl(10, 12))
 
     body = await overview(w)
     names = [c["name"] for c in body["companies"]]
@@ -350,6 +355,9 @@ async def test_overview_lists_every_company_by_name_with_each_warning(
     expected = await service_usage(w, pending, OCT)
     # The real cost per execution is over the priced executions only: the unpriced one has none.
     assert late["cost_per_execution_rm"] == round_to(expected.raw_cost_rm, "0.0001")
+    early = row_of(body, joined)
+    assert (early["status"], early["warnings"]) == ("ok", ["usage_before_plan"])
+    assert (early["usage_without_plan"], early["executions"]) == (2, 1)
 
 
 @requires_docker
@@ -368,9 +376,12 @@ async def test_overview_cycle_parameter_follows_the_client_rules(
         True,
     )
     assert row_of(sep, tenant)["executions"] == 1
-    for cycle, status in (("2026-09-06", 422), ("nope", 422), ("2026-11-05", 404)):
+    cases = (("2026-09-06", 422), ("nope", 422), ("2026-11-05", 404), ("9999-12-05", 404))
+    for cycle, status in cases:
         response = await w.admin.get(f"{OVERVIEW}?cycle={cycle}")
         assert response.status_code == status, (cycle, response.text)
+    far = await w.admin.get(f"{OVERVIEW}?cycle=9999-12-05")
+    assert far.json()["detail"] == "cycle_not_found"
 
 
 # --- plan ------------------------------------------------------------------------------------

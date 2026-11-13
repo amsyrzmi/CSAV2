@@ -47,6 +47,8 @@ function warningSentence(warning: AdminWarning | LangfuseWarning | string, compa
       return `Usage recorded after termination: ${plural(company.usage_after_termination, "execution", "executions")}, not billed`;
     case "not_set_up_with_usage":
       return `Has usage but no billing plan yet: ${plural(company.usage_without_plan, "execution", "executions")}, not billed`;
+    case "usage_before_plan":
+      return `Usage before the join date: ${plural(company.usage_without_plan, "execution", "executions")}, not billed`;
     case "pending_prices":
       return `Some usage has no price yet: ${plural(company.unpriced_calls, "call", "calls")} in ${plural(company.unpriced_executions, "execution", "executions")}`;
     case "langfuse_drift":

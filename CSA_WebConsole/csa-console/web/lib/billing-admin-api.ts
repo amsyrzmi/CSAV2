@@ -13,7 +13,8 @@ import { api, post } from "./api";
 export type UsageStatus = "ok" | "pending_prices" | "not_set_up";
 export type Stage = "pilot" | "collaborator" | "terminated";
 export type Bundle = "individual" | "curated" | "complete";
-export type AdminWarning = "pilot_ended" | "usage_after_termination" | "not_set_up_with_usage" | "pending_prices";
+export type AdminWarning =
+  | "pilot_ended" | "usage_after_termination" | "not_set_up_with_usage" | "usage_before_plan" | "pending_prices";
 /** Raised only by the on-demand Langfuse check, never by the overview. */
 export type LangfuseWarning = "langfuse_drift";
 export type LangfuseResult = "match" | "drift" | "unavailable";

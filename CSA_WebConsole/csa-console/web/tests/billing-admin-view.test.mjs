@@ -65,6 +65,10 @@ test("each warning reads as a plain sentence, with counts where they help", () =
     ["Usage recorded after termination: 1 execution, not billed"]);
   assert.deepEqual(warningSentences(company({ warnings: ["not_set_up_with_usage"], usage_without_plan: 1200 })),
     ["Has usage but no billing plan yet: 1,200 executions, not billed"]);
+  assert.deepEqual(warningSentences(company({ warnings: ["usage_before_plan"], usage_without_plan: 2 })),
+    ["Usage before the join date: 2 executions, not billed"]);
+  assert.deepEqual(warningSentences(company({ warnings: ["usage_before_plan"], usage_without_plan: 1 })),
+    ["Usage before the join date: 1 execution, not billed"]);
   assert.deepEqual(warningSentences(company({ warnings: ["pending_prices"], unpriced_calls: 4, unpriced_executions: 2 })),
     ["Some usage has no price yet: 4 calls in 2 executions"]);
   assert.deepEqual(warningSentences(company({ warnings: ["pending_prices"], unpriced_calls: 1, unpriced_executions: 1 })),
@@ -72,6 +76,16 @@ test("each warning reads as a plain sentence, with counts where they help", () =
   assert.deepEqual(warningSentences(company()), []);
   // Several warnings keep the server's order.
   assert.equal(warningSentences(company({ warnings: ["pilot_ended", "pending_prices"], unpriced_calls: 2, unpriced_executions: 2 })).length, 2);
+});
+
+test("every warning code the server raises has its own plain sentence", () => {
+  const generic = warningSentences(company({ warnings: ["something_new"] }))[0];
+  const codes = ["pilot_ended", "usage_after_termination", "not_set_up_with_usage", "usage_before_plan", "pending_prices"];
+  for (const code of codes) {
+    const [sentence] = warningSentences(company({ warnings: [code], usage_without_plan: 3, usage_after_termination: 3, unpriced_calls: 3, unpriced_executions: 3 }));
+    assert.notEqual(sentence, generic, code);
+    assert.doesNotMatch(sentence, /_|null|undefined|NaN/, `${code}: ${sentence}`);
+  }
 });
 
 test("an unknown warning still reads as a sentence, never a raw code", () => {

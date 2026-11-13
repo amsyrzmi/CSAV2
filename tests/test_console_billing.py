@@ -246,6 +246,9 @@ async def test_cycle_defaults_to_the_current_one_and_is_validated(sessions: Sess
         assert (await admin.get(f"{path}?cycle=not-a-date")).status_code == 422
         assert (await admin.get(f"{path}?cycle=2026-11-05")).status_code == 404
         assert (await admin.get(f"{path}?cycle=2027-01-05")).status_code == 404
+        # The far future (past the last date a cycle can end) is the same 404, not a 500.
+        far = await admin.get(f"{path}?cycle=9999-12-05")
+        assert (far.status_code, far.json()["detail"]) == (404, "cycle_not_found")
 
 
 # --- executions paging -----------------------------------------------------------------------

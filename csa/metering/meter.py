@@ -2,13 +2,15 @@
 
 Provider clients call ``require_context`` before any request (so an unbound call fails fast,
 before a paid HTTP call) and ``record`` after a response. ``LedgerMeter.record`` writes in its own
-short transaction, retries once, and on a second failure logs the loss and returns: a ledger
-write failing must not fail the customer's turn. The error log carries identifiers and counts
-only, never prompt or reply text.
+short transaction, each attempt bounded by ``WRITE_ATTEMPT_TIMEOUT_S``, retries once, and on a
+second failure logs the loss and returns: a ledger write failing (or stalling on a busy pool) must
+not fail or stall the customer's turn. The error log carries what is needed to rebuild the row
+(identifiers and counts), never prompt or reply text and never the exception message.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -22,6 +24,7 @@ from csa.metering.context import MeterContext, current_context
 
 __all__ = [
     "LEDGER_PROVIDERS",
+    "WRITE_ATTEMPT_TIMEOUT_S",
     "GenerationMirror",
     "LedgerMeter",
     "NullMeter",
@@ -32,6 +35,10 @@ __all__ = [
 logger = structlog.get_logger(__name__)
 
 _WRITE_ATTEMPTS = 2
+
+# The bound on one write attempt, pool wait included. The pool's own wait (30 s) would otherwise
+# let two attempts hold a user turn for about a minute, inside the caller's own deadline.
+WRITE_ATTEMPT_TIMEOUT_S: float = 2.0
 
 
 # The providers the clients record in the ledger (``Usage.provider``: csa/decide/groq.py and
@@ -110,25 +117,31 @@ class LedgerMeter:
             "completion_tokens": usage.completion_tokens,
             "schema_name": usage.schema_name,
         }
-        for attempt in range(_WRITE_ATTEMPTS):
+        last_error: Exception | None = None
+        for _ in range(_WRITE_ATTEMPTS):
             try:
                 # Its own transaction on its own connection: the caller's transaction (if any)
-                # rolling back must not take the ledger row with it.
-                async with tx(self._pool, str(ctx.client_id)) as conn:
-                    await db.q.execute("billing/usage_insert.sql", params, conn=conn)
+                # rolling back must not take the ledger row with it. The attempt's own timeout
+                # raises TimeoutError here; a caller's outer deadline cancels this task instead
+                # (CancelledError, not caught), so the caller's timeout still fires.
+                async with asyncio.timeout(WRITE_ATTEMPT_TIMEOUT_S):
+                    async with tx(self._pool, str(ctx.client_id)) as conn:
+                        await db.q.execute("billing/usage_insert.sql", params, conn=conn)
                 return
-            except psycopg.Error:
-                if attempt + 1 < _WRITE_ATTEMPTS:
-                    continue
+            except (psycopg.Error, TimeoutError) as exc:
+                last_error = exc
         logger.error(
             "ai_usage_write_failed",
             client_id=str(ctx.client_id),
             trace_id=str(ctx.trace_id),
+            conversation_id=None if ctx.conversation_id is None else str(ctx.conversation_id),
             job=ctx.job,
             provider=usage.provider,
             model=usage.model,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
+            schema_name=usage.schema_name,
+            error_type=type(last_error).__name__,
         )
 
     def _mirror_submit(self, ctx: MeterContext, usage: Usage) -> None:

@@ -18,13 +18,15 @@ self-hosted Langfuse v4 or later. On Langfuse Cloud the Metrics API is rate limi
 organisation (Hobby: 100 requests a day; Core: 100 an hour; Pro and up: 500 an hour; HTTP 429),
 which is why the check is asked for one company at a time and never on an overview load.
 
-``langfuse_tokens`` answers ``None`` (and logs an error) when the keys are unset, Langfuse cannot
-be reached, it answers an error status, or the reply is not the documented shape: never a guess.
+``langfuse_tokens`` answers ``None`` (and logs an error) when the keys are unset, the base URL is
+malformed, Langfuse cannot be reached or does not answer within ``REQUEST_DEADLINE_S``, it answers
+an error status, or the reply is not the documented shape: never a guess.
 Logs carry only the event, the HTTP status or the exception type; never keys, URLs or bodies.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -41,6 +43,7 @@ __all__ = [
     "ABS_TOLERANCE",
     "DEFAULT_BASE_URL",
     "METRICS_PATH",
+    "REQUEST_DEADLINE_S",
     "SETTLE",
     "TIMEOUT",
     "CheckResult",
@@ -57,11 +60,15 @@ METRICS_PATH = "/api/public/v2/metrics"
 # The sink's own default when LANGFUSE_BASE_URL is unset (apps/worker, apps/gateway).
 DEFAULT_BASE_URL = "https://cloud.langfuse.com"
 TIMEOUT = httpx.Timeout(10.0)
+# The whole request, end to end: ``TIMEOUT`` bounds each phase, so a server that trickles its
+# reply could otherwise hold the admin page far longer.
+REQUEST_DEADLINE_S: float = 15.0
 # Usage this recent may still sit in the exporter's batch queue: both sides leave it out.
 SETTLE = timedelta(minutes=5)
 # ``match`` within 1% of the ledger figure or this many tokens, whichever is larger, per direction.
 ABS_TOLERANCE = 100
-_DIGITS = re.compile(r"[0-9]+")
+# Eighteen digits is far past any real token total and well inside what ``int`` will parse.
+_DIGITS = re.compile(r"[0-9]{1,18}")
 _MEASURES = ("inputTokens", "outputTokens")
 
 CheckResult = Literal["match", "drift", "unavailable"]
@@ -174,7 +181,8 @@ async def langfuse_tokens(
 
     ``start`` and ``end`` are Kuala Lumpur dates (``end`` exclusive), queried as UTC instants.
     An empty window is zero without a request. ``None`` (with an error log) when either key is
-    unset or blank, Langfuse is unreachable, answers an error status, or replies off-shape.
+    unset or blank, the base URL is malformed, Langfuse is unreachable or too slow, answers an
+    error status, or replies off-shape.
     """
     if not (public_key and public_key.strip() and secret_key and secret_key.strip()):
         logger.error("langfuse_check_unconfigured")
@@ -183,13 +191,16 @@ async def langfuse_tokens(
     if finish <= begin:
         return LangfuseTotals(0, 0)
     try:
-        response = await http.get(
-            f"{base_url.rstrip('/')}{METRICS_PATH}",
-            params={"query": _query(client_id, begin, finish)},
-            auth=httpx.BasicAuth(public_key, secret_key),
-            timeout=TIMEOUT,
-        )
-    except httpx.HTTPError as exc:
+        async with asyncio.timeout(REQUEST_DEADLINE_S):
+            response = await http.get(
+                f"{base_url.rstrip('/')}{METRICS_PATH}",
+                params={"query": _query(client_id, begin, finish)},
+                auth=httpx.BasicAuth(public_key, secret_key),
+                timeout=TIMEOUT,
+            )
+    # A malformed LANGFUSE_BASE_URL raises InvalidURL (not an HTTPError) on httpx 0.28; a missing
+    # scheme is UnsupportedProtocol, an HTTPError.
+    except (httpx.HTTPError, httpx.InvalidURL, TimeoutError) as exc:
         logger.error("langfuse_check_unreachable", error_type=type(exc).__name__)
         return None
     if response.status_code != 200:

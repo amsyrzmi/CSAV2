@@ -175,11 +175,21 @@ console.
   `openai/gpt-oss-20b`, which has no price yet.
 - **Sandbox Client - Ihsan:** collaborator / Complete from the current cycle's start, no usage.
 - Executions between the cycle start and the join date are not billed; the admin overview counts
-  them in `usage_without_plan`.
+  them in `usage_without_plan` and shows them as "Usage before the join date: N executions, not
+  billed".
+- The seed places its rows relative to the day it is run (the join date, the spread of executions
+  and the cut-off ten minutes before now all move with it), so the execution counts, RM amounts
+  and the "27 / 30 days" proration below are those of the 2026-11-13 run: your numbers will differ.
+  Check that the figures agree with each other (cards, table, list and charts), not that they
+  match these.
+- Tier stepping (above 2,000 and above 10,000 executions in a cycle) is not exercised by the seed,
+  which stays far below 2,000; it is covered by the Task 7 unit vectors
+  (`tests/test_billing_pricing.py`).
 
 ## 4. What each Credit-tab state looks like
 
-Open Credit (`/portal/credit`) as the company's Admin. Figures are those of the 2026-11-13 run.
+Open Credit (`/portal/credit`) as the company's Admin. Figures are those of the 2026-11-13 run;
+they depend on the date the seed is run (section 3), so yours will differ.
 
 - **Pending prices** (Amsyar, current cycle, before checklist item 9.5): the banner "Bill so far,
   final on 5 Dec", the line "Billed from 8 Nov", and the amber notice "Some usage is still being
@@ -230,9 +240,11 @@ Open Credit (`/portal/credit`) as the company's Admin. Figures are those of the 
    mention `token` (the CSRF token), which is expected.
 9. **Platform-admin Billing page** (`/billing`, platform admin):
    1. Overview of the open cycle: one row per company with plan, executions, tokens in and out,
-      raw cost, AI charge, platform fee, billed total and AI margin. Amsyar shows "Some usage has no
-      price yet: 1 call in 1 execution". The cycle picker shows past cycles; the previous cycle
-      shows "Has usage but no billing plan yet: 111 executions, not billed" for Amsyar.
+      raw cost, AI charge, platform fee, billed total and AI margin. Amsyar shows "Usage before the
+      join date: N executions, not billed" (the executions between the cycle start and the join
+      date) and "Some usage has no price yet: 1 call in 1 execution". The cycle picker shows past
+      cycles; the previous cycle shows "Has usage but no billing plan yet: 111 executions, not
+      billed" for Amsyar (counts from the 2026-11-13 run).
    2. Plan editor: "Billing plan" on a company row opens it on the open cycle only (it is hidden on
       a closed cycle).
    3. Price form, shadow rule: Groq, `openai/gpt-oss-120b`, 0.15 / 0.60, dated a few days before
@@ -310,6 +322,27 @@ Langfuse test project only, on this isolated stack (or staging), never productio
    generation's timestamp) to see whether `toTimestamp` is inclusive. The check stops 5 minutes
    before now on both sides for the open cycle.
 
+5. **Model prices before go-live.** In each environment (staging, then production), compare the
+   models the processes are configured to call with the priced models. An unpriced model shows as
+   `pending_prices`, and its executions are left out of the AI charge until a price is added. Read
+   the configured models (unset means the settings default in `csa/core/settings.py`):
+
+   ```bash
+   grep -E '^(GROQ_MODEL|GOOGLE_AI_MODEL|ASSISTANT_DRAFT_MODEL)=' <that environment's env file>
+   ```
+
+   and the price rows (on a host of that environment, with its `DATABASE_URL` exported):
+
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "select provider, model, effective_from from ai_model_prices order by provider, model, effective_from"
+   ```
+
+   Add a row for every configured model that has none, before the first billed cycle, on
+   `/billing` (price form). If usage of that model already exists in the open cycle, date the price
+   at the cycle's start (allowed while the model has no earlier row), so those executions are
+   priced rather than left pending.
+
 ## 8. Clean up
 
 ```bash
@@ -328,5 +361,3 @@ Stop the gateway and the web console with Ctrl-C, and close the terminals that l
 - On the Tenants page, a company with no plan is offered "5 Dec 2026" and later 5ths as quick
   dates, but its first plan must start inside the current cycle; those dates are refused with the
   "first plan must start inside the current billing cycle" sentence.
-- The admin overview shows pre-join usage of a set-up cycle only as `usage_without_plan` in the
-  API, with no warning sentence on the page.

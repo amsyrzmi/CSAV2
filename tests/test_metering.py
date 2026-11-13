@@ -6,8 +6,10 @@ use a pool that cannot connect. All data is synthetic.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, LiteralString, get_args
 from uuid import UUID, uuid4
@@ -17,6 +19,7 @@ import pytest
 import pytest_asyncio
 from csa.core.db import build_pool
 from csa.core.tenancy import tx
+from csa.metering import meter as meter_module
 from csa.metering.context import (
     JOB_AGENT,
     JOB_LABELS,
@@ -68,6 +71,39 @@ class DeadPool:
     def connection(self) -> Any:
         self.attempts += 1
         raise psycopg.OperationalError("synthetic outage")
+
+
+class _ScriptedConn:
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        yield
+
+    async def execute(self, sql: Any, params: Any = None) -> None:
+        return None
+
+    @asynccontextmanager
+    async def cursor(self) -> AsyncIterator[_ScriptedConn]:
+        yield self
+
+
+class ScriptedPool:
+    """A pool whose attempts follow a script: "fail" raises, "stall" hangs, "ok" inserts."""
+
+    def __init__(self, *script: str) -> None:
+        self.script = list(script)
+        self.attempts = 0
+        self.inserts: list[Any] = []
+
+    @asynccontextmanager
+    async def connection(self) -> AsyncIterator[_ScriptedConn]:
+        step = self.script[self.attempts]
+        self.attempts += 1
+        if step == "fail":
+            raise psycopg.OperationalError("synthetic outage")
+        if step == "stall":
+            await asyncio.sleep(60)
+        yield _ScriptedConn()
+        self.inserts.append(step)
 
 
 def _dead(mirror: RecordingMirror | None = None) -> tuple[LedgerMeter, DeadPool]:
@@ -180,18 +216,81 @@ async def test_ledger_failure_retries_once_then_logs_and_returns() -> None:
     assert event["prompt_tokens"] == 120
     assert event["completion_tokens"] == 30
     # Counts and identifiers only: no text of any kind.
+    assert event["schema_name"] == "SyntheticReply"
+    assert event["conversation_id"] is None
+    assert event["error_type"] == "OperationalError"
     assert set(event) == {
         "event",
         "log_level",
         "client_id",
         "trace_id",
+        "conversation_id",
         "job",
         "provider",
         "model",
         "prompt_tokens",
         "completion_tokens",
+        "schema_name",
+        "error_type",
     }
+    # The type name only, never the message (which may carry a DSN).
+    assert "synthetic outage" not in str(event)
     assert mirror.calls == [(ctx, USAGE)]
+
+
+async def test_ledger_first_attempt_fails_then_second_writes_one_row() -> None:
+    pool = ScriptedPool("fail", "ok")
+    meter = LedgerMeter(pool)  # type: ignore[arg-type]
+    with capture_logs() as logs, meter_context(_ctx()):
+        await meter.record(USAGE)
+    assert pool.attempts == 2
+    assert pool.inserts == ["ok"]
+    assert [e for e in logs if e["log_level"] == "error"] == []
+
+
+async def test_ledger_stall_is_bounded_retried_then_logged_and_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(meter_module, "WRITE_ATTEMPT_TIMEOUT_S", 0.01)
+    mirror = RecordingMirror()
+    pool = ScriptedPool("stall", "stall")
+    meter = LedgerMeter(pool, mirror)  # type: ignore[arg-type]
+    conversation = uuid4()
+    ctx = MeterContext(
+        client_id=uuid4(), trace_id=uuid4(), job="email_reply", conversation_id=conversation
+    )
+    with capture_logs() as logs, meter_context(ctx):
+        async with asyncio.timeout(5):  # the test fails rather than hangs if unbounded
+            await meter.record(USAGE)
+    assert pool.attempts == 2
+    assert pool.inserts == []
+    [event] = [e for e in logs if e["event"] == "ai_usage_write_failed"]
+    assert event["log_level"] == "error"
+    assert event["conversation_id"] == str(conversation)
+    assert event["schema_name"] == "SyntheticReply"
+    assert event["error_type"] == "TimeoutError"
+    assert mirror.calls == [(ctx, USAGE)]
+
+
+async def test_ledger_stall_then_success_writes_one_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(meter_module, "WRITE_ATTEMPT_TIMEOUT_S", 0.01)
+    pool = ScriptedPool("stall", "ok")
+    meter = LedgerMeter(pool)  # type: ignore[arg-type]
+    with capture_logs() as logs, meter_context(_ctx()):
+        await meter.record(USAGE)
+    assert pool.inserts == ["ok"]
+    assert [e for e in logs if e["log_level"] == "error"] == []
+
+
+async def test_outer_cancellation_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The caller's own deadline expiring mid-write must cancel the turn, not be swallowed.
+    monkeypatch.setattr(meter_module, "WRITE_ATTEMPT_TIMEOUT_S", 30)
+    pool = ScriptedPool("stall", "stall")
+    meter = LedgerMeter(pool)  # type: ignore[arg-type]
+    with meter_context(_ctx()), pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await meter.record(USAGE)
+    assert pool.attempts == 1
 
 
 async def test_mirror_exception_is_never_raised() -> None:

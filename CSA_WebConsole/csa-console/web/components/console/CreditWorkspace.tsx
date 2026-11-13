@@ -54,7 +54,12 @@ export function CreditWorkspace() {
   useEffect(() => {
     const controller = new AbortController();
     fetchUsage(picked || null, controller.signal)
-      .then((found) => { setUsage(found); setLoading(false); })
+      .then((found) => {
+        // A superseded read (the cycle changed) must not overwrite the newer cycle's figures.
+        if (controller.signal.aborted) return;
+        setUsage(found);
+        setLoading(false);
+      })
       .catch((cause) => {
         if (controller.signal.aborted) return;
         // A failed read for a new cycle must not leave the old cycle's figures looking current.
