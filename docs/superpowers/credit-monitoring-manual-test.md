@@ -189,55 +189,60 @@ console.
 ## 4. What each Credit-tab state looks like
 
 Open Credit (`/portal/credit`) as the company's Admin. Figures are those of the 2026-11-13 run;
-they depend on the date the seed is run (section 3), so yours will differ.
+they depend on the date the seed is run (section 3), so yours will differ. Owner decision
+2026-11-13: the bill line is called "AI Usage Charges" and the client sees the bill, the charges
+per AI agent and per day and the execution count, but no list of single executions, no model and
+no provider.
 
 - **Pending prices** (Amsyar, current cycle, before checklist item 9.5): the banner "Bill so far,
   final on 5 Dec", the line "Billed from 8 Nov", and the amber notice "Some usage is still being
-  priced. It is added to the AI usage price once it is priced." Cards: Executions 101, AI usage
-  price RM 0.66, Platform fee RM 89.99 (RM 99.99 x 27 / 30 days), Bill so far RM 90.65. One row in
-  the executions list (an "Assistant request" by Workspace assistant) shows "Pending" instead of a
-  price.
-- **Normal** (Amsyar, after the price is added): no amber notice; the pending row has a price; AI
-  usage price RM 0.67, bill so far RM 90.66. The per-agent prices, the daily prices and the listed
-  prices each add up to the AI usage price exactly (4 places in the table, list and charts, 2 on
-  the cards).
+  priced. It is added to the AI Usage Charges once it is priced." Cards: Executions 101, AI Usage
+  Charges RM 0.66, Platform fee RM 89.99 (RM 99.99 x 27 / 30 days), Bill so far RM 90.65. In the
+  per-agent table the Workspace assistant's charges leave out the usage still being priced; its
+  executions count still includes that execution.
+- **Normal** (Amsyar, after the price is added): no amber notice; AI Usage Charges RM 0.67, bill
+  so far RM 90.66. The per-agent charges and the daily charges each add up to the AI Usage Charges
+  exactly (4 places in the table and charts, 2 on the cards).
 - **Not set up** (Amsyar, previous cycle "5 Oct to 5 Nov, billing not set up" in the picker; or any
-  company with no plan): only "Billing not set up yet. Your usage and bill will show here once your
-  plan is set up." No cards, no RM 0.00 figures.
-- **Zero usage** (Ihsan): cards Executions 0, AI usage price RM 0.00, Platform fee RM 119.99, Bill
-  so far RM 119.99; "No AI usage in this cycle yet." and "No executions in this cycle yet." No
-  charts.
+  company with no plan): only "Billing not set up yet. Your AI Usage Charges and bill will show
+  here once your plan is set up." No cards, no RM 0.00 figures.
+- **Zero usage** (Ihsan): cards Executions 0, AI Usage Charges RM 0.00, Platform fee RM 119.99,
+  Bill so far RM 119.99; "No AI Usage Charges in this cycle yet." under By AI agent. No charts.
 - **Terminated** (Ihsan after checklist item 9.7): a termination dated the current cycle's start (the join
-  date here) leaves nothing billed: every card RM 0.00 or 0, and the same "No AI usage in this
-  cycle yet" copy, with "Bill so far, final on 5 Dec" still shown. There is no "terminated" wording
+  date here) leaves nothing billed: every card RM 0.00 or 0, and the same "No AI Usage Charges in
+  this cycle yet" copy, with "Bill so far, final on 5 Dec" still shown. There is no "terminated" wording
   on the Credit tab (the client API carries no termination field). A termination dated later in the
   cycle shows "Billed to <date>" and a prorated fee instead.
 - **Staff or read-only member:** no Credit link in the rail; `/portal/credit` is a 404 page and
-  the three `/console/v1/billing/usage*` routes answer 403.
+  the two `/console/v1/billing/usage*` routes answer 403.
 
 ## 5. Checklist
 
 1. **Cards** (Amsyar): the four cards match section 4; "Bill so far" while the cycle is open.
 2. **Per-agent table**: five rows with avatars (Training summary has the neutral bot icon):
    Customer support assistant, Email assistant, Workspace assistant, Training summary, HR assistant,
-   highest price first, each with its executions and a 4-place price.
-3. **Executions list**: newest first, 50 a page, "Load more executions" fetches the next page; 101
-   rows in all; time, AI agent, job in plain words ("Customer reply", "Email summary", "Assistant
-   request" ...), price or "Pending". Times are in the browser's time zone (see Known gaps).
-4. **Both charts**: "AI usage price per day" (bars from the join date to today, every day of the
-   cycle on the axis, "Highest day: ..." above it) and "AI usage price by AI agent" (horizontal
-   bars with the price beside each).
+   highest charges first, each with its executions and its AI Usage Charges at 4 places. The
+   executions column adds up to the Executions card (101).
+3. **No per-execution list** (owner decision 2026-11-13): there is no executions list and no "Load
+   more" button anywhere on the page, and no model, provider or job name is shown. The words "AI
+   usage price" appear nowhere; the bill line reads "AI Usage Charges".
+4. **Both charts**: "AI Usage Charges per day" (bars from the join date to today, every day of the
+   cycle on the axis, "Highest day: ..." above it) and "AI Usage Charges by AI agent" (horizontal
+   bars with the charges beside each).
 5. **Cycle picker**: "5 Nov to 5 Dec (open), bill so far RM 90.65" and "5 Oct to 5 Nov, billing not
    set up"; switching shows the not-set-up state.
 6. **Not set up**: as above, for the previous cycle and for a new company.
 7. **Pending prices, then priced**: add the missing price on `/billing` (checklist item 9.5), reload
-   Credit: the notice is gone and the pending row has a price.
+   Credit: the notice is gone and the AI Usage Charges include the newly priced usage.
 8. **No forbidden field reaches the client.** In the browser's developer tools, Network tab, with
-   the Credit tab open as the client Admin, look at every `/console/v1/billing/usage`,
-   `/usage/cycles` and `/usage/executions` response: none contains a token count, raw price or
-   cost, markup, margin, USD or AWS figure (search the responses for `token`, `raw`, `cost`,
-   `markup`, `margin`, `usd`, `aws`, `prompt`, `completion`). Only `/auth/csrf` and `/auth/login`
-   mention `token` (the CSRF token), which is expected.
+   the Credit tab open as the client Admin, look at every `/console/v1/billing/usage` and
+   `/usage/cycles` response: none contains a token count, raw price or cost, markup, margin, USD or
+   AWS figure, model or provider name (search the responses for `token`, `raw`, `cost`, `markup`,
+   `margin`, `usd`, `aws`, `prompt`, `completion`, `model`, `provider`, `groq`, `gemini`). Only
+   `/auth/csrf` and `/auth/login` mention `token` (the CSRF token), which is expected. The Credit
+   tab makes no `/usage/executions` request, and opening
+   `/console/v1/billing/usage/executions` in the same browser tab answers 404 (the route no longer
+   exists).
 9. **Platform-admin Billing page** (`/billing`, platform admin):
    1. Overview of the open cycle: one row per company with plan, executions, tokens in and out,
       raw cost, AI charge, platform fee, billed total and AI margin. Amsyar shows "Usage before the
@@ -355,8 +360,6 @@ Stop the gateway and the web console with Ctrl-C, and close the terminals that l
 
 ## Known gaps seen in the 2026-11-13 run
 
-- The executions list shows times in the browser's time zone, while the daily chart uses Kuala
-  Lumpur days (deferred minor from Task 11). In a browser set to UTC, 12:24 KL shows as 04:24.
 - A terminated company's Credit tab has no wording that says so (section 4).
 - On the Tenants page, a company with no plan is offered "5 Dec 2026" and later 5ths as quick
   dates, but its first plan must start inside the current cycle; those dates are refused with the

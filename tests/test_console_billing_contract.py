@@ -23,8 +23,6 @@ from csa.console.billing import (
     AgentUsageOut,
     CyclePickOut,
     DailyUsageOut,
-    ExecutionOut,
-    ExecutionsPageOut,
     UsageOut,
     billing_now,
 )
@@ -52,8 +50,6 @@ CLIENT_MODELS: tuple[type[BaseModel], ...] = (
     UsageOut,
     AgentUsageOut,
     DailyUsageOut,
-    ExecutionOut,
-    ExecutionsPageOut,
     CyclePickOut,
 )
 # Token counts no other figure in these tests can produce, so a match is a leak.
@@ -103,7 +99,8 @@ def test_client_models_forbid_extra_fields(model: type[BaseModel]) -> None:
 def test_the_published_billing_routes_carry_no_forbidden_property() -> None:
     document = contract()
     routes = {p: v for p, v in document["paths"].items() if p.startswith(BASE + "/usage")}
-    assert set(routes) == {f"{BASE}/usage", f"{BASE}/usage/executions", f"{BASE}/usage/cycles"}
+    # Owner decision 2026-11-13: no per-execution list for the client.
+    assert set(routes) == {f"{BASE}/usage", f"{BASE}/usage/cycles"}
     seen: set[str] = set()
 
     def walk(value: Any) -> None:
@@ -172,6 +169,7 @@ async def test_payloads_and_logs_carry_prices_only(
         str(internal.raw_cost_rm),
         f"{internal.raw_cost_rm:.4f}",
         "openai/gpt-oss-120b",
+        "groq",
         UNPRICED,
     }
     secrets |= {str(p.exact_price) for p in internal.priced}
@@ -182,11 +180,13 @@ async def test_payloads_and_logs_carry_prices_only(
     with structlog.testing.capture_logs() as structured:
         responses = [
             await admin.get(f"{BASE}/usage"),
-            await admin.get(f"{BASE}/usage/executions?limit=2"),
+            await admin.get(f"{BASE}/usage?cycle=2026-10-05"),
             await admin.get(f"{BASE}/usage/cycles"),
         ]
-        cursor = responses[1].json()["next_cursor"]
-        responses.append(await admin.get(f"{BASE}/usage/executions?cursor={cursor}"))
+        gone = await admin.get(f"{BASE}/usage/executions")
+    assert gone.status_code == 404, gone.text  # no per-execution list (owner decision)
+    for secret in secrets:
+        assert secret not in gone.text, secret
     for response in responses:
         assert response.status_code == 200, response.text
         payload = response.json()
@@ -199,9 +199,10 @@ async def test_payloads_and_logs_carry_prices_only(
         assert re.fullmatch(r"\d+\.\d{2}", usage[key]), usage[key]
     for entry in usage["by_agent"] + usage["daily"]:
         assert re.fullmatch(r"\d+\.\d{4}", entry["price"]), entry
-    items = responses[1].json()["items"] + responses[3].json()["items"]
-    assert [i["price"] is None for i in items] == [True, False, False]
-    assert sum(Decimal(i["price"]) for i in items if i["price"]) == Decimal(usage["ai_usage_price"])
+    assert usage["executions"] == 3
+    agents = usage["by_agent"]
+    assert sum(Decimal(a["price"]) for a in agents) == Decimal(usage["ai_usage_price"])
+    assert sum(Decimal(d["price"]) for d in usage["daily"]) == Decimal(usage["ai_usage_price"])
 
     logged = [json.dumps(entry, default=str) for entry in structured]
     logged += [record.getMessage() for record in caplog.records]

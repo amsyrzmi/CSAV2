@@ -11,7 +11,6 @@ import uuid
 from collections.abc import Iterator
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
 
 import httpx
 import pytest
@@ -28,7 +27,7 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
 
 BASE = "/console/v1/billing"
-PATHS = (f"{BASE}/usage", f"{BASE}/usage/executions", f"{BASE}/usage/cycles")
+PATHS = (f"{BASE}/usage", f"{BASE}/usage/cycles")
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=KL)
 AUG = Cycle(date(2026, 8, 5), date(2026, 9, 5))
 SEP = Cycle(date(2026, 9, 5), date(2026, 10, 5))
@@ -105,10 +104,6 @@ async def admin_of(w: SessionWorld, tenant: str) -> httpx.AsyncClient:
     return client
 
 
-def ats(page: dict[str, Any]) -> list[datetime]:
-    return [datetime.fromisoformat(item["at"]) for item in page["items"]]
-
-
 # --- access ----------------------------------------------------------------------------------
 
 
@@ -142,19 +137,20 @@ async def test_admin_sees_their_own_usage_matching_the_service(sessions: Session
     }
     assert sum(Decimal(d["price"]) for d in body["daily"]) == expected.bill.ai_charge
 
-    page = (await admin.get(f"{BASE}/usage/executions")).json()
-    assert page["next_cursor"] is None
-    assert ats(page) == [kl(10, 8), kl(10, 6, 10), kl(10, 6, 9)]
-    first = page["items"][0]
-    assert first == {
-        "at": first["at"],
-        "agent_id": "hr",
-        "agent_title": "HR assistant",
-        "job_label": "HR assistant",
-        "price": f"{expected.price_by_trace[expected.executions[0].trace_id]:.4f}",
-    }
-    assert page["items"][1]["job_label"] == "Email reply draft"
-    assert sum(Decimal(i["price"]) for i in page["items"]) == expected.bill.ai_charge
+
+async def test_the_per_execution_list_does_not_exist(sessions: SessionWorld) -> None:
+    """Owner decision 2026-11-13: the client sees the bill, per-agent and per-day charges and the
+    execution count, never a list of single executions."""
+    w = sessions
+    tenant = w.tenants[0]
+    await plan(w, tenant, OCT.start)
+    await call(w, tenant, kl(10, 6))
+    admin = await admin_of(w, tenant)
+    for query in ("", "?cycle=2026-10-05", "?limit=2"):
+        response = await admin.get(f"{BASE}/usage/executions{query}")
+        assert response.status_code == 404, response.text
+    platform = await w.admin.get(f"{BASE}/usage/executions?client_id={tenant}")
+    assert platform.status_code == 404, platform.text
 
 
 @pytest.mark.parametrize("role", ["tenant_staff", "read_only"])
@@ -199,9 +195,10 @@ async def test_tenants_never_see_each_other(sessions: SessionWorld) -> None:
         admin = await admin_of(w, tenant)
         usage = (await admin.get(f"{BASE}/usage")).json()
         assert usage["executions"] == len(days)
-        page = (await admin.get(f"{BASE}/usage/executions")).json()
         hour = 12 if tenant == mine else 15
-        assert ats(page) == [kl(10, d, hour) for d in days]
+        assert [d["day"] for d in usage["daily"] if d["price"] != "0.0000"] == [
+            kl(10, d, hour).date().isoformat() for d in sorted(days)
+        ]
         for path in PATHS:
             assert (await admin.get(f"{path}?client_id={other}")).status_code == 403
 
@@ -215,8 +212,6 @@ async def test_platform_admin_selects_the_tenant(sessions: SessionWorld) -> None
     usage = await w.admin.get(f"{BASE}/usage?client_id={w.tenants[1]}")
     assert usage.status_code == 200, usage.text
     assert usage.json()["executions"] == 1
-    page = await w.admin.get(f"{BASE}/usage/executions?client_id={w.tenants[1]}")
-    assert len(page.json()["items"]) == 1
     cycles = await w.admin.get(f"{BASE}/usage/cycles?client_id={w.tenants[0]}")
     assert cycles.status_code == 200 and [c["start"] for c in cycles.json()] == ["2026-10-05"]
     unknown = await w.admin.get(f"{BASE}/usage?client_id={uuid.uuid4()}")
@@ -241,81 +236,14 @@ async def test_cycle_defaults_to_the_current_one_and_is_validated(sessions: Sess
         True,
     )
     assert sep["executions"] == 1
-    for path in (f"{BASE}/usage", f"{BASE}/usage/executions"):
-        assert (await admin.get(f"{path}?cycle=2026-09-06")).status_code == 422
-        assert (await admin.get(f"{path}?cycle=not-a-date")).status_code == 422
-        assert (await admin.get(f"{path}?cycle=2026-11-05")).status_code == 404
-        assert (await admin.get(f"{path}?cycle=2027-01-05")).status_code == 404
-        # The far future (past the last date a cycle can end) is the same 404, not a 500.
-        far = await admin.get(f"{path}?cycle=9999-12-05")
-        assert (far.status_code, far.json()["detail"]) == (404, "cycle_not_found")
-
-
-# --- executions paging -----------------------------------------------------------------------
-
-
-async def test_paging_is_stable_while_a_new_execution_arrives(sessions: SessionWorld) -> None:
-    w = sessions
-    tenant = w.tenants[0]
-    await plan(w, tenant, OCT.start)
-    for day in range(10, 15):
-        await call(w, tenant, kl(10, day))
-    admin = await admin_of(w, tenant)
-    path = f"{BASE}/usage/executions?limit=2"
-    first = (await admin.get(path)).json()
-    assert ats(first) == [kl(10, 14), kl(10, 13)] and first["next_cursor"]
-    await call(w, tenant, kl(10, 15))  # newer than everything listed
-    second = (await admin.get(f"{path}&cursor={first['next_cursor']}")).json()
-    assert ats(second) == [kl(10, 12), kl(10, 11)]
-    third = (await admin.get(f"{path}&cursor={second['next_cursor']}")).json()
-    assert ats(third) == [kl(10, 10)] and third["next_cursor"] is None
-    fresh = (await admin.get(path)).json()
-    assert ats(fresh) == [kl(10, 15), kl(10, 14)]
-
-
-async def test_two_executions_at_the_same_instant_page_by_trace(sessions: SessionWorld) -> None:
-    w = sessions
-    tenant = w.tenants[0]
-    await plan(w, tenant, OCT.start)
-    for _ in range(3):
-        await call(w, tenant, kl(10, 9))
-    admin = await admin_of(w, tenant)
-    pages = []
-    cursor = ""
-    for _ in range(5):  # a keyset that repeats a row would never end: bound the walk
-        page = (await admin.get(f"{BASE}/usage/executions?limit=1{cursor}")).json()
-        pages.append(page)
-        if page["next_cursor"] is None:
-            break
-        cursor = f"&cursor={page['next_cursor']}"
-    assert [len(p["items"]) for p in pages] == [1, 1, 1]
-    assert pages[-1]["next_cursor"] is None
-    assert len({p["next_cursor"] for p in pages[:-1]}) == 2
-
-
-async def test_limit_bounds_and_bad_cursors(sessions: SessionWorld) -> None:
-    w = sessions
-    tenant = w.tenants[0]
-    await plan(w, tenant, AUG.start)
-    await call(w, tenant, kl(9, 10))
-    await call(w, tenant, kl(10, 10))
-    admin = await admin_of(w, tenant)
-    path = f"{BASE}/usage/executions"
-    assert (await admin.get(f"{path}?limit=0")).status_code == 422
-    assert (await admin.get(f"{path}?limit=201")).status_code == 422
-    assert len((await admin.get(f"{path}?limit=200")).json()["items"]) == 1
-    sep_page = (await admin.get(f"{path}?cycle=2026-09-05&limit=1")).json()
-    assert len(sep_page["items"]) == 1 and sep_page["next_cursor"] is None
-    for bad in ("garbage", "Zm9vfGJhcnxiYXo", "", "%00", "x" * 300):
-        response = await admin.get(f"{path}?cursor={bad}")
-        assert response.status_code == 422, (bad, response.text)
-    # A cursor is bound to its cycle: one from October is refused for September.
-    for day in (11, 12):
-        await call(w, tenant, kl(10, day))
-    october = (await admin.get(f"{path}?limit=1")).json()
-    assert october["next_cursor"]
-    crossed = await admin.get(f"{path}?cycle=2026-09-05&cursor={october['next_cursor']}")
-    assert crossed.status_code == 422
+    path = f"{BASE}/usage"
+    assert (await admin.get(f"{path}?cycle=2026-09-06")).status_code == 422
+    assert (await admin.get(f"{path}?cycle=not-a-date")).status_code == 422
+    assert (await admin.get(f"{path}?cycle=2026-11-05")).status_code == 404
+    assert (await admin.get(f"{path}?cycle=2027-01-05")).status_code == 404
+    # The far future (past the last date a cycle can end) is the same 404, not a 500.
+    far = await admin.get(f"{path}?cycle=9999-12-05")
+    assert (far.status_code, far.json()["detail"]) == (404, "cycle_not_found")
 
 
 # --- states ----------------------------------------------------------------------------------
@@ -341,8 +269,6 @@ async def test_not_set_up_shape(sessions: SessionWorld) -> None:
         "by_agent": [],
         "daily": [],
     }
-    page = (await admin.get(f"{BASE}/usage/executions")).json()
-    assert page == {"items": [], "next_cursor": None}
     cycles = (await admin.get(f"{BASE}/usage/cycles")).json()
     assert cycles == [{"start": "2026-10-05", "end": "2026-11-05", "total": None, "final": False}]
 
@@ -366,8 +292,6 @@ async def test_pending_prices_shape(sessions: SessionWorld) -> None:
         },
         {"agent_id": "hr", "title": "HR assistant", "executions": 1, "price": "0.0000"},
     ]
-    items = (await admin.get(f"{BASE}/usage/executions")).json()["items"]
-    assert [(i["agent_id"], i["price"]) for i in items] == [("hr", None), ("support", "1.5000")]
 
 
 async def test_cycles_newest_first_with_totals_and_final(sessions: SessionWorld) -> None:

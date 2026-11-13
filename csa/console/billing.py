@@ -1,18 +1,19 @@
 """The Credit tab's API under ``/console/v1/billing``: a company's usage and bill, prices only.
 
-Client routes (this module, Task 9): ``GET /usage``, ``GET /usage/executions`` and
-``GET /usage/cycles``, for the company's Admin or a platform admin who picks the company with
-``client_id``. Everyone else, staff, read-only members and the machine principal included, gets
-403: a non-Admin member seeing billing is an anti-goal. Task 10 adds the platform-admin routes to
-the router ``build_billing_router`` returns.
+Client routes (this module, Task 9): ``GET /usage`` and ``GET /usage/cycles``, for the company's
+Admin or a platform admin who picks the company with ``client_id``. Everyone else, staff,
+read-only members and the machine principal included, gets 403: a non-Admin member seeing billing
+is an anti-goal. Task 10 adds the platform-admin routes to the router ``build_billing_router``
+returns.
 
-What leaves here is prices only (spec "What the client sees"): the bill, the allocated prices and
-the execution counts. The service's ``CycleUsage`` also carries raw cost, tokens and the markup
-for the admin view, so every response model is built by copying named fields, never by dumping a
-dataclass or dict, and every model forbids extra fields. Nothing here logs. Money is a
-fixed-point decimal string: 2 places for the fee, AI usage price and total, 4 for the allocated
-prices (each execution's, and the per-agent and per-day sums of them, which add up to the AI
-usage price exactly). A value that would need rounding to fit is an error, never rounded here.
+What leaves here is prices only (spec "What the client sees"): the bill, the per-agent and per-day
+charges and the execution counts. Owner decision 2026-11-13: there is no per-execution list, so
+the client never sees single executions or their jobs. The service's ``CycleUsage`` also carries
+raw cost, tokens and the markup for the admin view, so every response model is built by copying
+named fields, never by dumping a dataclass or dict, and every model forbids extra fields. Nothing
+here logs. Money is a fixed-point decimal string: 2 places for the fee, AI usage price and total,
+4 for the per-agent and per-day sums of the allocated prices, which add up to the AI usage price
+exactly. A value that would need rounding to fit is an error, never rounded here.
 
 The platform-admin routes (Task 10: raw cost, tokens and margin) are in
 ``csa.console.billing_admin`` under ``/billing/admin``, with models of their own; nothing here
@@ -21,8 +22,6 @@ imports them.
 
 from __future__ import annotations
 
-import base64
-import binascii
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Context, Decimal, Inexact
@@ -30,23 +29,19 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
-from csa.billing.agents import AGENT_TITLES
 from csa.billing.cycles import Cycle, cycle_containing, cycle_of
 from csa.billing.memo import USAGE_MEMO
-from csa.billing.service import CycleUsage, ExecutionRow, cycle_usage, list_cycles
+from csa.billing.service import CycleUsage, cycle_usage, list_cycles
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Role
 from csa.core.tenancy import tx
-from csa.metering.context import JOB_LABELS
 
 __all__ = [
     "AgentUsageOut",
     "CyclePickOut",
     "DailyUsageOut",
-    "ExecutionOut",
-    "ExecutionsPageOut",
     "UsageOut",
     "billing_client",
     "billing_now",
@@ -54,9 +49,6 @@ __all__ = [
     "pick_cycle",
 ]
 
-DEFAULT_PAGE = 50
-MAX_PAGE = 200
-_MAX_CURSOR = 256
 _CYCLE_START_DAY = 5
 _ADMIN_REQUIRED = "billing_admin_required"
 # Quantizing under this context raises instead of rounding a value that does not fit.
@@ -126,30 +118,6 @@ class UsageOut(BaseModel):
     daily: list[DailyUsageOut]
 
 
-class ExecutionOut(BaseModel):
-    """One execution: when it started, its agent, its job in plain words, its price.
-
-    ``price`` is ``None`` while the execution is still being priced.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    at: AwareDatetime
-    agent_id: str
-    agent_title: str
-    job_label: str
-    price: Money4 | None
-
-
-class ExecutionsPageOut(BaseModel):
-    """A page of executions, newest first; ``next_cursor`` fetches the next, ``None`` at the end."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    items: list[ExecutionOut]
-    next_cursor: str | None
-
-
 class CyclePickOut(BaseModel):
     """A cycle for the picker: its bill total (``None`` when not set up) and whether it is final."""
 
@@ -193,34 +161,6 @@ def pick_cycle(start: date | None, now: datetime) -> Cycle:
     return cycle_containing(start)
 
 
-def _b64(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def _encode_cursor(cycle: Cycle, execution: ExecutionRow) -> str:
-    """The keyset of the last listed execution, bound to its cycle; opaque to the client."""
-    text = f"{cycle.start.isoformat()}|{execution.first_at.isoformat()}|{execution.trace_id}"
-    return _b64(text.encode("ascii"))
-
-
-def _decode_cursor(cursor: str, cycle: Cycle) -> tuple[datetime, UUID]:
-    """``(first_at, trace_id)`` from a cursor this cycle issued; anything else is 422."""
-    try:
-        raw = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
-        if _b64(raw) != cursor:  # only the canonical spelling of a cursor we issued
-            raise ValueError("not a canonical cursor")
-        start, first_at, trace = raw.decode("ascii").split("|")
-        at = datetime.fromisoformat(first_at)
-        key = (date.fromisoformat(start), at, UUID(trace))
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        raise HTTPException(422, "invalid_cursor") from None
-    if at.tzinfo is None or at.utcoffset() is None:
-        raise HTTPException(422, "invalid_cursor")
-    if key[0] != cycle.start:
-        raise HTTPException(422, "cursor_from_another_cycle")
-    return key[1], key[2]
-
-
 def usage_out(usage: CycleUsage) -> UsageOut:
     """The client view of a cycle: named price fields copied one by one, nothing else."""
     zero = Decimal("0.00")
@@ -250,36 +190,6 @@ def usage_out(usage: CycleUsage) -> UsageOut:
     )
 
 
-def executions_page(
-    usage: CycleUsage, after: tuple[datetime, UUID] | None, limit: int
-) -> ExecutionsPageOut:
-    """Up to ``limit`` executions older than the keyset ``after``, newest first.
-
-    ``usage.executions`` is ordered by ``(first_at, trace_id)`` descending, so the page starts at
-    the first execution below the keyset: a newer execution recorded since only ever appears at
-    the head of a fresh first page, never as a duplicate or a gap further down.
-    """
-    rows = usage.executions
-    start = 0
-    if after is not None:
-        start = next((i for i, e in enumerate(rows) if (e.first_at, e.trace_id) < after), len(rows))
-    page = rows[start : start + limit]
-    more = start + limit < len(rows)
-    return ExecutionsPageOut(
-        items=[
-            ExecutionOut(
-                at=e.first_at,
-                agent_id=e.agent_id,
-                agent_title=AGENT_TITLES[e.agent_id],
-                job_label=JOB_LABELS[e.job],
-                price=usage.price_by_trace.get(e.trace_id),
-            )
-            for e in page
-        ],
-        next_cursor=_encode_cursor(usage.cycle, page[-1]) if more and page else None,
-    )
-
-
 def build_billing_router() -> APIRouter:
     """The ``/billing`` routes, mounted under ``/console/v1`` by ``csa.console.router``."""
     router = APIRouter(prefix="/billing")
@@ -295,21 +205,6 @@ def build_billing_router() -> APIRouter:
         async with tx(request.app.state.pool, str(client_id)) as conn:
             summary = await cycle_usage(conn, client_id, picked, now=now, memo=USAGE_MEMO)
         return usage_out(summary)
-
-    @router.get("/usage/executions", response_model=ExecutionsPageOut)
-    async def executions(
-        request: Request,
-        client_id: Annotated[UUID, Depends(billing_client)],
-        now: Annotated[datetime, Depends(billing_now)],
-        cycle: Annotated[date | None, Query()] = None,
-        cursor: Annotated[str | None, Query(max_length=_MAX_CURSOR)] = None,
-        limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = DEFAULT_PAGE,
-    ) -> ExecutionsPageOut:
-        picked = pick_cycle(cycle, now)
-        after = None if cursor is None else _decode_cursor(cursor, picked)
-        async with tx(request.app.state.pool, str(client_id)) as conn:
-            summary = await cycle_usage(conn, client_id, picked, now=now, memo=USAGE_MEMO)
-        return executions_page(summary, after, limit)
 
     @router.get("/usage/cycles", response_model=list[CyclePickOut])
     async def cycles(

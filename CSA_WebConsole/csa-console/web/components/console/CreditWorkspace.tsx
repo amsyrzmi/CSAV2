@@ -1,14 +1,12 @@
 "use client";
 
 import { Bot } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { avatarForAgent } from "@/lib/agent-avatars";
+import { fetchCycles, fetchUsage, type CyclePickOut, type UsageOut } from "@/lib/credit-api";
 import {
-  fetchCycles, fetchExecutions, fetchUsage, type CyclePickOut, type ExecutionOut, type UsageOut,
-} from "@/lib/credit-api";
-import {
-  agentSeries, banner, countText, cycleLabel, cycleOption, dailySeries, executionPrice, executionTime,
-  formatRm, newestFirst, proratedNote, stateMessage,
+  agentSeries, banner, countText, cycleLabel, cycleOption, dailySeries, formatRm, newestFirst, proratedNote,
+  stateMessage,
 } from "@/lib/credit-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { AgentChart, DailyChart } from "./credit/CreditCharts";
@@ -29,9 +27,11 @@ function message(cause: unknown): string {
 }
 
 /**
- * The Credit tab: one billing cycle's usage and bill, prices only. The cycle picker scopes
+ * The Credit tab: one billing cycle's AI Usage Charges and bill. The cycle picker scopes
  * everything below it; changing cycle keeps the last figures on screen, dimmed, until the new
- * ones arrive. Money is shown exactly as the server sends it, never added up here.
+ * ones arrive. Money is shown exactly as the server sends it, never added up here. The client
+ * sees the charges per AI agent and per day and the execution count, never a list of single
+ * executions (owner decision 2026-11-13).
  */
 export function CreditWorkspace() {
   const [cycles, setCycles] = useState<CyclePickOut[] | null>(null);
@@ -85,7 +85,7 @@ export function CreditWorkspace() {
   const selected = picked || usage?.cycle_start || "";
   return (
     <>
-      <Heading title="Credit" description="Your company's AI usage and bill for each billing cycle." />
+      <Heading title="Credit" description="Your company's AI Usage Charges and bill for each billing cycle." />
       <div className="mb-5 max-w-md">
         {cycles ? (
           <>
@@ -126,7 +126,7 @@ function CycleView({ usage }: { usage: UsageOut }) {
     // No plan for this cycle: no figures at all, so nothing reads as a bill of RM 0.00.
     return (
       <section aria-label={`Billing cycle ${dates}`} data-testid="credit-not-set-up">
-        <Notice>{stateMessage(usage.status)}. Your usage and bill will show here once your plan is set up.</Notice>
+        <Notice>{stateMessage(usage.status)}. Your AI Usage Charges and bill will show here once your plan is set up.</Notice>
       </section>
     );
   }
@@ -142,7 +142,7 @@ function CycleView({ usage }: { usage: UsageOut }) {
           {prorated && <p className="text-sm text-ink-600" data-testid="credit-prorated">{prorated}</p>}
           {pending && (
             <Notice warning testId="credit-pending">
-              {pending}. It is added to the AI usage price once it is priced.
+              {pending}. It is added to the AI Usage Charges once it is priced.
             </Notice>
           )}
         </div>
@@ -155,7 +155,6 @@ function CycleView({ usage }: { usage: UsageOut }) {
           <AgentChart rows={agents} />
         </div>
       )}
-      <ExecutionList key={usage.cycle_start} cycle={usage.cycle_start} />
     </section>
   );
 }
@@ -163,7 +162,7 @@ function CycleView({ usage }: { usage: UsageOut }) {
 function Cards({ usage }: { usage: UsageOut }) {
   const cards = [
     { id: "executions", label: "Executions", value: countText(usage.executions) },
-    { id: "ai-usage-price", label: "AI usage price", value: formatRm(usage.ai_usage_price, 2) },
+    { id: "ai-usage-charges", label: "AI Usage Charges", value: formatRm(usage.ai_usage_price, 2) },
     { id: "platform-fee", label: "Platform fee", value: formatRm(usage.platform_fee, 2) },
     { id: "bill", label: usage.final ? "Bill" : "Bill so far", value: formatRm(usage.total, 2) },
   ];
@@ -195,16 +194,16 @@ function AgentTable({ usage }: { usage: UsageOut }) {
       <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold">By AI agent</h2>
       {usage.by_agent.length === 0 ? (
         <p className="text-sm text-ink-600" data-testid="credit-agents-empty">
-          No AI usage in this cycle yet. Each AI agent your company uses will appear here with its price.
+          No AI Usage Charges in this cycle yet. Each AI agent your company uses will appear here with its charges.
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <caption className="sr-only">AI usage price by AI agent</caption>
+            <caption className="sr-only">AI Usage Charges by AI agent</caption>
             <thead className="max-sm:sr-only"><tr>
               <th scope="col" className={head}>AI agent</th>
               <th scope="col" className={amountHead}>Executions</th>
-              <th scope="col" className={amountHead}>Price</th>
+              <th scope="col" className={amountHead}>AI Usage Charges</th>
             </tr></thead>
             <tbody>
               {usage.by_agent.map((agent) => (
@@ -213,92 +212,12 @@ function AgentTable({ usage }: { usage: UsageOut }) {
                     <span className="flex items-center gap-2"><AgentMark agentId={agent.agent_id} />{agent.title}</span>
                   </th>
                   <td data-label="Executions" className={`${amount} ${phoneCell}`}>{countText(agent.executions)}</td>
-                  <td data-label="Price" className={`${amount} ${phoneCell}`}>{formatRm(agent.price, 4)}</td>
+                  <td data-label="AI Usage Charges" className={`${amount} ${phoneCell}`}>{formatRm(agent.price, 4)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      )}
-    </section>
-  );
-}
-
-/** The cycle's executions, newest first, a page at a time. The cursor only ever travels with its cycle. */
-function ExecutionList({ cycle }: { cycle: string }) {
-  const [items, setItems] = useState<ExecutionOut[] | null>(null);
-  const [next, setNext] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const working = useRef(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchExecutions(cycle, null, controller.signal)
-      .then((page) => { setItems(page.items); setNext(page.next_cursor); })
-      .catch((cause) => { if (!controller.signal.aborted) setError(message(cause)); });
-    return () => controller.abort();
-  }, [cycle]);
-
-  async function more() {
-    if (!next || working.current) return;
-    working.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      const page = await fetchExecutions(cycle, next);
-      setItems((shown) => [...(shown ?? []), ...page.items]);
-      setNext(page.next_cursor);
-    } catch (cause) {
-      setError(message(cause));
-    } finally {
-      working.current = false;
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className={`${CARD} p-4 sm:p-5`} data-testid="credit-executions">
-      <h2 className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold">Executions</h2>
-      {items === null ? (
-        error ? <Notice error>{error}</Notice> : <div role="status"><Notice>Loading executions...</Notice></div>
-      ) : items.length === 0 ? (
-        <p className="text-sm text-ink-600" data-testid="credit-executions-empty">
-          No executions in this cycle yet. Each piece of work an AI agent does will appear here with its price.
-        </p>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm sm:min-w-[36rem]">
-              <caption className="sr-only">Executions in this cycle, newest first</caption>
-              <thead className="max-sm:sr-only"><tr>
-                <th scope="col" className={head}>Time</th>
-                <th scope="col" className={head}>AI agent</th>
-                <th scope="col" className={head}>What kind of job</th>
-                <th scope="col" className={amountHead}>Price</th>
-              </tr></thead>
-              <tbody>
-                {items.map((item, index) => (
-                  <tr key={`${item.at}:${index}`} data-testid="credit-execution-row" className={phoneRow}>
-                    <td data-label="Time" className={`${cell} ${phoneCell} whitespace-nowrap`}>
-                      <time dateTime={item.at}>{executionTime(item.at)}</time></td>
-                    <td data-label="AI agent" className={`${cell} ${phoneCell}`}>{item.agent_title}</td>
-                    <td data-label="What kind of job" className={`${cell} ${phoneCell}`}>{item.job_label}</td>
-                    <td data-label="Price"
-                      className={`${amount} ${phoneCell} ${item.price === null ? "text-ink-600" : ""}`}>{executionPrice(item.price)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {error && <div className="mt-3"><Notice error>{error}</Notice></div>}
-          {next && (
-            <div className="mt-4">
-              <button type="button" className={secondary} disabled={busy} data-testid="credit-executions-more"
-                onClick={() => void more()}>{busy ? "Loading..." : "Load more executions"}</button>
-            </div>
-          )}
-        </>
       )}
     </section>
   );

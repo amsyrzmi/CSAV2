@@ -212,21 +212,3 @@ export function cycleOption(pick: CyclePickOut, now: Date = new Date()): string 
 export function newestFirst(picks: CyclePickOut[]): CyclePickOut[] {
   return [...picks].sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
 }
-
-/** "12 Nov 2026, 14:05" in `timeZone` (the browser's own when left out). */
-export function executionTime(at: string, timeZone?: string): string {
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return "—";
-  const found = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone, year: "numeric", month: "numeric", day: "numeric",
-      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-    }).formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  return `${Number(found.day)} ${MONTHS[Number(found.month) - 1]} ${found.year}, ${found.hour.padStart(2, "0")}:${found.minute.padStart(2, "0")}`;
-}
-
-/** An execution's price at 4 places, or "Pending" while it is still being priced. */
-export function executionPrice(price: string | null): string {
-  return price === null ? "Pending" : formatRm(price, 4);
-}

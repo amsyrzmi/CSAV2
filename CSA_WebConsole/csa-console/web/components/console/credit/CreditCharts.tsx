@@ -4,7 +4,7 @@ import { Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Text, Too
 import { peakRow, priceTicks, type AgentRow, type ChartRow } from "@/lib/credit-view";
 
 /**
- * The Credit tab's two charts. Each plots one series of prices, so the bars wear the theme's
+ * The Credit tab's two charts. Each plots one series of AI Usage Charges, so the bars wear the theme's
  * primary colour (chosen per theme, so it holds on the light and night surfaces) and need no
  * legend: the heading names what is plotted. Colour never carries meaning on its own: bar length,
  * the value axis and value labels do, and every value is also in a visually hidden table.
@@ -59,7 +59,7 @@ function DataTable({ caption, rows, first }: { caption: string; rows: ChartRow[]
   return (
     <table className="sr-only">
       <caption>{caption}</caption>
-      <thead><tr><th scope="col">{first}</th><th scope="col">AI usage price</th></tr></thead>
+      <thead><tr><th scope="col">{first}</th><th scope="col">AI Usage Charges</th></tr></thead>
       <tbody>
         {rows.map((row) => (
           <tr key={row.key}><th scope="row">{row.label}</th><td>{row.text}</td></tr>
@@ -83,13 +83,13 @@ function Frame({ title, summary, testId, children }: {
   );
 }
 
-/** AI usage price per day across the cycle: one column per day, days with no usage at zero. */
+/** AI Usage Charges per day across the cycle: one column per day, days with no usage at zero. */
 export function DailyChart({ rows }: { rows: ChartRow[] }) {
   const peak = peakRow(rows);
-  const title = "AI usage price per day";
+  const title = "AI Usage Charges per day";
   if (!peak) {
     return (
-      <Frame title={title} summary="No AI usage price on any day of this cycle yet." testId="credit-daily-chart">
+      <Frame title={title} summary="No AI Usage Charges on any day of this cycle yet." testId="credit-daily-chart">
         <DataTable caption={title} rows={rows} first="Day" />
       </Frame>
     );
@@ -102,7 +102,7 @@ export function DailyChart({ rows }: { rows: ChartRow[] }) {
       <div className="h-64">
         <ResponsiveContainer>
           <BarChart data={data} barCategoryGap="20%" title={title}
-            desc="Each column is one day of the cycle. The exact prices are in the table that follows.">
+            desc="Each column is one day of the cycle. The exact charges are in the table that follows.">
             <CartesianGrid vertical={false} />
             <XAxis dataKey="label" tickLine={false} axisLine={false} tick={AXIS_TICK} minTickGap={12} />
             <YAxis type="number" domain={[0, axis.top]} ticks={axis.ticks} tickFormatter={axis.label}
@@ -130,13 +130,13 @@ function AgentTick({ x = 0, y = 0, payload }: TickProps) {
   );
 }
 
-/** AI usage price by AI agent: one bar per agent, each labelled with its exact price. */
+/** AI Usage Charges by AI agent: one bar per agent, each labelled with its exact charges. */
 export function AgentChart({ rows }: { rows: AgentRow[] }) {
   const peak = peakRow(rows);
-  const title = "AI usage price by AI agent";
+  const title = "AI Usage Charges by AI agent";
   if (!peak) {
     return (
-      <Frame title={title} summary="No AI usage price for any AI agent in this cycle yet." testId="credit-agent-chart">
+      <Frame title={title} summary="No AI Usage Charges for any AI agent in this cycle yet." testId="credit-agent-chart">
         <DataTable caption={title} rows={rows} first="AI agent" />
       </Frame>
     );
@@ -149,7 +149,7 @@ export function AgentChart({ rows }: { rows: AgentRow[] }) {
       <div style={{ height }}>
         <ResponsiveContainer>
           <BarChart data={rows} layout="vertical" barCategoryGap="30%" title={title}
-            desc="Each bar is one AI agent. The exact prices are in the table that follows.">
+            desc="Each bar is one AI agent. The exact charges are in the table that follows.">
             <CartesianGrid horizontal={false} />
             <XAxis type="number" domain={[0, axis.top]} ticks={axis.ticks} tickFormatter={axis.label}
               tickLine={false} axisLine={false} tick={AXIS_TICK} padding={{ right: 96 }} />

@@ -12,12 +12,13 @@ function moduleUrl(source) {
 }
 const read = (file) => readFile(new URL(file, import.meta.url), "utf8");
 const apiUrl = moduleUrl(await read("../lib/api.ts"));
+const apiModule = await import(apiUrl);
 const creditApiUrl = moduleUrl((await read("../lib/credit-api.ts")).replace('"./api"', JSON.stringify(apiUrl)));
 const view = await import(moduleUrl(await read("../lib/credit-view.ts")));
 const client = await import(creditApiUrl);
 const {
   formatRm, cycleLabel, banner, proratedNote, stateMessage, dailySeries, agentSeries, priceTicks,
-  cycleOption, newestFirst, executionTime, executionPrice, peakRow, countText,
+  cycleOption, newestFirst, peakRow, countText,
 } = view;
 
 // 12 Nov 2026 in Kuala Lumpur: the current year is 2026.
@@ -183,18 +184,7 @@ test("newestFirst orders cycles by start, newest first, without changing the inp
   assert.equal(picks[0].start, "2026-09-05");
 });
 
-test("executionTime is day, short month, year and 24-hour time in the given zone", () => {
-  assert.equal(executionTime("2026-11-12T06:05:00Z", "Asia/Kuala_Lumpur"), "12 Nov 2026, 14:05");
-  assert.equal(executionTime("2026-11-12T16:30:00+00:00", "Asia/Kuala_Lumpur"), "13 Nov 2026, 00:30");
-  assert.equal(executionTime("not a time", "Asia/Kuala_Lumpur"), "—");
-});
-
-test("executionPrice is the price at 4 places, or Pending while it is being priced", () => {
-  assert.equal(executionPrice("0.0123"), "RM 0.0123");
-  assert.equal(executionPrice(null), "Pending");
-});
-
-// ---- The API client: paths and the cursor rule ----
+// ---- The API client ----
 
 async function capture(run, reply) {
   const original = globalThis.fetch;
@@ -218,16 +208,20 @@ test("fetchUsage and fetchCycles read the billing routes with GET and no tenant 
   assert.deepEqual(await capture(() => client.fetchCycles(), []), [["/console/v1/billing/usage/cycles", "GET"]]);
 });
 
-test("fetchExecutions always sends the cycle and leaves the cursor out of the first page", async () => {
-  const page = { items: [], next_cursor: null };
-  assert.deepEqual(await capture(() => client.fetchExecutions("2026-11-05"), page),
-    [["/console/v1/billing/usage/executions?cycle=2026-11-05", "GET"]]);
-  for (const empty of [null, ""]) {
-    assert.deepEqual(await capture(() => client.fetchExecutions("2026-11-05", empty), page),
-      [["/console/v1/billing/usage/executions?cycle=2026-11-05", "GET"]], JSON.stringify(empty));
+// Owner decision 2026-11-13: the client sees the bill, the charges per AI agent and per day and
+// the execution count, never a list of single executions.
+test("there is no per-execution list: no fetch, no types, no list helpers, no list on the page", async () => {
+  assert.equal(client.fetchExecutions, undefined);
+  assert.equal(view.executionTime, undefined);
+  assert.equal(view.executionPrice, undefined);
+  const api = await read("../lib/credit-api.ts");
+  assert.doesNotMatch(api, /\/executions|ExecutionOut|ExecutionsPageOut|cursor/);
+  const page = await read("../components/console/CreditWorkspace.tsx");
+  assert.doesNotMatch(page, /fetchExecutions|ExecutionList|credit-executions|Load more|cursor/);
+  // The list's error sentences went with it.
+  for (const code of ["invalid_cursor", "cursor_from_another_cycle"]) {
+    assert.doesNotMatch(apiModule.explainedMessage(code) ?? "", /execution/i, code);
   }
-  assert.deepEqual(await capture(() => client.fetchExecutions("2026-11-05", "MjAy-_x"), page),
-    [["/console/v1/billing/usage/executions?cycle=2026-11-05&cursor=MjAy-_x", "GET"]]);
 });
 
 // ---- Contract: the client sees prices only ----
@@ -263,9 +257,42 @@ test("the API types mirror the server's client models field for field", async ()
     "cycle_start", "cycle_end", "billed_from", "billed_to", "executions", "ai_usage_price",
     "platform_fee", "total", "final", "status", "by_agent", "daily",
   ]);
-  assert.deepEqual(fields("ExecutionOut"), ["at", "agent_id", "agent_title", "job_label", "price"]);
-  assert.deepEqual(fields("ExecutionsPageOut"), ["items", "next_cursor"]);
   assert.deepEqual(fields("CyclePickOut"), ["start", "end", "total", "final"]);
+});
+
+// The bill line is "AI Usage Charges" everywhere the client reads it (owner decision 2026-11-13).
+const CHARGES_STRINGS = [
+  ["../components/console/CreditWorkspace.tsx", "Your company's AI Usage Charges and bill for each billing cycle."],
+  ["../components/console/CreditWorkspace.tsx", 'label: "AI Usage Charges"'],
+  ["../components/console/CreditWorkspace.tsx", "It is added to the AI Usage Charges once it is priced."],
+  ["../components/console/CreditWorkspace.tsx", "Your AI Usage Charges and bill will show here once your plan is set up."],
+  ["../components/console/CreditWorkspace.tsx", "AI Usage Charges by AI agent"],
+  ["../components/console/CreditWorkspace.tsx",
+    "No AI Usage Charges in this cycle yet. Each AI agent your company uses will appear here with its charges."],
+  ["../components/console/CreditWorkspace.tsx", '<th scope="col" className={amountHead}>AI Usage Charges</th>'],
+  ["../components/console/credit/CreditCharts.tsx", '"AI Usage Charges per day"'],
+  ["../components/console/credit/CreditCharts.tsx", '"AI Usage Charges by AI agent"'],
+  ["../components/console/credit/CreditCharts.tsx", '<th scope="col">AI Usage Charges</th>'],
+  ["../components/console/credit/CreditCharts.tsx", "No AI Usage Charges on any day of this cycle yet."],
+  ["../components/console/credit/CreditCharts.tsx", "No AI Usage Charges for any AI agent in this cycle yet."],
+  ["../components/console/credit/CreditCharts.tsx", "The exact charges are in the table that follows."],
+  ["../lib/api.ts", "Only your company's Admin can see its AI Usage Charges and bill."],
+];
+// Nothing the client reads may name a model, a provider or what the charge is made of.
+const UNDISCLOSED = /\bmodels?\b|provider|groq|gemini|langfuse|token|markup|margin|aws|usd/i;
+
+test("the bill line is AI Usage Charges in every client string, never the old AI usage price", async () => {
+  for (const [file, text] of CHARGES_STRINGS) {
+    assert.ok((await read(file)).includes(text), `${file} must say: ${text}`);
+    assert.doesNotMatch(text, UNDISCLOSED, text);
+  }
+  for (const file of CLIENT_FILES) {
+    const source = await read(file);
+    assert.doesNotMatch(source, /AI usage price/i, file);
+    source.split("\n").forEach((line, index) => {
+      assert.doesNotMatch(line, UNDISCLOSED, `${file}:${index + 1}: ${line.trim()}`);
+    });
+  }
 });
 
 test("the Credit page is served: proxy.ts adopts /portal/credit", async () => {

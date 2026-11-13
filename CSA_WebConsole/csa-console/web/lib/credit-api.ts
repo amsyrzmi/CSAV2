@@ -1,10 +1,11 @@
 import { api } from "./api";
 
 /**
- * Mirrors of the Credit tab's client models in csa/console/billing.py, field for field. Money is
- * a fixed-point decimal string: 2 places for the bill figures, 4 for the per-agent, per-day and
- * per-execution prices. Format it with lib/credit-view.ts, never add it up here. Dates are
- * "YYYY-MM-DD" (Kuala Lumpur calendar days); `cycle_end` and `billed_to` are exclusive.
+ * Mirrors of the Credit tab's client response shapes in csa/console/billing.py, field for field.
+ * Money is a fixed-point decimal string: 2 places for the bill figures, 4 for the per-agent and
+ * per-day charges. Format it with lib/credit-view.ts, never add it up here. Dates are
+ * "YYYY-MM-DD" (Kuala Lumpur calendar days); `cycle_end` and `billed_to` are exclusive. There is
+ * no per-execution list (owner decision 2026-11-13): only the execution count.
  */
 export type UsageStatus = "ok" | "pending_prices" | "not_set_up";
 
@@ -35,20 +36,6 @@ export interface UsageOut {
   daily: DailyUsageOut[];
 }
 
-export interface ExecutionOut {
-  at: string;
-  agent_id: string;
-  agent_title: string;
-  job_label: string;
-  /** Null while the execution is still being priced. */
-  price: string | null;
-}
-
-export interface ExecutionsPageOut {
-  items: ExecutionOut[];
-  next_cursor: string | null;
-}
-
 export interface CyclePickOut {
   start: string;
   end: string;
@@ -68,18 +55,6 @@ function path(rest: string, params: Record<string, string | null | undefined>): 
 /** One cycle's usage and bill; the open cycle when `cycle` (its start date) is left out. */
 export function fetchUsage(cycle?: string | null, signal?: AbortSignal): Promise<UsageOut> {
   return api(path("", { cycle }), { signal });
-}
-
-/**
- * A page of the cycle's executions, newest first. A cursor belongs to the cycle that issued it,
- * so the cycle is always sent with it; the first page sends no cursor at all.
- */
-export function fetchExecutions(
-  cycle: string,
-  cursor?: string | null,
-  signal?: AbortSignal,
-): Promise<ExecutionsPageOut> {
-  return api(path("/executions", { cycle, cursor }), { signal });
 }
 
 /** The cycles the picker offers, each with its bill total. */

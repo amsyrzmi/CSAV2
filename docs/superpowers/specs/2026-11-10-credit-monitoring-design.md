@@ -9,6 +9,10 @@ add the platform fee, and show each client a Credit tab with their executions, e
 and the bill they will receive. Slice 2 (own design later): a credit agent that staff talk to on
 Telegram and WhatsApp.
 
+**Owner decision 2026-11-13:** the client does not see the per-execution list; the bill line is
+called "AI Usage Charges"; the client keeps the bill, per-agent and per-day charges and the
+execution count, and never sees a model or provider.
+
 ## Intent and why
 
 Fourstacks bills each client a platform fee plus their AI usage with a markup (owner's pricing
@@ -98,6 +102,10 @@ figure at all. The Credit tab shows, for a billing cycle:
 - **Two charts:** (1) AI usage price per day across the cycle (bars); (2) AI usage price by AI agent
   (horizontal bars). Both plot prices only, at the cycle's current tier.
 
+**Owner decision 2026-11-13:** the client does not see the per-execution list; the bill line is
+called "AI Usage Charges"; the client keeps the bill, per-agent and per-day charges and the
+execution count, and never sees a model or provider.
+
 Execution prices are shown to RM0.0001 and allocated (largest remainder, in units of RM0.0001) so
 that the listed prices, the per-agent prices, the daily prices and the AI charge all add up
 exactly. **Never shown to a client:** raw provider price or cost, tokens, the markup percentage,
@@ -126,6 +134,9 @@ or fewer model calls than the workbook assumed).
   ledger row in our database, and a generation in Langfuse tagged with the client.
 - A client Admin sees, for the open and past cycles: executions, the price of each execution, the
   price per AI agent, two charts, platform fee and total bill, as prices only (no tokens).
+  **Owner decision 2026-11-13:** no price of each execution (no per-execution list); the bill line
+  is called "AI Usage Charges"; the client keeps the bill, per-agent and per-day charges and the
+  execution count, and never sees a model or provider.
 - A platform admin sees every client's raw cost, tokens, billed amount, AI margin and real cost per
   execution, and can set each client's plan.
 - The Langfuse sink works after 2026-11-16 (OTLP), shipped with the Credit tab (owner 2026-11-12).
@@ -326,6 +337,8 @@ price.
   the charts. Never raw price or cost, tokens, markup or margin.
 - `GET /usage/executions?cycle=&cursor=`: the paginated list (time, agent id and title, job label,
   price at 4 decimals).
+  **Owner decision 2026-11-13:** this route was removed (it answers 404); the client has no
+  per-execution list.
 - `GET /usage/cycles`: the cycles with a plan or usage and each cycle's total, for the picker.
 - Platform admin only: `GET /admin/overview?cycle=` (per client: raw cost, billed, AI margin, real
   cost per execution against the workbook's RM0.0167, unpriced count, warnings such as "pilot
@@ -346,6 +359,9 @@ price.
   on 5 Oct" banner for the open cycle; a first-period note when prorated ("Billed from 15 Aug");
   plain states for "Billing not set up yet" and "Some usage is still being priced". No token
   figure anywhere on this page.
+  **Owner decision 2026-11-13:** no paginated executions list on the page; the bill line is called
+  "AI Usage Charges"; the client keeps the bill, per-agent and per-day charges and the execution
+  count, and never sees a model or provider.
 - Platform admin: `app/(admin)/billing/page.tsx` (raw cost, tokens, margin) and a plan editor on the
   clients page.
 - Copy is plain English; follow `web/AGENTS.md` and the existing design system, no new look.
