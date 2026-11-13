@@ -7,8 +7,8 @@ description: Reconcile CSA source, plans, progress and validation evidence into 
 
 Create a continuation record that another session can trust without replaying the whole
 history. Read [AGENTS.md](../../../AGENTS.md), inspect `git status --short` and relevant
-diffs, then read [PROGRESS.md](../../../docs/PROGRESS.md), the active handoff, applicable
-[phase plans](../../../docs/langgraph-rebuild/) and the source/tests changed in the slice.
+diffs, then read [PROGRESS.md](../../../docs/PROGRESS.md), the active handoff, the applicable plan under `docs/superpowers/` and the
+source/tests changed in the slice.
 
 ## Reconcile before writing
 

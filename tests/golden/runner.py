@@ -22,6 +22,7 @@ import psycopg
 from csa.agents.ecommerce.models import EcommerceInput
 from csa.agents.kb.embedder import HASH_MODEL, _deterministic_embedding, vector_to_sql
 from csa.agents.kb.models import KbInput
+from csa.agents.payments.models import PaymentInput
 from csa.agents.staged.models import SubscriptionInput
 from csa.contracts.callbacks import CallbackCodec
 from csa.contracts.envelope import (
@@ -108,6 +109,15 @@ class PlanSeed(Strict):
     price: Decimal
     billing_interval: Literal["month", "year"] = "month"
     features: list[str] = Field(default_factory=list)
+    signup_mode: Literal["staff", "auto"] = "staff"
+    is_signup_open: bool = True
+
+
+class ContactSeed(Strict):
+    """The chat's own contact: a phone, and whether its channel verified it."""
+
+    phone: str | None = None
+    phone_verified: bool = False
 
 
 class SubscriptionSeed(Strict):
@@ -116,7 +126,7 @@ class SubscriptionSeed(Strict):
     # Fixed only when a case needs to type it (another contact's id in a customer message).
     id: uuid.UUID | None = None
     plan: str
-    status: Literal["active", "paused", "cancelled"] = "active"
+    status: Literal["pending", "active", "paused", "cancelled"] = "active"
     price: Decimal
     renews_in_days: int | None = None
     cancel_at_period_end: bool = False
@@ -124,6 +134,36 @@ class SubscriptionSeed(Strict):
     pending_in_days: int | None = None
     resume_in_days: int | None = None
     other_contact: bool = False
+
+
+class InvoiceSeed(Strict):
+    """One invoice of the chat's contact (or of another contact), with a synthetic reference.
+
+    A `paid` invoice gets its ledger row (a staff payment received `paid_days_ago` days ago), as
+    the customer may hear "paid" only with one. `subscription` is the index of one of the seed's
+    subscriptions: the invoice is then that subscription's opening invoice (no period yet).
+    """
+
+    reference: str
+    amount: Decimal
+    status: Literal["issued", "overdue", "proof_submitted", "paid", "void", "cash_pending"] = (
+        "issued"
+    )
+    plan_name: str | None = None
+    due_in_days: int | None = 7
+    paid_days_ago: int = 1
+    subscription: int | None = Field(default=None, ge=0)
+    other_contact: bool = False
+
+
+class PaymentMethodSeed(Strict):
+    """One way to pay the company shows customers (synthetic bank and account numbers only)."""
+
+    kind: Literal["transfer", "qr", "cash"] = "transfer"
+    label: str = "Bank transfer"
+    details: dict[str, str] = Field(default_factory=dict)
+    instructions: str = ""
+    sort_order: int = 0
 
 
 class ListingSeed(Strict):
@@ -148,8 +188,15 @@ class Seed(Strict):
     plans: list[PlanSeed] = Field(default_factory=list)
     subscriptions: list[SubscriptionSeed] = Field(default_factory=list)
     listings: list[ListingSeed] = Field(default_factory=list)
+    contact: ContactSeed = Field(default_factory=ContactSeed)
     # Capability rows switched on for the company (as ``kb_agent`` is when it has knowledge).
-    services: list[Literal["subscription_agent", "ecommerce_agent"]] = Field(default_factory=list)
+    services: list[Literal["subscription_agent", "ecommerce_agent", "payment_agent"]] = Field(
+        default_factory=list
+    )
+    # The company's payments are switched on (payment_settings), with these ways to pay.
+    payments_enabled: bool = False
+    payment_methods: list[PaymentMethodSeed] = Field(default_factory=list)
+    invoices: list[InvoiceSeed] = Field(default_factory=list)
 
 
 class Expect(Strict):
@@ -190,6 +237,12 @@ class Expect(Strict):
     escalation_reason: str | None = None
     # The conversation's unresolved-turn count (the escalation ladder) after this turn.
     clarify_count: int | None = None
+    # The company's sign-up requests (signup_requests, any status) after this turn.
+    signup_requests: int | None = None
+    # Whether this turn's reply offers Telegram's "share my number" button.
+    request_phone: bool | None = None
+    # The statuses of the company's invoices after this turn, in the order of their references.
+    invoice_statuses: list[str] | None = None
 
 
 class Tap(Strict):
@@ -311,8 +364,13 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                 "'python','low','python:kb_agent',%s,15000,1,'dispatched',true,true)",
                 (cid, Jsonb(KbInput.model_json_schema())),
             )
+        schemas: dict[str, type[BaseModel]] = {
+            "subscription_agent": SubscriptionInput,
+            "ecommerce_agent": EcommerceInput,
+            "payment_agent": PaymentInput,
+        }
         for service in case.seed.services:
-            schema = SubscriptionInput if service == "subscription_agent" else EcommerceInput
+            schema = schemas[service]
             conn.execute(
                 "INSERT INTO capability_registry(client_id,name,display_name,description,"
                 "pattern,risk_class,workflow_id,input_schema,timeout_ms,max_retries,"
@@ -333,8 +391,16 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             (tenant.endpoint_id, cid, f"golden-{uuid.uuid4().hex}", credential_id),
         )
         conn.execute(
-            "INSERT INTO contacts (id, client_id, telegram_id, full_name) VALUES (%s, %s, %s, %s)",
-            (tenant.contact_id, cid, int(tenant.external_id), "Golden Contact"),
+            "INSERT INTO contacts (id, client_id, telegram_id, full_name, phone, "
+            "phone_verified_at) VALUES (%s, %s, %s, %s, %s, CASE WHEN %s THEN now() END)",
+            (
+                tenant.contact_id,
+                cid,
+                int(tenant.external_id),
+                "Golden Contact",
+                case.seed.contact.phone,
+                case.seed.contact.phone_verified,
+            ),
         )
         conn.execute(
             "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread) "
@@ -347,6 +413,7 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             any(order.other_contact for order in case.seed.orders)
             or any(ticket.other_contact for ticket in case.seed.tickets)
             or any(sub.other_contact for sub in case.seed.subscriptions)
+            or any(invoice.other_contact for invoice in case.seed.invoices)
         ):
             conn.execute(
                 "INSERT INTO contacts (id,client_id,full_name) VALUES (%s,%s,'Other Contact')",
@@ -373,8 +440,8 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
             )
         for plan in case.seed.plans:
             conn.execute(
-                "INSERT INTO plans (client_id,code,name,price,billing_interval,features) "
-                "VALUES (%s,%s,%s,%s,%s,%s)",
+                "INSERT INTO plans (client_id,code,name,price,billing_interval,features,"
+                "signup_mode,is_signup_open) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     cid,
                     plan.code,
@@ -382,13 +449,17 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                     plan.price,
                     plan.billing_interval,
                     Jsonb(plan.features),
+                    plan.signup_mode,
+                    plan.is_signup_open,
                 ),
             )
+        subscription_ids: list[uuid.UUID] = []
         for index, sub in enumerate(case.seed.subscriptions):
-            conn.execute(
+            added = conn.execute(
                 "INSERT INTO subscriptions (id,client_id,contact_id,plan,status,price,started_at,"
                 "renews_at,resume_at,pending_plan,pending_effective_at,cancel_at_period_end) "
-                "VALUES (coalesce(%s::uuid,uuid_generate_v4()),%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES (coalesce(%s::uuid,uuid_generate_v4()),%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "RETURNING id",
                 (
                     sub.id,
                     cid,
@@ -403,7 +474,68 @@ def seed_tenant(owner_dsn: str, case: GoldenCase) -> Tenant:
                     None if sub.pending_in_days is None else case_noon(sub.pending_in_days),
                     sub.cancel_at_period_end,
                 ),
+            ).fetchone()
+            assert added is not None
+            subscription_ids.append(added[0])
+        if case.seed.payments_enabled:
+            conn.execute(
+                "INSERT INTO payment_settings (client_id, enabled) VALUES (%s, true)", (cid,)
             )
+        for method in case.seed.payment_methods:
+            conn.execute(
+                "INSERT INTO payment_methods (client_id,kind,label,details,instructions,"
+                "sort_order) VALUES (%s,%s,%s,%s,%s,%s)",
+                (
+                    cid,
+                    method.kind,
+                    method.label,
+                    Jsonb(method.details),
+                    method.instructions,
+                    method.sort_order,
+                ),
+            )
+        for invoice in case.seed.invoices:
+            invoice_id = f"inv_{uuid.uuid4().hex}"
+            paid_at = (
+                now - timedelta(days=invoice.paid_days_ago) if invoice.status == "paid" else None
+            )
+            conn.execute(
+                "INSERT INTO invoices (id,client_id,contact_id,subscription_id,reference,status,"
+                "amount,currency,issued_at,due_at,paid_at,line_items) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,'MYR',%s,%s,%s,%s)",
+                (
+                    invoice_id,
+                    cid,
+                    other_contact_id if invoice.other_contact else tenant.contact_id,
+                    None
+                    if invoice.subscription is None
+                    else subscription_ids[invoice.subscription],
+                    invoice.reference,
+                    invoice.status,
+                    invoice.amount,
+                    now - timedelta(days=10),
+                    None if invoice.due_in_days is None else case_noon(invoice.due_in_days),
+                    paid_at,
+                    Jsonb(
+                        [
+                            {
+                                "description": invoice.plan_name,
+                                "quantity": 1,
+                                "unit_price": str(invoice.amount),
+                            }
+                        ]
+                        if invoice.plan_name
+                        else []
+                    ),
+                ),
+            )
+            if paid_at is not None:
+                conn.execute(
+                    "INSERT INTO payments (client_id,invoice_id,amount,currency,received_at,"
+                    "method_kind,source,matched_by,idempotency_key) "
+                    "VALUES (%s,%s,%s,'MYR',%s,'transfer','staff','staff',%s)",
+                    (cid, invoice_id, invoice.amount, paid_at, f"golden-{invoice_id}"),
+                )
         if case.seed.listings:
             store_id = uuid.uuid4()
             conn.execute(
@@ -596,6 +728,8 @@ class Observed(BaseModel):
     escalation_reasons: list[str]
     prepared_requests: int
     clarify_count: int
+    signup_requests: int
+    invoice_statuses: list[str]
 
 
 def observe(
@@ -689,6 +823,13 @@ def observe(
             "SELECT clarify_count FROM conversations WHERE client_id=%s AND id=%s",
             (tenant.client_id, tenant.conversation_id),
         ).fetchone()
+        signups = conn.execute(
+            "SELECT count(*) FROM signup_requests WHERE client_id=%s", (tenant.client_id,)
+        ).fetchone()
+        invoices = conn.execute(
+            "SELECT status FROM invoices WHERE client_id=%s ORDER BY reference",
+            (tenant.client_id,),
+        ).fetchall()
     route = next((s.get("route") for node, _, s in events if node == "route"), None)
     gate = next((s.get("decision") for node, _, s in events if node == "gate"), None)
     gate_reason = next((s.get("reason") for node, _, s in events if node == "gate"), None)
@@ -718,6 +859,8 @@ def observe(
         escalation_reasons=[row[0] for row in reasons],
         prepared_requests=prepared[0] if prepared else 0,
         clarify_count=clarify[0] if clarify else 0,
+        signup_requests=signups[0] if signups else 0,
+        invoice_statuses=[row[0] for row in invoices],
     )
 
 
@@ -746,6 +889,8 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
         "handoff_sent",
         "prepared_requests",
         "clarify_count",
+        "signup_requests",
+        "invoice_statuses",
     ):
         expected = getattr(expect, field)
         if expected is not None:
@@ -778,6 +923,9 @@ def check(expect: Expect, seen: Observed, llm: CassetteGroq, escalations_before:
     if expect.confirmation is not None:
         has = any(ui.get("confirmation") for ui in seen.uis)
         assert has is expect.confirmation, detail
+    if expect.request_phone is not None:
+        offered = any(ui.get("request_phone") for ui in seen.uis)
+        assert offered is expect.request_phone, detail
     if expect.escalations is not None:
         assert seen.escalations - escalations_before == expect.escalations, detail
     for text in expect.compose_sees:

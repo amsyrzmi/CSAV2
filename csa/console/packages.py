@@ -77,15 +77,16 @@ PACKAGES: tuple[Package, ...] = (
         key="subscriptions",
         title="Subscriptions",
         summary=(
-            "Keeps your plans and customers' subscriptions, "
-            "and lets staff change them or answer requests."
+            "Keeps your plans and customers' subscriptions, lets customers sign up from the "
+            "chat, and lets staff change them or answer requests. With payments on, it sends "
+            "invoices and payment reminders, and tells customers how to pay."
         ),
         kind="addon",
         requires=("customer_support",),
-        capabilities=("subscription_agent",),
+        capabilities=("subscription_agent", "payment_agent"),
         hr_modules=(),
         email=False,
-        tabs=("subscriptions",),
+        tabs=("subscriptions", "payments"),
         sellable=True,
     ),
     Package(

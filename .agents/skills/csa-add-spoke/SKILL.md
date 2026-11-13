@@ -5,9 +5,8 @@ description: Add or extend a CSA spoke agent with typed inputs, fact-only output
 
 # Add a CSA spoke agent
 
-Read [AGENTS.md](../../../AGENTS.md), [LG02](../../../docs/langgraph-rebuild/LG02_contracts_state_registry.md),
-[LG05](../../../docs/langgraph-rebuild/LG05_spokes_and_tools.md), and the phase plan for
-the business capability. Inspect [the shared interface](../../../csa/agents/base.py),
+Read [AGENTS.md](../../../AGENTS.md) (its migration and contract rules apply) and
+the plan for the business capability. Inspect [the shared interface](../../../csa/agents/base.py),
 existing agents and their tests before choosing a layout.
 
 ## Implement the capability
@@ -32,7 +31,7 @@ existing agents and their tests before choosing a layout.
 ## Demonstrate the behavior
 
 Add focused unit/integration tests and meaningful golden cases from
-[LG08](../../../docs/langgraph-rebuild/LG08_testing_seed_evals.md). Include success,
+[the golden suite](../../../tests/golden/). Include success,
 missing input, domain conflict, unauthorized callback, replay/double tap and dependency
 failure as applicable. Mutations should prove final database state, event/audit rows and
 outbox effects, including concurrent identical requests when idempotency matters.

@@ -19,6 +19,7 @@ from csa.subscriptions.contracts import (
     ActionIn,
     CustomerRef,
     DecideIn,
+    InvoiceBrief,
     PlanIn,
     PlanOut,
     PlanPatch,
@@ -31,12 +32,16 @@ from csa.subscriptions.contracts import (
     SubscriptionEventOut,
     SubscriptionOut,
     SubscriptionPage,
+    SubscriptionSettingsIn,
 )
 from csa.workspace.registry import ProposalRegistry
 
 Conn = AsyncConnection[Any]
 
 PHONE_TERM = re.compile(r"[\d\s+().-]+")
+
+# What a company that has never saved its settings gets (the table's own default).
+DEFAULT_PENDING_EXPIRY_DAYS = 14
 
 
 def subscription_out(row: dict[str, Any]) -> SubscriptionOut:
@@ -70,12 +75,43 @@ def like_pattern(q: str) -> str:
 
 
 async def get_settings(conn: Conn, client_id: UUID) -> SettingsOut:
-    row = await db.q.fetch_one(
+    """The tenant's zone plus its saved settings; no row yet reads as the default, version 0."""
+    zone = await db.q.fetch_one(
         "subscriptions/tenant_timezone.sql", {"client_id": client_id}, conn=conn
     )
-    if row is None:
+    if zone is None:
         raise RuntimeError(f"tenant {client_id} has no clients row")
-    return SettingsOut.model_validate(row)
+    saved = await db.q.fetch_one(
+        "subscriptions/settings_get.sql", {"client_id": client_id}, conn=conn
+    )
+    return SettingsOut(
+        timezone=zone["timezone"],
+        pending_expiry_days=saved["pending_expiry_days"] if saved else DEFAULT_PENDING_EXPIRY_DAYS,
+        version=saved["version"] if saved else 0,
+    )
+
+
+async def put_settings(
+    conn: Conn, client_id: UUID, actor: ConsoleActor, data: SubscriptionSettingsIn
+) -> SettingsOut:
+    """Replace the settings. The first save makes the row; a save from an older read is 409."""
+    await db.q.execute(
+        "subscriptions/advisory_lock.sql",
+        {"key": f"subscriptions:settings:{client_id}"},
+        conn=conn,
+    )
+    saved = await db.q.fetch_one(
+        "subscriptions/settings_get.sql", {"client_id": client_id}, conn=conn
+    )
+    if (saved["version"] if saved else 0) != data.version:
+        raise HTTPException(409, "version_conflict")
+    await db.q.fetch_one(
+        "subscriptions/settings_upsert.sql",
+        {"client_id": client_id, "pending_expiry_days": data.pending_expiry_days},
+        conn=conn,
+    )
+    await audit(conn, actor, client_id, "subscriptions.settings.updated", str(client_id))
+    return await get_settings(conn, client_id)
 
 
 async def list_plans(conn: Conn, client_id: UUID, *, include_archived: bool) -> list[PlanOut]:
@@ -194,14 +230,40 @@ async def get_subscription(
     conn: Conn, client_id: UUID, subscription_id: UUID
 ) -> SubscriptionDetail:
     subscription = await get_subscription_out(conn, client_id, subscription_id)
-    rows = await db.q.fetch_all(
-        "subscriptions/subscription_events.sql",
-        {"client_id": client_id, "subscription_id": subscription_id},
+    key = {"client_id": client_id, "subscription_id": subscription_id}
+    rows = await db.q.fetch_all("subscriptions/subscription_events.sql", key, conn=conn)
+    invoice = await db.q.fetch_one("subscriptions/open_invoice.sql", key, conn=conn)
+    return SubscriptionDetail(
+        subscription=subscription,
+        events=[SubscriptionEventOut.model_validate(row) for row in rows],
+        open_invoice=InvoiceBrief.model_validate(invoice) if invoice is not None else None,
+    )
+
+
+async def lock_contact_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> None:
+    """Serialise everything that can give one contact a live subscription on one plan.
+
+    Filing a sign-up, approving one and adding a subscription by hand all call this first, before
+    any request row is inserted or locked, so they always take the locks in the same order (this
+    advisory lock, then the request row) and cannot deadlock. A decline takes only the row lock,
+    so it cannot be part of a cycle. The lock is held to the end of the transaction and is
+    re-entrant, so an auto-approval inside `file_signup` takes it again at no cost.
+    """
+    await db.q.execute(
+        "subscriptions/advisory_lock.sql",
+        {"key": f"subscriptions:signup:{client_id}:{contact_id}:{plan_code}"},
         conn=conn,
     )
-    return SubscriptionDetail(
-        subscription=subscription, events=[SubscriptionEventOut.model_validate(row) for row in rows]
+
+
+async def holds_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> bool:
+    """Whether the contact holds a live (active, paused or pending) subscription on the plan."""
+    held = await db.q.fetch_one(
+        "subscriptions/signup_live_subscription.sql",
+        {"client_id": client_id, "contact_id": contact_id, "plan_code": plan_code},
+        conn=conn,
     )
+    return held is not None and bool(held["live"])
 
 
 async def record_event(
@@ -252,6 +314,11 @@ async def create_subscription(
     )
     if contact is None:
         raise HTTPException(404, "contact_not_found")
+    # The same lock a sign-up approval takes: a hand-made subscription racing an approval of the
+    # same customer and plan leaves one live subscription and one 409.
+    await lock_contact_plan(conn, client_id, data.contact_id, data.plan_code)
+    if await holds_plan(conn, client_id, data.contact_id, data.plan_code):
+        raise HTTPException(409, "subscription_exists")
     created = await db.q.fetch_one(
         "subscriptions/subscription_insert.sql",
         {

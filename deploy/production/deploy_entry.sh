@@ -2,7 +2,9 @@
 # Production deploy entry point, installed root-owned at /usr/local/sbin/csa-prod-deploy.
 #
 # AWS Systems Manager runs it as the deploy user with a clean environment:
-#   deploy_entry.sh <action> <sha> [<migrations>] [<host_digest>]
+#   deploy_entry.sh <action> <sha> [<migrations>] [<host_digest>] [<python_digest> <frontend_digest>]
+# The two image digests (sha256:<64 hex>) are given together or not at all; on plan and apply they
+# are passed on as --python-digest and --frontend-digest, so the rollout needs no registry login.
 # The four variables below are defaults only; nothing here lets them weaken a safety check.
 set -euo pipefail
 # Systems Manager starts this in a root-only directory, where git and python would fail to read
@@ -27,13 +29,18 @@ valid() {
     [[ "$2" =~ $1 && "$2" != *$'\n'* ]]
 }
 
-if [[ $# -lt 2 || $# -gt 4 ]]; then
-    die "usage: csa-prod-deploy <plan|apply> <sha> [<migrations>] [<host_digest>]"
+usage="usage: csa-prod-deploy <plan|apply> <sha> [<migrations>] [<host_digest>] [<python_digest> <frontend_digest>]"
+if [[ $# -eq 5 ]]; then
+    die "give both image digests or neither; $usage"
+fi
+if [[ $# -lt 2 || $# -gt 6 ]]; then
+    die "$usage"
 fi
 action="$1"
 sha="$2"
 migrations="${3-}"
 digest="${4-}"
+image_options=()
 
 valid '^(plan|apply)$' "$action" || die "action must be plan or apply"
 valid '^[0-9a-f]{40}$' "$sha" || die "sha must be 40 lowercase hex characters"
@@ -42,6 +49,13 @@ if [[ "$action" == "apply" ]]; then
     valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
 else
     [[ -z "$digest" ]] || die "plan takes no host digest"
+fi
+if [[ $# -eq 6 ]]; then
+    for image_digest in "$5" "$6"; do
+        valid '^sha256:[0-9a-f]{64}$' "$image_digest" ||
+            die "give both image digests or neither, each sha256: and 64 lowercase hex characters"
+    done
+    image_options=(--python-digest "$5" --frontend-digest "$6")
 fi
 
 exec 9>"$LOCK"
@@ -70,13 +84,13 @@ run() {
     git -C "$CHECKOUT" checkout --detach "$sha" || return
     cd "$CHECKOUT" || return
     if [[ "$action" == "plan" ]]; then
-        "$PYTHON" -m scripts.staging_rollout --target production plan
+        "$PYTHON" -m scripts.staging_rollout --target production plan "${image_options[@]}"
     elif [[ -n "$migrations" ]]; then
         "$PYTHON" -m scripts.staging_rollout --target production apply \
-            --sha "$sha" --migrations "$migrations" --host-digest "$digest"
+            --sha "$sha" --migrations "$migrations" --host-digest "$digest" "${image_options[@]}"
     else
         "$PYTHON" -m scripts.staging_rollout --target production apply \
-            --sha "$sha" --host-digest "$digest"
+            --sha "$sha" --host-digest "$digest" "${image_options[@]}"
     fi
 }
 

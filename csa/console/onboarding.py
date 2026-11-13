@@ -18,6 +18,7 @@ from csa.agents.invoices.agent import InvoiceAgent
 from csa.agents.kb.agent import KbAgent
 from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
+from csa.agents.payments.agent import PaymentAgent
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.console.access import authenticate, human_admin, tenant
@@ -36,7 +37,11 @@ _AGENTS = (
     InvoiceAgent,
     BookingAgent,
     SubscriptionAgent,
+    PaymentAgent,
 )
+# A display name that is not the agent's name title-cased: 0591 seeds "Payments" for every company
+# that existed then, and a later company reads the same.
+_DISPLAY_NAMES = {PaymentAgent.name: "Payments"}
 
 
 class ClientIn(BaseModel):
@@ -90,7 +95,9 @@ async def create_client(
                 (
                     client_id,
                     agent.name,
-                    agent.name.removesuffix("_agent").replace("_", " ").title(),
+                    _DISPLAY_NAMES.get(
+                        agent.name, agent.name.removesuffix("_agent").replace("_", " ").title()
+                    ),
                     "CSAV2 capability; enable deliberately after configuration",
                     f"python:{agent.name}",
                     Jsonb(agent.Input.model_json_schema()),

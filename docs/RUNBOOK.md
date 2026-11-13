@@ -4,9 +4,8 @@ Never point any of this at production databases, credentials, bots, services, or
 The development environment may share a physical host with production; verify the private dev
 configuration and use only the isolated dev stack.
 
-For the latest guarded console runtime and recovery constraints, start with the
-[domain/release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md) and retained
-[runtime history](archive/handoffs/2026-10-16-runtime-stabilization.md). The generic
+For the latest guarded console runtime and recovery constraints, start with
+[PROGRESS.md](./PROGRESS.md) and the [release contract](../deploy/RELEASE.md). The generic
 first-time commands below are not instructions to reset or reprovision the recovered dev.
 Repository-only CI/image packaging is implemented; see the
 [release contract and inert staging proposal](../deploy/RELEASE.md). Public hosting,
@@ -19,7 +18,7 @@ for this release. Preserve the existing `fourstacks.my`/`www` landing service.
 Exact dependency versions are maintained in [pyproject.toml](../pyproject.toml) and
 [uv.lock](../uv.lock), not a duplicated version table. The combined PostGIS/pgvector
 image is built from [deploy/db.Dockerfile](../deploy/db.Dockerfile).
-Historical LG01 publication recorded
+The original publication recorded
 `ghcr.io/amsyrzmi/csa-pg16-postgis-vector` at
 `sha256:a61cb35736e5792140f139827bc86c698d17675f617cb8c46218e15e5085b223`.
 That digest was superseded in the current CI and staging-proposal source on
@@ -94,8 +93,8 @@ ENV=ci uv run pytest -q tests/test_golden.py tests/test_decide_providers.py test
 Policy coverage: `make coverage` enforces at least 90% with branch instrumentation.
 Synthetic load: `make load-test` exercises real ingress SQL and durable queue/outbox in disposable
 testcontainers (no external provider or Telegram calls). Do not run timing tests under coverage
-or alongside builds. See the [LG08 validation report](archive/evals/lg08_validation_report.md) for
-steady-state results, cold-pool failures, queue throughput and measurement limitations.
+or alongside builds. Measured steady-state results, cold-pool failures and queue throughput from
+2026-10-12 are summarized in [ARCHITECTURE.md](./ARCHITECTURE.md#evaluation-and-regression-evidence).
 
 The gateway now opens all eight existing pool connections before accepting traffic. Startup
 fails explicitly if those connections cannot open; pool cleanup also runs on failure. Allow
@@ -184,7 +183,7 @@ Optional live evaluation (sends **synthetic** case text to the configured extern
 ENV=dev uv run python -m csa.evals.decisions --provider both --concurrency 1 --out docs/evals/decision_report.md
 ```
 
-See [decision_report.md](archive/evals/decision_report.md) for the measured comparison. Review Jev
+See [ARCHITECTURE.md](./ARCHITECTURE.md#evaluation-and-regression-evidence) for the measured comparison. Review Jev
 retention and operational terms before real-client rollout. This evaluation does not calibrate
 all decision thresholds or prove production throughput.
 
@@ -475,6 +474,497 @@ docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conver
 For a handoff the replay also prints the staff note and the gap topic the model would write. The
 checklist for the whole release is "Business answers and the escalation ladder" in
 [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md).
+
+## Customer onboarding: sign-ups and linked contacts
+
+PR 2b (migrations 0580 and 0581). Customers sign up for a plan in the chat, and the same person on
+WhatsApp and Telegram becomes one customer. The staff side is the Subscriptions page (its Sign-ups tab,
+the Customers tab and a subscription's "Linked contacts" panel); the bot side only exists for a company
+whose `subscription_agent` capability is on (a company that only sells through TikTok Shop gets no
+sign-up wording at all). The owner's checks are in [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md),
+section "Customer onboarding".
+
+**Read the Sign-ups list.** The tab badge is the number of open sign-ups ("50+" when a further page
+exists; no badge while the list is empty or could not be read). Nothing pushes a notification to staff
+for a new sign-up in this release, so someone has to open the tab. The tab has five parts, top to
+bottom: the expiry setting, "Open sign-ups", "Needs review", "Recent links" and "Decided sign-ups". An
+open row shows:
+
+- the name and phone number the customer typed, and the plan they asked for;
+- a mark beside the phone: "Verified" means the channel proved the number (the WhatsApp number the
+  customer writes from, or Telegram's share-my-number button); "Not verified" means the customer typed
+  it. A typed number is kept on the sign-up request only. It is never copied to the customer's contact
+  record and it never links two contacts, so check it before you rely on it (call or message the number
+  through the usual channel);
+- a "Customer record" line when the contact's own name differs from the typed name;
+- the email the customer gave for payment reminders, if any (asked only on WhatsApp and only while the
+  company's payments are on; it is kept apart from the contact's own email, and a customer can skip it);
+- when the sign-up was made and on which channel.
+
+**Approve** makes one subscription with the status "Waiting to start" (pending) on that plan and marks
+the sign-up approved; the customer is not messaged about the approval itself and nothing is charged. With the
+company's payments on (section "Payments"), approving also makes the first invoice (not for a free plan), and
+the next payment reminder run, within 15 minutes, sends the customer that invoice with how to pay (or lists it
+under "Needs a nudge" when no channel reaches them). **Decline** takes an optional reason that only staff see;
+it is never sent to the customer. If a colleague decided the same sign-up
+first, the answer is `signup_not_pending` and the list reloads. `signup_has_plan` means the customer
+already has a live subscription on that plan (added by hand, or approved from another sign-up): decline
+the extra sign-up. `plan_not_open` means the plan was archived or closed to sign-ups after the customer
+asked. "Decided sign-ups" shows each result as "Approved by staff", "Approved automatically",
+"Declined" or "Expired". A plan whose Sign-ups setting is "Sign up automatically" skips the open list:
+the sign-up is approved straight away and the subscription waits to start. "Closed to new sign-ups" on a
+plan stops the bot offering it; people already on it keep it. Archiving a plan is not blocked by open
+sign-ups; closing it to sign-ups is how a company stops them.
+
+**Tell the customer.** Approve, decline and expiry do not message the customer (except the invoice reminder when
+payments are on, above), so after approving or declining a sign-up, message the customer from the Inbox yourself
+(an automatic notice is a follow-up). If the customer's chat was moved by a link, the Inbox answers 409 "This
+conversation has no active channel to reply on." until the customer writes again on that channel (known
+follow-up); reply on the channel the customer last used, or wait for their next message.
+
+**Start or cancel a pending subscription.** With the company's payments on, paying the first invoice starts
+a pending subscription (Mark paid, section "Payments"), so staff do not normally start it; "Start
+subscription" is the override, for a customer who pays another way or whose payment you already know about.
+Without payments on, staff start them. Open Customers, choose the "Waiting to start"
+filter and open the subscription. "Start subscription" starts it now, sets its first renewal one billing
+period from today and charges nothing. If the subscription has an open opening invoice, Start gives it the first period and leaves it
+open and payable (paying it later only records the payment, so void it if the customer owes nothing).
+"Cancel now" ends it at once; a cancelled subscription cannot be
+started again, so add a new subscription if the customer comes back. A pending subscription cannot be
+paused, resumed, changed or extended. A plan with a waiting subscription cannot change its billing
+interval; archiving it is not blocked.
+
+**The expiry setting.** Sign-ups tab, "Pending sign-ups expire after N days (0 = never)", one whole number
+from 0 to 90 for the company, default 14 when nothing was saved. The subscriptions-due job (every five
+minutes) cancels every pending subscription that was approved more than N days ago (rule five of that job, after
+the four renewal rules; it skips a company with no active Subscriptions package) and marks the sign-up
+it came from "Expired". Each cancelled subscription gets a `pending_expired` event on its timeline
+(actor `system:subscriptions_due`); nobody is messaged. Changing the setting applies to every pending
+subscription from the next run, including old ones. If two people save at the same moment the second gets
+a version conflict; the console reads the setting again and the person saves once more. To see the effect:
+
+```sql
+SELECT subscription_id, created_at FROM public.subscription_events
+WHERE client_id = '<client id>' AND action = 'pending_expired' ORDER BY created_at DESC LIMIT 20;
+```
+
+**Link and unlink.** One customer who writes on WhatsApp and on Telegram is two contacts until they are
+linked. The system links two contacts by itself in one case: a phone number a channel proved belongs to
+exactly one other live contact of the company (this happens when a customer writes on WhatsApp, and when
+a customer uses Telegram's share-my-number button), whether that other contact's number was verified or
+already on the contact. A number a customer only typed in the chat never links anything, and no console
+page edits a contact's phone: when two contacts are the same person, staff link them by hand from a
+subscription's "Linked contacts" panel ("Link another contact", then "Link contacts") or from a review
+("Link them").
+
+- "Recent links" on the Sign-ups tab lists the company's 20 newest links, newest first, whoever the
+  contacts are (also a link between two contacts with no subscription, which no drawer shows): both
+  contacts' names and channels, how they were linked ("Matched by a verified phone number" or "Linked by
+  staff"), the date, and Unlink while the link can still be undone. Read-only members see the list without
+  Unlink.
+
+- The survivor is the contact that already holds a subscription, otherwise the older one. The other
+  contact (the loser) stays in the database, hidden, and everything it owned moves to the survivor:
+  conversations, orders, tickets, subscriptions, bookings, invoices, sign-up requests and the rest.
+  Nothing is copied and nothing is deleted. Messages from either channel then land on the one customer.
+- Unlink is on the same panel (and in "Recent links") and works for 30 days after the link, newest link
+  first: while a newer
+  link on either contact is active the older one cannot be undone (`later_link_active`), and after 30
+  days it cannot be undone at all (`unlink_window_closed`; the only fix is to link the other way). A link
+  already undone is `link_not_active`, and `survivor_merged` means the survivor was linked into another
+  contact since: undo that link first. Unlink moves back only the rows the link moved; rows created after
+  the link (new messages, a new order) stay with the survivor.
+- "Skipped" is what unlink could not put back. The contact's phone number, phone verification and
+  Telegram account go back only while they still hold what the link left; a value staff changed since, or
+  one another contact now holds, is left alone instead of being overwritten or failing. The console says
+  "Unlinked. Not everything could be put back ..." and names each one; the API returns the same list as
+  `skipped` entries of the form `survivor.telegram_id` or `loser.phone` and the audit row
+  `contacts.link.removed` records it. Check those values on the two contacts afterwards.
+- An unlinked pair is never linked automatically again. If the same phone turns up for the pair, a review
+  is opened (reason `previously_unlinked`) and nothing else changes. Staff can still link that pair
+  themselves.
+- Audit rows: `contacts.link.created`, `contacts.link.removed`, `contacts.review.linked` and
+  `contacts.review.dismissed`.
+
+**What a review means.** The Sign-ups tab, "Needs review", lists pairs of contacts the system would not
+link by itself, with one plain sentence. At most one review is open per pair. "Not the same person" closes
+it and changes nothing, and the same pair is not reviewed again for the same reason (a different reason
+opens a new review); "Link them" links the pair as staff and is refused with the same reasons (409
+`link_refused:<reason>`) where a link is impossible. A review whose contact has since been merged
+elsewhere answers `contact_merged`: close it.
+
+| Reason | What happened | What staff should do |
+|---|---|---|
+| `several_matches` | More than one other live contact has the same phone number. | Look at the contacts (the sign-up list and Customers show names and numbers) and link the two that are the same person, from the panel or "Link them". Close the review if none are. The review names one pair, so check the other contacts with that number too. |
+| `telegram_conflict` | Both contacts already have their own Telegram account, so one person would own two. Neither the system nor staff can link them. | Close the review ("Not the same person"). If they are the same person, keep using the contact that holds the subscription and tell the customer to use one Telegram account; the other chat stays a separate customer. |
+| `same_channel_identity` | Both contacts already chat on the same channel with different accounts (two WhatsApp numbers, say). Staff cannot link them either. | Same as above: close the review and treat them as two customers, or ask the customer to use one account. |
+| `table_conflict` | Both contacts have a record that may exist only once per customer: a waiting (open) sign-up for the same plan, or a staged customer request with the same key. The link is refused and nothing moved. Two subscriptions on the same plan do not clash. | Settle the clash first, usually by declining one of the two open sign-ups for that plan, then link the pair again from the panel. |
+| `previously_unlinked` | Staff unlinked this pair before and the same phone has appeared again. | Decide again: "Link them" if they really are one person (it was a mistake to unlink), otherwise "Not the same person". The system will not link them by itself. |
+
+Open reviews and links for one company:
+
+```sql
+SELECT reason, status, created_at FROM public.contact_link_reviews
+WHERE client_id = '<client id>' AND status = 'open' ORDER BY created_at DESC;
+SELECT survivor_id, loser_id, reason, created_at, unlinked_at FROM public.contact_links
+WHERE client_id = '<client id>' ORDER BY created_at DESC LIMIT 20;
+```
+
+**Links for a company without the Subscriptions package.** Linking runs for every company (WhatsApp and
+Telegram shares link contacts whatever the packages), but the link pages and routes are part of
+Subscriptions. A company without an active Subscriptions package has no console path to its links, and the
+routes answer 403 `package_inactive` for it, a platform admin included. Read its links with the SQL above.
+To undo one, the operator either switches the Subscriptions package on for the company, unlinks from
+"Recent links" and switches it off again (while it is on, the bot also offers that company's plans and
+sign-ups), or asks a developer to run `csa.contacts.linking.unlink_contacts` for the link on the server.
+With the package on, the routes are (add `?client_id=<client id>` as a platform admin):
+
+```
+GET  /console/v1/subscriptions/links?limit=20              every link, newest first
+GET  /console/v1/subscriptions/links?contact_id=<contact>  the links of one contact
+POST /console/v1/subscriptions/links/<link id>/unlink      undo one (writers, within 30 days)
+```
+
+Whether automatic linking should run only for companies with the Subscriptions package is an open owner
+decision.
+
+**Roll back migrations 0580 and 0581.** Needed when going back to an image older than this release: its
+readiness check wants the highest applied version to equal its own. Roll back in reverse order: 0581
+first, then 0580.
+
+**Roll back migration 0581.** First, with the services still running, unlink every live link: from
+"Recent links" on the Sign-ups tab (its 20 newest), or with the routes above (`GET
+.../links?limit=200`, then `POST .../links/<link id>/unlink` for each one with `can_unlink`, newest
+first). A link cannot be undone once its
+table is dropped, rows a link moved stay with the survivor, and a loser whose link is older than 30 days
+(so it could not be undone) comes back as an ordinary, empty contact when `merged_into` is dropped. Then
+stop the services and, as the database owner and in this order: `REVOKE UPDATE
+(contact_id) ON public.agent_preparation_requests FROM csa_app;`, recreate
+`trg_preparation_contact_tenant` as `BEFORE INSERT` only (drop it, then `CREATE TRIGGER
+trg_preparation_contact_tenant BEFORE INSERT ON public.agent_preparation_requests FOR EACH ROW
+EXECUTE FUNCTION public.contact_identity_tenant_check();`), `DROP TABLE
+public.contact_link_reviews;`, `DROP TABLE public.contact_links;`, `DROP FUNCTION
+public.contacts_belong_to_client();`, `DROP INDEX public.contacts_verified_phone_uq;`, `DROP INDEX
+public.contacts_client_phone_digits;`, `ALTER TABLE public.contacts DROP COLUMN merged_into, DROP
+COLUMN phone_verified_at, DROP COLUMN phone_digits;` (this rewrites `contacts` again; the link audit
+and every verified-phone stamp are lost), `DROP FUNCTION public.my_phone_digits(text);`, and last
+`DELETE FROM public.schema_migrations WHERE version = '0581';`, or the runner thinks it is still
+applied. Then start the older images.
+
+**Roll back migration 0580.** After 0581 is rolled back. Stop the services, then, as the
+database owner and in this order: `UPDATE public.subscriptions SET status = 'cancelled', cancelled_at =
+now() WHERE status = 'pending';` (not a `DELETE`: every pending subscription has a `signup_approved`
+event and `subscription_events_subscription_id_fkey` does not cascade, so a delete fails),
+`ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_status_chk;` then `ALTER TABLE public.subscriptions ADD CONSTRAINT subscriptions_status_chk
+CHECK (status IN ('active', 'paused', 'cancelled'));`, `ALTER TABLE public.subscriptions DROP COLUMN
+activated_at;`, `ALTER TABLE public.plans DROP COLUMN is_signup_open, DROP COLUMN signup_mode;`, `DROP
+TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (every sign-up request is
+lost), and last `DELETE FROM public.schema_migrations WHERE version = '0580';`, or the runner thinks it
+is still applied. Then start the older images.
+
+## Payments
+
+Payments 1 (migrations 0590 and 0591). A company with the Subscriptions package makes invoices for its
+subscriptions, tells customers how to pay, reminds them, and records payments that staff confirm. The
+platform never holds money: customers pay the company's own bank account or DuitNow ID, and staff mark the
+invoice paid when it shows in that account. The staff side is the Payments page (rail entry "Payments", after
+Subscriptions, for admins and staff; read-only members do not see it); the bot side is the `payment_agent`
+capability. The owner's checks are in [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETEST.md), section "Payments".
+The design, with the build's deviations, is `docs/superpowers/specs/2026-11-11-payments-design.md`, section 11.
+
+**Switch payments on.** Payments are off for every company until an admin turns them on, so nothing is invoiced
+or sent on rollout. Payments, Settings (the "Settings" link beside "Invoices" at the top of the page, which is
+the address `/payments?view=settings`, or `/portal/payments?view=settings` in the company's own console) is
+admin-only to change; staff see it read-only. It is a view of the same page, not a separate page. First add at
+least one method under "Payment methods": "Add a payment method", then "Bank transfer" (bank name, account name,
+account number of 6 to 20 digits) or "DuitNow" (the DuitNow ID and account name), with optional instructions of
+up to 500 characters that customers read after the bank line. Each method shows "Customers see:" with the exact
+line a customer gets. A method can be turned off and edited but never deleted. Customers are shown only the
+first four active bank and DuitNow methods, in the order of the list (a company with more than four sees the
+rest only in the console), so a reminder or a reply stays one chat message. Cash cannot be added here (cash is
+paid through a booking, which is Payments 2); it does not count toward switching on. Then turn on "Send invoices
+and reminders" and save. Saving with no active bank or DuitNow method is refused ("Add an active bank account or
+DuitNow ID before switching payments on."), and so is turning off the last active method while payments are on
+("Keep one active method while payments are on."). A company with no saved settings reads as off, 7 days,
+reminders `-7, 0, 3, 7`, no pause. If two admins save at once the second sees "Someone else changed this. Check
+and save again." Settings and methods are audited (`payments.settings.updated`, `payments.method.created`,
+`payments.method.updated`).
+
+The settings are: "Days before each renewal to make the invoice" (1 to 30, default 7), "Reminder days" (days
+from the due date, at most 6, from -30 to 60; `-7` is 7 days before, `0` the due day, default `-7, 0, 3, 7`),
+and "Pause a subscription when an invoice is overdue for N days" (blank is off, otherwise 1 to 90). Quiet hours,
+the one-a-day limit and the reminder language are fixed in the code. The company's time zone is its
+`clients.timezone`.
+
+**How invoices are made.** Only while the company's payments are on and its Subscriptions package is active, and
+never for a plan priced at zero. The `payments_due` job runs every 15 minutes and does four things in order:
+
+1. A pending subscription ("Waiting to start") that has no opening invoice gets one, due `lead_days` after it is
+   issued. Normally this is not the job: approving a sign-up (by staff or automatically) with payments on makes
+   the opening invoice in the same step. The job covers subscriptions approved while payments were off, and ones
+   staff made pending by hand. A void opening invoice is never made again. Keep the Subscriptions setting
+   "Pending sign-ups expire after N days" at 0 (never) or at or above `lead_days`: a pending subscription that
+   expires first voids its opening invoice before its due date, and a customer who pays after that needs a new
+   subscription.
+2. An active subscription that is not cancelling at the end of its period gets the invoice for its next period
+   once that period starts within `lead_days` (and is still in the future), due on the day the period starts. The
+   amount is the plan's price in effect at that date (a plan change scheduled before then is used); it is frozen
+   when the invoice is made. One invoice per period: the first invoice of a period is the only one, so a void
+   invoice is not made again either. A period that has already started is never invoiced, which is why switching
+   payments on does not bill the periods running now.
+3. An `issued` invoice past its due time becomes `overdue`.
+4. Only when "Pause a subscription when an invoice is overdue for N days" is set: an active subscription with an
+   overdue invoice whose due date is more than N days ago is paused, with no resume date and the reason
+   "unpaid" (timeline: "suspended_unpaid"). An invoice pauses a subscription at most once: if staff resume it
+   while the invoice is still overdue, it is not paused again for that invoice (a later overdue invoice still
+   pauses it). Paying lifts the pause (see Mark paid).
+
+If the worker was down for longer than `lead_days` across a renewal, that period is never invoiced (the period
+had already started when the job came back). There is no staff check for this yet; compare each active
+subscription's renewal date with its newest invoice if you suspect it (follow-up). A paused-unpaid subscription
+is not renewed while it is paused, so its renewal date can fall behind; when it is paid, the subscription gets a
+fresh period from the payment day, and the periods missed during the pause are not invoiced. A subscription that
+is paused or cancelling at the end of its period gets no invoice for the next period.
+
+Switching payments back on after a while off: the next run marks every `issued` invoice whose due date passed
+`overdue`, and with the pause setting on it can pause those customers' subscriptions in the same run. Look at
+the open invoices first (the SQL below) and void the ones nobody owes any more.
+
+**Read the list and the drawer.** Payments shows "Needs attention" above the invoice list. The list has the
+chips Open (the default: waiting for payment, overdue, customer says paid, cash at meeting), Overdue, Customer
+says paid, Paid, Void and All, newest first, with "Load more". The search box takes an invoice reference (typed
+in any case, with a space or dash, for example `k7qx 4mf`; the check character must be right), part of the
+customer's name, or a phone number of 3 or more digits. The statuses read "Waiting for payment", "Overdue",
+"Customer says paid", "Paid", "Void" and "Cash at meeting" (Payments 2 uses the last). Open a row for the
+drawer: Details (customer, plan, amount, issued, due, the period it covers, paid on, and for a void invoice why
+it was voided, which only staff see), "What the customer said" (the claim text, shown as plain text), Reminders
+(each step: channel and sent, failed, waiting to send, not sent, or "No channel: message them yourself"; never the
+address), and Payment (amount, received on, method, who recorded it, and the note, which only staff see). The
+customer never sees the void reason or a payment note.
+
+**Mark paid.** In the drawer of an open invoice: Mark paid, then the method (Bank transfer, DuitNow or Cash),
+"Paid on" (a date, today or earlier), an optional note (300 characters), Continue, then the confirm question
+"Mark invoice <reference> paid? This starts the subscription if it is waiting." and Mark paid. It writes one
+`payments` row (the amount and currency are the invoice's) and sets the invoice `paid` in the same transaction,
+and writes the audit row `payments.invoice.paid`.
+
+- A pending subscription starts at once (timeline "activated" by payment); the opening invoice gets the first
+  period, from the start to the renewal date. A subscription paused for non-payment resumes ("resumed_paid") when
+  none of its other invoices is overdue; if another is, it stays paused until that one is paid or voided.
+- Marking paid is not blocked while payments are switched off: money that arrived must be recordable.
+- The open invoice of a cancelled subscription is marked paid and the payment recorded, and nothing else
+  happens: the subscription stays cancelled (timeline "payment_recorded", recorded only), and a customer who comes
+  back needs a new subscription added by hand.
+- A repeat is harmless. The form sends one request key per opened form, so a double click, or a retry after a
+  network error, records one payment. If a colleague marked it paid first, the second person sees "Someone
+  already marked this invoice paid." and the drawer shows the invoice as paid. A payment cannot be changed or
+  removed in the console, and an invoice has one payment (see the operator fix below).
+- A "paid on" date more than five minutes ahead is refused ("The payment date can't be in the future.").
+
+**Void.** In the drawer: Void, a required reason of up to 300 characters, "Void invoice". The reason is for
+staff only and is never sent to the customer. A paid invoice cannot be voided ("A paid invoice can't be
+voided."); a void invoice cannot be paid. Void does not cancel or pause the subscription, and a void invoice for a
+period is not made again. Cancelling a subscription, or the expiry of a pending one, voids the open invoices of
+the periods that will not run, the opening invoice included; the invoice of the period already running stays
+owed. Staff "Start subscription" (see Customer onboarding) keeps the opening invoice open and payable.
+
+- Voiding the overdue invoice of a subscription paused for non-payment does not resume it: resume it from
+  Subscriptions by hand.
+- "Extend renewal" voids the open invoices of periods that start from now on, "Customer says paid" ones
+  included (`void_reason` `subscription_changed`); the opening invoice and the running period's invoice stay.
+  The job then makes the invoice for the new renewal date. If the customer had claimed payment on a voided
+  invoice, settle it with them by hand. A paid invoice is never voided: if the next period's invoice was
+  already paid when you extend, the job still makes an invoice for the new date, so the customer is billed
+  twice. Void the newly issued one (the void invoice then stops the job making another for that date).
+- A pause from Subscriptions voids nothing. If the paused subscription will not run the period an open invoice
+  is for, void that invoice (or collect it) yourself.
+- A payment that arrives for a void invoice cannot be recorded ("This invoice can't be paid: it is void.", 409
+  `invoice_not_payable`). If the customer should have the plan, add the subscription again from Subscriptions
+  and start it by hand, and keep that payment in the company's own records: there is no console way to make an
+  invoice by hand in this release.
+
+**Needs attention.** Three groups, each oldest first, an invoice once per group, and none for paid, void or
+draft invoices:
+
+- "Customer says paid": the customer told the bot they paid (status "Customer says paid"). The bot says it is
+  noted and not yet confirmed. Check the company's bank account, then Mark paid, or message the customer from
+  the Inbox if nothing arrived. The note is the customer's own words and is not checked. While an invoice is
+  "Customer says paid" it gets no reminders, never turns overdue and never pauses the subscription, and there is
+  no console button to reject the claim yet (follow-up): if nothing arrived, use the operator step "Reject a
+  customer's claim" below.
+- "Needs a nudge": the newest reminder of an issued or overdue invoice found no channel (no Telegram chat, no
+  WhatsApp chat open within 23 hours, no email), or the company's replies are off. Nobody was told. Message the
+  customer from the Inbox, or phone them, then Mark paid when they pay. An invoice is listed once however many
+  steps failed to find a channel; it leaves the list when it is paid or voided, or when a later reminder reaches
+  the customer. Messaging the customer yourself does not remove it.
+- "Reminder failed": an open invoice with a reminder that failed to send in the last 14 days (for example the
+  mail provider refused it). Check the customer's address on their contact; a failed reminder is not tried
+  again.
+
+**Reminders.** The `payment_reminder_queue` job runs every 15 minutes for each company. A step is owed once its
+date has come (the due date plus the step's days). An opening invoice (a sign-up's first invoice) owes its
+earliest step as soon as it is made, so the customer learns how to pay at once whatever "Days before each
+renewal" and the reminder days are; its later steps count from the due date. A company whose reminder days
+are all after the due date gets that first step at issue, not after the due date. Only the newest owed step is sent;
+older owed steps are recorded as skipped and never sent late (a worker that was down, or payments just switched
+on). Each step is made once per invoice. Nothing is sent between 21:00 and 09:00 in the company's time zone (it
+goes in the morning), a customer gets at most one reminder a day (a second invoice's reminder goes the next
+day), and only invoices that are waiting for payment or overdue are reminded: not "Customer says paid", void or
+paid ones, nor an invoice without a reference, nor the next period's invoice of a subscription that is
+cancelling at the end of its period (its queued email is dropped too). A reminder is the same text as the bot's
+payment answer (in English or Malay, from the contact's language): what is owed and when, how to pay, the
+reference to use, and what to do if already paid. The channel is the first that works:
+
+1. Telegram, when the customer has a Telegram chat and the company's automatic messages are allowed.
+2. WhatsApp, only in a chat where the customer wrote in the last 23 hours (WhatsApp does not allow a company to
+   start a conversation outside its 24-hour window without an approved template, which is a later phase).
+3. Email, when the contact has an address (the address staff entered, else the one the customer gave at sign-up).
+   The row is queued and the `payment_reminder_mail` job (every 5 minutes) sends it. The mail is written at send
+   time with that day's date, its closing line asks the customer to "let us know when" instead of "reply here",
+   and it waits for 09:00 in quiet hours. A queued row older than 48 hours is dropped and never sent late.
+4. Otherwise a "no channel" row, shown under "Needs a nudge".
+
+A reminder row's status `sent` means the message was written for the delivery worker, not that it reached the
+customer: a Telegram or WhatsApp delivery that fails afterwards shows in the delivery dead letters and the staff
+notices, not on the invoice (feeding it back is a follow-up).
+
+No reminder of any kind goes out while the company's customer replies are Off or its Customer support is
+suspended (the same rule as booking reminders), mail included; each such invoice then shows under "Needs a
+nudge". If a company switches payments off, its queued reminder email rows stay queued (nothing is sent or
+dropped while it is off) and are dropped at the next claim once they are more than 48 hours old; a company that
+switches payments back on later does not send old mail.
+
+**The pause switch.** Leave "Pause a subscription when an invoice is overdue for N days" blank unless the
+company wants subscriptions of customers who do not pay paused automatically. When set, see rule 4 above. To
+undo it for one customer, resume the subscription from Subscriptions (the pause stays off for that invoice), or
+Mark paid.
+
+**Look at a company's invoices by hand.** For example the newest 20, and the reminder rows of one invoice:
+
+```sql
+SELECT id, reference, status, amount, currency, due_at, paid_at, subscription_id, period_start
+FROM public.invoices WHERE client_id = '<client id>' ORDER BY issued_at DESC LIMIT 20;
+SELECT step, channel, status, created_at, sent_at FROM public.invoice_reminders
+WHERE client_id = '<client id>' AND invoice_id = '<invoice id>' ORDER BY step;
+```
+
+A job that fails on a row logs `payments_issue_failed`, `payment_reminder_queue_failed`,
+`payment_reminder_mail_failed` or `payment_reminder_settle_failed` with the error class and ids only (never an
+address, an amount or a name) and goes on; the next run tries the row again.
+
+**The operator fix for a wrong Mark paid.** The console cannot undo a payment: the `payments` table is
+append-only for the application role (`csa_app` can read and add rows, not change or delete them), so only the
+database owner can fix a mistake (an invoice marked paid by mistake, or against the wrong invoice). Do it in one
+transaction, and look at the rows before you change anything:
+
+1. Check the company's bank account first. Stop if the customer really did pay: nothing needs fixing. Otherwise
+   find the company id, the invoice id (the drawer address `?invoice=<id>`, or the SQL above) and, if it has
+   one, the subscription id.
+2. As the database owner, open a transaction and read the rows. Check that you have the right invoice and exactly
+   one payment, and read the subscription's latest events: an `activated` or `resumed_paid` event whose payload
+   names this payment shows that the payment started or resumed the subscription.
+
+   ```sql
+   BEGIN;
+   SELECT id, reference, status, amount, paid_at, method_kind, claimed_at, due_at, subscription_id
+   FROM public.invoices WHERE client_id = '<client id>' AND id = '<invoice id>';
+   SELECT id, invoice_id, amount, received_at, method_kind, source, created_by, note, created_at
+   FROM public.payments WHERE client_id = '<client id>' AND invoice_id = '<invoice id>';
+   SELECT id, action, from_status, to_status, actor, payload, created_at
+   FROM public.subscription_events WHERE client_id = '<client id>'
+     AND subscription_id = '<subscription id>' ORDER BY created_at DESC LIMIT 10;
+   ```
+3. Delete the payment row and put the invoice back. Use `overdue` if its due date has passed and `issued`
+   otherwise (the job marks a late `issued` invoice overdue within 15 minutes anyway); use `proof_submitted`
+   instead if the customer's own claim should stand. Each statement must report one row:
+
+   ```sql
+   DELETE FROM public.payments
+   WHERE client_id = '<client id>' AND invoice_id = '<invoice id>' AND id = '<payment id>';
+   UPDATE public.invoices SET status = '<issued or overdue>', paid_at = NULL, method_kind = NULL
+   WHERE client_id = '<client id>' AND id = '<invoice id>' AND status = 'paid';
+   INSERT INTO public.console_audit (client_id, action, target_id, details)
+   VALUES ('<client id>', 'payments.invoice.payment_removed', '<invoice id>',
+           '{"by": "operator", "why": "<one line>"}');
+   ```
+4. Read the three SELECTs again and check the invoice is open and has no payment. Then `COMMIT;`, or `ROLLBACK;`
+   if anything looks wrong. Tell the staff member who marked it paid to reload the page and not to retry from a
+   tab that was open before the fix: the deleted payment took its request key with it, so a retry from that old
+   form would record a fresh payment.
+5. Act on the subscription by hand, from the console: if the payment started it ("activated") or resumed it
+   ("resumed_paid"), decide with the customer whether it should stay. Cancel it from Subscriptions to undo the
+   start (cancel voids an opening invoice that has no period, but leaves a running period's invoice owed, so void
+   that one too if the customer owes nothing), or leave it running and ask for the payment again. The invoice
+   keeps the period the payment gave it. A subscription paused for non-payment stays resumed unless you pause it.
+   Say what you did in a note to the team (there is no subscription note field; use the audit row above and your
+   own record).
+
+A payment of the wrong amount cannot happen through Mark paid (the amount is copied from the invoice); a short
+or over payment is a Payments 2 statement exception. An invoice made with the wrong amount is voided with a reason,
+and a void invoice for a period is not made again; there is no console way to make an invoice by hand in this
+release, so ask a developer.
+
+**Reject a customer's claim.** Until a "Reject claim" button is built (the first follow-up, an owner decision),
+a false "I paid" is put back by the database owner. Check the bank account first. Then, in one transaction,
+look, put the invoice back to "Waiting for payment" (the job marks it overdue within 15 minutes if its due date
+has passed; the claim note and time stay on the invoice for the record), and write an audit row. Each statement
+must report one row:
+
+```sql
+BEGIN;
+SELECT id, reference, status, due_at, claim_note, claimed_at, subscription_id
+FROM public.invoices WHERE client_id = '<client id>' AND id = '<invoice id>';
+UPDATE public.invoices SET status = 'issued'
+WHERE client_id = '<client id>' AND id = '<invoice id>' AND status = 'proof_submitted';
+INSERT INTO public.console_audit (client_id, action, target_id, details)
+VALUES ('<client id>', 'payments.invoice.claim_rejected', '<invoice id>',
+        '{"by": "operator", "why": "<one line>"}');
+```
+
+Check each statement reported one row, then `COMMIT;` or `ROLLBACK;`.
+
+Reminders, overdue and the pause rule then apply again from the next run. Tell the customer from the Inbox; if
+they say they paid again, the bot notes a new claim.
+
+**Before deploying 0590.** The migration stops (with the services already stopped for it) when an invoice has a
+status outside the seven, a negative amount or a currency that is not three upper-case letters. Run these on the
+target database first and fix any row they return (an unknown status becomes `void` or one of the seven; `RM` or
+`myr` becomes `MYR`); plans and subscriptions have no such check, but a plan's currency is copied to its
+subscriptions and invoices, so fix those too:
+
+```sql
+SELECT status, count(*) FROM public.invoices GROUP BY 1;
+SELECT id, currency FROM public.invoices WHERE currency !~ '^[A-Z]{3}$';
+SELECT client_id, code, currency FROM public.plans WHERE currency !~ '^[A-Z]{3}$';
+SELECT id, currency FROM public.subscriptions WHERE currency !~ '^[A-Z]{3}$';
+SELECT count(*) FROM public.invoices WHERE amount < 0;
+```
+
+**Roll back migrations 0590 and 0591.** Needed when going back to an image older than the payments
+release: its readiness check wants the highest applied version to equal its own. Roll back in reverse
+order: 0591 first, then 0590. Both lose data (every payment, reminder, method and setting, and the
+sign-up emails), so keep a dump first.
+
+**Roll back migration 0591.** Stop the services, then, as the database owner and in this order:
+`DELETE FROM public.capability_registry WHERE name = 'payment_agent';` (a company's own switch on it is
+lost), `ALTER TABLE public.signup_requests DROP CONSTRAINT signup_requests_email_chk, DROP COLUMN
+email;` (emails given at sign-up are lost), and last `DELETE FROM public.schema_migrations WHERE
+version = '0591';`, or the runner thinks it is still applied.
+
+**Roll back migration 0590.** After 0591 is rolled back, with the services still stopped and as the
+database owner, in this order: `DROP TABLE public.invoice_reminders, public.payments,
+public.payment_methods, public.payment_settings;` (every payment on the ledger, reminder, method and
+setting is lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_pause_reason_chk, DROP
+COLUMN pause_reason;`, `DROP INDEX public.invoices_reference_uq, public.invoices_subscription_period_uq,
+public.invoices_open, public.invoices_contact;`, `ALTER TABLE public.invoices DROP CONSTRAINT
+invoices_subscription_fk, DROP CONSTRAINT invoices_status_chk, DROP CONSTRAINT invoices_amount_chk, DROP
+CONSTRAINT invoices_currency_chk, DROP CONSTRAINT invoices_client_id_key, DROP COLUMN reference, DROP
+COLUMN method_kind, DROP COLUMN subscription_id, DROP COLUMN period_start, DROP COLUMN period_end, DROP
+COLUMN reminded_at, DROP COLUMN claim_note, DROP COLUMN claimed_at, DROP COLUMN void_reason, DROP COLUMN
+voided_at, DROP COLUMN voided_by;` (the checks on those columns go with them; the references, claims and
+void reasons are lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_client_id_key;`,
+and last `DELETE FROM public.schema_migrations WHERE version = '0590';`, or the runner thinks it is
+still applied. Then start the older images.
 
 ## Stuck knowledge uploads
 

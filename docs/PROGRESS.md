@@ -1,5 +1,35 @@
 # Progress
 
+Payments 1: invoices, payment methods, reminders and the bot's payment answers (2026-11-13, branch `feat/payments-1`, migrations 0590 and 0591, spec `docs/superpowers/specs/2026-11-11-payments-design.md` (section 11 is the settled design), plan `docs/superpowers/plans/2026-11-13-payments-1.md`; PR P1 of the business surfaces programme, one pull request of 14 tasks; `EXPECTED_SCHEMA_VERSION` is now `"0591"`): a company with the Subscriptions package can make invoices for its subscriptions, tell customers how to pay, remind them and record the payments staff confirm; the platform never holds money (no gateway, no card, no provider). **Payments are off for each company until an Admin switches them on** (`payment_settings.enabled`, which needs one active bank or DuitNow method), so rolling this out invoices and messages nobody. Migration `0590` gives `invoices` a status check (draft, issued, proof_submitted, paid, overdue, void, cash_pending), an amount check, a customer-visible `reference` (`XXXX-XXC`, unique per company), `method_kind`, `subscription_id` with `period_start` and `period_end` (one invoice per subscription period, void ones included), a claim trail (`claim_note`, `claimed_at`), a void trail, `reminded_at`, and the keys `invoices_client_id_key` and `subscriptions_client_id_key` on `(client_id, id)`; it adds `subscriptions.pause_reason` and the tables `payment_settings`, `payment_methods`, `payments` (the ledger: append-only for `csa_app`, one payment per invoice and per idempotency key, amounts `numeric(12,2)`) and `invoice_reminders` (one row per invoice and step), all tenant isolated with grants to `csa_app` only. Migration `0591` adds the `payment_agent` capability row for every company (switched on wherever `subscription_agent` is) and `signup_requests.email`. No backfill and no role change; both stop all four services on staging. Rollback for both is in `docs/RUNBOOK.md`, section "Payments".
+
+**What changed, the ledger and the console API.** `csa/payments` holds the reference (a weighted mod-31 check character), settings and methods, the invoice ledger (`issue_opening_invoice`, `issue_period_invoice`, `mark_paid`, `void_invoice`, `void_for_subscription`, `record_claim`, `customer_invoices`) and the routes under `/console/v1/payments` (settings, methods, invoices, mark-paid, void, attention). An invoice becomes `paid` only in the transaction that inserts its `payments` row, with the amount copied from the invoice by SQL; every writer takes the subscription lock, then the invoice lock, so two people pressing Mark paid record one payment (the second gets 409 `invoice_already_paid`) and the same request key again returns the first answer. Mark paid starts a pending subscription (and gives its opening invoice the first period) and lifts an unpaid pause. `GET /console/v1/invoices` now returns `amount` as a decimal string, and the invoice agent's download-link action and its route (which only ever answered 501) are gone. `docs/CONSOLE_API.md` has a "Payments" section; `docs/console_openapi.json` is regenerated, not merged by hand.
+
+**What changed, the jobs.** `payments_due` (every 15 minutes) makes the opening invoice of a pending subscription that has none, makes the invoice for the next period once it starts within `lead_days` (default 7), marks late invoices `overdue`, and, only when the company set "Pause a subscription when an invoice is overdue for N days", pauses an active subscription as unpaid (once per invoice). `payment_reminder_queue` (every 15 minutes) sends each reminder step once, the newest owed step only, on Telegram, in a WhatsApp chat the customer wrote in within 23 hours, or as a queued email row, else a `no_channel` row for "Needs a nudge"; nothing between 21:00 and 09:00 in the company's time zone and at most one reminder per contact per local day. `payment_reminder_mail` (every 5 minutes) sends the queued rows. Subscriptions: approving a sign-up with payments on issues the opening invoice in the same transaction, cancelling or expiring voids the open invoices of the periods that will not run, "Extend renewal" voids the open invoices of periods from now on (`void_reason` `subscription_changed`; the job issues the invoice for the new date), and staff "Start subscription" stays as an override that gives the opening invoice the first period and leaves it open. An opening invoice gets its first reminder (the earliest step) when it is issued, whatever `lead_days` is; a subscription cancelling at period end gets no reminder for the next period's invoice; customer texts show at most the first four bank and DuitNow methods.
+
+**What changed, the bot.** A new `PaymentAgent` (`instructions`, `status`, `claim_paid`) answers only from the customer's own invoices (the chat's contact) with texts written by `csa/payments/copy.py` in English or Malay, with every amount, account number and reference copied from the database, and sends them as they stand with no model call; it never says "received" or "paid" without a `payments` row, and a customer's "I paid" is noted for staff ("Customer says paid") and does not mark anything paid. A turn that asks about payments replies with the payment facts after what the same turn committed (a booking, a ticket, a sign-up request, an order draft). The payment agent and its planner and classifier rules are offered only to a company with `payment_agent` on and its payments switched on (read every turn), and a disputed or double charge is handed to a person. The optional sign-up email is asked on WhatsApp only, after the phone, only while payments are on. A pending subscription's plan answer now says whether its first invoice is waiting. **Console.** A Payments page (rail entry after Subscriptions, admins and staff): "Needs attention" (Customer says paid, Needs a nudge, Reminder failed), the invoice list with status chips and search, the drawer (details, what the customer said, reminders, payment) with Mark paid and Void, and a Settings view (`?view=settings`) with the switch, lead days, reminder days, the pause setting and the payment methods; staff see Settings read-only. The Subscriptions drawer shows the open invoice with "Open in Payments", and the Sign-ups tab shows the email.
+
+**Deviations from the design (settled in section 11 of the design, each with its cost if wrong).** (1) Payments are off until an Admin switches them on, because running the generator for every active subscription would invoice and message customers of companies that collect money another way. (2) No QR image in P1: the `qr` method carries the DuitNow ID and name as text; there is no outbound image anywhere. (3) Every payment answer is a facts-only reply (status and claim replies as well as instructions); a turn with a payment question replies with the payment facts after the turn's own committed writes, drops its other reads, and a mixed read needs a second message. (4) Cash through Bookings is wholly Payments 2; P1 keeps the `cash` kind, `cash_pending` and `source 'cash'`, and staff record cash with Mark paid. (5) Only subscription invoices are generated; orders stay cash on delivery. (6) The reference is `XXXX-XXC` with no company prefix. (7) One payment per invoice and an append-only ledger, no undo in P1: a wrong Mark paid needs the operator fix in the RUNBOOK. (8) The sign-up email is asked only on WhatsApp and only when payments are on. (9) Quiet hours (21:00 to 09:00), one reminder per contact per day and the reminder language from `contacts.locale` are constants. (10) `payment_agent` is switched on by 0591 wherever `subscription_agent` is, but the classifier and planner are offered it only while the company's payments are on (`payment_settings.enabled`, read every turn, not cached): with payments off, "nak bayar macam mana?" goes to the agents that answered it before (knowledge, orders, invoices) instead of a dead-end "not set up" at every subscriptions company already live; the agent's own "payment details aren't set up" answer stays as the backstop for a turn that races a switch-off. (11) Staff "Start subscription" stays as an override and leaves the opening invoice open; opening invoices are due `lead_days` after issue; a pending subscription whose customer said they paid is not expired; expiry and cancellation void the open invoices of the periods that will not run. (12) The live (contact, plan) rule is an advisory lock and a 409 in `create_subscription`, not a unique index (onboarding follow-up 3). (13) Read-only members do not see Payments. (14) Survey corrections: `invoices` matches the design section 2, `GET /console/v1/invoices` returned a float amount, `tests/test_contact_linking_schema.py:374` pinned 0581, and the golden runner seeds Telegram chats only, so the sign-up email and the reminders are covered by unit and job tests.
+
+**Rulings made in the build.** (a) A cancelled subscription's open invoice can still be marked paid; only the payment is recorded ("recorded only") and the subscription is not reactivated. (b) Staff "Start" sets the opening invoice's period and leaves it open and payable. (c) A subscription is suspended at most once per invoice, so a staff resume sticks. (d) A paused-unpaid subscription is not renewed while paused; paying gives a fresh period from the payment day, and the periods missed during the pause are never invoiced. (e) A period is invoiced only if it starts within `lead_days`: a worker outage longer than `lead_days` across a renewal means that period is never invoiced (follow-up: a staff-visible unbilled-period check). (f) A zero-price subscription gets no invoice, and a free sign-up that staff approve gets the wording without an invoice. (g) Reminder email is built at send time with that day's date, has its own closing line (no "reply here"), is dropped after 48 hours (`STALE_AFTER`) and waits for 09:00 in quiet hours. (h) The Replies Off rule (`customers_remindable`) stops reminder email as well as chat reminders, as it does for booking reminders. (i) The planner's `escalate` for a dispute survives plan validation (`plan_rules.py`) for companies with payments. (j) Facts that can be sent word for word (the sign-up read-back, phone invalid, try later, the ticket cancel question, the draft order) were reworded to speak to the customer. (k) The sign-up email ask discloses where the address is kept ("We keep it on your contact record to send you messages about your plan and bookings"), a deliberate departure from the plan's copy because booking mail uses the address too; the shared sign-up data note was not changed (owner decision). (l) Settings is an in-page view visible to admin and staff, with no extra routes. (m) The invoice agent lost its download link, so `INVOICE_SIGNING_SECRET` is now unused (a chore to remove it). (n) The reference check is a weighted mod-31 sum, not the textbook Luhn fold, which cannot catch every single wrong character in base 31. Final review rulings: (o) `invoices.currency` must be three upper-case letters: `invoices_currency_chk` was added to 0590 in place (0590 is applied nowhere yet; a development database that ran the earlier 0590 lacks the check, no functional harm), with a pre-check naming the bad values, and a plan's currency must match `^[A-Z]{3}$` (`PlanIn`, a 422). (p) "Extend renewal" voids the subscription's open invoices of periods from now on (`subscription_changed`, a claimed one included; the opening invoice and the running period's stay) so the job reissues for the new date; a manual pause voids nothing (staff void or collect the invoice of a period that will not run). (q) A subscription cancelling at period end gets no reminder for the next period's already-issued invoice (queue, mail and listing). (r) A customer's "I paid" freezes the reminders and the unpaid pause for that invoice and staff cannot reject it in the console: until a "Reject claim" button is built (first follow-up, owner decision) it is the operator SQL in the RUNBOOK. (s) `payment_agent` is offered only while payments are on (deviation 10). (t) An opening invoice owes its earliest reminder step from when it is issued, so a staff-approved customer gets how to pay at once whatever `lead_days` and the steps are; later steps still count from the due date. (u) Customer texts list at most the first four active bank and DuitNow methods by sort order (`CUSTOMER_METHODS`), so the longest reminder (about 3,100 characters) and the longest instructions reply (about 3,950 in Malay, five invoices) fit one Telegram message; a facts reply keeps whole facts only and leaves out a later one that would pass 8,000 characters (only a first fact over 8,000 characters is cut). (v) Mark paid on a pending subscription logs `payment_activation_period_unset` (never refuses) when the paid invoice is not the opening one that gets the first period: money received is always recordable.
+
+**Open owner decisions.** (1) **DuitNow QR image.** P1 shows the DuitNow ID as text. Decided 2026-11-13: sending the picture is a follow-up right after P1 (on Telegram about one task: an upload in Payments settings and `sendPhoto` in delivery; WhatsApp needs the media phase). (2) Read the Malay payment and reminder wording (`csa/payments/copy.py`) and approve or rewrite it; the builder wrote it, no native speaker has read it. (3) The sign-up data sentence under "Customer onboarding" does not mention a given email; decide whether it should, together with the open "on your contact record" question there.
+
+**Follow-ups (parked, none blocks the merge unless the final review says so; the full list of deferred minors is in the SDD ledger of the branch).** First: (1) a "Reject claim" button for staff (a customer's false "I paid" today needs the operator SQL in the RUNBOOK; owner decision); (2) delivery outcome back into the reminders (a reminder `sent` means written for the delivery worker, not delivered; a failed delivery shows only in the delivery dead letters and staff notices); (3) a staff-visible check for unbilled periods after a worker outage; (4) the DuitNow QR image (above). Then: (5) Payments 2: statement import with matching, short and over payments as statement exceptions, cash through Bookings (`choose_cash`, `collects_payment`, `bookings.invoice_id`, Collect cash). (6) WhatsApp reminders outside the 23-hour window need the template phase; until then such customers with no email are listed under "Needs a nudge". (7) Remove the unused `INVOICE_SIGNING_SECRET`. (8) Minors left unfixed: the 0591 mirror test does not cover a company with `is_enabled` true and `client_enabled` false; an empty method patch still bumps the version and audits, and the enable-versus-deactivate-last-method lock has no two-connection test; a seed invoice marked `paid` with no payment row cannot be added to the ledger (409); always-failing rows can starve a `payments_due` batch, more than 500 capped invoices for one contact can starve a reminder run, and the daily cap would race if the runner ever ran one job twice for one company; with a large pause setting the next period's invoice can go overdue during a pause, so paying the first does not resume; the reminder mail job checks quiet hours only when it lists rows, can leave a row `failed` after a delivered send, and may send two near-identical mails after a backlog; a payment turn takes its language from the message, not the classifier (a Malay "dah transfer" can get English facts, and a Malay turn that also wrote a booking mixes languages), and the write facts are English only; a `cash_pending` invoice is told to pay by transfer (Payments 2 creates them); a paid invoice older than 60 days typed as a reference answers "can't find"; `filed_auto_invoice` says "ask me how to pay" without checking `payment_agent` is on; the sign-up email's `lower()` can differ from Postgres on rare characters, and the read-back with the address goes to the composer and reviewer models as the phone does; drawer reminder dates use the browser's time zone, the page reports tab "subscriptions" to the assistant, Load more has a narrow A-B-A race, unsaved settings are dropped on a version conflict or a view change without a warning, and a 403 on a write by a demoted admin is not routed to the refusal notice.
+
+**What was and was not verified.** Each task was tested one file at a time on disposable databases with made-up data (made-up banks, accounts like 5120000000xx, example addresses) and reviewed on its own by an independent reviewer; every Critical or Important finding was fixed and re-reviewed. The files are `tests/test_payments_schema.py`, `test_payment_reference.py`, `test_payment_settings.py`, `test_payment_invoices.py` (with two-connection concurrency tests), `test_jobs_payments.py`, `test_jobs_payment_reminders.py`, `test_jobs_payment_reminder_mail.py`, `test_console_payments.py`, `test_payment_agent.py`, `test_payment_copy.py`, `test_payment_reply.py`, `test_payments_browser.py`, the golden cases `cs_pay_*` (instructions in English and Malay, status unpaid and paid, a claim in both, another customer's reference, a dispute that hands off, a TikTok-only company), `cs_sub_pending_waiting_payment_en` and `cs_signup_no_email_ask_telegram_en`, and the replay conversations `en-payment` and `ms-payment` (synthetic facts, no database). **Final review: done** (whole-branch review on the most capable model: no Critical finding; its Important findings I1-I7 were fixed in one fix wave and re-reviewed with no Critical or Important finding; a small touch-up followed). **Not verified:** (1) the live staging replay of the planner and classifier rules (`docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation en-payment --conversation ms-payment` with the live model, and a real "charged twice" message, which must escalate without spreading `escalate` to other account questions); (2) proactive WhatsApp delivery of a reminder in an open chat through the real delivery worker (the reminder code writes the message and delivery row; nothing was sent through a real WhatsApp account); (3) the real model's behaviour on the sign-up email rules (copying `[EMAIL_0]`, a Malay "skip", a booking email answer pulled into a sign-up); (4) CI shard results (CI is the merge gate; the full suite was not run locally). Nothing was run against staging, and no real number, address, bank account or customer message was used. The owner's retest rows are in `docs/CUSTOMER_BOT_RETEST.md`, section "Payments" (instructions, "did you receive my payment" before and after a claim, a claim, another customer's reference, a dispute that hands off, a TikTok-only company, a WhatsApp sign-up with and without email, a reminder on Telegram and in an open WhatsApp chat); the staff steps are in `docs/RUNBOOK.md`, section "Payments".
+
+Customer onboarding: sign-up from the chat and one customer across channels (2026-11-12, branch `feat/customer-onboarding`, migrations 0580 and 0581, spec `docs/superpowers/specs/2026-11-11-customer-onboarding-design.md` (section 10 is the settled design), plan `docs/superpowers/plans/2026-11-12-customer-onboarding.md`; PR 2b of the business surfaces programme, one pull request instead of the planned two; `EXPECTED_SCHEMA_VERSION` is now `"0581"`): a customer can sign up for a plan in a Telegram or WhatsApp chat, staff approve or decline it (or the plan approves it automatically), and the same person on WhatsApp and Telegram becomes one customer instead of two. Migration `0580` adds `signup_requests`, `subscription_settings` (pending expiry days), `plans.signup_mode` and `plans.is_signup_open`, `subscriptions.activated_at` and the `pending` status in `subscriptions_status_chk` (read from the live list as 0531 does). Migration `0581` adds `public.my_phone_digits(text)`, the generated `contacts.phone_digits` (this rewrites `contacts`), `contacts.phone_verified_at` and `merged_into`, the unique `contacts_verified_phone_uq`, the `contact_links` and `contact_link_reviews` tables, and lets `csa_app` update `agent_preparation_requests.contact_id` only. No role change, no backfill; both stop all four services on staging (the `contacts` rewrite is why). Rollback for both is in `docs/RUNBOOK.md`.
+
+**What changed, the bot.** `SubscriptionAgent` gains `request_signup`: it asks for one missing thing per turn (plan, full name, phone), uses a phone the channel verified without asking for it, offers Telegram's share-my-number button once, reads the sign-up back and files it only on a typed yes that answers that read-back ("ok" counts as a yes right after the read-back; an "ok" with no read-back just before it files nothing). A typed phone stays on the sign-up request and is marked unverified. Because the planner only sees `[PHONE_n]` and inbound bodies are stored redacted, what a turn collected is kept in a one-hour per-chat draft in `pending_actions` (action `signup_draft`, no migration), updated in place and blanked when it closes or expires. The subscription and sign-up prompt rules are told to the model only for a company with `subscription_agent` on, so a TikTok-only company gets no sign-up wording. **Contacts.** WhatsApp (on a customer's message) and a Telegram share-my-number verify a phone with one normaliser and link the contact to exactly one other live contact with the same digits; the survivor is the one with a subscription, else the older. A link re-points every contact-owned row to the survivor (conversations, orders, tickets, subscriptions, bookings, invoices, sign-up requests, and the rest; twelve tables) and records them so an unlink within 30 days, newest link first, puts them back. The WhatsApp ingress runs resolve and verify inside a savepoint and retries once on `contact_merged` (a second merge is a retryable 503). A foreign, missing-user_id or forwarded Telegram contact card is refused before any contact is resolved, and the stored hash of a share is scrubbed of the number. **Console.** Subscriptions gains a Sign-ups tab (expiry setting, open sign-ups with Approve and Decline, "Needs review", "Recent links" with Unlink for every link of the company, decided sign-ups), a "Waiting to start" customer filter with "Start subscription" and cancel for a pending subscription, per-plan sign-up switches, and a "Linked contacts" panel in the subscription drawer with Link and Unlink. A fifth rule in the subscriptions-due job cancels a pending subscription after the company's `pending_expiry_days` (default 14, 0 never, 0 to 90) and marks its sign-up expired.
+
+**Rulings made in the build (all recorded in section 10 of the design, each with its cost if wrong).** Deviations 1 to 10 from the plan: (1) a link re-points all contact-owned rows instead of adding `merged_into` followers; (2) staff-entered phones count as a match, typed phones never; (3) unlink after 30 days is refused (409), not done by hand; (4) a typed read-back and typed yes replace the confirm button; (5) staff activate until payments exist; (6) archiving a plan stays unblocked; (7) no staff push for a new sign-up; (8) the link anchor is the subscription drawer plus "Needs review"; (9) a typed sign-up phone is never copied to `contacts.phone`; (10) survey corrections (`renews_at > started_at` is a `WHERE`, the portal twin is the same workspace, `contact_verifications` and `subscription_requests` stay untouched, the normaliser sits behind an IMMUTABLE SQL function). Further rulings: A, `merged_into` is set before the survivor takes the phone (the verified-phone index ignores merged rows) and both contacts' columns are recorded for the unlink; B, the re-point SQL is built from the `LINKED_TABLES` constant, never from input; C, the link and review routes live in `csa/contacts/api.py`; D, see (9); E, subscription and sign-up prompt rules only for companies with `subscription_agent`; F, an unlinked pair is never linked automatically again (review reason `previously_unlinked`, staff can still link it) and unlink reports what it skipped (`UnlinkOutcome.skipped`: a phone, stamp or Telegram id that changed since the link or that another contact now holds). Review reasons: `several_matches`, `telegram_conflict`, `same_channel_identity`, `table_conflict`, `previously_unlinked`. Task rulings: the Telegram ingress refuses a bad card before contact resolution (stores strictly less than the brief's order); the sign-up draft in `pending_actions` is a recorded deviation, narrowed to one row per chat with its payload blanked on close and expiry.
+
+**Open owner decisions.** (1) The sign-up data sentence says "We keep your name and phone number on your contact record ...", but a typed phone stays on the sign-up request (ruling D); decide whether it should say "on your sign-up request". Not decided by the builder. (2) Should automatic linking run only for companies with the Subscriptions package? Today it runs for every company on WhatsApp and Telegram shares, but the link pages and routes are part of Subscriptions, so for a company without it a wrong link is undone only by an operator (`docs/RUNBOOK.md`, "Links for a company without the Subscriptions package").
+
+**Follow-ups (parked, none blocks the merge).** (1) Payments will make `Start subscription` automatic (P1). (2) `unlinkNote` in the console guesses between "older than 30 days" and "newer link first" from the browser clock; an `unlink_blocked` reason from the server would be exact. (3) Staff manual create takes no per-contact-and-plan lock, so a manual create racing an approve could leave two live subscriptions for one plan; the partial unique index on live subscriptions per contact and plan belongs to payments P1. (4) Ordinary Telegram messages have no `live_contact` guard after a link. (5) Review resolve-as-linked races a concurrent dismiss. (6) The envelope keeps the loser's display name for the turn after a link (stale envelope after a link). (7) A walk-in or booking can attach to a merged shell contact. (8) An unsolicited share of the customer's own number feeds `[shared phone number]` to a bot with no sign-up in progress. (9) An automatic customer notice after approve, decline and expiry; today staff message the customer from the Inbox. (10) Found in the final fix wave: `ingress_events` stays with the contact it came in on (`EXCLUDED_TABLES`), and `inbox/get_reply_route.sql` and `bookings/customer_route.sql` require `ingress_events.contact_id = conversations.contact_id`, so after a staff link (or a review linked) a chat that moved to the survivor has no reply route ("This conversation has no active channel to reply on.") until the customer writes again; an automatic link is affected too whenever the contact that sent the linking message is the survivor (the other channel's chat moved with only the loser's events). The fix is either to move `ingress_events` with a link or to let the two route SQLs accept events of a contact whose `merged_into` is the chat's contact; the owner to rule on fixing it before or after the merge. The full list of deferred minors is in the SDD ledger of the branch.
+
+**What was and was not verified.** Each task was tested one file at a time on disposable databases with made-up data and reviewed on its own; the full suite and the whole-branch review are CI's and the final review's job. Golden cases `cs_signup_*` (collect, confirm, closed plan, an "ok" that does not answer the read-back, verified phone, TikTok-only company) and replay conversations `en-signup` and `ms-signup` are new. **No live model run:** the sign-up rules are checked by prompt-text tests and cassettes only. Nothing was run against staging, and no real number, share or WhatsApp message was used. The owner's retest rows are in `docs/CUSTOMER_BOT_RETEST.md`, section "Customer onboarding" (sign-up in English and Malay on both channels, an "ok" that does not answer the read-back, another customer's number, share then WhatsApp lands on one customer, a forwarded card, a closed plan); the staff steps are in `docs/RUNBOOK.md`, section "Customer onboarding: sign-ups and linked contacts".
+
 Customer bot business answers and the escalation ladder (2026-11-11, branch `feat/customer-bot-answers`, migration 0560, spec `docs/superpowers/specs/2026-11-10-customer-bot-business-answers-design.md`, plan `docs/superpowers/plans/2026-11-10-customer-bot-business-answers.md`; PR 2 of the business surfaces programme; `EXPECTED_SCHEMA_VERSION` is now `"0560"`): the customer bot answers which plan a customer is on, when it renews or ends, how much stock there is in our shop and on TikTok Shop, and it hands off only after a ladder, with a note for the staff member who takes the chat. Migration `0560` adds `escalations.note` (text, at most 500 characters, NULL for every older row) and the index `escalations_conversation_created (client_id, conversation_id, created_at DESC)`; no policy, grant or role change, no backfill; it stops all four services on staging.
 
 **What changed, handoff and note.** The handoff reply and a staff note are written in one model call (`HandoffOut`: reply, `staff_note`, `gap_topic`). The note is English, at most 300 characters and two sentences, and must pass the same grounding check as the reply against every recent message (both authors) and the current one; when it fails, when the model errors or times out, or when no model is used (template handoffs), the fixed `fallback_staff_note` is stored instead (by reason first, then by route for `plan_escalated`). `finalize` writes it with `update_escalation_note.sql` (by `client_id` and `trace_id`, only while the note is empty, so a resumed finalize cannot overwrite it); only when that row was written, and a `gap_topic` was set (at most six words, at least one letter, no digits), does it record the topic in `kb_gaps`, so one question may leave two gap rows (the knowledge agent's own query and the handoff's topic). The note never reaches `Draft.text`, an outbound row, a receipt or the Telegram notification (that still carries the reason only). A null or non-text `staff_note` or `gap_topic` from the model is read as empty, so the customer keeps a good reply. The inbox thread shows the newest note of the conversation (`GET /conversations/{id}` only, as `handoff_note: {text, at}`; list rows, takeover, release and reply results and their receipts carry `null`) as the plain-text line `Note from the assistant (<date and time>): <text>` (testid `inbox-handoff-note`); tests prove hostile text (an `<img onerror>`, a markdown link) stays text.
@@ -408,7 +438,7 @@ Caddy, tunnel, DNS, container or secret was changed; the three staging
 services kept running. Public auth/CSRF/logout/tenant acceptance and
 backup/restore remain open.
 Current continuation:
-[topology reconciliation](archive/handoffs/2026-10-19-domain-release-next-session.md#current-continuation-shared-host-topology-reconciliation-2026-10-23).
+topology reconciliation (removed from the repo; see git history).
 
 Shared-host publishing correction (local proposal, 2026-10-23): #22 merged
 as `a9a212f`; final branch/PR/main CI passed. Approved staging startup left
@@ -417,7 +447,7 @@ HTTP 000). Requested Docker binding existed; actual binding was absent.
 Owner approved a frontend-only normal bridge correction and leaving services
 running privately. No Caddy/public route change or live correction applied.
 Current continuation:
-[host publishing correction](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-frontend-host-publishing-correction-2026-10-23).
+host publishing correction (removed from the repo; see git history).
 
 Shared-tunnel/Caddy hosting (proposed, not applied, 2026-10-23): owner selected
 the existing host cloudflared service and explicitly approved local preparation
@@ -429,7 +459,7 @@ Database/gateway remain private; normal shared startup excludes dedicated
 connector. Host Caddy edits/reload, service startup, tunnel route and DNS still
 need separate approval. Public-login safeguards remain open.
 Historical continuation:
-[shared hosting preparation](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-shared-tunnel-and-caddy-2026-10-23).
+shared hosting preparation (removed from the repo; see git history).
 Focused final checks: **52 passed**, no skips, 12 test-secret-directory warnings;
 Ruff/types, Caddy snippet and runbook syntax pass. This is configuration
 evidence, not live acceptance. Previous #22 head's PR CI failed the unchanged
@@ -447,7 +477,7 @@ dedicated tunnel or Access application was reported; wildcard/company routes
 remain untouched. Three staging services were last reported stopped, volumes
 retained. No runtime/Compose changes or infrastructure operations in this slice.
 Historical continuation at public-login revision:
-[public-login safeguards and remaining gates](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-public-login-demo-review-2026-10-23).
+public-login safeguards and remaining gates (removed from the repo; see git history).
 Batch remaining local evidence; ask before publication and each infrastructure
 operation. Public routing remains blocked pending safeguard approval.
 
@@ -463,7 +493,7 @@ operation was performed. Runtime steps remain separately approved; batch their
 outcomes into one evidence update. Protected executable CD follows live
 acceptance, not unproven procedure automation.
 Historical continuation at runbook proposal:
-[consolidated ingress readiness](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-consolidated-ingress-readiness-2026-10-23).
+consolidated ingress readiness (removed from the repo; see git history).
 
 Private staging readiness accepted and stopped (2026-10-23): PR #19 merged
 as `8ff63c29`; PR, branch and main CI passed (main `39935706204`).
@@ -474,7 +504,7 @@ database with both volumes retained. See the
 This is private readiness, not browser authentication, tenant/public-ingress,
 recovery or end-to-end conversation acceptance.
 Historical continuation at private-readiness completion:
-[dedicated ingress planning](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-readiness-complete-2026-10-23).
+dedicated ingress planning (removed from the repo; see git history).
 No restart, tunnel/token provisioning, hostname, shared connector or Caddy
 change is authorized. Review the next plan before separately approved execution.
 
@@ -490,7 +520,7 @@ Private checks cover gateway readiness, login-page delivery and frontend-to-
 gateway reachability; stop commands retain data. No execution is authorized
 by this procedure, and no services were started during its preparation.
 Historical continuation at proposal time:
-[private startup procedure](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-private-staging-startup-procedure-2026-10-23).
+private startup procedure (removed from the repo; see git history).
 
 Staging bootstrap executed and stopped (2026-10-23): PR #17 merged as
 `a5eb450`; PR CI `39914864494`, branch CI `39914798398` and main CI
@@ -502,7 +532,7 @@ is stopped; both volumes remain. See the
 for results, the failed `stg` shortcut attempts and evidence limitations.
 
 Historical continuation at bootstrap completion:
-[bootstrap complete; private application startup is next](archive/handoffs/2026-10-19-domain-release-next-session.md#prior-continuation-staging-bootstrap-complete-2026-10-23).
+bootstrap complete; private application startup is next (removed from the repo; see git history).
 Review a bounded gateway/frontend startup procedure before separately approved
 execution. Do not repeat bootstrap, delete volumes or activate ingress.
 
@@ -576,7 +606,7 @@ call was made. Next gates: workflow PR review/CI/merge, owner-created protected
 `staging-images` environment, then a separately approved dispatch of CI run
 39754225130 before its artifact expires 2026-10-29. See the
 [workflow contract](../deploy/RELEASE.md#staging-image-publication-workflow)
-and [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and active handoff (removed from the repo; see git history).
 
 Staging connector configuration and exact-image mount probes: PR #11 merged as
 `7cdc1562a33bf3a33c4561e53d26263a6a08f731`. Post-merge CI
@@ -587,7 +617,7 @@ manifest/config digests, source revision, amd64 platform and runtime users were
 verified. Python runs as `1000:1000`; frontend's configured `node` resolves to
 `1000:1000`. Exact artifact identities and limits are in the
 [release evidence](../deploy/RELEASE.md#pr-11-merged-artifacts-identity-verification-2026-10-22)
-and [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and active handoff (removed from the repo; see git history).
 
 The exact reviewed Python/frontend OCI archives were imported and
 tested with explicit approval using synthetic files and network-disabled
@@ -632,7 +662,7 @@ with no root entrypoint; offline `--network none` probes with a fake token file
 showed `65532:65532` `0400` is readable while UID-1000-owned `0400` is denied.
 No connector, real token, tunnel, DNS, dashboard, Caddy or service change. See
 [RELEASE.md](../deploy/RELEASE.md#dedicated-connector-image-and-token-file-probe-2026-10-22)
-and the [active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+and the active handoff (removed from the repo; see git history).
 
 Customer-service routing/grounding/handoff goldens (2026-10-22): PR #8 merged
 as `b2dc7a2`; PR CI 39719424850, branch CI 39719295898 and post-merge main
@@ -646,7 +676,7 @@ Final focused command covering all golden cases, KB tests and staff-path tests:
 Repository lint/types/import checks passed. The initial four-case run was
 **2 passed / 2 failed** because core-only seeding did not register/enable KB;
 the synthetic fixture now explicitly registers/enables it with the current schema.
-See [LG08 evidence and limits](./langgraph-rebuild/LG08_testing_seed_evals.md#customer-service-evaluation-expansion-2026-10-22).
+See LG08 evidence and limits (removed from the repo; see git history).
 No live model/TEI/provider requests, delivery worker, persistent database action or
 deployment. Scripted model verdicts prove orchestration/guard behavior, not
 independent model accuracy or multilingual quality. Full hosted CI remains the
@@ -679,7 +709,7 @@ current-grant directory/training guide to the staff workspace and fixed HR deep
 links. HR retains session/grant/resource authority; no employee records, new
 mutations, model calls, workspace-history changes or migrations are added.
 See [HR evidence](./hr/PROGRESS.md#workspace-hr-guidance) and the
-[active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+active handoff (removed from the repo; see git history).
 
 At the user's request, use focused local validation through customer-service,
 subscription and interactive-voice completion, with broader checks for shared
@@ -731,7 +761,7 @@ Workspace A0/A1 merged (2026-10-21): PR #3 merged to `main` as `b3b84c7`
 API, `/workspace` and `/portal/workspace` pages, deterministic page guidance,
 one tenant-scoped order read and migration 0370 (RLS, no FORCE); gateway
 readiness now expects schema 0370. No HR, voice, mutation or provider call.
-Details: [A1 handoff](archive/handoffs/2026-10-21-workspace-a1-implementation.md).
+Details: A1 handoff (removed from the repo; see git history).
 Evidence: local lint passed; local full suite had 1 known load-latency failure
 plus 4 Node-PATH errors; local browser acceptance could not run (host Chromium
 missing `libatk-1.0.so.0`). PR CI run 39607346826 first failed only
@@ -745,7 +775,7 @@ the flaky load assertion with approval. Persistent dev was not migrated.
 Product planning priority change (2026-10-21): the user requested business web
 chat, HR, refined customer service and interactive voice as the first four
 priorities, with Teach-a-task last. The
-[two-developer roadmap](archive/handoffs/2026-10-21-workspace-agents-roadmap.md)
+two-developer roadmap (removed from the repo; see git history)
 records proposed domain grouping, permission/workflow gaps, staged acceptance
 and independent
 workspace / HR continuation prompts (since retired).
@@ -858,7 +888,7 @@ and aggregate CPU was not saturated. Laptop/shared-host variability remains
 plausible, not a proven sole cause. No application/test source or thresholds
 changed. These diagnostics do not supersede the failed load run. Exact scope,
 metrics and next action are in the
-[TCP diagnosis](archive/handoffs/2026-10-19-domain-release-next-session.md#tcp-diagnosis-2026-10-20).
+TCP diagnosis (removed from the repo; see git history).
 
 Focused performance check (2026-10-20, source `39de725`): the single
 `NO_LOCAL_ENV=1 ENV=ci make load-test` run finished **3 passed, 1 failed,
@@ -873,7 +903,7 @@ were disposable Testcontainers; no provider, persistent migration or service
 restart was used. No timing retry, threshold change or full-suite rerun occurred.
 LG15 performance remains open. Next: diagnose TCP latency without treating
 diagnostic reruns as acceptance or assuming host contention. See the
-[latest performance handoff](archive/handoffs/2026-10-19-domain-release-next-session.md#latest-slice-focused-performance-check-2026-10-20).
+latest performance handoff (removed from the repo; see git history).
 
 Documentation audit/release review (2026-10-20): the approved 54-path audit is
 committed as `f46dba0fe006577dcc56d150bd62a576adf0f15e`; the follow-on synthetic
@@ -919,7 +949,7 @@ covers authenticated UI/session behavior, admin switches and persistence,
 read-only controls, tenant-scoped activity/polling, visible refresh failure and
 recovery, same-origin requests, denied browser egress and no page errors. The
 exact command and scope are in the
-[active handoff](archive/handoffs/2026-10-19-domain-release-next-session.md#latest-slice-synthetic-m2-browser-acceptance-2026-10-20)
+active handoff (removed from the repo; see git history)
 and [frontend README](../CSA_WebConsole/csa-console/web/README.md). The current
 `NO_LOCAL_ENV=1 ENV=ci make lint test` first attempt passed lint but ended with
 **2,546 passed, 136 warnings, 4 setup errors in 2,101.43 s**. Each error was a
@@ -1025,7 +1055,7 @@ Important: hosted Gitleaks scanned **only one commit** in the latest push.
 The initial large candidate scan had failed; the separate offline candidate-range
 scan above now supplies that missing evidence. No merge, publication or deployment.
 
-Latest continuation: [Fourstacks domain/release handoff and next-session prompt](archive/handoffs/2026-10-19-domain-release-next-session.md).
+Latest continuation: Fourstacks domain/release handoff and next-session prompt (removed from the repo; see git history).
 Current development: M6 incomplete; source expects **0360**, while **0300** is the last
 approved recorded persistent-dev schema, not a fresh probe. Latest M6D focused evidence:
 **1,457 inventory tests passed**, one existing Testcontainers warning, **114.59 s**;
@@ -1105,7 +1135,7 @@ contents metadata endpoints returned 403; that is not proof of package visibilit
 No run validates the dirty frontend/package jobs or OCI artifact path. Next gate is
 owner approval to select changes for a clean review branch and confirmation that
 GHCR grants this repo Actions read access. Do not commit/push/trigger/publish/deploy
-without approval. See the [release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+without approval. See the release handoff (removed from the repo; see git history).
 That source-selection approval was subsequently granted: review candidate c2e5376
 contains the approved snapshot (118 files; the earlier 92 status entries included
 directories). The user published the DB image, updated its three active digest
@@ -1122,7 +1152,7 @@ See the [release contract](../deploy/RELEASE.md) for operator gates.
 
 ## Historical acceptance context
 
-M4 history starts at [the prior closeout](archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
+M4 history starts at the prior closeout (removed from the repo; see git history).
 M4 is **functionally closed with an explicitly accepted laptop-dev performance exception**;
 M5's Telegram-only staff slice was reviewed and rolled out on explicitly approved guarded
 dev at **0300**; platform-admin UI and synthetic Telegram acceptance are verified.
@@ -1142,7 +1172,7 @@ test-only scope, so the full suite was not rerun.
 The preceding **1052 passed / 1 TCP latency failure** remains historical evidence, not
 the latest result; one passing run is not a stable-capacity claim. For next-session
 M6B-specific scope, see the dated
-[M6B verifier handoff](archive/handoffs/2026-10-18-m6b-verifier-next-session.md); the current
+M6B verifier handoff (removed from the repo; see git history); the current
 continuation prompt is in the domain/release handoff above.
 The preceding **971 passed / 1 TCP latency failure**
 (ack p95 **213.232 ms**, unchanged **<200 ms**) remains recorded.
@@ -1166,7 +1196,7 @@ user-owned review reports and UI-guide material remain preserved.
   warehouse and future tenant-admin count/adjustment records with required reasons.
   Documented the per-variant authority model, quantity/reservation vocabulary, idempotent
   order ownership, report-only provider reconciliation and write-freeze conflict handling in
-  the [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6d-inventory-authority-and-reconciliation-design-2026-10-18-user-selected-direction).
+  the M6 roadmap (removed from the repo; see git history).
   This separates existing `products.reserved_qty` local order repair from physical or
   provider stock reconciliation. Design only: no stock mutation, schema, sync or runtime
   behavior was wired. A separate immutable in-memory prototype in
@@ -1272,7 +1302,7 @@ user-owned review reports and UI-guide material remain preserved.
   database/n8n dump is needed. Existing-row audits, deployed holding statuses/writers and
   physical counts gate persistent rollout/cutover, not synthetic development or proposal
   review. Migration-proposal review completed in the
-  [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md).
+  M6 roadmap (removed from the repo; see git history).
   Recommends an identity-only first stage: necessary tenant-composite unique anchors
   and empty warehouse registry with RLS, tenant reads and no runtime mutation grants.
   Preserve existing global PKs, text order IDs, UUID product/item IDs and `qty`; no seeds,
@@ -1337,7 +1367,7 @@ user-owned review reports and UI-guide material remain preserved.
   audit storage and transaction design, with a real trusted actor adapter and freeze
   concurrency still required before writable integration.
 - Count persistence review (2026-10-19): **not ready for writable persistence**.
-  [Review findings and transaction sequence](archive/handoffs/2026-10-15-console-source-migration-plan.md)
+  Review findings and transaction sequence (removed from the repo; see git history)
   identify shape-versus-transition validation, pending-freeze serialization independent
   of ledger version, transaction-bound actor revalidation/revocation, missing immutable
   audit envelope/enforcement, and stale rejection recovery versus approval fencing.
@@ -1536,7 +1566,7 @@ user-owned review reports and UI-guide material remain preserved.
   Documentation-only; latest975 full pass remains prior implementation evidence.
   Attached env snapshot unopened; no credentials, login, API Testing Tool, live request,
   persistent DB/service/webhook/frontend/UI-guide change. Source0350/persistent0300.
-  See [verified contract and implementation prerequisites](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-public-token-exchange-contract-verification-2026-10-18).
+  See verified contract and implementation prerequisites (removed from the repo; see git history).
 - Staff connection-status continuation (2026-10-18): existing staff-only store list,
   detail and exact-binding reads now expose a narrow `connection` metadata projection.
   A single tenant/record-bounded batch query checks latest exact-store grant lifecycle,
@@ -1571,7 +1601,7 @@ user-owned review reports and UI-guide material remain preserved.
   No schema/dependency change; source still requires0350, persistent dev remains0300.
   Attached environment snapshots were not opened. No existing secrets/key access,
   provider HTTP, persistent migration/reset, service/webhook or UI-guide change.
-  See [staff connection status](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-staff-connection-status-2026-10-18).
+  See staff connection status (removed from the repo; see git history).
 - Authorization-attempt continuation (2026-10-18): user cannot proceed beyond Partner
   Center account registration. Partner review/publishing/seller authorization remain
   an external live gate, not a blocker for synthetic development. No custom-app/own-shop
@@ -1614,7 +1644,7 @@ user-owned review reports and UI-guide material remain preserved.
   or threshold relaxation. The945 full pass below belongs to the preceding slice.
   Gateway source now requires0350; persistent dev remains0300. No existing credentials/
   keys, live HTTP, persistent migration/reset, services, frontend or UI-guide changed.
-  See [offline authorization choreography](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-offline-authorization-attempts-and-reconnection-2026-10-18).
+  See offline authorization choreography (removed from the repo; see git history).
 - App-lifecycle continuation (2026-10-18): user selected a global non-secret app gate
   across all tenants, with external app secrets remaining external. Added empty0340
   app state/audit metadata and immutable grant `app_revision`. Registration is always
@@ -1649,7 +1679,7 @@ user-owned review reports and UI-guide material remain preserved.
   and unverified host-capacity/root-cause caveats remain; no latency-only retry occurred.
   Gateway source now requires0340; persistent dev remains0300. No real credential/key
   lookup, live HTTP, persistent migration/reset, service or UI-guide change.
-  See [global app lifecycle](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-global-app-lifecycle-fence-2026-10-18).
+  See global app lifecycle (removed from the repo; see git history).
 - Trusted-storage continuation (2026-10-18): user selected external app secrets plus
   explicit PostgreSQL app/shop binding evidence, not arbitrary credential metadata.
   Added empty0330 immutable tenant-scoped bindings linked to immutable grants.
@@ -1683,7 +1713,7 @@ user-owned review reports and UI-guide material remain preserved.
   Gateway source now requires0330; persistent dev remains0300, with no migration,
   reset, real credential/key read, provider call, service change or UI-guide edit.
   The **907 passed** full result below belongs to the preceding resolver-contract slice.
-  See [trusted storage scope](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-trusted-shop-binding-storage-2026-10-18).
+  See trusted storage scope (removed from the repo; see git history).
 - Offline resolver-contract continuation (2026-10-18): added explicit injected trusted
   app/credential loaders, decryptor and caller-owned HTTP client, with immutable
   secret-masked material contracts. Exact context/app/generation and token-expiry
@@ -1709,7 +1739,7 @@ user-owned review reports and UI-guide material remain preserved.
   No schema/SQL/dependency/frontend change, live request, persistent reset/migration,
   service replacement, console/agent wiring or UI-guide edit. Eligibility and actual
   trusted storage/loader/decryption deployment remain gated.
-  See [offline resolver contract](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-offline-credential-resolver-contract-2026-10-18).
+  See offline resolver contract (removed from the repo; see git history).
 - Bound-reader continuation (2026-10-18): added server-only composition of an injected
   trusted bound reader, fresh shop verification under credential/grant fences, revised
   evidence provenance `fresh_authorized_shop_with_stored_grant_scopes`, and one native
@@ -1739,7 +1769,7 @@ user-owned review reports and UI-guide material remain preserved.
   Developer/app eligibility is an external unresolved live-acceptance gate. No own-shop/
   unpublished exception has been verified for this market/account; individual seller
   eligibility or general TikTok developer sandbox access does not prove Shop API access.
-  See [server-bound composition and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-bound-reader-composition-2026-10-18-offline-continuation).
+  See server-bound composition and remaining gates (removed from the repo; see git history).
 - Authorized-shop continuation (2026-10-18): user revised per-operation policy to
   **fresh shop match + stored verified grant scopes**, with current order permission
   enforced by the actual order endpoint. Shop lookup is not fresh order-scope evidence;
@@ -1764,7 +1794,7 @@ user-owned review reports and UI-guide material remain preserved.
   remain unimplemented. Existing evidence labels must not be treated as proof of fresh
   scopes from this primitive. No real seller request/account/credential inspection,
   schema/dependency/frontend change, persistent migration/reset, rollout or UI-guide edit.
-  See [revised policy and verified shop primitive](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-fresh-authorized-shop-primitive-2026-10-18-offline-continuation).
+  See revised policy and verified shop primitive (removed from the repo; see git history).
 - Credential/read-fence continuation: user selected conservative fenced ordering and
   no automatic replay. Added0320 with DB-managed credential generations, atomic grant
   disconnection on material credential change/deletion, and tenant-scoped immutable
@@ -1795,7 +1825,7 @@ user-owned review reports and UI-guide material remain preserved.
   Delay occurs before HTTP entry as well as inside measured ack; p95 values cannot be
   subtracted to isolate a stage. Standalone workers start only after ingress. Current
   logs do not establish host/CPU/DB/pool cause; no latency retry or threshold change.
-  See [fencing design, tests and latency limits](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-credentialread-fences-2026-10-17-offline-continuation).
+  See fencing design, tests and latency limits (removed from the repo; see git history).
 - Durable-grant continuation: added forward-only **0310**, internal async repository
   and parameterized SQL for verified grant metadata, exact local-store creation
   matching, tenant-scoped reads and compare-and-swap terminal invalidation.
@@ -1911,7 +1941,7 @@ user-owned review reports and UI-guide material remain preserved.
   invented quantity1. Request correction is not full response compatibility or live wiring.
   No account/credential inspection, seller API call/testing tool, migration, restart,
   persistent reset, infrastructure/webhook or UI-guide change. See
-  [official references, corrections and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
+  official references, corrections and remaining gates (removed from the repo; see git history).
 - Store-identity continuation: added staff-only local store-record list/detail and UI,
   platform filters, bounded stable UUID pagination, and immutable exact tenant/record/
   platform/store binding. Queries select identity/expiry/update columns only, never
@@ -1936,7 +1966,7 @@ user-owned review reports and UI-guide material remain preserved.
   No live account/credential inspection, provider call, persistent-dev reset/restart,
   migration, infrastructure/webhook or UI-guide edit. No new browser acceptance claimed.
   This is metadata binding, not a provider credential resolver or a legacy adapter fix.
-  See [local store-identity scope and remaining gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-local-store-identities-and-binding-offline-continuation).
+  See local store-identity scope and remaining gates (removed from the repo; see git history).
 - Local source/store-filter continuation: order list/detail/cursors now enforce tenant
   plus exact persisted channel and optional platform-scoped store ID. Store-only
   queries fail400; invalid channel/store bounds422; mismatched resources/cursors404.
@@ -1958,7 +1988,7 @@ user-owned review reports and UI-guide material remain preserved.
   were stopped and the one-shot helper removed; no forwarding/infrastructure changes.
   No shared TikTok account/credential inspection, provider call, persistent reset,
   service replacement, migration or UI-guide edit. Provider/store credential binding
-  remains pending, not implied by local matching. See the [local filter evidence](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-local-sourcestore-filters-offline-continuation).
+  remains pending, not implied by local matching. See the local filter evidence (removed from the repo; see git history).
 - M6B continuation: offline TikTok order-read contract groundwork is implemented.
   Detail/search now reject provider errors, incomplete/malformed orders, mismatched
   detail IDs and invalid pages rather than fabricate successful default data.
@@ -1979,10 +2009,10 @@ user-owned review reports and UI-guide material remain preserved.
   Full validation remains **not green**; no new M6 performance waiver is implied.
   No console/provider wiring, live credentials, store claims or product/write changes.
   Current official API compatibility and tenant/store credential binding remain gates,
-  not assumed complete. See the [M6B groundwork and verification gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-order-read-contract-groundwork-offline-not-provider-verification).
+  not assumed complete. See the M6B groundwork and verification gates (removed from the repo; see git history).
 - User requested a multi-platform seller workspace, TikTok-first, and approved **staff-only
   business reads** plus **read-only local stock with no synchronization authority**.
-  Expanded [M6 roadmap](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation)
+  Expanded M6 roadmap (removed from the repo; see git history)
   stages local reads, verified seller reads/connections, separately authorized TikTok
   operations, multi-platform inventory decisions, and original invoice/staff preparation work.
 - Implemented separate `/business` and `/portal/business` UI plus typed local
@@ -2045,7 +2075,7 @@ user-owned review reports and UI-guide material remain preserved.
 - The checkout was clean at `d8f7149` on entry. Existing user review files and UI-guide
   state are preserved. No commit was requested or made.
 - Post-review offline validation passes. Final exact results belong in
-  [the M5 evidence record](archive/handoffs/2026-10-17-m5-telegram-inbox.md).
+  the M5 evidence record (removed from the repo; see git history).
   M4's accepted laptop-dev exception remains; no threshold or release waiver changed.
 - Implementation review fixed three coupled gaps before rollout:
   - Takeover of an existing timed escalation must clear its expiry and establish
@@ -2533,7 +2563,7 @@ change remains pending, and the historical hang/500 causes are not proven.
   files were identified as safe redundant deletions. Retained the old recovery handoff
   as incident history and updated it to point forward; replaced the old M2/M3 kickoff
   prompt with a canonical M5 handoff link.
-- [M4 closeout / M5 kickoff](archive/handoffs/2026-10-16-m4-closeout-m5-start.md) contains the
+- M4 closeout / M5 kickoff (removed from the repo; see git history) contains the
   acceptance matrix, exact remaining performance debt, environment/service/fixture
   state, M5 authority question, implementation order and ready-to-paste session prompt.
   M5 must remain separate from owner-private sandbox history/holds; its original
@@ -2564,7 +2594,7 @@ change remains pending, and the historical hang/500 causes are not proven.
 | KB console upload ingestion | Done (gated by `KB_INGEST_ENABLED`): console writes ≤3 PDF/DOCX/CSV files to `KB_UPLOAD_ROOT/<client_id>/` + `kb_ingest_jobs` row; worker validates, confines paths, extracts, chunks, embeds (strict TEI, no silent fallback), stores versioned/deduplicated docs, records per-file `meta.results`, and retries with backoff. Model-filtered search. Also fixed LG13 regressions: `EcommerceAgent.ACTION_RISK` class attribute, stale capabilities test, JEV answers fixture for new agents, and `job_runs` (owner-written ops log) excluded from the RLS set-equality test. Full suite: 442 passed; the 6 failures were rerun in isolation and pass (the 3 latency thresholds failed only under host load). | `tests/test_kb_ingest.py` (25 passed), `tests/test_kb_agent.py` (7 passed), live dev TEI e5-small semantic check; not tested: real console writing jobs, worker loop running live in dev |
 | LG13 Waves 2/3 preparation | Implemented provider-neutral slice, **not live integrations**: disabled-by-default booking/subscription agents provide contact-scoped local reads and unexecuted requests; staff-only email/research/invoice-draft libraries, strict inputs and Decimal totals. Immutable preparation ledger with RLS, contact-owner checks, actor/trace and concurrent idempotency. No external calls, executable approvals or billing/event/invoice mutations. | `csa/agents/staged/`, migration `0260_staged_agent_requests.sql`, `tests/test_staged_agents.py` (51 passed); `docs/handoffs/2026-10-15-wave23-preparation.md`. |
 | LG15 Console turnover (n8n → CSA) | M0–M3 implemented; M4 functionally closed with accepted laptop-dev performance exception. M5 Telegram slice approved/running on guarded dev0300 with platform-admin UI, synthetic Telegram acceptance, live reader denial and representative tenant-admin/staff replay verified. M3 tenant-role replay and broader M5–M8 pending. | Latest full lint/tests **692 passed**, ASGI/TCP ack p95 **108.284 / 174.623 ms**, unchanged <200 ms. Frontend 12+2/lint/types/build pass; controlled live response-loss retry, ownership, approve/edit/reject, scoped denials and fresh post-release delivery verified. No production-capacity waiver or public deployment. |
-| LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | `docs/langgraph-rebuild/LG14_teach_task_desktop_agent.md` |
+| LG14 Teach-a-Task Virtual Desktop | Planned: Dedicated desktop container sandbox, user action recording, playbook compiler & scheduled replay | plan removed from the repo; see git history |
 
 
-Entries dated before 2026-10-20 are archived in [archive/PROGRESS-2026-10-early.md](./archive/PROGRESS-2026-10-early.md).
+Entries dated before 2026-10-20 were moved to an early-progress archive that has since been removed from the repo (see git history).

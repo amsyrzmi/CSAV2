@@ -117,14 +117,17 @@ test("pageStack push and pop", () => {
 
 test("agentOptions labels are unique", () => {
   const options = agentOptions();
-  assert.equal(options.length, 9);
-  assert.equal(new Set(options.map((option) => option.value)).size, 9);
-  assert.equal(new Set(options.map((option) => option.label)).size, 9);
+  assert.equal(options.length, 10);
+  assert.equal(new Set(options.map((option) => option.value)).size, 10);
+  assert.equal(new Set(options.map((option) => option.label)).size, 10);
   const labels = Object.fromEntries(options.map((option) => [option.value, option.label]));
   assert.equal(labels.escalation_agent, "Support cases & hand-over assistant: escalation");
   assert.equal(labels.ticket_agent, "Support cases & hand-over assistant: tickets");
   assert.equal(labels.order_agent, "Order management assistant: orders");
   assert.equal(labels.order_approval, "Order management assistant: approvals");
+  // The payment agent shares the Subscriptions package and its avatar.
+  assert.equal(labels.subscription_agent, "Subscriptions assistant: plans");
+  assert.equal(labels.payment_agent, "Subscriptions assistant: payments");
   // A title that only one capability has stays plain.
   assert.equal(labels.kb_agent, "Business knowledge agent");
   assert.equal(labels.invoice_agent, "Invoice lookup assistant");

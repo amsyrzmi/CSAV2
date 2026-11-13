@@ -17,6 +17,8 @@ const OWNED = [
   "components/console/fs/",
   "components/console/SubscriptionsWorkspace.tsx",
   "lib/subscriptions-view.ts",
+  "components/console/ContactLinks.tsx",
+  "lib/contact-links.ts",
   "components/console/inbox/",
   "components/AppShell.tsx",
   "components/console/shell/",

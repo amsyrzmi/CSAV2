@@ -6,6 +6,13 @@ change and records one ``subscription_events`` row keyed by the proposal id, so 
 again after the commit replays that event's receipt instead of acting twice. For an immediate
 plan change the bound version also carries the target plan's price, currency and interval
 (``bound_version``), because a plan edit does not bump the subscription's version.
+
+Invoices follow in the same transaction, under the subscription lock taken first (the payments
+lock order): ``cancel_now`` voids the open invoices of periods that will not run and the opening
+invoice (the running period's invoice stays owed), ``extend_renewal`` voids the open invoices of
+periods from now on (``subscription_changed``; the invoice job reissues for the new date), and
+``activate`` gives the opening invoice its first period, so an open one stays payable and a later
+payment only records it. ``pause`` voids nothing.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from csa.console.kb_uploads import audit
 from csa.console.services import ACTIVE_ONLY, require_package
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.payments.invoices import void_for_subscription
 from csa.subscriptions.api import require_subscriptions_write
 from csa.subscriptions.contracts import Action, ActionIn
 from csa.subscriptions.service import Conn, get_request_row, get_subscription_out, record_event
@@ -32,15 +40,17 @@ from csa.workspace.registry import CardContent, ProposalError, ProposalOrigin
 
 # Which statuses each action may start from; the card refuses anything else.
 ALLOWED_FROM: dict[Action, frozenset[str]] = {
+    "activate": frozenset({"pending"}),
     "pause": frozenset({"active"}),
     "resume": frozenset({"paused"}),
     "change_plan": frozenset({"active", "paused"}),
     "cancel_at_period_end": frozenset({"active"}),
-    "cancel_now": frozenset({"active", "paused"}),
+    "cancel_now": frozenset({"active", "paused", "pending"}),
     "extend_renewal": frozenset({"active"}),
 }
 
 TITLES: dict[Action, str] = {
+    "activate": "Start the subscription",
     "pause": "Pause subscription",
     "resume": "Resume subscription",
     "change_plan": "Change plan",
@@ -51,6 +61,7 @@ TITLES: dict[Action, str] = {
 
 # Timeline event names, past tense like the due job's (``resumed``, ``plan_changed``).
 EVENTS: dict[Action, str] = {
+    "activate": "activated",
     "pause": "paused",
     "resume": "resumed",
     "change_plan": "plan_changed",
@@ -218,6 +229,8 @@ def _change(
 ) -> str:
     """One plain sentence saying what confirming the card will do."""
     match action.action:
+        case "activate":
+            return "Start now. The first renewal is one billing period from today."
         case "pause":
             if action.resume_at is None:
                 return "Pause now until someone resumes it."
@@ -462,8 +475,39 @@ class SubscriptionActionExecutor:
             )
             if applied is None:
                 raise RuntimeError(f"subscription {action.subscription_id} apply matched no row")
+            if action.action == "cancel_now":
+                await void_for_subscription(
+                    conn,
+                    client_id,
+                    action.subscription_id,
+                    reason="subscription_cancelled",
+                    from_period=now,
+                )
+            elif action.action == "extend_renewal":
+                # The next period now starts later: an invoice already issued (or claimed) for a
+                # period from now on names the wrong dates. Void it; the invoice job issues the
+                # one for the new renewal date. The opening invoice and the running period's stay.
+                # The cut is the OLD renewal date: when it has already passed (the invoice job has
+                # not renewed yet) the next period's invoice starts there, before now, and must go
+                # too. With a renewal date still ahead it is the same as now: the running period
+                # always starts before it.
+                await void_for_subscription(
+                    conn,
+                    client_id,
+                    action.subscription_id,
+                    reason="subscription_changed",
+                    from_period=locked["renews_at"] or now,
+                    include_opening=False,
+                )
+            elif action.action == "activate":
+                # Started by hand: the opening invoice (the one with no period yet), when there
+                # is one, covers the first period (the new started_at to renews_at). It keeps its
+                # status, so an open one stays payable and paying it only records the payment.
+                await db.q.execute("payments/invoice_set_period.sql", key, conn=conn)
             details: dict[str, Any] = {}
             match action.action:
+                case "activate":
+                    details = {"new_renews_at": _iso(applied["renews_at"])}
                 case "pause":
                     details = {"resume_at": _iso(action.resume_at)}
                 case "resume":

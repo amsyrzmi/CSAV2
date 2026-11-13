@@ -58,6 +58,8 @@ PLANS = [
         "features": ["Weekly delivery"],
         "sort_order": 0,
         "is_active": True,
+        "signup_mode": "staff",
+        "is_signup_open": True,
     },
     {
         "code": "pro",
@@ -68,8 +70,90 @@ PLANS = [
         "features": [],
         "sort_order": 1,
         "is_active": True,
+        "signup_mode": "staff",
+        "is_signup_open": True,
     },
 ]
+
+AISYAH_CONTACT = "77777777-7777-4777-8777-777777777777"
+BEN_CONTACT = "77777777-7777-4777-8777-888888888888"
+LINK_RECENT = "aaaaaaaa-0000-4000-8000-000000000001"
+LINK_OLD = "aaaaaaaa-0000-4000-8000-000000000002"
+REVIEW_SEVERAL = "bbbbbbbb-0000-4000-8000-000000000001"
+REVIEW_TELEGRAM = "bbbbbbbb-0000-4000-8000-000000000002"
+PENDING_SUB = "33333333-3333-4333-8333-aaaaaaaaaaaa"
+SIGNUP_VERIFIED = "99999999-9999-4999-8999-111111111111"
+SIGNUP_TYPED = "99999999-9999-4999-8999-222222222222"
+SIGNUP_DECIDED = "99999999-9999-4999-8999-333333333333"
+
+
+def signup_row(
+    sign_id: str, who: dict[str, Any], plan: str, typed_name: str, typed_phone: str, **changes: Any
+) -> dict[str, Any]:
+    return {
+        "id": sign_id,
+        "contact": who,
+        "plan_code": plan,
+        "plan_name": plan.title(),
+        "full_name": typed_name,
+        "phone": typed_phone,
+        "phone_verified": False,
+        "status": "pending",
+        "decided_via": None,
+        "decline_reason": None,
+        "subscription_id": None,
+        "created_at": "2026-10-30T02:00:00Z",
+        "decided_at": None,
+        "source_channel": "telegram",
+        "invoice_reference": None,
+        "email": None,
+        **changes,
+    }
+
+
+def linked(who: dict[str, Any], channels: list[str]) -> dict[str, Any]:
+    """A contact as the link routes send it: no email, no Telegram account."""
+    return {
+        "id": who["id"],
+        "full_name": who["full_name"],
+        "phone": who["phone"],
+        "channels": channels,
+    }
+
+
+def link_row(
+    link_id: str,
+    survivor: dict[str, Any],
+    loser: dict[str, Any],
+    *,
+    created_at: str = "2026-10-30T02:00:00Z",
+    can_unlink: bool = True,
+    unlinked_at: str | None = None,
+    reason: str = "staff",
+) -> dict[str, Any]:
+    return {
+        "id": link_id,
+        "survivor": survivor,
+        "loser": loser,
+        "reason": reason,
+        "created_at": created_at,
+        "unlinked_at": unlinked_at,
+        "can_unlink": can_unlink,
+    }
+
+
+def review_row(
+    review_id: str, first: dict[str, Any], second: dict[str, Any], reason: str
+) -> dict[str, Any]:
+    return {
+        "id": review_id,
+        "contact_a": first,
+        "contact_b": second,
+        "reason": reason,
+        "status": "open",
+        "resolution": None,
+        "created_at": "2026-11-01T02:00:00Z",
+    }
 
 
 def tomorrow_in_kuala_lumpur() -> str:
@@ -151,7 +235,45 @@ class World:
             request_row(REQUEST_ORPHAN, None, aisyah),
         ]
         self.plans = copy.deepcopy(PLANS)
+        self.settings: dict[str, Any] = {
+            "timezone": "Asia/Kuala_Lumpur",
+            "pending_expiry_days": 14,
+            "version": 0,
+        }
+        chen = self.contacts[2]
+        self.signups = [
+            signup_row(
+                SIGNUP_VERIFIED,
+                chen,
+                "basic",
+                "Chen Wei",
+                "+60111222333",
+                phone_verified=True,
+                email="chen.wei@example.test",
+            ),
+            signup_row(SIGNUP_TYPED, aisyah, "pro", "Aisyah R.", "+60100000000"),
+            signup_row(
+                SIGNUP_DECIDED,
+                ben,
+                "pro",
+                "Ben Tan",
+                "+60198765432",
+                status="declined",
+                decided_via="staff",
+                decline_reason="Duplicate request",
+                decided_at="2026-10-31T02:00:00Z",
+            ),
+        ]
+        self.approve_error: str | None = None
+        # Contact links (Task 5 routes): none and nothing to review until a test seeds them.
+        self.links: list[dict[str, Any]] = []
+        self.reviews: list[dict[str, Any]] = []
+        self.link_error: str | None = None
+        self.review_error: str | None = None
+        self.unlink_skipped: list[str] = []
         self.proposal: dict[str, Any] | None = None
+        # The open invoice each subscription's drawer shows (Payments); none unless a test sets one.
+        self.open_invoices: dict[str, dict[str, Any]] = {}
         self.calls: list[dict[str, Any]] = []
         self.unexpected: list[str] = []
 
@@ -159,7 +281,7 @@ class World:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         params = {key: values[0] for key, values in parse_qs(query).items()}
-        body = request.post_data_json if request.method in {"POST", "PATCH"} else None
+        body = request.post_data_json if request.method in {"POST", "PATCH", "PUT"} else None
         self.calls.append(
             {
                 "method": request.method,
@@ -194,7 +316,77 @@ class World:
             return 400, {"detail": "tenant mismatch"}
         writer = self.upstream.me["role"] != "read_only"
         if path == "subscriptions/settings" and method == "GET":
-            return 200, {"timezone": "Asia/Kuala_Lumpur"}
+            return 200, self.settings
+        if path == "subscriptions/settings" and method == "PUT" and writer:
+            if body["version"] != self.settings["version"]:
+                return 409, {"detail": "version_conflict"}
+            self.settings = {
+                **self.settings,
+                "pending_expiry_days": body["pending_expiry_days"],
+                "version": self.settings["version"] + 1,
+            }
+            return 200, self.settings
+        if path == "subscriptions/signups" and method == "GET":
+            decided = params.get("status") == "decided"
+            rows = [r for r in self.signups if (r["status"] != "pending") == decided]
+            return 200, {"items": rows, "next_cursor": None}
+        if path.startswith("subscriptions/signups/") and method == "POST" and writer:
+            _, _, sign_id, verb = path.split("/")
+            row = next(r for r in self.signups if r["id"] == sign_id)
+            if row["status"] != "pending":
+                return 409, {"detail": "signup_not_pending"}
+            if verb == "approve":
+                if body not in (None, {}):
+                    return 422, {"detail": "approve takes no body"}
+                if self.approve_error:
+                    return 409, {"detail": self.approve_error}
+                row.update(
+                    status="approved",
+                    decided_via="staff",
+                    decided_at="2026-11-02T02:00:00Z",
+                    subscription_id=PENDING_SUB,
+                )
+            else:
+                row.update(
+                    status="declined",
+                    decided_via="staff",
+                    decided_at="2026-11-02T02:00:00Z",
+                    decline_reason=(body or {}).get("reason"),
+                )
+            return 200, row
+        if path == "subscriptions/links" and method == "GET":
+            newest = sorted(self.links, key=lambda r: r["created_at"], reverse=True)
+            who = params.get("contact_id")
+            if who is None:  # every link of the company (the Sign-ups tab's Recent links)
+                return 200, newest[: int(params.get("limit", "100"))]
+            return 200, [r for r in newest if who in (r["survivor"]["id"], r["loser"]["id"])]
+        if path == "subscriptions/links" and method == "POST" and writer:
+            if self.link_error:
+                return 409, {"detail": f"link_refused:{self.link_error}"}
+            first = next(c for c in self.contacts if c["id"] == body["contact_a"])
+            second = next(c for c in self.contacts if c["id"] == body["contact_b"])
+            made = link_row(
+                f"aaaaaaaa-0000-4000-8000-1000000000{len(self.links):02d}",
+                linked(first, ["telegram"]),
+                linked(second, ["whatsapp"]),
+                created_at="2026-11-02T01:00:00Z",
+            )
+            self.links.append(made)
+            return 201, made
+        if path.startswith("subscriptions/links/") and path.endswith("/unlink") and writer:
+            row = next(r for r in self.links if r["id"] == path.split("/")[2])
+            if not row["can_unlink"]:
+                return 409, {"detail": "unlink_window_closed"}
+            row.update(unlinked_at="2026-11-02T01:30:00Z", can_unlink=False)
+            return 200, {"skipped": self.unlink_skipped}
+        if path == "subscriptions/link-reviews" and method == "GET":
+            return 200, [r for r in self.reviews if r["status"] == params.get("status", "open")]
+        if path.startswith("subscriptions/link-reviews/") and method == "POST" and writer:
+            review = next(r for r in self.reviews if r["id"] == path.split("/")[2])
+            if body["resolution"] == "linked" and self.review_error:
+                return 409, {"detail": self.review_error}
+            review.update(status="resolved", resolution=body["resolution"])
+            return 200, review
         if path == "subscriptions/plans" and method == "GET":
             return 200, self.plans
         if path.startswith("subscriptions/plans/") and method == "PATCH" and writer:
@@ -238,7 +430,11 @@ class World:
             return 200, {"items": rows, "next_cursor": None}
         if path in {f"subscriptions/{AISYAH}", f"subscriptions/{BEN}"} and method == "GET":
             sub_id = path.split("/")[1]
-            return 200, {"subscription": self.subs[sub_id], "events": self.events[sub_id]}
+            return 200, {
+                "subscription": self.subs[sub_id],
+                "events": self.events[sub_id],
+                "open_invoice": self.open_invoices.get(sub_id),
+            }
         if path == f"subscriptions/{AISYAH}/actions" and method == "POST" and writer:
             self.proposal = {
                 "id": PROPOSAL,
@@ -646,7 +842,11 @@ class RichWorld(World):
             and parts[1] in self.subs
             and parts[1] not in {AISYAH, BEN}
         ):
-            return 200, {"subscription": self.subs[parts[1]], "events": self.events[parts[1]]}
+            return 200, {
+                "subscription": self.subs[parts[1]],
+                "events": self.events[parts[1]],
+                "open_invoice": self.open_invoices.get(parts[1]),
+            }
         return super().answer(method, path, params, body)
 
 
@@ -1197,6 +1397,277 @@ PLACEHOLDER_FITS_JS = """() => {
 }"""
 
 
+async def test_signups_tab_approves_declines_and_sets_the_expiry(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            # Two sign-ups wait: the tab says how many.
+            badge = page.get_by_test_id("signups-badge")
+            await expect(badge).to_have_text("Open: 2", timeout=WAIT)
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            open_rows = page.get_by_test_id("signup-open")
+            await expect(open_rows).to_have_count(2, timeout=WAIT)
+
+            # The phone mark follows phone_verified; the name is the one the customer typed.
+            chen = open_rows.filter(has_text="Chen Wei")
+            # The email the customer gave for payment reminders shows to staff; none, no line.
+            await expect(chen.get_by_test_id("signup-email")).to_have_text("chen.wei@example.test")
+            await expect(chen.get_by_test_id("signup-phone-mark")).to_have_text("Verified")
+            aisyah = open_rows.filter(has_text="Aisyah R.")
+            await expect(aisyah.get_by_test_id("signup-phone-mark")).to_have_text("Not verified")
+            await expect(aisyah.get_by_test_id("signup-email")).to_have_count(0)
+            await expect(aisyah).to_contain_text("Customer record: Aisyah Rahman")
+            await expect(aisyah).to_contain_text("Wants the Pro plan")
+
+            # A decided sign-up keeps its reason, marked staff only.
+            decided = page.get_by_test_id("signup-decided")
+            await expect(decided).to_have_count(1)
+            await expect(decided.get_by_test_id("signup-outcome")).to_have_text("Declined")
+            await expect(decided).to_contain_text("Reason (only staff see this): Duplicate request")
+
+            # The expiry strip: whole days only, saved with version 0 on the first save.
+            strip = page.get_by_test_id("signup-settings")
+            await expect(strip).to_contain_text("Pending sign-ups expire after")
+            await expect(strip).to_contain_text("days (0 = never)")
+            days = strip.get_by_test_id("signup-expiry-days")
+            save = strip.get_by_test_id("signup-expiry-save")
+            await expect(days).to_have_value("14")
+            await expect(save).to_be_disabled()
+            await days.fill("91")
+            await expect(save).to_be_disabled()
+            await days.fill("7")
+            await save.click()
+            await expect(page.get_by_text("Saved. Pending sign-ups will expire")).to_be_visible()
+            puts = [c for c in world.calls if c["method"] == "PUT"]
+            assert [(c["path"], c["body"], c["csrf"]) for c in puts] == [
+                (
+                    "subscriptions/settings",
+                    {"pending_expiry_days": 7, "version": 0},
+                    "synthetic-csrf",
+                )
+            ], puts
+            await expect(days).to_have_value("7")
+            await expect(save).to_be_disabled()
+
+            # Approve sends no body and moves the sign-up to the decided list.
+            await chen.get_by_test_id("signup-approve").click()
+            await expect(page.get_by_text("Approved. Chen Wei is waiting to start")).to_be_visible()
+            await expect(open_rows).to_have_count(1, timeout=WAIT)
+            await expect(badge).to_have_text("Open: 1", timeout=WAIT)
+            approves = [c for c in world.calls if c["path"].endswith("/approve")]
+            assert [(c["path"], c["body"], c["csrf"]) for c in approves] == [
+                (f"subscriptions/signups/{SIGNUP_VERIFIED}/approve", None, "synthetic-csrf")
+            ], approves
+            await expect(decided).to_have_count(2)
+            await expect(
+                decided.filter(has_text="Chen Wei").get_by_test_id("signup-outcome")
+            ).to_have_text("Approved by staff")
+
+            # Decline opens a reason box that says who sees it, and sends the trimmed reason.
+            await open_rows.first.get_by_test_id("signup-decline").click()
+            form = page.get_by_test_id("signup-decline-form")
+            await expect(form).to_contain_text("only staff see this")
+            await form.get_by_test_id("signup-reason").fill("  Not a customer  ")
+            await form.get_by_test_id("signup-decline-confirm").click()
+            await expect(open_rows).to_have_count(0, timeout=WAIT)
+            await expect(badge).to_have_count(0)
+            await expect(
+                page.get_by_text("When a customer signs up for a plan in the chat")
+            ).to_be_visible()
+            declines = [c for c in world.calls if c["path"].endswith("/decline")]
+            assert [(c["path"], c["body"]) for c in declines] == [
+                (f"subscriptions/signups/{SIGNUP_TYPED}/decline", {"reason": "Not a customer"})
+            ], declines
+            await expect(decided).to_have_count(3)
+
+    await with_browser(body)
+
+
+async def test_a_refused_approval_says_why_and_the_sign_up_stays(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.approve_error = "plan_not_open"
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            row = page.get_by_test_id("signup-open").filter(has_text="Chen Wei")
+            await expect(row).to_be_visible(timeout=WAIT)
+            await row.get_by_test_id("signup-approve").click()
+            await expect(row).to_contain_text("closed to new sign-ups or archived")
+            await expect(page.get_by_test_id("signup-open")).to_have_count(2)
+            await expect(row.get_by_test_id("signup-approve")).to_be_enabled()
+
+    await with_browser(body)
+
+
+async def test_read_only_members_see_sign_ups_without_controls(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, role="read_only", wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            await expect(page.get_by_test_id("signup-open")).to_have_count(2, timeout=WAIT)
+            await expect(page.get_by_test_id("signup-approve")).to_have_count(0)
+            await expect(page.get_by_test_id("signup-decline")).to_have_count(0)
+            await expect(page.get_by_test_id("signup-expiry-days")).to_be_disabled()
+            await expect(page.get_by_test_id("signup-expiry-save")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_plan_sign_up_switches_are_saved_with_the_plan(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Staff approve", timeout=WAIT
+            )
+            await page.get_by_test_id("plan-edit-basic").click()
+            mode = page.get_by_test_id("plan-edit-signup-mode")
+            await expect(mode).to_have_value("staff")
+            await expect(page.get_by_test_id("plan-edit-closed")).not_to_be_checked()
+            await expect(mode.locator("option")).to_have_text(
+                ["Staff approve", "Sign up automatically"]
+            )
+            await mode.select_option("auto")
+            await page.get_by_test_id("plan-edit-save").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Sign up automatically"
+            )
+            await page.get_by_test_id("plan-edit-basic").click()
+            await page.get_by_test_id("plan-edit-closed").check()
+            await page.get_by_test_id("plan-edit-save").click()
+            await expect(page.get_by_test_id("plan-signups-basic")).to_have_text(
+                "Closed to new sign-ups"
+            )
+            patches = [c for c in world.calls if c["method"] == "PATCH"]
+            assert [(c["body"]["signup_mode"], c["body"]["is_signup_open"]) for c in patches] == [
+                ("auto", True),
+                ("auto", False),
+            ], patches
+
+            # A new plan can start closed and automatic.
+            await page.get_by_test_id("plan-add").click()
+            form = page.get_by_test_id("plan-form")
+            await expect(form.get_by_test_id("plan-signup-mode")).to_have_value("staff")
+            await expect(form.get_by_test_id("plan-closed")).not_to_be_checked()
+            await expect(form).to_contain_text("Closed to new sign-ups")
+
+    await with_browser(body)
+
+
+async def test_pending_subscriptions_wait_to_start_and_are_not_active(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        who = customer("88888888-8888-4888-8888-aaaaaaaaaaaa", "Imran Aziz", "+60130000005")
+        world.subs[PENDING_SUB] = {
+            **subscription(PENDING_SUB, who, "basic", "59.90"),
+            "status": "pending",
+            "renews_at": None,
+        }
+        world.events[PENDING_SUB] = [
+            {
+                "id": 1,
+                "actor": "system:signup_auto",
+                "action": "signup_approved",
+                "from_status": None,
+                "to_status": "pending",
+                "payload": {"plan": "basic", "request_id": SIGNUP_VERIFIED},
+                "created_at": "2026-09-27T01:00:00Z",
+            }
+        ]
+        async with subs_page(browser, site, world) as page:
+            rows = page.get_by_test_id("subscription-row")
+            await expect(rows).to_have_count(7)
+            # Pending is its own chip and is never counted as active.
+            await expect(page.get_by_test_id("customers-view-pending")).to_have_text(
+                "Waiting to start (1)"
+            )
+            await expect(page.get_by_test_id("customers-view-active")).to_have_text("Active (4)")
+            await expect(page.get_by_test_id("summary-active-value")).to_have_text("4")
+            await page.get_by_test_id("customers-view-pending").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.first.get_by_test_id("subscription-status")).to_have_text(
+                "Waiting to start"
+            )
+
+            # The drawer offers Start and Cancel now, and nothing else.
+            drawer = await open_customer(page, "Imran Aziz")
+            await expect(drawer.get_by_test_id("subscription-detail-status")).to_have_text(
+                "Waiting to start"
+            )
+            actions = drawer.get_by_test_id("subscription-actions").get_by_role("button")
+            await expect(actions).to_have_text(["Start subscription", "Cancel now"])
+            await expect(drawer.get_by_test_id("subscription-timeline")).to_contain_text(
+                "Sign-up approved automatically for the Basic plan. Waiting to start."
+            )
+
+    await with_browser(body)
+
+
+async def test_a_pending_subscription_names_its_invoice_and_links_to_payments(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = RichWorld(site.upstream)
+        who = customer("88888888-8888-4888-8888-aaaaaaaaaaaa", "Imran Aziz", "+60130000005")
+        world.subs[PENDING_SUB] = {
+            **subscription(PENDING_SUB, who, "basic", "59.90"),
+            "status": "pending",
+            "renews_at": None,
+        }
+        world.events[PENDING_SUB] = [
+            {
+                "id": 1,
+                "actor": "system:signup_auto",
+                "action": "signup_approved",
+                "from_status": None,
+                "to_status": "pending",
+                "payload": {"plan": "basic", "request_id": SIGNUP_VERIFIED},
+                "created_at": "2026-09-27T01:00:00Z",
+            },
+            {
+                "id": 2,
+                "actor": "system:payments_due",
+                "action": "suspended_unpaid",
+                "from_status": "active",
+                "to_status": "paused",
+                "payload": {"invoice_id": "inv_0007"},
+                "created_at": "2026-09-28T01:00:00Z",
+            },
+        ]
+        world.open_invoices[PENDING_SUB] = {
+            "id": "inv_0007",
+            "reference": "K7QX-4MF",
+            "status": "issued",
+            "amount": "59.90",
+            "currency": "MYR",
+            "due_at": "2026-11-10T01:00:00Z",
+        }
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Imran Aziz")
+            line = drawer.get_by_test_id("subscription-open-invoice")
+            await expect(line).to_contain_text("Invoice K7QX-4MF · Waiting for payment")
+            link = line.get_by_test_id("subscription-open-in-payments")
+            await expect(link).to_have_text("Open in Payments")
+            await expect(link).to_have_attribute("href", "/portal/payments?invoice=inv_0007")
+            await expect(drawer.get_by_test_id("subscription-timeline")).to_contain_text(
+                "Paused because an invoice stayed unpaid."
+            )
+            # A subscription with no open invoice shows no invoice line.
+            await drawer.get_by_test_id("subscription-close").click()
+            other = await open_customer(page, "Aisyah Rahman")
+            await expect(other.get_by_test_id("subscription-details")).to_be_visible()
+            await expect(other.get_by_test_id("subscription-open-invoice")).to_have_count(0)
+
+        # Read-only members see the invoice line but no link: Payments refuses them.
+        async with subs_page(browser, site, world, role="read_only") as page:
+            drawer = await open_customer(page, "Imran Aziz")
+            await expect(drawer.get_by_test_id("subscription-open-invoice")).to_contain_text(
+                "Invoice K7QX-4MF · Waiting for payment"
+            )
+            await expect(drawer.get_by_test_id("subscription-open-in-payments")).to_have_count(0)
+
+    await with_browser(body)
+
+
 @pytest.mark.parametrize("theme", THEMES)
 async def test_subscriptions_at_five_widths_in_three_themes(site: Site, theme: str) -> None:
     async def body(browser: Any) -> None:
@@ -1258,5 +1729,415 @@ async def test_subscriptions_at_five_widths_in_three_themes(site: Site, theme: s
                         assert item["ratio"] >= 4.5, (theme, item)
                 await page.keyboard.press("Escape")
                 await expect(drawer).to_be_hidden(timeout=WAIT)
+
+    await with_browser(body)
+
+
+def link_calls(world: World) -> list[dict[str, Any]]:
+    return [
+        c
+        for c in world.calls
+        if c["method"] == "POST" and c["path"].startswith("subscriptions/link")
+    ]
+
+
+async def test_link_another_contact_asks_first_then_links_and_unlinks(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            panel = drawer.get_by_test_id("linked-contacts")
+            await expect(panel.get_by_role("heading", name="Linked contacts")).to_be_visible()
+            await expect(panel.get_by_test_id("link-empty")).to_have_text(
+                "This customer is not linked to any other contact."
+            )
+            # The list is read for this customer's contact, with the session's own tenant.
+            reads = [c for c in world.calls if c["path"] == "subscriptions/links"]
+            assert reads and all(c["params"] == {"contact_id": AISYAH_CONTACT} for c in reads), (
+                reads
+            )
+
+            # Pick a contact: nothing is linked until the confirm step is answered.
+            await panel.get_by_test_id("link-another").click()
+            await panel.get_by_test_id("link-search").fill("ben")
+            await panel.get_by_test_id("link-find").click()
+            await panel.get_by_test_id("link-option").filter(has_text="Ben Tan").click()
+            confirm = panel.get_by_test_id("link-confirm")
+            await expect(confirm).to_contain_text("Link Ben Tan to this customer?")
+            await expect(confirm).to_contain_text("You can undo this for 30 days.")
+            assert link_calls(world) == []
+            # Choosing the customer itself is refused before anything is sent.
+            await confirm.get_by_role("button", name="Choose another contact").click()
+            await panel.get_by_test_id("link-search").fill("aisyah")
+            await panel.get_by_test_id("link-find").click()
+            await panel.get_by_test_id("link-option").click()
+            await expect(confirm).to_contain_text(
+                "Choose a different contact. This is the same customer."
+            )
+            await expect(confirm.get_by_test_id("link-confirm-yes")).to_be_disabled()
+            await confirm.get_by_role("button", name="Choose another contact").click()
+            await panel.get_by_test_id("link-search").fill("ben")
+            await panel.get_by_test_id("link-find").click()
+            await panel.get_by_test_id("link-option").filter(has_text="Ben Tan").click()
+            await panel.get_by_test_id("link-confirm-yes").click()
+            await until(lambda: link_calls(world), "the link was never sent")
+
+            calls = link_calls(world)
+            assert [(c["path"], c["body"], c["csrf"]) for c in calls] == [
+                (
+                    "subscriptions/links",
+                    {"contact_a": AISYAH_CONTACT, "contact_b": BEN_CONTACT},
+                    "synthetic-csrf",
+                )
+            ], calls
+            await expect(panel.get_by_test_id("link-done")).to_contain_text(
+                "Linked Aisyah Rahman and Ben Tan."
+            )
+            row = panel.get_by_test_id("link-row")
+            await expect(row).to_have_count(1)
+            await expect(row).to_contain_text("Aisyah Rahman")
+            await expect(row).to_contain_text("Ben Tan")
+            await expect(row.get_by_test_id("link-channels")).to_have_text(["Telegram", "WhatsApp"])
+            await expect(row.get_by_test_id("link-meta")).to_have_text(
+                "Linked by staff · 2 Nov 2026"
+            )
+            await expect(panel.get_by_test_id("link-picker")).to_have_count(0)
+
+            # Unlink while the server says it can be undone: no body, and a plain notice.
+            await row.get_by_test_id("link-unlink").click()
+            await expect(panel.get_by_test_id("link-done")).to_have_text(
+                "Unlinked. The two contacts are separate again."
+            )
+            calls = link_calls(world)
+            assert [(c["path"], c["body"], c["csrf"]) for c in calls[1:]] == [
+                (f"subscriptions/links/{world.links[0]['id']}/unlink", None, "synthetic-csrf")
+            ], calls
+            await expect(row.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(row.get_by_test_id("link-note")).to_have_text("Undone on 2 Nov 2026.")
+
+    await with_browser(body)
+
+
+async def test_unlink_names_what_could_not_be_put_back(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben = world.contacts[0], world.contacts[1]
+        world.links = [
+            link_row(
+                LINK_RECENT,
+                linked(aisyah, ["telegram"]),
+                linked(ben, ["whatsapp"]),
+                reason="verified_phone",
+            )
+        ]
+        world.unlink_skipped = ["loser.telegram_id", "survivor.phone"]
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            panel = drawer.get_by_test_id("linked-contacts")
+            await expect(panel.get_by_test_id("link-meta")).to_have_text(
+                "Matched by a verified phone number · 30 Oct 2026"
+            )
+            await panel.get_by_test_id("link-unlink").click()
+            await expect(panel.get_by_test_id("link-done")).to_have_text(
+                "Unlinked. Not everything could be put back, because it changed after the link or "
+                "another contact now has it: Ben Tan's Telegram account, "
+                "Aisyah Rahman's phone number."
+            )
+
+    await with_browser(body)
+
+
+async def test_a_link_that_cannot_be_undone_says_why(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben, chen = world.contacts
+        world.links = [
+            link_row(
+                LINK_OLD,
+                linked(aisyah, ["telegram"]),
+                linked(chen, ["whatsapp"]),
+                created_at="2026-09-01T02:00:00Z",
+                can_unlink=False,
+            ),
+            link_row(
+                LINK_RECENT,
+                linked(aisyah, ["telegram"]),
+                linked(ben, ["email"]),
+                created_at="2026-10-31T02:00:00Z",
+                can_unlink=False,
+            ),
+        ]
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            panel = drawer.get_by_test_id("linked-contacts")
+            rows = panel.get_by_test_id("link-row")
+            await expect(rows).to_have_count(2)
+            await expect(panel.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(rows.filter(has_text="Chen Wei").get_by_test_id("link-note")).to_have_text(
+                "This link is older than 30 days and can no longer be undone here."
+            )
+            await expect(rows.filter(has_text="Ben Tan").get_by_test_id("link-note")).to_have_text(
+                "A newer link on one of these contacts has to be undone first."
+            )
+
+    await with_browser(body)
+
+
+async def test_a_refused_link_says_why_and_changes_nothing(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.link_error = "telegram_conflict"
+        async with subs_page(browser, site, world) as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            panel = drawer.get_by_test_id("linked-contacts")
+            await panel.get_by_test_id("link-another").click()
+            await panel.get_by_test_id("link-search").fill("ben")
+            await panel.get_by_test_id("link-find").click()
+            await panel.get_by_test_id("link-option").filter(has_text="Ben Tan").click()
+            await panel.get_by_test_id("link-confirm-yes").click()
+            await expect(panel.get_by_test_id("link-picker")).to_contain_text(
+                "These two contacts each have their own Telegram account, so they can't be linked."
+            )
+            assert len(link_calls(world)) == 1
+            await expect(panel.get_by_test_id("link-row")).to_have_count(0)
+            # The person can step back and choose someone else.
+            await expect(panel.get_by_test_id("link-confirm-yes")).to_be_enabled()
+            await panel.get_by_role("button", name="Choose another contact").click()
+            await expect(panel.get_by_test_id("link-search")).to_be_visible()
+
+    await with_browser(body)
+
+
+async def test_needs_review_links_or_dismisses_each_pair(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben, chen = world.contacts
+        world.reviews = [
+            review_row(
+                REVIEW_SEVERAL,
+                linked(aisyah, ["telegram"]),
+                linked(chen, ["whatsapp"]),
+                "several_matches",
+            ),
+            review_row(
+                REVIEW_TELEGRAM,
+                linked(ben, ["telegram"]),
+                linked(chen, ["telegram"]),
+                "telegram_conflict",
+            ),
+        ]
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            rows = page.get_by_test_id("review-open")
+            await expect(rows).to_have_count(2, timeout=WAIT)
+            reads = [c for c in world.calls if c["path"] == "subscriptions/link-reviews"]
+            assert reads and all(c["params"] == {"status": "open"} for c in reads), reads
+            first = rows.filter(has_text="Chen Wei").filter(has_text="Aisyah Rahman")
+            await expect(first.get_by_test_id("review-reason")).to_have_text(
+                "Several contacts have this phone number, so it was not linked automatically."
+            )
+            await expect(first.get_by_test_id("link-channels")).to_have_text(
+                ["Telegram", "WhatsApp"]
+            )
+            second = rows.filter(has_text="Ben Tan")
+            await expect(second.get_by_test_id("review-reason")).to_have_text(
+                "Both contacts have their own Telegram account, so they were not linked "
+                "automatically."
+            )
+
+            await first.get_by_role("button", name="Link them").click()
+            await expect(page.get_by_text("Linked Aisyah Rahman and Chen Wei.")).to_be_visible()
+            await expect(rows).to_have_count(1, timeout=WAIT)
+            await second.get_by_role("button", name="Not the same person").click()
+            await expect(rows).to_have_count(0, timeout=WAIT)
+            await expect(page.get_by_text("Nothing needs review.")).to_be_visible()
+            await expect(
+                page.get_by_text("Closed. Ben Tan and Chen Wei stay separate contacts.")
+            ).to_be_visible()
+            posts = [(c["path"], c["body"], c["csrf"]) for c in link_calls(world)]
+            assert posts == [
+                (
+                    f"subscriptions/link-reviews/{REVIEW_SEVERAL}/resolve",
+                    {"resolution": "linked"},
+                    "synthetic-csrf",
+                ),
+                (
+                    f"subscriptions/link-reviews/{REVIEW_TELEGRAM}/resolve",
+                    {"resolution": "dismissed"},
+                    "synthetic-csrf",
+                ),
+            ], posts
+
+    await with_browser(body)
+
+
+async def test_a_merged_pair_tells_staff_to_dismiss_the_review(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, _ben, chen = world.contacts
+        world.reviews = [
+            review_row(
+                REVIEW_SEVERAL,
+                linked(aisyah, ["telegram"]),
+                linked(chen, []),
+                "previously_unlinked",
+            )
+        ]
+        world.review_error = "contact_merged"
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            row = page.get_by_test_id("review-open")
+            await expect(row).to_have_count(1, timeout=WAIT)
+            await expect(row.get_by_test_id("link-channels")).to_have_text(
+                ["Telegram", "No chat channel yet"]
+            )
+            await row.get_by_role("button", name="Link them").click()
+            await expect(row).to_contain_text("choose Not the same person to close it")
+            await expect(row).to_have_count(1)
+            await row.get_by_role("button", name="Not the same person").click()
+            await expect(row).to_have_count(0, timeout=WAIT)
+
+    await with_browser(body)
+
+
+# Two contacts on no subscription at all: a link between them shows only under Recent links.
+LONE_A = "77777777-7777-4777-8777-aaaaaaaaaaaa"
+LONE_B = "77777777-7777-4777-8777-bbbbbbbbbbbb"
+
+
+def lone_pair() -> tuple[dict[str, Any], dict[str, Any]]:
+    return (
+        {
+            "id": LONE_A,
+            "full_name": "Intan Lone",
+            "phone": "+60111000001",
+            "channels": ["whatsapp"],
+        },
+        {"id": LONE_B, "full_name": None, "phone": None, "channels": ["telegram"]},
+    )
+
+
+async def test_recent_links_show_every_link_and_unlink_from_the_list(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben, _chen = world.contacts
+        first, second = lone_pair()
+        world.links = [
+            link_row(
+                LINK_OLD,
+                linked(aisyah, ["telegram"]),
+                linked(ben, ["email"]),
+                created_at="2026-10-20T02:00:00Z",
+                can_unlink=False,
+                unlinked_at="2026-10-21T02:00:00Z",
+            ),
+            link_row(LINK_RECENT, first, second, reason="verified_phone"),
+        ]
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            panel = page.get_by_test_id("recent-links")
+            rows = panel.get_by_test_id("link-row")
+            await expect(rows).to_have_count(2, timeout=WAIT)
+            # Every link of the company, newest first, read without a contact.
+            reads = [c for c in world.calls if c["path"] == "subscriptions/links"]
+            assert reads and all(c["params"] == {"limit": "20"} for c in reads), reads
+            lone = rows.nth(0)
+            await expect(lone).to_contain_text("Intan Lone")
+            await expect(lone).to_contain_text("Unnamed customer")
+            await expect(lone.get_by_test_id("link-channels")).to_have_text(
+                ["WhatsApp", "Telegram"]
+            )
+            await expect(lone.get_by_test_id("link-meta")).to_have_text(
+                "Matched by a verified phone number · 30 Oct 2026"
+            )
+            older = rows.nth(1)
+            await expect(older).to_contain_text("Aisyah Rahman")
+            await expect(older.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(older.get_by_test_id("link-note")).to_have_text("Undone on 21 Oct 2026.")
+
+            await lone.get_by_test_id("link-unlink").click()
+            await expect(panel.get_by_test_id("link-done")).to_have_text(
+                "Unlinked. The two contacts are separate again."
+            )
+            posts = [(c["path"], c["body"], c["csrf"]) for c in link_calls(world)]
+            assert posts == [
+                (f"subscriptions/links/{LINK_RECENT}/unlink", None, "synthetic-csrf")
+            ], posts
+            await expect(lone.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(lone.get_by_test_id("link-note")).to_have_text("Undone on 2 Nov 2026.")
+
+    await with_browser(body)
+
+
+async def test_recent_links_say_so_when_there_are_none(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            await expect(page.get_by_test_id("recent-links")).to_contain_text(
+                "No contacts have been linked yet.", timeout=WAIT
+            )
+
+    await with_browser(body)
+
+
+async def test_read_only_members_see_links_and_reviews_without_controls(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        aisyah, ben, chen = world.contacts
+        world.links = [
+            link_row(LINK_RECENT, linked(aisyah, ["telegram"]), linked(ben, ["whatsapp"]))
+        ]
+        world.reviews = [
+            review_row(
+                REVIEW_SEVERAL,
+                linked(aisyah, ["telegram"]),
+                linked(chen, ["whatsapp"]),
+                "several_matches",
+            )
+        ]
+        async with subs_page(browser, site, world, role="read_only") as page:
+            drawer = await open_customer(page, "Aisyah Rahman")
+            panel = drawer.get_by_test_id("linked-contacts")
+            await expect(panel.get_by_test_id("link-row")).to_have_count(1)
+            await expect(panel.get_by_test_id("link-unlink")).to_have_count(0)
+            await expect(panel.get_by_test_id("link-another")).to_have_count(0)
+            await page.keyboard.press("Escape")
+            await expect(drawer).to_be_hidden(timeout=WAIT)
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            await expect(page.get_by_test_id("review-open")).to_have_count(1, timeout=WAIT)
+            await expect(page.get_by_test_id("review-link")).to_have_count(0)
+            await expect(page.get_by_test_id("review-dismiss")).to_have_count(0)
+            recent = page.get_by_test_id("recent-links")
+            await expect(recent.get_by_test_id("link-row")).to_have_count(1)
+            await expect(recent.get_by_test_id("link-unlink")).to_have_count(0)
+        assert link_calls(world) == []
+
+    await with_browser(body)
+
+
+async def test_a_stale_expiry_version_is_read_again_so_the_next_save_works(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world, wait_for_rows=False) as page:
+            await page.get_by_test_id("subscriptions-tab-signups").click()
+            strip = page.get_by_test_id("signup-settings")
+            days = strip.get_by_test_id("signup-expiry-days")
+            save = strip.get_by_test_id("signup-expiry-save")
+            await expect(days).to_have_value("14", timeout=WAIT)
+            # Someone else saves first: the version this page holds is now stale.
+            world.settings = {**world.settings, "pending_expiry_days": 10, "version": 3}
+            await days.fill("7")
+            await save.click()
+            await expect(strip).to_contain_text("Someone else changed this setting.")
+            await expect(days).to_have_value("10")
+            await days.fill("5")
+            await save.click()
+            await expect(page.get_by_text("Saved. Pending sign-ups will expire")).to_be_visible()
+            puts = [c["body"] for c in world.calls if c["method"] == "PUT"]
+            assert puts == [
+                {"pending_expiry_days": 7, "version": 0},
+                {"pending_expiry_days": 5, "version": 3},
+            ], puts
 
     await with_browser(body)

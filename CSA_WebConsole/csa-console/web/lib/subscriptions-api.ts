@@ -1,8 +1,11 @@
 import { api, patch, post } from "./api";
+import type { InvoiceStatus } from "./payments-api";
 import type { ProposalOut } from "./workspace-api";
 
 /** Mirrors of csa/subscriptions/contracts.py. Decimals arrive as JSON strings. */
-export type SubscriptionStatus = "active" | "paused" | "cancelled";
+export type SubscriptionStatus = "pending" | "active" | "paused" | "cancelled";
+/** How a sign-up for a plan is decided: staff approve it, or it is approved at once. */
+export type SignupMode = "staff" | "auto";
 export type BillingInterval = "month" | "year";
 type Amount = string | number;
 
@@ -15,6 +18,9 @@ export interface PlanOut {
   features: string[];
   sort_order: number;
   is_active: boolean;
+  signup_mode: SignupMode;
+  /** False: customers cannot sign up for the plan in the chat. */
+  is_signup_open: boolean;
 }
 
 export interface PlanIn {
@@ -25,6 +31,8 @@ export interface PlanIn {
   billing_interval?: BillingInterval;
   features?: string[];
   sort_order?: number;
+  signup_mode?: SignupMode;
+  is_signup_open?: boolean;
 }
 
 export interface PlanPatch {
@@ -34,6 +42,8 @@ export interface PlanPatch {
   features?: string[] | null;
   sort_order?: number | null;
   is_active?: boolean | null;
+  signup_mode?: SignupMode | null;
+  is_signup_open?: boolean | null;
 }
 
 export interface CustomerRef {
@@ -77,9 +87,21 @@ export interface SubscriptionEventOut {
   created_at: string;
 }
 
+/** Mirrors InvoiceBrief: the subscription's open invoice as its drawer shows it. Money is a string. */
+export interface InvoiceBrief {
+  id: string;
+  reference: string | null;
+  status: InvoiceStatus;
+  amount: string;
+  currency: string;
+  due_at: string | null;
+}
+
 export interface SubscriptionDetail {
   subscription: SubscriptionOut;
   events: SubscriptionEventOut[];
+  /** The invoice still waiting for payment, if any (Payments). */
+  open_invoice: InvoiceBrief | null;
 }
 
 export interface SubscriptionCreateIn {
@@ -90,6 +112,7 @@ export interface SubscriptionCreateIn {
 }
 
 export type SubscriptionAction =
+  | "activate"
   | "pause"
   | "resume"
   | "change_plan"
@@ -136,6 +159,91 @@ export interface DecideIn {
   resume_at?: string | null;
 }
 
+export type SignupStatus = "pending" | "approved" | "declined" | "expired";
+
+/** Mirrors SignupOut: `full_name` and `phone` are what the customer typed; `contact` is the record as it stands. */
+export interface SignupOut {
+  id: string;
+  contact: CustomerRef;
+  plan_code: string;
+  plan_name: string | null;
+  full_name: string;
+  phone: string;
+  /** The contact's phone was verified by its channel and is the typed number. */
+  phone_verified: boolean;
+  status: SignupStatus;
+  decided_via: "staff" | "auto" | null;
+  /** Staff only: never sent to the customer. */
+  decline_reason: string | null;
+  subscription_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+  source_channel: string | null;
+  /** The invoice issued when an automatic sign-up started waiting for payment. */
+  invoice_reference: string | null;
+  /** The email the customer gave at sign-up for payment reminders. Staff only. */
+  email: string | null;
+}
+
+export interface SignupPage {
+  items: SignupOut[];
+  next_cursor: string | null;
+}
+
+export interface DeclineIn {
+  reason?: string | null;
+}
+
+/** Mirrors csa/contacts/contracts.py. A contact as the link screens show it: no email, no Telegram account. */
+export interface LinkedContact {
+  id: string;
+  full_name: string | null;
+  phone: string | null;
+  /** Channel codes (telegram, whatsapp, ...), including those a not-yet-undone link moved off the loser. */
+  channels: string[];
+}
+
+export type LinkReason = "verified_phone" | "staff";
+export type ReviewReason =
+  | "several_matches"
+  | "telegram_conflict"
+  | "same_channel_identity"
+  | "table_conflict"
+  | "previously_unlinked";
+
+export interface LinkIn {
+  contact_a: string;
+  contact_b: string;
+}
+
+export interface LinkOut {
+  id: string;
+  survivor: LinkedContact;
+  loser: LinkedContact;
+  reason: LinkReason;
+  created_at: string;
+  unlinked_at: string | null;
+  /** Not undone, within 30 days, and no later active link on either contact. */
+  can_unlink: boolean;
+}
+
+export interface UnlinkResultOut {
+  /** Contact columns the unlink left alone, as "role.column" (for example "loser.telegram_id"). */
+  skipped: string[];
+}
+
+export type ReviewResolution = "linked" | "dismissed";
+
+export interface ReviewOut {
+  id: string;
+  contact_a: LinkedContact;
+  contact_b: LinkedContact;
+  reason: ReviewReason;
+  status: "open" | "resolved";
+  resolution: ReviewResolution | null;
+  created_at: string;
+}
+
 export interface SubscriptionQuery {
   q?: string;
   status?: SubscriptionStatus | "";
@@ -165,10 +273,24 @@ const id = (value: string) => `/${encodeURIComponent(value)}`;
 export interface SubscriptionSettings {
   /** The tenant's IANA time zone (clients.timezone). */
   timezone: string;
+  /** Days a pending subscription waits before it expires; 0 means never. */
+  pending_expiry_days: number;
+  /** 0 until the company has saved settings; sent back on the save. */
+  version: number;
+}
+
+export interface SettingsIn {
+  pending_expiry_days: number;
+  version: number;
 }
 
 export function getSettings(tenantId: string | null): Promise<SubscriptionSettings> {
   return api(subscriptionsPath(tenantId, "/settings"));
+}
+
+/** Saves the settings as a whole. Send the version that was read (0 before the first save). */
+export function putSettings(tenantId: string | null, body: SettingsIn): Promise<SubscriptionSettings> {
+  return api(subscriptionsPath(tenantId, "/settings"), { method: "PUT", body: JSON.stringify(body) });
 }
 
 export function listPlans(tenantId: string | null, includeArchived: boolean): Promise<PlanOut[]> {
@@ -221,6 +343,59 @@ export function decideRequest(tenantId: string | null, requestId: string, body: 
   return post(subscriptionsPath(tenantId, `/requests${id(requestId)}/decide`), body);
 }
 
+export function listSignups(
+  tenantId: string | null,
+  status: "pending" | "decided",
+  before?: string | null,
+): Promise<SignupPage> {
+  return api(subscriptionsPath(tenantId, "/signups", { status, before }));
+}
+
+/** Approving makes one pending subscription; the route takes no body. */
+export function approveSignup(tenantId: string | null, signupId: string): Promise<SignupOut> {
+  return api(subscriptionsPath(tenantId, `/signups${id(signupId)}/approve`), { method: "POST" });
+}
+
+export function declineSignup(tenantId: string | null, signupId: string, body: DeclineIn): Promise<SignupOut> {
+  return post(subscriptionsPath(tenantId, `/signups${id(signupId)}/decline`), body);
+}
+
+/** Links of one customer, newest first: those where the contact is the survivor or the loser. */
+export function listLinks(tenantId: string | null, contactId: string): Promise<LinkOut[]> {
+  return api(subscriptionsPath(tenantId, "/links", { contact_id: contactId }));
+}
+
+/** How many links the Sign-ups tab lists; the route allows up to 200. */
+export const RECENT_LINKS_LIMIT = 20;
+
+/** Every link of the company, newest first, whoever the contacts are (the Sign-ups tab list). */
+export function listRecentLinks(tenantId: string | null, limit = RECENT_LINKS_LIMIT): Promise<LinkOut[]> {
+  return api(subscriptionsPath(tenantId, "/links", { limit: String(limit) }));
+}
+
+export function linkContacts(tenantId: string | null, body: LinkIn): Promise<LinkOut> {
+  return post(subscriptionsPath(tenantId, "/links"), body);
+}
+
+/** Undoes a link; the route takes no body and names what it could not put back in `skipped`. */
+export function unlinkContacts(tenantId: string | null, linkId: string): Promise<UnlinkResultOut> {
+  return api(subscriptionsPath(tenantId, `/links${id(linkId)}/unlink`), { method: "POST" });
+}
+
+/** Pairs of contacts the system could not link by itself, newest first. */
+export function listReviews(tenantId: string | null, status: "open" | "resolved" = "open"): Promise<ReviewOut[]> {
+  return api(subscriptionsPath(tenantId, "/link-reviews", { status }));
+}
+
+/** `linked` links the pair as staff; `dismissed` closes the review and links nothing. */
+export function resolveReview(
+  tenantId: string | null,
+  reviewId: string,
+  resolution: ReviewResolution,
+): Promise<ReviewOut> {
+  return post(subscriptionsPath(tenantId, `/link-reviews${id(reviewId)}/resolve`), { resolution });
+}
+
 // ---- Display helpers (docs/WRITING_GUIDE.md: "RM 59.90", "27 Oct 2026, 09:15") ----
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -269,6 +444,7 @@ export function formatDateTime(value: unknown, timeZone?: string): string {
 }
 
 export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  pending: "Waiting to start",
   active: "Active",
   paused: "Paused",
   cancelled: "Cancelled",
@@ -276,11 +452,12 @@ export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
 
 // Mirrors csa/subscriptions/executor.py ALLOWED_FROM; the server refuses anything else.
 const ALLOWED_FROM: Record<SubscriptionAction, SubscriptionStatus[]> = {
+  activate: ["pending"],
   pause: ["active"],
   resume: ["paused"],
   change_plan: ["active", "paused"],
   cancel_at_period_end: ["active"],
-  cancel_now: ["active", "paused"],
+  cancel_now: ["active", "paused", "pending"],
   extend_renewal: ["active"],
 };
 
@@ -306,6 +483,7 @@ export function dayAfter(today: Date = new Date()): string {
 }
 
 const SYSTEM_ACTOR = "system:subscriptions_due";
+const SIGNUP_AUTO_ACTOR = "system:signup_auto";
 
 function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -332,6 +510,16 @@ export function eventSentence(
   switch (event.action) {
     case "created":
       sentence = `Subscription started on the ${plan("plan")} plan.`;
+      break;
+    case "signup_approved":
+      sentence = `Sign-up approved ${event.actor === SIGNUP_AUTO_ACTOR ? "automatically" : "by staff"} for the ${
+        plan("plan")} plan. Waiting to start.`;
+      break;
+    case "activated":
+      sentence = p.via === "payment" ? "Subscription started when the payment was recorded." : "Subscription started.";
+      break;
+    case "pending_expired":
+      sentence = "Expired before it started, so it was cancelled.";
       break;
     case "paused":
       sentence = str(p.resume_at) ? `Paused until ${day("resume_at")}.` : "Paused until someone resumes it.";
@@ -373,6 +561,18 @@ export function eventSentence(
       break;
     case "renewed":
       sentence = `Renewed for another period. Next renewal on ${day("renews_at")}.`;
+      break;
+    // Payments (csa/payments/invoices.py mark_paid and the payments due job).
+    case "payment_recorded":
+      sentence = p.recorded_only === true
+        ? "A payment was recorded; the cancelled subscription stays cancelled."
+        : "A payment was recorded.";
+      break;
+    case "resumed_paid":
+      sentence = "Resumed after the overdue payment was recorded.";
+      break;
+    case "suspended_unpaid":
+      sentence = "Paused because an invoice stayed unpaid.";
       break;
     default:
       sentence = "Subscription updated.";

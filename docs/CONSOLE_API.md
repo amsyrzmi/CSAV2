@@ -1,7 +1,7 @@
 # Console API contract (v1)
 
-Current release/domain continuation:
-[handoff and prompt](archive/handoffs/2026-10-19-domain-release-next-session.md).
+Current release state: see [PROGRESS.md](./PROGRESS.md) and
+[deploy/RELEASE.md](../deploy/RELEASE.md).
 M6 remains incomplete; this contract is not public deployment approval. M6A local
 records are not a live provider feed, and the new M6B verifier has no supported
 console callback/runtime registration. Mounted legacy marketplace OAuth routes are
@@ -13,15 +13,14 @@ acceptance; public browser/ingress and staging have not. See
 
 M0–M5 plus offline M6A implementation (M4 functionally closed with accepted dev performance exception, 2026-10-16): the retained Next.js presentation calls one CSAV2
 gateway through same-origin `/console/v1/*`. The copied Python API is reference only.
-See the [migration plan](archive/handoffs/2026-10-15-console-source-migration-plan.md) and
-[frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
+See the [frontend adoption instructions](../CSA_WebConsole/csa-console/web/README.md).
 Offline M6B TikTok order-page validation is internal adapter groundwork only: it adds no
 console routes or live connection claims. Complete provider response-contract verification,
 tenant/store-bound credential resolution and safe browser projections remain required;
 the normalized internal ecommerce order is not a console response model.
 Official v202309 request paths, pagination placement and detail envelope have since been
 verified/corrected; line-item quantity/price normalization still blocks provider readiness.
-See the [verified scope and remaining response/grant gates](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6b-official-tiktok-request-verification-2026-10-17-offline-correction).
+The verified scope notes lived in the original migration plan, since removed from the repository (see git history).
 
 ## Staff HR contract (source implementation, 2026-10-21)
 
@@ -572,7 +571,7 @@ The user subsequently accepted **functional M4 closeout with a laptop-dev perfor
 exception**, carrying latency work forward. Laptop hardware is reported context, not a
 proven cause. Benchmarks and `<200 ms` remain unchanged; release performance acceptance
 is still required. M5 may begin as a separate staff surface, not expanded sandbox
-authority. See [the closeout and M5 prompt](archive/handoffs/2026-10-16-m4-closeout-m5-start.md).
+authority. The closeout and M5 prompt were removed from the repository (see git history).
 See [current evidence](./PROGRESS.md). Offline tests/build are not live-browser evidence.
 Future replacements still require scoped approval. No public rollout is implied.
 
@@ -1179,29 +1178,40 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /settings` | any tenant member | `{timezone}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar |
-| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active}` |
-| `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `billing_interval` is `month` or `year`. 409 `plan_exists`; audited `subscriptions.plan.created` |
-| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives). 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active or paused subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
+| `GET /settings` | any tenant member | `{timezone, pending_expiry_days, version}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar, and the days a pending subscription waits before it expires (default 14 until the company saves a value; `0` means never; `version` is 0 until the first save) |
+| `PUT /settings` | writers | Body `{pending_expiry_days (0-90), version}`; returns `SettingsOut`. The first save makes the row (send `version: 0`); a save from an older read is 409 `version_conflict`; out-of-range values are 422; audited `subscriptions.settings.updated` |
+| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active, signup_mode, is_signup_open}` |
+| `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?, signup_mode?, is_signup_open?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `currency` (default `MYR`) is three upper-case letters (`^[A-Z]{3}$`, else 422), `billing_interval` is `month` or `year`, `signup_mode` is `staff` (default: staff decide a sign-up) or `auto` (a sign-up is approved at once), `is_signup_open` (default true) says whether customers can sign up for the plan in the chat. 409 `plan_exists`; audited `subscriptions.plan.created` |
+| `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active, paused or pending subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
-| `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
-| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
+| `GET /{id}` | any tenant member | `{subscription, events, open_invoice}`, events being the timeline; `open_invoice` is the newest open invoice of the subscription (`InvoiceBrief` `{id, reference, status, amount, currency, due_at}`, status `issued`, `overdue`, `proof_submitted` or `cash_pending`) or `null`. 404 `subscription_not_found` |
+| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`, 409 `subscription_exists` (the customer already has an active, paused or pending subscription on the plan; it takes the sign-up approval's per-customer-and-plan lock, so racing an approval leaves one); audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
+| `GET /signups?status=pending\|decided&before&limit` | any tenant member | `{items, next_cursor}` of `SignupOut` (newest first, keyset `before`, `limit` 1-100; `pending` is the default, `decided` is approved, declined and expired) |
+| `POST /signups/{id}/approve` | writers | No body; returns the approved `SignupOut`. Creates one `pending` subscription at the plan's price now. 404 `signup_not_found`; 409 `signup_not_pending`; 409 `signup_has_plan` (the customer already has an active, paused or pending subscription on the plan, for example added by hand; the request stays pending for staff to decline); 409 `plan_not_open` (the plan was archived or closed to sign-ups; the request stays pending); audited `subscriptions.signup.approved` |
+| `POST /signups/{id}/decline` | writers | Body `{reason?}` (at most 300 characters; optional body); returns the declined `SignupOut`. 404 `signup_not_found`; 409 `signup_not_pending`; audited `subscriptions.signup.declined` |
+| `GET /links?contact_id=&limit=` | any tenant member | `LinkOut[]` (newest first, `limit` 1-200, default 100): `{id, survivor, loser, reason (verified_phone\|staff), created_at, unlinked_at, can_unlink}`, `survivor` and `loser` being `{id, full_name, phone, channels}`. With `contact_id` only links where that contact is survivor or loser (404 `contact_not_found` for a contact of another company). `channels` is the distinct `contact_identities.channel` of the contact now; for the loser of a link not yet undone it also lists the channels its identities had before the link moved them to the survivor. `can_unlink` is true while the link is not undone, is under 30 days old and no later active link involves either contact: the same rule `unlink` enforces. Never returns what a link moved, email or a Telegram account |
+| `POST /links` | writers | Body `{contact_a, contact_b}`; 201 `LinkOut` with reason `staff`. The survivor is the contact holding a subscription, else the older. 404 `contact_not_found` (unknown contact or another company's); 422 `same_contact`; 409 `contact_merged` (either is already a merged shell); 409 `link_refused:<code>` with the refusal after the colon (`telegram_conflict`, `same_channel_identity`, `table_conflict`; nothing changed); audited `contacts.link.created` |
+| `POST /links/{id}/unlink` | writers | No body; 200 `{skipped}`, the contact columns the unlink left alone as `role.column` (for example `survivor.telegram_id`: changed since the link, or taken by another contact), `[]` for a plain unlink. 404 `link_not_found`; 409 `link_not_active` (already undone), `unlink_window_closed` (older than 30 days), `later_link_active` (undo the newer link first), `survivor_merged` (the survivor was linked into another contact since); audited `contacts.link.removed` |
+| `GET /link-reviews?status=open\|resolved&limit=` | any tenant member | `ReviewOut[]` (newest first, `limit` 1-200, `open` is the default): `{id, contact_a, contact_b, reason (several_matches\|telegram_conflict\|same_channel_identity\|table_conflict\|previously_unlinked), status, resolution (linked\|dismissed\|null), created_at}`, the contacts being `{id, full_name, phone, channels}` as in `LinkOut` |
+| `POST /link-reviews/{id}/resolve` | writers | Body `{resolution: dismissed\|linked}`; returns the settled `ReviewOut`. `dismissed` closes the review and links nothing; `linked` links the pair as staff (reason `staff`; 409 `link_refused:<code>` leaves the review open, and 409 `contact_merged` when one of the pair is already a merged shell: dismiss it). 404 `review_not_found`; 409 `review_not_open`; audited `contacts.review.dismissed` or `contacts.review.linked` |
 | `GET /requests?status=open\|decided` | any tenant member | `{items, next_cursor}` of `RequestOut`, the customer requests staged by the subscription agent, with the decision once one exists |
 | `POST /requests/{id}/decide` | writers | Body `{decision: approve\|decline, note?, resume_at?}`; returns the decided `RequestOut` |
 
 "Writers" are `tenant_admin` and `tenant_staff` in their own tenant, and platform admins
 who select a tenant with `?client_id=`. Every member of the tenant may read, including
 `read_only`; a `read_only` writer attempt and any other tenant's id are 403. The static
-paths (`/settings`, `/plans`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
+paths (`/settings`, `/plans`, `/signups`, `/links`, `/link-reviews`, `/requests`, `/customers`) are registered before `/{id}`. The Customers tab's
 "Add subscription" form uses `GET /customers` to find the customer, then `POST` (the
 collection) with an active plan and an optional start date.
 
 ### Statuses and flags
 
-`status` is `active`, `paused` or `cancelled` (a database check since `0480`; legacy values
-become `cancelled` in the migration). `version` increases on every change and binds a card.
+`status` is `pending`, `active`, `paused` or `cancelled` (a database check since `0480`, `pending` since
+`0580`; legacy values become `cancelled` in the migration). A `pending` subscription is an approved
+customer sign-up that staff have not started: no `renews_at` and no renewal anchor, so it cannot be
+paused or renewed, only started (`activate`) or cancelled. `version` increases on every change and binds a card.
 Flags: `cancel_at_period_end` (cancel when `renews_at` passes), `pending_plan` with
 `pending_effective_at` (a scheduled plan change) and `resume_at` (a date on which a paused
 subscription resumes).
@@ -1214,15 +1224,16 @@ payload carries.
 
 | Action | From | Fields | Effect |
 |---|---|---|---|
+| `activate` | pending | none | "Start the subscription": active; `started_at` and `activated_at` are now; `renews_at` and the renewal anchor are one billing period on the tenant's calendar from now |
 | `pause` | active | optional `resume_at` (date, after today on the tenant's calendar) | paused; `resume_at` set when given |
 | `resume` | paused | none | active; `resume_at` cleared; a lapsed or missing (`NULL`) `renews_at` becomes one billing interval from now |
 | `change_plan` | active, paused | `plan_code` (required), `effective_at`, `price_override` | absent or past `effective_at` changes now at the new plan's current price; a future one sets `pending_plan` and `pending_effective_at` |
 | `cancel_at_period_end` | active, not already flagged, with a `renews_at` | none | sets `cancel_at_period_end` |
-| `cancel_now` | active, paused | none | cancelled immediately; `cancelled_at` set; pending plan, resume date and period-end flag cleared |
+| `cancel_now` | active, paused, pending | none | cancelled immediately; `cancelled_at` set; pending plan, resume date and period-end flag cleared |
 | `extend_renewal` | active | `renews_at` (required) | moves `renews_at`; must be after the current one |
 
-Each executed action records one timeline event keyed by the proposal id (`paused`,
-`resumed`, `plan_changed`, `plan_change_scheduled`, `cancel_scheduled`, `cancelled`,
+Each executed action records one timeline event keyed by the proposal id (`activated`,
+`paused`, `resumed`, `plan_changed`, `plan_change_scheduled`, `cancel_scheduled`, `cancelled`,
 `renewal_extended`), so a confirm replayed after commit returns the same receipt rather
 than acting twice. The card runs the same checks at create and again at confirm; a
 subscription that changed in between fails the confirm with 409 `proposal_stale`. An
@@ -1260,6 +1271,44 @@ existing subscription; the price a subscription pays moves only through a plan c
 timeline records `price_override: true` with the old and new price. A scheduled change is
 applied by the due job at the plan's price on the day, not the price quoted when it was
 scheduled.
+
+### Sign-ups
+
+A customer signs up for a plan in the chat; the bot files one `signup_requests` row (migration
+`0580`) and the request waits for staff, or for the plan: a plan with `signup_mode: "auto"`
+approves it in the same transaction as the filing. `SignupOut` is `{id, contact: {id, full_name,
+phone, email}, plan_code, plan_name, full_name, phone, phone_verified, status, decided_via,
+decline_reason, subscription_id, created_at, decided_at, source_channel, invoice_reference, email}`. `contact` is the
+contact record as it stands. `full_name` and `phone` are what the customer typed (the phone
+normalised); the typed phone stays on the request and is never copied to the contact, and no
+route edits a contact's phone: when the customer already has another contact, staff link the two
+contacts by hand (`POST /links`). `phone_verified` is true only when the
+contact's phone was verified by its channel and equals the typed number. `source_channel` is the
+channel of the contact's newest identity (null when it has none). `email` is the address the
+customer gave in the chat for payment reminders (asked on WhatsApp while payments are on; lower
+case, a claim nobody checked; it also fills the contact's `customer_given_email` only when the
+contact has no address, never its `email`), null when none. `status` is `pending`,
+`approved`, `declined` or `expired`; `decided_via` is `staff` or `auto`.
+
+- One open request per customer and plan: a repeat returns the open one, and a live (active,
+  paused or pending) subscription on the plan files nothing.
+- Approve (and the automatic approval) locks the request, refuses unless it is pending (409
+  `signup_not_pending`), refuses (409 `signup_has_plan`) a customer who already holds the plan,
+  reads the plan again (409 `plan_not_open` unless active and open for sign-ups) and creates the
+  `pending` subscription at the plan's price and currency then, with a `signup_approved` timeline
+  event (actor the approving user, or `system:signup_auto`). Two
+  approvals at once, or a staff approval racing an automatic one, give one subscription and one 409;
+  filing and approving take a per-customer-and-plan lock first, so two filings at once never leave
+  two live subscriptions.
+- Decline stores the optional reason for staff only; it is never sent to the customer.
+- Staff start a pending subscription with the `activate` action; otherwise it expires after the
+  company's `pending_expiry_days`.
+- Payments (migration `0590`): while the company's payments are on, the approval (staff or
+  automatic) also issues the subscription's opening invoice in the same transaction, and
+  `SignupOut.invoice_reference` is its reference (`null` when payments were off, or the invoice
+  is void). Marking it paid starts the subscription. Staff may still start it with `activate`:
+  the open opening invoice then gets the first period (`started_at` to `renews_at`), stays
+  payable, and paying it later only records the payment.
 
 ### Request queue
 
@@ -1303,6 +1352,18 @@ to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
 4. Renew: an active, unflagged subscription whose `renews_at` has passed advances to the
    next step of its renewal cycle (`renewed`).
 
+Invoices (payments): rule 1 voids the open invoices of periods that will not run
+(`period_start` at or after the period end) with `void_reason` `subscription_cancelled` and keeps
+the invoice of the period that ran. Rule 5 (pending expiry) skips a pending subscription that has a
+`proof_submitted` or `cash_pending` invoice (the customer said they paid, or cash is waiting) and
+voids the expired one's opening invoice (`subscription_expired`). `cancel_now` voids the same way
+as rule 1, from now: the opening invoice and the invoices of later periods (`subscription_cancelled`).
+`extend_renewal` voids the open invoices of periods that start from now on (`subscription_changed`,
+a `proof_submitted` one included) and never the opening invoice; the invoice job then issues the one
+for the new renewal date. `pause` voids nothing.
+Rule 2 runs before rule 4, so a plan change due at `renews_at` applies to the period that starts
+then.
+
 A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
 interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date
 use the tenant's calendar (`clients.timezone`, default `Asia/Kuala_Lumpur`).
@@ -1318,6 +1379,68 @@ now or by the job, counts the new interval from the end of the current period.
 Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
 `subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,
 plus the `workspace.proposal.*` rows the registry writes for every card.
+
+## Payments
+
+Payments 1 (migrations `0590`, `0591`). Staff see the company's invoices, record a payment that
+arrived ("Mark paid"), void an invoice, and set up how customers pay. The platform never holds
+money: there is no gateway, card or provider here.
+
+Routes, under `/console/v1/payments` with the usual tenant selection. Human sessions only (the
+machine token is refused) and behind the `subscriptions` package gate (active status only; an
+inactive package is 403 `package_inactive`):
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /settings` | staff | `PaymentSettingsOut` `{enabled, lead_days, reminder_days, suspend_after_days, version}`; a company that never saved reads `{false, 7, [-7, 0, 3, 7], null, 0}` |
+| `PUT /settings` | admins | Body `PaymentSettingsIn` (`lead_days` 1-30, `reminder_days` at most 6 distinct days from -30 to 60, stored sorted, `suspend_after_days` null or 1-90, `version`); returns `PaymentSettingsOut`. The first save sends `version: 0`; an older version is 409 `version_conflict`; `enabled: true` without an active `qr` or `transfer` method is 409 `no_active_method` (cash does not count); audited `payments.settings.updated` |
+| `GET /methods` | staff | `MethodOut[]` `{id, kind, label, details, instructions, is_active, sort_order, version}`, by sort order then label, inactive ones included |
+| `POST /methods` | admins | Body `MethodIn` `{kind (qr\|transfer\|cash), label (1-60), details, instructions?, is_active?, sort_order? (0-100)}`; 201 `MethodOut` (version 1). `details` must fit the kind: `transfer` `{bank_name, account_name, account_number (6-20 digits)}`, `qr` `{duitnow_id, account_name}`, `cash` `{}`; otherwise 422 `invalid_details`; audited `payments.method.created` |
+| `PATCH /methods/{id}` | admins | Body `MethodPatch` (any of `label`, `details` (replaces the whole object), `instructions`, `is_active`, `sort_order`, plus `version`); the kind never changes. 404 `method_not_found` (also another company's id); 409 `version_conflict`; 409 `last_active_method` (turning off the last active `qr`/`transfer` method while payments are on); 422 `invalid_details`; audited `payments.method.updated`. A method is never deleted |
+| `GET /invoices?status=&q=&before=&limit=` | staff | `InvoicePage` `{items: InvoiceOut[], next_before}`, newest `issued_at` first (then id). See filters and cursor below |
+| `GET /invoices/{id}` | staff | `InvoiceDetail`: `InvoiceOut` plus `payment` (`PaymentOut` or `null`) and `reminders` (`ReminderOut[]`, oldest first). `id` is at most 64 characters (422 otherwise); 404 `invoice_not_found` for an unknown id or another company's |
+| `POST /invoices/{id}/mark-paid` | staff | Body `MarkPaidIn` `{request_key (uuid), method_kind (qr\|transfer\|cash), received_at? (with a time zone; now when left out), note? (at most 300)}`; returns the `InvoiceDetail` after the payment. One `payments` ledger row (amount and currency are the invoice's), the invoice `paid`; a pending subscription starts and an unpaid pause lifts as the ledger rules say; an open invoice of a cancelled subscription is a normal 200 that only records the payment (the subscription is untouched). The same `request_key` again returns the same detail and records nothing. 404 `invoice_not_found`; 409 `invoice_already_paid`, `invoice_not_payable` (void, draft or zero), `request_key_reused` (the key already paid another invoice); 422 `received_in_future` (more than 5 minutes ahead; a note over 300 characters is FastAPI's field-list 422, never `invalid_note`); audited `payments.invoice.paid` |
+| `POST /invoices/{id}/void` | staff | Body `VoidIn` `{reason (1-300 after trimming)}`; returns the `InvoiceDetail`. 404 `invoice_not_found`; 409 `invoice_paid`, `invoice_void`; a missing, blank or over-long reason is FastAPI's field-list 422, never `invalid_reason`; audited `payments.invoice.voided` |
+| `GET /attention` | staff | `PaymentAttentionPage` `{items: [{kind, invoice: InvoiceOut, since}]}`, kinds in this order, at most 100 invoices each, each kind oldest `since` first: `proof_submitted` (open invoices a customer said they paid; `since` = `claimed_at`, or `issued_at` when `claimed_at` is null), `needs_nudge` (issued or overdue invoices whose newest reminder row is `no_channel`: no channel could reach the customer; once per invoice; `since` = that row's `created_at`), `reminder_failed` (open invoices with a `failed` reminder in the last 14 days; once per invoice; `since` = the newest failure). A paid, void or draft invoice never appears. Payments 2 adds unmatched statement lines, amount mismatches and duplicate references |
+
+"Staff" are platform admins (with `?client_id=`), `tenant_admin` and `tenant_staff`; "admins" are
+platform admins and `tenant_admin`. `read_only` members get 403 on every Payments route, reads
+included, and another company's `client_id` is 403; those two 403s carry a sentence in `detail` ("payments access requires an administrator or staff role", "payments tenant is not authorized"), not a code. Other refusals are `{"detail": "<code>"}`; a body
+that fails the models' own checks is FastAPI's 422 field list, except method details that do not
+fit the kind, which are `{"detail": "invalid_details"}` on `POST /methods` and `PATCH /methods/{id}`
+alike.
+
+### Invoice models
+
+- `InvoiceOut`: `{id, reference, status, amount, currency, issued_at, due_at, paid_at,
+  period_start, period_end, subscription_id, plan_name, contact, claim_note, claimed_at,
+  method_kind, void_reason, voided_at, reminded_at}`. `status` is `draft`, `issued`,
+  `proof_submitted`, `paid`, `overdue`, `void` or `cash_pending`. `plan_name` is the first line
+  item's description, frozen at issue. `contact` is `ContactBrief` `{id, full_name, channels}`
+  (the contact's distinct `contact_identities` channels now, as in `LinkedContact`; no phone,
+  email or address) or `null`. `void_reason` and `voided_at` are staff-only and never reach a
+  customer.
+- `PaymentOut`: `{id, amount, currency, received_at, method_kind, source (statement\|staff\|cash),
+  matched_by (auto\|staff), created_by_name, note, created_at}`. `created_by_name` is the display
+  name of the console user who recorded it (a member of the company or a platform admin), `null`
+  for a system payment or when the name cannot be read.
+- `ReminderOut`: `{step, channel (telegram\|whatsapp\|email\|none), status (queued\|sending\|sent\|failed\|dropped\|skipped\|no_channel), created_at, sent_at}`. The address a reminder went to is
+  never in any Payments response.
+- Money (`amount`) is a decimal string with two places (`"59.90"`), never a JSON number.
+
+### Invoice list filters and cursor
+
+- `status`: `open` (the default: `issued`, `overdue`, `proof_submitted`, `cash_pending`),
+  `overdue`, `proof_submitted`, `paid`, `void`, or `all` (every status, `draft` included; drafts
+  are listed only under `all`, and Payments 1 never creates one). Any other value is 422.
+- `q` (at most 100 characters): an invoice reference typed in any case, with spaces or dashes
+  (`k7qx 4mf` finds `K7QX-4MF`; it must carry a valid check character), or a case-insensitive part
+  of the contact's name (`%` and `_` are literal), or, when the term reads like a phone number with
+  3 or more digits, the digits of the contact's phone. The parts are alternatives.
+- `limit` 1-100 (default 50). `next_before` is the id of the last invoice on the page when there
+  is another page, else `null`; send it back unchanged as `before` (at most 64 characters) for
+  the next page. The page after it continues the `(issued_at DESC, id DESC)` order. Treat it as
+  opaque; an id the company does not have gives an empty page.
 
 ## Business management (M6A/B; offline local reads and store records)
 
@@ -1350,7 +1473,7 @@ Local update timestamps are not marketplace-sync evidence. Product local active 
 is not a published listing; stock is not synchronized and is not cross-store authority.
 These pages do not claim live tracking, connection health or import completeness.
 Tickets, invoices/PDFs, preparation and provider-backed operations remain staged in the
-[expanded M6 plan](archive/handoffs/2026-10-15-console-source-migration-plan.md#m6--business-tabs-integrations-and-staff-preparation).
+expanded M6 plan (removed from the repository; see git history).
 Implementation is offline; the last approved M5 services have not been replaced.
 
 Order filters match persisted `channel` (`telegram`, `web`, `tiktok_shop`, `shopee`,
@@ -2320,8 +2443,8 @@ onboarding/disabled. Normal KB polling processes only `pilot`/`active` tenants, 
 shadow gate intentionally produces no sends, even when KB ingestion succeeds.
 
 ## Invoices (LG13)
-- `GET /console/v1/invoices?limit=50` lists invoices.
-- `GET /console/v1/invoices/{id}/download-link` returns **501** until M6 supplies a real artifact-serving path. The placeholder signing-key fallback is removed. The adopted UI does not offer downloads.
+- `GET /console/v1/invoices?limit=50` lists invoices. `amount` is a decimal string (`"199.50"`), never a number.
+- Since Payments 1 there is no download link: the route (which only ever answered 501) and the invoice agent's `download_link` action are gone. The invoice agent's reads show only invoices a customer may hear about (no draft or void; `paid` only with its ledger row). Staff invoice work is under [Payments](#payments) (`/console/v1/payments`).
 
 ## OpenAPI
 The gateway serves `/openapi.json` and `/docs` only outside production; Redoc is disabled.
@@ -2338,7 +2461,7 @@ tests. Regenerate/review this snapshot with contract changes; automated TypeScri
 from this versioned artifact is the follow-on strategy rather than fetching machine-protected
 runtime OpenAPI during builds. Do not infer authentication from a successful schema build.
 
-## Not built yet (planned, see LG15)
+## Not built yet (planned)
 Wave 2/3 preparation libraries are now available under `csa/agents/staged/` (2026-10-15).
 Booking/subscription customer agents have local reads and unexecuted requests. Staff email,
 web-research and invoice-draft preparation are **not HTTP endpoints**. A future authenticated

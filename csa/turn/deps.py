@@ -32,6 +32,7 @@ from csa.agents.invoices.agent import InvoiceAgent
 from csa.agents.kb.agent import KbAgent
 from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
+from csa.agents.payments.agent import PaymentAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
 from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN
@@ -73,6 +74,7 @@ from csa.graph.policy.plan_rules import (
 )
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
+from csa.payments.settings import get_settings
 from csa.staff.ownership import automation_allowed, replies_off
 from csa.turn.texts import (
     clip_message,
@@ -128,14 +130,20 @@ CAPABILITIES = {
         "order number"
     ),
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
-    "invoice_agent": "Invoice lookup, status check, and signed download links",
+    "invoice_agent": "Invoice lookup and status",
     "booking_agent": (
         "Free times for a service, booking, moving and cancelling the customer's own "
         "appointments, and looking up their bookings"
     ),
     "subscription_agent": (
-        "The plans on offer, the customer's own plan (found from this chat), and requests to "
-        "pause, cancel or change it that staff decide; no billing changes"
+        "The plans on offer, the customer's own plan (found from this chat), signing the "
+        "customer up for a plan, and requests to pause, cancel or change it that staff decide; "
+        "no billing changes"
+    ),
+    "payment_agent": (
+        "How to pay the customer's own invoices (bank account, DuitNow and the invoice "
+        "reference), whether a payment was recorded, and noting that the customer says they "
+        "paid; the server finds the invoices from this chat"
     ),
 }
 
@@ -148,6 +156,7 @@ _PLANNABLE: dict[str, Any] = {
     "invoice_agent": InvoiceAgent,
     "booking_agent": BookingAgent,
     "subscription_agent": SubscriptionAgent,
+    "payment_agent": PaymentAgent,
 }
 
 
@@ -169,33 +178,164 @@ def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
     ]
 
 
+def write_facts(state: TurnState) -> list[tuple[str, Fact]]:
+    """The facts (with their turn ids) of every other agent's write that ran in this turn.
+
+    A write is a planned task whose action is not a read in its agent's `ACTION_RISK`: a booking
+    made, moved or cancelled, a ticket opened or changed, a sign-up or plan request, an order
+    draft. Its facts say what was done, what was refused, or what waits for the customer's yes
+    (a sign-up read back, a cancel asked, a draft order to confirm). A task that failed (not
+    ok) is left out, whatever facts it carries. Payment tasks are left out (`payment_facts`),
+    and so is a follow-up task, which is only ever a read (`_admit`).
+    """
+    if state.plan is None:
+        return []
+    writes = {
+        task.task_id
+        for task in state.plan.tasks
+        if task.agent != PaymentAgent.name
+        and task.agent in _PLANNABLE
+        and _PLANNABLE[task.agent].ACTION_RISK.get(str(task.input.get("action")))
+        in {"draft", "commit"}
+    }
+    return [
+        (f"{result.task_id}:{fact.id}", fact)
+        for result in state.results
+        if result.ok and result.task_id in writes
+        for fact in result.facts
+    ]
+
+
+def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
+    """The facts (with their turn ids) of every payment task that answered in this turn.
+
+    Such a turn's reply is these facts as they stand (`compose`): an account number, a reference
+    or an amount must reach the customer exactly as the database holds it, and "paid" only when
+    the ledger says so, which a model's rewording could not promise.
+    """
+    return [
+        (f"{result.task_id}:{fact.id}", fact)
+        for result in state.results
+        if result.ok and result.agent == PaymentAgent.name
+        for fact in result.facts
+    ]
+
+
+DRAFT_MAX = 8000  # Draft.text's limit
+
+
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
-    """The facts of a booking write, as they stand, as the reply (the agent writes them to be
-    read by a customer). Marked `template`, so the coordinator's check is grounding alone."""
+    """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
+    a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
+    the coordinator's check is grounding alone.
+
+    Whole facts only, up to `DRAFT_MAX` characters: a later fact that would not fit is left out,
+    never cut, so an account number or a reference is never sent half. Only a first fact over
+    `DRAFT_MAX` characters is cut (it must give some reply); a payment answer is far shorter:
+    `csa.payments.copy.CUSTOMER_METHODS`."""
+    kept: list[tuple[str, Fact]] = []
+    size = 0
+    for fact_id, fact in written:
+        extra = len(fact.text) + (1 if kept else 0)
+        if size + extra > DRAFT_MAX:
+            break
+        kept.append((fact_id, fact))
+        size += extra
+    text = "\n".join(fact.text for _, fact in kept) or written[0][1].text[:DRAFT_MAX]
     return Draft(
-        text="\n".join(fact.text for _, fact in written)[:8000],
+        text=text,
         language=language if len(language) >= 2 else "en",
-        fact_ids=[fact_id for fact_id, _ in written][:100],
+        fact_ids=[fact_id for fact_id, _ in (kept or written[:1])][:100],
         composer="template",
     )
 
 
 def with_real_email(task: Task, raw: str) -> Task | None:
-    """The booking task with its email swapped for the address the customer really wrote.
+    """The task with its email swapped for the address the customer really wrote.
 
-    The planner may name `[EMAIL_n]` (or a literal address, which is only a guess); only an
-    address that is in the raw message survives, so a model can never invent one. Without one the
-    field is dropped. None when that leaves a `save_details` with nothing to save.
+    A booking task's `customer_email`, and a sign-up's (`subscription_agent` `request_signup`)
+    `email`. The planner may name `[EMAIL_n]` (or a literal address, which is only a guess); only
+    an address that is in the raw message survives, so a model can never invent one. Without one
+    the field is dropped. A sign-up also keeps a word with an @ that the customer typed whole but
+    that redaction did not take for an address (so no placeholder was made for it): the agent
+    checks it, and tells them when it does not look right. None when a `save_details` is left with
+    nothing to save; a sign-up is never None.
     """
-    given = task.input.get("customer_email")
+    signup = task.agent == "subscription_agent" and task.input.get("action") == "request_signup"
+    key = "email" if signup else "customer_email"
+    given = task.input.get(key)
     if given is None:
         return task
-    payload = {k: v for k, v in task.input.items() if k != "customer_email"}
-    address = real_email(str(given), raw)
+    payload = {k: v for k, v in task.input.items() if k != key}
+    value = str(given)
+    address = real_email(value, raw)
+    if address is None and signup:
+        address = _typed_word(value, raw)
+    if signup and address is not None and len(address) > _LONGEST_EMAIL:
+        # No real address is that long, and the sign-up input holds no more: the agent gets a
+        # word that is no address, so it answers `email_invalid` and the turn keeps the name
+        # and phone (a longer value would fail the whole task as invalid input).
+        address = _TOO_LONG_EMAIL
     if address is not None:
-        payload["customer_email"] = address
+        payload[key] = address
     elif task.input.get("action") == "save_details" and not payload.get("customer_name"):
         return None
+    return task.model_copy(update={"input": payload})
+
+
+# The longest address a sign-up passes on (`SubscriptionInput.email`'s limit), and what it passes
+# for a longer one: not an address (no @), so the agent's check refuses it.
+_LONGEST_EMAIL = 254
+_TOO_LONG_EMAIL = "[EMAIL_TOO_LONG]"
+
+# What may wrap a word the customer typed: "(ali@example)," is the word ali@example.
+_WORD_EDGES = "\"'()<>[]{},.;:!?"
+
+
+def _typed_word(value: str, raw: str) -> str | None:
+    """`value` as the customer typed it, when it has an @ and is one whole word of `raw`.
+
+    A whole word only, so a part of a longer address is never taken for the address."""
+    wanted = value.strip()
+    if "@" not in wanted:
+        return None
+    words = (word.strip(_WORD_EDGES) for word in raw.split())
+    return next((word for word in words if word.casefold() == wanted.casefold()), None)
+
+
+_PHONE_PLACEHOLDER = re.compile(r"\[PHONE_[0-9]{1,3}\]")
+# A run of digits as a person types a number: '+44 7911 123456', '(012) 345-6789'.
+_TYPED_NUMBER = re.compile(r"\+?\d[\d ()-]*\d")
+
+
+def with_real_phone(task: Task, raw: str, redacted: str) -> Task:
+    """The sign-up task with its phone as the customer typed it in this message, or without one.
+
+    The planner sees a Malaysian number only as a placeholder such as ``[PHONE_0]``; it resolves
+    only in the message that holds it (the raw body redacted again must give the stored redacted
+    body, as for a TikTok order number). A number written out (shown raw, an international one) is
+    kept only when its digits are a number the customer typed here. Anything else is dropped: the
+    agent then keeps the number an earlier turn collected, or asks for it. A model can name a
+    number but never invent one.
+    """
+    if task.agent != "subscription_agent" or task.input.get("action") != "request_signup":
+        return task
+    given = task.input.get("phone")
+    if given is None:
+        return task
+    payload = {k: v for k, v in task.input.items() if k != "phone"}
+    value = str(given).strip()
+    typed: str | None = None
+    if _PHONE_PLACEHOLDER.fullmatch(value):
+        again, values = redact_with_values(raw)
+        if again == redacted:
+            typed = values.get(value)
+    else:
+        digits = "".join(c for c in value if c.isdigit())
+        found = {"".join(c for c in m.group() if c.isdigit()) for m in _TYPED_NUMBER.finditer(raw)}
+        typed = value if digits and digits in found else None
+    if typed is not None:
+        payload["phone"] = typed
     return task.model_copy(update={"input": payload})
 
 
@@ -242,6 +382,7 @@ class PostgresTurnDependencies:
             "invoice_agent",
             "booking_agent",
             "subscription_agent",
+            "payment_agent",
         }
     )
 
@@ -283,6 +424,7 @@ class PostgresTurnDependencies:
                 "invoice_agent": InvoiceAgent(),
                 "booking_agent": self._booking_agent,
                 "subscription_agent": SubscriptionAgent(),
+                "payment_agent": PaymentAgent(),
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),
@@ -306,8 +448,20 @@ class PostgresTurnDependencies:
                 },
                 conn=conn,
             )
+            # Read every turn, never cached: switching payments off takes the payment agent (and
+            # its prompt rules) away at once.
+            payments_on = (await get_settings(conn, envelope.client_id)).enabled
         if row is None:
             raise RuntimeError("conversation_not_found")
+        # Cached per company for 30 s; which agents (and their rules) the model is told of.
+        switched_on = await self._capabilities.load(envelope.client_id)
+        names = {capability.name for capability in switched_on}
+        if not payments_on:
+            # The payment agent is offered only while the company's payments are on: with them
+            # off, a "how do I pay?" goes to the agents that answered it before (knowledge,
+            # orders, invoices). The agent's own `payment_not_set_up` answer stays for a turn
+            # that races a switch-off.
+            names.discard(PaymentAgent.name)
         # Side by side: each read has its own budget and never raises (both degrade to empty), so
         # together they stay inside the node's limit, which one after the other they need not.
         (recent, handoff_recent, memory_off), booking = await asyncio.gather(
@@ -327,6 +481,7 @@ class PostgresTurnDependencies:
             flags=flags,
             booking=booking,
             recent=recent,
+            capabilities=sorted(names),
         )
 
     async def _recent_messages(
@@ -508,14 +663,18 @@ class PostgresTurnDependencies:
             pool=self._pool,
             pending_actions=self._pending,
             timezone=row["timezone"],
+            # The language this turn is answered in where an agent words its facts itself (the
+            # payment agent); a channel that reports none ("und") falls to the word detector.
+            locale=_turn_language(envelope),
             callback_action_id=envelope.callback.action_id if envelope.callback else None,
         )
-        if task.agent == "booking_agent":
+        if task.agent in ("booking_agent", "subscription_agent"):
             # The planner saw only redacted text, so it can name an address but not write one.
             real = with_real_email(task, envelope.message.body_raw)
             if real is None:
                 return reply(ctx, [EMAIL_NOT_SEEN]).model_copy(update={"task_id": task.task_id})
             task = real
+        task = with_real_phone(task, envelope.message.body_raw, envelope.message.body_redacted)
         return await self._runner.execute(_resolve_order_number(task, envelope), ctx)
 
     async def handle_muted(
@@ -526,6 +685,16 @@ class PostgresTurnDependencies:
         return []
 
     async def compose(self, state: TurnState) -> Draft:
+        paid = payment_facts(state)
+        if paid and not _hands_off(state):
+            # Facts only; the model is never asked. The payment facts are worded in the turn's
+            # language where copy has it (English or Malay, else English); the draft is marked
+            # with the turn's language either way. What another task wrote this turn is told
+            # first, as its agent worded it: done (a booking, a ticket, a request), refused, or
+            # a question waiting for the customer's yes (a sign-up read back, a cancel asked, a
+            # draft order). Other tasks' reads are left out (the planner plans payment tasks
+            # alone).
+            return _facts_draft([*write_facts(state), *paid], _turn_language(state.envelope))
         written = booking_write_facts(state)
         if not written:
             return await self._compose(state)
@@ -561,9 +730,7 @@ class PostgresTurnDependencies:
                 language=state.envelope.message.language,
                 composer="template",
             )
-        if (state.handoff is not None and state.handoff.required) or (
-            state.plan is not None and state.plan.reply_strategy == "escalate"
-        ):
+        if _hands_off(state):
             return await self._handoff_draft(state)
         language = state.envelope.message.language
         brand = await self._client_brand(state.envelope.client_id)
@@ -1014,6 +1181,18 @@ def _handoff_may_be_written(state: TurnState) -> bool:
     )
 
 
+def _hands_off(state: TurnState) -> bool:
+    """Whether this turn's reply is the handoff reply (a person is being asked in)."""
+    return (state.handoff is not None and state.handoff.required) or (
+        state.plan is not None and state.plan.reply_strategy == "escalate"
+    )
+
+
+def _turn_language(envelope: Envelope) -> str:
+    """The channel's language for the message, else the word detector's."""
+    return resolve_language(None, envelope.message.language, envelope.message.body_redacted)
+
+
 def _require_conversation(envelope: Envelope) -> UUID:
     if envelope.conversation.id is None:
         raise RuntimeError("conversation_id_missing")
@@ -1094,7 +1273,7 @@ async def _insert_outbound(
     if handoff:
         await db.q.execute("staff/set_handoff.sql", (envelope.client_id, row["id"]), conn=conn)
     ui = message.ui.model_dump(mode="json", exclude_none=True)
-    if ui.get("confirmation") or ui.get("options"):
+    if ui.get("confirmation") or ui.get("options") or ui.get("request_phone"):
         await db.q.fetch_one(
             "worker/set_message_ui.sql",
             (Jsonb(ui), row["id"], envelope.client_id),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -11,6 +12,7 @@ from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.jobs.bookings import (
+    MAIL_STATS,
     run_pending_expiry,
     run_reminder_mail,
     run_reminder_queue,
@@ -18,7 +20,8 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
-from csa.jobs.reapers import run_mute_expiry
+from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
+from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
 from csa.jobs.runner import JobRunner, build_default_registry
@@ -27,6 +30,72 @@ from tests.conftest import owner_dsn_for, requires_docker
 from tests.test_worker import _configure_test_settings
 
 pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_setup_dsn")]
+
+
+async def test_pending_actions_expiry_clears_the_typed_data_of_sign_up_drafts_only(
+    pg_container: object, app_dsn: str
+) -> None:
+    owner_dsn = owner_dsn_for(pg_container)
+    tenant, other, contact, other_contact = (uuid.uuid4() for _ in range(4))
+    conversation, other_conversation = uuid.uuid4(), uuid.uuid4()
+    typed = {"plan_code": "besar", "full_name": "Synthetic Typed", "phone": "+60123456780"}
+    button = {"order_id": "synthetic-order"}
+    stale_draft, live_draft, stale_button, foreign_draft = (uuid.uuid4() for _ in range(4))
+    async with await psycopg.AsyncConnection.connect(owner_dsn, autocommit=True) as conn:
+        for client, who, chat in (
+            (tenant, contact, conversation),
+            (other, other_contact, other_conversation),
+        ):
+            await conn.execute(
+                "INSERT INTO clients(id,slug,name,status,platform_version) "
+                "VALUES (%s,%s,'Synthetic expiry','active','lg10-test')",
+                (client, f"pa-expiry-{client}"),
+            )
+            await conn.execute(
+                "INSERT INTO contacts(id,client_id,full_name) VALUES (%s,%s,'Synthetic')",
+                (who, client),
+            )
+            await conn.execute(
+                "INSERT INTO conversations(id,client_id,contact_id,channel,channel_thread) "
+                "VALUES (%s,%s,%s,'telegram',%s)",
+                (chat, client, who, str(chat)),
+            )
+        for ident, client, who, chat, action, payload, offset in [
+            (stale_draft, tenant, contact, conversation, "signup_draft", typed, "-1 minute"),
+            (live_draft, tenant, contact, conversation, "signup_draft", typed, "+30 minutes"),
+            (stale_button, tenant, contact, conversation, "create_draft", button, "-1 minute"),
+            (
+                foreign_draft,
+                other,
+                other_contact,
+                other_conversation,
+                "signup_draft",
+                typed,
+                "-1 minute",
+            ),
+        ]:
+            agent = "subscription_agent" if action == "signup_draft" else "order_agent"
+            await conn.execute(
+                "INSERT INTO pending_actions(id,client_id,conversation_id,contact_id,agent,action,"
+                "payload,expires_at) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,now() + %s::interval)",
+                (ident, client, chat, who, agent, action, json.dumps(payload), offset),
+            )
+    async with db.build_pool(app_dsn, max_size=2, autocommit=True) as pool:
+        async with tx(pool, str(tenant)) as conn:
+            ran = await run_pending_actions_expiry(conn, tenant, FakeClock())
+    assert ran == {"expired_count": 2}
+    async with await psycopg.AsyncConnection.connect(owner_dsn) as conn:
+        cursor = await conn.execute(
+            "SELECT id,status,payload FROM pending_actions WHERE id=ANY(%s)",
+            ([stale_draft, live_draft, stale_button, foreign_draft],),
+        )
+        rows = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    # The expired sign-up draft keeps no typed data; a draft still in its hour, another action's
+    # payload (consumed elsewhere) and another company's rows are untouched.
+    assert rows[stale_draft] == ("expired", {})
+    assert rows[live_draft] == ("open", typed)
+    assert rows[stale_button] == ("expired", button)
+    assert rows[foreign_draft] == ("open", typed)
 
 
 async def test_mute_expiry_batch_isolation_locks_and_idempotency(
@@ -464,6 +533,30 @@ async def test_registry_runs_the_booking_reminders_every_five_minutes() -> None:
         assert send is not None and send.per_client is False
         assert send.every == timedelta(minutes=5) and send.timeout > 30
         assert send.fn is not run_reminder_mail  # the registry binds the mailer around it
+
+
+async def test_registry_queues_payment_reminders_every_fifteen_minutes_per_company() -> None:
+    job = build_default_registry().get("payment_reminder_queue")
+    assert job is not None and job.fn is run_payment_reminder_queue
+    assert job.every == timedelta(minutes=15)
+    # Per company, each invoice in its own transaction on the app pool.
+    assert job.per_client is True and job.own_transactions is True
+    assert job.timeout == 120.0
+    due = build_default_registry().get("payments_due")
+    assert due is not None and due.timeout == 120.0
+
+
+async def test_registry_sends_payment_reminder_mail_every_five_minutes_for_everyone() -> None:
+    mailer = Mailer(None, "FourStacks <no-reply@fourstacks.my>")
+    for registry in (build_default_registry(), build_default_registry(mailer)):
+        job = registry.get("payment_reminder_mail")
+        # One run for everyone, as the owner, and room for a batch of slow sends.
+        assert job is not None and job.per_client is False
+        assert job.every == timedelta(minutes=5) and job.timeout > 30
+        assert job.fn is not run_payment_reminder_mail  # the registry binds the mailer around it
+        # With no app pool, nothing is touched: every count is zero.
+        idle = await job.fn(None, FakeClock(datetime(2031, 1, 1, tzinfo=UTC)), batch_size=10)  # type: ignore[call-arg, arg-type]
+        assert idle == dict.fromkeys(MAIL_STATS, 0)
 
 
 async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner() -> None:

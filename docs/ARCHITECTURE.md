@@ -1,13 +1,13 @@
 # Architecture
 
 CSA is a multi-tenant customer-service runtime: Python 3.12, FastAPI, LangGraph, PostgreSQL (psycopg 3 async).
-Phase plans live in [langgraph-rebuild/](./langgraph-rebuild/LG00_master_plan.md).
+The original LG00-LG15 phase plans were removed from the repository (see git history); the rules still enforced are in `AGENTS.md`.
 The [project overview](./PROJECT_OVERVIEW.md) explains the repository map and
 document authority, and its
 [current status and release boundary](./PROJECT_OVERVIEW.md#current-status-and-release-boundary)
 section covers limitations.
-Current release/domain boundaries are in the
-[domain/release handoff](archive/handoffs/2026-10-19-domain-release-next-session.md).
+Current release boundaries are in [deploy/RELEASE.md](../deploy/RELEASE.md) and
+[PROGRESS.md](./PROGRESS.md).
 This is the runtime-flow summary, not proof of running services or public deployment.
 
 ## Request pipeline
@@ -139,15 +139,19 @@ changes, resumes and renewals in that order on the tenant's calendar; nothing is
 ## Evaluation and regression evidence
 
 - `csa/evals/decisions.py` compares live classifiers against 60 synthetic labelled messages;
-  [decision_report.md](archive/evals/decision_report.md) records the measured results, not an SLA.
+  a 2026-10-12 live run (Groq `openai/gpt-oss-120b` against `jev-1.13.0`) scored intent 90% versus 100%,
+  injection recall 80% versus 100% and human-request recall 83% for both, with p50 latency of about 770 ms
+  versus 285 ms; four of the LLM's misses were provider timeouts. These are measured results, not an SLA.
 - `tests/golden/` uses JSON cases and schema-keyed model cassettes with real Postgres, agents,
   worker, graph, timeline and outbox. Twenty-two cases cover order-status resolution, semantic
   rejection/regeneration/failure, tenant review/suppression, injection/mute, classifier timeout
   order/ticket callback repetition, wrong-contact/expired tokens and multi-agent partial results;
-  they do not yet cover the entire LG08 matrix.
+  they do not cover every scenario.
 - Policy coverage is 100% with branch instrumentation; `make coverage` and CI enforce a 90% floor.
-  [LG08 validation report](archive/evals/lg08_validation_report.md) distinguishes measured steady-state
-  ingress latency from cold-start failures and durable backlog throughput; neither is a cloud SLA.
+  The 2026-10-12 load run (150 messages at 50/s, real ingress SQL, no model providers, shared home server)
+  measured ingress p95 of about 110 ms and durable queue throughput of about 2 turns/s with four drain
+  workers. It separates steady-state ingress latency from cold-pool failures and backlog throughput;
+  neither is a cloud SLA.
 - The dev tenant uses `cascade`. Other tenants retain the `llm` default. Jev vendor retention,
   regional hosting and operational guarantees still require review before real-client rollout.
 
@@ -160,7 +164,7 @@ changes, resumes and renewals in that order on the tenant's calendar; nothing is
 | `escalation` | Mute the AI for 24 h, alert staff with a **Resume AI** button |
 | `tickets` | Create support tickets |
 
-`SpokeRunner` runs them with a circuit breaker and records every run. Planned agents are in LG13.
+`SpokeRunner` runs them with a circuit breaker and records every run. Further agents (knowledge base, invoices, e-commerce, HR, staged booking and subscription) are described in [PROJECT_OVERVIEW.md](./PROJECT_OVERVIEW.md).
 
 ## Data model & safety
 

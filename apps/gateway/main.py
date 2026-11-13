@@ -55,6 +55,7 @@ from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.marketplace.reads import live_read_access
 from csa.metering.meter import LedgerMeter
+from csa.payments.api import build_payments_router
 from csa.storage.factory import build_stores, verify_stores
 from csa.subscriptions.api import build_subscriptions_router
 from csa.workspace.executors import build_proposal_registry
@@ -70,7 +71,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0572"
+EXPECTED_SCHEMA_VERSION = "0591"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -535,6 +536,7 @@ def create_app() -> FastAPI:
     app.include_router(build_channels_router())
     # lane B (console): subscriptions router registers here
     app.include_router(build_subscriptions_router())
+    app.include_router(build_payments_router())
     app.include_router(build_bookings_router())
     app.include_router(build_calendar_router())
     # --- end lane registrations ---

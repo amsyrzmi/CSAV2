@@ -46,6 +46,12 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
 
 ## If something goes wrong
 
+- `apply` now ends with a read-only smoke test (`smoke <name>: ok` lines, `Stopped at smoke: ...`
+  on failure). After an image-only failure at readiness or smoke it may roll back by itself:
+  `Rolling back to ...` then `Rolled back: the previous images are running; <sha7> is not.` and
+  `Fix forward, then re-run plan and apply.` The run still ends red (exit 1) and writes no staged
+  record; report the lines verbatim. `Stopped at rollback:` means the rollback itself failed:
+  show the lines and ask the owner.
 - If `apply` fails, show the script's own recovery lines verbatim: the step, the state staging
   is in, then whichever applies (`Nothing on staging was changed.`, the `docker ... start` restart
   command, `Migrations were applied: ...` with fix forward, or `Rollback images:` with the

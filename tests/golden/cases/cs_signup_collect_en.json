@@ -1,0 +1,147 @@
+{
+  "id": "cs_signup_collect_en",
+  "matrix": "Sign-up: the bot asks for one missing detail at a time",
+  "description": "'I want to sign up for Plan Besar' asks for the full name and says once what is kept; the name then asks for the phone with Telegram's share button. Nothing is filed.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "besar",
+        "name": "Plan Besar",
+        "price": "50.00",
+        "features": [
+          "Unlimited data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent"
+    ]
+  },
+  "turns": [
+    {
+      "say": "I want to sign up for Plan Besar",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Sure! What's your full name? We keep your name and phone number on your contact record so the team can set up your plan."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "reply_contains": [
+          "full name"
+        ],
+        "compose_sees": [
+          "To sign up for Plan Besar I still need your full name.",
+          "We keep your name and phone number on your contact record so the team can set up your plan."
+        ],
+        "signup_requests": 0,
+        "request_phone": false,
+        "reply_excludes": [
+          "approved",
+          "is now active",
+          "has been activated"
+        ]
+      }
+    },
+    {
+      "say": "Ali Bin Abu",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Ali Bin Abu"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Thanks, Ali. What's your phone number? You can tap the button below to share it."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "reply_contains": [
+          "phone number"
+        ],
+        "compose_sees": [
+          "To sign up for Plan Besar I still need your phone number."
+        ],
+        "signup_requests": 0,
+        "request_phone": true
+      }
+    }
+  ]
+}

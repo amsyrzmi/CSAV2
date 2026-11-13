@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, LiteralString
 from uuid import UUID, uuid4
 
 import psycopg
@@ -35,7 +35,10 @@ from csa.agents.staged.service import (
     resolve_subscription,
 )
 from csa.contracts.callbacks import PendingActionStore
+from csa.contracts.envelope import Envelope
+from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Task
+from csa.contracts.state import Context
 from csa.core import db
 from csa.core.tenancy import tx
 from psycopg.conninfo import make_conninfo
@@ -683,7 +686,7 @@ def test_the_resolution_table() -> None:
     )
     assert resolve_subscription([newer, older], None, "pro")[0] == "which"  # type: ignore[index]
     assert resolve_subscription([pro, paused], None, "max") is paused
-    # A named plan that is waiting for payment is not requestable.
+    # A named plan that is waiting to be started is not requestable.
     assert resolve_subscription([waiting], None, "lite") == ("waiting", ["Lite"])
     # An id only picks among these rows; one that is not here finds nothing.
     assert resolve_subscription([pro, basic], pro["id"], None) is pro  # type: ignore[arg-type]
@@ -762,6 +765,73 @@ async def test_mine_with_zero_one_and_several_subscriptions(world: World) -> Non
     assert len(await mine(world, action="list")) == 3
     assert "Your plan: old was cancelled." in await mine(world, action="list")
     assert await mine(world, action="status") == await mine(world)
+
+
+async def payments_on(world: World) -> None:
+    """The world's company switches payments on (as its settings save would)."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO payment_settings (client_id, enabled) VALUES (%s, true)",
+            (world.ctx.client_id,),
+        )
+
+
+@requires_docker
+async def test_mine_on_a_pending_plan_without_an_invoice_is_waiting_for_the_team(
+    world: World,
+) -> None:
+    other = replace(world.ctx, contact_id=world.other_contact)
+    await add_subscription(world, plan="lite", contact=world.other_contact, status="pending")
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, is waiting to be started by the team. "
+        "Nothing has been charged."
+    ]
+
+
+@requires_docker
+async def test_mine_on_a_pending_plan_names_its_opening_invoice(world: World) -> None:
+    other = replace(world.ctx, contact_id=world.other_contact)
+    sub = await add_subscription(world, plan="lite", contact=world.other_contact, status="pending")
+    # The invoice is the other contact's own (theirs is the pending plan); a void one is never
+    # named, the open one is.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        for reference, status in (("SGCK-4PM", "void"), ("KDMW-7AS", "issued")):
+            await conn.execute(
+                "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference,"
+                " status, amount, currency, issued_at, due_at, period_start) "
+                "VALUES (%s,%s,%s,%s,%s,%s,15,'MYR',now(),now() + interval '7 days',"
+                " CASE WHEN %s = 'void' THEN now() - interval '1 day' END)",
+                (
+                    f"inv_{uuid4().hex}",
+                    world.ctx.client_id,
+                    world.other_contact,
+                    sub,
+                    reference,
+                    status,
+                    status,
+                ),
+            )
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, starts when your first payment is confirmed. "
+        "Invoice KDMW-7AS is waiting for payment."
+    ]
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE invoices SET status='proof_submitted' WHERE subscription_id=%s "
+            "AND reference='KDMW-7AS'",
+            (sub,),
+        )
+    assert await mine(world, other) == [
+        "Your plan: lite, MYR 15.00, starts when your payment is confirmed. "
+        "You told us you paid; it isn't confirmed yet."
+    ]
+    # A status read by the subscription's id says the same.
+    status = await SubscriptionAgent().run(
+        other, SubscriptionInput(action="status", subscription_id=sub)
+    )
+    assert [f.text for f in status.facts] == await mine(world, other)
+    # The chat's own contact sees only its own plan.
+    assert await mine(world) == ["Your plan: basic, MYR 10.00."]
 
 
 @requires_docker
@@ -985,3 +1055,981 @@ async def test_make_db_reset_on_disposable_database(combined_pg_image: str) -> N
                 )
             ).fetchone()
             assert row and row[0] is True
+
+
+# --- sign-up from the chat (request_signup) ------------------------------------------------------
+
+TYPED = "0123456789"  # synthetic
+TYPED_E164 = "+60123456789"
+
+
+def _kinds(result: AgentResult) -> list[str]:
+    """The fact kinds of a result, without their index suffix, in order."""
+    return [fact.id.rsplit("_", 1)[0] for fact in result.facts]
+
+
+async def signup_chat(
+    world: World,
+    *,
+    channel: str = "telegram",
+    phone: str | None = None,
+    verified: bool = False,
+    signup_mode: str = "staff",
+    is_signup_open: bool = True,
+) -> AgentContext:
+    """The world's contact in a chat on `channel`, with Plan Besar and Plan Kecil on offer."""
+    conversation = uuid4()
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO plans (client_id,code,name,price,signup_mode,is_signup_open) "
+            "VALUES (%s,'besar','Plan Besar',50,%s,%s),(%s,'kecil','Plan Kecil',15,'staff',true)",
+            (world.ctx.client_id, signup_mode, is_signup_open, world.ctx.client_id),
+        )
+        await conn.execute(
+            "UPDATE contacts SET phone=%s, phone_verified_at=CASE WHEN %s THEN now() END "
+            "WHERE id=%s",
+            (phone, verified, world.ctx.contact_id),
+        )
+        await conn.execute(
+            "INSERT INTO conversations (id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (conversation, world.ctx.client_id, world.ctx.contact_id, channel, str(conversation)),
+        )
+    return replace(world.ctx, conversation_id=conversation, channel=channel)
+
+
+async def signup_turn(world: World, ctx: AgentContext, **fields: object) -> AgentResult:
+    """One turn: the agent runs, then the reply of that turn is sent (stored as the chat's latest
+    assistant message, as a real turn does)."""
+    turn = replace(ctx, trace_id=uuid4(), idempotency_key=f"signup-{uuid4()}")
+    result = await SubscriptionAgent().run(
+        turn, SubscriptionInput.model_validate({"action": "request_signup", **fields})
+    )
+    await reply_sent(world, turn)
+    return result
+
+
+async def reply_sent(world: World, ctx: AgentContext) -> None:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO messages (client_id,conversation_id,direction,author,body,redacted_body,"
+            "idempotency_key,trace_id) VALUES (%s,%s,'outbound','assistant','reply','reply',%s,%s)",
+            (ctx.client_id, ctx.conversation_id, f"out-{uuid4()}", ctx.trace_id),
+        )
+
+
+async def signups(world: World) -> list[dict[str, object]]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            await cursor.execute(
+                "SELECT contact_id, plan_code, full_name, phone, status, decided_via "
+                "FROM signup_requests WHERE client_id=%s ORDER BY created_at",
+                (world.ctx.client_id,),
+            )
+            return list(await cursor.fetchall())
+
+
+async def contact_phone(world: World, contact: UUID) -> tuple[object, object]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT phone, phone_verified_at FROM contacts WHERE id=%s", (contact,)
+            )
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+BESAR = {"plan_code": "Plan Besar"}
+ALI = {"full_name": "Ali Bin Abu"}
+
+
+def test_the_sign_up_input_takes_the_customers_words_only() -> None:
+    assert SubscriptionAgent.ACTION_RISK["request_signup"] == "draft"
+    inp = SubscriptionInput(action="request_signup", plan_code="Plan Besar")
+    assert (inp.full_name, inp.phone, inp.confirmed) == (None, None, False)
+    blank = SubscriptionInput.model_validate(
+        {"action": "request_signup", "full_name": " ", "phone": ""}
+    )
+    assert blank.full_name is None and blank.phone is None
+    for bad in (
+        {"full_name": "x" * 121},
+        {"phone": "1" * 41},
+        {"contact_id": str(uuid4())},
+        {"client_id": str(uuid4())},
+        {"verified": True},
+    ):
+        with pytest.raises(ValidationError):
+            SubscriptionInput.model_validate({"action": "request_signup", **bad})
+    descriptions = {n: f.description for n, f in SubscriptionInput.model_fields.items()}
+    assert "request_signup" in str(descriptions["action"])
+    assert "[PHONE_0]" in str(descriptions["phone"])
+    assert "read back" in str(descriptions["confirmed"])
+
+
+def _signup_task(**fields: object) -> Task:
+    return Task(
+        task_id="t0-subscription_agent",
+        agent="subscription_agent",
+        input={"action": "request_signup", **fields},
+    )
+
+
+def test_the_server_swaps_a_phone_placeholder_for_the_number_in_this_message() -> None:
+    from csa.core.pii import redact
+    from csa.turn.deps import with_real_phone
+
+    raw = f"I'm Ali, my number is {TYPED}"
+    swapped = with_real_phone(_signup_task(phone="[PHONE_0]"), raw, redact(raw))
+    assert swapped.input["phone"] == TYPED
+    # A number shown raw (international) is kept only when the customer really wrote it.
+    abroad = "call me on +44 7911 123456"
+    kept = with_real_phone(_signup_task(phone="+447911123456"), abroad, redact(abroad))
+    assert kept.input["phone"] == "+447911123456"
+    invented = with_real_phone(_signup_task(phone="+447911000000"), abroad, redact(abroad))
+    assert "phone" not in invented.input
+    # A placeholder this message does not hold (a "yes" after a read-back) is dropped: the server
+    # keeps the number from the turn that collected it.
+    dropped = with_real_phone(_signup_task(phone="[PHONE_0]", confirmed=True), "yes", "yes")
+    assert dropped.input == {"action": "request_signup", "confirmed": True}
+    # A stored redaction that does not match this message's resolves nothing.
+    assert "phone" not in with_real_phone(_signup_task(phone="[PHONE_0]"), raw, raw).input
+    other = Task(task_id="t", agent="subscription_agent", input={"action": "mine"})
+    assert with_real_phone(other, raw, redact(raw)) is other
+
+
+@requires_docker
+async def test_a_sign_up_asks_for_the_name_first_and_files_nothing(world: World) -> None:
+    ctx = await signup_chat(world)
+    result = await signup_turn(world, ctx, **BESAR)
+    assert result.ok
+    assert [f.id for f in result.facts] == ["signup_missing_1", "signup_data_note_2"]
+    assert result.facts[0].text == "To sign up for Plan Besar I still need your full name."
+    assert result.ui.request_phone is False
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_no_phone_on_telegram_offers_the_share_button_once_then_asks_in_words(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world)
+    first = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(first) == ["signup_missing", "signup_data_note"]
+    asked = await signup_turn(world, ctx, **BESAR, **ALI)
+    # The data note was told in the first asking turn, so it is not told again.
+    assert _kinds(asked) == ["signup_missing"]
+    assert asked.facts[0].text == "To sign up for Plan Besar I still need your phone number."
+    assert asked.ui.request_phone is True
+    # The customer shared, but nothing was verified: asked once more in words, no button again.
+    again = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(again) == ["signup_missing"] and again.ui.request_phone is False
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_on_whatsapp_a_missing_phone_is_asked_in_words(world: World) -> None:
+    ctx = await signup_chat(world, channel="whatsapp")
+    result = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(result) == ["signup_missing", "signup_data_note"]
+    assert "phone number" in result.facts[0].text
+    assert result.ui.request_phone is False
+
+
+@requires_docker
+async def test_a_verified_phone_is_used_and_never_asked(world: World) -> None:
+    ctx = await signup_chat(world, phone=TYPED, verified=True)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone="0199999999")
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is "
+        "that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert read.ui.request_phone is False
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    [row] = await signups(world)
+    assert row["phone"] == TYPED_E164 and row["full_name"] == "Ali Bin Abu"
+
+
+@requires_docker
+async def test_an_invalid_typed_phone_is_asked_again(world: World) -> None:
+    ctx = await signup_chat(world)
+    result = await signup_turn(world, ctx, **BESAR, **ALI, phone="12345")
+    assert _kinds(result) == ["signup_phone_invalid", "signup_data_note"]
+    assert result.facts[0].text == (
+        "That phone number does not look right. Please type it again with the area or country code."
+    )
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_details_are_read_back_and_filed_only_on_a_yes_to_that_read_back(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
+    )
+    assert await signups(world) == []
+    # The "yes" turn: the planner's phone placeholder could not be resolved in "yes", so it is left
+    # out; the number collected earlier is used.
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [f.id for f in filed.facts] == ["signup_filed_1"]
+    assert filed.facts[0].text == (
+        "Your sign-up for Plan Besar was received. The team will review it and tell you what "
+        "happens next. Nothing is active yet."
+    )
+    assert await signups(world) == [
+        {
+            "contact_id": world.ctx.contact_id,
+            "plan_code": "besar",
+            "full_name": "Ali Bin Abu",
+            "phone": TYPED_E164,
+            "status": "pending",
+            "decided_via": None,
+        }
+    ]
+    # Ruling D: the typed number stays on the request, never on the contact.
+    assert await contact_phone(world, world.ctx.contact_id) == (None, None)
+    again = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED, confirmed=True)
+    assert _kinds(again) == ["signup_exists"]
+    assert again.facts[0].text == "You already have a sign-up for Plan Besar waiting for the team."
+    assert len(await signups(world)) == 1
+
+
+@requires_docker
+async def test_a_yes_with_no_read_back_before_it_reads_back_and_files_nothing(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world)
+    eager = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED, confirmed=True)
+    assert _kinds(eager) == ["signup_readback", "signup_data_note"]
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_a_yes_after_another_reply_is_not_a_yes_to_the_read_back(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    # Another question was answered after the read-back: the latest reply is not the read-back.
+    await reply_sent(world, replace(ctx, trace_id=uuid4()))
+    late = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(late) == ["signup_readback"]
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_a_different_plan_reads_back_again(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    other = await signup_turn(world, ctx, plan_code="Plan Kecil", confirmed=True)
+    assert _kinds(other) == ["signup_readback"]
+    assert other.facts[0].text.startswith("Sign-up for Plan Kecil: name Ali Bin Abu, phone ")
+    assert await signups(world) == []
+    filed = await signup_turn(world, ctx, plan_code="kecil", confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert [r["plan_code"] for r in await signups(world)] == ["kecil"]
+
+
+@requires_docker
+async def test_a_closed_plan_files_nothing(world: World) -> None:
+    ctx = await signup_chat(world, is_signup_open=False)
+    result = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED, confirmed=True)
+    assert [(f.id, f.text) for f in result.facts] == [
+        ("signup_closed_1", "Plan Besar is not taking new sign-ups right now.")
+    ]
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_an_unknown_or_unnamed_plan_asks_which(world: World) -> None:
+    ctx = await signup_chat(world)
+    for fields in ({"plan_code": "Plan Emas"}, {}):
+        result = await signup_turn(world, ctx, **fields, **ALI)
+        assert _kinds(result)[0] == "signup_which"
+        assert result.facts[0].text == "To sign up I still need to know which plan you want."
+        texts = [f.text for f in result.facts]
+        assert any(t.startswith("Plan Besar: MYR 50.00") for t in texts)
+        assert not any("Plan Emas" in t for t in texts)
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_a_plan_already_held_files_nothing(world: World) -> None:
+    ctx = await signup_chat(world)
+    await add_subscription(world, plan="besar")
+    result = await signup_turn(world, ctx, **BESAR)
+    assert [(f.id, f.text) for f in result.facts] == [
+        ("signup_has_plan_1", "You already have Plan Besar.")
+    ]
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_a_typed_phone_of_another_contact_files_and_shows_nothing_of_them(
+    world: World,
+) -> None:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE contacts SET full_name='Other Synthetic', email='other@test.example', "
+            "phone=%s, phone_verified_at=now() WHERE id=%s",
+            (TYPED, world.other_contact),
+        )
+    ctx = await signup_chat(world)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    shown = " ".join(f.id + f.text for f in [*read.facts, *filed.facts])
+    for secret in ("Other Synthetic", "other@test.example", str(world.other_contact)):
+        assert secret not in shown
+    [row] = await signups(world)
+    assert row["contact_id"] == world.ctx.contact_id and row["phone"] == TYPED_E164
+    assert await contact_phone(world, world.ctx.contact_id) == (None, None)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        for table in ("contact_links", "contact_link_reviews"):
+            found = await (
+                await conn.execute(
+                    f"SELECT count(*) FROM {table} WHERE client_id=%s",  # noqa: S608
+                    (world.ctx.client_id,),
+                )
+            ).fetchone()
+            assert found == (0,), table
+
+
+@requires_docker
+async def test_an_auto_plan_registers_a_pending_subscription(world: World) -> None:
+    ctx = await signup_chat(world, signup_mode="auto")
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_auto_1",
+            "Your sign-up for Plan Besar is registered and waiting to be started by the team.",
+        )
+    ]
+    [row] = await signups(world)
+    assert (row["status"], row["decided_via"]) == ("approved", "auto")
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        subs = await (
+            await conn.execute(
+                "SELECT status FROM subscriptions WHERE client_id=%s AND contact_id=%s "
+                "AND plan='besar'",
+                (world.ctx.client_id, world.ctx.contact_id),
+            )
+        ).fetchall()
+    assert subs == [("pending",)]
+
+
+@requires_docker
+async def test_with_payments_on_a_staff_plan_sign_up_says_an_invoice_follows_approval(
+    world: World,
+) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Besar was received. The team will review it; once it is "
+            "approved you'll get an invoice with how to pay, and the plan starts when the "
+            "payment is confirmed. Nothing is active yet.",
+        )
+    ]
+
+
+@requires_docker
+async def test_with_payments_on_a_free_staff_plan_promises_no_invoice(world: World) -> None:
+    """A zero-price plan gets no invoice at approval (issue_opening_invoice skips it), so the
+    customer is told what a payments-off company says, never "you'll get an invoice"."""
+    await payments_on(world)
+    ctx = await signup_chat(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE plans SET price = 0 WHERE client_id = %s AND code = 'besar'",
+            (world.ctx.client_id,),
+        )
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Besar was received. The team will review it and tell you "
+            "what happens next. Nothing is active yet.",
+        )
+    ]
+
+
+@requires_docker
+async def test_with_payments_on_an_auto_plan_names_its_opening_invoice(world: World) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world, signup_mode="auto")
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        invoices = await (
+            await conn.execute(
+                "SELECT reference, status FROM invoices WHERE client_id=%s AND contact_id=%s",
+                (world.ctx.client_id, world.ctx.contact_id),
+            )
+        ).fetchall()
+    [(reference, status)] = invoices
+    assert status == "issued"
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_auto_invoice_1",
+            f"Your sign-up for Plan Besar is registered. Invoice {reference} is ready: ask me "
+            "how to pay. The plan starts when the payment is confirmed.",
+        )
+    ]
+    # Asked after, the pending plan (the newest) names the same invoice.
+    assert await mine(world, ctx) == [
+        f"Your plan: Plan Besar, MYR 50.00 a month, starts when your first payment is "
+        f"confirmed. Invoice {reference} is waiting for payment.",
+        "Your plan: basic, MYR 10.00.",
+    ]
+
+
+@requires_docker
+async def test_a_filing_error_is_try_later_and_files_nothing(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.subscriptions import signup
+    from fastapi import HTTPException
+
+    async def refused(*_args: object, **_kwargs: object) -> object:
+        raise HTTPException(409, "plan_not_open")
+
+    # The auto-approval fails after the request row was inserted: the row is rolled back.
+    monkeypatch.setattr(signup, "auto_approve", refused)
+    ctx = await signup_chat(world, signup_mode="auto")
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    failed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in failed.facts] == [
+        (
+            "signup_try_later_1",
+            "The sign-up could not be filed just now, so nothing was filed. Please try again in "
+            "a little while.",
+        )
+    ]
+    assert "plan_not_open" not in failed.facts[0].text
+    assert await signups(world) == []
+
+
+@requires_docker
+async def test_a_switched_off_subscription_agent_signs_up_nobody(world: World) -> None:
+    ctx = await signup_chat(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE capability_registry SET client_enabled=false "
+            "WHERE client_id=%s AND name='subscription_agent'",
+            (world.ctx.client_id,),
+        )
+    result = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED, confirmed=True)
+    assert result.error and result.error.code == "disabled"
+    assert await signups(world) == []
+
+
+# --- the sign-up draft: one row, updated in place, cleared when it closes ------------------------
+
+
+async def drafts(world: World) -> list[dict[str, object]]:
+    """Every sign-up draft row of the company (any chat), oldest first."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            await cursor.execute(
+                "SELECT id, contact_id, conversation_id, status, payload, expires_at "
+                "FROM pending_actions WHERE client_id=%s AND action='signup_draft' "
+                "ORDER BY created_at, id",
+                (world.ctx.client_id,),
+            )
+            return list(await cursor.fetchall())
+
+
+async def all_pending_text(world: World) -> str:
+    """Every pending_actions row of the company as one string, to search for typed data."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT pa::text FROM pending_actions pa WHERE client_id=%s", (world.ctx.client_id,)
+            )
+        ).fetchall()
+    return " ".join(str(row[0]) for row in rows)
+
+
+@requires_docker
+async def test_a_multi_turn_collection_keeps_one_open_draft_row(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR)
+    [first] = await drafts(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)  # the read-back
+    await signup_turn(world, ctx, **BESAR, **ALI)  # a question in between
+    [row] = await drafts(world)
+    # The same row, updated in place: still open, holding what was collected so far.
+    assert row["id"] == first["id"] and row["status"] == "open"
+    assert row["payload"]["full_name"] == "Ali Bin Abu"  # type: ignore[index]
+    assert row["payload"]["phone"] == TYPED_E164  # type: ignore[index]
+    assert (
+        row["contact_id"] == world.ctx.contact_id and row["conversation_id"] == ctx.conversation_id
+    )
+
+
+@requires_docker
+async def test_an_update_in_place_restarts_the_hour_from_the_latest_save(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE pending_actions SET expires_at = now() + interval '1 minute' "
+            "WHERE client_id=%s AND action='signup_draft'",
+            (world.ctx.client_id,),
+        )
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    [row] = await drafts(world)
+    assert row["expires_at"] > datetime.now(UTC) + timedelta(minutes=50)  # type: ignore[operator]
+
+
+@requires_docker
+async def test_a_filed_sign_up_closes_its_draft_with_the_data_cleared(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    [open_draft] = await drafts(world)
+    assert open_draft["status"] == "open"
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    [row] = await drafts(world)
+    assert row["status"] == "used" and row["payload"] == {}
+    assert len(await signups(world)) == 1
+    # The typed name and number now live on the request only, in no pending_actions row.
+    text = await all_pending_text(world)
+    for typed in ("Ali Bin Abu", TYPED, TYPED_E164):
+        assert typed not in text
+    # A yes said again after filing is answered from the request, not from the cleared draft.
+    again = await signup_turn(world, ctx, **BESAR, confirmed=True)
+    assert _kinds(again) == ["signup_exists"]
+    assert len(await signups(world)) == 1
+    assert [r["payload"] for r in await drafts(world)] == [{}]
+
+
+@requires_docker
+async def test_a_plan_switch_updates_the_same_draft_and_a_closed_plan_clears_it(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    switched = await signup_turn(world, ctx, plan_code="Plan Kecil", confirmed=True)
+    assert _kinds(switched) == ["signup_readback"]
+    [row] = await drafts(world)
+    assert row["status"] == "open" and row["payload"]["plan_code"] == "kecil"  # type: ignore[index]
+    # Then the customer asks for a plan that has closed since: the draft ends with its data gone.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE plans SET is_signup_open=false WHERE client_id=%s AND code='besar'",
+            (world.ctx.client_id,),
+        )
+    closed = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(closed) == ["signup_closed"]
+    [ended] = await drafts(world)
+    assert ended["status"] == "used" and ended["payload"] == {}
+    text = await all_pending_text(world)
+    for typed in ("Ali Bin Abu", TYPED, TYPED_E164):
+        assert typed not in text
+
+
+@requires_docker
+async def test_a_plan_already_held_ends_the_draft_with_its_data_cleared(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    await add_subscription(world, plan="besar")
+    held = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(held) == ["signup_has_plan"]
+    [row] = await drafts(world)
+    assert row["status"] == "used" and row["payload"] == {}
+    assert "Ali Bin Abu" not in await all_pending_text(world)
+
+
+@requires_docker
+async def test_a_stale_open_draft_is_cancelled_cleared_and_replaced(world: World) -> None:
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    # An hour passed and the expiry job has not run yet: the row is still open but not readable.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE pending_actions SET expires_at = now() - interval '1 minute' "
+            "WHERE client_id=%s AND action='signup_draft'",
+            (world.ctx.client_id,),
+        )
+    fresh = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(fresh) == ["signup_missing", "signup_data_note"]  # started again, name asked
+    old, new = await drafts(world)
+    assert (old["status"], old["payload"]) == ("cancelled", {})
+    assert new["status"] == "open" and new["payload"]["plan_code"] == "besar"  # type: ignore[index]
+    text = await all_pending_text(world)
+    assert "Ali Bin Abu" not in text and TYPED_E164 not in text
+
+
+@requires_docker
+async def test_a_draft_of_another_contact_or_conversation_is_not_read(world: World) -> None:
+    ctx = await signup_chat(world)
+    elsewhere = uuid4()
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO conversations (id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,'telegram',%s)",
+            (elsewhere, world.ctx.client_id, world.ctx.contact_id, str(elsewhere)),
+        )
+        await conn.execute(
+            "INSERT INTO conversations (id,client_id,contact_id,channel,channel_thread) "
+            "VALUES (%s,%s,%s,'telegram',%s)",
+            (uuid4(), world.ctx.client_id, world.other_contact, "other-chat"),
+        )
+        payload = json.dumps(
+            {"plan_code": "besar", "full_name": "Someone Else", "phone": "+60111111111"}
+        )
+        for contact, conversation in (
+            (world.ctx.contact_id, elsewhere),  # my other conversation
+            (world.other_contact, ctx.conversation_id),  # another contact, this conversation id
+        ):
+            await conn.execute(
+                "INSERT INTO pending_actions (client_id,conversation_id,contact_id,agent,action,"
+                "payload,expires_at) VALUES (%s,%s,%s,'subscription_agent','signup_draft',%s,"
+                "now() + interval '1 hour')",
+                (world.ctx.client_id, conversation, contact, payload),
+            )
+    result = await signup_turn(world, ctx, **BESAR)
+    # Nothing was picked up from the other drafts: the name is still asked, nothing is read back.
+    assert _kinds(result) == ["signup_missing", "signup_data_note"]
+    shown = " ".join(f.text for f in result.facts)
+    assert "Someone Else" not in shown and "+60111111111" not in shown
+    mine = (world.ctx.contact_id, ctx.conversation_id)
+    others = [r for r in await drafts(world) if (r["contact_id"], r["conversation_id"]) != mine]
+    assert [r["payload"]["full_name"] for r in others] == ["Someone Else"] * 2  # type: ignore[index]
+    assert all(r["status"] == "open" for r in others)
+
+
+# --- the optional email at sign-up (WhatsApp with payments on, for payment reminders) -----------
+
+EMAIL_ASK = (
+    "If you'd like payment reminders by email, tell me your email address, or say skip. We keep "
+    "it on your contact record to send you messages about your plan and bookings."
+)
+EMAIL_INVALID = "That email address does not look right. Please type it again, or say skip."
+
+
+def test_the_sign_up_input_takes_an_email_or_a_skip() -> None:
+    inp = SubscriptionInput(action="request_signup", plan_code="Plan Besar")
+    assert (inp.email, inp.skip_email) == (None, False)
+    given = SubscriptionInput.model_validate(
+        {"action": "request_signup", "email": " [EMAIL_0] ", "skip_email": True}
+    )
+    assert (given.email, given.skip_email) == ("[EMAIL_0]", True)
+    assert SubscriptionInput.model_validate({"action": "request_signup", "email": ""}).email is None
+    with pytest.raises(ValidationError):
+        SubscriptionInput.model_validate({"action": "request_signup", "email": "a" * 255})
+    descriptions = {n: f.description for n, f in SubscriptionInput.model_fields.items()}
+    assert "[EMAIL_0]" in str(descriptions["email"])
+    assert "skip" in str(descriptions["skip_email"])
+
+
+def test_a_sign_up_email_is_only_one_the_customer_really_wrote() -> None:
+    from csa.turn.deps import with_real_email
+
+    raw = "it's Ali.Abu@Example.com thanks"
+    swapped = with_real_email(_signup_task(email="[EMAIL_0]"), raw)
+    assert swapped is not None and swapped.input["email"] == "Ali.Abu@Example.com"
+    typed = with_real_email(_signup_task(email="ali.abu@example.com"), raw)
+    assert typed is not None and typed.input["email"] == "Ali.Abu@Example.com"
+    # A planner-invented address, or a placeholder this message does not hold, is dropped; the
+    # sign-up itself stands (never None).
+    for invented in ("guess@example.com", "[EMAIL_1]", "Ali.Abu@Example.co", "abu@example.com"):
+        dropped = with_real_email(_signup_task(email=invented, full_name="Ali"), raw)
+        assert dropped is not None
+        assert dropped.input == {"action": "request_signup", "full_name": "Ali"}, invented
+    # What the customer typed that is not an address (no placeholder for it) reaches the agent as
+    # they typed it, so they are told it does not look right.
+    bad = with_real_email(_signup_task(email="ali@gmail"), "my email ali@gmail")
+    assert bad is not None and bad.input["email"] == "ali@gmail"
+    other = Task(task_id="t", agent="subscription_agent", input={"action": "mine", "email": "x"})
+    assert with_real_email(other, raw) is other
+
+
+async def contact_emails(world: World) -> tuple[object, object]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT email, customer_given_email FROM contacts WHERE id=%s",
+                (world.ctx.contact_id,),
+            )
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+async def request_emails(world: World) -> list[object]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT email FROM signup_requests WHERE client_id=%s ORDER BY created_at",
+                (world.ctx.client_id,),
+            )
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+async def whatsapp_signup(world: World, *, payments: bool = True) -> AgentContext:
+    """A WhatsApp chat whose phone the channel verified, with the company's payments on."""
+    if payments:
+        await payments_on(world)
+    return await signup_chat(world, channel="whatsapp", phone=TYPED, verified=True)
+
+
+READ_PLAIN = (
+    "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is that "
+    "right? Reply yes to sign up. Nothing is filed until you do."
+)
+
+
+@requires_docker
+async def test_on_whatsapp_the_email_is_asked_once_after_the_name_and_filed(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    first = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(first) == ["signup_missing", "signup_data_note"]
+    asked = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert [(f.id, f.text) for f in asked.facts] == [("signup_email_ask_1", EMAIL_ASK)]
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="Ali.Abu@Example.com")
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, email "
+        "ali.abu@example.com. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert await signups(world) == []
+    # The yes: the planner's placeholder resolves nothing in "yes", the draft keeps the address.
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == ["ali.abu@example.com"]
+    # Only the given address is filled: never the contact's own email, never a link.
+    assert await contact_emails(world) == (None, "ali.abu@example.com")
+    assert "ali.abu@example.com" not in await all_pending_text(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        for table in ("contact_links", "contact_link_reviews"):
+            found = await (
+                await conn.execute(
+                    f"SELECT count(*) FROM {table} WHERE client_id=%s",
+                    (world.ctx.client_id,),
+                )
+            ).fetchone()
+            assert found == (0,), table
+
+
+@requires_docker
+async def test_skip_or_a_second_turn_without_an_address_files_with_no_email(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world)
+    asked = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(asked) == ["signup_email_ask", "signup_data_note"]
+    skipped = await signup_turn(world, ctx, **BESAR, **ALI, skip_email=True)
+    assert _kinds(skipped) == ["signup_readback"]
+    assert skipped.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, no "
+        "email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == [None]
+    assert await contact_emails(world) == (None, None)
+
+
+@requires_docker
+async def test_an_answer_without_an_address_after_the_ask_reads_back_with_no_email(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    read = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text.endswith(
+        "no email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+
+
+@requires_docker
+async def test_an_invalid_email_is_asked_again_once_then_left_out(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    bad = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@gmail")
+    assert [(f.id, f.text) for f in bad.facts] == [("signup_email_invalid_1", EMAIL_INVALID)]
+    again = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@still-bad")
+    assert _kinds(again) == ["signup_readback"]
+    assert ", no email." in again.facts[0].text and "still-bad" not in again.facts[0].text
+    # A good address after that is still taken (read back again with it).
+    good = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(good) == ["signup_readback"]
+    assert ", email ali@example.com." in good.facts[0].text
+
+
+@requires_docker
+async def test_an_invalid_email_then_a_good_one_is_read_back(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    await signup_turn(world, ctx, **BESAR, **ALI, email="ali@gmail")
+    good = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(good) == ["signup_readback"]
+    assert ", email ali@example.com." in good.facts[0].text
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == ["ali@example.com"]
+
+
+def whatsapp_envelope(ctx: AgentContext, raw: str) -> Envelope:
+    """The customer's WhatsApp message `raw` in the chat of `ctx`, redacted as the channel does."""
+    from csa.core.pii import redact
+
+    return Envelope.model_validate(
+        {
+            "trace_id": str(uuid4()),
+            "received_at": datetime(2029, 1, 1, tzinfo=UTC),
+            "channel": "whatsapp",
+            "idempotency_key": f"wa-{uuid4()}",
+            "client_id": str(ctx.client_id),
+            "contact": {
+                "id": str(ctx.contact_id),
+                "external_id": "60123456789",
+                "channel": "whatsapp",
+                "display_name": None,
+            },
+            "conversation": {
+                "id": str(ctx.conversation_id),
+                "channel_thread": str(ctx.conversation_id),
+                "turn_count": 1,
+                "status": "open",
+            },
+            "message": {"body_raw": raw, "body_redacted": redact(raw), "language": "en"},
+            "meta": {},
+        }
+    )
+
+
+async def spoke_turn(world: World, ctx: AgentContext, raw: str, **fields: object) -> AgentResult:
+    """One turn through the turn's own dependency hook (`execute_spoke`), as the planner asked."""
+    from csa.turn.deps import PostgresTurnDependencies
+
+    deps = PostgresTurnDependencies(world.ctx.pool)
+    result = await deps.execute_spoke(
+        _signup_task(**fields), whatsapp_envelope(ctx, raw), Context()
+    )
+    await reply_sent(world, ctx)
+    return result
+
+
+@requires_docker
+async def test_the_turn_hands_a_sign_up_only_the_address_the_customer_wrote(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    raw = "Ali Bin Abu, Ali.Abu@Example.com"
+    # The planner saw "[EMAIL_0]"; the agent gets the real address, so it is read back.
+    read = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
+    assert read.error is None and _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert ", email ali.abu@example.com." in read.facts[0].text
+
+
+@requires_docker
+async def test_the_turn_drops_an_address_the_planner_invented(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    invented = await spoke_turn(
+        world, ctx, "Ali Bin Abu", **BESAR, **ALI, email="guess@example.com"
+    )
+    # Nothing reached the agent, so it asks; the invented address is never read back.
+    assert invented.error is None
+    assert _kinds(invented) == ["signup_email_ask", "signup_data_note"]
+    assert "guess@example.com" not in " ".join(f.text for f in invented.facts)
+
+
+@requires_docker
+async def test_an_over_long_address_is_invalid_and_the_turn_keeps_the_name(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    long_address = "a" * 288 + "@example.com"
+    assert len(long_address) == 300
+    raw = f"Ali Bin Abu, {long_address}"
+    bad = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
+    assert bad.error is None  # not invalid_input: the turn's name and phone are not lost
+    assert _kinds(bad) == ["signup_email_invalid", "signup_data_note"]
+    assert bad.facts[0].text == EMAIL_INVALID
+    # The draft kept the name and the phone: a skip reads them back.
+    read = await spoke_turn(world, ctx, "skip", **BESAR, skip_email=True)
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, no "
+        "email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert long_address not in await all_pending_text(world)
+
+
+@pytest.mark.parametrize("channel", ["telegram", "web"])
+@requires_docker
+async def test_telegram_and_the_web_sandbox_never_ask(world: World, channel: str) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world, channel=channel, phone=TYPED, verified=True)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == [None]
+    assert await contact_emails(world) == (None, None)
+
+
+@requires_docker
+async def test_with_payments_off_whatsapp_never_asks(world: World) -> None:
+    ctx = await whatsapp_signup(world, payments=False)
+    read = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+
+
+@pytest.mark.parametrize("column", ["email", "customer_given_email"])
+@requires_docker
+async def test_a_contact_with_an_address_on_file_is_never_asked_and_keeps_it(
+    world: World, column: str
+) -> None:
+    ctx = await whatsapp_signup(world)
+    on_file: dict[str, LiteralString] = {
+        "email": "UPDATE contacts SET email='first@example.com' WHERE id=%s",
+        "customer_given_email": (
+            "UPDATE contacts SET customer_given_email='first@example.com' WHERE id=%s"
+        ),
+    }
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(on_file[column], (world.ctx.contact_id,))
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="second@example.com")
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+    await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert await request_emails(world) == [None]
+    expected = ("first@example.com", None) if column == "email" else (None, "first@example.com")
+    assert await contact_emails(world) == expected
+
+
+@requires_docker
+async def test_with_payments_on_a_free_plan_sign_up_promises_no_invoice(world: World) -> None:
+    await payments_on(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO plans (client_id,code,name,price) VALUES (%s,'percuma','Plan Percuma',0)",
+            (world.ctx.client_id,),
+        )
+    ctx = await signup_chat(world)
+    free = {"plan_code": "Plan Percuma"}
+    await signup_turn(world, ctx, **free, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **free, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Percuma was received. The team will review it and tell you "
+            "what happens next. Nothing is active yet.",
+        )
+    ]

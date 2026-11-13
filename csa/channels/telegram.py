@@ -146,6 +146,18 @@ def telegram_username(value: object) -> str | None:
     return None
 
 
+class SharedPhone(ContractModel):
+    """A Telegram contact card as sent: the number, and whose account the card belongs to.
+
+    Only a card whose ``user_id`` is the sender's own Telegram id, sent directly rather than
+    forwarded, proves the sender holds the number; ingress decides that, not the parser.
+    """
+
+    phone_number: str = Field(min_length=1, max_length=64)
+    user_id: int | None = None
+    forwarded: bool = False
+
+
 class TelegramEvent(ContractModel):
     update_id: int = Field(ge=0)
     kind: Literal["message", "edited_message", "callback_query"]
@@ -162,6 +174,7 @@ class TelegramEvent(ContractModel):
     reply_to_message_id: int | None = None
     is_group: bool = False
     staff_action_id: UUID | None = None
+    shared_phone: SharedPhone | None = None
 
     @property
     def channel_thread(self) -> str:
@@ -294,15 +307,31 @@ class TelegramAdapter:
         text: str,
         http_client: httpx.AsyncClient | None = None,
         buttons: Sequence[tuple[str, str]] | None = None,
+        request_phone_label: str | None = None,
+        remove_keyboard: bool = False,
     ) -> TelegramDeliveryReceipt:
-        """Send text (optionally with one row of inline buttons) and return the message id.
+        """Send text and return the message id.
+
+        At most one of: one row of inline ``buttons``; a one-time reply keyboard with a single
+        "share my number" button (``request_phone_label``); or ``remove_keyboard``, which takes
+        that keyboard away again.
 
         Error values intentionally exclude the Bot API URL because it contains
         the credential token.
         """
+        if sum((bool(buttons), request_phone_label is not None, remove_keyboard)) > 1:
+            raise ValueError("a message carries at most one kind of reply markup")
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
-        if buttons:
+        if request_phone_label is not None:
+            payload["reply_markup"] = {
+                "keyboard": [[{"text": request_phone_label, "request_contact": True}]],
+                "one_time_keyboard": True,
+                "resize_keyboard": True,
+            }
+        elif remove_keyboard:
+            payload["reply_markup"] = {"remove_keyboard": True}
+        elif buttons:
             payload["reply_markup"] = {
                 "inline_keyboard": [
                     [
@@ -454,6 +483,7 @@ class TelegramAdapter:
         if not isinstance(body_value, str):
             raise TelegramUpdateError("Telegram message text or caption must be a string")
         attachments = _attachments(message_data)
+        shared_phone = _shared_phone(message_data) if kind == "message" else None
         try:
             message = Message(
                 body_raw=body_value,
@@ -477,6 +507,7 @@ class TelegramAdapter:
                 reply_to_message_id=reply_to_message_id,
                 is_group=is_group,
                 staff_action_id=staff_action_id,
+                shared_phone=shared_phone,
             )
         except ValidationError as exc:
             raise TelegramUpdateError("Telegram update is outside the supported contract") from exc
@@ -539,6 +570,28 @@ def _telegram_id(value: object, field: str, *, allow_negative: bool = False) -> 
     if parsed == 0 or (parsed < 0 and not allow_negative):
         raise TelegramUpdateError(f"{field} is invalid")
     return str(parsed)
+
+
+_FORWARD_KEYS = ("forward_origin", "forward_from", "forward_from_chat", "forward_date")
+
+
+def _shared_phone(message: Mapping[str, Any]) -> SharedPhone | None:
+    """The contact card of a message, if it carries one."""
+    if "contact" not in message:
+        return None
+    card = _mapping(message["contact"], "contact")
+    number = card.get("phone_number")
+    if not isinstance(number, str) or not number.strip():
+        raise TelegramUpdateError("contact phone_number is missing or invalid")
+    user_id = card.get("user_id")
+    try:
+        return SharedPhone(
+            phone_number=number.strip(),
+            user_id=user_id if isinstance(user_id, int) and not isinstance(user_id, bool) else None,
+            forwarded=any(key in message for key in _FORWARD_KEYS),
+        )
+    except ValidationError as exc:
+        raise TelegramUpdateError("contact card is outside the supported contract") from exc
 
 
 def _attachments(message: Mapping[str, Any]) -> list[Attachment]:

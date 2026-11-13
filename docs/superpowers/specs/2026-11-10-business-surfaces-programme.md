@@ -29,13 +29,20 @@ request count at five, plus two that wait on the owner.
 | 2 | Customer bot: answers and escalation ladder | `2026-11-10-customer-bot-business-answers-design.md` | 0560–0569 (0560 adds `escalations.note`) | Real customers are on production; the answers and the ladder change the same graph and the same golden cases |
 | 3 | Connections tab | `2026-11-10-connections-tab-design.md` | none | Console navigation changes here before the Overview-as-assistant pull request changes it again |
 | 4 | Product management | `2026-11-10-product-management-design.md` | 0570–0579 | Needs new write routes, a stock-authority rule and assistant actions |
-| 2b | Customer onboarding: sign-up from the chat, per-plan auto-approve, channel-verified linking | `2026-11-11-customer-onboarding-design.md` | 0580-0589 | Added 2026-11-11 (owner: customers must become customers and be recognised across channels); same graph as PR 2, so right after it |
-| P1 | Payments 1: invoices, payment methods, reminders, the bot's payment answers, the Payments tab | `2026-11-11-payments-design.md` | 0590-0599 | Added 2026-11-11 (owner: clients are paid by QR, transfer or cash, and it must be automated for thousands of customers); needs 2b for pending subscriptions |
+| 2b | Customer onboarding: sign-up from the chat, per-plan auto-approve, channel-verified linking | `2026-11-11-customer-onboarding-design.md` | 0580-0589 | Added 2026-11-11 (owner: customers must become customers and be recognised across channels); same graph as PR 2, so right after it. Done in build 2026-11-12 on `feat/customer-onboarding` (one pull request, 0580 and 0581; its settled design is section 10 of the design), awaiting review and merge |
+| P1 | Payments 1: invoices, payment methods, reminders, the bot's payment answers, the Payments tab | `2026-11-11-payments-design.md` | 0590-0599 | Added 2026-11-11 (owner: clients are paid by QR, transfer or cash, and it must be automated for thousands of customers); needs 2b for pending subscriptions. Built 2026-11-13 on `feat/payments-1` (one pull request, 0590 and 0591, plan `2026-11-13-payments-1.md`; its settled design is section 11 of the design), in review, not merged |
 | P2 | Payments 2: bank statement import with automatic matching, cash through Bookings | `2026-11-11-payments-design.md` | 0590-0599 | The scaling piece: staff handle exceptions only |
+| HR | HR refinement: a proper and practical HR flow | none yet; needs its own design round first | to be decided | Added by the owner 2026-11-12; moved on 2026-11-13 to after the assistant pull request (5), last of this list |
+| TL | Training library: video upload by tenant admins, transcription of the audio, a stored summary when cheap, questions to the assistant about a video | none yet; needs its own design round first | to be decided | Added by the owner 2026-11-13; right after payments P1 and P2 |
 | 5 | Assistant PR 3 (Overview becomes the assistant, interactive dock, alive avatar) | already planned in the assistant refinement programme; its design is brainstormed when it starts | to be decided | Last, so it renders the cards that 4 adds |
 
-Recommended order after pull request 3 (owner may reorder): 2, 2b, P1, P2, 4, then the assistant pull request. Payments
-and onboarding come before products because customer growth is what the owner expects to scale.
+Recommended order after pull request 3 (owner may reorder): 2, 2b, P1, P2, TL, 4, then the assistant pull
+request (5), then the HR refinement. The owner changed this on 2026-11-12 and again on 2026-11-13: 2 and 2b are
+done, payments P1 and P2 follow, then the training library with video, then product management (4), then the
+assistant pull request (5), and the HR refinement last. Payments and onboarding come before products because
+customer growth is what the owner expects to scale. The Mito rename, organisation move, private repository and
+CI shard rebalance were designed on 2026-11-13 and then cancelled by the owner so payments could start
+(`2026-11-13-mito-rename-and-org-move-design.md`, kept as reference).
 
 Decided by the owner on 2026-11-11 (these were waiting on the owner):
 
@@ -53,8 +60,10 @@ Decided by the owner on 2026-11-11 (these were waiting on the owner):
 - **Cancel on a knowledge job keeps its confirm step** (the behaviour shipped in #101).
 
 The HR programme (attendance, claims, payroll, recruitment, onboarding, leave self-service) keeps its
-order and its migration range (0520–0529 and later) and runs after pull request 5. It shares no files
-with pull requests 1 to 4.
+order and its migration range (0520–0529 and later). Its refinement project, added by the owner on
+2026-11-12 for a proper and practical HR flow, runs after the assistant pull request (5) (owner,
+2026-11-13), and needs its own design round first. The other HR projects also run after pull request 5.
+Until the refinement starts, the HR programme shares no files with pull requests 1 to 4.
 
 ## 3. Rules every pull request follows
 
@@ -106,5 +115,17 @@ programme as P1 and P2 (`2026-11-11-payments-design.md`).
   `fix/kb-remove-deletes-file`). On 2026-11-11 the owner asked for the open design decisions to be
   resolved with their defaults: WhatsApp-only reminders and the statement format (payments design
   section 10, now marked decided).
+- 2026-11-12: PR 2b (customer onboarding) is built on `feat/customer-onboarding` (one pull request instead of
+  two, migrations 0580 and 0581) and waits for review and merge. The owner changed the order: 2b, payments P1
+  and P2, PR 4 (product management), HR refinement (needs its own design round), then the assistant pull
+  request.
+- 2026-11-13: PR 2b (#111) and the CI fixes (#112) are merged and on staging (0580, 0581). The owner reordered the
+  programme: payments P1 and P2 next, then the training library with video, then product management, the
+  assistant pull request and the HR refinement last. A Mito rename, organisation move (`fourstacks/mito`), private
+  repository and CI shard rebalance was designed (`2026-11-13-mito-rename-and-org-move-design.md`) and cancelled
+  the same day to start payments sooner.
+- 2026-11-13: P1 (Payments 1) is built on `feat/payments-1` (one pull request, migrations 0590 and 0591) and is in
+  review, not merged. Payments are off per company until an Admin switches them on; the DuitNow QR image is a
+  follow-up after P1 (text first). P2 (statement import, cash through Bookings) is not started.
 - Next: the plan for pull request 2 (customer bot business answers, migration 0560) is being written on
   `docs/customer-bot-answers-plan`; then the plans for 2b, P1, P2 and PR 4 in that order.

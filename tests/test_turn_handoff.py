@@ -15,7 +15,7 @@ from uuid import UUID
 import httpx
 import pytest
 from csa.contracts.envelope import Callback, Channel
-from csa.contracts.facts import Fact
+from csa.contracts.facts import Fact, Ui
 from csa.contracts.plan import Intent, Plan
 from csa.contracts.state import (
     Context,
@@ -27,6 +27,7 @@ from csa.contracts.state import (
     TurnState,
     Verification,
 )
+from csa.core.tenancy import tx
 from csa.decide.llm import HandoffOut
 from csa.graph.policy.gate import Policy
 from csa.graph.policy.handoff import decide_handoff
@@ -658,6 +659,38 @@ async def test_hold_keeps_a_handoff_draft_on_a_muted_conversation(shop: Shop) ->
     await real.hold(_with_draft(other, handoff=False).model_copy(update={"verdict": verdict}))
     left = await shop.w.q("SELECT id FROM approvals WHERE conversation_id = %s", str(other_chat))
     assert left == []
+
+
+@requires_docker
+async def test_a_request_phone_ui_is_stored_with_the_message_and_an_empty_ui_is_not(
+    shop: Shop,
+) -> None:
+    contact = await shop.customer()
+    chat, trace = await _routed_chat(shop, contact)
+    envelope = envelope_for(shop, contact, chat).model_copy(update={"trace_id": trace})
+
+    def message(key: str, ui: Ui) -> OutboundMessage:
+        return OutboundMessage(
+            trace_id=trace,
+            contact_id=contact,
+            channel=Channel.TELEGRAM,
+            body=f"body {key}",
+            idempotency_key=f"{trace}:{key}",
+            ui=ui,
+        )
+
+    async with tx(shop.w.pool, shop.tenant) as conn:
+        await deps._insert_outbound(conn, envelope, message("ask", Ui(request_phone=True)))
+        await deps._insert_outbound(conn, envelope, message("plain", Ui()))
+    rows = await shop.w.q(
+        "SELECT body, ui FROM messages WHERE conversation_id = %s AND direction = 'outbound'"
+        " ORDER BY body",
+        str(chat),
+    )
+    assert rows == [
+        {"body": "body ask", "ui": {"options": [], "request_phone": True}},
+        {"body": "body plain", "ui": None},
+    ]
 
 
 # --- finalize stores the note and the gap ----------------------------------------------------

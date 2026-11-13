@@ -4,7 +4,7 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password" | "subscriptions" | "bookings" | "training_library" | "connections"
+  | "team" | "password" | "subscriptions" | "payments" | "bookings" | "training_library" | "connections"
   | "credit" | "billing";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
@@ -60,6 +60,20 @@ export function bookingsPages(admin: boolean): NavChild[] {
 }
 
 const pathOf = (href: string) => href.split("?")[0];
+
+/**
+ * A console page's href as the navigation writes it: `/{path}` for a platform admin, else
+ * `/portal/{path}`, with any non-empty query values (a platform admin's `client_id`, say).
+ */
+export function consoleHref(
+  platformAdmin: boolean,
+  path: string,
+  params: Record<string, string | null | undefined> = {},
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value) query.set(key, value);
+  return `${platformAdmin ? `/${path}` : `/portal/${path}`}${query.size ? `?${query}` : ""}`;
+}
 
 /**
  * The sub-page the path is on: an exact match wins, else the deepest child whose page the path
@@ -118,6 +132,8 @@ const gate: Partial<Record<NavKey, string[]>> = {
   hr: ["hr"],
   email: ["staff_email"],
   subscriptions: ["subscriptions"],
+  // Invoices belong to subscriptions; the server gates Payments on the same package.
+  payments: ["subscriptions"],
   bookings: ["bookings"],
   training_library: ["training_library"],
 };
@@ -138,7 +154,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     const current = status.get(pkg);
     return current !== undefined && (unlocks[key] ?? ACTIVE_ONLY).includes(current);
   };
-  const to = (path: string) => (admin ? `/${path}` : `/portal/${path}`);
+  const to = (path: string) => consoleHref(admin, path);
   const entries: Array<NavLink & { show?: boolean }> = [
     // Overview is the assistant home: the sandbox chat lives there (/chat redirects to it).
     { key: "overview", label: "Overview", href: admin ? "/" : "/portal" },
@@ -151,6 +167,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "business", label: "Business management", href: to("business"), show: writer, children: businessPages(admin) },
     // Read-only members see the tab too; the page hides its action controls for them.
     { key: "subscriptions", label: "Subscriptions", href: to("subscriptions") },
+    // Read-only members get 403 on every Payments route, reads included, so they get no link.
+    { key: "payments", label: "Payments", href: to("payments"), show: writer },
     // Every member sees Bookings, read-only included; the setup pages hide their edit controls.
     { key: "bookings", label: "Bookings", href: to("bookings"), children: bookingsPages(admin) },
     // Every member reads the library, read-only included; only managers see its edit controls.

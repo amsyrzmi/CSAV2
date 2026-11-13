@@ -6,8 +6,8 @@ description: Design, implement or review CSA-managed inventory authority, reserv
 # Change CSA inventory behavior
 
 Read [AGENTS.md](../../../AGENTS.md), current inventory entries in
-[PROGRESS.md](../../../docs/PROGRESS.md), and the M6D sections of the
-[M6 roadmap](../../../docs/archive/handoffs/2026-10-15-console-source-migration-plan.md).
+[PROGRESS.md](../../../docs/PROGRESS.md). The original M6D design (the console
+migration plan) was removed from the repo; recover it from git history if needed.
 Reconcile plans with current contracts, migrations and tests before choosing the next
 slice. Preserve the existing distinction between design evidence, test-local SQL,
 application schema, runtime wiring and live cutover.

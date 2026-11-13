@@ -11,7 +11,12 @@ function moduleUrl(source) {
 }
 const apiUrl = moduleUrl(await readFile(new URL("../lib/api.ts", import.meta.url), "utf8"));
 const source = await readFile(new URL("../lib/subscriptions-api.ts", import.meta.url), "utf8");
-const subs = await import(moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl))));
+const subsUrl = moduleUrl(source.replace('"./api"', JSON.stringify(apiUrl)));
+const subs = await import(subsUrl);
+// linkBody lives in lib/contact-links.ts, which imports the subscriptions client.
+const linksSource = await readFile(new URL("../lib/contact-links.ts", import.meta.url), "utf8");
+const { linkBody } = await import(
+  moduleUrl(linksSource.replace('"@/lib/subscriptions-api"', JSON.stringify(subsUrl))));
 const { api, ApiError } = await import(apiUrl);
 
 const SUB = "33333333-3333-4333-8333-333333333333";
@@ -113,6 +118,7 @@ test("subscription refusals are explained in plain words and keep their code", a
     "request_has_no_plan", "request_action_mismatch", "resume_at_applies_to_pause_only",
     "request_in_progress", "proposal_stale", "plan_exists", "proposal_not_executed",
     "resume_at_not_after_today", "plan_in_use", "proposal_registry_unavailable",
+    "plan_not_open", "signup_not_pending", "signup_has_plan", "signup_changed", "signup_not_found",
   ];
   const original = globalThis.fetch;
   try {
@@ -130,6 +136,80 @@ test("subscription refusals are explained in plain words and keep their code", a
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("sign-up and settings calls use the Task 4 routes with the right bodies", async () => {
+  const SIGNUP = "55555555-5555-4555-8555-555555555555";
+  const [, requests] = await capture(async () => {
+    await subs.getSettings(null);
+    await subs.putSettings(null, { pending_expiry_days: 7, version: 0 });
+    await subs.listSignups(null, "pending");
+    await subs.listSignups(null, "decided", SIGNUP);
+    await subs.approveSignup(null, SIGNUP);
+    await subs.declineSignup(null, SIGNUP, { reason: "Not a customer" });
+    await subs.declineSignup(null, SIGNUP, {});
+    await subs.updatePlan(null, "basic", { signup_mode: "auto", is_signup_open: false });
+    await subs.createPlan(null, { code: "gold", name: "Gold", price: "10.00", signup_mode: "auto" });
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/subscriptions/settings"],
+    ["PUT", "/console/v1/subscriptions/settings"],
+    ["GET", "/console/v1/subscriptions/signups?status=pending"],
+    ["GET", `/console/v1/subscriptions/signups?status=decided&before=${SIGNUP}`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/approve`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/decline`],
+    ["POST", `/console/v1/subscriptions/signups/${SIGNUP}/decline`],
+    ["PATCH", "/console/v1/subscriptions/plans/basic"],
+    ["POST", "/console/v1/subscriptions/plans"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), { pending_expiry_days: 7, version: 0 });
+  // Approve takes no body; decline sends the reason as typed, or an empty object.
+  assert.equal(requests[4][1].body, undefined);
+  assert.deepEqual(JSON.parse(requests[5][1].body), { reason: "Not a customer" });
+  assert.deepEqual(JSON.parse(requests[6][1].body), {});
+  assert.deepEqual(JSON.parse(requests[7][1].body), { signup_mode: "auto", is_signup_open: false });
+  assert.equal(requests[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+  assert.equal(requests[2][1].headers.has("X-CSRF-Token"), false);
+});
+
+test("a platform admin names the tenant on sign-up and settings calls", async () => {
+  const SIGNUP = "55555555-5555-4555-8555-555555555555";
+  const [, requests] = await capture(async () => {
+    await subs.putSettings("t1", { pending_expiry_days: 0, version: 2 });
+    await subs.listSignups("t1", "pending");
+    await subs.approveSignup("t1", SIGNUP);
+    await subs.declineSignup("t1", SIGNUP, { reason: "x" });
+  });
+  assert.deepEqual(requests.map(([path]) => path), [
+    "/console/v1/subscriptions/settings?client_id=t1",
+    "/console/v1/subscriptions/signups?client_id=t1&status=pending",
+    `/console/v1/subscriptions/signups/${SIGNUP}/approve?client_id=t1`,
+    `/console/v1/subscriptions/signups/${SIGNUP}/decline?client_id=t1`,
+  ]);
+});
+
+test("pending is a status of its own, labelled Waiting to start", () => {
+  assert.equal(subs.STATUS_LABELS.pending, "Waiting to start");
+  assert.deepEqual(Object.keys(subs.STATUS_LABELS), ["pending", "active", "paused", "cancelled"]);
+  const sub = (status, renews_at = null) => ({ status, cancel_at_period_end: false, renews_at });
+  // Mirrors the executor: a pending subscription can be started or cancelled, nothing else.
+  assert.deepEqual(subs.availableActions(sub("pending")), ["activate", "cancel_now"]);
+  assert.ok(!subs.availableActions(sub("active", "2026-11-27T01:15:00Z")).includes("activate"));
+  assert.ok(!subs.availableActions(sub("paused")).includes("activate"));
+  assert.deepEqual(subs.availableActions(sub("cancelled")), []);
+});
+
+test("sign-up and expiry events read as plain sentences", () => {
+  const say = (action, actor = "22222222-2222-4222-8222-222222222222", payload = {}) =>
+    subs.eventSentence({ id: 1, actor, action, from_status: null, to_status: null, payload,
+      created_at: "2026-10-27T01:15:00Z" }, (code) => ({ basic: "Basic" })[code] ?? code);
+  assert.equal(say("signup_approved", undefined, { plan: "basic" }),
+    "Sign-up approved by staff for the Basic plan. Waiting to start.");
+  assert.equal(say("signup_approved", "system:signup_auto", { plan: "basic" }),
+    "Sign-up approved automatically for the Basic plan. Waiting to start.");
+  assert.equal(say("activated"), "Subscription started.");
+  assert.equal(say("pending_expired", "system:subscriptions_due"),
+    "Expired before it started, so it was cancelled.");
 });
 
 test("money and dates follow the writing guide", () => {
@@ -187,6 +267,22 @@ test("timeline events read as plain sentences from action and payload", () => {
   assert.equal(say("something_new", {}), "Subscription updated.");
 });
 
+test("payment events read as plain sentences", () => {
+  const say = (action, payload = {}, actor = "22222222-2222-4222-8222-222222222222") =>
+    subs.eventSentence({ id: 1, actor, action, from_status: null, to_status: null, payload,
+      created_at: "2026-11-12T01:15:00Z" });
+  const paid = { invoice_id: "inv_0001", payment_id: "11111111-1111-4111-8111-111111111111", via: "payment" };
+  assert.equal(say("payment_recorded", paid), "A payment was recorded.");
+  assert.equal(say("payment_recorded", { ...paid, recorded_only: true }),
+    "A payment was recorded; the cancelled subscription stays cancelled.");
+  assert.equal(say("resumed_paid", paid), "Resumed after the overdue payment was recorded.");
+  assert.equal(say("suspended_unpaid", { invoice_id: "inv_0001" }, "system:payments_due"),
+    "Paused because an invoice stayed unpaid.");
+  // A pending subscription started by its payment says so; a staff start reads as before.
+  assert.equal(say("activated", paid), "Subscription started when the payment was recorded.");
+  assert.equal(say("activated", {}), "Subscription started.");
+});
+
 test("action buttons follow the executor's allowed starting states", () => {
   const sub = (status, cancel_at_period_end = false, renews_at = "2026-11-27T01:15:00Z") =>
     ({ status, cancel_at_period_end, renews_at });
@@ -205,4 +301,79 @@ test("the earliest resume date is tomorrow on the browser's calendar", () => {
   assert.equal(subs.dayAfter(new Date(2026, 9, 27, 23, 59)), "2026-10-28");
   assert.equal(subs.dayAfter(new Date(2026, 11, 31, 0, 1)), "2027-01-01");
   assert.equal(subs.dayAfter(new Date(2028, 1, 28, 12, 0)), "2028-02-29");
+});
+
+test("link, unlink and review calls use the Task 5 routes with the right bodies", async () => {
+  const LINK = "66666666-6666-4666-8666-111111111111";
+  const REVIEW = "66666666-6666-4666-8666-222222222222";
+  const [, requests] = await capture(async () => {
+    await subs.listLinks(null, SUB);
+    await subs.linkContacts(null, linkBody(SUB, REQ));
+    await subs.unlinkContacts(null, LINK);
+    await subs.listReviews(null);
+    await subs.listReviews(null, "resolved");
+    await subs.resolveReview(null, REVIEW, "linked");
+    await subs.resolveReview(null, REVIEW, "dismissed");
+    await subs.listLinks("a b/1", SUB);
+    await subs.unlinkContacts("t1", LINK);
+    await subs.resolveReview("t1", REVIEW, "dismissed");
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", `/console/v1/subscriptions/links?contact_id=${SUB}`],
+    ["POST", "/console/v1/subscriptions/links"],
+    ["POST", `/console/v1/subscriptions/links/${LINK}/unlink`],
+    ["GET", "/console/v1/subscriptions/link-reviews?status=open"],
+    ["GET", "/console/v1/subscriptions/link-reviews?status=resolved"],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve`],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve`],
+    ["GET", `/console/v1/subscriptions/links?client_id=a+b%2F1&contact_id=${SUB}`],
+    ["POST", `/console/v1/subscriptions/links/${LINK}/unlink?client_id=t1`],
+    ["POST", `/console/v1/subscriptions/link-reviews/${REVIEW}/resolve?client_id=t1`],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), { contact_a: SUB, contact_b: REQ });
+  // Unlink takes no body; resolve sends the resolution word the server expects.
+  assert.equal(requests[2][1].body, undefined);
+  assert.deepEqual(JSON.parse(requests[5][1].body), { resolution: "linked" });
+  assert.deepEqual(JSON.parse(requests[6][1].body), { resolution: "dismissed" });
+  assert.equal(requests[1][1].headers.get("X-CSRF-Token"), "synthetic-csrf");
+  assert.equal(requests[0][1].headers.has("X-CSRF-Token"), false);
+});
+
+test("recent links are every link of the company, newest first, without a contact", async () => {
+  const [, requests] = await capture(async () => {
+    await subs.listRecentLinks(null);
+    await subs.listRecentLinks("t1", 5);
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", `/console/v1/subscriptions/links?limit=${subs.RECENT_LINKS_LIMIT}`],
+    ["GET", "/console/v1/subscriptions/links?client_id=t1&limit=5"],
+  ]);
+  assert.equal(subs.RECENT_LINKS_LIMIT, 20);
+});
+
+test("link refusals are explained in plain words and keep their code", async () => {
+  const codes = [
+    "link_refused:telegram_conflict", "link_refused:same_channel_identity", "link_refused:table_conflict",
+    "unlink_window_closed", "link_not_active", "later_link_active", "survivor_merged", "contact_merged",
+    "link_not_found", "review_not_found", "review_not_open", "same_contact", "contact_not_found",
+  ];
+  const seen = new Set();
+  const original = globalThis.fetch;
+  try {
+    for (const code of codes) {
+      globalThis.fetch = async () => Response.json({ detail: code }, { status: 409 });
+      await assert.rejects(api("/console/v1/subscriptions/links"), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, code);
+        assert.notEqual(error.message, code, code);
+        assert.doesNotMatch(error.message, /_|:/, code);
+        assert.match(error.message, /\.$/, code);
+        seen.add(error.message);
+        return true;
+      });
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(seen.size, codes.length, "each code has its own sentence");
 });

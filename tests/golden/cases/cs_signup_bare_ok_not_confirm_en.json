@@ -1,0 +1,194 @@
+{
+  "id": "cs_signup_bare_ok_not_confirm_en",
+  "matrix": "Sign-up: an ok that does not answer the read-back files nothing",
+  "description": "The sign-up is read back, the customer then asks about the plan, and says 'ok' to that answer. Even when the planner marks it confirmed, the latest reply was not the read-back: the server reads it back again and files nothing.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "besar",
+        "name": "Plan Besar",
+        "price": "50.00",
+        "features": [
+          "Unlimited data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent"
+    ]
+  },
+  "turns": [
+    {
+      "say": "Sign me up for Plan Besar please. I'm Ali Bin Abu, my number is 0123456789",
+      "redacted": "Sign me up for Plan Besar please. I'm Ali Bin Abu, my number is [PHONE_0]",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Ali Bin Abu",
+                "phone": "[PHONE_0]"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Here's your sign-up: Plan Besar, name Ali Bin Abu, phone +60123456789. Is that right? We keep your name and phone number on your contact record so the team can set up your plan."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do."
+        ],
+        "signup_requests": 0
+      }
+    },
+    {
+      "say": "What does Plan Besar include?",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "plans"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Plan Besar is MYR 50.00 a month with unlimited data."
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "Plan Besar: MYR 50.00 a month. Includes: Unlimited data."
+        ],
+        "signup_requests": 0
+      }
+    },
+    {
+      "say": "ok",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.8
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Ali Bin Abu",
+                "phone": "[PHONE_0]",
+                "confirmed": true
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "Just to check: sign up for Plan Besar with name Ali Bin Abu and phone +60123456789?"
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do."
+        ],
+        "reply_excludes": [
+          "received",
+          "approved",
+          "is now active",
+          "has been activated"
+        ],
+        "signup_requests": 0
+      }
+    }
+  ]
+}

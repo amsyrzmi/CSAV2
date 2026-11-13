@@ -13,6 +13,7 @@ from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
 from csa.jobs.runner import build_default_registry
 from csa.jobs.subscriptions import run_subscriptions_due
+from csa.payments.reference import new_invoice_id, new_reference
 from psycopg import sql
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -21,7 +22,14 @@ pytestmark = [requires_docker, pytest.mark.asyncio, pytest.mark.usefixtures("lg_
 
 ACTOR = "system:subscriptions_due"
 NOW = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
-ZERO = {"cancelled": 0, "plan_changed": 0, "resumed": 0, "renewed": 0, "pending_skipped": 0}
+ZERO = {
+    "cancelled": 0,
+    "plan_changed": 0,
+    "resumed": 0,
+    "renewed": 0,
+    "pending_skipped": 0,
+    "pending_expired": 0,
+}
 
 
 def at(text: str) -> datetime:
@@ -519,6 +527,30 @@ async def test_resume_with_no_renewal_date_starts_a_period(
         assert datetime.fromisoformat(event["payload"]["renews_at"]) == at("2026-04-10 20:00")
 
 
+async def test_resume_by_date_clears_the_unpaid_pause_reason(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(
+            conn,
+            tenant,
+            status="paused",
+            paused_at=NOW - timedelta(days=5),
+            pause_reason="unpaid",
+            resume_at=date(2026, 3, 10),
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"resumed": 1}
+
+        cursor = await conn.execute(
+            "SELECT status, pause_reason FROM subscriptions WHERE id=%s", (sub,)
+        )
+        assert await cursor.fetchone() == ("active", None)
+
+
 @pytest.mark.parametrize("package", [None, "requested", "suspended"])
 async def test_tenant_without_an_active_package_is_left_alone(
     pg_container: object, app_dsn: str, package: str | None
@@ -589,3 +621,328 @@ async def test_scheduled_interval_change_resets_the_anchor(
         row = await fetch_subscription(conn, no_renewal)
         assert row["plan"] == "annual"
         assert row["renewal_anchor"] is None and row["renews_at"] is None
+
+
+async def add_pending(
+    conn: psycopg.AsyncConnection[Any], client: uuid.UUID, days_old: int, **fields: Any
+) -> uuid.UUID:
+    """An unpaid pending subscription approved ``days_old`` days before the job clock."""
+    return await add_subscription(
+        conn,
+        client,
+        status="pending",
+        started_at=NOW - timedelta(days=days_old),
+        renews_at=None,
+        **fields,
+    )
+
+
+async def add_signup(
+    conn: psycopg.AsyncConnection[Any], client: uuid.UUID, sub: uuid.UUID, status: str = "approved"
+) -> uuid.UUID:
+    cursor = await conn.execute(
+        "INSERT INTO contacts (client_id, full_name) VALUES (%s, 'Siti Contoh') RETURNING id",
+        (client,),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    contact = row[0]
+    cursor = await conn.execute(
+        "INSERT INTO signup_requests (client_id, contact_id, plan_code, full_name, phone, status,"
+        " subscription_id) VALUES (%s, %s, 'basic', 'Siti Contoh', '+60123456789', %s, %s)"
+        " RETURNING id",
+        (client, contact, status, sub),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    return uuid.UUID(str(row[0]))
+
+
+async def signup_status(conn: psycopg.AsyncConnection[Any], signup: uuid.UUID) -> str:
+    cursor = await conn.execute("SELECT status FROM signup_requests WHERE id=%s", (signup,))
+    row = await cursor.fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+async def set_expiry_days(conn: psycopg.AsyncConnection[Any], client: uuid.UUID, days: int) -> None:
+    await conn.execute(
+        "INSERT INTO subscription_settings(client_id, pending_expiry_days) VALUES (%s, %s)",
+        (client, days),
+    )
+
+
+async def test_pending_past_the_default_fourteen_days_expires_with_its_signup_request(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        old = await add_pending(conn, tenant, 15, version=3)
+        fresh = await add_pending(conn, tenant, 13)
+        old_signup = await add_signup(conn, tenant, old)
+        fresh_signup = await add_signup(conn, tenant, fresh)
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        gone = await fetch_subscription(conn, old)
+        assert gone["status"] == "cancelled" and gone["cancelled_at"] == NOW
+        assert gone["version"] == 4
+        events = await fetch_events(conn, old)
+        assert [(e["actor"], e["action"], e["from_status"], e["to_status"]) for e in events] == [
+            (ACTOR, "pending_expired", "pending", "cancelled")
+        ]
+        assert events[0]["proposal_id"] is None
+        assert await signup_status(conn, old_signup) == "expired"
+        kept = await fetch_subscription(conn, fresh)
+        assert kept["status"] == "pending" and kept["version"] == 1
+        assert await fetch_events(conn, fresh) == []
+        assert await signup_status(conn, fresh_signup) == "approved"
+        assert await run(app_dsn, tenant) == ZERO
+
+
+async def test_pending_expiry_setting_zero_never_expires_and_thirty_keeps_a_twenty_day_row(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        never, thirty = await seed_tenants(conn)
+        await set_expiry_days(conn, never, 0)
+        await set_expiry_days(conn, thirty, 30)
+        ancient = await add_pending(conn, never, 400)
+        twenty = await add_pending(conn, thirty, 20)
+        thirty_one = await add_pending(conn, thirty, 31)
+
+        assert await run(app_dsn, never) == ZERO
+        assert await run(app_dsn, thirty) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, ancient))["status"] == "pending"
+        assert (await fetch_subscription(conn, twenty))["status"] == "pending"
+        assert (await fetch_subscription(conn, thirty_one))["status"] == "cancelled"
+
+
+async def test_only_unpaid_pending_rows_expire_and_only_their_approved_request_changes(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        active = await add_subscription(conn, tenant, started_at=NOW - timedelta(days=200))
+        paused = await add_subscription(
+            conn, tenant, status="paused", started_at=NOW - timedelta(days=200)
+        )
+        old = await add_pending(conn, tenant, 40)
+        declined = await add_signup(conn, tenant, old, status="declined")
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, active))["status"] == "active"
+        assert (await fetch_subscription(conn, paused))["status"] == "paused"
+        assert (await fetch_subscription(conn, old))["status"] == "cancelled"
+        assert await signup_status(conn, declined) == "declined"
+
+
+async def test_pending_expiry_is_per_company_and_never_crosses_tenants(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        short, long = await seed_tenants(conn)
+        await set_expiry_days(conn, short, 7)
+        await set_expiry_days(conn, long, 60)
+        short_row = await add_pending(conn, short, 10)
+        long_row = await add_pending(conn, long, 10)
+        short_signup = await add_signup(conn, short, short_row)
+        long_signup = await add_signup(conn, long, long_row)
+
+        assert await run(app_dsn, short) == ZERO | {"pending_expired": 1}
+        assert (await fetch_subscription(conn, short_row))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, long_row))["status"] == "pending"
+        assert await signup_status(conn, short_signup) == "expired"
+        assert await signup_status(conn, long_signup) == "approved"
+
+        assert await run(app_dsn, long) == ZERO
+        assert (await fetch_subscription(conn, long_row))["status"] == "pending"
+        assert await fetch_events(conn, long_row) == []
+
+
+async def test_pending_expiry_respects_batch_size(pg_container: object, app_dsn: str) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        oldest = await add_pending(conn, tenant, 30)
+        middle = await add_pending(conn, tenant, 25)
+        newest = await add_pending(conn, tenant, 20)
+
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO | {"pending_expired": 2}
+        assert (await fetch_subscription(conn, oldest))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, middle))["status"] == "cancelled"
+        assert (await fetch_subscription(conn, newest))["status"] == "pending"
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO | {"pending_expired": 1}
+        assert await run(app_dsn, tenant, batch_size=2) == ZERO
+
+
+# --- invoices (payments) -------------------------------------------------------------------------
+
+OPEN = ("issued", "overdue", "proof_submitted", "cash_pending")
+
+
+async def add_invoice(
+    conn: psycopg.AsyncConnection[Any],
+    client: uuid.UUID,
+    sub: uuid.UUID,
+    status: str = "issued",
+    period_start: datetime | None = None,
+) -> str:
+    """An invoice of the subscription (an opening one when `period_start` is None)."""
+    invoice_id = new_invoice_id(NOW)
+    await conn.execute(
+        "INSERT INTO invoices (id, client_id, subscription_id, reference, status, amount, "
+        "currency, issued_at, due_at, period_start, period_end) "
+        "VALUES (%s,%s,%s,%s,%s,50,'MYR',%s,%s,%s,%s)",
+        (
+            invoice_id,
+            client,
+            sub,
+            new_reference(),
+            status,
+            NOW - timedelta(days=30),
+            period_start or NOW - timedelta(days=1),
+            period_start,
+            period_start + timedelta(days=30) if period_start else None,
+        ),
+    )
+    return invoice_id
+
+
+async def fetch_invoice(conn: psycopg.AsyncConnection[Any], invoice_id: str) -> dict[str, Any]:
+    cursor = await conn.execute(
+        "SELECT status, void_reason, voided_at, voided_by FROM invoices WHERE id=%s", (invoice_id,)
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    return dict(zip(["status", "void_reason", "voided_at", "voided_by"], row, strict=True))
+
+
+async def open_invoice_ids(conn: psycopg.AsyncConnection[Any], sub: uuid.UUID) -> list[str]:
+    cursor = await conn.execute(
+        "SELECT id FROM invoices WHERE subscription_id=%s AND status = ANY(%s) ORDER BY id",
+        (sub, list(OPEN)),
+    )
+    return [str(row[0]) for row in await cursor.fetchall()]
+
+
+async def test_period_end_cancel_voids_the_next_period_invoice_and_keeps_the_running_one(
+    pg_container: object, app_dsn: str
+) -> None:
+    ended = NOW - timedelta(hours=1)
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        leaving = await add_subscription(conn, tenant, cancel_at_period_end=True, renews_at=ended)
+        running = await add_invoice(conn, tenant, leaving, "overdue", ended - timedelta(days=28))
+        upcoming = await add_invoice(conn, tenant, leaving, "proof_submitted", ended)
+        staying = await add_subscription(conn, tenant, renews_at=NOW + timedelta(days=3))
+        staying_next = await add_invoice(conn, tenant, staying, "issued", NOW + timedelta(days=3))
+
+        assert await run(app_dsn, tenant) == ZERO | {"cancelled": 1}
+
+        assert (await fetch_subscription(conn, leaving))["status"] == "cancelled"
+        assert await fetch_invoice(conn, upcoming) == {
+            "status": "void",
+            "void_reason": "subscription_cancelled",
+            "voided_at": NOW,
+            "voided_by": None,
+        }
+        # The period that ran is still owed; the subscription that renews keeps its invoice.
+        assert await open_invoice_ids(conn, leaving) == [running]
+        assert (await fetch_invoice(conn, staying_next))["status"] == "issued"
+        assert await run(app_dsn, tenant) == ZERO
+
+
+async def test_expired_pending_subscription_voids_its_opening_invoice(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        old = await add_pending(conn, tenant, 15)
+        opening = await add_invoice(conn, tenant, old, "overdue")
+        fresh = await add_pending(conn, tenant, 13)
+        fresh_opening = await add_invoice(conn, tenant, fresh, "issued")
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, old))["status"] == "cancelled"
+        assert await fetch_invoice(conn, opening) == {
+            "status": "void",
+            "void_reason": "subscription_expired",
+            "voided_at": NOW,
+            "voided_by": None,
+        }
+        assert await open_invoice_ids(conn, old) == []
+        assert (await fetch_subscription(conn, fresh))["status"] == "pending"
+        assert (await fetch_invoice(conn, fresh_opening))["status"] == "issued"
+
+
+async def test_a_pending_subscription_whose_customer_said_they_paid_is_not_expired(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        claimed = await add_pending(conn, tenant, 20)
+        claimed_invoice = await add_invoice(conn, tenant, claimed, "proof_submitted")
+        cash = await add_pending(conn, tenant, 20)
+        cash_invoice = await add_invoice(conn, tenant, cash, "cash_pending")
+        silent = await add_pending(conn, tenant, 20)
+        await add_invoice(conn, tenant, silent, "issued")
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+
+        assert (await fetch_subscription(conn, silent))["status"] == "cancelled"
+        for sub, invoice, status in (
+            (claimed, claimed_invoice, "proof_submitted"),
+            (cash, cash_invoice, "cash_pending"),
+        ):
+            kept = await fetch_subscription(conn, sub)
+            assert kept["status"] == "pending" and kept["version"] == 1
+            assert await fetch_events(conn, sub) == []
+            assert (await fetch_invoice(conn, invoice))["status"] == status
+        assert await run(app_dsn, tenant) == ZERO
+
+
+async def test_a_plan_change_due_at_the_renewal_applies_before_the_renewal(
+    pg_container: object, app_dsn: str
+) -> None:
+    """Rule 2 runs before rule 4: the period that starts at renews_at is on the new plan."""
+    renews_at = at("2026-03-10 10:00")
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        sub = await add_subscription(
+            conn,
+            tenant,
+            renews_at=renews_at,
+            renewal_anchor=at("2026-01-10 10:00"),
+            pending_plan="annual",
+            pending_effective_at=renews_at,
+        )
+
+        assert await run(app_dsn, tenant) == ZERO | {"plan_changed": 1, "renewed": 1}
+
+        row = await fetch_subscription(conn, sub)
+        assert (row["plan"], row["price"]) == ("annual", 500)
+        # Renewed on the new plan's yearly interval, counted from the end of the old period.
+        assert row["renewal_anchor"] == renews_at
+        assert row["renews_at"] == at("2027-03-10 10:00")
+        assert [e["action"] for e in await fetch_events(conn, sub)] == ["plan_changed", "renewed"]

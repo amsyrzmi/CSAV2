@@ -4,9 +4,14 @@
 -- a manual cancel_now does); the event payload names it as cleared_pending_plan (NULL if none).
 -- Rows are claimed FOR UPDATE SKIP LOCKED (oldest period end first, at most %(batch_size)s), the
 -- change bumps version, and each row gets one 'cancelled_at_period_end' timeline event. Nothing is
--- charged. %(now)s is the job clock, so a test clock and production use the same statement.
+-- charged. The open invoices of periods that will not run (period_start at or after the period
+-- end, renews_at) and an opening invoice still without a period are voided in the same statement
+-- (void_reason 'subscription_cancelled', voided_by NULL, as payments/void_for_subscription.sql);
+-- the invoice of the period that ran stays owed. The subscription rows are locked by `due` before
+-- the invoice UPDATE can match them: the payments lock order (subscription, then invoice).
+-- %(now)s is the job clock, so a test clock and production use the same statement.
 WITH due AS (
-    SELECT id, status AS from_status, pending_plan
+    SELECT id, status AS from_status, pending_plan, renews_at
     FROM public.subscriptions
     WHERE client_id = %(client_id)s
       AND status = 'active'
@@ -29,5 +34,13 @@ WITH due AS (
            from_status, to_status, jsonb_build_object('cleared_pending_plan', pending_plan)
     FROM changed
     RETURNING id
+), voided AS (
+    UPDATE public.invoices i
+    SET status = 'void', void_reason = 'subscription_cancelled', voided_at = %(now)s::timestamptz
+    FROM due
+    WHERE i.client_id = %(client_id)s AND i.subscription_id = due.id
+      AND i.status IN ('issued', 'overdue', 'proof_submitted', 'cash_pending')
+      AND (i.period_start IS NULL OR i.period_start >= due.renews_at)
+    RETURNING i.id
 )
 SELECT count(*) AS cancelled FROM logged;

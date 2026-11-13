@@ -393,7 +393,156 @@ def test_capabilities_cover_plannable_agents() -> None:
         "invoice_agent",
         "booking_agent",
         "subscription_agent",
+        "payment_agent",
     }
+
+
+@pytest.mark.parametrize("call", ["classify", "plan"])
+async def test_the_payment_agent_is_named_only_to_a_company_that_has_it(call: str) -> None:
+    for ctx in (Context(), Context(capabilities=["subscription_agent", "ecommerce_agent"])):
+        system, _ = await _prompts_for(ctx, call)
+        assert "payment_agent" not in system, call
+    system, _ = await _prompts_for(Context(capabilities=["payment_agent"]), call)
+    assert "payment_agent" in system
+    assert "the server finds the invoices from this chat" in system
+    if call == "plan":
+        schemas = json.loads(
+            system.split("Agent input schemas: ", 1)[1].split(". Agent purposes")[0]
+        )
+        assert set(schemas["payment_agent"]["properties"]) == {"action", "reference", "note"}
+
+
+_PAYMENT_PLAN_RULE_TEXT = (
+    "Payments: asking how to pay, which bank account or DuitNow to pay to, or where to transfer "
+    "(for example 'how do I pay?', 'where do I transfer?', 'nak bayar macam mana?', 'akaun bank "
+    "apa?') uses payment_agent 'instructions'. Asking whether their payment was received (for "
+    "example 'did you receive my payment?', 'dah masuk ke?') is 'status'. Saying they have paid "
+    "(for example 'I've paid', 'dah transfer pagi tadi dari Maybank') is 'claim_paid', with note "
+    "copied from the customer's own words about when and from which bank they paid. The server "
+    "finds the customer's invoices from this chat and writes every amount, account number and "
+    "reference itself: put reference only when the customer wrote one, copied as they wrote it, "
+    "and never put an amount, account number or reference the customer did not write. Plan "
+    "payment tasks alone, with no other agent's task in the same reply. A customer who disputes "
+    'an amount or says they were charged twice gets no tasks and reply_strategy "escalate", so '
+    "a team member checks it. "
+)
+_PAYMENT_CLASSIFY_RULE_TEXT = (
+    " Asking how or where to pay, whether a payment was received, saying they have paid, or "
+    "disputing a charge has intent billing_invoice and payment_agent should be scored (for "
+    "example 'nak bayar macam mana?', 'dah masuk ke?', 'dah transfer pagi tadi dari Maybank')."
+)
+_SUBSCRIPTION_PAY_RULE_TEXT = (
+    "How to pay for a plan waiting for payment uses payment_agent 'instructions', not "
+    "subscription_agent. "
+)
+
+
+async def test_the_payment_rules_are_exact_and_said_only_with_the_payment_agent() -> None:
+    from csa.decide.llm import (
+        _PAYMENT_CLASSIFY_RULE,
+        _PAYMENT_PLAN_RULE,
+        _SUBSCRIPTION_PAY_RULE,
+    )
+
+    assert _PAYMENT_PLAN_RULE == _PAYMENT_PLAN_RULE_TEXT
+    assert _PAYMENT_CLASSIFY_RULE == _PAYMENT_CLASSIFY_RULE_TEXT
+    assert _SUBSCRIPTION_PAY_RULE == _SUBSCRIPTION_PAY_RULE_TEXT
+    for ctx in (
+        Context(),
+        Context(capabilities=["subscription_agent"]),
+        Context(capabilities=["ecommerce_agent"]),
+        _booking_context(),
+    ):
+        plan, _ = await _prompts_for(ctx, "plan")
+        classify, _ = await _prompts_for(ctx, "classify")
+        for words in ("Payments: asking how to pay", "claim_paid", "charged twice"):
+            assert words not in plan, words
+        assert _SUBSCRIPTION_PAY_RULE_TEXT not in plan
+        assert _PAYMENT_CLASSIFY_RULE_TEXT not in classify
+        assert '"escalate"' not in plan
+    for ctx in (
+        Context(capabilities=["payment_agent"]),
+        _recent_ctx(("customer", "hi")).model_copy(update={"capabilities": ["payment_agent"]}),
+    ):
+        plan, _ = await _prompts_for(ctx, "plan")
+        assert _PAYMENT_PLAN_RULE_TEXT in plan
+        assert plan.index("Payments: asking how to pay") < plan.index("If a required value")
+        classify, _ = await _prompts_for(ctx, "classify")
+        assert _PAYMENT_CLASSIFY_RULE_TEXT in classify
+        assert classify.index("Greetings and thanks are chitchat.") < classify.index(
+            "Asking how or where to pay"
+        )
+
+
+async def test_the_payment_rule_never_lets_the_planner_write_money_and_escalates_disputes() -> None:
+    plan, _ = await _prompts_for(Context(capabilities=["payment_agent"]), "plan")
+    for words in (
+        "never put an amount, account number or reference the customer did not write",
+        "put reference only when the customer wrote one, copied as they wrote it",
+        "with note copied from the customer's own words",
+        "Plan payment tasks alone",
+        "disputes an amount or says they were charged twice gets no tasks and reply_strategy "
+        '"escalate"',
+        "'nak bayar macam mana?'",
+        "'dah masuk ke?'",
+        "'dah transfer pagi tadi dari Maybank'",
+    ):
+        assert words in plan, words
+
+
+async def test_how_to_pay_for_a_waiting_plan_is_said_with_both_agents_only() -> None:
+    both = Context(capabilities=["subscription_agent", "payment_agent"])
+    plan, _ = await _prompts_for(both, "plan")
+    assert _SUBSCRIPTION_PAY_RULE_TEXT in plan
+    assert plan.index("Subscriptions: the plans") < plan.index("How to pay for a plan waiting")
+    assert plan.index("How to pay for a plan waiting") < plan.index("Signing up: when")
+    assert plan.index("Signing up: when") < plan.index("Payments: asking how to pay")
+    payments_only, _ = await _prompts_for(Context(capabilities=["payment_agent"]), "plan")
+    assert _SUBSCRIPTION_PAY_RULE_TEXT not in payments_only
+    assert "Subscriptions: the plans" not in payments_only
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    [[], [{"agent": "payment_agent", "input": {"action": "status"}}]],
+)
+async def test_an_escalating_plan_of_a_payments_company_hands_off_with_no_tasks(
+    tasks: list[dict[str, Any]],
+) -> None:
+    plan = await _provider(_ok({"tasks": tasks, "reply_strategy": "escalate"})).plan(
+        make_envelope("you charged me twice"),
+        Context(capabilities=["payment_agent"]),
+        make_signals(Intent.BILLING_INVOICE),
+    )
+    assert plan.reply_strategy == "escalate"
+    assert plan.tasks == []
+    # An account question with no tasks is otherwise asked again; the planner's escalation stands.
+    validated, errors = validate_plan(plan, known_agents=frozenset(CAPABILITIES), clarify_count=0)
+    assert not errors and validated.reply_strategy == "escalate" and validated.tasks == []
+
+
+async def test_an_escalating_plan_without_the_payment_agent_is_not_honoured() -> None:
+    nothing = await _provider(_ok({"tasks": [], "reply_strategy": "escalate"})).plan(
+        make_envelope("you charged me twice"), Context(), make_signals(Intent.BILLING_INVOICE)
+    )
+    assert nothing.reply_strategy == "ask_clarifying"
+    kb = {"agent": "kb_agent", "input": {"action": "query", "query": "double charge"}}
+    with_task = await _provider(_ok({"tasks": [kb], "reply_strategy": "escalate"})).plan(
+        make_envelope("you charged me twice"), Context(), make_signals(Intent.BILLING_INVOICE)
+    )
+    assert with_task.reply_strategy == "auto_reply"
+    assert [t.agent for t in with_task.tasks] == ["kb_agent"]
+
+
+async def test_a_planned_payment_task_cannot_carry_an_amount_or_account() -> None:
+    for extra in ({"amount": "35.00"}, {"account_number": "512000000021"}):
+        task = {"agent": "payment_agent", "input": {"action": "claim_paid", **extra}}
+        plan = await _provider(_ok({"tasks": [task], "reply_strategy": "auto_reply"})).plan(
+            make_envelope("dah bayar"),
+            Context(capabilities=["payment_agent"]),
+            make_signals(Intent.BILLING_INVOICE),
+        )
+        assert plan.tasks == [] and plan.reply_strategy == "ask_clarifying", extra
 
 
 async def test_callback_turn_skips_llm_classification() -> None:
@@ -1321,7 +1470,7 @@ async def test_planner_routes_tiktok_numbers_and_offers_no_marketplace_write() -
 
     plan = await _provider(reply).plan(
         make_envelope("where is my TikTok order 576461413038785752?"),
-        Context(),
+        Context(capabilities=["ecommerce_agent"]),
         make_signals(Intent.ORDER),
     )
     assert [(t.agent, t.input) for t in plan.tasks] == [
@@ -1388,7 +1537,9 @@ async def test_next_step_never_offers_the_tiktok_stock_check_to_the_model() -> N
         seen.append(json.loads(request.content)["messages"][0]["content"])
         return _ok(step)(request)
 
-    tasks = await _provider(handler).next_step(TurnState(envelope=make_envelope("mug?")))
+    tasks = await _provider(handler).next_step(
+        TurnState(envelope=make_envelope("mug?"), ctx=Context(capabilities=["ecommerce_agent"]))
+    )
     assert [(t.agent, t.input["action"]) for t in tasks] == [("ecommerce_agent", "order_status")]
     allowed = json.loads(
         seen[0]
@@ -1412,7 +1563,9 @@ async def test_the_look_ahead_may_propose_product_availability() -> None:
         seen.append(json.loads(request.content)["messages"][0]["content"])
         return _ok(step)(request)
 
-    tasks = await _provider(handler).next_step(TurnState(envelope=make_envelope("mug?")))
+    tasks = await _provider(handler).next_step(
+        TurnState(envelope=make_envelope("mug?"), ctx=Context(capabilities=["ecommerce_agent"]))
+    )
     assert [(t.agent, t.input["action"], t.input["query"]) for t in tasks] == [
         ("order_agent", "product_availability", "mug")
     ]
@@ -1449,7 +1602,9 @@ async def test_the_model_sees_only_the_placeholder_of_a_card_like_order_number()
         prompts.append(request.content.decode())
         return _ok(planned)(request)
 
-    plan = await _provider(reply).plan(envelope, Context(), make_signals(Intent.ORDER))
+    plan = await _provider(reply).plan(
+        envelope, Context(capabilities=["ecommerce_agent"]), make_signals(Intent.ORDER)
+    )
     assert [t.input for t in plan.tasks] == [{"action": "order_status", "order_number": "[CARD_0]"}]
     (prompt,) = prompts
     assert "[CARD_0]" in prompt and "576461413038785750" not in prompt
@@ -1941,6 +2096,30 @@ _SUBSCRIPTION_CLASSIFY_RULE_TEXT = (
     "it has intent subscription and subscription_agent should be scored (for example 'plan saya "
     "habis bila?', 'nak tukar plan')."
 )
+_SIGNUP_PLAN_RULE_TEXT = (
+    "Signing up: when the customer asks to sign up for, subscribe to or join a plan (for example "
+    "'I want to sign up', 'nak daftar plan Besar'), and on each later message of that sign-up, "
+    "use subscription_agent 'request_signup' with plan_code as the plan they want. Put full_name "
+    "and phone only from the customer's own words in <recent_messages> or this message, never "
+    "invented; copy a phone exactly as it shows, a placeholder such as [PHONE_0] included. The "
+    "server asks for what is still missing, one thing at a time, and reads the sign-up back. "
+    "'[shared phone number]' means the customer shared their number with the button: plan "
+    "request_signup again with the plan and name, and no phone. Set confirmed true only when the "
+    "latest assistant message in <recent_messages> read back a sign-up and this message clearly "
+    "says yes to it, in any language (for example yes, ok, ya, betul, boleh); anything else is "
+    "not a yes, so leave confirmed out. A different plan restarts the read-back: plan "
+    "request_signup with the new plan and no confirmed. Put email only when the customer gives "
+    "an email address in this message (for payment reminders): copy it exactly as it shows, a "
+    "placeholder such as [EMAIL_0] included, never invented. When the server asked for an email "
+    "and the customer does not want to give one (for example 'skip', 'tak payah', 'takde'), set "
+    "skip_email true and leave email out. "
+)
+_SIGNUP_CLASSIFY_RULE_TEXT = (
+    " Asking to sign up for, subscribe to or join a plan, and a short answer that continues a "
+    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]', an email "
+    "address, a skip or a yes), has intent subscription and subscription_agent should be scored "
+    "(for example 'nak daftar plan Besar')."
+)
 _SENTIMENT_RULE_TEXT = (
     " Sentiment angry is only for insults, threats or fury at the business; complaints, "
     "impatience and everyday exclamations (for example 'alamak', 'adoi', 'lambat gila', "
@@ -1975,7 +2154,9 @@ _OLD_CLASSIFY_TAIL = (
     " A question about the customer's own plan, its renewal, or pausing, cancelling or "
     "changing it has intent subscription and subscription_agent should be scored (for "
     "example 'plan saya habis bila?', 'nak tukar plan')."
-    " Sentiment angry is only for insults, threats or fury at the business; complaints, "
+    + _SIGNUP_CLASSIFY_RULE_TEXT
+    + _PAYMENT_CLASSIFY_RULE_TEXT
+    + " Sentiment angry is only for insults, threats or fury at the business; complaints, "
     "impatience and everyday exclamations (for example 'alamak', 'adoi', 'lambat gila', "
     "'seriously?') are frustrated."
 )
@@ -2009,6 +2190,9 @@ _OLD_PLAN_HEAD = (
     "with the product words as query: it checks our shop and our TikTok Shop together. "
     "Use 'search_products' or 'product_detail' only to find the SKU for an order. "
     + _SUBSCRIPTION_PLAN_RULE_TEXT
+    + _SUBSCRIPTION_PAY_RULE_TEXT
+    + _SIGNUP_PLAN_RULE_TEXT
+    + _PAYMENT_PLAN_RULE_TEXT
     + "If a required value is missing, return no tasks and "
     'reply_strategy "ask_clarifying". Never use order_agent actions "confirm" or '
     '"cancel" (they need a button). '
@@ -2020,12 +2204,17 @@ _OLD_PLAN_USER = (
 )
 
 
-async def test_classify_and_plan_prompts_for_a_bare_context_are_unchanged() -> None:
-    classify_system, classify_user = await _prompts_for(Context(), "classify")
+# A company with every service on: ecommerce_agent and subscription_agent are shown only to a
+# company that has them (ruling E), every other agent to all.
+_ALL_ON = Context(capabilities=sorted(CAPABILITIES))
+
+
+async def test_classify_and_plan_prompts_with_every_service_on_are_unchanged() -> None:
+    classify_system, classify_user = await _prompts_for(_ALL_ON, "classify")
     assert classify_system == (_OLD_CLASSIFY_HEAD + json.dumps(CAPABILITIES) + _OLD_CLASSIFY_TAIL)
     assert classify_user == _OLD_CLASSIFY_USER
 
-    plan_system, plan_user = await _prompts_for(Context(), "plan")
+    plan_system, plan_user = await _prompts_for(_ALL_ON, "plan")
     assert plan_user == _OLD_PLAN_USER
     assert plan_system.startswith(_OLD_PLAN_HEAD + "Agent input schemas: {")
     assert plan_system.endswith("}. Agent purposes: " + json.dumps(CAPABILITIES) + ".")
@@ -2609,7 +2798,8 @@ async def test_planner_has_the_subscription_rule_with_malay_examples() -> None:
 
     assert _SUBSCRIPTION_PLAN_RULE == _SUBSCRIPTION_PLAN_RULE_TEXT
     # Said to every planner, with or without earlier messages or a booking context.
-    for ctx in (Context(), _booking_context(), _recent_ctx(("customer", "hi"))):
+    for ctx in (_ALL_ON, _booking_context(), _recent_ctx(("customer", "hi"))):
+        ctx = ctx.model_copy(update={"capabilities": ["subscription_agent"]})
         system, _ = await _prompts_for(ctx, "plan")
         assert _SUBSCRIPTION_PLAN_RULE_TEXT in system
         assert system.index("Use 'search_products'") < system.index("Subscriptions: the plans")
@@ -2628,13 +2818,110 @@ async def test_classifier_scores_subscription_questions_and_has_the_anger_thresh
 
     assert _SUBSCRIPTION_CLASSIFY_RULE == _SUBSCRIPTION_CLASSIFY_RULE_TEXT
     assert _SENTIMENT_RULE == _SENTIMENT_RULE_TEXT
-    for ctx in (Context(), _booking_context(), _recent_ctx(("assistant", "Which plan?"))):
+    for ctx in (_ALL_ON, _booking_context(), _recent_ctx(("assistant", "Which plan?"))):
+        ctx = ctx.model_copy(update={"capabilities": ["subscription_agent"]})
         system, _ = await _prompts_for(ctx, "classify")
         assert _SUBSCRIPTION_CLASSIFY_RULE_TEXT in system
         assert _SENTIMENT_RULE_TEXT in system
         assert system.index("Greetings and thanks are chitchat.") < system.index(
             "A question about the customer's own plan"
         )
+
+
+async def test_the_sign_up_rules_are_said_with_the_subscription_rules() -> None:
+    from csa.decide.llm import _SIGNUP_CLASSIFY_RULE, _SIGNUP_PLAN_RULE
+
+    assert _SIGNUP_PLAN_RULE == _SIGNUP_PLAN_RULE_TEXT
+    assert _SIGNUP_CLASSIFY_RULE == _SIGNUP_CLASSIFY_RULE_TEXT
+    on = Context(capabilities=["subscription_agent"])
+    plan, _ = await _prompts_for(on, "plan")
+    assert plan.index("Subscriptions: the plans") < plan.index("Signing up: when")
+    assert plan.index("Signing up: when") < plan.index("If a required value")
+    # The typed yes: only right after a read-back, and a different plan restarts it.
+    for words in (
+        "Set confirmed true only when the latest assistant message in <recent_messages> read back "
+        "a sign-up and this message clearly says yes to it",
+        "(for example yes, ok, ya, betul, boleh); anything else is not a yes",
+        "A different plan restarts the read-back",
+        "never invented",
+        "'nak daftar plan Besar'",
+        "'I want to sign up'",
+    ):
+        assert words in plan, words
+    classify, _ = await _prompts_for(on, "classify")
+    assert _SIGNUP_CLASSIFY_RULE_TEXT in classify
+    assert classify.index("'nak tukar plan')") < classify.index(" Asking to sign up")
+    schemas = json.loads(plan.split("Agent input schemas: ", 1)[1].split(". Agent purposes")[0])
+    actions = schemas["subscription_agent"]["properties"]["action"]["enum"]
+    assert "request_signup" in actions
+    assert {"full_name", "phone", "confirmed"} <= set(schemas["subscription_agent"]["properties"])
+    # The optional email at sign-up (WhatsApp, for payment reminders): a placeholder copied, never
+    # an address written by the model, and the customer's skip in English or Malay.
+    for words in ("[EMAIL_0]", "never invented", "'skip', 'tak payah', 'takde'", "skip_email"):
+        assert words in plan, words
+    fields = schemas["subscription_agent"]["properties"]
+    assert {"email", "skip_email"} <= set(fields)
+    assert "[EMAIL_0]" in fields["email"]["description"]
+    assert "skip" in fields["skip_email"]["description"]
+
+
+@pytest.mark.parametrize("call", ["classify", "plan"])
+async def test_a_company_without_subscriptions_is_never_told_of_plans_or_sign_ups(
+    call: str,
+) -> None:
+    # Ruling E: a company that sells only TikTok Shop products.
+    tiktok_only = _recent_ctx(("customer", "hi")).model_copy(
+        update={"capabilities": ["ecommerce_agent"]}
+    )
+    for ctx in (tiktok_only, Context(), _booking_context()):
+        system, _ = await _prompts_for(ctx, call)
+        for words in (
+            "subscription_agent",
+            "Subscriptions: the plans",
+            "Signing up:",
+            "request_signup",
+            "A question about the customer's own plan",
+        ):
+            assert words not in system, (words, call)
+        assert "order_agent" in system and "kb_agent" in system
+    system, _ = await _prompts_for(tiktok_only, call)
+    assert "ecommerce_agent" in system
+
+
+async def test_the_tiktok_rule_is_said_only_to_a_company_with_the_tiktok_service() -> None:
+    from csa.decide.llm import _SHOP_STOCK_RULE, MARKETPLACE_PLANNER_RULE
+
+    assert _SHOP_STOCK_RULE == (
+        "Stock, price or availability questions use order_agent 'product_availability' with the "
+        "product words as query. Use 'search_products' or 'product_detail' only to find the SKU "
+        "for an order."
+    )
+    with_tiktok, _ = await _prompts_for(Context(capabilities=["ecommerce_agent"]), "plan")
+    assert MARKETPLACE_PLANNER_RULE in with_tiktok and _SHOP_STOCK_RULE not in with_tiktok
+    shop_only, _ = await _prompts_for(Context(capabilities=["subscription_agent"]), "plan")
+    assert _SHOP_STOCK_RULE in shop_only
+    assert "TikTok" not in shop_only.split("Agent input schemas: ")[0]
+    assert "ecommerce_agent" not in shop_only
+    classify, _ = await _prompts_for(Context(capabilities=["subscription_agent"]), "classify")
+    assert "ecommerce_agent" not in classify and "subscription_agent" in classify
+
+
+async def test_the_look_ahead_offers_only_the_companys_own_gated_agents() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["messages"][0]["content"])
+        return _ok({"done": True, "tasks": []})(request)
+
+    state = TurnState(envelope=make_envelope("mug?"), ctx=Context())
+    await _provider(handler).next_step(state)
+    allowed = json.loads(
+        seen[0]
+        .split("Allowed actions per agent (no others): ", 1)[1]
+        .split(". Agent input schemas")[0]
+    )
+    assert "subscription_agent" not in allowed and "ecommerce_agent" not in allowed
+    assert "order_agent" in allowed
 
 
 async def test_classifier_language_is_the_latest_message_only_with_earlier_messages() -> None:

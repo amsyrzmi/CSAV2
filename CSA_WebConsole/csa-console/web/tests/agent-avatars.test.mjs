@@ -24,6 +24,7 @@ test("capability names map onto the twelve avatar ids in one place", () => {
     invoice_agent: "invoices",
     ecommerce_agent: "ecommerce",
     subscription_agent: "subscriptions",
+    payment_agent: "subscriptions",
     booking_agent: "bookings",
     lhdn_agent: "einvoicing",
   };

@@ -1,0 +1,145 @@
+{
+  "id": "cs_signup_not_offered_tiktok_only_en",
+  "matrix": "Sign-up: a company that sells only TikTok Shop products hears nothing of plans",
+  "description": "A company with only the TikTok Shop service: the classifier and planner are never told of subscription_agent or the plan and sign-up rules, so 'how do I sign up' and 'what plan am I on' get the honest no-information answer with the offer of a person.",
+  "seed": {
+    "knowledge": [
+      {
+        "title": "Foreign plans",
+        "content": "FOREIGN-PLAN-SECRET sign up on the other site.",
+        "other_tenant": true
+      }
+    ],
+    "services": [
+      "ecommerce_agent"
+    ]
+  },
+  "turns": [
+    {
+      "say": "How do I sign up for a plan?",
+      "cassette": {
+        "Classification": {
+          "intent": "product_info",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "kb_agent": 0.8
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "kb_agent",
+              "input": {
+                "action": "query",
+                "query": "how to sign up for a plan"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "I don't have that information here. Do you want me to pass your question to a team member?"
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "kb_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "No matching knowledge base documentation found"
+        ],
+        "model_never_sees": [
+          "subscription_agent",
+          "request_signup",
+          "Signing up:",
+          "Subscriptions: the plans"
+        ],
+        "kb_gaps": 1,
+        "signup_requests": 0,
+        "handoff_sent": false,
+        "reply_excludes": [
+          "sign-up",
+          "daftar"
+        ]
+      }
+    },
+    {
+      "say": "What plan am I on?",
+      "cassette": {
+        "Classification": {
+          "intent": "product_info",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "kb_agent": 0.8
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "kb_agent",
+              "input": {
+                "action": "query",
+                "query": "which plan the customer is on"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "I don't have that information here either. Want me to ask a team member?"
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "kb_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "No matching knowledge base documentation found"
+        ],
+        "model_never_sees": [
+          "subscription_agent",
+          "request_signup",
+          "Signing up:",
+          "Subscriptions: the plans"
+        ],
+        "kb_gaps": 2,
+        "signup_requests": 0,
+        "handoff_sent": false,
+        "reply_excludes": [
+          "sign-up",
+          "daftar"
+        ]
+      }
+    }
+  ]
+}

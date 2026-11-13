@@ -161,12 +161,17 @@ class DeliveryWorker:
                     provider_message_id = wa_receipt.provider_message_id
                 else:
                     await self._throttle(chat_id)
+                    buttons = _buttons(details.get("ui"))
                     receipt = await TelegramAdapter.send_message(
                         bot_token,
                         chat_id=chat_id,
                         text=str(details["body"]),
                         http_client=self._http_client,
-                        buttons=_buttons(details.get("ui")),
+                        buttons=buttons,
+                        # A message has one reply markup; inline buttons win over the keyboard.
+                        request_phone_label=None
+                        if buttons
+                        else _request_phone_label(details.get("ui")),
                     )
                     status_code = receipt.status_code
                 updated = await db.q.fetch_one(
@@ -532,6 +537,16 @@ def _buttons(raw: object) -> list[tuple[str, str]]:
             continue
         result.append((option.label, data))
     return result
+
+
+SHARE_NUMBER_LABEL = "Share my number / Kongsi nombor saya"
+
+
+def _request_phone_label(raw: object) -> str | None:
+    """The share-my-number button text when the stored ``Ui`` asks for the customer's phone."""
+    if not raw:
+        return None
+    return SHARE_NUMBER_LABEL if Ui.model_validate(raw).request_phone else None
 
 
 class _Closable(Protocol):

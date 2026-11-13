@@ -8,6 +8,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
+from fastapi import HTTPException
+from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -19,6 +21,7 @@ from csa.channels.ingress import (
     _canonical_payload_hash,
 )
 from csa.channels.whatsapp import WhatsAppAdapter, WhatsAppEvent, WhatsAppParseError
+from csa.contacts.linking import live_contact, verify_phone
 from csa.contracts.envelope import Channel, Contact, ConversationRef, Envelope, Message, Meta
 from csa.core import db
 from csa.core.tenancy import tx
@@ -112,11 +115,7 @@ class WhatsAppIngress:
                 "display_name": event.profile_name or f"+{event.wa_id}",
             }
             await db.q.fetch_one("ingress/lock_whatsapp_contact.sql", params, conn=conn)
-            resolved = await db.q.fetch_one(
-                "ingress/resolve_whatsapp_contact.sql", params, conn=conn
-            )
-            if resolved is None:
-                raise RuntimeError("whatsapp contact could not be resolved")
+            resolved = await self._resolve_and_verify(conn, client_id, params)
             contact_id: UUID = resolved["contact_id"]
             conversation = await db.q.fetch_one(
                 "ingress/insert_conversation.sql",
@@ -210,6 +209,65 @@ class WhatsAppIngress:
                 unsupported_type=event.unsupported_type,
             )
         return IngressReceipt(accepted=True, duplicate=duplicate, trace_id=trace_id)
+
+    async def _resolve_and_verify(
+        self, conn: AsyncConnection[Any], client_id: UUID, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve and verify the sender, once more if a link merged the contact meanwhile.
+
+        Each attempt is a savepoint. A link can merge the contact the resolver chose after the
+        resolver's snapshot (and after its identity insert queued behind the link's row lock), so
+        the identity may sit on the merged shell. The failed attempt is rolled back, identity
+        insert included, and the next one cannot choose the shell: the resolver skips merged
+        contacts. The wa_id advisory lock was taken by the caller, outside the savepoints, and is
+        kept. Locks an attempt took inside its savepoint are released with it, so the retry takes
+        the phone and contact locks afresh, in the order verify_phone and live_contact define.
+        """
+        for attempt in (1, 2):
+            try:
+                async with conn.transaction():
+                    resolved = await self._resolve(conn, params)
+                    return await self._verify(conn, client_id, params, resolved)
+            except HTTPException as exc:
+                if exc.detail != "contact_merged":
+                    raise
+                logger.warning(
+                    "whatsapp_contact_merged_retry", client_id=str(client_id), attempt=attempt
+                )
+        logger.error("whatsapp_contact_merged_twice", client_id=str(client_id))
+        # 503: Meta redelivers the message, and the link has long finished by then.
+        raise IngressError(503, "contact was merged while the message was received; retry")
+
+    async def _resolve(self, conn: AsyncConnection[Any], params: dict[str, Any]) -> dict[str, Any]:
+        """The contact of the sender; the statement runs a second time if its insert lost a race."""
+        for _ in range(2):
+            resolved = await db.q.fetch_one(
+                "ingress/resolve_whatsapp_contact.sql", params, conn=conn
+            )
+            if resolved is not None:
+                return resolved
+        raise RuntimeError("whatsapp contact could not be resolved")
+
+    async def _verify(
+        self,
+        conn: AsyncConnection[Any],
+        client_id: UUID,
+        params: dict[str, Any],
+        resolved: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Record the wa_id as the contact's verified phone; the live contact the message is for.
+
+        Meta vouches for the wa_id. verify_phone runs before live_contact (lock order), and may
+        link the contact to another, so the returned id is the survivor.
+        """
+        result = await verify_phone(
+            conn, client_id, resolved["contact_id"], "+" + params["wa_id"], source="whatsapp"
+        )
+        contact_id = await live_contact(conn, client_id, result.contact_id)
+        if contact_id == resolved["contact_id"]:
+            return resolved
+        # Linked into an existing customer: this is not a first contact.
+        return {**resolved, "contact_id": contact_id, "first_contact": False}
 
     async def _is_known(self, client_id: UUID, event: WhatsAppEvent) -> bool:
         async with tx(self._pool, str(client_id)) as conn:

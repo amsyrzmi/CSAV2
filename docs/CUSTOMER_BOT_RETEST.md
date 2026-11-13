@@ -88,6 +88,105 @@ facts, the fixed staff notes and the inbox line. A change to wording edits only 
 `csa/agents/staged/subscription_facts.py`, `csa/agents/orders/availability.py`, `csa/turn/texts.py` or the
 Malay examples, then re-runs `tests/test_golden.py` and `tests/test_llm_provider.py` in full.
 
+## Customer onboarding
+
+Run this after the rollout that carries migrations 0580 and 0581 (a customer signs up for a plan in the
+chat, and one person on WhatsApp and Telegram becomes one customer). The staging test company needs the
+Subscriptions package with the subscription agent switched on, two plans (one set to "Staff approve", one
+to "Sign up automatically"), a plan closed to new sign-ups, and a Telegram bot and a WhatsApp test number
+to write from. Use synthetic customers and made-up phone numbers only. What staff do with a sign-up, a
+link or a review is in [RUNBOOK.md](RUNBOOK.md), section "Customer onboarding: sign-ups and linked
+contacts". The replay checks only the wording the model gives for the sign-up facts (it needs the model key
+and no database):
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation en-signup
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-signup
+```
+
+| Check | Setup | Expected | Kind |
+| --- | --- | --- | --- |
+| Sign-up replay read-through | `--conversation en-signup`, then `--conversation ms-signup` | Exit 0. Read every reply: it asks for one missing thing at a time, reads the name and phone back before anything is filed, and says nothing is active yet once it is filed (and never that anything was or was not charged); casual Malay in the Malay run | manual |
+| Sign up in English on Telegram | A new Telegram chat: "I want to sign up for <plan>"; give a full name when asked; tap the share-my-number button | One question per message (plan, name, then the phone). The share button appears once, when the phone is asked for. After the share the bot does not ask for the phone again; it reads back the plan and name and refers to the number already on the chat. A "yes" files the sign-up: it appears in the console under Subscriptions, Sign-ups, with the phone marked "Verified" | manual |
+| Sign up in Malay on Telegram | The same in Malay ("nak daftar plan <plan>") with a new chat | The same steps in casual Malay, no `anda` or `sila`; the read-back and the filed confirmation are in Malay; the Sign-ups row is the same | manual |
+| Sign up in English on WhatsApp | A new WhatsApp chat from a synthetic number: sign up for the plan set to "Staff approve" | The bot never asks for the phone, because WhatsApp gave it; the read-back refers to the number already on the chat. A "yes" files the sign-up, marked "Verified"; the reply says the team will review it and nothing is active yet | manual |
+| Sign up in Malay on WhatsApp | The same in Malay | The same steps in casual Malay; the sign-up row is the same | manual |
+| A sign-up that needs no approval | Sign up for the plan set to "Sign up automatically" | The sign-up shows under "Decided sign-ups" as "Approved automatically" at once; a subscription "Waiting to start" appears under Customers; the customer is told it is waiting to be started, never that it is active or paid | manual |
+| An "ok" that does not answer the read-back files nothing | During a sign-up, when the bot has read the sign-up back, ask a question first (for example "what does the plan include?"), then reply "ok" to that answer | No sign-up is filed and nothing appears in the Sign-ups tab; the bot reads the sign-up back again. A yes (an "ok" included) files it only when it answers the read-back itself, as the latest reply; an "ok" with no read-back just before it files nothing (covered by the golden case `cs_signup_bare_ok_not_confirm_en`) | manual |
+| Another customer's number typed | In a Telegram chat that has not shared a number, type the phone number of an existing synthetic customer (one with a subscription) when asked | The sign-up is filed (or read back) with the number "Not verified"; the two contacts are not linked, no "Linked contacts" panel appears for either, and nothing about the other customer (name, plan) is said in the chat | manual |
+| Telegram share, then a WhatsApp message | An existing customer who has a WhatsApp chat with a subscription: from a new Telegram chat share the same number with the share button; then send a message from the WhatsApp number | One customer, not two: the subscription's "Linked contacts" panel lists both chats ("Matched by a verified phone number"), and both chats' messages appear on the one customer. A message from either chat reaches the bot without an error. In the console, Unlink (within 30 days) separates them again | manual |
+| A forwarded contact card is refused | In Telegram send a contact card that someone else shared (forward a contact card, or share the contact of another person) instead of using the share button | The bot answers "Please use the button to share your own number."; nothing is stored, no contact is created or changed and no phone is marked verified | manual |
+| A closed plan | Ask to sign up for the plan marked "Closed to new sign-ups" | The bot says at once that the plan is not taking new sign-ups and asks for no name or phone; no sign-up is filed and nothing appears in the Sign-ups tab | manual |
+| A company without subscriptions | A staging company with only the TikTok Shop service: "how do I sign up" and "what plan am I on" | An honest "I don't have that information" with an offer to pass it to a person; no sign-up wording and no plan names. Covered by `cs_signup_not_offered_tiktok_only_*` in the golden cases | manual |
+| Pending subscription expiry | Approve a sign-up, then (staging only, with the owner's agreement) lower "Pending sign-ups expire after" to 1 day and wait, or back-date `subscriptions.started_at` of the waiting subscription by two days | Within about five minutes of the job the subscription shows Cancelled, the sign-up shows "Expired", and the timeline has "Expired before it started, so it was cancelled."; nobody is messaged. Put the setting back to 14 | manual |
+| Callback taps and contact shares | Golden only: golden cases cannot send a button tap or a contact share. The ingress tests (`test_ingress.py`, `test_telegram.py`, `test_delivery_buttons.py`, `test_staged_agents.py`) cover them | The rows above are the only end-to-end check | golden only |
+
+Owner decision still open: the sign-up's data sentence ("We keep your name and phone number on your
+contact record so the team can set up your plan.") says "on your contact record", but a number the
+customer types stays on the sign-up request and is not written to the contact (only a number the channel
+verified is). Read it in the Telegram and WhatsApp runs above and decide whether the wording should say "on
+your sign-up request" or leave the promise as it is.
+
+## Payments
+
+Run this after the rollout that carries migrations 0590 and 0591 (invoices with references, payment
+settings and methods, reminders, and the bot answering about payments). The staging test company needs
+the Subscriptions package with the subscription agent and the payment agent switched on, a priced plan
+(for example MYR 35.00 a month, "Staff approve"), a second plan set to "Sign up automatically", a made-up
+bank transfer method under Payments, Settings (a made-up bank and an account number such as
+5120000000xx; the switch "Send invoices and reminders" on), a Telegram bot and a WhatsApp test number to
+write from, and mail switched on for the email rows. Use synthetic customers only, and an email address
+you control for the email rows. What staff do with an invoice (Mark paid, Void, Needs attention, the
+reminder rules) is in [RUNBOOK.md](RUNBOOK.md), section "Payments". The replay checks only the wording
+the model gives for synthetic payment facts (it needs the model key and no database):
+
+```bash
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation en-payment
+docker exec csa-staging-gateway-1 python -m scripts.customer_bot_replay --conversation ms-payment
+```
+
+The payment answers themselves are not model text. A customer's payment question gets the facts as
+`csa/payments/copy.py` writes them, with the reference, amount and account number copied from the
+database, in English or casual Malay (the language of the customer's message). The replay does not run
+the planner's payment rules or the classifier's, so the rows below are the only check of those against
+the real model: the golden cases (`cs_pay_*`) use a scripted model.
+
+| Check | Setup | Expected | Kind |
+| --- | --- | --- | --- |
+| Payment replay read-through | `--conversation en-payment`, then `--conversation ms-payment` | Exit 0. Read every reply: the invoice, bank line, reference and "after paying" line (and, after the claim, the "noted" and "not confirmed yet" lines) match the facts exactly; no invented bank, amount or account; casual Malay in the Malay run | manual |
+| Instructions in English | A contact with one open invoice (approve a sign-up with payments on). In the chat: "how do I pay for my plan? which account do I transfer to?" | Four lines: "Invoice <reference>: MYR 35.00 for <plan>, due <day month year>." then "Bank transfer: <bank>, account <number>, name <account name>." (staff's instructions after it, if any), then "Please put <reference> as the payment reference so we can match your payment." and "After paying, tell me when and from which bank, and we'll confirm once it shows in our account." The reference, amount and account number are exactly the console's | manual |
+| Instructions in Malay | The same in Malay: "nak bayar plan macam mana eh? transfer ke akaun mana?" | "Invois <reference>: MYR 35.00 untuk <plan>, kena bayar sebelum <hari bulan tahun>." (the month in Malay, for example "20 Disember 2026"), "Pindahan bank: <bank>, akaun <number>, nama <account name>.", "Letak <reference> sebagai rujukan bayaran ya, senang kami padankan." and "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk akaun." Casual, no `anda` or `sila`. The owner reads the wording and approves or rewrites it (see below) | manual |
+| "Did you receive my payment?" before any claim | The same open invoice. Ask "did you receive my payment?" and, in Malay, "dah masuk ke?" | "Invoice <reference> (MYR 35.00) is not paid yet. No payment has been recorded for it." / "Invois <reference> (MYR 35.00) belum dibayar. Belum ada bayaran direkodkan untuknya." The reply never says "received" or "confirmed" | manual |
+| A claim | "ok I've transferred it just now from Maybank" (Malay: "dah transfer pagi tadi dari Maybank") | "Thanks, I've noted that you paid invoice <reference>. We'll confirm once it shows in our account; until then it isn't marked as paid." / "Terima kasih, saya dah catat awak bayar invois <reference>. Kami sahkan bila duit dah masuk akaun; sebelum tu ia belum ditanda dibayar." In the console the invoice is "Customer says paid", it is under "Customer says paid" in Needs attention, and the drawer shows what the customer said as text. It is not marked paid, and the subscription has not started. A second claim, or the same question again, answers "Invoice <reference> (MYR 35.00): you told us you paid. It isn't confirmed yet; we confirm it once it shows in our account." (Malay: "Invois <reference> (MYR 35.00): awak dah bagitahu dah bayar. Belum disahkan lagi; kami sahkan bila duit dah masuk akaun.") | manual |
+| "Did you receive my payment?" after a claim, then after Mark paid | Ask once after the claim (the "told us you paid" line above), then Mark paid the invoice in the console and ask again | After Mark paid: "Invoice <reference> (MYR 35.00) was paid on <day month year>." (Malay: "Invois <reference> (MYR 35.00) dah dibayar pada <hari bulan tahun>."). The waiting subscription now shows Active in the console. The bot says "paid" only after this | manual |
+| Two open invoices and "I paid" | A contact with two open invoices (two plans, or an unpaid invoice and the next renewal's); say "I've paid" | "You have more than one invoice waiting: <reference>, <reference>. Which one did you pay?" and nothing is noted until the customer names one | manual |
+| Another customer's reference | Type the reference of an invoice that belongs to another synthetic customer, with "did you get payment for <reference>?" | "I can't find invoice <the reference as typed> on this chat." (Malay: "Saya tak jumpa invois <reference> dalam chat ni."). Nothing about the other invoice (amount, plan, name) is said, and nothing is noted on it. Covered by `cs_pay_other_contacts_reference_en` | manual |
+| A dispute is handed to a person | "you charged me twice" or "the amount is wrong" | No amount, account or reference in the reply and no payment is noted; the chat is handed off with the usual holding reply and the staff alert, and the Inbox shows the escalation. Needs the real planner: the replay and golden cases cannot show that it chooses `escalate` and does not use it for other account questions ("how do I pay" must still answer, "plan apa saya" must still answer) | manual |
+| A TikTok-only company | A staging company with only the TikTok Shop service: "how do I pay for my plan" | No payment wording and no payment answers: an honest "I don't have that information" with an offer to pass it to a person. Covered by `cs_pay_not_offered_tiktok_only_en` | manual |
+| Payments switched off | Switch "Send invoices and reminders" off for the test company (the invoices stay), then "how do I pay" | "Payment details aren't set up in this chat yet. I can pass your question to the team." (Malay: "Butiran bayaran belum disediakan kat sini lagi. Saya boleh hantar soalan ni kepada team."). Switch it back on afterwards | manual |
+| WhatsApp sign-up without an email | A new WhatsApp chat on the plan set to "Staff approve", payments on: sign up, give the name, and answer the email question with "skip" | After the name (WhatsApp already gave the phone) the bot asks once: "If you'd like payment reminders by email, tell me your email address, or say skip. We keep it on your contact record to send you messages about your plan and bookings." After "skip" the read-back says "no email" ("Sign-up for <plan>: name <name>, phone the number already on this chat, no email. Is that right? ..."). A "yes" files it: "Your sign-up for <plan> was received. The team will review it; once it is approved you'll get an invoice with how to pay, and the plan starts when the payment is confirmed. Nothing is active yet." The Sign-ups row shows no email | manual |
+| WhatsApp sign-up with an email | The same, answering with an address you control. Then try once with "ali@" in a fresh chat | The read-back ends "..., email <the address in lower case>". A bad address gets once "That email address does not look right. Please type it again, or say skip."; a second bad one is left out. After approval the Sign-ups row shows the address. A Telegram sign-up is never asked for an email (`cs_signup_no_email_ask_telegram_en`), and a WhatsApp sign-up with payments off is not asked either | manual |
+| Sign-up on a plan that approves itself | Sign up on the "Sign up automatically" plan with payments on | "Your sign-up for <plan> is registered. Invoice <reference> is ready: ask me how to pay. The plan starts when the payment is confirmed." The invoice is in the console. With payments off, or on a plan priced at zero, the reply is "Your sign-up for <plan> is registered and waiting to be started by the team." and no invoice is made | manual |
+| A pending subscription asks about its plan | A waiting subscription with an open invoice: "plan apa saya?" | "Your plan: <plan>, MYR 35.00 a month, starts when your first payment is confirmed. Invoice <reference> is waiting for payment." After a claim: "... starts when your payment is confirmed. You told us you paid; it isn't confirmed yet." (golden case `cs_sub_pending_waiting_payment_en`) | manual |
+| A reminder on Telegram | A customer with a Telegram chat whose sign-up you approve with payments on. Wait for the next payment reminder run (every 15 minutes), outside 21:00 to 09:00 in the company's time zone | One message, the first of the steps ("7 days before" with the default settings, owed at once for a new invoice): "<Brand>: invoice <reference> for MYR 35.00 is due on <date>." (or "is due today", or "was due on <date> and is still unpaid"), the bank line, "Please put <reference> as the payment reference so we can match your payment." and "If you've already paid, reply here and tell us when." In Malay (the contact's language) "<Brand>: invois <reference> untuk MYR 35.00 kena bayar sebelum <tarikh>." ... "Kalau dah bayar, balas sini dan bagitahu bila ya." The drawer's Reminders shows "Telegram · sent <day>". No second reminder that day for the same customer | manual |
+| A reminder in an open WhatsApp chat | A WhatsApp customer who wrote within the last 23 hours, with no Telegram chat; approve a sign-up with payments on | The same reminder text arrives in that WhatsApp chat (Reminders: "WhatsApp · sent <day>"). Proactive WhatsApp delivery through the real delivery worker is not verified yet: record whether the message arrived | manual |
+| A reminder by email, and no channel | A WhatsApp customer whose last message is more than 23 hours old: once with an email on the contact, once without | With an email: the drawer shows "Email · waiting to send"; the mail goes out within five minutes of the next permitted run (never between 21:00 and 09:00), built with that day's date, and its closing line is "If you've already paid, please let us know when." (no "reply here"). Without an email: "No channel: message them yourself", and the invoice appears under "Needs a nudge" | manual |
+
+Owner decisions and calibration for this section:
+
+- Read the Malay wording of the payment facts and of the reminder (`csa/payments/copy.py`: "kena bayar
+  sebelum", "dah lepas", "Letak ... sebagai rujukan bayaran ya", "Kalau dah bayar, balas sini dan bagitahu
+  bila ya", the Malay dates "20 Disember 2026") and approve or rewrite it. The builder wrote it in the same
+  casual register as the earlier Malay copy; no native speaker has read it. Edits go in `copy.py`, then
+  `tests/test_payment_copy.py`, `tests/test_golden.py` and `tests/test_customer_bot_replay.py` re-run.
+- The sign-up email question discloses where the address is kept ("We keep it on your contact record to send
+  you messages about your plan and bookings"). The shared sign-up data sentence under "Customer onboarding"
+  does not mention a given email; decide whether it should, together with the open "on your contact record"
+  wording question there.
+- Not verified before this checklist: the planner and classifier payment rules against the real model (the
+  `en-payment` and `ms-payment` replay does not run them), the sign-up email rules against the real model
+  (copying `[EMAIL_0]`, "skip" in Malay), and proactive WhatsApp delivery of a reminder.
+
 ## Calibration
 
 The Malay register (a glossary and 12 examples in `_MS_GLOSSARY` and `_MS_EXAMPLES`, in

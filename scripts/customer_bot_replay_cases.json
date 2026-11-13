@@ -105,6 +105,106 @@
         "tak payah, takpe. ada plan apa je?",
         "ya"
       ]
+    },
+    {
+      "id": "en-signup",
+      "language": "en",
+      "facts_source": "subscription_agent",
+      "facts_by_turn": [
+        [
+          "To sign up for Plan Besar I still need your full name.",
+          "We keep your name and phone number on your contact record so the team can set up your plan."
+        ],
+        ["To sign up for Plan Besar I still need your phone number."],
+        [
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do."
+        ],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."]
+      ],
+      "messages": [
+        "hi, I want to sign up for Plan Besar",
+        "Ali Bin Abu",
+        "0123456789",
+        "yes",
+        "thanks!"
+      ]
+    },
+    {
+      "id": "ms-signup",
+      "language": "ms",
+      "facts_source": "subscription_agent",
+      "facts_by_turn": [
+        [
+          "To sign up for Plan Besar I still need your full name.",
+          "We keep your name and phone number on your contact record so the team can set up your plan."
+        ],
+        ["To sign up for Plan Besar I still need your phone number."],
+        [
+          "Sign-up for Plan Besar: name Siti Binti Ahmad, phone +60123456789. Is that right? Reply yes to sign up. Nothing is filed until you do."
+        ],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."],
+        ["Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."]
+      ],
+      "messages": [
+        "hi, nak daftar plan Besar",
+        "Siti Binti Ahmad",
+        "0123456789",
+        "ya betul",
+        "ok terima kasih"
+      ]
+    },
+    {
+      "id": "en-payment",
+      "language": "en",
+      "facts_source": "payment_agent",
+      "facts_by_turn": [
+        [
+          "Invoice KDMW-7AS: MYR 35.00 for Plan Sederhana, due 20 December 2026.",
+          "Bank transfer: Bank Sintetik, account 512000000021, name Kedai Contoh Sdn Bhd.",
+          "Please put KDMW-7AS as the payment reference so we can match your payment.",
+          "After paying, tell me when and from which bank, and we'll confirm once it shows in our account."
+        ],
+        [
+          "Thanks, I've noted that you paid invoice KDMW-7AS. We'll confirm once it shows in our account; until then it isn't marked as paid."
+        ],
+        [
+          "Invoice KDMW-7AS (MYR 35.00): you told us you paid. It isn't confirmed yet; we confirm it once it shows in our account."
+        ],
+        []
+      ],
+      "messages": [
+        "hi, how do I pay for my plan? which account do I transfer to?",
+        "ok I've transferred it just now from Maybank",
+        "did you receive it?",
+        "thanks!"
+      ]
+    },
+    {
+      "id": "ms-payment",
+      "language": "ms",
+      "facts_source": "payment_agent",
+      "facts_by_turn": [
+        [
+          "Invois KDMW-7AS: MYR 35.00 untuk Plan Sederhana, kena bayar sebelum 20 Disember 2026.",
+          "Pindahan bank: Bank Sintetik, akaun 512000000021, nama Kedai Contoh Sdn Bhd.",
+          "Letak KDMW-7AS sebagai rujukan bayaran ya, senang kami padankan.",
+          "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk akaun."
+        ],
+        [
+          "Terima kasih, saya dah catat awak bayar invois KDMW-7AS. Kami sahkan bila duit dah masuk akaun; sebelum tu ia belum ditanda dibayar."
+        ],
+        [
+          "Invois KDMW-7AS (MYR 35.00): awak dah bagitahu dah bayar. Belum disahkan lagi; kami sahkan bila duit dah masuk akaun."
+        ],
+        []
+      ],
+      "messages": [
+        "hi, nak bayar plan macam mana eh? transfer ke akaun mana?",
+        "dah transfer pagi tadi dari Maybank",
+        "dah masuk ke?",
+        "ok terima kasih"
+      ]
     }
   ]
 }
