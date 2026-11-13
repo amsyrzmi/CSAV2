@@ -6,7 +6,7 @@ import { avatarForAgent } from "@/lib/agent-avatars";
 import { fetchCycles, fetchUsage, type CyclePickOut, type UsageOut } from "@/lib/credit-api";
 import {
   agentSeries, banner, countText, cycleLabel, cycleOption, dailySeries, formatRm, newestFirst, proratedNote,
-  stateMessage,
+  stateMessage, terminationNotice, terminationPlace,
 } from "@/lib/credit-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { AgentChart, DailyChart } from "./credit/CreditCharts";
@@ -130,14 +130,24 @@ function CycleView({ usage }: { usage: UsageOut }) {
       </section>
     );
   }
+  const ended = terminationNotice(usage);
+  if (terminationPlace(usage) === "before") {
+    // The plan ended before this cycle began: nothing was billed, so no figures are shown.
+    return (
+      <section aria-label={`Billing cycle ${dates}`} data-testid="credit-plan-ended">
+        <Notice testId="credit-termination">{ended}</Notice>
+      </section>
+    );
+  }
   const open = banner(usage);
   const prorated = proratedNote(usage);
   const pending = stateMessage(usage.status);
   const agents = agentSeries(usage);
   return (
     <section aria-label={`Billing cycle ${dates}`} className="space-y-6" data-testid="credit-cycle-view">
-      {(open || prorated || pending) && (
+      {(ended || open || prorated || pending) && (
         <div className="space-y-2">
+          {ended && <Notice testId="credit-termination">{ended}</Notice>}
           {open && <Notice testId="credit-banner">{open}</Notice>}
           {prorated && <p className="text-sm text-ink-600" data-testid="credit-prorated">{prorated}</p>}
           {pending && (

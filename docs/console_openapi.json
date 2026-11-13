@@ -15659,7 +15659,7 @@
       },
       "UsageOut": {
         "additionalProperties": false,
-        "description": "One cycle's usage and bill for the Credit tab.\n\n``billed_from`` and ``billed_to`` (exclusive) are the billed window, ``None`` when billing is\nnot set up or the company was terminated before the cycle. ``executions`` counts every\nexecution in the window, priced or not. ``final`` is false for the open cycle (the bill so\nfar). ``status`` ``pending_prices`` means some usage is still being priced and is left out of\n``ai_usage_price``; ``not_set_up`` has every figure zero.",
+        "description": "One cycle's usage and bill for the Credit tab.\n\n``billed_from`` and ``billed_to`` (exclusive) are the billed window, ``None`` when billing is\nnot set up or the company was terminated before the cycle. ``executions`` counts every\nexecution in the window, priced or not. ``final`` is false for the open cycle (the bill so\nfar). ``status`` ``pending_prices`` means some usage is still being priced and is left out of\n``ai_usage_price``; ``not_set_up`` has every figure zero. ``terminated_on`` is the date the\ncompany's plan ended when that is before ``cycle_end`` (this cycle holds the final period, or\nthe plan ended before it), else ``None``: a date only, no reason.",
         "properties": {
           "ai_usage_price": {
             "title": "Ai Usage Price",
@@ -15734,6 +15734,18 @@
             "title": "Status",
             "type": "string"
           },
+          "terminated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminated On"
+          },
           "total": {
             "title": "Total",
             "type": "string"
@@ -15751,7 +15763,8 @@
           "final",
           "status",
           "by_agent",
-          "daily"
+          "daily",
+          "terminated_on"
         ],
         "title": "UsageOut",
         "type": "object"

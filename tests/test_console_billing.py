@@ -123,6 +123,7 @@ async def test_admin_sees_their_own_usage_matching_the_service(sessions: Session
     assert body["cycle_start"] == "2026-10-05" and body["cycle_end"] == "2026-11-05"
     assert (body["billed_from"], body["billed_to"]) == ("2026-10-05", "2026-11-05")
     assert body["executions"] == 3 and body["final"] is False and body["status"] == "ok"
+    assert body["terminated_on"] is None
     assert body["ai_usage_price"] == f"{expected.bill.ai_charge:.2f}"
     assert body["platform_fee"] == "119.99"
     assert body["total"] == f"{expected.bill.total:.2f}"
@@ -268,6 +269,7 @@ async def test_not_set_up_shape(sessions: SessionWorld) -> None:
         "status": "not_set_up",
         "by_agent": [],
         "daily": [],
+        "terminated_on": None,
     }
     cycles = (await admin.get(f"{BASE}/usage/cycles")).json()
     assert cycles == [{"start": "2026-10-05", "end": "2026-11-05", "total": None, "final": False}]
@@ -320,3 +322,27 @@ async def test_cycles_newest_first_with_totals_and_final(sessions: SessionWorld)
     assert (aug["billed_from"], aug["billed_to"]) == ("2026-08-15", "2026-09-05")
     # The closed cycles are memoised by the picker; the open one never is.
     assert len(USAGE_MEMO) == 2
+
+
+async def test_terminated_on_marks_the_final_cycle_and_every_later_one(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    tenant = w.tenants[0]
+    await plan(w, tenant, AUG.start)
+    await plan(w, tenant, date(2026, 9, 12), "terminated")  # inside SEP
+    await call(w, tenant, kl(9, 10))
+    admin = await admin_of(w, tenant)
+    aug = (await admin.get(f"{BASE}/usage?cycle=2026-08-05")).json()
+    sep = (await admin.get(f"{BASE}/usage?cycle=2026-09-05")).json()
+    oct_ = (await admin.get(f"{BASE}/usage")).json()
+    assert aug["terminated_on"] is None  # the plan ended after this cycle
+    # The cycle holding the termination bills its final period and says when the plan ended.
+    assert sep["terminated_on"] == "2026-09-12"
+    assert (sep["billed_from"], sep["billed_to"]) == ("2026-09-05", "2026-09-12")
+    assert sep["executions"] == 1 and sep["total"] != "0.00"
+    # A later cycle has nothing billed and still carries the date (before its start).
+    assert oct_["terminated_on"] == "2026-09-12"
+    assert oct_["billed_from"] is None and oct_["total"] == "0.00" and oct_["status"] == "ok"
+    expected = await service_usage(w, tenant, SEP)
+    assert expected.terminated_on == date(2026, 9, 12)

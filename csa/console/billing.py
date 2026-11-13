@@ -99,7 +99,9 @@ class UsageOut(BaseModel):
     not set up or the company was terminated before the cycle. ``executions`` counts every
     execution in the window, priced or not. ``final`` is false for the open cycle (the bill so
     far). ``status`` ``pending_prices`` means some usage is still being priced and is left out of
-    ``ai_usage_price``; ``not_set_up`` has every figure zero.
+    ``ai_usage_price``; ``not_set_up`` has every figure zero. ``terminated_on`` is the date the
+    company's plan ended when that is before ``cycle_end`` (this cycle holds the final period, or
+    the plan ended before it), else ``None``: a date only, no reason.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -116,6 +118,7 @@ class UsageOut(BaseModel):
     status: Literal["ok", "pending_prices", "not_set_up"]
     by_agent: list[AgentUsageOut]
     daily: list[DailyUsageOut]
+    terminated_on: date | None
 
 
 class CyclePickOut(BaseModel):
@@ -187,6 +190,7 @@ def usage_out(usage: CycleUsage) -> UsageOut:
             for agent in usage.by_agent
         ],
         daily=[DailyUsageOut(day=day.day, price=day.price) for day in usage.daily],
+        terminated_on=usage.terminated_on,
     )
 
 

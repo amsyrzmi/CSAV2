@@ -99,6 +99,38 @@ export function proratedNote(usage: UsageOut, now: Date = new Date()): string | 
   return null;
 }
 
+/** "12 Dec 2026": always with the year, as a date-only string from the server. */
+function fullDayLabel(day: string): string | null {
+  const parts = dayParts(day);
+  return parts ? `${parts.text} ${parts.year}` : null;
+}
+
+export type TerminationPlace = "inside" | "before";
+
+/**
+ * Where the plan's end day falls against this cycle: "inside" when cycle_start <= day <
+ * cycle_end (this cycle holds the last billing period), "before" when the plan ended before the
+ * cycle began, null when it has not ended by this cycle's end. Plain YYYY-MM-DD comparison.
+ */
+export function terminationPlace(
+  usage: Pick<UsageOut, "cycle_start" | "cycle_end" | "terminated_on">,
+): TerminationPlace | null {
+  const day = usage.terminated_on;
+  if (!day || !DATE_ONLY.test(day) || day >= usage.cycle_end) return null;
+  return day >= usage.cycle_start ? "inside" : "before";
+}
+
+/** The notice for a company whose plan has ended, or null when it has not by this cycle. */
+export function terminationNotice(
+  usage: Pick<UsageOut, "cycle_start" | "cycle_end" | "terminated_on">,
+): string | null {
+  const place = terminationPlace(usage);
+  if (place === "before") return "Your plan has ended.";
+  if (place !== "inside" || !usage.terminated_on) return null;
+  return `Your plan ended on ${fullDayLabel(usage.terminated_on)}. `
+    + "The figures below are the final AI Usage Charges and bill for your last billing period.";
+}
+
 const STATE_MESSAGES: Record<UsageStatus, string | null> = {
   ok: null,
   pending_prices: "Some usage is still being priced",

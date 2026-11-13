@@ -34,6 +34,8 @@ export interface UsageOut {
   status: UsageStatus;
   by_agent: AgentUsageOut[];
   daily: DailyUsageOut[];
+  /** The day the company's plan ended, when that is before cycle_end; otherwise null. */
+  terminated_on: string | null;
 }
 
 export interface CyclePickOut {

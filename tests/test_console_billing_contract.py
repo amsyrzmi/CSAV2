@@ -91,6 +91,25 @@ def test_client_models_have_no_forbidden_property(
     assert [n for n in names if FORBIDDEN.search(n)] == []
 
 
+def test_usage_out_fields_are_pinned() -> None:
+    """A new client field is a deliberate contract change: list it here after the review."""
+    assert list(UsageOut.model_fields) == [
+        "cycle_start",
+        "cycle_end",
+        "billed_from",
+        "billed_to",
+        "executions",
+        "ai_usage_price",
+        "platform_fee",
+        "total",
+        "final",
+        "status",
+        "by_agent",
+        "daily",
+        "terminated_on",
+    ]
+
+
 @pytest.mark.parametrize("model", CLIENT_MODELS, ids=lambda m: m.__name__)
 def test_client_models_forbid_extra_fields(model: type[BaseModel]) -> None:
     assert model.model_config.get("extra") == "forbid"

@@ -18,7 +18,7 @@ const view = await import(moduleUrl(await read("../lib/credit-view.ts")));
 const client = await import(creditApiUrl);
 const {
   formatRm, cycleLabel, banner, proratedNote, stateMessage, dailySeries, agentSeries, priceTicks,
-  cycleOption, newestFirst, peakRow, countText,
+  cycleOption, newestFirst, peakRow, countText, terminationPlace, terminationNotice,
 } = view;
 
 // 12 Nov 2026 in Kuala Lumpur: the current year is 2026.
@@ -29,7 +29,7 @@ function usage(overrides = {}) {
     cycle_start: "2026-11-05", cycle_end: "2026-12-05",
     billed_from: "2026-11-05", billed_to: "2026-12-05",
     executions: 3, ai_usage_price: "0.06", platform_fee: "99.99", total: "100.05",
-    final: false, status: "ok",
+    final: false, status: "ok", terminated_on: null,
     by_agent: [
       { agent_id: "support", title: "Customer support assistant", executions: 2, price: "0.0400" },
       { agent_id: "training", title: "Training summary", executions: 1, price: "0.0200" },
@@ -102,6 +102,37 @@ test("proratedNote names a first or last period and stays quiet for a full cycle
   assert.equal(proratedNote(usage({ billed_from: null, billed_to: null, status: "not_set_up" }), NOW), null);
   assert.equal(proratedNote(usage({ cycle_start: "2025-08-05", cycle_end: "2025-09-05",
     billed_from: "2025-08-15", billed_to: "2025-09-05" }), NOW), "Billed from 15 Aug 2025");
+});
+
+test("terminationPlace compares date-only strings: start day inside, end day after", () => {
+  const cycle = { cycle_start: "2026-11-05", cycle_end: "2026-12-05" };
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: null })), null);
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2026-11-05" })), "inside");
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2026-11-20" })), "inside");
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2026-12-04" })), "inside");
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2026-12-05" })), null);
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2027-01-10" })), null);
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2026-11-04" })), "before");
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "2025-12-31" })), "before");
+  assert.equal(terminationPlace(usage({ ...cycle, terminated_on: "not a day" })), null);
+});
+
+test("terminationNotice names the end day with its year, or says the plan has ended", () => {
+  const cycle = { cycle_start: "2026-11-05", cycle_end: "2026-12-05" };
+  assert.equal(terminationNotice(usage({ ...cycle, terminated_on: "2026-11-12" })),
+    "Your plan ended on 12 Nov 2026. The figures below are the final AI Usage Charges and bill for your last billing period.");
+  assert.equal(terminationNotice(usage({ ...cycle, terminated_on: "2026-11-05" })),
+    "Your plan ended on 5 Nov 2026. The figures below are the final AI Usage Charges and bill for your last billing period.");
+  assert.equal(terminationNotice(usage({ ...cycle, terminated_on: "2026-10-20" })), "Your plan has ended.");
+  assert.equal(terminationNotice(usage({ ...cycle, terminated_on: null })), null);
+  assert.equal(terminationNotice(usage({ ...cycle, terminated_on: "2026-12-05" })), null);
+  // A KL day is written as sent, whatever the browser's zone: the last day of a year stays put.
+  assert.equal(terminationNotice(usage({ cycle_start: "2026-12-05", cycle_end: "2027-01-05", terminated_on: "2026-12-31" })),
+    "Your plan ended on 31 Dec 2026. The figures below are the final AI Usage Charges and bill for your last billing period.");
+  for (const text of [terminationNotice(usage({ ...cycle, terminated_on: "2026-11-12" })), "Your plan has ended."]) {
+    assert.doesNotMatch(text, FORBIDDEN, text);
+    assert.doesNotMatch(text, UNDISCLOSED, text);
+  }
 });
 
 test("stateMessage is plain words for the two non-ok states", () => {
@@ -255,7 +286,7 @@ test("the API types mirror the server's client models field for field", async ()
   assert.deepEqual(fields("DailyUsageOut"), ["day", "price"]);
   assert.deepEqual(fields("UsageOut"), [
     "cycle_start", "cycle_end", "billed_from", "billed_to", "executions", "ai_usage_price",
-    "platform_fee", "total", "final", "status", "by_agent", "daily",
+    "platform_fee", "total", "final", "status", "by_agent", "daily", "terminated_on",
   ]);
   assert.deepEqual(fields("CyclePickOut"), ["start", "end", "total", "final"]);
 });

@@ -148,6 +148,9 @@ class CycleUsage:
     date. Neither is billed. ``raw_cost_rm`` sums the priced executions' raw cost; tokens sum every
     execution in the window. ``markup`` is the cycle's tier markup percent (``None`` when nothing is
     billed); like raw cost and tokens it never reaches a client.
+
+    ``terminated_on`` is the company's termination date when it falls before the cycle's end (the
+    cycle contains the termination, or it came after it), else ``None``. The client sees it.
     """
 
     cycle: Cycle
@@ -169,6 +172,7 @@ class CycleUsage:
     raw_cost_rm: Decimal
     prompt_tokens: int
     completion_tokens: int
+    terminated_on: date | None
 
 
 def _midnight(d: date) -> datetime:
@@ -261,6 +265,7 @@ def _summarise(
     final: bool,
     usage_without_plan: int,
     usage_after_termination: int,
+    terminated_on: date | None,
 ) -> CycleUsage:
     """Price and bill a billed window's ledger rows. Pure and CPU-bound: run it off the loop."""
     if plan.stage == "terminated":  # billed_plan never returns one; markup_pct would refuse it
@@ -323,6 +328,7 @@ def _summarise(
         raw_cost_rm=_exact_sum([cast(Decimal, e.raw_rm) for e in priced_rows]),
         prompt_tokens=sum(e.prompt_tokens for e in executions),
         completion_tokens=sum(e.completion_tokens for e in executions),
+        terminated_on=terminated_on,
     )
 
 
@@ -334,6 +340,7 @@ def _unbilled(
     the_bill: Bill | None,
     usage_without_plan: int,
     usage_after_termination: int,
+    terminated_on: date | None,
 ) -> CycleUsage:
     """A cycle with no billed window: not set up, or at or after a termination."""
     return CycleUsage(
@@ -356,6 +363,7 @@ def _unbilled(
         raw_cost_rm=_ZERO,
         prompt_tokens=0,
         completion_tokens=0,
+        terminated_on=terminated_on,
     )
 
 
@@ -377,6 +385,7 @@ async def _cycle_usage(
     before_plan_end = cycle.end if join is None else min(join, cycle.end)
     usage_without_plan = await _count(conn, client_id, cycle.start, before_plan_end)
     usage_after_termination = 0
+    terminated_on = terminated if terminated is not None and terminated < cycle.end else None
     if terminated is not None and terminated < cycle.end:
         usage_after_termination = await _count(
             conn, client_id, max(cycle.start, terminated), cycle.end
@@ -392,6 +401,7 @@ async def _cycle_usage(
                 the_bill=bill(fee=_ZERO, exact_prices=[]),
                 usage_without_plan=usage_without_plan,
                 usage_after_termination=usage_after_termination,
+                terminated_on=terminated_on,
             )
         return _unbilled(
             cycle,
@@ -400,6 +410,7 @@ async def _cycle_usage(
             the_bill=None,
             usage_without_plan=usage_without_plan,
             usage_after_termination=usage_after_termination,
+            terminated_on=terminated_on,
         )
     plan = billed_plan(history, cycle)
     if plan is None:  # billed_plan is None only when billed_window is
@@ -419,6 +430,7 @@ async def _cycle_usage(
         final=final,
         usage_without_plan=usage_without_plan,
         usage_after_termination=usage_after_termination,
+        terminated_on=terminated_on,
     )
 
 
