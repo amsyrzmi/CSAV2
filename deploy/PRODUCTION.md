@@ -41,12 +41,22 @@ On the instance the root-owned entry script `/usr/local/sbin/csa-prod-deploy` ch
 commit in `/home/ubuntu/CSAV2` and runs
 `python -m scripts.staging_rollout --target production plan` (or `apply`) as `ubuntu`.
 
+The workflow, not the instance, talks to GitHub. The `plan` job first runs
+`deploy/production/resolve_commit.sh`, which picks the commit, checks it (refusals below) and reads
+both image digests from the registry's manifest API with an anonymous pull token (the images are
+public, so no token and no `packages: read` permission are involved). The two digests go to the
+instance with the plan and the apply. The instance still pulls by digest with an empty Docker
+config and checks each pulled image's digest and revision label against the commit. A host run by
+hand without digests keeps the old path (see Break-glass).
+
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
    `staging-rollout` flow, which writes the staged record.
 2. **Start it.** GitHub, Actions, `deploy-production`, "Run workflow", branch `main`. Leave `sha`
-   empty to deploy the newest staged commit (the newest successful `staging` deployment), or give
-   the full 40-character SHA of an older staged commit (a rollback). From a terminal:
+   empty to deploy the tip of `main`, the commit you just merged, and only that commit: if its
+   staging rollout has not finished, the run fails and nothing older is picked. Or give the full
+   40-character SHA of an older staged commit on `main` (a deliberate rollback; the plan shows the
+   downgrade warning). From a terminal:
 
    ```bash
    gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
@@ -55,13 +65,14 @@ commit in `/home/ubuntu/CSAV2` and runs
 
    Both jobs run only for `main`, and their runner scripts always come from a checkout of `main`,
    never from the commit being deployed.
-3. **Read the plan** in the `plan` job's summary. It lists `Target SHA:`, `Staged on:` (the date
-   of the staging rollout it found), both image digests, any `WARNING:` lines, the rollback
+3. **Read the plan** in the `plan` job's summary. It lists `Target SHA:`, both image digests
+   (the staged check already ran in the `Resolve and check the commit` step; `Staged on:` appears
+   only when a host run by hand did the check itself), any `WARNING:` lines, the rollback
    references (the images running now), `Pending migrations:`, any missing secret files,
    `Host overrides:` (which `CSA_PROD_*` keys `/srv/csa-prod/host.env` sets; values are never
    printed), `Host settings digest:`, the steps, the downtime line when a migration is pending, and
-   the apply command line. The workflow sends exactly the target SHA, migrations and host digest
-   from these lines; you never type them. The printed command line (`.venv/bin/python -m
+   the apply command line. The workflow sends exactly the target SHA, migrations, host digest and
+   image digests from the plan job; you never type them. The printed command line (`.venv/bin/python -m
    scripts.staging_rollout --target production apply ...`) is for reference only: the instance
    runs the rollout with `/opt/csa-deploy/venv/bin/python` through `csa-prod-deploy`.
 4. **Approve or reject** the `production` deployment on the run page ("Review deployments"). One
@@ -70,20 +81,62 @@ commit in `/home/ubuntu/CSAV2` and runs
    unavailable, bot replies delayed, not lost), and a downgrade warning means the target is older
    than what runs now. Reject to cancel; nothing on production has changed (only
    the deploy checkout moved to the commit).
-5. **Read the result** in the `apply` job's summary. `apply` checks out `main` again at approval
-   time for its runner scripts, then sends the planned values; on the instance the rollout
+5. **Read the result** in the `apply` job's summary. `apply` first checks that `main` is still at
+   the planned commit (a default run only; an explicit `sha` is not checked), checks out `main`
+   again for its runner scripts, then sends the planned values; on the instance the rollout
    re-derives the plan and refuses if anything changed. It checks the compose config, takes and
    verifies a backup (`Backup taken: backups/csa_staging-<timestamp>.dump`), pulls and verifies
    the images by digest, applies the pending migrations (services stopped), recreates gateway,
-   worker (both replicas), delivery and frontend, waits for `/readyz`, runs the check files, and
-   ends with `Rollout of <sha7> finished.`. On a stop it prints `Stopped at <step>: ...`, the state
+   worker (both replicas), delivery and frontend, waits for `/readyz`, runs the check files, runs
+   the smoke test and ends with `Rollout of <sha7> finished.`. On a stop it prints `Stopped at <step>: ...`, the state
    production is in, the recovery lines for how far it got, and
-   `Re-run plan, then apply, once the cause is fixed.` It never retries, restarts or rolls back by
-   itself. Every run is also logged on the instance in
+   `Re-run plan, then apply, once the cause is fixed.` It never retries or restarts by itself, and
+   rolls back only in the one case described under "What a smoke stop or a rollback means". Every run is also logged on the instance in
    `/var/log/csa-prod-deploy/<timestamp>-<action>-<sha7>.log`. Systems Manager's
    `GetCommandInvocation` returns at most 24,000 characters of output, so a long apply loses its
    tail (the recovery lines) from the workflow log and summary: the complete log is always the
    one on the instance in `/var/log/csa-prod-deploy/`.
+6. **The public smoke test** is the last step of the `apply` job and runs only when the apply
+   succeeded. It asks the console origin (the environment secret `PROD_CONSOLE_ORIGIN`) for `/` and
+   passes on a 2xx or 3xx status (a login redirect counts and is not followed), retrying a failed
+   request up to 3 times, 5 s apart; the worst case is about 75 seconds. It never prints the origin.
+
+### What a smoke stop or a rollback means
+
+The smoke test runs on the instance after the check files, and a failure of it, or of `/readyz`,
+stops the rollout. In order, it checks: the migrations recorded in the database equal the
+checkout's; every replica of gateway, worker, delivery and frontend is healthy on the planned
+image; the console origin and the hooks origin from `host.env` each answer below 500 when
+requested from the instance (up to 3 attempts, 5 s apart); the frontend answers over HTTP from
+the gateway container. It prints one `smoke <name>: ok` line per passing check and stops at the
+first failure with `Stopped at smoke: <reason>`.
+
+When the failure was at readiness or smoke, the rollout puts the previous images back, but only if
+all of this holds: no migration was pending or applied by this run, every replica of every
+previous app container was running, and all of them were on known registry image refs that agree
+per app. Anything else gets the ordinary recovery lines instead. A rollback always leaves the run
+red (exit 1), so nothing is recorded as deployed. What you see and what to do:
+
+- `Rolling back to <ref>…` (one line per app), then
+  `Rolled back: the previous images are running; <sha7> is not.` and
+  `Fix forward, then re-run plan and apply.`: production is back on the previous images and
+  `/readyz` answers. Read the `Stopped at smoke:` or `Stopped at readiness:` line above to see why
+  the new commit failed. Fix forward in a new commit, and start a new run once it is on `main`
+  and staged. Nothing else is needed on the host. The rollback does not run the smoke test or the
+  check files for the previous version, which was running before this deploy.
+- `Stopped at smoke: <reason>` with no `Rolling back` line: the failure is real but the rollback
+  was not allowed (a migration was applied, or the previous images are unknown or not all
+  running). The new images are still running. The recovery lines that follow say which case it is:
+  with migrations applied, fix forward (or restore the backup, see Restoring a backup); for the
+  first deploy from local image tags, follow Rolling back to the local images under Break-glass.
+- `Stopped at rollback: <reason>` after `Rolling back to ...`: the rollback itself did not
+  come up healthy. Do not start another run. Check the host (`docker ps` as `ubuntu`, the
+  newest log in `/var/log/csa-prod-deploy/`) and decide by hand whether to fix forward or use the
+  break-glass procedure. The ordinary recovery lines follow it.
+
+A failed public smoke test comes after a successful apply: the services are up on the new commit
+and the instance's own smoke test passed, but the console origin did not answer as expected from
+outside. Check the tunnel and the console origin before anything else; nothing was rolled back.
 
 ### What a failure means
 
@@ -98,7 +151,9 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   Command history, the command id from the line `ssm_run: sent <action> for <sha> as command <id>`.
   Systems Manager itself stops a command that runs longer than 120 minutes (the documents'
   `timeoutSeconds`, longer than the runner waits), so a command still running at 124 may yet
-  finish or be stopped.
+  finish or be stopped. Each job is limited to 130 minutes, longer than both. The waits are sized
+  for the worst case of a deploy that fails and rolls back, which runs two passes of the four
+  recreates; a deploy that rolls back needs the longer budget.
 - **64**: the runner refused an argument or setting; nothing was sent.
 - **1**: anything else, including a command that failed on the instance. The line
   `ssm_run: command <id> finished with status <status> (exit code <N>)` gives the instance's exit
@@ -109,7 +164,7 @@ and the directory must be owned by `ubuntu`. **2** is a plan
   that found missing secret files. **1** is a rollout stop, `commit is not on main`, or a failed
   `git fetch`. A `TimedOut` status also arrives as runner exit 1, not 124: either the instance did
   not pick the command up within 10 minutes (it never ran), or Systems Manager stopped it at its
-  40-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
+  120-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
   run; the instance's log shows which.
 
 A `Configure AWS credentials` step that fails with `Not authorized to perform
@@ -120,20 +175,44 @@ Fix it with `aws iam update-assume-role-policy --role-name <role> --policy-docum
 and start the workflow again.
 
 A `Require the deploy variables` step that fails names the secret or variable that is not set
-(see One-time setup, step 6). With an empty `sha`, `no successful staging deployment found` means
-no commit has a staged record yet. A failed `Read the plan` step (`parse_plan: ...`) means the
+(see One-time setup, step 6); the apply job also needs `PROD_CONSOLE_ORIGIN`. A failed `Read the plan` step (`parse_plan: ...`) means the
 plan output lacked one of its `Target SHA:`, `Pending migrations:` or `Host settings digest:`
 lines, or named another commit; `apply` does not run.
 
 ### What each refusal means
 
-- `Stopped at gate: commit <sha7> has not been rolled out to staging`: staging never recorded this
-  commit. Roll it out to staging first. There is no bypass. If the staging rollout succeeded but
-  printed `WARNING: staging is fine but the staged record was not written`, run its `Retry:` line
-  on the home server: `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`.
-  It refuses a commit that is not on `origin/main` in that checkout.
-- `images for <sha7> are not published yet (<state>)`: approve the `staging-images` environment
-  on the publish run, wait for it to finish, then start again.
+The `Resolve and check the commit` step of the `plan` job runs five checks in this order. The first
+that fails prints one line and fails the run; nothing was sent to the instance. Start again once
+the cause is fixed.
+
+1. `sha must be the full 40 character lowercase commit SHA`: the `sha` input is not a full lowercase
+   SHA. Fix the input, or leave it empty.
+2. `commit <sha7> is not on main`: the commit is not an ancestor of `main`. Only commits on `main`
+   deploy.
+3. `the ci run for <sha7> has not succeeded on main`: no completed `ci` run on `main` for this
+   commit concluded success. Wait for it, or fix the failure.
+4. `main's tip <sha7> is not staged yet; wait for deploy-staging` (an empty `sha`) or
+   `commit <sha7> has not been rolled out to staging` (an explicit `sha`): staging has no success
+   record for this commit. Roll it out to staging first. There is no bypass. If the staging
+   rollout succeeded but printed `WARNING: staging is fine but the staged record was not written`,
+   run its `Retry:` line on the home server:
+   `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`. It refuses a
+   commit that is not on `origin/main` in that checkout.
+5. `images for <sha7> are not published (csa-<app>)`: the registry has no image tagged with the
+   full SHA. Wait for the `publish-staging-images` run for that commit to finish. Other messages
+   from this step (`could not get a registry token`, `the registry answered HTTP <n>`, `the
+   registry returned no single digest`, a failed GitHub read) mean the answer could not be
+   trusted; the run fails closed. Start again.
+
+Refusals at the later steps:
+
+- `main moved to <sha7> since this run's plan; start the workflow again`: the `apply` job's first
+  step, after approval, found a newer commit on `main` than the one planned (a default run only).
+  Nothing was sent. Start the workflow again to plan the new tip. An explicit `sha` skips this
+  check.
+- On a host run by hand with no digests: `Stopped at gate: commit <sha7> has not been rolled out
+  to staging` and `images for <sha7> are not published yet (<state>)` come from the instance's
+  own `gh` lookup (Break-glass).
 - `Stopped at confirm: host settings changed since plan; run plan again`: `/srv/csa-prod/host.env`
   changed between plan and approval. Start the workflow again.
 - `HEAD changed since plan` or `pending migrations changed since plan`: production or `main`
@@ -166,7 +245,8 @@ lines, or named another commit; `apply` does not run.
 - After a stop with migrations applied, the recovery text names the backup taken at the start
   (`The backup taken at the start of this deploy is backups/csa_staging-<timestamp>.dump`); fix
   forward, or restore it (Restoring a backup).
-- Image-only stop after the recreate: `To roll back: git checkout <sha> in /home/ubuntu/CSAV2, run
+- Image-only stop after the recreate that was not rolled back automatically (see What a smoke
+  stop or a rollback means): `To roll back: git checkout <sha> in /home/ubuntu/CSAV2, run
   plan and apply, then git checkout main.` On production that means: start `deploy-production`
   with `sha` set to that revision (it is a staged commit); do not touch the checkout. On the first
   deploy the previous images are local tags: the text says `follow the manual rollback runbook`,
@@ -290,13 +370,14 @@ aws ssm create-document --region "$REGION" --name csa-production-plan --document
 aws ssm create-document --region "$REGION" --name csa-production-apply --document-type Command --document-format JSON --content file://ssm-document-apply.json
 ```
 
-`csa-production-plan` comes from `deploy/production/ssm-document-plan.json` (one parameter, `sha`)
-and `csa-production-apply` from `deploy/production/ssm-document-apply.json` (`sha`, `migrations`,
-`hostDigest`). Every parameter has an `allowedPattern`, so Systems Manager rejects anything else,
+`csa-production-plan` comes from `deploy/production/ssm-document-plan.json` (`sha`, `pythonDigest`,
+`frontendDigest`) and `csa-production-apply` from `deploy/production/ssm-document-apply.json`
+(`sha`, `migrations`, `hostDigest`, `pythonDigest`, `frontendDigest`). Every parameter has an `allowedPattern`, so Systems Manager rejects anything else,
 and each document runs `runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy` with its action
 written in. When a PR changes a document file, update it the same way:
 `aws ssm update-document --name <name> --content file://<file> --document-version '$LATEST'`,
 then `aws ssm update-document-default-version --name <name> --document-version <new version>`.
+The documents and the instance's entry script change together: see "After the digest change merges".
 
 ### 5. Instance (SSH as `ubuntu`): checkout, tools, entry script, host file, backup, GitHub read
 
@@ -395,9 +476,12 @@ f. The backup script, **only after step e**: the repository's `deploy/production
    `skipped: previous backup still running`, wait a minute and run it again. Every deploy checks
    that the installed copy is byte-for-byte the commit's `deploy/production/backup.sh`.
 
-g. GitHub read access for `gh`, which looks up the image digests (GitHub's package API needs a
-   token even for public packages) and reads the `staging` deployments. The token comes from the
-   other developer: a classic token with only the `read:packages` scope. `gh auth login
+g. GitHub read access for `gh`, **for break-glass only**. A deploy started from the workflow
+   passes the image digests and needs no token on the instance. The `read:packages` token is needed only for break-glass:
+   a host run by hand with no digests looks them up with `gh` (GitHub's package API needs a
+   token even for public packages) and reads the `staging` deployments, so the staged gate still
+   holds. The token comes from the other developer: a classic token with only the `read:packages`
+   scope. `gh auth login
    --with-token` insists on wider scopes, so write `gh`'s host file directly, with the token typed
    at a hidden prompt:
 
@@ -413,7 +497,8 @@ g. GitHub read access for `gh`, which looks up the image digests (GitHub's packa
    The last line must print a `sha256:` digest. No `docker login` is needed: the rollout pulls
    the public images by digest with an empty Docker config, so it would not use one.
 
-h. Run a plan on the instance exactly as Systems Manager will, for the newest staged commit:
+h. Run a plan on the instance as Systems Manager would, for the newest staged commit. It gives
+   no digests, so it takes the break-glass path and needs the token from step g:
 
    ```bash
    SHA=$(gh api "repos/amsyrzmi/CSAV2/deployments?environment=staging&per_page=1" --jq '.[0].sha')
@@ -425,7 +510,7 @@ h. Run a plan on the instance exactly as Systems Manager will, for the newest st
    never as root directly: a root run leaves the lock file root-owned, and every later run then
    fails at the lock with `Permission denied`.
 
-### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, three secrets, one variable
+### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, four secrets, one variable
 
 - Environment **`production-plan`**: no required reviewer. Deployment branches and tags:
   "Selected branches and tags", one rule for the branch `main`. Environment secrets:
@@ -434,13 +519,15 @@ h. Run a plan on the instance exactly as Systems Manager will, for the newest st
 - Environment **`production`**: Required reviewers `amsyrzmi` and `DanSan0408` (one approval is
   enough; `DanSan0408` needs at least read access to the repository, which they have). Leave
   "Prevent self-review" off. Deployment branches and tags: only `main`, as above. Environment
-  secrets: `PROD_APPLY_ROLE_ARN` (the `csa-prod-deploy-apply` role ARN) and `PROD_INSTANCE_ID`.
+  secrets: `PROD_APPLY_ROLE_ARN` (the `csa-prod-deploy-apply` role ARN), `PROD_INSTANCE_ID` and
+  `PROD_CONSOLE_ORIGIN` (the production console origin: `https://` plus the hostname, no path,
+  port or trailing slash; the public smoke test asks it for `/`).
 - Repository variable **`PROD_DEPLOY_REGION`**: `<region>`.
 
 The `main`-only restriction on both environments is mandatory: the roles' trust policies name the
 environment, and the environment's branch rule is what keeps another branch from getting that
-token (the jobs also check `github.ref`). The role ARNs and instance id are secrets so the public
-workflow logs mask them.
+token (the jobs also check `github.ref`). The role ARNs, instance id and console origin are
+secrets so the public workflow logs mask them, and the real values never go into the repository.
 
 Create the two environments, their reviewers and branch rules first, in the web settings
 (Settings, Environments); `gh secret set --env` for an environment that does not exist yet fails
@@ -452,13 +539,14 @@ gh secret set PROD_PLAN_ROLE_ARN --repo amsyrzmi/CSAV2 --env production-plan
 gh secret set PROD_INSTANCE_ID --repo amsyrzmi/CSAV2 --env production-plan
 gh secret set PROD_APPLY_ROLE_ARN --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_INSTANCE_ID --repo amsyrzmi/CSAV2 --env production
+gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production
 gh variable set PROD_DEPLOY_REGION --repo amsyrzmi/CSAV2 --body <region>
 ```
 
 ### 7. GitHub: verify with a plan
 
 Start `deploy-production` with an empty `sha` (Deploying from GitHub, step 2) and read the plan.
-On the first run it must show `Staged on:`, both images by digest, the rollback references as
+On the first run it must show `Target SHA:` for the tip of `main`, both images by digest, the rollback references as
 `unknown (a local image with no registry digest, or not running)`, and the pending migrations.
 Optionally check, on the instance, that the image pulls without credentials (the plan's
 `python:` digest; the pull is reused by the apply):
@@ -472,7 +560,8 @@ Then reject the `production` deployment, or approve it to make the first deploy,
 ### First production deploy: what to check
 
 - The first plan's log (`/var/log/csa-prod-deploy/`) shows no `getcwd` or permission lines before
-  `Target SHA:`, and `gh` finds its login (no `gh auth login` prompt or HTTP 401).
+  `Target SHA:`, and the instance makes no `gh` call (the digests came from the workflow, so no
+  `gh auth login` prompt or HTTP 401 can appear).
 - Before approving: an anonymous pull of the plan's digests works from the instance (the
   `docker pull` with an empty `DOCKER_CONFIG` in step 7, for both the `python:` and the
   `frontend:` digest).
@@ -486,6 +575,54 @@ Then reject the `production` deployment, or approve it to make the first deploy,
   releases their comments claim: `gh api repos/<owner>/<action>/git/ref/tags/<tag>` (for
   example `repos/actions/checkout/git/ref/tags/v7.0.1`) must name the pinned SHA; when its
   `object.type` is `tag`, follow it with `gh api repos/<owner>/<action>/git/tags/<object sha>`.
+
+## After the digest change merges
+
+Once the pull request that moves the digest lookup into the workflow is merged to `main`, the
+instance's entry script and the two command documents must be updated together, and the new
+secret set, before the next run. The workflow now sends `pythonDigest` and `frontendDigest` to
+both documents, and its apply job refuses to start without `PROD_CONSOLE_ORIGIN`. The entry
+script and the documents must match: a run against a document or an entry script from before the
+change fails closed, and nothing is deployed. Do the four steps in this order. `<name>` is
+`csa-production-plan` and then `csa-production-apply`; `<file>` is the matching
+`ssm-document-*.json` under `~/csa-deploy`.
+
+1. **Update both command documents** (CloudShell). First download the merged files, then run the
+   two `aws` commands once for each document. `update-document` prints the new version number;
+   use it in the next command for that document. Add `--region "$REGION"` if CloudShell's default
+   region is not the production one.
+
+   ```bash
+   cd ~/csa-deploy
+   RAW=https://raw.githubusercontent.com/amsyrzmi/CSAV2/main/deploy/production
+   curl -fsSLO "$RAW/ssm-document-plan.json" && curl -fsSLO "$RAW/ssm-document-apply.json"
+   aws ssm update-document --name <name> --content file://<file> --document-version '$LATEST'
+   aws ssm update-document-default-version --name <name> --document-version <new version>
+   ```
+
+2. **Reinstall the entry script** (Instance, SSH as `ubuntu`). The checkout `~/CSAV2` on the
+   instance must be on the merged `main` first (`git -C ~/CSAV2 fetch origin main` and
+   `git -C ~/CSAV2 checkout --detach origin/main`), because the script is installed from it.
+
+   ```bash
+   sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh /usr/local/sbin/csa-prod-deploy
+   ```
+
+3. **Set the new secret** (a machine with `gh` logged in as a repository admin). The value is the
+   production console origin and is typed at `gh`'s hidden prompt.
+
+   ```bash
+   gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production
+   ```
+
+4. **Start a run** (the same machine) and read the plan.
+
+   ```bash
+   gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
+   ```
+
+The first run after this should show the two digests in the plan from the registry and, on apply,
+`smoke ...: ok` lines followed by `Rollout of <sha7> finished.`.
 
 ## Restoring a backup
 
@@ -564,6 +701,11 @@ is for the owner only, for an urgent fix when staging or the deploy pipeline is 
 `csa_compose` function (Manual shell environment, below); before using it, check that its switch
 values match `deploy/production-rollout.env` and `/srv/csa-prod/host.env`, which the scripted
 deploy uses instead.
+
+Running the entry script on the instance by hand (`csa-prod-deploy plan` or `apply` with no image
+digests) is a different, smaller exception: it does today's `gh` digest lookup, which needs the
+`read:packages` token of One-time setup, step 5g, and it still enforces the staged gate. The
+manual Compose procedure below does not.
 
 1. Take a backup (as `ubuntu`, no `sudo`): `/srv/csa-prod/backup/backup.sh && tail -n 1 /srv/csa-prod/backup/backup.log`.
 2. Bring the checkout to the commit: `git -C ~/CSAV2 fetch origin main && git -C ~/CSAV2 checkout --detach <full sha>`.

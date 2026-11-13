@@ -2334,12 +2334,10 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_CONSOLE_ORIGIN",
     }
     assert environments == {"production", "production-plan"}
-    # TEMPORARY exemption: Task 8 (the runbook) adds PROD_CONSOLE_ORIGIN to the setup section.
-    # When it does, the assertion below fails: Task 8 removes it and this exemption together, so
-    # the secret is then required like every other.
-    assert "PROD_CONSOLE_ORIGIN" not in setup, "Task 8: drop the exemption and this assertion"
-    for name in (names - {"PROD_CONSOLE_ORIGIN"}) | environments:
+    for name in names | environments:
         assert name in setup, name
+    github = setup[setup.index("### 6.") : setup.index("### 7.")]
+    assert "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production" in github
 
 
 SCANNED_DOCS = ("PRODUCTION.md", "production skill", "staging skill", "pipeline routine")
@@ -2424,6 +2422,88 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
     ):
         assert needle in text, needle
     assert text.index("plan") < text.index("apply")
+    flat = " ".join(text.split())
+    for needle in (
+        "Leave `sha` empty",
+        "tip of `main`",
+        "main's tip <sha7> is not staged yet; wait for deploy-staging",
+        "main moved to <sha7> since this run's plan",
+        "Rolled back:",
+        "Stopped at smoke:",
+        "Stopped at rollback:",
+    ):
+        assert needle in flat, needle
+
+
+def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -> None:
+    text = _production_doc()
+    # Prose needles are matched with line breaks and runs of spaces collapsed.
+    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    setup_raw = _section(text, "One-time setup")
+    setup = " ".join(setup_raw.split())
+    break_glass = " ".join(_section(text, "Break-glass").split())
+    after = _section(text, "After the digest change merges")
+    flat_text = " ".join(text.split())
+
+    # An empty sha is the tip of main, and each refusal the plan job can print is named.
+    assert "Leave `sha` empty to deploy the tip of `main`" in deploying
+    for needle in (
+        "sha must be the full 40 character lowercase commit SHA",
+        "commit <sha7> is not on main",
+        "the ci run for <sha7> has not succeeded on main",
+        "main's tip <sha7> is not staged yet; wait for deploy-staging",
+        "commit <sha7> has not been rolled out to staging",
+        "images for <sha7> are not published (csa-<app>)",
+        "main moved to <sha7> since this run's plan; start the workflow again",
+    ):
+        assert needle in deploying, needle
+    # The registry is read anonymously, so the hosts need no token for a normal deploy.
+    assert "anonymous" in deploying
+    assert "`read:packages` token is needed only for break-glass" in setup
+    assert "needed for every deploy" not in flat_text
+    assert "still enforces the staged gate" in break_glass
+    # The smoke test: the instance's checks, then the public step.
+    for needle in ("5 s apart", "`PROD_CONSOLE_ORIGIN`", "2xx or 3xx", "frontend"):
+        assert needle in deploying, needle
+    # What a rollback line and a smoke stop mean.
+    for needle in (
+        "Rolling back to <ref>",
+        "Rolled back: the previous images are running; <sha7> is not.",
+        "Fix forward, then re-run plan and apply.",
+        "Stopped at smoke:",
+        "Stopped at rollback:",
+        "always leaves the run red",
+    ):
+        assert needle in deploying, needle
+    # The waits: runner 115 minutes, document 120, job 130; a rollback needs the longer budget.
+    assert "130 minutes" in deploying
+    assert "rolls back" in deploying
+    assert "40-minute" not in flat_text
+    # The secret, listed in step 6 with what it is.
+    assert (
+        "`PROD_CONSOLE_ORIGIN`" in setup_raw[setup_raw.index("### 6.") : setup_raw.index("### 7.")]
+    )
+    # Owner steps after the digest change merges, in order, with placeholders only.
+    update = (
+        "aws ssm update-document --name <name> --content file://<file> --document-version '$LATEST'"
+    )
+    default = (
+        "aws ssm update-document-default-version --name <name> --document-version <new version>"
+    )
+    install = (
+        "sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh "
+        "/usr/local/sbin/csa-prod-deploy"
+    )
+    secret = "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production"
+    start = "gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main"
+    positions = [after.index(needle) for needle in (update, default, install, secret, start)]
+    assert positions == sorted(positions)
+    assert len(set(positions)) == 5
+    assert "csa-production-plan" in after
+    assert "csa-production-apply" in after
+    assert "fails closed" in after
+    assert after.count("CloudShell") >= 2
+    assert "Instance" in after
 
 
 def test_production_doc_review_fixes() -> None:
@@ -2434,7 +2514,7 @@ def test_production_doc_review_fixes() -> None:
     # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
     assert "`TimedOut`" in deploying
     assert "120 minutes" in deploying
-    assert "30 minutes" not in text
+    assert not re.search(r"(?<![0-9])30 minutes", text)
     # The runner's wait is 115 minutes of elapsed time since the send, not an estimate from polls.
     assert "115 minutes (by the clock, not a count of polls)" in deploying
     assert "about 115 minutes" not in text
@@ -2466,7 +2546,7 @@ def test_production_doc_review_fixes() -> None:
     first = setup[setup.index("### First production deploy: what to check") :]
     for needle in (
         "getcwd",
-        "`gh` finds its login",
+        "makes no `gh` call",
         "Before approving",
         "DOCKER_CONFIG",
         "send-command",
@@ -2476,3 +2556,17 @@ def test_production_doc_review_fixes() -> None:
         "gh api repos/<owner>/<action>/git/ref/tags/<tag>",
     ):
         assert needle in first, needle
+
+
+def test_spec_matches_the_tip_default_and_the_registry_method() -> None:
+    spec = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md").read_text(
+        encoding="utf-8"
+    )
+
+    flat = " ".join(spec.split())
+    assert "default run: main's tip must not have moved since the plan" in flat
+    assert "production must not already run a newer commit" not in flat
+    assert "registry manifest API" in flat
+    assert "anonymous pull token" in flat
+    assert "Digests are optional on the host CLI" in flat
+    assert "break-glass" in flat
