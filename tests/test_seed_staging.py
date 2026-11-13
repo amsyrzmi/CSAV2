@@ -173,7 +173,7 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
             )
             == 0
         )
-        assert await _count(conn, "SELECT count(*) FROM capability_registry") == 18
+        assert await _count(conn, "SELECT count(*) FROM capability_registry") == 20
         packages = await (
             await conn.execute(
                 "SELECT client_id, package, status, reference, activated_by IS NOT NULL, "
