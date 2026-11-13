@@ -1,0 +1,107 @@
+{
+  "id": "cs_pay_not_offered_tiktok_only_en",
+  "matrix": "Payments: a company that sells only TikTok Shop products hears nothing of payment_agent",
+  "description": "A company with only the TikTok Shop service (payments on in its settings, but no payment agent): the classifier and planner are never told of payment_agent or the payment rules, nothing plans it, and 'how do I pay my invoice?' gets the honest no-information answer.",
+  "seed": {
+    "knowledge": [
+      {
+        "title": "Foreign payments",
+        "content": "FOREIGN-PAY-SECRET pay on the other site.",
+        "other_tenant": true
+      }
+    ],
+    "services": [
+      "ecommerce_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "How do I pay my invoice?",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "en",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "kb_agent": 0.8
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "kb_agent",
+              "input": {
+                "action": "query",
+                "query": "how to pay an invoice"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        },
+        "ComposeOut": {
+          "reply": "I don't have that information here. Do you want me to pass your question to a team member?"
+        },
+        "ReviewOut": {
+          "ok": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "kb_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "compose_sees": [
+          "No matching knowledge base documentation found"
+        ],
+        "model_never_sees": [
+          "payment_agent",
+          "Payments: asking how to pay",
+          "claim_paid",
+          "How to pay for a plan waiting",
+          "Asking how or where to pay",
+          "512000000021",
+          "KDMW-7AS",
+          "FOREIGN-PAY-SECRET"
+        ],
+        "reply_excludes": [
+          "512000000021",
+          "KDMW-7AS"
+        ],
+        "invoice_statuses": [
+          "issued"
+        ],
+        "kb_gaps": 1
+      }
+    }
+  ]
+}

@@ -608,7 +608,7 @@ async def test_tenant_onboarding_provisions_disabled_capabilities_and_atomic_aud
     assert tenant["config"]["runtime"] == "langgraph"
     assert Policy.model_validate(tenant["config"]["policy"]).deployment_mode == "shadow"
     rows = await sessions.q(
-        "SELECT name,is_enabled,client_enabled,input_schema FROM capability_registry "
+        "SELECT name,display_name,is_enabled,client_enabled,input_schema FROM capability_registry "
         "WHERE client_id=%s",
         sessions.tenants[0],
     )
@@ -617,9 +617,14 @@ async def test_tenant_onboarding_provisions_disabled_capabilities_and_atomic_aud
         "order_agent",
         "booking_agent",
         "subscription_agent",
+        "payment_agent",
     }
     assert all(not row["is_enabled"] and not row["client_enabled"] for row in rows)
     assert all(row["input_schema"].get("type") == "object" for row in rows)
+    payments = next(row for row in rows if row["name"] == "payment_agent")
+    assert set(payments["input_schema"]["properties"]) == {"action", "reference", "note"}
+    # The name 0591 seeds for existing companies, so every company reads the same.
+    assert payments["display_name"] == "Payments"
     created = await sessions.q(
         "SELECT actor_id,details FROM console_audit WHERE client_id=%s AND action='tenant.created'",
         sessions.tenants[0],

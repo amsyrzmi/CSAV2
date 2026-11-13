@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any, LiteralString
 from uuid import UUID
 
 import pytest
 from csa.core.tenancy import tx
-from csa.subscriptions import signup
+from csa.payments.reference import new_invoice_id, new_reference
+from csa.subscriptions import service, signup
+from csa.subscriptions.contracts import SubscriptionCreateIn
 from csa.subscriptions.signup import SignupFiled
 from fastapi import HTTPException
 
 from tests.conftest import requires_docker
 from tests.test_console_sessions import SessionWorld
 from tests.test_console_subscriptions import seed_customer, seed_plan
+from tests.test_subscriptions_executor import actor_from
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
 
 TYPED = "+60199990000"
+HOLD = 0.4  # seconds a racing transaction keeps its locks before it commits
 
 
 async def file(
@@ -30,10 +35,13 @@ async def file(
     tenant: str | None = None,
     name: str = "Aisha Rahman",
     phone: str = TYPED,
+    email: str | None = None,
 ) -> SignupFiled:
     tenant = tenant or w.tenants[0]
     async with tx(w.pool, tenant) as conn:
-        return await signup.file_signup(conn, UUID(tenant), UUID(contact), plan, name, phone)
+        return await signup.file_signup(
+            conn, UUID(tenant), UUID(contact), plan, name, phone, email=email
+        )
 
 
 async def approve(w: SessionWorld, request_id: UUID, *, tenant: str | None = None) -> Any:
@@ -524,3 +532,262 @@ async def test_phone_verified_and_source_channel_come_from_the_contact(
     await decline(w, typed_other.id)
     same = (await file(w, contact, phone="012 345 6789")).request
     assert same is not None and same.phone == "+60123456789" and same.phone_verified is True
+
+
+# --- the opening invoice (payments) --------------------------------------------------------------
+
+
+async def payments_on(w: SessionWorld, *, enabled: bool = True, tenant: str | None = None) -> None:
+    await w.q(
+        "INSERT INTO payment_settings (client_id, enabled) VALUES (%s,%s) "
+        "ON CONFLICT (client_id) DO UPDATE SET enabled = EXCLUDED.enabled",
+        tenant or w.tenants[0],
+        enabled,
+    )
+
+
+async def invoices_of(w: SessionWorld, sub: UUID | None) -> list[dict[str, Any]]:
+    return await w.q("SELECT * FROM invoices WHERE subscription_id=%s ORDER BY issued_at", sub)
+
+
+async def test_approve_issues_the_opening_invoice_in_the_same_transaction(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await payments_on(w)
+    request = (await file(w, contact)).request
+    assert request is not None and request.invoice_reference is None
+
+    decided = await approve(w, request.id)
+
+    [invoice] = await invoices_of(w, decided.subscription_id)
+    assert invoice["status"] == "issued" and invoice["period_start"] is None
+    assert str(invoice["amount"]) == "29.90" and invoice["currency"] == "MYR"
+    assert invoice["contact_id"] == UUID(contact) and invoice["reference"] is not None
+    assert decided.invoice_reference == invoice["reference"]
+    async with tx(w.pool, w.tenants[0]) as conn:
+        page = await signup.list_signups(
+            conn, UUID(w.tenants[0]), status="decided", before=None, limit=50
+        )
+    assert [item.invoice_reference for item in page.items] == [invoice["reference"]]
+
+    # Payments off: the approval issues nothing and says so.
+    await payments_on(w, enabled=False)
+    other = await seed_customer(w, w.tenants[0], name="Budi Contoh", email="budi@example.test")
+    second = (await file(w, other)).request
+    assert second is not None
+    off = await approve(w, second.id)
+    assert off.status == "approved" and off.invoice_reference is None
+    assert await invoices_of(w, off.subscription_id) == []
+
+
+async def test_the_sign_up_shows_its_opening_invoice_never_a_later_one(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await payments_on(w)
+    request = (await file(w, contact)).request
+    assert request is not None
+    decided = await approve(w, request.id)
+    [opening] = await invoices_of(w, decided.subscription_id)
+    # A later period's invoice, issued after the opening one.
+    later = new_reference()
+    await w.q(
+        "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference, status, "
+        "amount, currency, issued_at, due_at, period_start, period_end) "
+        "VALUES (%s, %s, %s, %s, %s, 'issued', 29.90, 'MYR', now() + interval '1 minute', "
+        "now() + interval '30 days', now() + interval '30 days', now() + interval '60 days')",
+        new_invoice_id(datetime.now(UTC)),
+        w.tenants[0],
+        contact,
+        decided.subscription_id,
+        later,
+    )
+
+    async def shown() -> list[str | None]:
+        async with tx(w.pool, w.tenants[0]) as conn:
+            one = await signup.get_signup(conn, UUID(w.tenants[0]), request.id)
+            page = await signup.list_signups(
+                conn, UUID(w.tenants[0]), status="decided", before=None, limit=50
+            )
+        return [one.invoice_reference, *[i.invoice_reference for i in page.items]]
+
+    assert await shown() == [opening["reference"], opening["reference"]]
+    # Paid, the opening invoice gets its period and is still the one shown.
+    await w.q(
+        "UPDATE invoices SET period_start = now(), period_end = now() + interval '30 days' "
+        "WHERE id = %s",
+        opening["id"],
+    )
+    assert await shown() == [opening["reference"], opening["reference"]]
+    # Voided, it shows none: never the later period's reference in its place.
+    await w.q(
+        "UPDATE invoices SET status = 'void', period_start = NULL, period_end = NULL WHERE id = %s",
+        opening["id"],
+    )
+    assert await shown() == [None, None]
+
+
+async def test_approve_rolled_back_leaves_no_invoice(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await payments_on(w)
+    request = (await file(w, contact)).request
+    assert request is not None
+    issued: list[Any] = []
+    original = signup.issue_opening_invoice
+
+    async def issue_and_note(*args: Any, **kwargs: Any) -> Any:
+        record = await original(*args, **kwargs)
+        issued.append(record)
+        return record
+
+    async def fail(*_: Any, **__: Any) -> None:
+        raise RuntimeError("forced failure after the invoice insert")
+
+    monkeypatch.setattr(signup, "issue_opening_invoice", issue_and_note)
+    monkeypatch.setattr(signup, "_audit", fail)
+
+    with pytest.raises(RuntimeError, match="forced failure"):
+        await approve(w, request.id)
+
+    assert len(issued) == 1 and issued[0] is not None  # the invoice was inserted, then undone
+    assert await w.q("SELECT id FROM invoices WHERE client_id=%s", w.tenants[0]) == []
+    assert await count(w, "subscriptions") == 0
+    stored = await w.q("SELECT status FROM signup_requests WHERE id=%s", request.id)
+    assert stored == [{"status": "pending"}]
+
+
+async def test_an_auto_approval_issues_the_opening_invoice_too(sessions: SessionWorld) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await payments_on(w)
+    await w.q(
+        "UPDATE plans SET signup_mode='auto' WHERE client_id=%s AND code='basic'", w.tenants[0]
+    )
+
+    filed = await file(w, contact)
+
+    assert filed.request is not None and filed.request.status == "approved"
+    [invoice] = await invoices_of(w, filed.request.subscription_id)
+    assert invoice["status"] == "issued" and str(invoice["amount"]) == "29.90"
+    assert filed.request.invoice_reference == invoice["reference"]
+
+
+async def test_a_manual_create_racing_an_approve_gives_one_live_subscription(
+    sessions: SessionWorld,
+) -> None:
+    """Staff add the customer by hand while another approves their sign-up (two connections)."""
+    w = sessions
+    contact, _ = await world(w)
+    request = (await file(w, contact)).request
+    assert request is not None
+    _, me = await w.member(role="tenant_staff")
+    tenant = UUID(w.tenants[0])
+
+    async def create() -> Any:
+        async with tx(w.pool, w.tenants[0]) as conn:
+            made = await service.create_subscription(
+                conn,
+                tenant,
+                actor_from(me),
+                SubscriptionCreateIn(contact_id=UUID(contact), plan_code="basic"),
+            )
+            await asyncio.sleep(HOLD)
+            return made
+
+    async def approving() -> Any:
+        async with tx(w.pool, w.tenants[0]) as conn:
+            decided = await signup.approve_signup(conn, tenant, request.id, UUID(w.admin_id))
+            await asyncio.sleep(HOLD)
+            return decided
+
+    results = await asyncio.gather(create(), approving(), return_exceptions=True)
+
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(refused) == 1, results
+    assert refused[0].status_code == 409
+    assert refused[0].detail in {"subscription_exists", "signup_has_plan"}
+    live = await w.q(
+        "SELECT count(*) AS n FROM subscriptions WHERE client_id=%s AND contact_id=%s "
+        "AND plan='basic' AND status IN ('active','paused','pending')",
+        w.tenants[0],
+        contact,
+    )
+    assert live == [{"n": 1}]
+
+
+# --- the email given at sign-up (WhatsApp, for payment reminders) ------------------------------
+
+
+async def contact_emails(w: SessionWorld, contact: str) -> dict[str, Any]:
+    [row] = await w.q("SELECT email, customer_given_email FROM contacts WHERE id=%s", contact)
+    return row
+
+
+async def test_a_given_email_is_stored_lower_case_and_fills_an_empty_given_email(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await w.q("UPDATE contacts SET email=NULL WHERE id=%s", contact)
+
+    filed = await file(w, contact, email="  Aisha.Rahman@Example.COM ")
+
+    assert filed.outcome == "filed" and filed.request is not None
+    assert filed.request.email == "aisha.rahman@example.com"
+    stored = await w.q("SELECT email FROM signup_requests WHERE id=%s", filed.request.id)
+    assert stored == [{"email": "aisha.rahman@example.com"}]
+    # A claim nobody checked: the given address only, never the contact's own email.
+    assert await contact_emails(w, contact) == {
+        "email": None,
+        "customer_given_email": "aisha.rahman@example.com",
+    }
+    # The staff list shows it.
+    async with tx(w.pool, w.tenants[0]) as conn:
+        page = await signup.list_signups(
+            conn, UUID(w.tenants[0]), status="pending", before=None, limit=50
+        )
+    assert [item.email for item in page.items] == ["aisha.rahman@example.com"]
+
+
+async def test_a_given_email_never_overwrites_an_address_on_file(sessions: SessionWorld) -> None:
+    w = sessions
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    given = await seed_customer(w, w.tenants[0], name="Given Contoh", email="unused@example.test")
+    await w.q(
+        "UPDATE contacts SET email=NULL, customer_given_email='first@example.test' WHERE id=%s",
+        given,
+    )
+    own = await seed_customer(w, w.tenants[0], name="Own Contoh", email="own@example.test")
+
+    for contact in (given, own):
+        filed = await file(w, contact, email="second@example.test")
+        assert filed.request is not None and filed.request.email == "second@example.test"
+    assert await contact_emails(w, given) == {
+        "email": None,
+        "customer_given_email": "first@example.test",
+    }
+    assert await contact_emails(w, own) == {
+        "email": "own@example.test",
+        "customer_given_email": None,
+    }
+
+
+async def test_no_email_files_none_and_a_bad_one_files_nothing(sessions: SessionWorld) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await w.q("UPDATE contacts SET email=NULL WHERE id=%s", contact)
+    assert await refusal(file(w, contact, email="not-an-address")) == (422, "invalid_email")
+    assert await count(w, "signup_requests") == 0
+    filed = await file(w, contact)
+    assert filed.request is not None and filed.request.email is None
+    assert await contact_emails(w, contact) == {"email": None, "customer_given_email": None}
+    # A repeat with an address returns the open request as it was, and fills nothing.
+    again = await file(w, contact, email="late@example.test")
+    assert again.outcome == "exists" and again.request is not None and again.request.email is None
+    assert await contact_emails(w, contact) == {"email": None, "customer_given_email": None}

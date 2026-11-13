@@ -242,11 +242,95 @@ def test_the_shipped_script_has_the_sign_up_conversations() -> None:
         assert "I still need your full name." in joined[0]
         assert "We keep your name and phone number on your contact record" in joined[0]
         assert "I still need your phone number." in joined[1]
-        assert joined[2].startswith("Sign-up for ") and "Ask the customer to confirm" in joined[2]
+        assert (
+            joined[2].startswith("Sign-up for ")
+            and "Reply yes to sign up. Nothing is filed until you do." in joined[2]
+        )
         assert "was received. The team will review it" in joined[3]
         assert not any("approved" in text for text in joined)
         # Synthetic only: the number in the read-back is the test number.
         assert "+60123456789" in joined[2]
+
+
+def test_the_shipped_sign_up_conversations_never_speak_of_a_charge() -> None:
+    from scripts.customer_bot_replay import SCRIPT_FILE, load_script
+
+    by_id = {c.id: c for c in load_script(SCRIPT_FILE).conversations}
+    for conversation_id in ("en-signup", "ms-signup"):
+        turns = by_id[conversation_id].facts_by_turn
+        assert turns is not None
+        assert not any("charged" in fact for facts in turns for fact in facts), conversation_id
+        assert turns[3] == [
+            "Your sign-up for Plan Besar was received. The team will review it and tell you what "
+            "happens next. Nothing is active yet."
+        ]
+
+
+def test_the_shipped_script_has_the_payment_conversations_with_the_copys_own_facts() -> None:
+    # How to pay, "I've paid", "did you get it?" and thanks: each turn's facts are exactly what
+    # the payment agent says (csa.payments.copy) about one synthetic invoice and bank account.
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from csa.payments import copy
+    from csa.payments.contracts import MethodOut
+    from csa.payments.invoices import InvoiceRecord
+    from scripts.customer_bot_replay import SCRIPT_FILE, load_script
+
+    invoice = InvoiceRecord(
+        id="inv_synthetic",
+        client_id=uuid4(),
+        contact_id=uuid4(),
+        subscription_id=None,
+        reference="KDMW-7AS",
+        status="issued",
+        amount=Decimal("35.00"),
+        currency="MYR",
+        issued_at=datetime(2026, 12, 1, tzinfo=UTC),
+        due_at=datetime(2026, 12, 20, 4, 0, tzinfo=UTC),
+        paid_at=None,
+        period_start=None,
+        period_end=None,
+        plan_name="Plan Sederhana",
+        claim_note=None,
+        claimed_at=None,
+        method_kind=None,
+    )
+    method = MethodOut(
+        id=uuid4(),
+        kind="transfer",
+        label="Bank transfer",
+        details={
+            "bank_name": "Bank Sintetik",
+            "account_number": "512000000021",
+            "account_name": "Kedai Contoh Sdn Bhd",
+        },
+        instructions="",
+        is_active=True,
+        sort_order=0,
+        version=1,
+    )
+    by_id = {c.id: c for c in load_script(SCRIPT_FILE).conversations}
+    pairs: list[tuple[str, copy.Locale]] = [("en-payment", "en"), ("ms-payment", "ms")]
+    for conversation_id, locale in pairs:
+        conversation = by_id[conversation_id]
+        assert conversation.language == locale
+        assert conversation.facts_source == "payment_agent"
+        assert conversation.facts_by_turn == [
+            [
+                copy.invoice_line(invoice, locale, "Asia/Kuala_Lumpur"),
+                copy.method_line(method, locale),
+                copy.reference_line(["KDMW-7AS"], locale),
+                copy.after_paying_line(locale),
+            ],
+            [copy.claim_noted_line("KDMW-7AS", locale)],
+            [copy.claimed_line(invoice, locale)],
+            [],
+        ], conversation_id
+    malay = " ".join(f for facts in by_id["ms-payment"].facts_by_turn or [] for f in facts)
+    assert sum(count_formal_markers(malay).values()) == 0
+    assert "belum ditanda dibayar" in malay
 
 
 async def test_facts_differ_per_turn_and_carry_their_agent_as_source() -> None:

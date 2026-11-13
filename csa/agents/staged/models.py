@@ -227,6 +227,27 @@ class SubscriptionInput(DraftModel):
             "any language. Otherwise leave it out: the server then reads the sign-up back first."
         ),
     )
+    # The planner sees an address only as a placeholder; the server swaps it for the address in
+    # the customer's own message, and drops one the message does not hold
+    # (`csa.turn.deps.with_real_email`). The agent checks it and asks for it only on WhatsApp.
+    email: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=254,
+        description=(
+            "request_signup only: the email address the customer gave in this message for "
+            "payment reminders, copied exactly as it shows, a placeholder such as [EMAIL_0] "
+            "included. Leave it out when they gave none; never write one yourself."
+        ),
+    )
+    skip_email: bool = Field(
+        default=False,
+        description=(
+            "request_signup only: true when the server asked for an email address and the "
+            "customer does not want to give one (for example skip, tak payah, takde). Otherwise "
+            "leave it out."
+        ),
+    )
 
     @field_validator("*", mode="before")
     @classmethod

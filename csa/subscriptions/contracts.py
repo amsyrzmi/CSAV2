@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from csa.console.contracts import Contract
+from csa.payments.contracts import InvoiceStatus
 
 Status = Literal["pending", "active", "paused", "cancelled"]
 Interval = Literal["month", "year"]
@@ -44,7 +45,7 @@ class PlanIn(Contract):
     code: str = Field(pattern=r"^[a-z0-9_-]{1,64}$")
     name: str = Field(min_length=1, max_length=120)
     price: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
-    currency: str = "MYR"
+    currency: str = Field(default="MYR", pattern=r"^[A-Z]{3}$")
     billing_interval: Interval = "month"
     features: list[str] = Field(default_factory=list, max_length=20)
     sort_order: int = 0
@@ -111,9 +112,22 @@ class SubscriptionEventOut(Contract):
 EventOut = SubscriptionEventOut
 
 
+class InvoiceBrief(Contract):
+    """An open invoice as the subscription detail shows it (no staff-only fields)."""
+
+    id: str
+    reference: str | None  # null only on an invoice written before references existed
+    status: InvoiceStatus
+    amount: Decimal
+    currency: str
+    due_at: datetime | None
+
+
 class SubscriptionDetail(Contract):
     subscription: SubscriptionOut
     events: list[SubscriptionEventOut]
+    # The subscription's newest open invoice (issued, overdue, proof_submitted, cash_pending).
+    open_invoice: InvoiceBrief | None
 
 
 class SubscriptionCreateIn(Contract):
@@ -226,6 +240,12 @@ class SignupOut(Contract):
     created_at: datetime
     decided_at: datetime | None
     source_channel: str | None  # the channel of the contact's newest identity
+    # The reference of the approved subscription's first invoice (issued at approval while
+    # payments are on); null when none was issued or it is void.
+    invoice_reference: str | None
+    # The address the customer gave in the chat for payment reminders (asked on WhatsApp while
+    # payments are on), lower case; a claim nobody checked. Null when none was given.
+    email: str | None
 
 
 class SignupPage(Contract):

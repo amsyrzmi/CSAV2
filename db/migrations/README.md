@@ -47,6 +47,15 @@ Reserved ranges (client growth program, 2026-10-27):
   `contacts.phone_verified_at` and `merged_into`, the unique `contacts_verified_phone_uq`, and the
   `contact_links` and `contact_link_reviews` tables, and lets `csa_app` update
   `agent_preparation_requests.contact_id` only (a link moves staged requests to the survivor).
+- `0590`–`0599`: payments. 0590 gives `invoices` a status check, an amount check, a currency check (three
+  upper-case letters), a `reference` (unique per company), `method_kind`, `subscription_id` with `period_start` and `period_end` (one invoice per
+  subscription period, void ones included), a claim and a void trail, and the keys
+  `invoices_client_id_key` and `subscriptions_client_id_key` on `(client_id, id)`; it adds
+  `subscriptions.pause_reason` and the tables `payment_settings`, `payment_methods`, `payments` (the
+  ledger, append-only for `csa_app`, one payment per invoice and per idempotency key) and
+  `invoice_reminders`, all tenant isolated with grants to `csa_app` only. 0591 seeds the `payment_agent`
+  capability row for every company (switched on where `subscription_agent` is) and adds
+  `signup_requests.email`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

@@ -3,9 +3,13 @@
 One thing is asked per turn: the plan, then the full name, then the phone. A phone the channel
 verified is used and never asked; otherwise Telegram offers the "share my number" button once and
 any channel takes a typed number, which stays on the request only (never on the contact, ruling
-D). With everything collected the sign-up is read back and nothing is filed; it is filed only when
-the planner read this message as a yes (`confirmed`) and the chat's latest assistant message was
-that very read-back of these same details.
+D). On WhatsApp, while the company's payments are on and the contact has no address on file, the
+email for payment reminders is asked once, after the name and the phone: an address the customer
+wrote (checked as a booking's is), a skip, or nothing on the next turn, and a bad address is asked
+for again once. Telegram and the web sandbox never ask. With everything collected the sign-up is
+read back and nothing is filed; it is filed only when the planner read this message as a yes
+(`confirmed`) and the chat's latest assistant message was that very read-back of these same
+details.
 
 The planner sees a Malaysian number only as a placeholder, which resolves only in the message that
 holds it, so what each turn collected is kept in a short-lived draft for the next: a
@@ -36,10 +40,12 @@ from csa.agents.staged.subscription_facts import (
     plan_facts,
     signup_fact,
 )
+from csa.bookings.notify import clean_address
 from csa.contacts.linking import live_contact
 from csa.contracts.facts import Fact
 from csa.core import db
 from csa.core.phone import normalise_my_phone
+from csa.payments.settings import get_settings
 from csa.subscriptions.signup import file_signup
 
 logger = structlog.get_logger(__name__)
@@ -63,7 +69,11 @@ class Draft(BaseModel):
     phone: str | None = None  # typed, normalised; never the contact's own
     noted: bool = False  # the data note was told
     asked_share: bool = False  # Telegram's share button was offered
-    read_back: list[str] | None = None  # [plan code, name, phone key] as read back
+    email: str | None = None  # given for payment reminders (WhatsApp), checked, lower case
+    email_asked: bool = False  # the email was asked (or given without asking)
+    email_invalid_told: bool = False  # a bad address was answered with `email_invalid` once
+    # [plan code, name, phone key] as read back, then the email ("" for none) when it was asked
+    read_back: list[str] | None = None
     read_back_trace: str | None = None  # the turn that read it back
 
 
@@ -109,9 +119,18 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
     if ended is not None:
         await _close(conn, ctx, contact_id, "used")
         return SignupTurn(_Reply().add(ended, plan=plan_name).facts())
-    verified = await _verified_phone(conn, ctx.client_id, contact_id)
+    own = await db.q.fetch_one(
+        "agents/contact_phone.sql",
+        {"client_id": ctx.client_id, "contact_id": contact_id},
+        conn=conn,
+    )
+    verified = _verified_phone(own)
+    asks_email = await _asks_email(conn, ctx, own)
     typed = draft.phone
     draft = draft.model_copy(update={"plan_code": code, "full_name": name})
+    if asks_email and not draft.email_asked and clean_address(inp.email) is not None:
+        # Given before it was asked (with the name, say): kept, and not asked for again.
+        draft = _email_step(draft, inp)[0]
     if verified is None and inp.phone is not None:
         typed = normalise_my_phone(inp.phone)
         if typed is None:
@@ -129,13 +148,54 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
         return await _ask(conn, ctx, contact_id, draft, missing, request_phone=share)
     phone = verified or typed
     assert phone is not None
+    if asks_email:
+        draft, question = _email_step(draft, inp)
+        if question is not None:
+            return await _ask(conn, ctx, contact_id, draft, _Reply().add(question))
+    email = draft.email if asks_email else None
     key = [code, name, _VERIFIED_KEY if verified else phone]
+    if asks_email:
+        key.append(email or "")
     if inp.confirmed and await _answers_read_back(conn, ctx, draft, key):
-        return await _file(conn, ctx, contact_id, code, plan_name, name, phone)
+        priced = plan["price"] > 0
+        return await _file(
+            conn, ctx, contact_id, code, plan_name, name, phone, email=email, priced=priced
+        )
     draft = draft.model_copy(update={"read_back": key, "read_back_trace": str(ctx.trace_id)})
     shown = VERIFIED_PHONE if verified else phone
-    read = _Reply().add("readback", plan=plan_name, name=name, phone=shown)
+    read = _Reply().add(
+        "readback", plan=plan_name, name=name, phone=shown, email=email, with_email=asks_email
+    )
     return await _ask(conn, ctx, contact_id, draft, read)
+
+
+async def _asks_email(conn: Conn, ctx: AgentContext, own: dict[str, Any] | None) -> bool:
+    """Whether this sign-up asks for an email for payment reminders: on WhatsApp only, while the
+    company's payments are on, for a contact with no address of its own and none given before."""
+    if ctx.channel != "whatsapp" or own is None or own["has_email"]:
+        return False
+    return (await get_settings(conn, ctx.client_id)).enabled
+
+
+def _email_step(draft: Draft, inp: SubscriptionInput) -> tuple[Draft, SignupKind | None]:
+    """The draft after this turn's answer to the email question, and what to ask (None: read back).
+
+    A good address is kept (lower case). A bad one is asked for again once; after that it is left
+    out. A skip, or a turn with no address once it was asked, leaves the email out.
+    """
+    if inp.email is not None:
+        address = clean_address(inp.email)
+        if address is not None:
+            return draft.model_copy(update={"email": address.lower(), "email_asked": True}), None
+        if not draft.email_invalid_told:
+            told = {"email_asked": True, "email_invalid_told": True}
+            return draft.model_copy(update=told), "email_invalid"
+        return draft.model_copy(update={"email": None, "email_asked": True}), None
+    if inp.skip_email:
+        return draft.model_copy(update={"email": None, "email_asked": True}), None
+    if not draft.email_asked:
+        return draft.model_copy(update={"email_asked": True}), "email_ask"
+    return draft, None
 
 
 async def _plan(conn: Conn, client_id: UUID, named: str) -> dict[str, Any] | None:
@@ -167,11 +227,8 @@ def _ended(plan: dict[str, Any], held: SignupKind | None) -> SignupKind | None:
     return held
 
 
-async def _verified_phone(conn: Conn, client_id: UUID, contact_id: UUID) -> str | None:
+def _verified_phone(own: dict[str, Any] | None) -> str | None:
     """The contact's own phone when its channel verified it, normalised; otherwise None."""
-    own = await db.q.fetch_one(
-        "agents/contact_phone.sql", {"client_id": client_id, "contact_id": contact_id}, conn=conn
-    )
     if own is None or not own["verified"] or not own["phone"]:
         return None
     return normalise_my_phone(str(own["phone"]))
@@ -201,15 +258,21 @@ async def _file(
     plan_name: str,
     name: str,
     phone: str,
+    *,
+    email: str | None,
+    priced: bool,
 ) -> SignupTurn:
     """File the request.
 
     Any refusal the service raises rolls back to the savepoint, so nothing is filed, and the
-    customer is told only to try again later (no error text).
+    customer is told only to try again later (no error text). `priced`: the plan costs more than
+    nothing, so an approval while payments are on issues an invoice (a free plan gets none).
     """
     try:
         async with conn.transaction():
-            filed = await file_signup(conn, ctx.client_id, contact_id, code, name, phone)
+            filed = await file_signup(
+                conn, ctx.client_id, contact_id, code, name, phone, email=email
+            )
     except HTTPException as exc:
         logger.warning(
             "signup_not_filed",
@@ -225,8 +288,18 @@ async def _file(
         return SignupTurn(_Reply().add("which").facts(plan_facts(offered)))
     await _close(conn, ctx, contact_id, "used")
     if filed.outcome == "filed":
-        auto = filed.request is not None and filed.request.status == "approved"
-        return SignupTurn(_Reply().add("filed_auto" if auto else "filed", plan=plan_name).facts())
+        request = filed.request
+        if request is not None and request.status == "approved":
+            # An auto plan: approved at once, with its opening invoice while payments are on.
+            if request.invoice_reference:
+                reply = _Reply().add(
+                    "filed_auto_invoice", plan=plan_name, ref=request.invoice_reference
+                )
+            else:
+                reply = _Reply().add("filed_auto", plan=plan_name)
+            return SignupTurn(reply.facts())
+        payments = priced and (await get_settings(conn, ctx.client_id)).enabled
+        return SignupTurn(_Reply().add("filed", plan=plan_name, payments=payments).facts())
     told: dict[str, SignupKind] = {"exists": "exists", "has_plan": "has_plan", "closed": "closed"}
     return SignupTurn(_Reply().add(told[filed.outcome], plan=plan_name).facts())
 

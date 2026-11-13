@@ -210,3 +210,111 @@ Decided 2026-11-11: the owner asked for these to be resolved appropriately, so b
    in a short "Needs a nudge" list for staff.
 2. **Statement format.** Default: CSV export with a saved column mapping per company (Maybank, CIMB and Public Bank
    business accounts normally export CSV); a PDF-only bank is a later add.
+
+## 11. Builder check 3 (2026-11-13): the Payments 1 plan
+
+The build (one pull request, fourteen tasks, migrations 0590 and 0591, plan `docs/superpowers/plans/2026-11-13-payments-1.md`)
+departs from sections 2 to 10 in the places below. Each is the design for P1 now; where a sentence above says
+otherwise, this section wins. Each ruling says what it costs if it was the wrong call. Payments 2 (statement import,
+cash through Bookings) is not part of it.
+
+### 11.1 Deviations from the design and the survey
+
+1. **Payments are off until an Admin switches them on** (`payment_settings.enabled`, which needs one active bank or
+   DuitNow method). The design has the generator run for every active subscription; on rollout that would invoice and
+   message every customer of every company with the Subscriptions package, including companies that collect money
+   another way. *If wrong:* one extra switch per company before invoices start.
+2. **No QR image in P1.** The `qr` method carries the DuitNow ID and name as text; there is no outbound image
+   anywhere (Telegram send is text, WhatsApp is plain text), and adding it is media and storage work. *If wrong:*
+   customers who prefer to scan must type the DuitNow ID, which any Malaysian bank app accepts (see 11.3).
+3. **Every payment answer is a facts-only reply**, not just the instructions: status and claim replies are the facts as
+   written in English or Malay (`AgentContext.locale` from the message language), so the bot can never say "received"
+   without a `payments` row. A turn that asks for payment information replies with the payment facts, preceded by what
+   the same turn's other tasks wrote and committed (a booking, a ticket, a sign-up request, an order draft), stated
+   first; that turn's other reads are dropped and no model is called. Facts that can now be sent word for word (the
+   sign-up read-back, phone invalid, try later, the ticket cancel question, the draft order) were reworded to speak to
+   the customer. *If wrong:* stiffer wording, and a read asked together with a payment question needs a second message.
+4. **Cash through Bookings is wholly Payments 2** (`choose_cash`, `booking_types.collects_payment`,
+   `bookings.invoice_id`, Collect cash), as the programme split says; P1 keeps the `cash` method kind, the
+   `cash_pending` status and `source 'cash'` so P2 adds no rewrite. Meanwhile staff record cash with Mark paid (method
+   Cash). *If wrong:* none for P1 users.
+5. **Only subscription invoices are generated.** Orders stay cash on delivery with `orders.payment_status`; the
+   design's "an order becomes an invoice" waits for a later change. *If wrong:* an order paid by transfer is not
+   tracked here.
+6. **Reference format `XXXX-XXC` with no company prefix** (section 5 lists a prefix on the method; the reference
+   belongs to the invoice, and a prefix lengthens what customers type into a 20-character bank reference field). *If
+   wrong:* a prefix column can be added later without changing existing references.
+7. **One payment per invoice and an append-only ledger, no undo in P1.** Short and over payments become P2 statement
+   exceptions, not payments. *If wrong:* a wrong Mark paid needs the operator fix in `docs/RUNBOOK.md`, section
+   "Payments".
+8. **The optional sign-up email is asked only on WhatsApp and only when payments are on** (owner default 10.1 is about
+   WhatsApp-only customers; Telegram is already a proactive channel). *If wrong:* a Telegram customer who leaves
+   Telegram has no email fallback.
+9. **Quiet hours (21:00 to 09:00), one reminder per contact per day, and the reminder language from `contacts.locale`
+   are constants.** *If wrong:* a company wanting other hours needs a code change.
+10. **`payment_agent` is switched on by 0591 wherever `subscription_agent` is on, but offered to the classifier and
+    planner only while the company's payments are on** (`payment_settings.enabled`, read every turn in
+    `load_context`, never cached; final review ruling I5). With payments off, "how do I pay?" goes to the agents that
+    answered it before (knowledge, orders, invoices) and no payment prompt rule (the dispute escalation included) is
+    told; the agent's own "payment details aren't set up" answer stays as the backstop for a turn that races a
+    switch-off. *If wrong:* a company that takes payments its own way gets no payment answers until it switches
+    payments on.
+11. **Staff "Start subscription" stays as an override.** It gives the opening invoice its first period (the new start
+    to the new renewal date) and leaves it open and payable; paying it later only records the payment. Opening
+    invoices are due `lead_days` after issue; a pending subscription whose customer said they paid is not expired;
+    expiry and cancellation void the open invoices of the periods that will not run, the opening invoice included
+    (the running period's invoice stays owed). *If wrong:* staff void an invoice by hand after a manual start.
+12. **The live (contact, plan) rule is an advisory lock and a 409 in `create_subscription`, not a unique index**
+    (onboarding follow-up 3): the linking service's `_UNIQUES` cannot express a status list, and a unique index would
+    refuse links between two holders of one plan. *If wrong:* a link can still merge two contacts that each hold the
+    plan; staff cancel one.
+13. **Read-only members do not see Payments** ("Admin and staff" in the design; financial data).
+14. **Survey corrections.** `invoices` matches section 2; its RLS comes from the 0110 loop and its grants from 0100;
+    `GET /console/v1/invoices` returned `amount` as a float (now a decimal string); the invoice agent's download-link
+    route is removed with the action; `tests/test_contact_linking_schema.py:374` pinned 0581; the onboarding design's
+    "approve creates the first invoice" is now true only with payments on; the golden runner seeds Telegram chats
+    only, so WhatsApp-only behaviour (the sign-up email, reminders) is covered by unit and job tests, not golden
+    cases.
+
+### 11.2 Rulings made during the build
+
+These came out of the per-task reviews and are in the code and tests. Each costs a small change if the owner
+disagrees.
+
+1. **Check character.** The reference's check character is a weighted mod-31 sum (weights 2 and 1, the doubled value
+   counted as 2x mod 31), not the textbook Luhn fold, which cannot catch every single wrong character in base 31. It
+   catches every single wrong character and every adjacent swap. Nothing in the database depends on it beyond the
+   pattern.
+2. **A cancelled subscription's open invoice can still be marked paid, and only the payment is recorded.** Money that
+   arrived must be recordable. The subscription is not touched (no activation, no resume, no new dates; a
+   `payment_recorded` event with `recorded_only` goes on its timeline). Nothing is un-cancelled or un-voided; staff
+   re-subscribe the customer by hand if they come back.
+3. **A subscription is suspended for non-payment at most once per invoice.** If staff resume it while the invoice
+   stays overdue, the next run does not pause it again for that invoice (a later overdue invoice still can).
+4. **Paused-unpaid subscriptions are not renewed while paused.** Paying lifts the pause and gives a fresh period from
+   the payment day; the periods that would have run during the pause are never invoiced.
+5. **A period is invoiced only if it starts within `lead_days`** (and after now). A worker outage longer than
+   `lead_days` across a renewal means that period is never invoiced; the same rule stops switching payments on from
+   billing a period that is already running. Follow-up: a staff-visible "unbilled periods" check.
+6. **Zero-price subscriptions get no invoice** (a payment must be more than zero), and a free sign-up that staff
+   approve gets the wording without an invoice.
+7. **Reminder email is built at send time** with the day's date, has its own closing line (an email reply goes to a
+   sender nobody reads, so it does not say "reply here"), is dropped after 48 hours (`STALE_AFTER`, never sent late)
+   and waits for 09:00 in quiet hours. The Replies Off rule that stops booking reminder mail also stops payment
+   reminder mail (`customers_remindable` is false for a company with Customer support).
+8. **The planner's `escalate` for a disputed or double charge now survives plan validation** (`plan_rules.py`) for
+   companies with `payment_agent`; before, an account intent with no task was turned into a clarifying question.
+9. **The sign-up email is asked after the phone** and its ask discloses where the address is kept: "We keep it on your
+   contact record to send you messages about your plan and bookings." This is a deliberate departure from the plan's
+   copy, because booking mail also uses the address. The shared sign-up data note ("We keep your name and phone number
+   ...") was not changed (owner decision, still open in `docs/CUSTOMER_BOT_RETEST.md`).
+10. **Payments settings are an in-page view** (`/payments?view=settings`, `/portal/payments?view=settings`), visible to
+    Admin and staff, read-only for staff; there are no separate routes.
+11. **The invoice agent lost its download link**, so `INVOICE_SIGNING_SECRET` is now unused (a chore to remove it).
+
+### 11.3 Open question for the owner
+
+1. **DuitNow QR image.** Your clients are paid by DuitNow QR. P1 shows the DuitNow ID as text and does not send the QR
+   picture (deviation 2). Sending the picture on Telegram is a follow-up of about one task (upload in Payments
+   settings, `sendPhoto` in delivery); WhatsApp needs the media phase. Decided 2026-11-13: it is a follow-up right
+   after P1, text first.

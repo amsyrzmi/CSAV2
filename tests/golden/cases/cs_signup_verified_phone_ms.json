@@ -78,7 +78,7 @@
         "agent_errors": [],
         "escalations": 0,
         "compose_sees": [
-          "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Ask the customer to confirm, and file nothing yet.",
+          "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is that right? Reply yes to sign up. Nothing is filed until you do.",
           "Malay register"
         ],
         "model_never_sees": [
@@ -122,7 +122,7 @@
           "done": true
         },
         "ComposeOut": {
-          "reply": "Dah terima pendaftaran Plan Besar awak. Team akan semak dan bagitahu apa seterusnya. Belum aktif lagi, dan takde caj apa-apa."
+          "reply": "Dah terima pendaftaran Plan Besar awak. Team akan semak dan bagitahu apa seterusnya. Belum aktif lagi."
         },
         "ReviewOut": {
           "ok": true
@@ -138,7 +138,7 @@
         "agent_errors": [],
         "escalations": 0,
         "compose_sees": [
-          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet and nothing has been charged."
+          "Your sign-up for Plan Besar was received. The team will review it and tell you what happens next. Nothing is active yet."
         ],
         "model_never_sees": [
           "0123456789",

@@ -1,14 +1,19 @@
 """Customer sign-up: file a request, staff approve or decline it, or the plan approves it at once.
 
-An approval creates one `pending` subscription (price and currency are the plan's at that moment);
-staff start it later, or it expires. Nothing here charges, and the typed sign-up phone stays on the
-request: it is never written to the contact, so a typed number can never link its owner's contact
-to the person who typed it. Every function takes a connection inside a tenant transaction.
+An approval creates one `pending` subscription (price and currency are the plan's at that moment)
+and, while the company's payments are on, its opening invoice in the same transaction; staff start
+it later, a payment of that invoice starts it, or it expires. Nothing here charges, and the typed
+sign-up phone stays on the request: it is never written to the contact, so a typed number can never
+link its owner's contact to the person who typed it. An email given at sign-up (for payment
+reminders) is stored on the request in lower case and fills only the contact's
+`customer_given_email`, and only while the contact has no address at all: never its `email`, which
+identity and linking trust. Every function takes a connection inside a tenant transaction.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -16,10 +21,12 @@ from fastapi import HTTPException
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
+from csa.bookings.notify import clean_address
 from csa.core import db
 from csa.core.phone import normalise_my_phone
+from csa.payments.invoices import issue_opening_invoice
 from csa.subscriptions.contracts import CustomerRef, SignupOut, SignupPage
-from csa.subscriptions.service import record_event
+from csa.subscriptions.service import holds_plan, lock_contact_plan, record_event
 
 Conn = AsyncConnection[Any]
 
@@ -83,22 +90,6 @@ async def list_signups(
     return SignupPage(items=items, next_cursor=items[-1].id if len(rows) > limit else None)
 
 
-async def _lock_contact_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> None:
-    """Serialise everything that can give one contact a live subscription on one plan.
-
-    Filing and approving both call this first, before any request row is inserted or locked, so
-    they always take the locks in the same order (this advisory lock, then the request row) and
-    cannot deadlock. A decline takes only the row lock, so it cannot be part of a cycle. The lock
-    is held to the end of the transaction and is re-entrant, so an auto-approval inside
-    `file_signup` takes it again at no cost.
-    """
-    await db.q.execute(
-        "subscriptions/advisory_lock.sql",
-        {"key": f"subscriptions:signup:{client_id}:{contact_id}:{plan_code}"},
-        conn=conn,
-    )
-
-
 async def _audit(
     conn: Conn, actor_user_id: UUID | None, client_id: UUID, action: str, request_id: UUID
 ) -> None:
@@ -110,15 +101,6 @@ async def _audit(
     )
 
 
-async def _holds_plan(conn: Conn, client_id: UUID, contact_id: UUID, plan_code: str) -> bool:
-    held = await db.q.fetch_one(
-        "subscriptions/signup_live_subscription.sql",
-        {"client_id": client_id, "contact_id": contact_id, "plan_code": plan_code},
-        conn=conn,
-    )
-    return held is not None and bool(held["live"])
-
-
 async def file_signup(
     conn: Conn,
     client_id: UUID,
@@ -126,16 +108,26 @@ async def file_signup(
     plan_code: str,
     full_name: str,
     phone: str,
+    *,
+    email: str | None = None,
 ) -> SignupFiled:
     """File one pending request for the contact, or say why none was filed.
 
     A repeat returns the open request (`exists`). An archived or unknown plan is `unknown_plan`,
     one closed to sign-ups is `closed`, and a live subscription on the plan is `has_plan`; none of
     them writes anything. A plan that approves by itself is approved in this same transaction.
+    `email` (checked as a booking's address is, 422 `invalid_email` otherwise) is stored on a new
+    request and fills the contact's empty `customer_given_email`; a repeat changes neither.
     """
     typed = normalise_my_phone(phone)  # cheap, and a no-op on a number already normalised
     if typed is None:
         raise HTTPException(422, "invalid_phone")
+    given: str | None = None
+    if email is not None:
+        address = clean_address(email)
+        if address is None:
+            raise HTTPException(422, "invalid_email")
+        given = address.lower()
     name = full_name.strip()
     if not 1 <= len(name) <= MAX_NAME:
         raise HTTPException(422, "invalid_name")
@@ -146,8 +138,8 @@ async def file_signup(
         return SignupFiled(None, False, "unknown_plan")
     if not plan["is_signup_open"]:
         return SignupFiled(None, False, "closed")
-    await _lock_contact_plan(conn, client_id, contact_id, plan_code)
-    if await _holds_plan(conn, client_id, contact_id, plan_code):
+    await lock_contact_plan(conn, client_id, contact_id, plan_code)
+    if await holds_plan(conn, client_id, contact_id, plan_code):
         return SignupFiled(None, False, "has_plan")
     inserted = await db.q.fetch_one(
         "subscriptions/signup_insert.sql",
@@ -157,6 +149,7 @@ async def file_signup(
             "plan_code": plan_code,
             "full_name": name,
             "phone": typed,
+            "email": given,
         },
         conn=conn,
     )
@@ -170,6 +163,12 @@ async def file_signup(
             raise HTTPException(409, "signup_changed")
         return SignupFiled(await get_signup(conn, client_id, existing["id"]), False, "exists")
     request_id: UUID = inserted["id"]
+    if given is not None:
+        await db.q.execute(
+            "subscriptions/contact_given_email_fill.sql",
+            {"client_id": client_id, "contact_id": contact_id, "email": given},
+            conn=conn,
+        )
     if plan["signup_mode"] == "auto":
         return SignupFiled(await auto_approve(conn, client_id, request_id), True, "filed")
     return SignupFiled(await get_signup(conn, client_id, request_id), True, "filed")
@@ -188,11 +187,14 @@ async def _approve(
     A staff approval racing an auto-approval (or a second staff approval) gives exactly one
     subscription and one 409. The contact and plan of a request never change, so they are read
     first (no lock), the per-(contact, plan) advisory lock is taken, and only then the request row
-    is locked: the same order `file_signup` uses. A contact who already holds the plan by then
-    (added by hand, or approved through another request) is 409 `signup_has_plan`.
+    is locked: the same order `file_signup` and a subscription added by hand use. A contact who
+    already holds the plan by then (added by hand, or approved through another request) is 409
+    `signup_has_plan`. While the company's payments are on, the subscription's opening invoice is
+    issued in this same transaction (a failure later rolls both back); the returned request then
+    carries its `invoice_reference`.
     """
     seen = await get_signup(conn, client_id, request_id)
-    await _lock_contact_plan(conn, client_id, seen.contact.id, seen.plan_code)
+    await lock_contact_plan(conn, client_id, seen.contact.id, seen.plan_code)
     locked = await db.q.fetch_one(
         "subscriptions/signup_lock.sql",
         {"client_id": client_id, "request_id": request_id},
@@ -202,7 +204,7 @@ async def _approve(
         raise HTTPException(404, "signup_not_found")
     if locked["status"] != "pending":
         raise HTTPException(409, "signup_not_pending")
-    if await _holds_plan(conn, client_id, locked["contact_id"], locked["plan_code"]):
+    if await holds_plan(conn, client_id, locked["contact_id"], locked["plan_code"]):
         raise HTTPException(409, "signup_has_plan")
     # The plan as it is now, shared-locked so an archive or a close cannot land after this read.
     plan = await db.q.fetch_one(
@@ -249,6 +251,7 @@ async def _approve(
         to_status="pending",
         payload={"plan": locked["plan_code"], "request_id": str(request_id)},
     )
+    await issue_opening_invoice(conn, client_id, subscription_id, now=datetime.now(UTC))
     await _audit(conn, actor_user_id, client_id, "subscriptions.signup.approved", request_id)
     return await get_signup(conn, client_id, request_id)
 
@@ -260,7 +263,8 @@ async def approve_signup(
 
     409 `signup_not_pending` unless it is pending, 409 `plan_not_open` unless the plan is active
     and open, 409 `signup_has_plan` when the contact already holds a live subscription on the plan;
-    otherwise one pending subscription at the plan's price now.
+    otherwise one pending subscription at the plan's price now (and its opening invoice while
+    payments are on).
     """
     return await _approve(conn, client_id, request_id, via="staff", actor_user_id=actor_user_id)
 

@@ -1,0 +1,102 @@
+{
+  "id": "cs_pay_dispute_handoff_en",
+  "matrix": "Payments: a customer who says they were charged twice is handed to a person",
+  "description": "A disputed double charge: the planner returns no tasks and reply_strategy escalate (the payment rule), so nothing is read or noted, one escalation is opened with a staff note, and the reply says a team member will check it.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "You charged me twice for my plan this month, I want the extra charge back",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "en",
+          "sentiment": "frustrated",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "payment_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [],
+          "reply_strategy": "escalate"
+        },
+        "HandoffOut": {
+          "reply": "Sorry about that. I've passed this to a team member, who will check the charges and reply here.",
+          "staff_note": "The customer says they were charged twice for their plan this month and wants the extra charge back. Nothing was checked or changed.",
+          "gap_topic": null
+        }
+      },
+      "expect": {
+        "agents": [
+          "escalation_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "reply_contains": [
+          "team member"
+        ],
+        "reply_excludes": [
+          "refund",
+          "KDMW-7AS"
+        ],
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "escalations": 1,
+        "escalation_reason": "plan_escalated",
+        "escalation_note_contains": [
+          "charged twice"
+        ],
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}
