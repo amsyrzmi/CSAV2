@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 from uuid import UUID
 
 import boto3
+import httpx
 import pytest
+import requests
+from botocore.exceptions import ClientError
 from csa.core.settings import Settings
 from csa.storage.factory import Stores
 from csa.storage.local import LocalObjectStore
@@ -63,7 +67,8 @@ def test_smoke_passes_against_moto_and_prints_no_secrets(
         )
         client.create_bucket(Bucket=BUCKET)
 
-        code = storage_smoke.run(s3_settings())
+        with moto_http() as http:
+            code = storage_smoke.run(s3_settings(), http=http)
 
         leftovers = client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
     output = capsys.readouterr().out
@@ -100,6 +105,10 @@ def test_smoke_checks_a_local_training_store(
     assert code == 0
     assert any(line.startswith("PASS training: put then read") for line in lines)
     assert not [line for line in lines if line.startswith(("PASS kb", "PASS hr"))]
+    for check in MULTIPART_CHECKS:
+        assert any(line.startswith(f"PASS training: {check}") for line in lines), check
+    # The gateway serves local files itself: there is no presigned link to try.
+    assert not [line for line in lines if "presigned" in line]
     assert not [path for path in root.rglob("*") if path.is_file()]
 
 
@@ -178,3 +187,184 @@ def test_failed_checks_print_no_secrets_or_payload(capsys: pytest.CaptureFixture
     for secret in (FAKE_KEY_ID, FAKE_SECRET, storage_smoke.PAYLOAD.decode("ascii")):
         assert secret not in captured.out
         assert secret not in captured.err
+
+
+MULTIPART_CHECKS = (
+    "multipart: start, three pieces, complete",
+    "multipart: read back",
+    "multipart: abort an upload",
+    "multipart: cleanup leaves nothing behind",
+)
+
+
+def moto_http() -> httpx.Client:
+    """An httpx client whose requests reach moto: moto answers ``requests`` calls, not httpx."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        answer = requests.request(
+            request.method, str(request.url), headers=dict(request.headers), timeout=10
+        )
+        return httpx.Response(answer.status_code, headers=answer.headers, content=answer.content)
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_smoke_runs_a_multipart_round_trip_and_a_presigned_range_on_moto(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[httpx.Request] = []
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        with moto_http() as http:
+            http.event_hooks["request"].append(seen.append)
+            code = storage_smoke.run(s3_settings(), http=http)
+
+        leftovers = client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+        uploads = client.list_multipart_uploads(Bucket=BUCKET).get("Uploads", [])
+    output = capsys.readouterr().out
+    lines = result_lines(output)
+
+    assert code == 0, output
+    assert leftovers == [] and uploads == []
+    assert not [line for line in lines if line.startswith("FAIL ")]
+    for check in (*MULTIPART_CHECKS, "presigned range answers 206"):
+        assert any(line.startswith(f"PASS training: {check}") for line in lines), check
+    # Multipart is the training store's alone.
+    for store in ("kb", "hr"):
+        assert not [line for line in lines if line.startswith(f"PASS {store}: multipart")]
+    # One ranged GET of the training object, through the presigned link.
+    assert len(seen) == 1
+    assert seen[0].headers["Range"] == "bytes=0-15"
+    assert "/training/" in seen[0].url.path
+    # Content-free: no key, link, signature, bucket or object name.
+    for secret in (FAKE_KEY_ID, FAKE_SECRET, BUCKET, "http", "Signature", "X-Amz", ".bin"):
+        assert secret not in output, secret
+
+
+class WrongRangeStore(S3ObjectStore):
+    """Hands out a presigned link to another object: the range check must fail."""
+
+    def presigned_playback(
+        self, tenant: UUID, name: str, ttl_seconds: int, media_type: str, file_name: str
+    ) -> str | None:
+        return super().presigned_playback(tenant, "missing.bin", ttl_seconds, media_type, file_name)
+
+
+def test_smoke_fails_a_presigned_range_that_is_not_206(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = WrongRangeStore(BUCKET, "training", client)
+        with moto_http() as http:
+            passed = storage_smoke._check_multipart("training", store, UUID(int=2), http)
+        leftovers = client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+    output = capsys.readouterr().out
+    assert passed is False
+    # moto answers a link to a missing object 403 (S3 itself answers 403 or 404).
+    assert re.search(
+        r"^FAIL training: presigned range answers 206 \(answered 40[34], expected 206\)$",
+        output,
+        flags=re.MULTILINE,
+    )
+    assert leftovers == []
+    assert "http" not in output and BUCKET not in output
+
+
+class AbortDeniedStore(S3ObjectStore):
+    """Today's application key, before the TrainingMultipart statement: abort is AccessDenied."""
+
+    def abort_upload(self, tenant: UUID, name: str, upload_id: str | None) -> None:
+        error = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": f"{FAKE_KEY_ID} {FAKE_SECRET}"}},
+            "AbortMultipartUpload",
+        )
+        raise self._error("abort", error) from error
+
+
+def test_cleanup_removes_the_object_even_when_an_abort_is_denied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = AbortDeniedStore(BUCKET, "training", client)
+        monkeypatch.setattr(
+            storage_smoke, "build_stores", lambda settings: Stores(kb=None, hr=None, training=store)
+        )
+        with moto_http() as http:
+            code = storage_smoke.run(s3_settings(), http=http)
+        leftovers = client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+        uploads = client.list_multipart_uploads(Bucket=BUCKET).get("Uploads", [])
+    output = capsys.readouterr().out
+
+    assert code == 1
+    # The completed ~10 MiB object and the small object are gone; only the upload this key may
+    # not abort is left, for the bucket's lifecycle rule.
+    assert leftovers == []
+    assert len(uploads) == 1
+    assert (
+        "FAIL training: multipart: abort an upload (object storage abort failed: AccessDenied)"
+    ) in output
+    assert re.search(
+        r"^FAIL training: multipart: cleanup leaves nothing behind \(left behind: an open upload "
+        r"\(object storage abort failed: AccessDenied\)\)$",
+        output,
+        flags=re.MULTILINE,
+    )
+    # The checks after the failed abort still ran.
+    assert "PASS training: presigned range answers 206" in output
+    for secret in (FAKE_KEY_ID, FAKE_SECRET, BUCKET, "http", "Signature", "X-Amz", ".bin"):
+        assert secret not in output, secret
+
+
+class DeleteDeniedStore(AbortDeniedStore):
+    """Neither abort nor delete is allowed: the cleanup names both, and still tries both."""
+
+    deletes = 0
+
+    def delete(self, tenant: UUID, name: str) -> None:
+        type(self).deletes += 1
+        error = ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+        raise self._error("delete", error) from error
+
+
+def test_cleanup_tries_every_removal_and_names_what_is_left(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = DeleteDeniedStore(BUCKET, "training", client)
+        with moto_http() as http:
+            passed = storage_smoke._check_multipart("training", store, UUID(int=4), http)
+    output = capsys.readouterr().out
+    assert passed is False
+    assert DeleteDeniedStore.deletes == 1
+    line = next(line for line in output.splitlines() if "cleanup leaves nothing" in line)
+    assert line.startswith("FAIL training: ")
+    assert "an open upload (object storage abort failed: AccessDenied)" in line
+    assert "the object (object storage delete failed: AccessDenied)" in line
+    assert BUCKET not in output and ".bin" not in output

@@ -866,8 +866,8 @@ assistant chat and tab-origin cards stay English.
 A turn with `page_context` is planned by one model call that returns exactly one typed
 proposal: `answer`, `navigate`, `directory_lookup`, `email_compose`, `email_reply`,
 `email_team`, `inbox_summary`, `training_submit`, `inbox_decision`, `clarification`, the
-people actions or `product_stock_read`. The planner only proposes; role, package, switch and
-record-version gates are enforced afterwards by the turn service and the proposal
+people actions, `product_stock_read` or `training_ask`. The planner only proposes; role, package,
+switch and record-version gates are enforced afterwards by the turn service and the proposal
 registry, so a wrong plan can at worst produce a refused turn or a card the user
 declines. It runs only when `WORKSPACE_ASSISTANT_ENABLED=true` (default false; the
 gateway then builds the planner from `GROQ_API_KEY` and `GROQ_MODEL`). Without a
@@ -931,6 +931,29 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   connected TikTok Shop, no match, or no package gives a plain `answer`. The turn row stores
   the action as `answer` (the action column's check list is set by migration 0521); the stored
   result keeps `product_stock_read`.
+- `training_ask` (`{question, item?, item_id?}`) answers a question about what one training
+  video says, from its stored transcript, with a `TrainingAnswerResult`: `{action:
+  "training_ask", markdown, sources: [{item_id, title, start_seconds}]}` (at most 5 sources).
+  It needs the Training library tab (its role rule, then the `training_library` package;
+  otherwise the locked-tab answer). The server finds the video in the caller's company only: the
+  picked `item_id`, else every one of the `item` words in the title (case-insensitive), else the
+  open record `{kind: "training_item", id}`, else the company's only ready video; several give a
+  `clarification` with up to 5 videos (option value: an item id). Only a `ready` video with
+  speech is answered from; a manager is told when a video is still being processed. Anyone else
+  gets the answer for a missing video: "I couldn't find that training video." when asking by id
+  (the open record or a picked option), "I couldn't find a training video called ..." when
+  asking by title words, and "There is no ready training video in the Training library yet."
+  (`training_none`) when nothing names a video and the company has no ready video with speech
+  (in Malay: "Belum ada video latihan yang sedia dalam Training library."). A transcript of at
+  most 40,000 characters is sent whole as `[mm:ss] text` lines; a longer one sends the 8
+  windows nearest the question (embedded with the gateway's knowledge base embedder; the
+  windows must have been made by the same model, otherwise "I can't search this video right
+  now") in time order after the stored summary. The model's cited seconds are kept only when
+  they fall inside a line that was sent, snapped to that line's start; `markdown` ends with
+  "From *title*, at 03:15 and 12:40" in the turn's language. An answer that the video does not
+  cover has no sources. Transcripts are never in the knowledge base the customer bot searches.
+  The turn row stores the action as `answer`; the stored result keeps `training_ask`. The open
+  record's summary for the planner gives the title, the length and whether a transcript exists.
 - A failure of the email-drafting model (invalid output, provider error or timeout) on an
   `email_compose`, `email_reply` or `email_team` turn returns 503
   `email_model_unavailable`; nothing is drafted or stored.
@@ -1959,18 +1982,20 @@ not make one the booking, its mail and the answer are as without Meet, and the j
 
 ## Training library
 
-A company's own training PDFs: staff list them and open them, tenant admins and the company's HR
+A company's own training PDFs and videos: staff list them and open them, tenant admins and the company's HR
 owner add, edit and remove them, and anyone may ask for a stored summary. The web client is
 `TrainingWorkspace` under `/training` and `/portal/training`. Operations, settings and what is out
 of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key)
 and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
-`docs/console_openapi.json` as `ItemOut`, `ItemList`, `ItemPatch`, `SummaryRequest`, `SummaryOut`
-and `NoSummary`.
+`docs/console_openapi.json` as `ItemOut`, `Processing`, `ItemList`, `ItemPatch`, `SummaryRequest`,
+`SummaryOut`, `NoSummary`, `VideoStart`, `VideoUploadOut`, `PieceOut`, `PlaybackOut`,
+`TranscriptLine` and `TranscriptOut`. Migrations `0600` and
+`0601` add video to the same items and the tables behind it.
 
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
 every role, a platform admin included, gets 403 `package_inactive` until it is activated) and for
 human sessions only: a machine token is refused, as on the KB and HR routes (a machine `POST`,
-`PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
+`PUT`, `PATCH` or `DELETE` gets 403 `machine principal has read-only access` from the console's
 authentication before the route runs; only a machine `GET` reaches the route's 403 `human session
 required`). A platform admin chooses the company with `?client_id=` (400 without it); a member of
 another company is refused (403 with `client_id`, 404 on an item id). An item of another company is
@@ -1980,14 +2005,15 @@ always 404 `training_not_found`, never 403. The file store is the `training` sto
 
 Who may call:
 
-- **Read** (list, file, read a summary, ask for a summary): any member of the company, every role
-  including `read_only`, and a platform admin who chose the company.
-- **Manage** (add, edit, remove, regenerate a summary): a platform admin who chose the company, a
-  tenant admin, and the company's HR owner when that person is a `tenant_staff` member. The HR owner
-  is asked again on every request, so a move takes effect on the next call (see
+- **Read** (list, file, playback, video, transcript, read a summary, ask for a summary): any member
+  of the company, every role including `read_only`, and a platform admin who chose the company.
+- **Manage** (add, edit, remove, regenerate a summary, every video upload route, retry): a platform
+  admin who chose the company, a tenant admin, and the company's HR owner when that person is a
+  `tenant_staff` member. The HR owner is asked again on every request, so a move takes effect on the
+  next call (see
   [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#the-hr-owner-dependency)). `can_manage` on the list
   says which a caller is. A plain staff member gets 403 `training_forbidden`.
-- A `read_only` member is refused every `POST`, `PATCH` and `DELETE` by the console's write rule
+- A `read_only` member is refused every `POST`, `PUT`, `PATCH` and `DELETE` by the console's write rule
   with 403 `write permission required` before the route runs, with one exception: `POST
   /training/items/{id}/summary`. That exemption (`reader_may_post` in `csa/console/access.py`) holds
   only when the matched route is that one and the decoded path is exactly that route with a
@@ -1996,29 +2022,40 @@ Who may call:
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary}`. `view_mode` is `slides` or `document`. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
+| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
 | `POST /training/items` | manage | 201 `ItemOut`. `multipart/form-data` with one part named `file` and no other field, plus the `Idempotency-Key` header (a UUID). Title is the file name without `.pdf` (cut to 120 characters), `view_mode` is `slides` when the first page is landscape (its `/Rotate` counted), else `document`. Step one of the two-step upload, below |
-| `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below |
-| `DELETE /training/items/{id}` | manage | 204. Removes the row, then the file |
-| `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below |
-| `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model |
-| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below |
+| `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below. On a video `title`, `description` and `category` work in every state; `view_mode` is 422 `training_not_pdf` and nothing in that request is applied |
+| `DELETE /training/items/{id}` | manage | 204. Removes the row (a video's pieces, job, transcript and search windows go with it, in any state), then the file or the unfinished upload and the store's multipart upload. The video's processing-usage row stays, so deleting does not give its seconds back |
+| `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below. A video is 404 `training_not_found` here |
+| `GET /training/items/{id}/playback` | read | `PlaybackOut` `{url, expires_at, media_type}` for a video: where to play it from for the next 15 minutes (ask again after `expires_at`). On S3 `url` is a presigned inline GET under the company's own prefix (`private, no-store`, never log or store it); on the local store it is the gateway's `/console/v1/training/items/{id}/video` (with `?client_id=` for a platform admin). `media_type` is `video/mp4` (a `.mov` plays as that) or `video/webm`. A PDF, an item of another company, and for a reader any video that is not `ready` are 404 `training_not_found`; so is a manager's video with no file to play (still `uploading`, or failed for a reason in the file itself, whose file the worker deleted). The answer is `Cache-Control: private, no-store`. See [The video route](#the-video-route) |
+| `GET /training/items/{id}/video` | read | The video itself, local store only (404 `training_not_found` on S3, where `playback` gives the URL), answering HTTP Range. See [The video route](#the-video-route) |
+| `GET /training/items/{id}/transcript` | read | `TranscriptOut` `{language, speech, segments}`; `segments` are `{start_ms, end_ms, text}` in time order. `speech` is `speech`, `no_speech` or `no_audio` and `language` the transcript's language, both `null` until transcribing has decided them. A reader gets it for a `ready` video only (404 otherwise); a manager gets it in every state, the lines made so far while the video is transcribing. A silent video has no segments. A PDF is 404. `Cache-Control: private, no-store` |
+| `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model. Works for a video as for a PDF; a video that is not `ready` is 404 for a reader, and a silent or failed video answers `{"summary": null}` to a manager |
+| `POST /training/videos` | manage | 201 `VideoUploadOut`. Starts a video upload; see [Video uploads](#video-uploads) |
+| `PUT /training/videos/{id}/pieces/{n}` | manage | 200 `PieceOut` `{number, received}`. One piece, raw `application/octet-stream` with `X-Piece-SHA256` |
+| `GET /training/videos/{id}/upload` | manage | `VideoUploadOut`: the plan and the piece numbers already stored, for resuming |
+| `POST /training/videos/{id}/complete` | manage | 200 `ItemOut` with `status: uploaded`. No body. Idempotent |
+| `POST /training/items/{id}/retry` | manage | 200 `ItemOut`. No body. Only for a `failed` video whose `failure` is one worth trying again (`training_transcription_unavailable`, `training_summary_unavailable`, `training_storage_unavailable`): its processing goes back in the queue at the stage that failed, with its attempts reset, and the item's `status` becomes that stage (`transcribing` or `summarising`) with `failure` `null`. Any other item is 409 `training_retry_not_allowed` (a video that is not failed, or failed for a reason in the file itself, which needs a new upload). Works while `TRAINING_VIDEO_ENABLED` is off; the training worker picks the job up once it runs. See [Video processing](#video-processing) |
+| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below. On a video it is 409 `training_summary_automatic` (a video's summary is made when it is processed), after the 403 for `regenerate: true` from a non-manager and the 404 for an item the caller cannot see |
 
 ### Limits
 
+The PDF limits first; the video limits are in the table under [Video uploads](#video-uploads), and
+PDFs and videos are counted apart.
+
 | What | Limit |
 |---|---|
-| One file | 25 MB (`25 * 1024 * 1024` bytes); the whole body is bounded at that plus 64 KB of multipart framing |
+| One PDF | 25 MB (`25 * 1024 * 1024` bytes); the whole body is bounded at that plus 64 KB of multipart framing |
 | Pages in one PDF | 300 (at least one) |
-| Items in one company | 300 |
-| Total size of one company's items | 500 MB (counts `byte_size` of the rows) |
+| PDFs in one company | 300 |
+| Total size of one company's PDFs | 500 MB (counts `byte_size` of the PDF rows) |
 | `title` | 1 to 120 characters after trimming; no control characters |
 | `description` | 0 to 1000 characters after trimming; line breaks and tabs allowed, no other control characters |
 | `category` | 0 to 60 characters after trimming; no control characters; free text |
 | Text sent for a summary | the first 24,000 characters of the PDF's text |
 | `summary` / `key_points` stored | summary 1 to 1500 characters; at most 6 points of 1 to 200 characters |
 
-The four upload limits are constants in `csa/training/limits.py`. The count and byte limits are
+The PDF limits are constants in `csa/training/limits.py`. The count and byte limits are
 checked under the company's lock, so two uploads racing for the last slot give one 201 and one 409.
 
 ### Two-step upload
@@ -2059,6 +2096,97 @@ In this order. A refusal stores nothing and writes no row.
 6. Under the company lock: the idempotency key, then the item and byte limits, then the write and
    the row.
 
+### Video uploads
+
+A video is sent in pieces, each its own request, so a dropped connection costs one piece and an
+upload can resume. While `TRAINING_VIDEO_ENABLED` is off (the default) the four video routes answer
+503 `training_video_unavailable`; without a training store they answer 503
+`training_storage_unavailable` as the other routes do. Abort an upload with `DELETE
+/training/items/{id}` (it works in every state).
+
+1. `POST /training/videos` with `VideoStart` `{file_name, byte_size, media_type}` (name 1 to 255
+   characters, `byte_size` at least 1, `media_type` 1 to 100 characters) and a fresh
+   `Idempotency-Key` UUID. In this order: the name passes the name rule (422
+   `training_name_invalid`), the extension is `.mp4`, `.m4v`, `.mov` or `.webm` in any case (422
+   `training_not_video`), `byte_size` is at most 500 MiB (413 `training_file_too_large`); then under
+   the company lock: manage (403), the key (the same key with another name, size or media type is
+   409 `training_key_conflict`; the same values answer 201 with the same upload and what it has
+   received), at most 50 videos and 5 GiB of video for the company, counting the declared size of
+   every upload still open (409 `training_library_full`), and at most 2 uploads open at once (409
+   `training_uploads_in_progress`). The answer is `VideoUploadOut` `{item, piece_size,
+   piece_count, received}`: the item is `uploading` with the file name without its extension as its
+   title, `piece_size` is 8 MiB and `piece_count` is `byte_size` divided by it, rounded up.
+   `received` is `[]`. The file is stored under a generated name (`<uuid>.<ext>`); the uploaded name
+   is data only, and `media_type` counts for the key only (the stored type follows the extension).
+2. `PUT /training/videos/{id}/pieces/{n}` for each piece, in any order and up to 4 at once, with
+   the raw bytes as an `application/octet-stream` body and `X-Piece-SHA256` set to the piece's
+   SHA-256 in hex. Checked in this order: manage (403), the item is a video of the company (404) and
+   still uploading (409 `training_upload_closed`); `n` is in `1..piece_count`, the hash header is
+   64 hex characters and `Content-Length` is exactly the piece's size, `piece_size` for every piece
+   but the last and the remainder for the last (422 `training_piece_invalid`, before any byte of the
+   body is read); a free slot (503 `training_busy` with `Retry-After: 2` when the gateway already
+   holds 4 pieces; send it again then); the body is exactly that size (422
+   `training_piece_invalid`), its SHA-256 matches the header (422 `training_piece_corrupt`, nothing
+   written) and piece 1 starts as its extension says: an ISO-BMFF `ftyp` box (bytes 4 to 8) for
+   `.mp4`, `.m4v` and `.mov`, the EBML header `1A 45 DF A3` for `.webm` (422 `training_not_video`).
+   The piece is written at the offset its number gives and recorded. The same piece with the same
+   hash again answers 200 without writing; a different hash replaces it. A piece for an upload that
+   is removed or completed while it is sent is 409 `training_upload_closed` and leaves no file; once
+   the removal has committed the item is gone and a piece is 404 `training_not_found`. The answer is
+   `PieceOut` `{number, received}`, `received` being how many pieces are stored now.
+3. `GET /training/videos/{id}/upload` answers `VideoUploadOut` with the numbers stored so far, to
+   resume after a reload: send the others. Past `uploading` every number is listed.
+4. `POST /training/videos/{id}/complete` (no body) under the company lock: every piece is stored
+   with its exact size and the sizes add up to `byte_size` (else 409 `training_piece_missing`). The
+   store then checks every piece's bytes against its hash and publishes the file (the S3 upload is
+   completed, the local file renamed). A piece whose stored bytes no longer match is forgotten and
+   the answer is 409 `training_piece_missing`: ask `GET .../upload`, send the pieces it no longer
+   lists, and complete again. On success the item becomes `uploaded` with its `byte_size` and a
+   SHA-256 of the piece hashes (each piece's hex SHA-256 in order, joined by line breaks), the upload
+   and piece records go, and the video is queued for processing (`processing.stage` is
+   `transcribing`). Completing again answers the item. Completion refuses new pieces of that item
+   (409 `training_upload_closed`) and waits for those already being written, so the published file
+   is exactly the recorded pieces.
+
+| What | Limit |
+|---|---|
+| One video | 500 MiB (`500 * 1024 * 1024` bytes) |
+| Videos in one company | 50, a refused video's row included until it is removed |
+| Total size of one company's videos | 5 GiB, counting uploads still open at their declared size (PDFs are counted apart) |
+| Uploads open at once in one company | 2 |
+| Piece size | 8 MiB, the last piece the remainder |
+| Pieces one gateway holds at once | 4 |
+
+The limits are constants in `csa/training/limits.py`; the count, byte and open-upload limits are
+checked under the company's lock, so two starts racing for the last slot give one 201 and one 409.
+
+### Video processing
+
+The training worker (`python -m apps.training_worker.main`, one process per deployment) processes a
+completed upload in two stages, transcribing then summarising, one video at a time and at most one
+per company at once, oldest first. A manager sees the progress in `processing` and the outcome in
+`status` and `failure`:
+
+- A failure worth trying again (the speech service, the model or storage did not answer) waits
+  60 seconds times the attempt number and tries again, up to 3 attempts per stage. After the third
+  the video is `failed` with `training_transcription_unavailable`, `training_summary_unavailable` or
+  `training_storage_unavailable`, and `POST /training/items/{id}/retry` starts that stage again. A
+  worker stopped mid-video carries on where it stopped (finished chunks are not sent again) once its
+  heartbeat is 10 minutes old.
+- A refusal of the file itself (`training_video_unreadable`, `training_video_too_long`,
+  `training_video_codec`) fails the video at once and deletes the stored file, so its bytes stop
+  counting against the 5 GiB; the row stays so the manager sees why, and it still counts toward the
+  50 videos until it is removed. It cannot be retried. `training_video_unreadable` is decided by
+  the probe only: an ffmpeg child killed by the OOM killer, or a loudness or chunk pass that fails
+  after the probe accepted the file, is a failure worth trying again, and on S3 a probe that fails
+  while the store holds the full size refuses the file only on the stage's last attempt.
+- At most 5 hours of video per company are processed in any 24 hours. The seconds are booked before
+  the first chunk is sent, and deleting a video does not give them back. A video past the limit
+  waits (`processing.waiting` is `true`) until enough booked time is more than 24 hours old.
+- Every hour the worker removes uploads with no new piece for 24 hours (audit
+  `training.upload_abandoned`, with no actor), aborts storage uploads that have no upload in
+  progress, removes stored files no item keeps, and deletes usage records older than 2 days.
+
 ### Detail codes
 
 Every refusal is `{"detail": "<code>"}`. The web client keeps the code on `ApiError.code` and shows
@@ -2068,18 +2196,27 @@ a plain sentence (see below).
 |---|---|---|
 | 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
 | 403 | `human session required` | A machine token on a `GET` route |
-| 403 | `machine principal has read-only access` | A machine token on `POST`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
-| 403 | `write permission required` | A `read_only` member on `POST`, `PATCH` or `DELETE`, except the summary `POST` |
-| 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit or remove; anyone but a manager sending `regenerate: true` |
-| 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
+| 403 | `machine principal has read-only access` | A machine token on `POST`, `PUT`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
+| 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` |
+| 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit, remove or retry; anyone but a manager sending `regenerate: true` |
+| 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made; a video a reader may not see yet (not `ready`); `playback` or `video` of a manager's video with no file to play; `file` of a video, or `playback`, `video` and `transcript` of a PDF |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |
-| 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company |
-| 413 | `training_file_too_large` | The file is over 25 MB, or the body passes the bound |
+| 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company (PDFs only; videos are counted apart) |
+| 409 | `training_summary_automatic` | `POST .../summary` on a video |
+| 409 | `training_retry_not_allowed` | `POST .../retry` on an item that is not a `failed` video, or one that failed for a reason in the file itself |
+| 409 | `training_uploads_in_progress` | Starting a third video upload while two are open in the company |
+| 409 | `training_upload_closed` | A piece for a video that is no longer uploading (completed, or removed while the piece was sent), or sent while its completion runs |
+| 409 | `training_piece_missing` | Completing before every piece is stored with its size, or a stored piece no longer matches its hash (that piece is forgotten; send it again) |
+| 413 | `training_file_too_large` | The file is over 25 MB, or the body passes the bound; a video over 500 MiB |
 | 413 | `training_upload_invalid` | The multipart headers pass 8 KB |
 | 415 | `training_upload_invalid` | The body is not `multipart/form-data` |
+| 416 | `training_range_not_satisfiable` | `GET .../video` with a range outside the file or several ranges; `Content-Range: bytes */size` |
 | 422 | `training_upload_invalid` | Anything else wrong with the form: no file, two files, another field name, a malformed body |
 | 422 | `training_name_invalid` | The file name fails the name rule above |
-| 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty |
+| 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty; also `view_mode` in a `PATCH` of a video |
+| 422 | `training_not_video` | A video's extension is not `.mp4`, `.m4v`, `.mov` or `.webm`, or its first piece does not start as that container does |
+| 422 | `training_piece_invalid` | A piece number outside `1..piece_count`, an `X-Piece-SHA256` that is not 64 hex characters, or a `Content-Length` or body that is not exactly the piece's size |
+| 422 | `training_piece_corrupt` | A piece's bytes do not match its `X-Piece-SHA256`; nothing is written |
 | 422 | `training_pdf_damaged` | The PDF cannot be read, has no pages, or its page tree is broken or hostile |
 | 422 | `training_pdf_protected` | The PDF is encrypted |
 | 422 | `training_pdf_too_many_pages` | More than 300 pages (a page count that lies is caught after the walk) |
@@ -2087,6 +2224,8 @@ a plain sentence (see below).
 | 422 | `training_pdf_unreadable` | The limited child could not finish the check in its CPU, memory or 20 second wall-clock limit, or crashed or answered garbage. The file is refused; nothing is wrong with the service |
 | 422 | `training_no_text` | Summary only: the PDF has no text to read (a scan), or the content budget ran out before any text. Nothing is stored |
 | 503 | `training_storage_unavailable` | The store is not configured, the write failed after the client's retries, or the stored object is missing or unreadable (the log carries the item id only). Retry |
+| 503 | `training_video_unavailable` | A video upload route while `TRAINING_VIDEO_ENABLED` is off |
+| 503 | `training_busy` | The gateway already holds 4 pieces; `Retry-After: 2`. Send the piece again |
 | 503 | `training_parser_unavailable` | The PDF checker could not run, or the 30 second wait for it (slot and parse) ran out. Infrastructure, not the file. Retry |
 | 503 | `training_assistant_unavailable` | Summary only: the provider failed, timed out (20 seconds) or answered something that does not fit the summary shape, or another click on the same item was still making it after 60 seconds; also no model client and none is stored, which happens only when the gateway's console identity block did not run at startup (`GROQ_API_KEY` is a required setting, so the client is always built when it does). Nothing is stored |
 | 422 | (FastAPI validation) | A missing or non-UUID `Idempotency-Key`, a non-UUID item id, an invalid or empty `PATCH` body |
@@ -2114,6 +2253,26 @@ streams, so a removal never breaks a download already open. Headers:
 A missing or unreadable object is 503 `training_storage_unavailable` (404 when the item was removed
 in the meantime). A browser's own PDF viewer in an iframe is not an option (the console sends
 `X-Frame-Options: DENY`): the page fetches this route and draws it.
+
+### The video route
+
+`GET /training/items/{id}/video` is served by the gateway for the local store only (staging). It
+opens the stored object, seeks to the first byte asked for and streams it in 64 KB blocks, with no
+company lock and no database connection held while it streams. It must work behind the console's
+`/console/v1` rewrite and it answers the `Range` header of a browser's `<video>` element:
+
+- No `Range`, or a header that is not one `bytes=<first>-<last>` range (another unit, `bytes=abc`,
+  `bytes=5-2`), is ignored: 200 with the whole file.
+- One range (`bytes=a-b`, `bytes=a-` or the last `n` bytes as `bytes=-n`; a last byte past the end is cut
+  to the end): 206 with `Content-Range: bytes a-b/size` and the range's `Content-Length`.
+- A range that starts at or past the end, `bytes=-0`, several ranges (any comma), or a header over 256
+  characters: 416 `training_range_not_satisfiable` with `Content-Range: bytes */size`.
+
+Every answer, 416 included, carries `Accept-Ranges: bytes`, `Content-Disposition: inline`,
+`Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`; a 200 or 206 also
+carries `Content-Type` from the stored container (`video/mp4` for `.mp4`, `.m4v` and `.mov`,
+`video/webm` for `.webm`). A missing object is 503 `training_storage_unavailable` (404 when the item was
+removed in the meantime).
 
 ### The summary
 
@@ -2149,13 +2308,20 @@ file), `training_pdf_protected`, `training_pdf_active_content`, `training_file_t
 `training_pdf_too_many_pages` (300), `training_library_full` (items or 500 MB),
 `training_name_invalid`, `training_upload_invalid`, `training_key_conflict`,
 `training_storage_unavailable` and `training_parser_unavailable` (try again), `training_not_found`,
+`training_not_video`, `training_uploads_in_progress`, `training_upload_closed`,
+`training_piece_missing`, `training_piece_invalid`, `training_piece_corrupt`, `training_busy` (the
+page retries on its own), `training_video_unavailable`, `training_retry_not_allowed`,
 `training_no_text`, `training_assistant_unavailable`, `package_inactive`, `training_forbidden` and
 `write permission required` ("only admins and the HR owner can change the library").
 
 ### Audit
 
-One `console_audit` row per change, with the item id as target and empty details: `training.item_added`
-(a retry that returns the first item writes none), `training.item_edited`, `training.item_removed`,
+One `console_audit` row per change, with the item id as target and empty details:
+`training.video_upload_started` (a video upload was started; a retry with the same key writes none),
+`training.item_added` (a PDF stored, or a video's upload completed; a retry that returns the first
+item writes none), `training.item_edited`, `training.item_removed`,
+`training.video_retried` (a manager queued a failed video again), `training.upload_abandoned` (the
+training worker removed an upload with no new piece for 24 hours; `actor_id` is `null`),
 `training.summary_generated`, `training.summary_regenerated`. Views, downloads and reads of a summary
 are not logged. Log lines carry the item id, the company id, a byte count, the model name and an
 outcome, never a title, file name, PDF text or summary text.

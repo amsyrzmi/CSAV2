@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 from collections.abc import Iterable, Mapping
 from contextlib import AsyncExitStack, ExitStack
 from typing import Any, BinaryIO
@@ -49,12 +48,21 @@ from csa.core import db
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.storage.base import ObjectStore, StorageError, durable_put
+from csa.storage.multipart import MultipartStore
 from csa.training import limits, summary
 from csa.training.access import can_manage
 from csa.training.limits import MAX_FILE_BYTES
-from csa.training.models import TITLE_MAX_CHARS, ItemList, ItemOut, ItemPatch, SummaryOut
+from csa.training.models import (
+    TITLE_MAX_CHARS,
+    ItemList,
+    ItemOut,
+    ItemPatch,
+    Processing,
+    SummaryOut,
+)
 from csa.training.pdf import PDF_MAGIC, PdfRefused, check_file_name
 from csa.training.pdf_guard import PdfGuardError, check_pdf_isolated, extract_text_isolated
+from csa.training.store_sweep import cleanup, lock
 
 logger = structlog.get_logger(__name__)
 
@@ -63,9 +71,12 @@ __all__ = [
     "FORBIDDEN",
     "NOT_FOUND",
     "STORAGE_UNAVAILABLE",
+    "SUMMARY_AUTOMATIC",
+    "VIDEO_UNAVAILABLE",
     "TrainingFile",
     "TrainingLibrary",
     "cleanup",
+    "lock",
 ]
 
 MEDIA_TYPE = "application/pdf"
@@ -73,8 +84,6 @@ MEDIA_TYPE = "application/pdf"
 MAX_UPLOAD_BODY_BYTES = MAX_FILE_BYTES + 65536
 # Covers waiting for one of the parser's child slots as well as the parse itself.
 PARSE_TIMEOUT_SECONDS = 30
-# Only names this module generates are ever swept (and the local store's temporary files).
-STORED = re.compile(r"\.?[a-f0-9-]{36}\.pdf(\.part)?")
 
 FORBIDDEN = "training_forbidden"
 NOT_FOUND = "training_not_found"
@@ -88,35 +97,14 @@ NOT_PDF = "training_not_pdf"
 UPLOAD_INVALID = "training_upload_invalid"
 NO_TEXT = "training_no_text"
 ASSISTANT_UNAVAILABLE = "training_assistant_unavailable"
+VIDEO_UNAVAILABLE = "training_video_unavailable"
+SUMMARY_AUTOMATIC = "training_summary_automatic"
+# The job's error code while it waits for the daily processing limit (set by the training worker).
+LIMIT_REACHED = "training_processing_limit"
 
 # The shared parser's own refusals, by their text (csa/console/multipart.py).
 _PARSER_BAD_NAME = "invalid original filename"
 _PARSER_BIG_HEADERS = "multipart headers exceed 8 KB"
-
-
-def _lock_key(client_id: UUID) -> str:
-    return f"{client_id}:training"
-
-
-async def _lock(conn: AsyncConnection[Any], client_id: UUID) -> None:
-    await db.q.execute("training/lock.sql", (_lock_key(client_id),), conn=conn)
-
-
-async def cleanup(pool: AsyncConnectionPool, store: ObjectStore, client_id: UUID) -> int:
-    """Delete this company's stored files that no row keeps, under the company lock.
-
-    Only names this module generates are touched; anything else in the prefix stays.
-    """
-    removed = 0
-    async with tx(pool, str(client_id)) as conn:
-        await _lock(conn, client_id)
-        rows = await db.q.fetch_all("training/names.sql", (client_id,), conn=conn)
-        keep = {row["storage_name"] for row in rows}
-        for name in await asyncio.to_thread(store.list_names, client_id):
-            if STORED.fullmatch(name) and name not in keep:
-                await asyncio.to_thread(store.delete, client_id, name)
-                removed += 1
-    return removed
 
 
 class TrainingFile(SourceDownload):
@@ -225,6 +213,21 @@ def _default_title(name: str) -> str:
     return title or name.strip()[:TITLE_MAX_CHARS]
 
 
+def _processing(row: Mapping[str, Any]) -> Processing | None:
+    """A video's progress while it waits for or is in processing; nothing for any other state.
+
+    A PDF row carries no job columns (the insert returns none), hence ``get``.
+    """
+    if row["kind"] != "video" or row["status"] not in ("uploaded", "transcribing", "summarising"):
+        return None
+    return Processing(
+        stage=row.get("job_stage") or "transcribing",
+        chunks_done=row.get("chunks_done") or 0,
+        chunks_total=row.get("chunks_total"),
+        waiting=row.get("job_status") == "queued" and row.get("job_error") == LIMIT_REACHED,
+    )
+
+
 def _categories(items: Iterable[ItemOut]) -> list[str]:
     """Each non-empty category once, matched case-insensitively, in alphabetical order."""
     seen: dict[str, str] = {}
@@ -255,8 +258,10 @@ class TrainingLibrary:
     async def list_items(self, actor: ConsoleActor, client_id: UUID) -> ItemList:
         async with tx(self.pool, str(client_id)) as conn:
             manage = await can_manage(conn, actor, client_id)
-            rows = await db.q.fetch_all("training/list.sql", (client_id,), conn=conn)
-        items = await self._items(client_id, rows)
+            rows = await db.q.fetch_all(
+                "training/list.sql", {"client_id": client_id, "manage": manage}, conn=conn
+            )
+        items = await self._items(client_id, rows, manage=manage)
         return ItemList(items=items, categories=_categories(items), can_manage=manage)
 
     async def add_item(
@@ -278,7 +283,7 @@ class TrainingLibrary:
         duplicate = False
         try:
             async with tx(self.pool, str(client_id)) as conn:
-                await _lock(conn, client_id)
+                await lock(conn, client_id)
                 # Asked again: the HR owner may have moved while the file was being checked.
                 if not await can_manage(conn, actor, client_id):
                     raise HTTPException(403, FORBIDDEN)
@@ -345,7 +350,7 @@ class TrainingLibrary:
             byte_size=len(data),
             outcome="duplicate" if duplicate else "stored",
         )
-        [item] = await self._items(client_id, [row])
+        [item] = await self._items(client_id, [row], manage=True)
         return item
 
     async def patch_item(
@@ -354,6 +359,12 @@ class TrainingLibrary:
         async with tx(self.pool, str(client_id)) as conn:
             if not await can_manage(conn, actor, client_id):
                 raise HTTPException(403, FORBIDDEN)
+            current = await db.q.fetch_one("training/get.sql", (client_id, item_id), conn=conn)
+            if current is None:
+                raise HTTPException(404, NOT_FOUND)
+            if current["kind"] == "video" and patch.view_mode is not None:
+                # A video has no view mode: refuse the whole edit rather than apply part of it.
+                raise HTTPException(422, NOT_PDF)
             row = await db.q.fetch_one(
                 "training/patch.sql",
                 {**patch.model_dump(), "client_id": client_id, "id": item_id},
@@ -362,22 +373,56 @@ class TrainingLibrary:
             if row is None:
                 raise HTTPException(404, NOT_FOUND)
             await audit(conn, actor, client_id, "training.item_edited", str(item_id))
-        [item] = await self._items(client_id, [row])
+        [item] = await self._items(client_id, [row], manage=True)
         return item
 
     async def remove_item(self, actor: ConsoleActor, client_id: UUID, item_id: UUID) -> None:
         async with tx(self.pool, str(client_id)) as conn:
             if not await can_manage(conn, actor, client_id):
                 raise HTTPException(403, FORBIDDEN)
+            # The job row first, as the worker locks it (job, then item): the cascade below
+            # would otherwise lock the item and then wait on the job, a deadlock with a worker
+            # write in progress.
+            await db.q.fetch_all(
+                "training/video_job_lock.sql",
+                {"client_id": client_id, "item_id": item_id},
+                conn=conn,
+            )
+            # Read before the delete takes the row (and its upload) away.
+            open_upload = await db.q.fetch_one(
+                "training/video_upload_get.sql", (client_id, item_id), conn=conn
+            )
             row = await db.q.fetch_one("training/delete.sql", (client_id, item_id), conn=conn)
             if row is None:
                 raise HTTPException(404, NOT_FOUND)
             await audit(conn, actor, client_id, "training.item_removed", str(item_id))
+        # "removed" (no upload was open), "upload_aborted", or "abort_failed" (the row is gone;
+        # the sweep lists the store's open uploads and aborts this one).
+        outcome = "removed"
+        if open_upload is not None and isinstance(self.store, MultipartStore):
+            try:
+                await asyncio.to_thread(
+                    self.store.abort_upload,
+                    client_id,
+                    open_upload["storage_name"],
+                    open_upload["upload_id"],
+                )
+                outcome = "upload_aborted"
+            except Exception as failure:
+                outcome = "abort_failed"
+                logger.error(
+                    "training_abort_failed",
+                    item_id=str(item_id),
+                    client_id=str(client_id),
+                    outcome=type(failure).__name__,
+                )
         logger.info(
             "training_item_removed",
             item_id=str(item_id),
             client_id=str(client_id),
+            kind=row["kind"],
             byte_size=row["byte_size"],
+            outcome=outcome,
         )
         try:
             await cleanup(self.pool, self.store, client_id)
@@ -391,7 +436,8 @@ class TrainingLibrary:
         """Stream the item's PDF. Reading never waits for the company lock or holds a
         connection while the object is opened or sent."""
         row = await self._row(client_id, item_id)
-        if row is None:
+        if row is None or row["kind"] != "pdf":
+            # A video is played from its own routes, never downloaded through this one.
             raise HTTPException(404, NOT_FOUND)
         try:
             stream = await asyncio.to_thread(self.store.open, client_id, row["storage_name"])
@@ -419,10 +465,13 @@ class TrainingLibrary:
             handles.pop_all()
             return response
 
-    async def get_summary(self, client_id: UUID, item_id: UUID) -> SummaryOut | None:
-        row = await self._summary_row(client_id, item_id)
-        if row is None:
-            raise HTTPException(404, NOT_FOUND)
+    async def get_summary(
+        self, actor: ConsoleActor, client_id: UUID, item_id: UUID
+    ) -> SummaryOut | None:
+        async with tx(self.pool, str(client_id)) as conn:
+            row = await db.q.fetch_one("training/summary_get.sql", (client_id, item_id), conn=conn)
+            await self._visible(conn, actor, client_id, row)
+        assert row is not None
         return summary.decode(row)
 
     async def make_summary(
@@ -442,8 +491,11 @@ class TrainingLibrary:
             if regenerate and not await can_manage(conn, actor, client_id):
                 raise HTTPException(403, FORBIDDEN)
             row = await db.q.fetch_one("training/summary_get.sql", (client_id, item_id), conn=conn)
-        if row is None:
-            raise HTTPException(404, NOT_FOUND)
+            await self._visible(conn, actor, client_id, row)
+        assert row is not None
+        if row["kind"] == "video":
+            # A video's summary is made by its own processing, never on request.
+            raise HTTPException(409, SUMMARY_AUTOMATIC)
         if not regenerate and (made := summary.decode(row)) is not None:
             return made
         if model is None:
@@ -536,15 +588,39 @@ class TrainingLibrary:
         async with tx(self.pool, str(client_id)) as conn:
             return await db.q.fetch_one("training/summary_get.sql", (client_id, item_id), conn=conn)
 
+    async def _visible(
+        self,
+        conn: AsyncConnection[Any],
+        actor: ConsoleActor,
+        client_id: UUID,
+        row: Mapping[str, Any] | None,
+    ) -> None:
+        """404 unless the item exists and ``actor`` may see it: readers see only a ready video."""
+        if row is None:
+            raise HTTPException(404, NOT_FOUND)
+        if row["kind"] == "video" and row["status"] != "ready":
+            if not await can_manage(conn, actor, client_id):
+                raise HTTPException(404, NOT_FOUND)
+
     async def _row(self, client_id: UUID, item_id: UUID) -> Mapping[str, Any] | None:
         async with tx(self.pool, str(client_id)) as conn:
             return await db.q.fetch_one("training/get.sql", (client_id, item_id), conn=conn)
 
-    async def _items(self, client_id: UUID, rows: list[Mapping[str, Any]]) -> list[ItemOut]:
+    async def present(
+        self, client_id: UUID, rows: list[Mapping[str, Any]], *, manage: bool
+    ) -> list[ItemOut]:
+        """The rows as items, for the video upload routes (``_items``)."""
+        return await self._items(client_id, rows, manage=manage)
+
+    async def _items(
+        self, client_id: UUID, rows: list[Mapping[str, Any]], *, manage: bool
+    ) -> list[ItemOut]:
+        """The rows as items; ``manage`` adds the failure, progress and notice managers see."""
         names = await self._names(client_id, {row["created_by"] for row in rows} - {None})
         return [
             ItemOut(
                 id=row["id"],
+                kind=row["kind"],
                 title=row["title"],
                 description=row["description"],
                 category=row["category"],
@@ -554,6 +630,11 @@ class TrainingLibrary:
                 created_at=row["created_at"],
                 uploaded_by_name=names.get(row["created_by"]),
                 has_summary=row["has_summary"],
+                status=row["status"],
+                duration_ms=row["duration_ms"],
+                failure=row["failure_code"] if manage and row["status"] == "failed" else None,
+                processing=_processing(row) if manage else None,
+                notice="hevc" if manage and row["video_codec"] == "hevc" else None,
             )
             for row in rows
         ]

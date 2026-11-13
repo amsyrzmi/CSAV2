@@ -36,6 +36,7 @@ from csa.core import db
 from csa.core.tenancy import tx
 from csa.storage.base import ObjectStore
 from csa.training.api import build_training_router
+from csa.training.video_api import build_training_video_router
 
 
 class TraceOut(BaseModel):
@@ -139,6 +140,7 @@ def build_router(
     router = APIRouter(prefix="/console/v1", dependencies=[Depends(auth)])
     router.include_router(build_upload_router(kb_store))
     router.include_router(build_training_router(training_store))
+    router.include_router(build_training_video_router(training_store))
     router.include_router(build_chat_router())
     router.include_router(build_voice_router())
     router.include_router(build_voice_sessions_router())

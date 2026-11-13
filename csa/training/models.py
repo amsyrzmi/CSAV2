@@ -11,11 +11,16 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     ConfigDict,
+    Field,
     StringConstraints,
     model_validator,
 )
 
 ViewMode = Literal["slides", "document"]
+Kind = Literal["pdf", "video"]
+VideoStatus = Literal["uploading", "uploaded", "transcribing", "summarising", "ready", "failed"]
+Stage = Literal["transcribing", "summarising"]
+Speech = Literal["speech", "no_speech", "no_audio"]
 
 TITLE_MAX_CHARS = 120
 DESCRIPTION_MAX_CHARS = 1000
@@ -58,17 +63,63 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Processing(_Model):
+    """A video's progress, for managers; ``waiting`` says the daily processing limit is used."""
+
+    stage: Stage
+    chunks_done: int
+    chunks_total: int | None
+    waiting: bool
+
+
 class ItemOut(_Model):
+    """One library item. A PDF has a view mode and a page count; a video has a duration instead.
+
+    ``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.
+    ``status`` is ``ready`` for every PDF.
+    """
+
     id: UUID
+    kind: Kind
     title: str
     description: str
     category: str
-    view_mode: ViewMode
-    page_count: int
+    view_mode: ViewMode | None
+    page_count: int | None
     byte_size: int
     created_at: AwareDatetime
     uploaded_by_name: str | None
     has_summary: bool
+    status: VideoStatus
+    duration_ms: int | None
+    failure: str | None
+    processing: Processing | None
+    notice: Literal["hevc"] | None
+
+
+class VideoStart(_Model):
+    """Starting a video upload: the file's name (data only), its size and its media type."""
+
+    file_name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    byte_size: Annotated[int, Field(ge=1)]
+    media_type: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+
+
+class VideoUploadOut(_Model):
+    """An upload's plan: send pieces ``1..piece_count`` of ``piece_size`` bytes (the last one the
+    remainder); ``received`` lists the numbers already stored, for resuming."""
+
+    item: ItemOut
+    piece_size: int
+    piece_count: int
+    received: list[int]
+
+
+class PieceOut(_Model):
+    """A stored piece and how many pieces of the upload are stored now."""
+
+    number: int
+    received: int
 
 
 class ItemList(_Model):
@@ -110,3 +161,29 @@ class NoSummary(_Model):
     """No summary has been made for the item yet."""
 
     summary: None = None
+
+
+class PlaybackOut(_Model):
+    """Where to play a video from, for a short while: ``url`` is a same-origin gateway route (local
+    storage, which answers Range requests) or a presigned storage URL. Ask again when it expires."""
+
+    url: str
+    expires_at: AwareDatetime
+    media_type: Literal["video/mp4", "video/webm"]
+
+
+class TranscriptLine(_Model):
+    """One spoken line with its start and end in milliseconds from the video's start."""
+
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+class TranscriptOut(_Model):
+    """A video's transcript in time order. ``language`` and ``speech`` are ``None`` until
+    transcribing has decided them (managers can read the lines made so far)."""
+
+    language: str | None
+    speech: Speech | None
+    segments: list[TranscriptLine]

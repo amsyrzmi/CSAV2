@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -65,6 +66,7 @@ def test_pipeline_connects_consumers_to_same_data_and_storage(tmp_path: Path) ->
         "worker",
         "delivery",
         "staging-embeddings",
+        "training-worker",
     }
     assert services["worker"]["command"] == ["python", "-m", "apps.worker.main"]
     assert services["delivery"]["command"] == ["python", "-m", "apps.delivery.main"]
@@ -394,7 +396,15 @@ def test_pipeline_long_running_services_restart_unless_stopped(tmp_path: Path) -
     (tmp_path / "long").mkdir()
     (tmp_path / "once").mkdir()
     services = render(tmp_path / "long", "staging-approved", "pipeline-approved")["services"]
-    for name in ("staging-db", "gateway", "worker", "delivery", "staging-embeddings", "frontend"):
+    for name in (
+        "staging-db",
+        "gateway",
+        "worker",
+        "delivery",
+        "staging-embeddings",
+        "frontend",
+        "training-worker",
+    ):
         assert services[name].get("restart") == "unless-stopped", name
     one_shots = render(
         tmp_path / "once",
@@ -452,17 +462,94 @@ def test_hr_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path)
         assert "staging-hr-uploads" not in {v["source"] for v in services[name].get("volumes", [])}
 
 
-def test_training_documents_volume_and_root_belong_to_the_gateway_only(tmp_path: Path) -> None:
+def test_training_documents_volume_belongs_to_the_gateway_and_training_worker_only(
+    tmp_path: Path,
+) -> None:
     services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
-    gateway = services["gateway"]
-    assert gateway["environment"]["TRAINING_UPLOAD_ROOT"] == "/var/lib/csa/training-uploads"
-    mounts = {v["target"]: v["source"] for v in gateway["volumes"]}
-    assert mounts["/var/lib/csa/training-uploads"] == "staging-training-uploads"
+    for name in ("gateway", "training-worker"):
+        service = services[name]
+        assert service["environment"]["TRAINING_UPLOAD_ROOT"] == "/var/lib/csa/training-uploads"
+        mounts = {v["target"]: v["source"] for v in service["volumes"]}
+        assert mounts["/var/lib/csa/training-uploads"] == "staging-training-uploads", name
     for name in ("worker", "delivery"):
         assert "TRAINING_UPLOAD_ROOT" not in services[name]["environment"]
         assert "staging-training-uploads" not in {
             v["source"] for v in services[name].get("volumes", [])
         }
+    # The training worker never touches knowledge-base or HR files.
+    training = services["training-worker"]
+    assert {v["source"] for v in training["volumes"]} == {"staging-training-uploads"}
+    assert "HR_UPLOAD_ROOT" not in training["environment"]
+    assert training["environment"]["KB_UPLOAD_ROOT"] == ""
+
+
+SPEECH_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+
+# Settings looks for /run/secrets even when told not to; the folder is absent off Docker.
+@pytest.mark.filterwarnings("ignore:directory .* does not exist:UserWarning")
+def test_training_worker_service_shape(tmp_path: Path) -> None:
+    from csa.core.settings import Settings
+
+    services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
+    training = services["training-worker"]
+    assert training["command"] == ["python", "-m", "apps.training_worker.main"]
+    assert training["image"] == services["worker"]["image"]
+    assert training["user"] == "1000:1000"
+    assert training["read_only"] is True
+    assert training["cap_drop"] == ["ALL"]
+    assert training.get("restart") == "unless-stopped"
+    # One process: the claim rule relies on a single training worker.
+    assert training.get("deploy", {}).get("replicas", 1) == 1
+    assert set(training["networks"]) == {"data", "embeddings", "provider-egress"}
+    assert "ports" not in training
+    assert "/tmp/training-worker.alive" in training["healthcheck"]["test"][-1]
+    assert {name: dep["condition"] for name, dep in training["depends_on"].items()} == {
+        "staging-db": "service_healthy",
+        "gateway": "service_healthy",
+    }
+    env = training["environment"]
+    assert env["VOICE_STT_ENDPOINT"] == SPEECH_ENDPOINT
+    assert env["TEI_ENDPOINT"] == "http://staging-embeddings:8080"
+    # Video is off by default on both services that read the switch, and nowhere else.
+    assert env["TRAINING_VIDEO_ENABLED"] == "false"
+    assert services["gateway"]["environment"]["TRAINING_VIDEO_ENABLED"] == "false"
+    for name in ("worker", "delivery", "frontend"):
+        assert "TRAINING_VIDEO_ENABLED" not in services[name].get("environment", {}), name
+    # The worker's database, credential and model secrets, and nothing else: no S3, HR, mail,
+    # channel or Google secret.
+    assert {s["target"]: s["source"] for s in training["secrets"]} == {
+        "DATABASE_URL": "staging_domain_dsn",
+        "LG_DATABASE_URL": "staging_owner_dsn",
+        "CREDENTIALS_KEY": "staging_credentials_key",
+        "GROQ_API_KEY": "staging_model_key",
+    }
+    # The rendered environment loads, and the speech key is the model key.
+    values = {k: v for k, v in env.items() if k in Settings.model_fields}
+    values |= {
+        "DATABASE_URL": "postgresql://csa_app:pw@localhost:5433/csa",
+        "LG_DATABASE_URL": "postgresql://csa:pw@localhost:5433/csa",
+        "GROQ_API_KEY": "synthetic-model-key",
+        "CREDENTIALS_KEY": "base64:" + base64.b64encode(b"\x01" * 32).decode("ascii"),
+    }
+    settings = Settings(_env_file=None, _secrets_dir=None, **values)  # type: ignore[call-arg]
+    assert settings.TRAINING_UPLOAD_ROOT == Path("/var/lib/csa/training-uploads")
+    assert settings.KB_UPLOAD_ROOT is None
+    key = settings.voice_transcription_key()
+    assert key is not None and key.get_secret_value() == "synthetic-model-key"
+
+
+def test_one_switch_turns_video_on_for_the_gateway_and_the_training_worker(
+    tmp_path: Path,
+) -> None:
+    services = render(
+        tmp_path,
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_TRAINING_VIDEO": "true"},
+    )["services"]
+    for name in ("gateway", "training-worker"):
+        assert services[name]["environment"]["TRAINING_VIDEO_ENABLED"] == "true", name
 
 
 def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:

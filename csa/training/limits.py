@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+VideoContainer = Literal["mp4", "webm"]
+VideoMediaType = Literal["video/mp4", "video/webm"]
+
 MAX_FILE_BYTES = 25 * 1024 * 1024
 """Largest PDF a single upload may carry."""
 
@@ -63,3 +68,104 @@ PDF_CHILD_MEMORY_BYTES = 1024 * 1024 * 1024
 
 PDF_CHILD_MAX_CONCURRENT = 2
 """Most parse children one process runs at once; further callers wait for a slot."""
+
+# Video. Values from docs/superpowers/specs/2026-11-13-training-library-video-design.md.
+
+MAX_VIDEO_BYTES = 500 * 1024 * 1024
+"""Largest video a single upload may carry."""
+
+VIDEO_PIECE_BYTES = 8 * 1024 * 1024
+"""Size of every upload piece but the last (an S3 part needs at least 5 MiB)."""
+
+MAX_VIDEO_SECONDS = 3600
+"""Longest video the library accepts."""
+
+MAX_VIDEO_ITEMS = 50
+"""Most videos one company's library may hold."""
+
+MAX_VIDEO_TOTAL_BYTES = 5 * 1024 * 1024 * 1024
+"""Most bytes of videos one company's library may hold, counting uploads in progress."""
+
+MAX_UPLOADS_IN_PROGRESS = 2
+"""Most video uploads one company may have open at once."""
+
+UPLOAD_ABANDON_SECONDS = 86_400
+"""An upload with no new piece for this long is removed by the sweep."""
+
+DAILY_PROCESSING_SECONDS = 18_000
+"""Most seconds of video one company may have transcribed per rolling 24 hours."""
+
+AUDIO_CHUNK_SECONDS = 300
+"""Length of each audio chunk sent to the speech endpoint."""
+
+ASK_WHOLE_MAX_CHARS = 40_000
+"""A transcript up to this long is sent whole to answer a question about it."""
+
+SUMMARY_PART_CHARS = 20_000
+"""Most transcript characters in one map step of the summary."""
+
+PIECES_IN_FLIGHT = 4
+"""Most upload pieces one gateway process accepts at once."""
+
+PLAYBACK_URL_SECONDS = 900
+"""Lifetime of a presigned playback or worker source URL."""
+
+JOB_STALE_SECONDS = 600
+"""A claimed job whose heartbeat is older than this is requeued."""
+
+JOB_MAX_ATTEMPTS = 3
+"""Attempts a job gets for transient failures before it fails."""
+
+JOB_BACKOFF_SECONDS = 60
+"""Wait before a retried job runs again, times the attempt number (60 s, 120 s)."""
+
+SWEEP_EVERY_SECONDS = 3600
+"""How often the training worker sweeps abandoned uploads and old usage rows."""
+
+USAGE_KEEP_SECONDS = 172_800
+"""Usage rows older than this are deleted by the sweep."""
+
+WINDOW_SECONDS = 60
+"""Length of each embedded transcript window."""
+
+ASK_NEAREST_WINDOWS = 8
+"""Windows sent to answer a question about a transcript too long to send whole."""
+
+VIDEO_EXTENSIONS: dict[str, VideoContainer] = {
+    ".mp4": "mp4",
+    ".m4v": "mp4",
+    ".mov": "mp4",
+    ".webm": "webm",
+}
+"""Accepted upload extensions and the container each is stored and demuxed as."""
+
+PLAYBACK_MEDIA_TYPE: dict[VideoContainer, VideoMediaType] = {
+    "mp4": "video/mp4",
+    "webm": "video/webm",
+}
+"""Media type a stored container plays as (a ``.mov`` plays as ``video/mp4``)."""
+
+# ffmpeg and ffprobe run in the training worker on untrusted video, each as a child under these
+# limits (csa/training/media.py). Values from docs/TRAINING_VIDEO_CAPACITY.md: 4 x the worst
+# measured CPU, 2 x the worst measured address space (rounded up to 64 MiB), 4 x the worst wall.
+
+FFMPEG_CHILD_CPU_SECONDS = 309
+"""CPU seconds one ffmpeg or ffprobe child may use (RLIMIT_CPU; the kernel kills it past it)."""
+
+FFMPEG_CHILD_MEMORY_BYTES = 469762048
+"""Address space one ffmpeg or ffprobe child may map (RLIMIT_AS, 448 MiB)."""
+
+FFMPEG_CHILD_WALL_SECONDS = 300
+"""Wall-clock seconds one child may take; its whole process group is killed past it."""
+
+PROBE_MAX_OUTPUT_BYTES = 262144
+"""Most bytes of stdout read from one child; more refuses the file."""
+
+SILENCE_MAX_DB = -50.0
+"""A first audio stream whose peak is at most this (dBFS) is silent: no speech to transcribe."""
+
+PLAYABLE_VIDEO: frozenset[str] = frozenset({"h264", "vp8", "vp9", "av1", "hevc"})
+"""Video codecs (ffprobe names) the library accepts; HEVC plays only in some browsers."""
+
+PLAYABLE_AUDIO: frozenset[str] = frozenset({"aac", "mp3", "opus", "vorbis"})
+"""Audio codecs (ffprobe names) the library accepts."""

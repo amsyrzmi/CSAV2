@@ -121,10 +121,11 @@ def build_training_router(store: ObjectStore | None) -> APIRouter:
     @router.get("/training/items/{item_id}/summary", response_model=SummaryOut | NoSummary)
     async def get_summary(
         item_id: UUID,
+        actor: Actor,
         client_id: Company,
         lib: Annotated[TrainingLibrary, Depends(library)],
     ) -> SummaryOut | NoSummary:
-        made = await lib.get_summary(client_id, item_id)
+        made = await lib.get_summary(actor, client_id, item_id)
         return made if made is not None else NoSummary()
 
     @router.post("/training/items/{item_id}/summary", response_model=SummaryOut)

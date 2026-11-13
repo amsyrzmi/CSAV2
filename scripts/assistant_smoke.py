@@ -121,6 +121,7 @@ ActionName = Literal[
     "booking_action",
     "email_batch",
     "plan",
+    "training_ask",
 ]
 Preset = Literal[
     "staff_basic",
@@ -132,6 +133,7 @@ Preset = Literal[
     "staff_bookings",
     "staff_bookings_view",
     "staff_subscriptions",
+    "staff_training",
 ]
 
 
@@ -273,6 +275,16 @@ PRESETS: dict[str, _Preset] = {
         _LINKED,
         "directory",
         extra_packages=("subscriptions",),
+    ),
+    # The Training library is active: a question about a video is training_ask.
+    "staff_training": _Preset(
+        "active",
+        _MANAGER,
+        None,
+        _NOT_APPROVER,
+        _LINKED,
+        "directory",
+        extra_packages=("training_library",),
     ),
     "staff_hr_inactive": _Preset(
         "suspended",

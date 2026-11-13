@@ -26,8 +26,11 @@ services:
     environment:
       # HR documents: the gateway is the only service that mounts the volume (below).
       HR_UPLOAD_ROOT: /var/lib/csa/hr-uploads
-      # Training library documents: also gateway-only (volume below).
+      # Training library documents: the gateway and the training worker (volume below).
       TRAINING_UPLOAD_ROOT: /var/lib/csa/training-uploads
+      # Video in the training library. Off unless the owner sets CSA_STAGING_TRAINING_VIDEO=true,
+      # which also switches the training worker on (deploy/PRODUCTION.md, "Training video").
+      TRAINING_VIDEO_ENABLED: ${CSA_STAGING_TRAINING_VIDEO:-false}
       TEI_ENDPOINT: http://staging-embeddings:8080
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
       TEI_QUERY_PREFIX: "query: "
@@ -74,7 +77,8 @@ services:
     # 18081 belongs to the development gateway; never reuse it here.
     ports:
       - "127.0.0.1:18031:8080"
-    # HR and training documents live on the gateway only; the worker and delivery never mount them.
+    # HR documents live on the gateway only; training documents on the gateway and the training
+    # worker. The worker and delivery never mount either.
     volumes:
       - "staging-hr-uploads:/var/lib/csa/hr-uploads"
       - "staging-training-uploads:/var/lib/csa/training-uploads"
@@ -176,6 +180,48 @@ services:
       timeout: 3s
       retries: 3
       start_period: 30s
+
+  # Training videos: transcribes, summarises and indexes them, and sweeps abandoned uploads.
+  # ONE process (never scale it out: a company's next job waits for its last, and that rule relies
+  # on a single claimer). With CSA_STAGING_TRAINING_VIDEO unset it only touches its liveness file.
+  training-worker:
+    restart: unless-stopped
+    <<: *runtime
+    command: ["python", "-m", "apps.training_worker.main"]
+    environment:
+      <<: *environment
+      # Training files only: never the knowledge-base or HR folders.
+      KB_UPLOAD_ROOT: ""
+      TRAINING_UPLOAD_ROOT: /var/lib/csa/training-uploads
+      TRAINING_VIDEO_ENABLED: ${CSA_STAGING_TRAINING_VIDEO:-false}
+      # Speech to text for the audio chunks. Groq's endpoint, so the key is the model key
+      # (GROQ_API_KEY, through Settings.voice_transcription_key). Retention: docs/CONSOLE_VOICE.md.
+      VOICE_STT_ENDPOINT: https://api.groq.com/openai/v1/audio/transcriptions
+    # The worker's own four: database (app role and owner role for the claim), credentials, model.
+    # No S3, HR, mail, channel or Google secret.
+    secrets:
+      - source: staging_domain_dsn
+        target: DATABASE_URL
+      - source: staging_owner_dsn
+        target: LG_DATABASE_URL
+      - source: staging_credentials_key
+        target: CREDENTIALS_KEY
+      - source: staging_model_key
+        target: GROQ_API_KEY
+    volumes: ["staging-training-uploads:/var/lib/csa/training-uploads"]
+    # embeddings for the transcript windows; provider-egress for the speech and model calls.
+    networks: ["data", "embeddings", "provider-egress"]
+    depends_on:
+      staging-db:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/training-worker.alive').stat().st_mtime < 90"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
 
   embeddings-init:
     image: ${CSA_STAGING_PYTHON_IMAGE:?approved Python image digest required}

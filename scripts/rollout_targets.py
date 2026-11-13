@@ -31,6 +31,7 @@ class Target:
     flags_file: str  # repo-relative
     required_keys: frozenset[str]
     optional_keys: frozenset[str]
+    optional_values: Mapping[str, tuple[str, ...]]  # allowed values of some optional keys
     host_file: Path | None
     host_required_keys: frozenset[str]
     host_override_keys: frozenset[str]  # optional keys a host file may set (its value wins)
@@ -54,8 +55,8 @@ STAGING = Target(
     image_owner="ghcr.io/amsyrzmi",
     package_owner="amsyrzmi",
     repo="amsyrzmi/CSAV2",
-    app_services=("gateway", "worker", "delivery", "frontend"),
-    stop_services=("gateway", "frontend", "worker", "delivery"),
+    app_services=("gateway", "worker", "delivery", "frontend", "training-worker"),
+    stop_services=("gateway", "frontend", "worker", "delivery", "training-worker"),
     replicas={},
     db_service="staging-db",
     db_name="csa_staging",
@@ -73,7 +74,10 @@ STAGING = Target(
             "CSA_STAGING_BOOKINGS_GOOGLE_MEET",
         }
     ),
-    optional_keys=frozenset(),
+    # Video in the training library (gateway and training worker); unset is off. Turning it on
+    # is a reviewed change to the flags file, after the checks in deploy/PRODUCTION.md.
+    optional_keys=frozenset({"CSA_STAGING_TRAINING_VIDEO"}),
+    optional_values={"CSA_STAGING_TRAINING_VIDEO": ("false", "true")},
     host_file=None,
     host_required_keys=frozenset(),
     host_override_keys=frozenset(),
@@ -96,6 +100,7 @@ PROD_TUNING_KEYS = frozenset(
         "CSA_PROD_MEM_FRONTEND",
         "CSA_PROD_MEM_EMBEDDINGS",
         "CSA_PROD_MEM_CLOUDFLARED",
+        "CSA_PROD_MEM_TRAINING_WORKER",
         "CSA_PROD_PG_SHARED_BUFFERS",
         "CSA_PROD_PG_EFFECTIVE_CACHE",
         "CSA_PROD_PG_WORK_MEM",
@@ -104,6 +109,13 @@ PROD_TUNING_KEYS = frozenset(
     }
 )
 _ORIGIN_KEYS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"})
+# Names the training worker's S3 key pair in compose.production.yml: unset it is the disabled
+# placeholder; prod_s3_training once the owner made the key. Only these two: any other value could
+# name another declared secret (the application key) as the training worker's.
+TRAINING_KEY_SWITCH = "CSA_PROD_S3_TRAINING_KEY"
+TRAINING_KEY_VALUES = ("prod_s3_training_disabled", "prod_s3_training")
+# Video in the training library (gateway and training worker).
+TRAINING_VIDEO_SWITCH = "CSA_STAGING_TRAINING_VIDEO"
 
 # The instance's backup script, installed from deploy/production/backup.sh. Production runs it
 # before anything changes; the rollout checks the installed copy matches the repository's.
@@ -123,7 +135,8 @@ PRODUCTION = replace(
     replicas={"worker": ("CSA_PROD_WORKER_REPLICAS", 2)},
     flags_file="deploy/production-rollout.env",
     required_keys=STAGING.required_keys - _ORIGIN_KEYS,
-    optional_keys=PROD_TUNING_KEYS,
+    optional_keys=PROD_TUNING_KEYS | STAGING.optional_keys | {TRAINING_KEY_SWITCH},
+    optional_values={**STAGING.optional_values, TRAINING_KEY_SWITCH: TRAINING_KEY_VALUES},
     host_file=Path("/srv/csa-prod/host.env"),
     host_required_keys=frozenset({"CSA_PROD_S3_BUCKET", "CSA_PROD_S3_REGION"}) | _ORIGIN_KEYS,
     host_override_keys=PROD_TUNING_KEYS | {"CSA_PROD_DB_IMAGE"},

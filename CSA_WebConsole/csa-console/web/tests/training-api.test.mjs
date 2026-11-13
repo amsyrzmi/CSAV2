@@ -136,3 +136,59 @@ test("a refusal keeps the server's code and status on ApiError", async () => {
     );
   }
 });
+
+test("an upload's pieces share one CSRF token, fetched again once when the server refuses it", async () => {
+  const original = globalThis.fetch;
+  let csrfReads = 0;
+  let refuseNext = 0;
+  const puts = [];
+  globalThis.fetch = async (path, init) => {
+    if (path === "/console/v1/auth/csrf") {
+      csrfReads += 1;
+      return Response.json({ csrf_token: `synthetic-csrf-${csrfReads}` });
+    }
+    puts.push([path, init.headers["X-CSRF-Token"]]);
+    if (refuseNext > 0) {
+      refuseNext -= 1;
+      return Response.json({ detail: "invalid csrf token" }, { status: 403 });
+    }
+    return Response.json({});
+  };
+  try {
+    const csrf = training.pieceCsrf();
+    const piece = new Blob(["synthetic piece"]);
+    await Promise.all([1, 2, 3].map((n) => training.putPiece(null, ID, n, piece, "ab", csrf)));
+    assert.equal(csrfReads, 1, "one token for every piece of the upload");
+    assert.deepEqual(puts.map(([, token]) => token), ["synthetic-csrf-1", "synthetic-csrf-1", "synthetic-csrf-1"]);
+
+    // The session's token changed: the refused piece fetches a new one once and is sent again.
+    puts.length = 0;
+    refuseNext = 1;
+    await training.putPiece(null, ID, 4, piece, "ab", csrf);
+    assert.equal(csrfReads, 2);
+    assert.deepEqual(puts.map(([, token]) => token), ["synthetic-csrf-1", "synthetic-csrf-2"]);
+    await training.putPiece(null, ID, 5, piece, "ab", csrf);
+    assert.equal(csrfReads, 2, "the new token is kept for the next pieces");
+
+    // Refused again with a fresh token: that is the answer, not a loop.
+    refuseNext = 2;
+    await assert.rejects(
+      training.putPiece(null, ID, 6, piece, "ab", csrf),
+      (error) => error instanceof ApiError && error.status === 403 && error.code === "invalid csrf token",
+    );
+    assert.equal(csrfReads, 3);
+
+    // Another 403 is not a CSRF problem: no new token.
+    globalThis.fetch = async (path) => {
+      if (path === "/console/v1/auth/csrf") { csrfReads += 1; return Response.json({ csrf_token: "x" }); }
+      return Response.json({ detail: "training_forbidden" }, { status: 403 });
+    };
+    await assert.rejects(
+      training.putPiece(null, ID, 7, piece, "ab", csrf),
+      (error) => error instanceof ApiError && error.code === "training_forbidden",
+    );
+    assert.equal(csrfReads, 3);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

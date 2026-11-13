@@ -1,5 +1,5 @@
-# CSA application image (LG01 §9.1). ONE image serves all three services
-# (gateway, worker, delivery) — they differ only by `command` in compose.yml.
+# CSA application image (LG01 §9.1). ONE image serves all four services
+# (gateway, worker, delivery, training worker) — they differ only by `command` in compose.
 #
 # Build with uv for a frozen, reproducible dependency closure, then run as a
 # non-root user with no build toolchain in the final layer.
@@ -38,6 +38,13 @@ WORKDIR /app
 
 # Copy the resolved virtualenv and the application source from the build stage.
 COPY --from=build --chown=1000:1000 /app /app
+
+# ffmpeg and ffprobe for the training worker's video jobs: the static 7.1.1 build measured in
+# docs/TRAINING_VIDEO_CAPACITY.md, pinned by the same digest as the CI install step (a test checks
+# both). That image has no shell, so only the two binaries come across, root-owned, onto PATH.
+# They read presigned S3 links with the CA bundle this base image ships
+# (/etc/ssl/certs/ca-certificates.crt, csa/training/media.py).
+COPY --from=mwader/static-ffmpeg@sha256:11a44711684c0b9f754c047dcd64235b8b52deab251bd0e0a86f22faa160749c /ffmpeg /ffprobe /usr/local/bin/
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

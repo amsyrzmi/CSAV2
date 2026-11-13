@@ -559,6 +559,40 @@
     }
   },
   {
+    "id": "training_ask-en-1",
+    "language": "en",
+    "message": "What does the onboarding video say about refund requests?",
+    "facts": {
+      "preset": "staff_training"
+    },
+    "expect": {
+      "actions": [
+        "training_ask"
+      ],
+      "not_actions": [
+        "training_submit",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "training_ask-ms-1",
+    "language": "ms",
+    "message": "Apa yang video onboarding cakap tentang permintaan bayaran balik?",
+    "facts": {
+      "preset": "staff_training"
+    },
+    "expect": {
+      "actions": [
+        "training_ask"
+      ],
+      "not_actions": [
+        "training_submit",
+        "clarification"
+      ]
+    }
+  },
+  {
     "id": "dont_send-en-1",
     "language": "en",
     "message": "Write an email to aina.rahman@example.com about Friday's meeting but don't send it yet",

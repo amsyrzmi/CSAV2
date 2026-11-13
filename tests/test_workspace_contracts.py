@@ -417,7 +417,17 @@ def test_result_discriminators_source_freshness_and_decimal_serialization() -> N
     assert order["order"]["total"] == "12.34"
     assert results[2].model_dump() == {"status": "denied", "code": "resource_unavailable"}
     schema = adapter.json_schema()
-    assert len(schema["anyOf"]) == 10
+    assert len(schema["anyOf"]) == 11
+    # A training video answer replays as the training_ask result it was stored as.
+    stored = {
+        "action": "training_ask",
+        "markdown": "Bring the receipt.\n\nFrom *Onboarding*, at 03:15.",
+        "sources": [{"item_id": str(uuid4()), "title": "Onboarding", "start_seconds": 195}],
+    }
+    replayed = adapter.validate_json(json.dumps(stored))
+    assert replayed.model_dump(mode="json") == stored
+    with pytest.raises(ValidationError):
+        adapter.validate_json(json.dumps({**stored, "sources": stored["sources"] * 6}))
     # A turn stored before the read became truthful still replays as it was stored.
     legacy = adapter.validate_json(
         results[1].model_copy(update={"marketplace_sync": "unavailable"}).model_dump_json()
@@ -550,6 +560,7 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
         "page_guidance": {"page": "workspace_home"},
         "local_order_read": {"resource": {"kind": "local_order", "order_id": "o"}},
         "product_stock_read": {"query": "mug"},
+        "training_ask": {"question": "What about refunds?"},
     }
     for action, rest in cases.items():
         assert adapter.validate_python({"action": action, **rest}).action == action

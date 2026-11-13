@@ -21,7 +21,8 @@ export AWS_PAGER=""
 # The wait is bounded by elapsed time, not by a number of polls (each poll also spends time in
 # get-command-invocation). It must stay shorter than the documents' timeoutSeconds (7200), which
 # must stay shorter than the workflow jobs' timeout-minutes (130). It outlasts the worst case of
-# an apply that rolls back (two passes of four recreates at up to 300 s up plus 300 s health).
+# an apply that rolls back (two passes of five recreates at up to 300 s up plus 300 s health:
+# 6000 s, which leaves 900 s for the backup, the pulls, the check files and the smoke test).
 : "${SSM_MAX_SECONDS:=6900}"
 # send-command returns before the invocation exists, so the first polls may not find it yet.
 MISSING_POLLS=5

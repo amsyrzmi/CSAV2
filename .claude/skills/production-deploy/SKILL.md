@@ -40,8 +40,8 @@ Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the re
    then `gh run view --repo amsyrzmi/CSAV2 --job <plan job id> --log`). Summarise it in a few
    lines: the target SHA, the image digests, whether the images changed, any `WARNING:` line (a
    downgrade warning means the target is older than what runs now), the pending migrations or
-   "none", the downtime (a migration stops gateway, frontend, both workers and delivery: console
-   unavailable, bot replies delayed, not lost), `Host overrides:`, and any missing secret files.
+   "none", the downtime (a migration stops gateway, frontend, both workers, delivery and the
+   training worker: console unavailable, bot replies delayed, not lost), `Host overrides:`, and any missing secret files.
    Do not poll in a loop; check again only when the owner asks or after a short wait.
    - The step `Resolve and check the commit` refuses before anything is sent to the instance,
      with one line: `sha must be the full 40 character lowercase commit SHA`,

@@ -100,7 +100,8 @@ def test_container_names_default_and_override() -> None:
 def test_restart_command_starts_every_replica() -> None:
     assert sr.restart_command(PROD, {}) == (
         "docker --host unix:///var/run/docker.sock start csa-prod-gateway-1 "
-        "csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1"
+        "csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1 "
+        "csa-prod-training-worker-1"
     )
     assert sr.restart_command(STAGING, {}) == sr.RESTART_COMMAND
 
@@ -342,7 +343,7 @@ def test_apply_against_a_target_uses_only_its_names(
     )
     ready = [argv for argv, _, _ in runner.calls if argv[3:4] == ["exec"]]
     assert ready and all("csa-prod-gateway-1" in argv for argv in ready)
-    assert "Stopping gateway, frontend, worker, delivery…" in lines
+    assert "Stopping gateway, frontend, worker, delivery, training-worker…" in lines
 
 
 # --- the repo switch file with an allow-listed host overlay -----------------------------------
@@ -1164,3 +1165,60 @@ def test_target_without_pre_change_applies_exactly_as_before(
     lines: list[str] = []
     sr._report_recovery(sr._Progress(), lines.append, target=PROD)
     assert lines == ["Nothing on production was changed."]
+
+
+# --- training video: the switch needs the training worker's key ---------------------------------
+
+VIDEO_NEEDS_KEY = (
+    "production-rollout.env: CSA_STAGING_TRAINING_VIDEO=true needs "
+    "CSA_PROD_S3_TRAINING_KEY=prod_s3_training"
+)
+
+
+@pytest.mark.parametrize("key_line", ["", "CSA_PROD_S3_TRAINING_KEY=prod_s3_training_disabled\n"])
+def test_production_flags_refuse_video_without_the_training_key(
+    tmp_path: Path, key_line: str
+) -> None:
+    path = tmp_path / "production-rollout.env"
+    text = (sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8")
+    path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=true\n" + key_line, encoding="utf-8")
+    with pytest.raises(RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.step == "flags"
+    assert caught.value.message == VIDEO_NEEDS_KEY
+    # With the key named it loads; with video off the key is not needed.
+    path.write_text(
+        text + "CSA_STAGING_TRAINING_VIDEO=true\nCSA_PROD_S3_TRAINING_KEY=prod_s3_training\n",
+        encoding="utf-8",
+    )
+    assert sr.load_flags(path, PRODUCTION)["CSA_STAGING_TRAINING_VIDEO"] == "true"
+    path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=false\n", encoding="utf-8")
+    assert sr.load_flags(path, PRODUCTION)["CSA_STAGING_TRAINING_VIDEO"] == "false"
+
+
+def test_staging_takes_video_on_without_any_key(tmp_path: Path) -> None:
+    # Staging keeps videos on its own volume: no S3 key is involved.
+    path = tmp_path / "staging-rollout.env"
+    text = (sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8")
+    path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=true\n", encoding="utf-8")
+    assert sr.load_flags(path, STAGING)["CSA_STAGING_TRAINING_VIDEO"] == "true"
+
+
+def test_plan_refuses_video_without_the_key_before_any_docker_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = HostedRig(tmp_path, monkeypatch, HOST_TEXT)
+    training = {"CSA_STAGING_TRAINING_VIDEO", "CSA_PROD_S3_TRAINING_KEY"}
+    rig.target = dataclasses.replace(
+        rig.target,
+        optional_keys=rig.target.optional_keys | training,
+        optional_values=PRODUCTION.optional_values,
+    )
+    (rig.repo / rig.target.flags_file).write_text(
+        SWITCHES_TEXT + "CSA_STAGING_TRAINING_VIDEO=true\n"
+    )
+    with pytest.raises(RolloutError) as caught:
+        rig.plan()
+    flags_name = Path(rig.target.flags_file).name
+    assert caught.value.message == VIDEO_NEEDS_KEY.replace("production-rollout.env", flags_name)
+    assert rig.docker_calls() == []

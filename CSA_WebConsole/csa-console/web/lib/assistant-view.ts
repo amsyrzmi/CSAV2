@@ -10,6 +10,7 @@ import {
 import type { Me } from "@/lib/identity-contracts";
 import { formatWhen } from "@/lib/email-recipients";
 import { entryForPath, navigationFor } from "@/lib/navigation";
+import { watchHref as trainingWatchHref } from "@/lib/training-view";
 import type { PackageState } from "@/lib/services-api";
 import type {
   ClarificationOption,
@@ -302,6 +303,41 @@ const guidance: Record<string, PanelKey> = {
 
 type OrderRead = Extract<WorkspaceResult, { action: "local_order_read" }>;
 type StockRead = Extract<WorkspaceResult, { action: "product_stock_read" }>;
+type TrainingAsk = Extract<WorkspaceResult, { action: "training_ask" }>;
+
+/** An answer from a training video: the text and one "Watch from mm:ss" link per source. */
+export interface TrainingAnswerView {
+  kind: "training_answer";
+  text: string;
+  sources: { itemId: string; title: string; seconds: number; label: string }[];
+}
+
+/** `mm:ss` as the server writes the times in the answer ("at 03:15"); minutes keep counting past 59. */
+function clock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function trainingAnswerView(result: TrainingAsk, language: Language): TrainingAnswerView {
+  return {
+    kind: "training_answer",
+    text: result.markdown,
+    sources: result.sources.map((source) => ({
+      itemId: source.item_id,
+      title: source.title,
+      seconds: source.start_seconds,
+      label: panelText(language, "watch_from", { time: clock(source.start_seconds) }),
+    })),
+  };
+}
+
+/**
+ * Where "Watch from" opens: the video's page at the second, under the viewer's own base (a platform
+ * admin keeps the company in the URL).
+ */
+export function watchHref(itemId: string, seconds: number, me: Me, tenantId: string | null): string {
+  return trainingWatchHref(itemId, seconds, me.role === "platform_admin", tenantId);
+}
 
 /** The stock card: one row per variant with its exact count, the total and the server's line. */
 export interface StockView {
@@ -358,7 +394,8 @@ export type ResultView =
   | { kind: "navigate"; tab: TabKey; resume: boolean }
   | { kind: "directory"; candidates: PersonOut[] }
   | { kind: "clarification"; question: string; options: ClarificationOption[] }
-  | StockView;
+  | StockView
+  | TrainingAnswerView;
 
 export function resultView(result: WorkspaceResult, language: Language = "en"): ResultView {
   if ("status" in result && result.status === "denied")
@@ -393,6 +430,8 @@ export function resultView(result: WorkspaceResult, language: Language = "en"): 
       return { kind: "clarification", question: result.question, options: result.options };
     case "product_stock_read":
       return stockView(result, language);
+    case "training_ask":
+      return trainingAnswerView(result, language);
   }
 }
 

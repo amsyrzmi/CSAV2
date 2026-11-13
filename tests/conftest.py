@@ -9,6 +9,7 @@ tests exercise the real migration path.
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -51,6 +52,21 @@ def _docker_available() -> bool:
 requires_docker = pytest.mark.skipif(
     not _docker_available(),
     reason="Docker is not available on this host",
+)
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+# CI installs the pinned ffmpeg and sets CSA_REQUIRE_FFMPEG=1: there a missing ffmpeg must fail
+# the run loudly, not skip every video test.
+if os.environ.get("CSA_REQUIRE_FFMPEG") == "1" and not _ffmpeg_available():
+    raise RuntimeError("CSA_REQUIRE_FFMPEG=1 but ffmpeg or ffprobe is not on PATH")
+
+requires_ffmpeg = pytest.mark.skipif(
+    not _ffmpeg_available(),
+    reason="ffmpeg and ffprobe are not on PATH",
 )
 
 

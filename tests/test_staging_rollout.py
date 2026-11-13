@@ -34,7 +34,8 @@ RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.La
 REVISION = "org.opencontainers.image.revision"
 RESTART = (
     "docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 "
-    "csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1"
+    "csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1 "
+    "csa-staging-training-worker-1"
 )
 RERUN = "Re-run plan, then apply, once the cause is fixed."
 SOCKET_PREFIX = f"docker --host {sr.SOCKET}"
@@ -441,7 +442,7 @@ def test_plan_tolerates_stopped_containers(
     runner = staging_runner(running=False, secret_files=paths)
     assert sr.main(["plan"], runner=runner) == 0
     out = capsys.readouterr().out
-    assert out.count("unknown (not running)") == 4
+    assert out.count("unknown (not running)") == 5
 
 
 def test_plan_shows_rollback_digests_when_running(
@@ -450,7 +451,7 @@ def test_plan_shows_rollback_digests_when_running(
     paths = make_secret_files(rollout_env, "staging_owner_dsn")
     assert sr.main(["plan"], runner=staging_runner(secret_files=paths)) == 0
     out = capsys.readouterr().out
-    assert out.count(RUNNING_REF) == 4
+    assert out.count(RUNNING_REF) == 5
     assert "docker.io/other" not in out
     assert "Rollback references (current containers):" in out
     assert "running now" not in out
@@ -740,8 +741,9 @@ def rig_factory(
     return make
 
 
+STOP_ALL = ["stop", "gateway", "frontend", "worker", "delivery", "training-worker"]
 MIGRATING = {"applied": ("0484", "0485"), "checkout": ("0484", "0485", "0486", "0487")}
-UP_ALL = ["up gateway", "up worker", "up delivery", "up frontend"]
+UP_ALL = ["up gateway", "up worker", "up delivery", "up frontend", "up training-worker"]
 
 
 def test_parse_migrations() -> None:
@@ -802,7 +804,7 @@ def test_apply_pulls_by_digest_and_recreates_with_the_documented_argv(
     assert [*sr.compose_base(), "ps", "--format", "{{.Service}} {{.Status}}"] in rig.runner.argvs
 
 
-def test_apply_with_migrations_stops_all_four_then_migrates_then_verifies(
+def test_apply_with_migrations_stops_every_app_service_then_migrates_then_verifies(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
     rig = rig_factory(**MIGRATING)
@@ -823,7 +825,7 @@ def test_apply_with_migrations_stops_all_four_then_migrates_then_verifies(
         "ps",
     ]
     stop = next(a for a in rig.runner.argvs if step_label(a) == "stop")
-    assert stop[len(sr.compose_base()) :] == ["stop", "gateway", "frontend", "worker", "delivery"]
+    assert stop[len(sr.compose_base()) :] == STOP_ALL
     migrate = next(a for a in rig.runner.argvs if step_label(a) == "migrate")
     assert migrate == [
         *sr.compose_base(),
@@ -924,7 +926,7 @@ def test_migrate_failure_stops_without_retry_or_recreate(
     assert seen[seen.index("migrate") + 1 :] == ["select"]  # the re-read decides the recovery
     assert "migrate exit=1" in rig.lines
     assert "Stopped at migrate:" in rig.text
-    assert "gateway, frontend, worker and delivery are stopped" in rig.text
+    assert "gateway, frontend, worker, delivery and training-worker are stopped" in rig.text
     assert rig.lines[rig.lines.index("To bring the previous version back:") + 1] == RESTART
     assert "Rollback images" not in rig.text
     assert "Migrations were applied" not in rig.text
@@ -940,14 +942,14 @@ def test_migrate_must_record_every_pending_version(
     assert not any(label.startswith("up") for label in labels(rig.runner))
 
 
-def test_failed_check_stops_all_four_and_exits_nonzero(
+def test_failed_check_stops_every_app_service_and_exits_nonzero(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
     rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "check", ok("3\n"))])
     assert rig.apply() == 1
     last = next(a for a in reversed(rig.runner.argvs) if step_label(a))
     assert step_label(last) == "stop"
-    assert last[len(sr.compose_base()) :] == ["stop", "gateway", "frontend", "worker", "delivery"]
+    assert last[len(sr.compose_base()) :] == STOP_ALL
     assert "Stopped at check 0485.sql: printed 3, expected 0" in rig.text
     assert "services stopped; investigate before the console is used again" in rig.text
 
@@ -1121,8 +1123,9 @@ def test_never_healthy_fails_after_timeout(rig_factory: Callable[..., ApplyRig])
     assert set(rig.sleeps) == {5}
     assert "Stopped at recreate gateway:" in rig.text
     assert (
-        "gateway, frontend, worker and delivery: gateway did not start on the new image; "
-        "worker, delivery and frontend are still stopped; the console is unavailable"
+        "gateway, frontend, worker, delivery and training-worker: gateway did not start on the "
+        "new image; worker, delivery, frontend and training-worker are still stopped; the console "
+        "is unavailable"
     ) in rig.lines
     assert "Rollback images:" not in rig.text
     assert RUNNING_REF not in rig.text
@@ -1143,9 +1146,9 @@ def test_recreate_failure_after_a_migration_says_fix_forward(
     assert rig.apply(["0486", "0487"]) == 1
     assert "Stopped at recreate worker:" in rig.text
     assert (
-        "gateway, frontend, worker and delivery: gateway is up on the new images; "
-        "worker did not start on the new image; delivery and frontend are still stopped; "
-        "the console is unavailable"
+        "gateway, frontend, worker, delivery and training-worker: gateway is up on the new "
+        "images; worker did not start on the new image; delivery, frontend and training-worker "
+        "are still stopped; the console is unavailable"
     ) in rig.lines
     assert (
         "Migrations were applied: 0486, 0487. The previous images fail /readyz against this "
@@ -1464,13 +1467,14 @@ def test_apply_announces_each_step_as_it_starts(rig_factory: Callable[..., Apply
     assert announced == [
         "Checking compose config…",
         "Pulling and verifying images…",
-        "Stopping gateway, frontend, worker, delivery…",
+        "Stopping gateway, frontend, worker, delivery, training-worker…",
         "Applying migrations 0486, 0487…",
         "Confirming migrations recorded…",
         "Recreating gateway…",
         "Recreating worker…",
         "Recreating delivery…",
         "Recreating frontend…",
+        "Recreating training-worker…",
         "Checking readiness…",
         "Running check 0485.sql…",
     ]
@@ -1562,9 +1566,9 @@ def test_image_only_recreate_failure_offers_the_previous_sha(
     )
     assert rig.apply() == 1
     assert (
-        "gateway, frontend, worker and delivery: gateway is up on the new images; "
-        "worker did not start on the new image; delivery and frontend still run the previous "
-        "images"
+        "gateway, frontend, worker, delivery and training-worker: gateway is up on the new "
+        "images; worker did not start on the new image; delivery, frontend and training-worker "
+        "still run the previous images"
     ) in rig.lines
     start = rig.lines.index("Rollback images:")
     assert rig.lines[start + 1] == f"  gateway: {RUNNING_REF} (revision {PREV_SHA})"

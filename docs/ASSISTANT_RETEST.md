@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 76 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 141 when cases are re-planned.
+- A run is about 78 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 145 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -371,6 +371,13 @@ row names them, the fields the model wrote (compared without case), never the se
 | Saya nak mohon kursus latihan pertolongan cemas | Staff with no employee link | An answer, no training request | `training-ms-3` |
 | i want to send a request for ComptiaA+ training | Staff with no employee link (the owner's staging phrase) | An answer, no training request and no email action | `training-en-3` |
 | I want to request a fire safety training | Staff with no employee link | The answer gives the reason (no linked employee record) | manual |
+| What does the onboarding video say about refund requests? | Training library active | A question about a video (training_ask), never a training request or a question back | `training_ask-en-1` |
+| Apa yang video onboarding cakap tentang permintaan bayaran balik? | Training library active | A question about a video (training_ask), never a training request or a question back | `training_ask-ms-1` |
+| What does this video say about refunds? | A ready video with speech open in the Training library | An answer from the video with "From *title*, at mm:ss", and a "Watch from mm:ss" link per time that opens the video there | manual |
+| What does the onboarding video say about parking? | A ready video that does not mention parking | It says the video does not cover it, with no time and no link | manual |
+| What does the onboarding video say? | Several ready videos with "onboarding" in the title | A question: which video, with up to 5 titles to pick | manual |
+| What does this video say? | Admin, a video still being processed open | "That video is still being processed." | manual |
+| What does the forklift video say? | No video with that title | "I couldn't find a training video called forklift." | manual |
 
 ## Inbox decision
 

@@ -193,6 +193,7 @@ def test_every_replica_of_every_app_service_is_inspected() -> None:
         "csa-prod-worker-2",
         "csa-prod-delivery-1",
         "csa-prod-frontend-1",
+        "csa-prod-training-worker-1",
     }
 
 
@@ -457,7 +458,12 @@ PREVIOUS = {
     "worker": PREV_PYTHON,
     "delivery": PREV_PYTHON,
     "frontend": PREV_FRONTEND,
+    # The training worker runs the same python image as gateway, worker and delivery.
+    "training-worker": PREV_PYTHON,
 }
+# The staging training worker's container: a service name with a dash is no keyword argument, so
+# the cases below give it its image through ``containers``.
+TRAINING_WORKER = sr.container_names(STAGING, {}, "training-worker")[0]
 ROLLED_BACK = [
     f"Rolling back to {PREV_PYTHON}…",
     f"Rolling back to {PREV_FRONTEND}…",
@@ -582,10 +588,13 @@ def test_a_readiness_failure_on_an_image_only_deploy_rolls_back_and_still_exits_
     ]
     ups = up_calls(rig)
     python, frontend = sr.IMAGE_ENV["python"], sr.IMAGE_ENV["frontend"]
-    assert [(env[python], env[frontend]) for _, env in ups[:4]] == [(PYTHON_REF, FRONTEND_REF)] * 4
-    assert [(env[python], env[frontend]) for _, env in ups[4:]] == [
+    count = len(sr.STAGING.app_services)
+    assert [(env[python], env[frontend]) for _, env in ups[:count]] == [
+        (PYTHON_REF, FRONTEND_REF)
+    ] * count
+    assert [(env[python], env[frontend]) for _, env in ups[count:]] == [
         (PREV_PYTHON, PREV_FRONTEND)
-    ] * 4
+    ] * count
     # The rollback env is a copy: the plan's env still names the deploy's images.
     (plan,) = plans
     assert (plan.env[python], plan.env[frontend]) == (PYTHON_REF, FRONTEND_REF)
@@ -624,9 +633,17 @@ def test_no_rollback_when_a_migration_was_applied(
     "previous",
     [
         lambda: Previous(frontend=None),
-        lambda: Previous(gateway=None, worker=None, delivery=None, frontend=None),
+        lambda: Previous(
+            gateway=None,
+            worker=None,
+            delivery=None,
+            frontend=None,
+            containers={TRAINING_WORKER: None},
+        ),
+        # The first deploy that carries the training worker: it ran no registry image before.
+        lambda: Previous(containers={TRAINING_WORKER: None}),
     ],
-    ids=["one-local-tag", "first-deploy-on-local-tags"],
+    ids=["one-local-tag", "first-deploy-on-local-tags", "first-deploy-of-the-training-worker"],
 )
 def test_no_rollback_when_a_previous_image_is_unknown(
     rig_factory: Callable[..., ApplyRig], previous: Callable[[], Previous]
@@ -649,7 +666,12 @@ def test_no_rollback_when_the_three_python_services_ran_different_images(
 def test_no_rollback_when_the_previous_images_are_the_planned_ones(
     rig_factory: Callable[..., ApplyRig],
 ) -> None:
-    same = Previous(gateway=PYTHON_REF, worker=PYTHON_REF, delivery=PYTHON_REF)
+    same = Previous(
+        gateway=PYTHON_REF,
+        worker=PYTHON_REF,
+        delivery=PYTHON_REF,
+        containers={TRAINING_WORKER: PYTHON_REF},
+    )
     rig = rig_factory(overrides=[*same.rules(), NEVER_READY])
     assert rig.apply() == 1
     assert_no_rollback(rig)
@@ -835,6 +857,7 @@ PROD_CONTAINERS = [
     "csa-prod-worker-2",
     "csa-prod-delivery-1",
     "csa-prod-frontend-1",
+    "csa-prod-training-worker-1",
 ]
 
 
@@ -850,8 +873,9 @@ def test_production_rolls_back_every_worker_replica_and_backs_up_once(
     assert rig.runner.argvs.count(BACKUP_ARGV) == 1
     ups = rig.ups()
     python = sr.IMAGE_ENV["python"]
-    assert [service for service, _ in ups] == ["gateway", "worker", "delivery", "frontend"] * 2
-    assert [env[python] for _, env in ups[4:]] == [PREV_PYTHON] * 4
+    services = ["gateway", "worker", "delivery", "frontend", "training-worker"]
+    assert [service for service, _ in ups] == services * 2
+    assert [env[python] for _, env in ups[len(services) :]] == [PREV_PYTHON] * len(services)
     # After the rollback's recreates every replica is checked healthy on its previous image.
     last_up = max(i for i, argv in enumerate(rig.runner.argvs) if "up" in argv)
     checked = [
@@ -875,7 +899,13 @@ def test_production_no_rollback_when_worker_replica_2_differs(
     previous = Previous(rig.target, containers=containers, states=states)
     rig.runner.rules[:0] = [*previous.rules(), NEVER_READY]
     assert rig.apply_image_only() == 1
-    assert [service for service, _ in rig.ups()] == ["gateway", "worker", "delivery", "frontend"]
+    assert [service for service, _ in rig.ups()] == [
+        "gateway",
+        "worker",
+        "delivery",
+        "frontend",
+        "training-worker",
+    ]
     assert not any(line.startswith(("Rolling back", "Rolled back")) for line in rig.lines)
     assert rig.runner.argvs.count(BACKUP_ARGV) == 1
     assert rig.lines[-1] == RERUN
