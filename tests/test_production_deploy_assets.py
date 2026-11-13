@@ -44,9 +44,13 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 MIGRATIONS = "0486,0487"
 DIGEST = "0123456789ab"
+IMAGE_HEX = "0123456789abcdef" * 4
+PY_DIGEST = "sha256:" + IMAGE_HEX
+FE_DIGEST = "sha256:" + "fedcba9876543210" * 4
+IMAGE_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$"
 
 # The entry script's arguments, in order; the two Systems Manager documents each fix the action.
-PARAMETERS = ("action", "sha", "migrations", "hostDigest")
+PARAMETERS = ("action", "sha", "migrations", "hostDigest", "pythonDigest", "frontendDigest")
 
 # One table of values that must be refused, keyed by argument (and Systems Manager parameter)
 # name. The entry script, ssm_run.sh and the document pattern tests all read it, so the layers
@@ -69,14 +73,42 @@ BAD_VALUES: dict[str, list[str]] = {
     "migrations": ["0486;id", "0486,", "abc", "04861", "048\u0666"],
     "hostDigest": [DIGEST[:-1], DIGEST + "0", DIGEST.upper(), "$(id)", DIGEST[:-1] + "\u0661"],
 }
-# Refusals beyond the per-value patterns: the digest is required for apply and empty for plan.
+# Both image digests share one pattern, so one list of refused values serves both.
+for _name in ("pythonDigest", "frontendDigest"):
+    BAD_VALUES[_name] = [
+        ("sha256:" + IMAGE_HEX).upper(),
+        "sha256:" + IMAGE_HEX.upper(),
+        "sha256:" + IMAGE_HEX[:63],
+        "sha256:" + IMAGE_HEX + "0",
+        "sha512:" + IMAGE_HEX,
+        PY_DIGEST + "\n",
+        "$(id)",
+        "sha256:" + IMAGE_HEX[:-1] + "\u0660",
+    ]
+# Refusals beyond the per-value patterns: the host digest is required for apply and empty for
+# plan, and the two image digests come together (six arguments) or not at all (four at most).
 ENTRY_ONLY_BAD_ARGUMENTS = [
     pytest.param(["apply", SHA, "", ""], id="apply-without-digest"),
     pytest.param(["plan", SHA, "", DIGEST], id="plan-with-digest"),
-    pytest.param(["plan", SHA, "", "", "extra"], id="too-many-arguments"),
+    pytest.param(["plan", SHA, "", "", "extra"], id="five-arguments"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST], id="one-image-digest"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST, FE_DIGEST, "extra"], id="seven-arguments"),
+    pytest.param(["plan", SHA, "", DIGEST, PY_DIGEST, FE_DIGEST], id="plan-with-host-digest"),
+    pytest.param(["apply", SHA, "", "", PY_DIGEST, FE_DIGEST], id="apply-without-host-digest"),
+    pytest.param(["plan", SHA, "", "", "", FE_DIGEST], id="plan-python-digest-empty"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST, ""], id="plan-frontend-digest-empty"),
+    pytest.param(["apply", SHA, "", DIGEST, "", FE_DIGEST], id="apply-python-digest-empty"),
+    pytest.param(["apply", SHA, "", DIGEST, PY_DIGEST, ""], id="apply-frontend-digest-empty"),
     pytest.param(["plan"], id="no-sha"),
 ]
-DEFAULTS = {"action": "apply", "sha": SHA, "migrations": MIGRATIONS, "hostDigest": DIGEST}
+DEFAULTS = {
+    "action": "apply",
+    "sha": SHA,
+    "migrations": MIGRATIONS,
+    "hostDigest": DIGEST,
+    "pythonDigest": PY_DIGEST,
+    "frontendDigest": FE_DIGEST,
+}
 
 
 def _bad_argument_vectors() -> list[object]:
@@ -158,20 +190,15 @@ case "$2" in
     *) exit 2 ;;
 esac
 """
-# The gh stub serves `gh api <path>` from JSON files in $STUB_GH_DIR.
+# The gh stub answers only the tip read the apply job makes: `gh api repos/<repo>/commits/main
+# --jq .sha`. It prints $STUB_TIP, or fails when $STUB_GH_FAIL is set.
 GH_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'gh\t%s\n' "$*" >> "$STUB_LOG"
-IFS=' '
-[[ "$1" == api && $# -eq 2 ]] || exit 2
-case "$2" in
-    *"/statuses?per_page=100")
-        id="${2%/statuses*}"
-        cat "$STUB_GH_DIR/statuses-${id##*/}.json"
-        ;;
-    *"/deployments?environment=staging&per_page=100") cat "$STUB_GH_DIR/deployments.json" ;;
-    *) exit 2 ;;
-esac
+[[ $# -eq 4 && "$1" == api && "$2" == "repos/example/repo/commits/main" ]] || exit 2
+[[ "$3" == --jq && "$4" == .sha ]] || exit 2
+[[ -z "${STUB_GH_FAIL:-}" ]] || { echo "gh: boom" >&2; exit 1; }
+printf '%s\n' "$STUB_TIP"
 """
 
 
@@ -189,7 +216,6 @@ class Harness:
         self.log_dir = tmp_path / "logs"
         self.python = tmp_path / "python-stub"
         self.polls = tmp_path / "polls"
-        self.gh_dir = tmp_path / "gh"
         self._write_stub(self.bin / "git", GIT_STUB)
         self._write_stub(self.bin / "aws", AWS_STUB)
         self._write_stub(self.bin / "gh", GH_STUB)
@@ -330,6 +356,96 @@ def test_entry_apply_without_migrations_omits_the_flag(harness: Harness) -> None
     ]
 
 
+ROLLOUT = ["python", "-m", "scripts.staging_rollout", "--target", "production"]
+IMAGE_OPTIONS = ["--python-digest", PY_DIGEST, "--frontend-digest", FE_DIGEST]
+
+
+@pytest.mark.parametrize(
+    ("args", "rollout"),
+    [
+        pytest.param(
+            ["plan", SHA, "", "", PY_DIGEST, FE_DIGEST], ["plan", *IMAGE_OPTIONS], id="plan"
+        ),
+        pytest.param(
+            ["apply", SHA, MIGRATIONS, DIGEST, PY_DIGEST, FE_DIGEST],
+            [
+                "apply",
+                "--sha",
+                SHA,
+                "--migrations",
+                MIGRATIONS,
+                "--host-digest",
+                DIGEST,
+                *IMAGE_OPTIONS,
+            ],
+            id="apply-with-migrations",
+        ),
+        pytest.param(
+            ["apply", SHA, "", DIGEST, PY_DIGEST, FE_DIGEST],
+            ["apply", "--sha", SHA, "--host-digest", DIGEST, *IMAGE_OPTIONS],
+            id="apply-without-migrations",
+        ),
+    ],
+)
+def test_entry_passes_both_digests_to_the_rollout(
+    harness: Harness, args: list[str], rollout: list[str]
+) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 0, result.stderr
+    assert [call for call in harness.calls() if call[0] == "python"] == [[*ROLLOUT, *rollout]]
+
+
+@pytest.mark.parametrize(
+    ("args", "rollout"),
+    [
+        pytest.param(["plan", SHA], ["plan"], id="plan-two-arguments"),
+        pytest.param(["plan", SHA, ""], ["plan"], id="plan-three-arguments"),
+        pytest.param(["plan", SHA, "", ""], ["plan"], id="plan-four-arguments"),
+        pytest.param(
+            ["apply", SHA, MIGRATIONS, DIGEST],
+            ["apply", "--sha", SHA, "--migrations", MIGRATIONS, "--host-digest", DIGEST],
+            id="apply-with-migrations",
+        ),
+        pytest.param(
+            ["apply", SHA, "", DIGEST],
+            ["apply", "--sha", SHA, "--host-digest", DIGEST],
+            id="apply-without-migrations",
+        ),
+    ],
+)
+def test_entry_without_digests_runs_the_old_path(
+    harness: Harness, args: list[str], rollout: list[str]
+) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 0, result.stderr
+    (call,) = [call for call in harness.calls() if call[0] == "python"]
+    assert call == [*ROLLOUT, *rollout]
+    assert "--python-digest" not in call
+    assert "--frontend-digest" not in call
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["plan", SHA, "", "", PY_DIGEST], id="plan-five-arguments"),
+        pytest.param(["apply", SHA, "", DIGEST, FE_DIGEST], id="apply-five-arguments"),
+        pytest.param(["plan", SHA, "", "", PY_DIGEST, ""], id="plan-frontend-empty"),
+        pytest.param(["plan", SHA, "", "", "", FE_DIGEST], id="plan-python-empty"),
+        pytest.param(["apply", SHA, "", DIGEST, "", FE_DIGEST], id="apply-python-empty"),
+        pytest.param(["apply", SHA, "", DIGEST, PY_DIGEST, ""], id="apply-frontend-empty"),
+    ],
+)
+def test_entry_refuses_one_digest_without_the_other(harness: Harness, args: list[str]) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 64
+    assert b"both image digests" in result.stderr
+    assert harness.calls() == []
+    assert not harness.log_dir.exists()
+
+
 def test_entry_tees_output_to_a_named_log_and_returns_the_rollout_status(
     harness: Harness,
 ) -> None:
@@ -455,17 +571,25 @@ def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
 DOCUMENTS = {"plan": PLAN_DOCUMENT, "apply": APPLY_DOCUMENT}
 DOCUMENT_NAMES = {"plan": "csa-production-plan", "apply": "csa-production-apply"}
 DOCUMENT_PATTERNS = {
-    "plan": {"sha": "^[0-9a-f]{40}$"},
+    "plan": {
+        "sha": "^[0-9a-f]{40}$",
+        "pythonDigest": IMAGE_DIGEST_PATTERN,
+        "frontendDigest": IMAGE_DIGEST_PATTERN,
+    },
     "apply": {
         "sha": "^[0-9a-f]{40}$",
         "migrations": "^([0-9]{4}(,[0-9]{4})*)?$",
         "hostDigest": "^[0-9a-f]{12}$",
+        "pythonDigest": IMAGE_DIGEST_PATTERN,
+        "frontendDigest": IMAGE_DIGEST_PATTERN,
     },
 }
 ENTRY_COMMAND = "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy "
 DOCUMENT_COMMANDS = {
-    "plan": ENTRY_COMMAND + 'plan "{{ sha }}" "" ""',
-    "apply": ENTRY_COMMAND + 'apply "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"',
+    "plan": ENTRY_COMMAND + 'plan "{{ sha }}" "" "" "{{ pythonDigest }}" "{{ frontendDigest }}"',
+    "apply": ENTRY_COMMAND
+    + 'apply "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"'
+    + ' "{{ pythonDigest }}" "{{ frontendDigest }}"',
 }
 
 
@@ -492,7 +616,7 @@ def test_document_parameters_have_the_exact_patterns_and_the_one_command(kind: s
     (step,) = document["mainSteps"]
     assert step["action"] == "aws:runShellScript"
     assert step["name"] == "deploy"
-    assert step["inputs"]["timeoutSeconds"] == "2400"
+    assert step["inputs"]["timeoutSeconds"] == "7200"
     commands = step["inputs"]["runCommand"]
     assert commands == ["set -eu", DOCUMENT_COMMANDS[kind]]
 
@@ -518,13 +642,13 @@ def test_document_timeout_outlasts_the_runner_and_fits_inside_the_job(kind: str)
     runner_wait = _ssm_run_default("SSM_MAX_SECONDS")
     job_minutes = [int(m) for m in re.findall(r"^\s+timeout-minutes: (\d+)$", _workflow(), re.M)]
 
-    assert timeout == 2400
-    assert runner_wait == 2100
+    assert timeout == 7200
+    assert runner_wait == 6900
     assert "SSM_MAX_POLLS" not in SSM_RUN.read_text()
     # A slow apply must not be killed while the runner still waits for it, and the job must
     # outlive the command.
     assert timeout > runner_wait
-    assert job_minutes == [45, 45]
+    assert job_minutes == [130, 130]
     assert all(runner_wait < timeout < minutes * 60 for minutes in job_minutes)
 
 
@@ -593,6 +717,8 @@ SSM_ENV = {
     "AWS_REGION": REGION,
     "INSTANCE_ID": INSTANCE,
     "SSM_POLL_SECONDS": "0",
+    "PYTHON_DIGEST": PY_DIGEST,
+    "FRONTEND_DIGEST": FE_DIGEST,
     "AWS_ACCESS_KEY_ID": "test-access-key-id",
     "AWS_SECRET_ACCESS_KEY": SECRET,
     "AWS_SESSION_TOKEN": TOKEN,
@@ -657,6 +783,8 @@ def test_ssm_run_fails_closed_without_instance_or_region(
         ("SSM_MAX_SECONDS", "0"),
         ("SSM_MAX_SECONDS", "-1"),
         ("SSM_MAX_SECONDS", "1.5"),
+        ("PYTHON_DIGEST", "sha256:abc"),
+        ("FRONTEND_DIGEST", FE_DIGEST + "\n"),
     ],
 )
 def test_ssm_run_refuses_malformed_settings(harness: Harness, name: str, value: str) -> None:
@@ -675,7 +803,13 @@ SSM_ONLY_BAD_ARGUMENTS = [pytest.param(["plan", SHA, MIGRATIONS, ""], id="plan-w
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("args", _bad_argument_vectors() + SSM_ONLY_BAD_ARGUMENTS)
 def test_ssm_run_rejects_bad_arguments(harness: Harness, args: list[str], locale: str) -> None:
-    result = harness.ssm(args, LC_ALL=locale, LANG=locale)
+    # The entry script takes the image digests as arguments five and six; ssm_run.sh reads them
+    # from the environment, so the same vectors are replayed that way.
+    env = {"LC_ALL": locale, "LANG": locale}
+    if len(args) == len(PARAMETERS):
+        env |= {"PYTHON_DIGEST": args[4], "FRONTEND_DIGEST": args[5]}
+        args = args[:4]
+    result = harness.ssm(args, **env)
 
     assert result.returncode == 64
     assert harness.calls() == []
@@ -695,7 +829,13 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
     assert result.returncode == code, result.stderr
     send, poll = harness.aws_calls()
     assert send == _send_argv("csa-production-apply", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA], "migrations": [MIGRATIONS], "hostDigest": [DIGEST]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "migrations": [MIGRATIONS],
+        "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
     assert poll == POLL_ARGV
     assert result.stdout == b"remote output\n"
     assert b"remote stderr\n" in result.stderr
@@ -708,14 +848,19 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
 
 def test_ssm_run_apply_without_migrations_omits_the_parameter(harness: Harness) -> None:
     # The apply document defaults migrations to "", so an empty list is left out rather than
-    # sent as an explicit empty String; sha and hostDigest are always sent.
+    # sent as an explicit empty String; the other parameters are always sent.
     assert _document("apply")["parameters"]["migrations"]["default"] == ""
     result = harness.ssm(["apply", SHA, "", DIGEST])
 
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
     assert send == _send_argv("csa-production-apply", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA], "hostDigest": [DIGEST]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
 
 
 @pytest.mark.parametrize("migrations", ["0486", MIGRATIONS])
@@ -728,10 +873,12 @@ def test_ssm_run_apply_sends_a_non_empty_migrations_list(harness: Harness, migra
         "sha": [SHA],
         "migrations": [migrations],
         "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
     }
 
 
-def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbatim(
+def test_ssm_run_plan_sends_the_sha_and_digests_to_the_plan_document_and_prints_verbatim(
     harness: Harness,
 ) -> None:
     remote = "Target SHA: x\n  indented   line\n\nno final newline"
@@ -740,8 +887,50 @@ def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbati
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
     assert send == _send_argv("csa-production-plan", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
     assert result.stdout == remote.encode()
+
+
+@pytest.mark.parametrize(
+    ("args", "document"),
+    [
+        pytest.param(["plan", SHA], "csa-production-plan", id="plan"),
+        pytest.param(["apply", SHA, MIGRATIONS, DIGEST], "csa-production-apply", id="apply"),
+    ],
+)
+def test_ssm_run_sends_both_digests_for_plan_and_apply(
+    harness: Harness, args: list[str], document: str
+) -> None:
+    other_python = "sha256:" + "1" * 64
+    other_frontend = "sha256:" + "2" * 64
+    result = harness.ssm(args, PYTHON_DIGEST=other_python, FRONTEND_DIGEST=other_frontend)
+
+    assert result.returncode == 0, result.stderr
+    send, _poll = harness.aws_calls()
+    assert send == _send_argv(document, send[9])
+    parameters = json.loads(send[9])
+    assert parameters["pythonDigest"] == [other_python]
+    assert parameters["frontendDigest"] == [other_frontend]
+
+
+@pytest.mark.parametrize("args", [["plan", SHA], ["apply", SHA, "", DIGEST]], ids=["plan", "apply"])
+@pytest.mark.parametrize("name", ["PYTHON_DIGEST", "FRONTEND_DIGEST"])
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_ssm_run_refuses_missing_digest_env_and_sends_nothing(
+    harness: Harness, args: list[str], name: str, value: str | None
+) -> None:
+    if value is None:
+        result = harness.ssm(args, unset=[name])
+    else:
+        result = harness.ssm(args, **{name: value})
+
+    assert result.returncode == 64
+    assert name.encode() in result.stderr
+    assert harness.calls() == []
 
 
 def test_ssm_run_polls_through_inprogress_and_times_out(harness: Harness) -> None:
@@ -1188,7 +1377,11 @@ def test_deploy_files_hold_no_account_instance_region_or_address(path: Path) -> 
 
 # --- the deploy-production workflow -------------------------------------------------------------
 
-JOB_PERMISSIONS = ["contents: read", "deployments: read", "id-token: write"]
+# The plan job also reads the Actions runs of the ci workflow (the resolver's CI check).
+JOB_PERMISSIONS = {
+    "plan": ["actions: read", "contents: read", "deployments: read", "id-token: write"],
+    "apply": ["contents: read", "deployments: read", "id-token: write"],
+}
 PIN = re.compile(r"^\s*(?:- )?uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
 
 
@@ -1271,7 +1464,7 @@ def test_workflow_triggers_permissions_and_pinning() -> None:
     assert "required: false" in sha_input
     assert "type: string" in sha_input
     (description,) = [line for line in sha_input if line.startswith("description:")]
-    assert "empty = newest staged commit" in description
+    assert "empty = the tip of main" in description
     assert _children(text, "permissions:") == ["contents: read"]
     assert _children(text, "concurrency:") == [
         "group: deploy-production",
@@ -1283,7 +1476,7 @@ def test_workflow_triggers_permissions_and_pinning() -> None:
     jobs = _jobs()
     assert list(jobs) == ["plan", "apply"]
     for name, body in jobs.items():
-        assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS, name
+        assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS[name], name
         assert "    runs-on: ubuntu-24.04\n" in body
         assert "    if: github.ref == 'refs/heads/main'\n" in body, name
     assert "    environment: production-plan\n" in jobs["plan"]
@@ -1306,7 +1499,7 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
     text = _workflow()
     blocks = _run_blocks(text)
 
-    assert len(blocks) == 6
+    assert len(blocks) == 8
     for block in blocks:
         assert block.startswith("set -euo pipefail\n"), block
         assert "${{" not in block, block
@@ -1315,6 +1508,9 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
         "sha: ${{ steps.parse.outputs.sha }}",
         "migrations: ${{ steps.parse.outputs.migrations }}",
         "host_digest: ${{ steps.parse.outputs.host_digest }}",
+        "python_digest: ${{ steps.target.outputs.python_digest }}",
+        "frontend_digest: ${{ steps.target.outputs.frontend_digest }}",
+        "explicit: ${{ steps.target.outputs.explicit }}",
     }
     assert set(_children(text, "    outputs:")) == outputs
     for line in text.splitlines():
@@ -1330,13 +1526,15 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
             ), line
 
 
-def _variables_env(**overrides: str | None) -> dict[str, str]:
+def _variables_env(job: str, **overrides: str | None) -> dict[str, str]:
     env = {
         "PATH": "/usr/bin:/bin",
         "ROLE_ARN": "arn:aws:iam::<account-id>:role/example",
         "AWS_REGION": REGION,
         "INSTANCE_ID": INSTANCE,
     }
+    if job == "apply":
+        env["PROD_CONSOLE_ORIGIN"] = "https://console.example.test"
     for name, value in overrides.items():
         if value is None:
             env.pop(name)
@@ -1354,11 +1552,14 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
     text = _workflow()
     body = _jobs()[job]
     role, other_role = ROLE_SECRETS[job], ROLE_SECRETS["apply" if job == "plan" else "plan"]
-    assert _children("  job:\n" + body, "    env:") == [
+    expected_env = [
         f"ROLE_ARN: ${{{{ secrets.{role} }}}}",
         "AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}",
         "INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}",
     ]
+    if job == "apply":
+        expected_env.append("PROD_CONSOLE_ORIGIN: ${{ secrets.PROD_CONSOLE_ORIGIN }}")
+    assert _children("  job:\n" + body, "    env:") == expected_env
     assert other_role not in body
     for gone in ("vars.PROD_DEPLOY_ROLE_ARN", "vars.PROD_INSTANCE_ID", "PROD_DEPLOY_ROLE_ARN"):
         assert gone not in text
@@ -1366,17 +1567,22 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
     assert f"role-to-assume: ${{{{ secrets.{role} }}}}" in configure
     assert "aws-region: ${{ vars.PROD_DEPLOY_REGION }}" in configure
     assert "mask-aws-account-id: true" in configure
-    assert _steps(job)[0].startswith("name: Require the deploy variables\n")
+    # Plan resolves the commit first (it needs no AWS variable); apply checks the variables first.
+    names = [step.split("\n", 1)[0] for step in _steps(job)]
+    assert names.index("name: Require the deploy variables") == (2 if job == "plan" else 0)
 
     name = "Require the deploy variables"
-    assert _run_step(job, name, _variables_env(), tmp_path).returncode == 0
-    for variable, setting in [
+    assert _run_step(job, name, _variables_env(job), tmp_path).returncode == 0
+    settings = [
         ("ROLE_ARN", role),
         ("AWS_REGION", "PROD_DEPLOY_REGION"),
         ("INSTANCE_ID", "PROD_INSTANCE_ID"),
-    ]:
+    ]
+    if job == "apply":
+        settings.append(("PROD_CONSOLE_ORIGIN", "PROD_CONSOLE_ORIGIN"))
+    for variable, setting in settings:
         for value in ("", None):
-            result = _run_step(job, name, _variables_env(**{variable: value}), tmp_path)
+            result = _run_step(job, name, _variables_env(job, **{variable: value}), tmp_path)
             assert result.returncode != 0
             assert setting.encode() in result.stderr
 
@@ -1396,109 +1602,107 @@ def test_workflow_runs_the_scripts_from_a_main_checkout(job: str) -> None:
     (configure,) = [i for i, step in enumerate(steps) if "configure-aws-credentials@" in step]
     scripts = [i for i, step in enumerate(steps) if "deploy/production/" in step]
     assert scripts
-    assert checkout < configure < min(scripts)
+    assert checkout < min(scripts)
+    # The instance scripts (and nothing else) need the AWS session.
+    first_ssm = next(i for i, step in enumerate(steps) if "ssm_run.sh" in step)
+    assert checkout < configure < first_ssm
     invoked = re.findall(r"deploy/production/\w+\.sh[^\n>|]*", "".join(steps))
     expected = {
         "plan": [
+            'deploy/production/resolve_commit.sh "$INPUT_SHA" ',
             'deploy/production/ssm_run.sh plan "$SHA" ',
             'deploy/production/parse_plan.sh "$RUNNER_TEMP/plan.txt" "$SHA" ',
         ],
-        "apply": ['deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" '],
+        "apply": [
+            'deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" ',
+            'deploy/production/public_smoke.sh "$PROD_CONSOLE_ORIGIN"',
+        ],
     }
     assert invoked == expected[job]
 
 
-def _resolve(
-    harness: Harness, input_sha: str, *, locale: str = "C"
-) -> subprocess.CompletedProcess[bytes]:
-    harness.gh_dir.mkdir(exist_ok=True)
+# The commit resolution itself (the staged gate, the newest-staged search, the CI, image and
+# main checks, the malformed-input refusals) lives in deploy/production/resolve_commit.sh and is
+# tested in tests/test_production_resolve.py. The workflow tests below cover only the wiring.
+
+RESOLVE_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'resolve_commit\t%s\n' "$*" >> "$STUB_LOG"
+env_line="GH_TOKEN=$GH_TOKEN REPOSITORY=$REPOSITORY"
+printf '%s\n' "$env_line" >> "$STUB_LOG.env"
+printf '%s' "$STUB_RESOLVE_OUTPUT"
+echo "stub message" >&2
+exit "${STUB_RESOLVE_STATUS:-0}"
+"""
+
+
+def test_the_workflow_resolves_with_the_script_after_checking_out_main(harness: Harness) -> None:
+    steps = _steps("plan")
+    assert steps[0].startswith("uses: actions/checkout@")
+    assert _children("      - " + steps[0], "        with:")[0] == "ref: main"
+    resolve = steps[1]
+    assert resolve.startswith("name: Resolve and check the commit\n")
+    assert "id: target\n" in resolve
+    assert _children("      - " + resolve, "        env:") == [
+        "INPUT_SHA: ${{ inputs.sha }}",
+        "GH_TOKEN: ${{ github.token }}",
+        "REPOSITORY: ${{ github.repository }}",
+    ]
+    (block,) = _run_blocks(resolve)
+    assert block == (
+        'set -euo pipefail\ndeploy/production/resolve_commit.sh "$INPUT_SHA" >> "$GITHUB_OUTPUT"\n'
+    )
+    # The old inline shell block (deployments listing and the jq search) is gone.
+    assert "deployments?environment" not in _workflow()
+    assert "Resolve the commit to deploy" not in _workflow()
+
+    # Run it with a stub script: arguments and environment reach it, stdout lands in the output
+    # file, and a failure fails the step.
+    work = harness.root / "work"
+    scripts = work / "deploy" / "production"
+    scripts.mkdir(parents=True)
+    harness._write_stub(scripts / "resolve_commit.sh", RESOLVE_STUB)
+    output = harness.root / "github-output"
     env = harness.env(
-        INPUT_SHA=input_sha,
+        INPUT_SHA="",
         GH_TOKEN="test-token",
         REPOSITORY="example/repo",
-        RUNNER_TEMP=str(harness.root),
-        GITHUB_OUTPUT=str(harness.root / "github-output"),
-        STUB_GH_DIR=str(harness.gh_dir),
-        LC_ALL=locale,
-        LANG=locale,
+        GITHUB_OUTPUT=str(output),
+        STUB_RESOLVE_OUTPUT=f"sha={SHA}\nexplicit=false\n",
     )
-    return _run_step("plan", "Resolve the commit to deploy", env, harness.root)
-
-
-def _deployments(harness: Harness, *deployments: tuple[object, str, list[str]]) -> None:
-    harness.gh_dir.mkdir(exist_ok=True)
-    listing = [{"id": number, "sha": sha} for number, sha, _states in deployments]
-    (harness.gh_dir / "deployments.json").write_text(json.dumps(listing))
-    for number, _sha, states in deployments:
-        statuses = [{"state": state} for state in states]
-        (harness.gh_dir / f"statuses-{number}.json").write_text(json.dumps(statuses))
-
-
-def _github_output(harness: Harness) -> str:
-    path = harness.root / "github-output"
-    return path.read_text() if path.exists() else ""
-
-
-def test_workflow_uses_a_valid_input_sha_without_asking_github(harness: Harness) -> None:
-    result = _resolve(harness, SHA)
-
+    result = _run_step("plan", "Resolve and check the commit", env, work)
     assert result.returncode == 0, result.stderr
-    assert _github_output(harness) == f"sha={SHA}\n"
-    assert harness.calls() == []
+    assert output.read_text() == f"sha={SHA}\nexplicit=false\n"
+    assert harness.calls() == [["resolve_commit", ""]]
+    assert Path(f"{harness.log}.env").read_text() == "GH_TOKEN=test-token REPOSITORY=example/repo\n"
 
-
-@pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("value", [value for value in BAD_VALUES["sha"] if value])
-def test_workflow_refuses_a_bad_input_sha(harness: Harness, value: str, locale: str) -> None:
-    result = _resolve(harness, value, locale=locale)
-
-    assert result.returncode != 0
-    assert _github_output(harness) == ""
-    assert harness.calls() == []
-
-
-def test_workflow_resolves_the_newest_successful_staging_deployment(harness: Harness) -> None:
-    newest, older, oldest = "a" * 40, "b" * 40, "c" * 40
-    _deployments(
-        harness,
-        (3, newest, ["in_progress", "failure"]),
-        (2, older, ["success", "inactive"]),
-        (1, oldest, ["success"]),
+    output.unlink()
+    env = harness.env(
+        INPUT_SHA=SHA,
+        GH_TOKEN="test-token",
+        REPOSITORY="example/repo",
+        GITHUB_OUTPUT=str(output),
+        STUB_RESOLVE_STATUS="1",
     )
-    result = _resolve(harness, "")
+    result = _run_step("plan", "Resolve and check the commit", env, work)
+    assert result.returncode == 1
+    assert b"stub message" in result.stderr  # the script's own message stays in the log
+    assert not output.exists() or output.read_text() == ""
+    assert harness.calls()[-1] == ["resolve_commit", SHA]
 
-    assert result.returncode == 0, result.stderr
-    assert _github_output(harness) == f"sha={older}\n"
-    listing = "repos/example/repo/deployments?environment=staging&per_page=100"
-    assert harness.calls() == [
-        ["gh", "api", listing],
-        ["gh", "api", "repos/example/repo/deployments/3/statuses?per_page=100"],
-        ["gh", "api", "repos/example/repo/deployments/2/statuses?per_page=100"],
+
+def test_the_input_description_says_tip_of_main() -> None:
+    (description,) = [
+        line for line in _children(_workflow(), "      sha:") if line.startswith("description:")
     ]
-
-
-@pytest.mark.parametrize(
-    "deployments",
-    [
-        pytest.param([], id="no-deployments"),
-        pytest.param([(2, "a" * 40, ["failure"]), (1, "b" * 40, [])], id="none-succeeded"),
-        pytest.param([("2; id", "a" * 40, ["success"])], id="malformed-id"),
-        pytest.param([(2, "A" * 40, ["success"])], id="malformed-sha"),
-    ],
-)
-def test_workflow_refuses_when_no_staged_commit_is_found(
-    harness: Harness, deployments: list[tuple[object, str, list[str]]]
-) -> None:
-    _deployments(harness, *deployments)
-    result = _resolve(harness, "")
-
-    assert result.returncode != 0
-    assert _github_output(harness) == ""
+    assert description == 'description: "Full commit SHA on main (empty = the tip of main)"'
+    assert "newest staged" not in _workflow()
 
 
 SSM_RUN_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'ssm_run\t%s\n' "$*" >> "$STUB_LOG"
+printf '%s %s\n' "${PYTHON_DIGEST-unset}" "${FRONTEND_DIGEST-unset}" >> "$STUB_LOG.digests"
 printf '%s' "$STUB_SSM_OUTPUT"
 exit "${STUB_SSM_STATUS:-0}"
 """
@@ -1620,6 +1824,8 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
     output = harness.root / "github-output"
     env = harness.env(
         SHA=SHA,
+        PYTHON_DIGEST=PY_DIGEST,
+        FRONTEND_DIGEST=FE_DIGEST,
         RUNNER_TEMP=str(harness.root),
         GITHUB_STEP_SUMMARY=str(summary),
         GITHUB_OUTPUT=str(output),
@@ -1630,6 +1836,7 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
 
     assert planned.returncode == status
     assert harness.calls() == [["ssm_run", "plan", SHA]]
+    assert Path(f"{harness.log}.digests").read_text() == f"{PY_DIGEST} {FE_DIGEST}\n"
     assert _unbracketed(planned.stdout) == GOOD_PLAN
     assert summary.read_text() == (f"### Production plan for `{SHA}`\n\n````\n{GOOD_PLAN}````\n")
     if status:
@@ -1648,6 +1855,8 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
         SHA=SHA,
         MIGRATIONS=migrations,
         HOST_DIGEST=DIGEST,
+        PYTHON_DIGEST=PY_DIGEST,
+        FRONTEND_DIGEST=FE_DIGEST,
         RUNNER_TEMP=str(harness.root),
         GITHUB_STEP_SUMMARY=str(summary),
         STUB_SSM_OUTPUT="applied\n",
@@ -1657,8 +1866,169 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
 
     assert result.returncode == 3
     assert harness.calls() == [["ssm_run", "apply", SHA, migrations, DIGEST]]
+    assert Path(f"{harness.log}.digests").read_text() == f"{PY_DIGEST} {FE_DIGEST}\n"
     assert _unbracketed(result.stdout) == "applied\n"
     assert summary.read_text() == f"### Production apply of `{SHA}`\n\n````\napplied\n````\n"
+
+
+TIP = "f" * 40
+MOVED_MESSAGE = "main moved to fffffff since this run's plan; start the workflow again"
+CHECK_NAME = "Check the commit is still current"
+
+
+def _tip_check(
+    harness: Harness, *, explicit: str, tip: str = TIP, fail: bool = False, sha: str = SHA
+) -> subprocess.CompletedProcess[bytes]:
+    extra = {"STUB_GH_FAIL": "1"} if fail else {}
+    env = harness.env(
+        SHA=sha,
+        EXPLICIT=explicit,
+        GH_TOKEN="test-token",
+        REPOSITORY="example/repo",
+        STUB_TIP=tip,
+        **extra,
+    )
+    return _run_step("apply", CHECK_NAME, env, harness.root)
+
+
+def test_apply_checks_the_tip_before_the_aws_credentials_step(harness: Harness) -> None:
+    steps = _steps("apply")
+    names = [step.split("\n", 1)[0] for step in steps]
+    check = names.index(f"name: {CHECK_NAME}")
+    (configure,) = [i for i, step in enumerate(steps) if "configure-aws-credentials@" in step]
+    # Before the AWS session and before anything that sends to the instance.
+    assert check < configure
+    assert all(check < i for i, step in enumerate(steps) if "ssm_run.sh" in step)
+    assert _children("      - " + steps[check], "        env:") == [
+        "SHA: ${{ needs.plan.outputs.sha }}",
+        "EXPLICIT: ${{ needs.plan.outputs.explicit }}",
+        "GH_TOKEN: ${{ github.token }}",
+        "REPOSITORY: ${{ github.repository }}",
+    ]
+    assert 'gh api "repos/$REPOSITORY/commits/main"' in _run_blocks(steps[check])[0]
+
+    # Run the step with a stub gh that reports a moved tip.
+    moved = _tip_check(harness, explicit="false")
+    assert moved.returncode != 0
+    assert MOVED_MESSAGE in moved.stderr.decode()
+    assert moved.stdout == b""
+    # It read the tip once and did nothing else.
+    assert harness.calls() == [["gh", "api", "repos/example/repo/commits/main", "--jq", ".sha"]]
+
+
+def test_no_step_can_run_after_a_failed_step() -> None:
+    # A failed check stops the job only because every later step keeps GitHub's default
+    # `success()` condition: one `if: always()` (or `!cancelled()`) on the AWS credentials or the
+    # apply step would let a stale run apply. So no step has an `if:` or `continue-on-error:`;
+    # the only conditions are the two job-level main-only guards.
+    code = [line for line in _workflow().splitlines() if not line.lstrip().startswith("#")]
+    conditions = [line.strip() for line in code if re.match(r"^\s*(?:- )?if:", line)]
+    assert conditions == ["if: github.ref == 'refs/heads/main'"] * 2
+    for job, body in _jobs().items():
+        assert "    if: github.ref == 'refs/heads/main'\n" in body, job
+        for step in _steps(job):
+            assert not re.search(r"^\s*(?:if|continue-on-error):", step, flags=re.MULTILINE), step
+    assert not any("continue-on-error" in line for line in code)
+
+
+def test_apply_tip_check_passes_when_main_is_unchanged_and_fails_closed(harness: Harness) -> None:
+    unchanged = _tip_check(harness, explicit="false", tip=SHA)
+    assert unchanged.returncode == 0, unchanged.stderr
+    assert harness.aws_calls() == []
+
+    # A tip that cannot be read, or is not a full sha, never passes.
+    failed = _tip_check(harness, explicit="false", fail=True)
+    assert failed.returncode != 0
+    assert "could not read the tip of main" in failed.stderr.decode()
+    for garbage in ("", "not-a-sha", SHA[:7], SHA.upper(), f"{SHA}\n{SHA}"):
+        result = _tip_check(harness, explicit="false", tip=garbage)
+        assert result.returncode != 0, garbage
+        assert "could not read the tip of main" in result.stderr.decode(), garbage
+        assert "main moved" not in result.stderr.decode(), garbage
+    # A planned sha that is not a full sha is refused with its own message, before the tip read.
+    for bad_sha in ("", "not-a-sha", SHA[:7], SHA.upper(), f"{SHA}\n{SHA}"):
+        harness.log.unlink(missing_ok=True)
+        result = _tip_check(harness, explicit="false", tip=TIP, sha=bad_sha)
+        assert result.returncode != 0, bad_sha
+        assert "the plan's sha is not a full commit sha" in result.stderr.decode(), bad_sha
+        assert "main moved" not in result.stderr.decode(), bad_sha
+        assert harness.calls() == [], bad_sha
+    # A missing or unexpected explicit flag does not skip the check.
+    for flag in ("", "TRUE", "yes", "1"):
+        result = _tip_check(harness, explicit=flag, tip=TIP)
+        assert result.returncode != 0, flag
+
+
+def test_the_staleness_check_is_skipped_for_an_explicit_sha(harness: Harness) -> None:
+    result = _tip_check(harness, explicit="true", tip=TIP)
+
+    assert result.returncode == 0, result.stderr
+    # Not even a read of the tip: an explicit sha may be older than main on purpose.
+    assert harness.calls() == []
+
+
+def test_digests_reach_ssm_run_through_the_environment_only() -> None:
+    plan_step = _step("plan", "Plan on the production instance")
+    apply_step = _step("apply", "Apply on the production instance")
+    for step, job in ((plan_step, "plan"), (apply_step, "apply")):
+        source = "steps.target" if job == "plan" else "needs.plan"
+        environment = _children("      - " + step, "        env:")
+        assert f"PYTHON_DIGEST: ${{{{ {source}.outputs.python_digest }}}}" in environment
+        assert f"FRONTEND_DIGEST: ${{{{ {source}.outputs.frontend_digest }}}}" in environment
+        (block,) = _run_blocks(step)
+        # ssm_run.sh reads both from its environment: neither is an argument nor spliced in.
+        (call,) = [line for line in block.splitlines() if "deploy/production/ssm_run.sh" in line]
+        assert "DIGEST" not in call.replace("$HOST_DIGEST", "")
+        assert "${{" not in block
+    # No other step or job output carries a digest into a script.
+    for line in _workflow().splitlines():
+        if "python_digest" in line or "frontend_digest" in line:
+            stripped = line.strip()
+            assert re.fullmatch(
+                r"(?:python_digest|frontend_digest|PYTHON_DIGEST|FRONTEND_DIGEST): "
+                r"\$\{\{ (?:steps\.target|needs\.plan)\.outputs\.(?:python|frontend)_digest \}\}",
+                stripped,
+            ), line
+
+
+def test_the_public_smoke_step_runs_last_and_the_secret_is_required_up_front(
+    tmp_path: Path,
+) -> None:
+    steps = _steps("apply")
+    assert steps[-1].startswith("name: Public smoke test\n")
+    assert _run_blocks(steps[-1]) == [
+        'set -euo pipefail\ndeploy/production/public_smoke.sh "$PROD_CONSOLE_ORIGIN"\n'
+    ]
+    # No `if:` that could run it after a failed apply, and no other use of the origin.
+    assert "if:" not in steps[-1]
+    assert "continue-on-error" not in _workflow()
+    code = [line for line in _workflow().splitlines() if not line.lstrip().startswith("#")]
+    # The job env, the up-front requirement and the smoke step: nothing else names the origin.
+    assert len([line for line in code if "PROD_CONSOLE_ORIGIN" in line]) == 3
+    names = [step.split("\n", 1)[0] for step in steps]
+    assert names.index("name: Apply on the production instance") == len(steps) - 2
+
+    # The up-front check is the first step, so an empty secret stops before anything is sent.
+    assert names[0] == "name: Require the deploy variables"
+    result = _run_step(
+        "apply",
+        "Require the deploy variables",
+        _variables_env("apply", PROD_CONSOLE_ORIGIN=""),
+        tmp_path,
+    )
+    assert result.returncode != 0
+    assert b"PROD_CONSOLE_ORIGIN" in result.stderr
+
+
+def test_permissions_are_unchanged_except_actions_read_on_plan() -> None:
+    text = _workflow()
+    assert _children(text, "permissions:") == ["contents: read"]
+    jobs = _jobs()
+    plan = _children("  job:\n" + jobs["plan"], "    permissions:")
+    apply = _children("  job:\n" + jobs["apply"], "    permissions:")
+    assert apply == ["contents: read", "deployments: read", "id-token: write"]
+    assert plan == ["actions: read", *apply]
+    assert "packages:" not in text
 
 
 # --- backup.sh: the instance's backup, kept in the repository ------------------------------------
@@ -1961,10 +2331,13 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_APPLY_ROLE_ARN",
         "PROD_INSTANCE_ID",
         "PROD_DEPLOY_REGION",
+        "PROD_CONSOLE_ORIGIN",
     }
     assert environments == {"production", "production-plan"}
     for name in names | environments:
         assert name in setup, name
+    github = setup[setup.index("### 6.") : setup.index("### 7.")]
+    assert "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production" in github
 
 
 SCANNED_DOCS = ("PRODUCTION.md", "production skill", "staging skill", "pipeline routine")
@@ -2049,6 +2422,110 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
     ):
         assert needle in text, needle
     assert text.index("plan") < text.index("apply")
+    flat = " ".join(text.split())
+    for needle in (
+        "Leave `sha` empty",
+        "tip of `main`",
+        "main's tip <sha7> is not staged yet; wait for deploy-staging",
+        "main moved to <sha7> since this run's plan",
+        "Rolled back:",
+        "Stopped at smoke:",
+        "Stopped at rollback:",
+        "older than the digest change",
+        "unrecognized arguments",
+        "concurrency group",
+    ):
+        assert needle in flat, needle
+
+
+def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -> None:
+    text = _production_doc()
+    # Prose needles are matched with line breaks and runs of spaces collapsed.
+    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    setup_raw = _section(text, "One-time setup")
+    setup = " ".join(setup_raw.split())
+    break_glass = " ".join(_section(text, "Break-glass").split())
+    after = _section(text, "After the digest change merges")
+    flat_text = " ".join(text.split())
+
+    # An empty sha is the tip of main, and each refusal the plan job can print is named.
+    assert "Leave `sha` empty to deploy the tip of `main`" in deploying
+    for needle in (
+        "sha must be the full 40 character lowercase commit SHA",
+        "commit <sha7> is not on main",
+        "the ci run for <sha7> has not succeeded on main",
+        "main's tip <sha7> is not staged yet; wait for deploy-staging",
+        "commit <sha7> has not been rolled out to staging",
+        "images for <sha7> are not published (csa-<app>)",
+        "main moved to <sha7> since this run's plan; start the workflow again",
+    ):
+        assert needle in deploying, needle
+    # The registry is read anonymously, so the hosts need no token for a normal deploy.
+    assert "anonymous" in deploying
+    assert "`read:packages` token is needed only for break-glass" in setup
+    assert "needed for every deploy" not in flat_text
+    assert "still enforces the staged gate" in break_glass
+    # The smoke test: the instance's checks, then the public step.
+    for needle in ("5 s apart", "`PROD_CONSOLE_ORIGIN`", "2xx or 3xx", "frontend"):
+        assert needle in deploying, needle
+    # What a rollback line and a smoke stop mean.
+    for needle in (
+        "Rolling back to <ref>",
+        "Rolled back: the previous images are running; <sha7> is not.",
+        "Fix forward, then re-run plan and apply.",
+        "Stopped at smoke:",
+        "Stopped at rollback:",
+        "always leaves the run red",
+    ):
+        assert needle in deploying, needle
+    # The waits: runner 115 minutes, document 120, job 130; a rollback needs the longer budget.
+    assert "130 minutes" in deploying
+    assert "rolls back" in deploying
+    assert "40-minute" not in flat_text
+    # The secret, listed in step 6 with what it is.
+    assert (
+        "`PROD_CONSOLE_ORIGIN`" in setup_raw[setup_raw.index("### 6.") : setup_raw.index("### 7.")]
+    )
+    # Owner steps after the digest change merges, in order, with placeholders only.
+    update = (
+        "aws ssm update-document --name <name> --content file://<file> --document-version '$LATEST'"
+    )
+    default = (
+        "aws ssm update-document-default-version --name <name> --document-version <new version>"
+    )
+    install = (
+        "sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh "
+        "/usr/local/sbin/csa-prod-deploy"
+    )
+    secret = "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production"
+    start = "gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main"
+    positions = [after.index(needle) for needle in (update, default, install, secret, start)]
+    assert positions == sorted(positions)
+    assert len(set(positions)) == 5
+    assert "csa-production-plan" in after
+    assert "csa-production-apply" in after
+    # The origin pre-check comes before the run starts, requests the origins as the smoke test
+    # does, and prints status codes only.
+    check = "set -a; . /srv/csa-prod/host.env; set +a"
+    assert after.index(secret) < after.index(check) < after.index(start)
+    for needle in (
+        "CSA_STAGING_CONSOLE_ORIGIN CSA_STAGING_HOOKS_ORIGIN",
+        "--write-out '%{http_code}\\n' --max-time 15 --url",
+        "https://<console-origin>/",
+        "do not start the run",
+        "already deployed is harmless",
+    ):
+        assert needle in " ".join(after.split()), needle
+    # An older revision cannot go through the workflow; it is a break-glass restore.
+    assert "unrecognized arguments" in deploying
+    assert "Rolling back to a revision older than the digest change" in break_glass
+    assert "has no such options" in break_glass
+    assert "csa-prod-deploy plan <full sha>" in break_glass
+    assert "Keep the token on the instance until production has run a commit" in setup
+    assert "holds the workflow's concurrency group" in deploying
+    assert "fails closed" in after
+    assert after.count("CloudShell") >= 2
+    assert "Instance" in after
 
 
 def test_production_doc_review_fixes() -> None:
@@ -2058,11 +2535,11 @@ def test_production_doc_review_fixes() -> None:
 
     # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
     assert "`TimedOut`" in deploying
-    assert "40 minutes" in deploying
-    assert "30 minutes" not in text
-    # The runner's wait is 35 minutes of elapsed time since the send, not an estimate from polls.
-    assert "35 minutes (by the clock, not a count of polls)" in deploying
-    assert "about 35 minutes" not in text
+    assert "120 minutes" in deploying
+    assert not re.search(r"(?<![0-9])30 minutes", text)
+    # The runner's wait is 115 minutes of elapsed time since the send, not an estimate from polls.
+    assert "115 minutes (by the clock, not a count of polls)" in deploying
+    assert "about 115 minutes" not in text
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
     guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}"'
     assert guard in setup
@@ -2091,7 +2568,7 @@ def test_production_doc_review_fixes() -> None:
     first = setup[setup.index("### First production deploy: what to check") :]
     for needle in (
         "getcwd",
-        "`gh` finds its login",
+        "makes no `gh` call",
         "Before approving",
         "DOCKER_CONFIG",
         "send-command",
@@ -2101,3 +2578,19 @@ def test_production_doc_review_fixes() -> None:
         "gh api repos/<owner>/<action>/git/ref/tags/<tag>",
     ):
         assert needle in first, needle
+
+
+def test_spec_matches_the_tip_default_and_the_registry_method() -> None:
+    spec = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md").read_text(
+        encoding="utf-8"
+    )
+
+    flat = " ".join(spec.split())
+    assert "default run: main's tip must not have moved since the plan" in flat
+    assert "production must not already run a newer commit" not in flat
+    assert "registry manifest API" in flat
+    assert "anonymous pull token" in flat
+    assert "Digests are optional on the host CLI" in flat
+    assert "break-glass" in flat
+    assert "finish in under a minute" not in flat
+    assert "110 seconds" in flat

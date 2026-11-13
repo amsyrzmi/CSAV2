@@ -149,9 +149,11 @@ after one click", and a merge waits on that click.
   check fails the run with its own message, and nothing reaches the instance.
 - **On the instance, in the plan:** unchanged (migrations, host settings digest, downgrade warning,
   installed `backup.sh` equal to the repo copy).
-- **Apply.** First step after approval, before anything is sent: the staleness check. The commit must
-  still be the tip of `main` (unless it was given explicitly), and production must not already run a
-  newer commit. This makes an approval of an out-of-date waiting run harmless.
+- **Apply.** First step after approval, before anything is sent: the staleness check. In a default
+  run: main's tip must not have moved since the plan; the run then fails with `main moved to <sha7>
+  since this run's plan; start the workflow again`. An explicit `sha` is a deliberate rollback to an
+  older staged commit, is not checked, and shows the downgrade warning in its plan. This makes an
+  approval of an out-of-date waiting run harmless.
 - **After apply:** the instance runs its smoke test; then the workflow runs a public smoke test
   against the production console origin (kept as an environment secret, masked). A failed smoke test
   fails the run (see Rollback).
@@ -169,20 +171,28 @@ a classic `read:packages` token that expires. The workflow's own token can read 
 
 - The workflow resolves the digests (`csa-python`, `csa-frontend`) for the sha and passes them to the
   plan and apply documents as two new parameters, each `^sha256:[0-9a-f]{64}$`.
-- The instance no longer calls `gh`. It still pulls by digest with an empty Docker config, checks the
+- The method is the registry manifest API, not the packages API. The images are public, so the
+  workflow asks `ghcr.io` for an anonymous pull token, then reads the `Docker-Content-Digest` of
+  the manifest tagged with the full sha. It needs no `packages: read` permission, and the
+  `read:packages` token is needed only on a host that is run by hand (break-glass).
+- Digests are optional on the host CLI. Given both, the instance makes no GitHub call. Given
+  neither (a host run by hand, break-glass), it does today's `gh` lookup and still enforces the
+  staged gate itself, so that path keeps its gate. Only one of the two is refused.
+- With digests, the instance no longer calls `gh`. It still pulls by digest with an empty Docker config, checks the
   pulled image's digest and its `org.opencontainers.image.revision` label against the sha, and refuses
   on any mismatch. Wrong images are therefore still caught on the host.
 - The staged-record check and the staged-record write move to the workflow.
 - **Trade-off, accepted by the owner on 2026-11-13:** the instance no longer re-checks the staged record on its own. The gate is
   enforced by the workflow, which runs from `main`, assumes a role that only the protected environment
   can assume, and (for apply) waits for approval. The hosts' break-glass path (the owner running the
-  script by hand) skips the gate unless the owner passes the digests and runs `record-staged` by hand;
-  the runbook says so. Defence in depth is lower; the token and its expiry disappear.
+  script by hand, with no digests) keeps its own staged gate, using the `gh` lookup and the
+  `read:packages` token; the manual Compose procedure has no gate, as before. Defence in depth is
+  lower for the workflow path; the token and its expiry disappear from it.
 
 ### Tests
 
 Both environments run read-only smoke checks. They never touch customer data, never call a model, and
-finish in under a minute. The list lives in the repository and runs on the instance as a rollout step
+finish in about 110 seconds in the worst case (the two origin checks retry up to 3 times, 5 s apart). The list lives in the repository and runs on the instance as a rollout step
 after readiness and the existing `0485.sql` check:
 
 - the gateway reports ready; the frontend answers on its port;
@@ -201,8 +211,9 @@ tests for the shell scripts, and structural tests that read the workflow and pol
 
 - The rollout, when `/readyz` or the smoke test fails after services were recreated, **and this run
   applied no migration, and the previous images are registry digests** (the plan's "Rollback
-  references" are known), recreates the four services on the previous digests, waits for readiness
-  and reports `rolled back to <sha7>`. It then still exits non-zero, so the run is red and the staged
+  references" are known; every replica of every previous app container was running, on refs that
+  agree per app), recreates the four services on the previous digests, waits for readiness
+  and prints `Rolled back: the previous images are running; <sha7> is not.` It then still exits non-zero, so the run is red and the staged
   record is not written.
 - If the rollback itself does not become ready, it stops and prints the recovery lines unchanged.
 - If migrations were applied, or the previous images are unknown (the first deploy ran local tags), it
@@ -258,7 +269,7 @@ tests for the shell scripts, and structural tests that read the workflow and pol
 
 ## Calls I made (to check)
 
-- The smoke checks above, and keeping them read-only and under a minute.
+- The smoke checks above, and keeping them read-only and short (about 110 seconds worst case).
 - `PROD_AUTO_PLAN` defaults to off. Every merge would otherwise send both reviewers a review request.
 - Image-only automatic rollback, and only that.
 - The workflow enforces the staged gate; the instance no longer double-checks it.
