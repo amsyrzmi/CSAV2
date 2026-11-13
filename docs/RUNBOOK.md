@@ -650,6 +650,32 @@ TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (ever
 lost), and last `DELETE FROM public.schema_migrations WHERE version = '0580';`, or the runner thinks it
 is still applied. Then start the older images.
 
+**Roll back migrations 0590 and 0591.** Needed when going back to an image older than the payments
+release: its readiness check wants the highest applied version to equal its own. Roll back in reverse
+order: 0591 first, then 0590. Both lose data (every payment, reminder, method and setting, and the
+sign-up emails), so keep a dump first.
+
+**Roll back migration 0591.** Stop the services, then, as the database owner and in this order:
+`DELETE FROM public.capability_registry WHERE name = 'payment_agent';` (a company's own switch on it is
+lost), `ALTER TABLE public.signup_requests DROP CONSTRAINT signup_requests_email_chk, DROP COLUMN
+email;` (emails given at sign-up are lost), and last `DELETE FROM public.schema_migrations WHERE
+version = '0591';`, or the runner thinks it is still applied.
+
+**Roll back migration 0590.** After 0591 is rolled back, with the services still stopped and as the
+database owner, in this order: `DROP TABLE public.invoice_reminders, public.payments,
+public.payment_methods, public.payment_settings;` (every payment on the ledger, reminder, method and
+setting is lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_pause_reason_chk, DROP
+COLUMN pause_reason;`, `DROP INDEX public.invoices_reference_uq, public.invoices_subscription_period_uq,
+public.invoices_open, public.invoices_contact;`, `ALTER TABLE public.invoices DROP CONSTRAINT
+invoices_subscription_fk, DROP CONSTRAINT invoices_status_chk, DROP CONSTRAINT invoices_amount_chk,
+DROP CONSTRAINT invoices_client_id_key, DROP COLUMN reference, DROP COLUMN method_kind, DROP COLUMN
+subscription_id, DROP COLUMN period_start, DROP COLUMN period_end, DROP COLUMN reminded_at, DROP COLUMN
+claim_note, DROP COLUMN claimed_at, DROP COLUMN void_reason, DROP COLUMN voided_at, DROP COLUMN
+voided_by;` (the checks on those columns go with them; the references, claims and void reasons are
+lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_client_id_key;`, and last
+`DELETE FROM public.schema_migrations WHERE version = '0590';`, or the runner thinks it is still
+applied. Then start the older images.
+
 ## Stuck knowledge uploads
 
 A failed or half-read upload shows a card under Needs attention on the Business knowledge page. **Try
