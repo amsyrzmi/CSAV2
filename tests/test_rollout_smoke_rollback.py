@@ -10,7 +10,13 @@ from scripts import staging_rollout as sr
 from scripts.rollout_targets import STAGING, Target
 from scripts.staging_rollout import Completed, RolloutError
 
-from tests.test_rollout_production import HOST_REQUIRED, PROD
+from tests.test_rollout_production import (
+    HOST_REQUIRED,
+    OBJECT_AT_START,
+    PROD,
+    TS_AT_START,
+    BackupRig,
+)
 from tests.test_staging_rollout import (
     FRONTEND_REF,
     PYTHON_REF,
@@ -49,9 +55,12 @@ class SmokeHost:
         statuses: Mapping[str, int] | None = None,
         curl_exit: int = 0,
         frontend_up: bool = True,
+        scripted: Mapping[str, list[int]] | None = None,
     ) -> None:
+        """``scripted`` maps an origin to its answers in order (0 is a curl failure)."""
         self.target = target
         self.lines: list[str] = []
+        self.sleeps: list[float] = []
         ids = {}
         refs: dict[str, str] = {}
         for service in target.app_services:
@@ -69,6 +78,10 @@ class SmokeHost:
         def curl(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
             if curl_exit:
                 return fail(curl_exit)
+            if scripted and argv[-1] in scripted:
+                queue = scripted[argv[-1]]
+                value = queue.pop(0) if len(queue) > 1 else queue[0]
+                return ok(str(value)) if value else fail(28)
             return ok(str(answers[argv[-1]]))
 
         self.runner = FakeRunner(
@@ -101,6 +114,7 @@ class SmokeHost:
             self.lines.append,
             sr._Progress(),
             target=self.target,
+            sleep=self.sleeps.append,
         )
 
     def stop(self, host_values: Mapping[str, str] | None = None) -> RolloutError:
@@ -290,3 +304,127 @@ def test_apply_prints_the_smoke_lines_before_the_final_status(
     status = next(i for i, line in enumerate(rig.lines) if line.startswith("gateway Up"))
     assert rig.lines.index("smoke frontend: ok") < status
     assert not any(line.startswith("Stopped") for line in rig.lines)
+
+
+# --- the origin checks retry a blip; nothing else does ---------------------------------------
+
+
+def origin_calls(host: SmokeHost, origin: str) -> int:
+    return sum(1 for argv in host.runner.argvs if argv[0] == "curl" and argv[-1] == origin)
+
+
+def test_a_503_then_a_200_passes_after_one_five_second_sleep() -> None:
+    host = SmokeHost(PROD, scripted={CONSOLE: [503, 200]})
+    host.smoke(ORIGINS)
+    assert host.sleeps == [5]
+    assert origin_calls(host, CONSOLE) == 2
+    assert "smoke console origin: ok" in host.lines
+
+
+def test_three_5xx_fail_at_smoke_after_exactly_two_sleeps() -> None:
+    host = SmokeHost(PROD, scripted={HOOKS: [502, 503, 504]})
+    error = host.stop(ORIGINS)
+    assert host.sleeps == [5, 5]
+    assert origin_calls(host, HOOKS) == 3
+    assert "hooks origin" in error.message and "504" in error.message
+    assert "smoke hooks origin: ok" not in host.lines
+
+
+def test_a_curl_failure_then_a_success_passes() -> None:
+    host = SmokeHost(PROD, scripted={CONSOLE: [0, 200]})
+    host.smoke(ORIGINS)
+    assert host.sleeps == [5]
+    assert host.lines[-3:] == [
+        "smoke console origin: ok",
+        "smoke hooks origin: ok",
+        "smoke frontend: ok",
+    ]
+
+
+def test_three_curl_failures_fail_at_smoke_without_the_origin() -> None:
+    host = SmokeHost(PROD, scripted={CONSOLE: [0]})
+    error = host.stop(ORIGINS)
+    assert host.sleeps == [5, 5]
+    assert "did not answer" in error.message
+    assert CONSOLE not in " ".join([error.message, error.state or "", *host.lines])
+
+
+def test_migrations_replicas_and_frontend_failures_are_not_retried() -> None:
+    migrations = SmokeHost(PROD, applied=["0484"])
+    migrations.stop(ORIGINS)
+    replicas = SmokeHost(PROD, unhealthy=["csa-prod-gateway-1"])
+    replicas.stop(ORIGINS)
+    frontend = SmokeHost(PROD, frontend_up=False)
+    frontend.stop(ORIGINS)
+    for host in (migrations, replicas, frontend):
+        assert host.sleeps == []
+    assert sum("psql" in argv for argv in migrations.runner.argvs) == 1
+    health = [argv for argv in replicas.runner.argvs if "{{.State.Health.Status}}" in argv]
+    assert len(health) == 1
+    assert sum(argv[3:4] == ["exec"] for argv in frontend.runner.argvs) == 1
+
+
+@pytest.mark.parametrize(
+    "broken", [lambda argv: argv[0] == "curl", lambda argv: argv[3:4] == ["exec"]]
+)
+def test_a_runner_error_inside_smoke_carries_the_smoke_step(
+    broken: Callable[[Sequence[str]], bool],
+) -> None:
+    def raises(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        raise RolloutError(argv[0], f"{argv[0]} not found")
+
+    host = SmokeHost(PROD)
+    host.runner.rules.insert(0, (broken, raises))
+    error = host.stop(ORIGINS)
+    assert "not found" in error.message
+    assert host.sleeps == []
+
+
+def test_apply_hands_its_own_sleep_to_the_smoke_test(
+    rig_factory: Callable[..., ApplyRig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = rig_factory()
+    seen: list[object] = []
+    real = sr._run_smoke
+
+    def spy(*args: object, **kwargs: object) -> None:
+        seen.append(kwargs["sleep"])
+        real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sr, "_run_smoke", spy)
+    assert rig.apply() == 0
+    assert seen == [rig.sleeps.append]
+
+
+# --- the recovery text of a smoke stop ---------------------------------------------------
+
+
+def test_a_smoke_stop_after_migrations_says_do_not_roll_back_and_names_the_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = BackupRig(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+    rig.runner.rules.insert(0, (has("{{.State.Health.Status}}"), ok("unhealthy\n")))
+    assert rig.apply(rig.digest()) == 1
+    text = "\n".join(rig.lines)
+    assert "Stopped at smoke: csa-prod-gateway-1 is not healthy on the planned image" in text
+    assert "The new images are running, but a smoke check after the rollout failed." in text
+    assert (
+        "Migrations were applied: 0486, so do not roll back the schema; investigate, fix "
+        "forward, then re-run plan and apply."
+    ) in text
+    assert (
+        f"The backup taken at the start of this deploy is {OBJECT_AT_START} "
+        f"(restore: {sr.PRODUCTION_RUNBOOK})"
+    ) in text
+    assert "Rollback images:" not in text
+
+
+def test_an_image_only_smoke_stop_prints_the_rollback_images(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    rig = rig_factory(overrides=[(has("{{.State.Health.Status}}"), ok("unhealthy\n"))])
+    assert rig.apply() == 1
+    assert "The new images are running, but a smoke check after the rollout failed." in rig.lines
+    assert "Rollback images:" in rig.lines
+    assert not any("do not roll back the schema" in line for line in rig.lines)
+    assert not any(line.startswith("The backup taken") for line in rig.lines)

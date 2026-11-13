@@ -99,6 +99,8 @@ SMOKE_ORIGINS = (
     ("hooks origin", "CSA_STAGING_HOOKS_ORIGIN"),
 )
 SMOKE_CURL_TIMEOUT = "15"
+SMOKE_ORIGIN_TRIES = 3  # only the origin checks retry: the rest read the instance's own state
+SMOKE_ORIGIN_PAUSE = 5
 SMOKE_STATE = "services are up on the new images but the smoke test is failing"
 READY_TRIES = 5
 READY_PAUSE = 3
@@ -1371,32 +1373,50 @@ def _smoke_replicas(runner: Runner, env: Mapping[str, str], target: Target) -> N
                 raise _smoke_stop(f"{name} is not healthy on the planned image")
 
 
-def _smoke_origin(runner: Runner, label: str, origin: str) -> None:
-    """The origin answers below 500 when requested from the host; its value is never printed."""
-    result = runner.run(
-        [
-            "curl",
-            "--silent",
-            "--output",
-            "/dev/null",
-            "--write-out",
-            "%{http_code}",
-            "--max-time",
-            SMOKE_CURL_TIMEOUT,
-            "--url",
-            origin,
-        ]
-    )
-    text = result.stdout.strip()
-    if result.returncode != 0 or not text.isdecimal():
-        raise _smoke_stop(f"the {label} did not answer (curl exit {result.returncode})")
-    if int(text) >= 500:
-        raise _smoke_stop(f"the {label} answered {text}")
+def _smoke_origin(runner: Runner, label: str, origin: str, sleep: Callable[[float], None]) -> None:
+    """The origin answers below 500 when requested from the host; its value is never printed.
+
+    A tunnel or proxy can blink, so a non-answer or a 5xx is retried: SMOKE_ORIGIN_TRIES attempts,
+    SMOKE_ORIGIN_PAUSE s apart. A runner error (no curl binary) is not a blink and stops at once.
+    """
+    argv = [
+        "curl",
+        "--silent",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code}",
+        "--max-time",
+        SMOKE_CURL_TIMEOUT,
+        "--url",
+        origin,
+    ]
+    failure = ""
+    for attempt in range(SMOKE_ORIGIN_TRIES):
+        if attempt:
+            sleep(SMOKE_ORIGIN_PAUSE)
+        try:
+            result = runner.run(argv)
+        except RolloutError as error:
+            raise _smoke_stop(error.message) from error
+        text = result.stdout.strip()
+        if result.returncode != 0 or not text.isdecimal():
+            failure = f"the {label} did not answer (curl exit {result.returncode})"
+        elif int(text) >= 500:
+            failure = f"the {label} answered {text}"
+        else:
+            return
+    raise _smoke_stop(failure)
 
 
 def _smoke_frontend(runner: Runner, env: Mapping[str, str], target: Target) -> None:
     gateway = container_names(target, env, "gateway")[0]
-    probe = runner.run([*docker_base(), "exec", gateway, "python", "-c", FRONTEND_PROBE], env=env)
+    try:
+        probe = runner.run(
+            [*docker_base(), "exec", gateway, "python", "-c", FRONTEND_PROBE], env=env
+        )
+    except RolloutError as error:
+        raise _smoke_stop(error.message) from error
     if probe.returncode != 0:
         raise _smoke_stop("the frontend did not answer over HTTP from the gateway container")
 
@@ -1410,6 +1430,7 @@ def _run_smoke(
     progress: _Progress,
     *,
     target: Target,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """A read-only look at the running instance after the check files; no customer data.
 
@@ -1417,7 +1438,8 @@ def _run_smoke(
     ``migrations`` (schema_migrations equals the checkout's), ``replicas`` (every replica of every
     app service is healthy on the planned image), ``console origin`` and ``hooks origin`` (each
     answers below 500 from the host; only when the host file holds both origins, so not on
-    staging), ``frontend`` (it answers over HTTP from the gateway container). Never an ``up``,
+    staging; retried, see ``_smoke_origin``), ``frontend`` (it answers over HTTP from the gateway
+    container). Never an ``up``,
     ``stop`` or write: a failure leaves the stack as it is for the caller to decide.
     """
     progress.phase = "smoke"
@@ -1427,7 +1449,7 @@ def _run_smoke(
     out("smoke replicas: ok")
     if all(key in host_values for _, key in SMOKE_ORIGINS):
         for label, key in SMOKE_ORIGINS:
-            _smoke_origin(runner, label, host_values[key])
+            _smoke_origin(runner, label, host_values[key], sleep)
             out(f"smoke {label}: ok")
     _smoke_frontend(runner, env, target)
     out("smoke frontend: ok")
@@ -1626,7 +1648,16 @@ def apply(
         _await_ready(runner, env, sleep, target=target)
         progress.phase = "checks"
         _run_checks(runner, env, checks_dir, out, progress, target=target)
-        _run_smoke(runner, env, plan.checkout, plan.host_values, out, progress, target=target)
+        _run_smoke(
+            runner,
+            env,
+            plan.checkout,
+            plan.host_values,
+            out,
+            progress,
+            target=target,
+            sleep=sleep,
+        )
         status = runner.run(
             [*compose_base(target=target), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
         )
