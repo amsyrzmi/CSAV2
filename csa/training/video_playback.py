@@ -179,6 +179,8 @@ class VideoPlayback:
     async def playback(self, actor: ConsoleActor, client_id: UUID, item_id: UUID) -> PlaybackOut:
         row = await self._visible(actor, client_id, item_id)
         media_type = limits.PLAYBACK_MEDIA_TYPE[row["container"]]
+        # Taken before the link is signed, so the stated expiry is never later than the link's.
+        expires_at = datetime.now(UTC) + timedelta(seconds=limits.PLAYBACK_URL_SECONDS)
         try:
             url = await asyncio.to_thread(
                 self.store.presigned_playback,
@@ -207,11 +209,7 @@ class VideoPlayback:
             client_id=str(client_id),
             outcome="local" if url.startswith("/") else "presigned",
         )
-        return PlaybackOut(
-            url=url,
-            expires_at=datetime.now(UTC) + timedelta(seconds=limits.PLAYBACK_URL_SECONDS),
-            media_type=media_type,
-        )
+        return PlaybackOut(url=url, expires_at=expires_at, media_type=media_type)
 
     async def open_video(
         self, actor: ConsoleActor, client_id: UUID, item_id: UUID, range_header: str | None

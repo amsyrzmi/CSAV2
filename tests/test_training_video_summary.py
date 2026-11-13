@@ -514,6 +514,22 @@ async def test_no_speech_or_failed_video_never_gets_a_summary(world: World) -> N
     assert world.model.calls == []
 
 
+async def test_a_manager_reading_a_failed_videos_summary_gets_none(world: World) -> None:
+    await enable(world.sessions, world.tenant)
+    failed = await world.video(short_rows(), status="failed")
+    # Even a stray summary left behind is not shown: a failed video has none.
+    await world.sessions.q(
+        "UPDATE training_items SET summary = %s WHERE id = %s",
+        '{"summary": "x", "key_points": []}',
+        failed,
+    )
+    manager, _ = await world.sessions.member(role="tenant_admin")
+    shown = await manager.get(f"{ITEMS}/{failed}/summary")
+    assert shown.status_code == 200, shown.text
+    assert shown.json() == {"summary": None}
+    assert world.model.calls == []
+
+
 async def test_a_failed_reduce_keeps_the_finished_parts_and_the_retry_only_reduces(
     world: World,
 ) -> None:

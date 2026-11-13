@@ -34,7 +34,7 @@ from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_console_sessions import SessionWorld
-from tests.test_training_api import ITEMS, audits, detail, enable, make_owner
+from tests.test_training_api import ITEMS, audits, detail, enable, make_owner, remove
 from tests.test_training_video_items import RecordingStore, put_file, upload_row, video_row
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
@@ -720,6 +720,56 @@ async def test_item_deleted_mid_job_stops_quietly(
     # The reservation stays with the deleted item: deleting does not give the seconds back.
     rows = await sessions.q("SELECT seconds FROM training_video_usage WHERE client_id = %s", tenant)
     assert [row["seconds"] for row in rows] == [90]
+
+
+async def test_removal_waits_for_a_fenced_worker_transaction_instead_of_deadlocking(
+    sessions: SessionWorld, owner_pool: AsyncConnectionPool, training_store: ObjectStore
+) -> None:
+    """The worker locks the job row, then the item (a segment insert checks its foreign key);
+    removal must take them in the same order, or Postgres kills one of the two (a 500 on Remove).
+    """
+    tenant = await enable(sessions)
+    await only_active(sessions, tenant)
+    admin, _ = await sessions.member(role="tenant_admin")
+    item = await queued_video(sessions, tenant)
+    worker = processor(sessions, owner_pool, training_store, Script())
+    claim = await worker.claim(UUID(tenant))
+    assert claim is not None and claim.item_id == UUID(item)
+
+    async def removal_waits() -> None:
+        for _ in range(200):
+            waiting = await sessions.q(
+                "SELECT count(*) AS n FROM pg_stat_activity"
+                " WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            )
+            if waiting[0]["n"] >= 1:
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the removal never waited for the worker's transaction")
+
+    async with JobHandle(sessions.pool, claim).tx() as conn:
+        removing = asyncio.create_task(remove(sessions, admin, item))
+        await removal_waits()
+        # The worker writes a segment while the removal waits: with the removal holding the item
+        # first, this insert and the removal would deadlock.
+        await conn.execute(
+            "INSERT INTO training_transcript_segments (client_id, item_id, chunk_index,"
+            " position, start_ms, end_ms, text) VALUES (%s, %s, 0, 0, 0, 1000, 'synthetic')",
+            (claim.client_id, claim.item_id),
+        )
+        assert not removing.done()
+    answer = await asyncio.wait_for(removing, 30)
+    assert answer.status_code == 204, answer.text
+    assert await item_of(sessions, item) is None
+    assert await job_of(sessions, item) is None
+    assert (
+        await sessions.q("SELECT 1 FROM training_transcript_segments WHERE item_id = %s", item)
+        == []
+    )
+    # The worker's next fenced write finds no job and stops quietly.
+    with pytest.raises(JobLost):
+        async with JobHandle(sessions.pool, claim).tx():
+            pass
 
 
 async def test_claims_never_cross_companies(

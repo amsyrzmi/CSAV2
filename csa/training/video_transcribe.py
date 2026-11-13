@@ -28,13 +28,18 @@
 Every write goes through ``job.tx()`` (the claim's attempt and stage fence), so an attempt that
 lost its claim writes nothing. Errors: ``TranscriptionError``, ``KbEmbeddingError`` and
 ``MediaUnavailable`` are ``Transient("training_transcription_unavailable")``; ``StorageError``
-is ``Transient("training_storage_unavailable")``; ``MediaRefused`` is ``Permanent(code)``.
+is ``Transient("training_storage_unavailable")``; ``MediaRefused`` from the probe is
+``Permanent(code)``. Once the probe has accepted the file (its duration is stored), an unreadable
+answer from the loudness or extract pass is ``Transient("training_transcription_unavailable")``:
+the probe read the file, so the cause is the attempt (an OOM kill, a full ``/tmp``), and a
+refusal would delete the upload.
 
 **An S3 source the probe cannot read.** ffmpeg's stderr is never read, so over https a bad file
 and a network failure both surface as ``MediaUnavailable("failed")``. In the probe step only, the
-stage then asks the store for the object's size with its own client: the stored size means the
-storage is fine and the file is unreadable (``Permanent``); anything else, an error included,
-is ``Transient("training_storage_unavailable")``.
+stage then asks the store for the object's size with its own client: the stored size on the
+job's last attempt (``JOB_MAX_ATTEMPTS``) means the storage is fine and the file is unreadable
+(``Permanent``); on an earlier attempt, or with any other answer, an error included, it is
+``Transient("training_storage_unavailable")``.
 
 Known limits. A WebM without Cues (browser MediaRecorder output) cannot seek, so each chunk's
 ``-ss`` demuxes from the start of the file: later chunks read more bytes over S3, bounded by the
@@ -54,7 +59,8 @@ import math
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -265,7 +271,8 @@ class TranscribeStage:
             raise Permanent(TOO_LONG)
         total = _chunks(duration_ms)
         if claim.chunks_done == 0:
-            peak = await max_volume_db(await self._source(claim), claim.container)
+            async with _probed_already():
+                peak = await max_volume_db(await self._source(claim), claim.container)
             if peak <= limits.SILENCE_MAX_DB:
                 await self._no_speech(claim, job)
                 return "ready"
@@ -347,8 +354,12 @@ class TranscribeStage:
             )
         except StorageError:
             size = None
+        # Deleting the file is irreversible, so one failed read is not enough: a brief S3 or DNS
+        # blip (or an https problem on the first switch-on) would cost every upload. Only the last
+        # attempt calls the file unreadable.
+        unreadable = size == item["byte_size"] and claim.attempt >= limits.JOB_MAX_ATTEMPTS
         verdict: Permanent | Transient = (
-            Permanent(UNREADABLE) if size == item["byte_size"] else Transient(STORAGE_FAILED)
+            Permanent(UNREADABLE) if unreadable else Transient(STORAGE_FAILED)
         )
         logger.warning(
             "training_transcribe_probe",
@@ -376,7 +387,10 @@ class TranscribeStage:
         source = await self._source(claim)
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="csa-training-") as directory:
             out = Path(directory) / "chunk.ogg"
-            audio_bytes = await extract_chunk(source, claim.container, start_seconds, seconds, out)
+            async with _probed_already():
+                audio_bytes = await extract_chunk(
+                    source, claim.container, start_seconds, seconds, out
+                )
             audio = await asyncio.to_thread(out.read_bytes)
         sent = holds_audio(audio)
         answer = (
@@ -538,10 +552,28 @@ def _chunks(duration_ms: int) -> int:
 
 
 def _at(base_ms: int, seconds: float, low_ms: int, high_ms: int) -> int:
-    """``base_ms`` plus ``seconds``, clipped to ``low_ms..high_ms`` (infinity is the end)."""
-    if not math.isfinite(seconds):
+    """``base_ms`` plus ``seconds``, clipped to ``low_ms..high_ms`` (infinity is the end).
+
+    A provider time past the end is the end before it is multiplied, so a huge finite value
+    (``1e306 * 1000`` is infinite) never reaches ``round``.
+    """
+    if not math.isfinite(seconds) or seconds >= (high_ms - base_ms) / 1000:
         return high_ms
     return min(high_ms, max(low_ms, base_ms + round(seconds * 1000)))
+
+
+@asynccontextmanager
+async def _probed_already() -> AsyncIterator[None]:
+    """Around the loudness and extract passes: the probe already accepted this file (its duration
+    is stored), so an unreadable answer now is a failed attempt (an OOM kill, a full ``/tmp``, a
+    read cut short), retried, never a refusal that deletes the upload.
+    """
+    try:
+        yield
+    except MediaRefused as refused:
+        if refused.code != UNREADABLE:
+            raise
+        raise MediaUnavailable("failed") from None
 
 
 def _pieces(text: str, limit: int) -> list[str]:

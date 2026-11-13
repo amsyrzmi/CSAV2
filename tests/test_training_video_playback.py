@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from csa.storage.base import ObjectStore
 from csa.storage.local import LocalObjectStore
 from csa.storage.s3 import S3ObjectStore
+from csa.training import limits
 from moto import mock_aws
 from structlog.testing import capture_logs
 
@@ -197,25 +199,28 @@ async def test_range_requests_answer_206_416_and_whole_file(
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("value", "status"),
     [
-        "bytes=0-99999999999999999999",
-        "bytes=" + "9" * 5000 + "-",
-        "bytes=abc",
-        "bytes=5-2",
-        "bytes=-",
-        "bytes=",
-        "bytes",
-        "bytes=0-1,",
-        "bytes=" + ",".join(f"{i}-{i}" for i in range(0, 4000, 2)),
-        "bytes=" + "0-1," * 3000,
-        "bytes=٢-٣",
-        "bytes= 5 - 9",
+        # The one well-formed range: its end is clamped to the file, so all of it comes back.
+        ("bytes=0-99999999999999999999", 206),
+        # Longer than MAX_RANGE_HEADER_CHARS, or several ranges: refused.
+        ("bytes=" + "9" * 5000 + "-", 416),
+        ("bytes=0-1,", 416),
+        ("bytes=" + ",".join(f"{i}-{i}" for i in range(0, 4000, 2)), 416),
+        ("bytes=" + "0-1," * 3000, 416),
+        # Not a byte range at all: ignored, the whole file.
+        ("bytes=abc", 200),
+        ("bytes=5-2", 200),
+        ("bytes=-", 200),
+        ("bytes=", 200),
+        ("bytes", 200),
+        ("bytes=٢-٣", 200),
+        ("bytes= 5 - 9", 200),
     ],
-    ids=lambda value: value[:24],
+    ids=lambda value: value[:24] if isinstance(value, str) else str(value),
 )
 async def test_malformed_and_oversized_range_headers_never_fail_or_read_past_the_file(
-    sessions: SessionWorld, training_store: ObjectStore, value: str
+    sessions: SessionWorld, training_store: ObjectStore, value: str, status: int
 ) -> None:
     tenant = await enable(sessions)
     staff, _ = await sessions.member()
@@ -224,13 +229,15 @@ async def test_malformed_and_oversized_range_headers_never_fail_or_read_past_the
 
     answer = await staff.get(f"{ITEMS}/{item}/video", headers=[(b"Range", value.encode())])
 
-    assert answer.status_code in {200, 206, 416}, answer.text[:200]
-    assert len(answer.content) <= len(data)
-    if answer.status_code == 416:
+    assert answer.status_code == status, answer.text[:200]
+    if status == 416:
         assert answer.headers["content-range"] == f"bytes */{len(data)}"
-    if answer.status_code == 206:
-        assert answer.content == data[: len(answer.content)] or answer.content == data[5:10]
-    if answer.status_code == 200:
+        assert len(answer.content) < len(data)
+    elif status == 206:
+        assert answer.headers["content-range"] == f"bytes 0-{len(data) - 1}/{len(data)}"
+        assert answer.content == data
+    else:
+        assert "content-range" not in answer.headers
         assert answer.content == data
 
 
@@ -317,6 +324,32 @@ async def test_s3_playback_is_a_15_minute_inline_no_store_url_under_the_callers_
     assert query["response-cache-control"] == ["private, no-store"]
     assert query["response-content-disposition"][0].startswith("inline")
     assert answer.headers["cache-control"] == "private, no-store"
+
+
+@S3_STORE
+async def test_the_stated_expiry_is_never_later_than_the_signed_links(
+    sessions: SessionWorld, training_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+    staff, _ = await sessions.member(role="read_only")
+    item = await ready_video(sessions, training_store, tenant)
+    signed: list[datetime] = []
+    assert isinstance(training_store, S3ObjectStore)
+    real = training_store.presigned_playback
+
+    def slow_signing(*args: Any, **kwargs: Any) -> str | None:
+        signed.append(datetime.now(UTC))
+        url = real(*args, **kwargs)
+        time.sleep(1.2)  # a slow signer: the answer must not outlive the link it describes
+        return url
+
+    monkeypatch.setattr(training_store, "presigned_playback", slow_signing)
+    answer = await staff.get(f"{ITEMS}/{item}/playback")
+
+    assert answer.status_code == 200, answer.text
+    expires = datetime.fromisoformat(answer.json()["expires_at"])
+    [at] = signed
+    assert expires <= at + timedelta(seconds=limits.PLAYBACK_URL_SECONDS)
 
 
 @S3_STORE

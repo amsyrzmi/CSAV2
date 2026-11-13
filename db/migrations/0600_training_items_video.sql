@@ -21,8 +21,10 @@
 -- Pre-check: 0581 applied and 0541 applied. Every training_items row must have kind = 'pdf':
 --   SELECT count(*) FROM public.training_items WHERE kind <> 'pdf'; must be 0, and
 --   SELECT count(*) FROM public.training_items WHERE view_mode IS NULL OR page_count IS NULL
---   OR sha256 IS NULL; must be 0. ADD COLUMN with a constant default does not rewrite the table;
---   the unique constraint builds an index while holding a short lock.
+--   OR sha256 IS NULL; must be 0. ADD COLUMN with a constant default does not rewrite the table.
+--   Lock: the whole file is one transaction, so the ACCESS EXCLUSIVE lock the ALTERs take (the
+--   unique index build and each NOT VALID check then its VALIDATE included) is held until commit;
+--   brief on this small table, but every training read and write waits for it.
 -- Rollback (after 0601 is rolled back; as the database owner):
 --   DELETE FROM public.training_items WHERE kind = 'video'; (the stored video files stay in the
 --   training store with no row; the store's sweep removes them; the console_audit rows stay)

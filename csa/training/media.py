@@ -26,11 +26,14 @@ A WebM without a duration (browser MediaRecorder output: no Duration, no Cues) i
 second child that demuxes it without decoding (``-c copy`` to the null muxer, stopped just past
 ``MAX_VIDEO_SECONDS``) and reads the last ``out_time_us`` from ``-progress``.
 
-Outcomes: a file the tool cannot read (it fails, is killed at a limit, floods stdout or answers
-with something unusable) is ``MediaRefused("training_video_unreadable")``; a codec outside the
-library's sets is ``MediaRefused("training_video_codec")``. ``MediaUnavailable`` is
-infrastructure: ``ffmpeg_missing``, ``timeout`` (the wall clock), or ``failed`` (the child could
-not start, or a remote source failed, which may be the network). Logs carry the tool, the action,
+Outcomes: a file the tool cannot read (it fails, ends on SIGXCPU, SIGXFSZ or a crash signal,
+floods stdout or answers with something unusable) is ``MediaRefused("training_video_unreadable")``;
+a codec outside the library's sets is ``MediaRefused("training_video_codec")``.
+``MediaUnavailable`` is infrastructure: ``ffmpeg_missing``, ``timeout`` (the wall clock), or
+``failed`` (the child could not start, a remote source failed, which may be the network, or the
+child was killed by SIGKILL or another outside signal: the OOM killer's choice is not the file's
+fault). The caller decides what a refusal after a successful probe means (``video_transcribe``
+retries it). Logs carry the tool, the action,
 the outcome, the code, byte counts and elapsed time only: never stderr (it is never read), a
 path, a URL or a file name.
 """
@@ -79,6 +82,22 @@ _CA_FILE = "/etc/ssl/certs/ca-certificates.crt"
 """CA bundle for presigned URLs (python:3.12-slim-bookworm); tests replace it, user data never."""
 
 _CHILD_OPEN_FILES = 64
+# Signals that end a child because of what it read: SIGXCPU at the CPU limit, SIGXFSZ at the
+# file-size limit (the bootstrap restores its default), and the crashes. Any other signal, SIGKILL
+# above all, is MediaUnavailable("failed"). ffmpeg normally exits by itself on SIGXCPU; one that
+# does not gets the hard limit's SIGKILL a second later, which reads as unavailable, so a CPU-bound
+# file costs at most the job's three bounded attempts.
+_FILE_SIGNALS = frozenset(
+    {
+        signal.SIGXCPU,
+        signal.SIGXFSZ,
+        signal.SIGSEGV,
+        signal.SIGABRT,
+        signal.SIGBUS,
+        signal.SIGFPE,
+        signal.SIGILL,
+    }
+)
 _CHILD_FILE_BYTES = MAX_AUDIO_BYTES  # the largest file a tool writes is one audio chunk
 _MAX_DURATION_MS = 2**31 - 1
 
@@ -473,10 +492,14 @@ async def _run[Result](
             outcome, code = "missing", "ffmpeg_missing"
             raise MediaUnavailable("ffmpeg_missing")
         if returncode < 0:
-            # A signal: SIGXCPU or SIGKILL at the CPU limit, SIGXFSZ at the file-size limit (the
-            # bootstrap restores its default), or a crash.
-            outcome, code = "killed", UNREADABLE
-            raise MediaRefused(UNREADABLE)
+            outcome = "killed"
+            if -returncode in _FILE_SIGNALS:
+                code = UNREADABLE
+                raise MediaRefused(UNREADABLE)
+            # SIGKILL (the kernel's OOM killer; this container is its first victim) or a signal
+            # from outside: nothing about the file, so the attempt is tried again.
+            code = "failed"
+            raise MediaUnavailable("failed")
         if returncode != 0:
             outcome = "failed"
             if source.startswith("https://"):

@@ -601,21 +601,38 @@ async def test_stderr_never_reaches_logs(monkeypatch: pytest.MonkeyPatch, tmp_pa
             "exit 1", "local", "failed", MediaRefused, "training_video_unreadable", id="exit-local"
         ),
         pytest.param("exit 1", "https", "failed", MediaUnavailable, "failed", id="exit-https"),
+        # SIGKILL says nothing about the file: the kernel's OOM killer picks the child first (the
+        # container's oom_score_adj is 600), so it is infrastructure and the attempt is retried.
+        # Changed deliberately from MediaRefused (final review, A1).
+        pytest.param("kill -KILL $$", "local", "killed", MediaUnavailable, "failed", id="killed"),
         pytest.param(
-            "kill -KILL $$",
+            "kill -KILL $$", "https", "killed", MediaUnavailable, "failed", id="killed-https"
+        ),
+        pytest.param("kill -TERM $$", "local", "killed", MediaUnavailable, "failed", id="term"),
+        # The limits' own signals and crashes are the file's doing.
+        pytest.param(
+            "kill -XCPU $$",
             "local",
             "killed",
             MediaRefused,
             "training_video_unreadable",
-            id="killed",
+            id="cpu-limit",
         ),
         pytest.param(
-            "kill -KILL $$",
+            "kill -SEGV $$",
+            "local",
+            "killed",
+            MediaRefused,
+            "training_video_unreadable",
+            id="crash-segv",
+        ),
+        pytest.param(
+            "kill -ABRT $$",
             "https",
             "killed",
             MediaRefused,
             "training_video_unreadable",
-            id="killed-https",
+            id="crash-abrt-https",
         ),
         pytest.param(
             "/usr/bin/head -c 400000 /dev/zero",

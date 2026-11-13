@@ -574,10 +574,17 @@ async def test_s3_probe_failure_checks_the_stored_size(
 
     monkeypatch.setattr(video_transcribe, "probe", failing_probe)
     with capture_logs() as logs:
-        # Storage answers with the stored size: the file itself is unreadable.
+        # Storage answers with the stored size: the file itself is unreadable, but only the last
+        # attempt says so (a brief S3 or DNS blip on the first must not delete the upload).
         unreadable, name = await world.video(seconds=2)
         stored = await world.item(unreadable)
         world.store.size_answer = stored["byte_size"]
+        for _ in range(limits.JOB_MAX_ATTEMPTS - 1):
+            assert await world.run() == "queued"
+            job = await world.job(unreadable)
+            assert job is not None and (job["status"], job["error_code"]) == ("queued", STORAGE)
+            assert (world.tmp_path / "training" / world.tenant / name).exists()
+            await world.make_due(unreadable)
         assert await world.run() == "failed"
         row = await world.item(unreadable)
         assert (row["status"], row["failure_code"]) == ("failed", "training_video_unreadable")
@@ -595,6 +602,64 @@ async def test_s3_probe_failure_checks_the_stored_size(
     assert world.speech.calls == []
     for log in logs:
         assert "storage.example.test" not in repr(log) and "synthetic-signature" not in repr(log)
+
+
+async def test_a_refusal_after_the_probe_accepted_the_file_is_retried_not_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item, name = await world.video(seconds=5)
+    path = world.tmp_path / "training" / world.tenant / name
+    real_loudness = video_transcribe.max_volume_db
+    recording_extract = video_transcribe.extract_chunk
+
+    async def refused_loudness(source: str, container: Any) -> float:
+        raise media.MediaRefused(media.UNREADABLE)
+
+    # The probe stores the duration, then the loudness pass fails: not a verdict on the file.
+    monkeypatch.setattr(video_transcribe, "max_volume_db", refused_loudness)
+    assert await world.run() == "queued"
+    job = await world.job(item)
+    assert job is not None and (job["status"], job["error_code"]) == ("queued", TRANSCRIPTION)
+    row = await world.item(item)
+    assert (row["duration_ms"], row["failure_code"]) == (5000, None)
+    assert path.exists()
+
+    async def refused_second_chunk(
+        source: str, container: Any, start_seconds: int, seconds: int, out: Path
+    ) -> int:
+        if start_seconds == limits.AUDIO_CHUNK_SECONDS:
+            raise media.MediaRefused(media.UNREADABLE)
+        return await recording_extract(source, container, start_seconds, seconds, out)
+
+    # A later attempt (the duration is stored): chunk 1's extraction fails the same way.
+    monkeypatch.setattr(video_transcribe, "max_volume_db", real_loudness)
+    monkeypatch.setattr(video_transcribe, "extract_chunk", refused_second_chunk)
+    await world.make_due(item)
+    assert await world.run() == "queued"
+    job = await world.job(item)
+    assert job is not None
+    assert (job["status"], job["error_code"], job["chunks_done"]) == ("queued", TRANSCRIPTION, 1)
+    assert (await world.item(item))["failure_code"] is None
+    assert path.exists()
+
+    # It mends: the next attempt resumes at chunk 1 and finishes.
+    monkeypatch.setattr(video_transcribe, "extract_chunk", recording_extract)
+    await world.make_due(item)
+    assert await world.run() == "summarising"
+    assert [index for index, _ in world.speech.calls] == [0, 1, 2]
+
+
+async def test_provider_times_far_outside_the_chunk_never_raise() -> None:
+    rows = video_transcribe.chunk_rows(
+        1,
+        300_000,
+        600_000,
+        [
+            TimedSegment(1e306, 1e306, "Starts past the end of the chunk."),
+            TimedSegment(2.0, 1.7976931348623157e308, "Ends far past the end of the chunk."),
+        ],
+    )
+    assert [(row.start_ms, row.end_ms) for row in rows] == [(600_000, 600_000), (302_000, 600_000)]
 
 
 async def test_a_chunk_past_the_end_of_the_audio_is_not_sent(world: World) -> None:

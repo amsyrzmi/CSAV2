@@ -137,8 +137,9 @@ class SpeechTranscriber:
         Any HTTP error status (429 and 5xx included), an answer over
         ``SEGMENTS_MAX_RESPONSE_BYTES`` or ``SEGMENTS_MAX_TEXT_CHARS``, or one that does not parse
         is ``transcription_failed``; a timeout is ``transcription_timeout``. A valid answer
-        without ``segments`` becomes one segment from 0 to the reported ``duration`` (infinite
-        when none is reported: the caller clips it to the chunk) holding the whole text.
+        without ``segments`` (or with an empty list) becomes one segment from 0 to the reported
+        ``duration`` (infinite when none is reported: the caller clips it to the chunk) holding
+        the whole text. NUL characters are dropped from every text and the language.
         """
         mime = mime.split(";", 1)[0].strip()
         if mime not in MIMES or not audio or len(audio) > MAX_AUDIO_BYTES:
@@ -172,12 +173,18 @@ class SpeechTranscriber:
             raise TranscriptionError("transcription_failed") from None
 
 
+def _clean(text: str) -> str:
+    """Trimmed, without NUL characters (Postgres text cannot hold them)."""
+    return text.replace("\x00", "").strip()
+
+
 def _timed(answer: _Verbose) -> TimedTranscript:
-    language = (answer.language or "").strip() or None
+    language = _clean(answer.language or "") or None
     if language is not None and len(language) > _LANGUAGE_MAX_CHARS:
         language = None
-    if answer.segments is None:
-        text = answer.text.strip()
+    if not answer.segments:
+        # No segments, or an empty list beside the text: the text is one segment.
+        text = _clean(answer.text)
         end = answer.duration if answer.duration is not None and answer.duration > 0 else math.inf
         segments = [TimedSegment(0.0, end, text)] if text else []
         return TimedTranscript(language, segments)
@@ -187,7 +194,7 @@ def _timed(answer: _Verbose) -> TimedTranscript:
             TimedSegment(
                 segment.start,
                 segment.end,
-                segment.text.strip(),
+                _clean(segment.text),
                 segment.no_speech_prob,
                 segment.avg_logprob,
             )

@@ -123,8 +123,10 @@ services:
         target: S3_SECRET_ACCESS_KEY
     volumes: !reset []
     # 256m, not the 160 MB measured: that was the import set alone, without pools, the S3 client
-    # and the upload buffer. Above the workers' 500, so the OOM killer takes a video job first; the
-    # job is picked up again once its heartbeat goes stale (10 minutes; it costs one attempt of 3).
+    # and the upload buffer. Above the workers' 500, so the OOM killer takes a video job first. If it
+    # kills the ffmpeg child, the attempt fails as transient and is retried after its backoff (one
+    # attempt of 3, the file kept); if it kills the Python process, the job is requeued once its
+    # heartbeat goes stale (10 minutes; also one attempt of 3).
     mem_limit: ${CSA_PROD_MEM_TRAINING_WORKER:-256m}
     oom_score_adj: 600
 

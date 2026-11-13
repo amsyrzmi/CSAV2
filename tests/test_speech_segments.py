@@ -130,6 +130,41 @@ async def test_answer_without_segments_becomes_one_segment(
     assert math.isinf(segment.end)
 
 
+async def test_nul_characters_are_dropped_and_an_empty_segment_list_keeps_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nul_segment = {
+        "start": 0.5,
+        "end": 2.0,
+        "text": " Wel\u0000come\u0000.",
+        "no_speech_prob": 0.01,
+    }
+    answers = [
+        # Postgres refuses NUL in text: it must never reach a stored segment or language.
+        verbose(language="eng\u0000lish", segments=[nul_segment]),
+        # An empty list with text is the text, as a missing list is.
+        {"text": " Spoken\u0000 words. ", "language": "malay", "duration": 30.0, "segments": []},
+        {"text": "Nothing timed.", "segments": []},
+        # Nothing said at all: no segment.
+        {"text": " \u0000 ", "segments": []},
+    ]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=answers.pop(0))
+
+    mock_http(monkeypatch, handle)
+    first = await speech().transcribe_segments(AUDIO, "audio/ogg")
+    assert first == TimedTranscript("english", [TimedSegment(0.5, 2.0, "Welcome.", 0.01)])
+    second = await speech().transcribe_segments(AUDIO, "audio/ogg")
+    assert second == TimedTranscript("malay", [TimedSegment(0.0, 30.0, "Spoken words.")])
+    third = await speech().transcribe_segments(AUDIO, "audio/ogg")
+    [segment] = third.segments
+    assert (segment.start, segment.text) == (0.0, "Nothing timed.")
+    assert math.isinf(segment.end)
+    fourth = await speech().transcribe_segments(AUDIO, "audio/ogg")
+    assert fourth.segments == []
+
+
 async def test_oversized_answer_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     long_text = "a" * (SEGMENTS_MAX_TEXT_CHARS + 1)
     answers: list[httpx.Response] = [

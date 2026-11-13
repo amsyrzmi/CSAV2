@@ -15,7 +15,8 @@
 --     item_id, chunk_index, position), with start and end in milliseconds.
 --   public.training_transcript_windows: the transcript regrouped into searchable windows, each with
 --     a vector(384) embedding and the model that made it (PK client_id, item_id, position).
---   public.training_video_usage: one row per video processed, for the company's monthly allowance
+--   public.training_video_usage: one row per video processed, for the company's rolling 24-hour
+--     processing allowance
 --     (UNIQUE client_id, item_id; index client_id, processed_at). It has no foreign key to
 --     training_items: deleting a video must not give its seconds back.
 --   Every table but usage has a composite foreign key (client_id, item_id) to
@@ -25,7 +26,7 @@
 -- Pre-check: 0600 applied (the unique key training_items_client_id_id_key must exist) and the vector
 --   extension is installed (baseline). The tables are new and empty; nothing is rewritten.
 -- Rollback (after the app no longer reads them; as the database owner):
---   DROP TABLE public.training_video_usage; (the monthly usage count is lost)
+--   DROP TABLE public.training_video_usage; (the rolling 24-hour usage count is lost)
 --   DROP TABLE public.training_transcript_windows, public.training_transcript_segments,
 --     public.training_video_jobs, public.training_video_pieces, public.training_video_uploads;
 --   Finally delete the schema_migrations row for 0601, or the runner thinks it is still applied.

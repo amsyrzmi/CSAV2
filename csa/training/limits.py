@@ -117,7 +117,7 @@ JOB_MAX_ATTEMPTS = 3
 """Attempts a job gets for transient failures before it fails."""
 
 JOB_BACKOFF_SECONDS = 60
-"""Base wait before a retried job runs again (doubles each attempt)."""
+"""Wait before a retried job runs again, times the attempt number (60 s, 120 s)."""
 
 SWEEP_EVERY_SECONDS = 3600
 """How often the training worker sweeps abandoned uploads and old usage rows."""

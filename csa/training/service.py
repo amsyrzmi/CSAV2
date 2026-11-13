@@ -380,6 +380,14 @@ class TrainingLibrary:
         async with tx(self.pool, str(client_id)) as conn:
             if not await can_manage(conn, actor, client_id):
                 raise HTTPException(403, FORBIDDEN)
+            # The job row first, as the worker locks it (job, then item): the cascade below
+            # would otherwise lock the item and then wait on the job, a deadlock with a worker
+            # write in progress.
+            await db.q.fetch_all(
+                "training/video_job_lock.sql",
+                {"client_id": client_id, "item_id": item_id},
+                conn=conn,
+            )
             # Read before the delete takes the row (and its upload) away.
             open_upload = await db.q.fetch_one(
                 "training/video_upload_get.sql", (client_id, item_id), conn=conn
@@ -388,14 +396,9 @@ class TrainingLibrary:
             if row is None:
                 raise HTTPException(404, NOT_FOUND)
             await audit(conn, actor, client_id, "training.item_removed", str(item_id))
-        logger.info(
-            "training_item_removed",
-            item_id=str(item_id),
-            client_id=str(client_id),
-            kind=row["kind"],
-            byte_size=row["byte_size"],
-            outcome="upload_open" if open_upload is not None else "removed",
-        )
+        # "removed" (no upload was open), "upload_aborted", or "abort_failed" (the row is gone;
+        # the sweep lists the store's open uploads and aborts this one).
+        outcome = "removed"
         if open_upload is not None and isinstance(self.store, MultipartStore):
             try:
                 await asyncio.to_thread(
@@ -404,14 +407,23 @@ class TrainingLibrary:
                     open_upload["storage_name"],
                     open_upload["upload_id"],
                 )
+                outcome = "upload_aborted"
             except Exception as failure:
-                # The row is gone; the sweep lists the store's open uploads and aborts this one.
+                outcome = "abort_failed"
                 logger.error(
                     "training_abort_failed",
                     item_id=str(item_id),
                     client_id=str(client_id),
                     outcome=type(failure).__name__,
                 )
+        logger.info(
+            "training_item_removed",
+            item_id=str(item_id),
+            client_id=str(client_id),
+            kind=row["kind"],
+            byte_size=row["byte_size"],
+            outcome=outcome,
+        )
         try:
             await cleanup(self.pool, self.store, client_id)
         except Exception as failure:

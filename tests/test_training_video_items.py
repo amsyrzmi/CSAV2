@@ -13,6 +13,7 @@ from csa.storage.local import LocalObjectStore
 from csa.training import limits
 from csa.training.service import cleanup
 from csa.training.store_sweep import STORED
+from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
 from tests.test_console_sessions import SessionWorld
@@ -466,9 +467,14 @@ async def test_delete_uploading_video_aborts_the_store_upload(
     )
     part = put_file(tmp_path, tenant, f".{name}.part")
 
-    answer = await remove(sessions, admin, item)
+    with capture_logs() as logs:
+        answer = await remove(sessions, admin, item)
     assert answer.status_code == 204, answer.text
     assert training_store.aborts == [(UUID(tenant), name, "upload-7")]
+    # The removal's log line says what came of the abort, once it was tried.
+    assert [log["outcome"] for log in logs if log["event"] == "training_item_removed"] == [
+        "upload_aborted"
+    ]
     assert not part.exists()
     assert names(training_store, tenant) == []
     assert await rows(sessions, tenant) == []
@@ -490,9 +496,13 @@ async def test_delete_survives_a_failing_abort_and_still_sweeps(
     part = put_file(tmp_path, tenant, f".{name}.part")
     training_store.abort_error = StorageError("synthetic storage outage")
 
-    answer = await remove(sessions, admin, item)
+    with capture_logs() as logs:
+        answer = await remove(sessions, admin, item)
     assert answer.status_code == 204, answer.text
     assert len(training_store.aborts) == 1
+    assert [log["outcome"] for log in logs if log["event"] == "training_item_removed"] == [
+        "abort_failed"
+    ]
     assert await rows(sessions, tenant) == []
     assert not part.exists()  # the sweep after the abort removes it
 
@@ -527,8 +537,12 @@ async def test_delete_ready_video_removes_file_children_and_summary_but_keeps_us
     )
     await sessions.q("UPDATE training_items SET summary='{}' WHERE id=%s", item)
 
-    answer = await remove(sessions, admin, item)
+    with capture_logs() as logs:
+        answer = await remove(sessions, admin, item)
     assert answer.status_code == 204, answer.text
+    assert [log["outcome"] for log in logs if log["event"] == "training_item_removed"] == [
+        "removed"
+    ]
     assert not path.exists() and names(training_store, tenant) == []
     # No upload was open, so the store was not asked to abort one.
     assert training_store.aborts == []
