@@ -23,6 +23,7 @@ from csa.payments.contracts import MethodOut
 from csa.payments.invoices import InvoiceRecord
 
 Locale = Literal["en", "ms"]
+Channel = Literal["chat", "email"]
 
 _MONTHS: dict[Locale, tuple[str, ...]] = {
     "en": (
@@ -149,6 +150,7 @@ def reminder_text(
     brand: str,
     locale: Locale,
     tz: str | ZoneInfo,
+    channel: Channel = "chat",
 ) -> str:
     """The reminder: what is owed and when, how to pay, the reference to use, and what to do if
     it is already paid. One line each. `today` is the local date, in the company's time zone, at
@@ -158,12 +160,23 @@ def reminder_text(
 
     `methods` are listed as given; the caller passes the company's active QR and transfer methods
     in their order. With none, the reminder still names the reference.
+
+    `channel` only changes the closing line: in a chat the customer can "reply here", in an email
+    a reply goes to a sender nobody reads, so the email asks them to let the company know.
     """
     lines = [_first_line(inv, today=today, brand=brand, locale=locale, tz=tz)]
     lines += [method_line(m, locale) for m in methods]
     lines.append(reference_line([_ref(inv)], locale))
     if locale == "ms":
-        lines.append("Kalau dah bayar, balas sini dan bagitahu bila ya.")
+        lines.append(
+            "Kalau dah bayar, balas sini dan bagitahu bila ya."
+            if channel == "chat"
+            else "Kalau dah bayar, maklumkan kami bila ya."
+        )
     else:
-        lines.append("If you've already paid, reply here and tell us when.")
+        lines.append(
+            "If you've already paid, reply here and tell us when."
+            if channel == "chat"
+            else "If you've already paid, please let us know when."
+        )
     return "\n".join(lines)

@@ -60,6 +60,10 @@ Conn = psycopg.AsyncConnection[Any]
 QUIET_START = time(21, 0)
 QUIET_END = time(9, 0)
 DAILY_CAP = 1  # reminders sent or queued per contact per local day
+# An email row queued longer ago than this is dropped, never sent: reminders are never sent late.
+# Quiet hours alone hold a row for about a day, so this only catches a backlog (mail off, a
+# company switched off and on again).
+STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 500  # invoices worked on per company per run; the next run goes on
 QUEUE_STATS: tuple[str, ...] = (
     "invoices",
@@ -343,13 +347,16 @@ async def run_payment_reminder_queue(
 async def _compose(conn: Conn, row: Mapping[str, Any], now: datetime) -> OutgoingMail | None:
     """The mail this claimed row owes now, or none if it is no longer owed (the row is dropped).
 
-    Everything is read again here, as late as it can be, in the claim's transaction: the
-    company's switches (subscriptions package active, payments on, `customers_remindable`), the
-    invoice (still issued or overdue, still with its contact), the contact, and the contact's
-    address as it is now, which must be the one the row was queued for. The text is built now,
-    with today's local date, so a reminder queued yesterday says what is true today.
+    A row queued more than `STALE_AFTER` ago is dropped first. Everything else is read again
+    here, as late as it can be, in the claim's transaction: the company's switches (subscriptions
+    package active, payments on, `customers_remindable`), the invoice (still issued or overdue,
+    still with its contact), the contact, and the contact's address as it is now, which must be
+    the one the row was queued for. The text is built now, with today's local date, so a reminder
+    queued yesterday says what is true today.
     """
     client_id: UUID = row["client_id"]
+    if now - row["created_at"] > STALE_AFTER:
+        return None
     company = await _load_company(conn, client_id)
     if company is None or not company.email:
         return None
@@ -382,6 +389,7 @@ async def _compose(conn: Conn, row: Mapping[str, Any], now: datetime) -> Outgoin
         brand=company.brand,
         locale=locale,
         tz=company.zone,
+        channel="email",
     )
     return payment_reminder_mail(
         to=to,
@@ -500,7 +508,8 @@ async def run_payment_reminder_mail(
     as `sending` only when it has a send slot, in a short transaction that also checks it again
     (`_compose`) and commits before the send. It is then settled `sent`, `failed` or `dropped`. A
     failed send is not retried. A row whose claim fails is counted in `errors` and left as it was,
-    for the next run, and the other rows still go.
+    for the next run, and the other rows still go. A row queued more than `STALE_AFTER` (48 hours)
+    ago is dropped at claim time, never sent: reminders are never sent late.
     """
     stats: dict[str, int] = dict.fromkeys(MAIL_STATS, 0)
     if mailer is None or not mailer.enabled:

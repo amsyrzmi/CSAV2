@@ -20,7 +20,11 @@ from csa.core.tenancy import tx
 from csa.jobs import payment_reminders
 from csa.jobs.bookings import LOST_AFTER, MAIL_STATS
 from csa.jobs.clock import FakeClock
-from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
+from csa.jobs.payment_reminders import (
+    STALE_AFTER,
+    run_payment_reminder_mail,
+    run_payment_reminder_queue,
+)
 from structlog.testing import capture_logs
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -182,10 +186,12 @@ async def test_a_queued_row_is_sent_once_and_settled_sent(
             f"{BRAND}: invoice {ref} for MYR 1,059.90 is due today.\n\n"
             f"Bank transfer: Bank Contoh, account {ACCOUNT}, name Kedai Contoh.\n\n"
             f"Please put {ref} as the payment reference so we can match your payment.\n\n"
-            "If you've already paid, reply here and tell us when.\n\n"
+            "If you've already paid, please let us know when.\n\n"
             f"{BRAND}\n"
         )
         assert ref in mail.html and ACCOUNT in mail.html
+        # A reply to an email goes to a sender nobody reads, so it never says "reply here".
+        assert "reply" not in mail.text.lower() and "reply" not in mail.html.lower()
         for secret in (STAFF_NOTE, VOID_REASON):
             assert secret not in mail.text and secret not in mail.html
         assert await status_of(conn, row) == ("sent", NOW)
@@ -243,6 +249,8 @@ async def test_a_malay_contact_gets_the_malay_mail(pg_container: object, app_dsn
         assert mail.text.startswith("Hai Synthetic Customer,\n\n")
         assert f"{BRAND}: invois {ref} untuk MYR 1,059.90 kena bayar hari ini." in mail.text
         assert f"Pindahan bank: Bank Contoh, akaun {ACCOUNT}" in mail.text
+        assert mail.text.endswith("Kalau dah bayar, maklumkan kami bila ya.\n\n" + BRAND + "\n")
+        assert "balas" not in mail.text.lower()
 
 
 # --- dropped at send time -----------------------------------------------------------------------
@@ -552,3 +560,36 @@ async def test_compose_drops_a_row_whose_company_switched_payments_off(
             )
         async with tx(pool, str(client)) as scoped:
             assert await payment_reminders._compose(scoped, claimed, NOW) is not None
+
+
+async def test_a_row_queued_more_than_stale_after_ago_is_dropped_never_sent(
+    pg_container: object, app_dsn: str
+) -> None:
+    assert STALE_AFTER == timedelta(hours=48)
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, support=None)
+        person = await contact(conn, client, email="stale@example.test")
+        inv = await invoice(conn, client, person)
+        stale = await queued(
+            conn, client, inv, "stale@example.test", created_at=NOW - timedelta(hours=49)
+        )
+        relay = FakeTransport()
+
+        assert await send(pg_container, app_dsn, relay) == ZERO | {"claimed": 1, "dropped": 1}
+        assert relay.sent == [] and await status_of(conn, stale) == ("dropped", None)
+
+
+async def test_a_row_held_twenty_hours_by_quiet_hours_is_still_sent(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, support=None)
+        person = await contact(conn, client, email="held@example.test")
+        inv = await invoice(conn, client, person)
+        held = await queued(
+            conn, client, inv, "held@example.test", created_at=NOW - timedelta(hours=20)
+        )
+        relay = FakeTransport()
+
+        assert await send(pg_container, app_dsn, relay) == ZERO | {"claimed": 1, "sent": 1}
+        assert len(relay.sent) == 1 and (await status_of(conn, held))[0] == "sent"

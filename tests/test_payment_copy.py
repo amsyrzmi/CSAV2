@@ -243,3 +243,30 @@ def test_no_customer_text_or_staff_field_reaches_the_copy() -> None:
     text = reminder_text(claimed, [TRANSFER], today=ON_THE_DAY, brand=BRAND, locale="en", tz=TZ)
     assert "Tuesday" not in text and "0123456789" not in text
     assert "Tuesday" not in invoice_line(claimed, "en", TZ)
+
+
+@pytest.mark.parametrize(
+    ("locale", "chat_line", "email_line"),
+    [
+        (
+            "en",
+            "If you've already paid, reply here and tell us when.",
+            "If you've already paid, please let us know when.",
+        ),
+        (
+            "ms",
+            "Kalau dah bayar, balas sini dan bagitahu bila ya.",
+            "Kalau dah bayar, maklumkan kami bila ya.",
+        ),
+    ],
+)
+def test_the_closing_line_follows_the_channel(locale: str, chat_line: str, email_line: str) -> None:
+    kwargs = {"today": BEFORE, "brand": BRAND, "locale": locale, "tz": TZ}
+    chat = reminder_text(INVOICE, [TRANSFER], **kwargs)  # type: ignore[arg-type]
+    by_default = reminder_text(INVOICE, [TRANSFER], channel="chat", **kwargs)  # type: ignore[arg-type]
+    email = reminder_text(INVOICE, [TRANSFER], channel="email", **kwargs)  # type: ignore[arg-type]
+    assert chat == by_default and chat.endswith(chat_line)
+    assert email.endswith(email_line)
+    # Only the closing line differs, and an email never says "reply here".
+    assert email.splitlines()[:-1] == chat.splitlines()[:-1]
+    assert "reply" not in email.lower() and "balas" not in email.lower()
