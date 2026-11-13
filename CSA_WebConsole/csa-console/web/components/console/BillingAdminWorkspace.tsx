@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchOverview, type AdminOverviewOut } from "@/lib/billing-admin-api";
 import {
-  costPerExecutionText, cycleOptions, marginText, overviewErrorMessage, planNowLabel, planStatus, rawCostText, tokenText,
+  costPerExecutionText, cycleOptions, marginText, overviewErrorMessage, planStatus, rawCostText, tokenText,
   warningSentences, workbookNote,
 } from "@/lib/billing-admin-view";
 import { countText, cycleLabel, formatRm } from "@/lib/credit-view";
@@ -68,7 +68,8 @@ export function BillingAdminWorkspace() {
   }
 
   const selected = picked || overview?.cycle_start || "";
-  const company = overview?.companies.find((c) => c.client_id === editing) ?? null;
+  // Plans are edited against the open cycle only: a closed cycle shows the plan that billed it, not the one in force now.
+  const company = overview && !overview.final ? (overview.companies.find((c) => c.client_id === editing) ?? null) : null;
   return (
     <>
       <Heading
@@ -103,7 +104,7 @@ export function BillingAdminWorkspace() {
                 className="font-(family-name:--fs-font-heading) text-base font-semibold">
                 Billing plan: {company.name}
               </h2>
-              <p className="mt-1 text-sm text-ink-600">{planNowLabel(overview?.final ?? false)}: {planStatus(company)}</p>
+              <p className="mt-1 text-sm text-ink-600">Now: {planStatus(company)}</p>
             </div>
             <button type="button" className={secondary} onClick={() => setEditing(null)}>Close</button>
           </div>
@@ -164,12 +165,14 @@ function CompanyTable({ overview, editing, onEdit }: {
                     <th scope="row" className={`${cell} ${edge} text-left font-medium`}>
                       <span className="block">{company.name}</span>
                       {/* In the first column so it never scrolls out of view. */}
-                      <button type="button" className={`${secondary} mt-2 whitespace-nowrap font-normal`}
-                        aria-expanded={editing === company.client_id}
-                        aria-controls={editing === company.client_id ? "billing-plan-editor" : undefined}
-                        aria-label={`Billing plan for ${company.name}`} onClick={() => onEdit(company.client_id)}>
-                        Billing plan
-                      </button>
+                      {!overview.final && (
+                        <button type="button" className={`${secondary} mt-2 whitespace-nowrap font-normal`}
+                          aria-expanded={editing === company.client_id}
+                          aria-controls={editing === company.client_id ? "billing-plan-editor" : undefined}
+                          aria-label={`Billing plan for ${company.name}`} onClick={() => onEdit(company.client_id)}>
+                          Billing plan
+                        </button>
+                      )}
                     </th>
                     <td className={`${cell} ${edge}`}>{planStatus(company)}</td>
                     <td className={`${amount} ${edge}`}>{countText(company.executions)}</td>

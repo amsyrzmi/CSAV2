@@ -343,11 +343,6 @@ export function currentPlanOf(overview: AdminOverviewOut | null, clientId: strin
   return found ? { stage: found.stage, bundle: found.bundle, terminated_on: found.terminated_on } : null;
 }
 
-/** The editor heading's label for the plan shown: "Now" for the open cycle, "In this cycle" for a closed one. */
-export function planNowLabel(final: boolean): string {
-  return final ? "In this cycle" : "Now";
-}
-
 export interface PlanForm extends PlanChoice { effective_from: string; reason: string }
 
 /**

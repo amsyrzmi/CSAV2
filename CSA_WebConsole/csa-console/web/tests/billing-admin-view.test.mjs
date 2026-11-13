@@ -20,7 +20,7 @@ const {
   warningSentences, planErrorMessage, priceErrorMessage, fxErrorMessage, PLAN_RULE_CODES,
   rawCostText, marginText, costPerExecutionText, workbookNote, tokenText, stageLabel, bundleLabel,
   planStatus, klToday, cycleStartOf, addMonths, cycleOptions, suggestedDates, klDateTime,
-  isUsdAmount, planBody, fullDay, initialPlanChoice, planChoiceReady, currentPlanOf, planNowLabel,
+  isUsdAmount, planBody, fullDay, initialPlanChoice, planChoiceReady, currentPlanOf,
   overviewErrorMessage, isUsdToMyr,
 } = view;
 
@@ -288,11 +288,6 @@ test("the Tenants page finds a tenant's plan in the overview, or knows it does n
     { stage: "collaborator", bundle: "curated", terminated_on: "2026-12-01" });
   assert.equal(currentPlanOf(overview, "22222222-2222-4222-8222-222222222222"), null);
   assert.equal(currentPlanOf(null, company().client_id), null);
-});
-
-test("the editor heading says Now only for the open cycle", () => {
-  assert.equal(planNowLabel(false), "Now");
-  assert.equal(planNowLabel(true), "In this cycle");
 });
 
 // ---- Overview errors and the FX cap ----
