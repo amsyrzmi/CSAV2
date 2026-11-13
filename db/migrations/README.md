@@ -47,6 +47,13 @@ Reserved ranges (client growth program, 2026-10-27):
   `contacts.phone_verified_at` and `merged_into`, the unique `contacts_verified_phone_uq`, and the
   `contact_links` and `contact_link_reviews` tables, and lets `csa_app` update
   `agent_preparation_requests.contact_id` only (a link moves staged requests to the survivor).
+- `0600`–`0609`: video in the training library. 0600 widens `training_items` (kind `pdf` or `video`,
+  `view_mode`, `page_count` and `sha256` nullable, `status`, `duration_ms`, `container`, `speech`,
+  `transcript_language`, `failure_code`, `video_codec`, `audio_codec`, the shape and ready checks, and
+  `UNIQUE (client_id, id)`; the new checks are added `NOT VALID` then validated). 0601 adds
+  `training_video_uploads`, `training_video_pieces`, `training_video_jobs`,
+  `training_transcript_segments`, `training_transcript_windows` (vector(384)) and
+  `training_video_usage` (no item foreign key, so deleting a video keeps its seconds counted).
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

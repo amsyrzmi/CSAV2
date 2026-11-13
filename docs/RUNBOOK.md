@@ -650,6 +650,33 @@ TABLE public.subscription_settings;`, `DROP TABLE public.signup_requests;` (ever
 lost), and last `DELETE FROM public.schema_migrations WHERE version = '0580';`, or the runner thinks it
 is still applied. Then start the older images.
 
+**Roll back migrations 0600 and 0601.** Needed when going back to an image older than the training
+video release: its readiness check wants the highest applied version to equal its own. Roll back in
+reverse order: 0601 first, then 0600.
+
+**Roll back migration 0601.** Stop the services, then, as the database owner: `DROP TABLE
+public.training_video_usage;` (the monthly video-seconds count is lost), `DROP TABLE
+public.training_transcript_windows, public.training_transcript_segments,
+public.training_video_jobs, public.training_video_pieces, public.training_video_uploads;` (every
+transcript and any upload in progress is lost; stored video files stay in the training store with no
+row and the store's sweep removes them), and last `DELETE FROM public.schema_migrations WHERE version
+= '0601';`, or the runner thinks it is still applied.
+
+**Roll back migration 0600.** After 0601 is rolled back. Stop the services, then, as the database
+owner and in this order: `DELETE FROM public.training_items WHERE kind = 'video';` (restore `NOT NULL`
+only when no video row exists, because a video has no `view_mode`, `page_count` or, while uploading,
+`sha256`), `ALTER TABLE public.training_items` dropping the constraints `training_items_sha256_chk`,
+`training_items_pdf_ready_chk`, `training_items_shape_chk`, `training_items_audio_codec_chk`,
+`training_items_video_codec_chk`, `training_items_failure_code_chk`,
+`training_items_transcript_language_chk`, `training_items_speech_chk`, `training_items_container_chk`,
+`training_items_duration_chk`, `training_items_status_chk`, `training_items_kind_chk` and
+`training_items_client_id_id_key`, then dropping the columns `audio_codec`, `video_codec`,
+`failure_code`, `transcript_language`, `speech`, `container`, `duration_ms` and `status`, then `ALTER
+COLUMN view_mode SET NOT NULL, ALTER COLUMN page_count SET NOT NULL, ALTER COLUMN sha256 SET NOT NULL;`
+and `ADD CONSTRAINT training_items_kind_check CHECK (kind IN ('pdf'));`, and last `DELETE FROM
+public.schema_migrations WHERE version = '0600';`, or the runner thinks it is still applied. Then start
+the older images.
+
 ## Stuck knowledge uploads
 
 A failed or half-read upload shows a card under Needs attention on the Business knowledge page. **Try
