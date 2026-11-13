@@ -31,7 +31,7 @@ from tests.test_staging_rollout import (
 
 GIB = 1 << 30
 EXAMPLE_ROSTER = rs.REPO_ROOT / "deploy" / "staging-accounts.example.json"
-SERVICES = ("gateway", "worker", "delivery", "frontend")
+SERVICES = ("gateway", "worker", "delivery", "frontend", "training-worker")
 IMAGE_IDS = {service: "sha256:" + str(index) * 64 for index, service in enumerate(SERVICES)}
 DB_BYTES = 52_428_800
 VOLUME_FILES = {
@@ -90,7 +90,8 @@ class ResetFake(FakeRunner):
 
 
 def _service_of(argv: Sequence[str]) -> str:
-    return argv[-1].split("-")[2]  # csa-staging-<service>-1
+    # csa-staging-<service>-1; a service name may contain a hyphen (training-worker).
+    return argv[-1].removeprefix("csa-staging-").removesuffix("-1")
 
 
 def reset_runner(
