@@ -123,7 +123,7 @@ async def test_seed_creates_roles_hr_and_records_idempotently(migrated_dsn: str)
     assert meranti == {
         "slug": "demo-meranti",
         "members": 5,
-        "capabilities_enabled": 9,
+        "capabilities_enabled": 10,
         "products": 8,
         "contacts": 2,
         "conversations": 2,
