@@ -24,6 +24,7 @@ from csa.jobs.runner import build_default_registry
 from csa.jobs.subscriptions import run_subscriptions_due
 from csa.payments import invoices
 from csa.payments.reference import new_invoice_id, new_reference
+from csa.subscriptions.service import record_event
 from psycopg import sql
 from structlog.testing import capture_logs
 
@@ -578,6 +579,90 @@ async def test_suspend_after_seven_days_pauses_once_as_unpaid(
                 due = await run_subscriptions_due(tenant_conn, tenant, FakeClock(NOW))
         assert due["resumed"] == 0
         assert (await fetch_subscription(conn, unpaid))["status"] == "paused"
+
+
+async def staff_resume(app_dsn: str, client: uuid.UUID, sub: uuid.UUID) -> None:
+    """Resume `sub` as the executor does: subscription_apply.sql under the lock, then the event."""
+    async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+        async with tx(pool, str(client)) as conn:
+            key = {"client_id": client, "subscription_id": sub}
+            locked = await db.q.fetch_one("subscriptions/subscription_lock.sql", key, conn=conn)
+            assert locked is not None
+            applied = await db.q.fetch_one(
+                "subscriptions/subscription_apply.sql",
+                {
+                    **key,
+                    "version": locked["version"],
+                    "action": "resume",
+                    "resume_at": None,
+                    "renews_at": None,
+                    "immediate_plan": False,
+                    "scheduled_plan": False,
+                    "plan_code": None,
+                    "price": None,
+                    "currency": None,
+                    "target_interval": None,
+                    "effective_at": None,
+                },
+                conn=conn,
+            )
+            assert applied is not None and applied["status"] == "active"
+            await record_event(
+                conn,
+                client,
+                sub,
+                actor=str(uuid.uuid4()),
+                action="resumed",
+                from_status=locked["status"],
+                to_status=applied["status"],
+                payload={"version": applied["version"]},
+            )
+
+
+async def test_a_staff_resume_of_an_unpaid_pause_is_not_undone_by_the_next_run(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        tenant = await seed_tenant(conn, suspend_after_days=7)
+        sub = await add_subscription(conn, tenant)
+        first = await add_invoice(
+            conn, tenant, sub, "overdue", due_at=NOW - timedelta(days=10), period_start=NOW
+        )
+        assert await run(app_dsn, tenant) == ZERO | {"suspended": 1}
+
+        await staff_resume(app_dsn, tenant, sub)
+        row = await fetch_subscription(conn, sub)
+        assert (row["status"], row["pause_reason"]) == ("active", None)
+        assert await invoice_status(conn, first) == "overdue"  # still unpaid
+
+        # suspension happens at most once per invoice: the same overdue invoice never pauses again
+        assert await run(app_dsn, tenant) == ZERO
+        assert await run(app_dsn, tenant, NOW + timedelta(days=3)) == ZERO
+        assert (await fetch_subscription(conn, sub))["status"] == "active"
+        suspensions = [
+            e for e in await fetch_events(conn, sub) if e["action"] == "suspended_unpaid"
+        ]
+        assert [e["payload"] for e in suspensions] == [{"invoice_id": first}]
+
+        # another overdue invoice past the cutoff that has caused no suspension yet still counts
+        second = await add_invoice(
+            conn,
+            tenant,
+            sub,
+            "overdue",
+            due_at=NOW - timedelta(days=8),
+            period_start=NOW + timedelta(days=30),
+        )
+        assert await run(app_dsn, tenant) == ZERO | {"suspended": 1}
+        row = await fetch_subscription(conn, sub)
+        assert (row["status"], row["pause_reason"]) == ("paused", "unpaid")
+        suspensions = [
+            e for e in await fetch_events(conn, sub) if e["action"] == "suspended_unpaid"
+        ]
+        assert [e["payload"] for e in suspensions] == [
+            {"invoice_id": first},
+            {"invoice_id": second},
+        ]
 
 
 async def test_two_tenants_are_isolated(pg_container: object, app_dsn: str) -> None:

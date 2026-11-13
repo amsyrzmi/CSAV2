@@ -42,7 +42,9 @@ async def run_payments_due(
     3. up to ``batch_size`` issued invoices past their due time become overdue;
     4. only when ``suspend_after_days`` is set: up to ``batch_size`` active subscriptions with an
        overdue invoice due more than that many days ago are paused as unpaid (no resume date;
-       paying lifts it), with one ``suspended_unpaid`` event each.
+       paying lifts it), with one ``suspended_unpaid`` event each. An invoice suspends at most
+       once: one that already caused a ``suspended_unpaid`` event no longer counts, so a resume
+       while it stays overdue is not undone by the next run.
 
     Each issue runs in its own savepoint: one that raises is undone, counted in ``failed`` and
     logged as ``payments_issue_failed`` with the error class and ids only, and the run goes on.

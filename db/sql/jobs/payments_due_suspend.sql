@@ -6,11 +6,18 @@
 -- csa.payments.invoices.mark_paid), version + 1. Each gets one 'suspended_unpaid' timeline event
 -- by 'system:payments_due' with {invoice_id}: the longest overdue of those invoices. Nothing is
 -- charged and nobody is messaged. %(now)s is the job clock.
+-- An overdue invoice that already caused a 'suspended_unpaid' event on this subscription is left
+-- out (the same test as payments_due_suspend_lock.sql): suspension happens at most once per
+-- invoice, so a resume while that invoice stays overdue is not undone by the next run.
 WITH due AS (
     SELECT s.id, s.status AS from_status,
            (SELECT i.id FROM public.invoices i
              WHERE i.client_id = s.client_id AND i.subscription_id = s.id
                AND i.status = 'overdue' AND i.due_at < %(cutoff)s::timestamptz
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.subscription_events e
+                   WHERE e.client_id = s.client_id AND e.subscription_id = s.id
+                     AND e.action = 'suspended_unpaid' AND e.payload->>'invoice_id' = i.id)
              ORDER BY i.due_at, i.id
              LIMIT 1) AS invoice_id
     FROM public.subscriptions s
