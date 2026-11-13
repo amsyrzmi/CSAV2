@@ -1882,7 +1882,8 @@ owner add, edit and remove them, and anyone may ask for a stored summary. The we
 of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key)
 and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
 `docs/console_openapi.json` as `ItemOut`, `Processing`, `ItemList`, `ItemPatch`, `SummaryRequest`,
-`SummaryOut`, `NoSummary`, `VideoStart`, `VideoUploadOut` and `PieceOut`. Migrations `0600` and
+`SummaryOut`, `NoSummary`, `VideoStart`, `VideoUploadOut`, `PieceOut`, `PlaybackOut`,
+`TranscriptLine` and `TranscriptOut`. Migrations `0600` and
 `0601` add video to the same items and the tables behind it.
 
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
@@ -1919,6 +1920,9 @@ Who may call:
 | `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below. On a video `title`, `description` and `category` work in every state; `view_mode` is 422 `training_not_pdf` and nothing in that request is applied |
 | `DELETE /training/items/{id}` | manage | 204. Removes the row (a video's pieces, job, transcript and search windows go with it, in any state), then the file or the unfinished upload and the store's multipart upload. The video's processing-usage row stays, so deleting does not give its seconds back |
 | `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below. A video is 404 `training_not_found` here |
+| `GET /training/items/{id}/playback` | read | `PlaybackOut` `{url, expires_at, media_type}` for a video: where to play it from for the next 15 minutes (ask again after `expires_at`). On S3 `url` is a presigned inline GET under the company's own prefix (`private, no-store`, never log or store it); on the local store it is the gateway's `/console/v1/training/items/{id}/video` (with `?client_id=` for a platform admin). `media_type` is `video/mp4` (a `.mov` plays as that) or `video/webm`. A PDF, an item of another company, and for a reader any video that is not `ready` are 404 `training_not_found`; so is a manager's video with no file to play (still `uploading`, or failed for a reason in the file itself, whose file the worker deleted). The answer is `Cache-Control: private, no-store`. See [The video route](#the-video-route) |
+| `GET /training/items/{id}/video` | read | The video itself, local store only (404 `training_not_found` on S3, where `playback` gives the URL), answering HTTP Range. See [The video route](#the-video-route) |
+| `GET /training/items/{id}/transcript` | read | `TranscriptOut` `{language, speech, segments}`; `segments` are `{start_ms, end_ms, text}` in time order. `speech` is `speech`, `no_speech` or `no_audio` and `language` the transcript's language, both `null` until transcribing has decided them. A reader gets it for a `ready` video only (404 otherwise); a manager gets it in every state, the lines made so far while the video is transcribing. A silent video has no segments. A PDF is 404. `Cache-Control: private, no-store` |
 | `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model. Works for a video as for a PDF; a video that is not `ready` is 404 for a reader, and a silent or failed video answers `{"summary": null}` to a manager |
 | `POST /training/videos` | manage | 201 `VideoUploadOut`. Starts a video upload; see [Video uploads](#video-uploads) |
 | `PUT /training/videos/{id}/pieces/{n}` | manage | 200 `PieceOut` `{number, received}`. One piece, raw `application/octet-stream` with `X-Piece-SHA256` |
@@ -2092,6 +2096,7 @@ a plain sentence (see below).
 | 413 | `training_file_too_large` | The file is over 25 MB, or the body passes the bound; a video over 500 MiB |
 | 413 | `training_upload_invalid` | The multipart headers pass 8 KB |
 | 415 | `training_upload_invalid` | The body is not `multipart/form-data` |
+| 416 | `training_range_not_satisfiable` | `GET .../video` with a range outside the file or several ranges; `Content-Range: bytes */size` |
 | 422 | `training_upload_invalid` | Anything else wrong with the form: no file, two files, another field name, a malformed body |
 | 422 | `training_name_invalid` | The file name fails the name rule above |
 | 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty; also `view_mode` in a `PATCH` of a video |
@@ -2134,6 +2139,26 @@ streams, so a removal never breaks a download already open. Headers:
 A missing or unreadable object is 503 `training_storage_unavailable` (404 when the item was removed
 in the meantime). A browser's own PDF viewer in an iframe is not an option (the console sends
 `X-Frame-Options: DENY`): the page fetches this route and draws it.
+
+### The video route
+
+`GET /training/items/{id}/video` is served by the gateway for the local store only (staging). It
+opens the stored object, seeks to the first byte asked for and streams it in 64 KB blocks, with no
+company lock and no database connection held while it streams. It must work behind the console's
+`/console/v1` rewrite and it answers the `Range` header of a browser's `<video>` element:
+
+- No `Range`, or a header that is not one `bytes=<first>-<last>` range (another unit, `bytes=abc`,
+  `bytes=5-2`), is ignored: 200 with the whole file.
+- One range (`bytes=a-b`, `bytes=a-` or the last `n` bytes as `bytes=-n`; a last byte past the end is cut
+  to the end): 206 with `Content-Range: bytes a-b/size` and the range's `Content-Length`.
+- A range that starts at or past the end, `bytes=-0`, several ranges (any comma), or a header over 256
+  characters: 416 `training_range_not_satisfiable` with `Content-Range: bytes */size`.
+
+Every answer, 416 included, carries `Accept-Ranges: bytes`, `Content-Disposition: inline`,
+`Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`; a 200 or 206 also
+carries `Content-Type` from the stored container (`video/mp4` for `.mp4`, `.m4v` and `.mov`,
+`video/webm` for `.webm`). A missing object is 503 `training_storage_unavailable` (404 when the item was
+removed in the meantime).
 
 ### The summary
 

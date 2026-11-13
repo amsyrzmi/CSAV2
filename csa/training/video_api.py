@@ -14,7 +14,8 @@ worker (``video_jobs.retry``).
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor
@@ -24,8 +25,16 @@ from csa.console.services import package_gate
 from csa.storage.base import ObjectStore
 from csa.storage.multipart import MultipartStore
 from csa.training import video_jobs
-from csa.training.models import ItemOut, PieceOut, VideoStart, VideoUploadOut
+from csa.training.models import (
+    ItemOut,
+    PieceOut,
+    PlaybackOut,
+    TranscriptOut,
+    VideoStart,
+    VideoUploadOut,
+)
 from csa.training.service import STORAGE_UNAVAILABLE, VIDEO_UNAVAILABLE, TrainingLibrary
+from csa.training.video_playback import VideoPlayback
 from csa.training.video_upload import VideoUploads
 
 Actor = Annotated[ConsoleActor, Depends(human)]
@@ -36,6 +45,16 @@ _PIECE_BODY: dict[str, Any] = {
         "required": True,
         "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
     }
+}
+NO_STORE = "private, no-store"
+_VIDEO_TYPES = {
+    media_type: {"schema": {"type": "string", "format": "binary"}}
+    for media_type in ("video/mp4", "video/webm")
+}
+_VIDEO_BODY: dict[int | str, dict[str, Any]] = {
+    200: {"content": _VIDEO_TYPES},
+    206: {"description": "The requested range", "content": _VIDEO_TYPES},
+    416: {"description": "The range is outside the file, or several were asked for"},
 }
 
 
@@ -66,6 +85,11 @@ def build_training_video_router(store: ObjectStore | None) -> APIRouter:
             store,
             identity_pool=identity.pool if isinstance(identity, IdentityService) else None,
         )
+
+    def playback(request: Request) -> VideoPlayback:
+        if store is None or not isinstance(store, MultipartStore):
+            raise HTTPException(503, STORAGE_UNAVAILABLE)
+        return VideoPlayback(request.app.state.pool, store)
 
     @router.post("/training/videos", response_model=VideoUploadOut, status_code=201)
     async def start_video(
@@ -119,5 +143,42 @@ def build_training_video_router(store: ObjectStore | None) -> APIRouter:
         lib: Annotated[TrainingLibrary, Depends(library)],
     ) -> ItemOut:
         return await video_jobs.retry(lib, actor, client_id, item_id)
+
+    @router.get("/training/items/{item_id}/playback", response_model=PlaybackOut)
+    async def get_playback(
+        response: Response,
+        item_id: UUID,
+        actor: Actor,
+        client_id: Company,
+        plays: Annotated[VideoPlayback, Depends(playback)],
+    ) -> PlaybackOut:
+        # The URL is a bearer link: no cache keeps it.
+        response.headers["Cache-Control"] = NO_STORE
+        return await plays.playback(actor, client_id, item_id)
+
+    @router.get(
+        "/training/items/{item_id}/video",
+        response_class=StreamingResponse,
+        responses=_VIDEO_BODY,
+    )
+    async def get_video(
+        item_id: UUID,
+        actor: Actor,
+        client_id: Company,
+        plays: Annotated[VideoPlayback, Depends(playback)],
+        range_header: Annotated[str | None, Header(alias="Range")] = None,
+    ) -> StreamingResponse:
+        return await plays.open_video(actor, client_id, item_id, range_header)
+
+    @router.get("/training/items/{item_id}/transcript", response_model=TranscriptOut)
+    async def get_transcript(
+        response: Response,
+        item_id: UUID,
+        actor: Actor,
+        client_id: Company,
+        plays: Annotated[VideoPlayback, Depends(playback)],
+    ) -> TranscriptOut:
+        response.headers["Cache-Control"] = NO_STORE
+        return await plays.transcript(actor, client_id, item_id)
 
     return router

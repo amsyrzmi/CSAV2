@@ -12141,6 +12141,36 @@
         "title": "PlanPatch",
         "type": "object"
       },
+      "PlaybackOut": {
+        "additionalProperties": false,
+        "description": "Where to play a video from, for a short while: ``url`` is a same-origin gateway route (local\nstorage, which answers Range requests) or a presigned storage URL. Ask again when it expires.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "media_type": {
+            "enum": [
+              "video/mp4",
+              "video/webm"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at",
+          "media_type"
+        ],
+        "title": "PlaybackOut",
+        "type": "object"
+      },
       "PrivateAccessSave": {
         "additionalProperties": false,
         "properties": {
@@ -15536,6 +15566,78 @@
           "command"
         ],
         "title": "TrainingTransition",
+        "type": "object"
+      },
+      "TranscriptLine": {
+        "additionalProperties": false,
+        "description": "One spoken line with its start and end in milliseconds from the video's start.",
+        "properties": {
+          "end_ms": {
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "start_ms": {
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "text"
+        ],
+        "title": "TranscriptLine",
+        "type": "object"
+      },
+      "TranscriptOut": {
+        "additionalProperties": false,
+        "description": "A video's transcript in time order. ``language`` and ``speech`` are ``None`` until\ntranscribing has decided them (managers can read the lines made so far).",
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptLine"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "speech": {
+            "anyOf": [
+              {
+                "enum": [
+                  "speech",
+                  "no_speech",
+                  "no_audio"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speech"
+          }
+        },
+        "required": [
+          "language",
+          "speech",
+          "segments"
+        ],
+        "title": "TranscriptOut",
         "type": "object"
       },
       "TurnOut": {
@@ -33785,6 +33887,80 @@
         "summary": "Open File"
       }
     },
+    "/console/v1/training/items/{item_id}/playback": {
+      "get": {
+        "operationId": "get_playback_console_v1_training_items__item_id__playback_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Playback"
+      }
+    },
     "/console/v1/training/items/{item_id}/retry": {
       "post": {
         "operationId": "retry_video_console_v1_training_items__item_id__retry_post",
@@ -34021,6 +34197,197 @@
           }
         },
         "summary": "Make Summary"
+      }
+    },
+    "/console/v1/training/items/{item_id}/transcript": {
+      "get": {
+        "operationId": "get_transcript_console_v1_training_items__item_id__transcript_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Transcript"
+      }
+    },
+    "/console/v1/training/items/{item_id}/video": {
+      "get": {
+        "operationId": "get_video_console_v1_training_items__item_id__video_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Range"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "206": {
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The requested range"
+          },
+          "416": {
+            "description": "The range is outside the file, or several were asked for"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video"
       }
     },
     "/console/v1/training/videos": {

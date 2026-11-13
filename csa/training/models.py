@@ -20,6 +20,7 @@ ViewMode = Literal["slides", "document"]
 Kind = Literal["pdf", "video"]
 VideoStatus = Literal["uploading", "uploaded", "transcribing", "summarising", "ready", "failed"]
 Stage = Literal["transcribing", "summarising"]
+Speech = Literal["speech", "no_speech", "no_audio"]
 
 TITLE_MAX_CHARS = 120
 DESCRIPTION_MAX_CHARS = 1000
@@ -160,3 +161,29 @@ class NoSummary(_Model):
     """No summary has been made for the item yet."""
 
     summary: None = None
+
+
+class PlaybackOut(_Model):
+    """Where to play a video from, for a short while: ``url`` is a same-origin gateway route (local
+    storage, which answers Range requests) or a presigned storage URL. Ask again when it expires."""
+
+    url: str
+    expires_at: AwareDatetime
+    media_type: Literal["video/mp4", "video/webm"]
+
+
+class TranscriptLine(_Model):
+    """One spoken line with its start and end in milliseconds from the video's start."""
+
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+class TranscriptOut(_Model):
+    """A video's transcript in time order. ``language`` and ``speech`` are ``None`` until
+    transcribing has decided them (managers can read the lines made so far)."""
+
+    language: str | None
+    speech: Speech | None
+    segments: list[TranscriptLine]
