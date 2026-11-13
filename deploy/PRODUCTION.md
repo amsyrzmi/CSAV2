@@ -91,12 +91,12 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
 
 - **0**: the command succeeded on the instance.
 - **124**: the command was still `Pending`, `InProgress` or `Delayed` when the runner stopped
-  waiting, 35 minutes (by the clock, not a count of polls) after it sent the command. The command
+  waiting, 115 minutes (by the clock, not a count of polls) after it sent the command. The command
   may still be running or may still start. **Check the
   host; do not start the workflow again.** On the instance: `ls -t /var/log/csa-prod-deploy | head -n 3`,
   read the newest log, and `pgrep -af csa-prod-deploy`. In AWS: Systems Manager, Run Command,
   Command history, the command id from the line `ssm_run: sent <action> for <sha> as command <id>`.
-  Systems Manager itself stops a command that runs longer than 40 minutes (the documents'
+  Systems Manager itself stops a command that runs longer than 120 minutes (the documents'
   `timeoutSeconds`, longer than the runner waits), so a command still running at 124 may yet
   finish or be stopped.
 - **64**: the runner refused an argument or setting; nothing was sent.

@@ -996,7 +996,10 @@ def test_every_check_file_runs_on_each_apply(
 
 
 def test_readiness_retries_then_fails(rig_factory: Callable[..., ApplyRig]) -> None:
-    rig = rig_factory(overrides=[(lambda argv: step_label(argv) == "ready", fail(1))])
+    # Nothing was running before, so no automatic rollback follows: the retries alone.
+    rig = rig_factory(
+        running=False, overrides=[(lambda argv: step_label(argv) == "ready", fail(1))]
+    )
     assert rig.apply() == 1
     assert labels(rig.runner).count("ready") == 5
     assert rig.sleeps == [3, 3, 3, 3]

@@ -622,7 +622,7 @@ def test_document_parameters_have_the_exact_patterns_and_the_one_command(kind: s
     (step,) = document["mainSteps"]
     assert step["action"] == "aws:runShellScript"
     assert step["name"] == "deploy"
-    assert step["inputs"]["timeoutSeconds"] == "2400"
+    assert step["inputs"]["timeoutSeconds"] == "7200"
     commands = step["inputs"]["runCommand"]
     assert commands == ["set -eu", DOCUMENT_COMMANDS[kind]]
 
@@ -648,13 +648,13 @@ def test_document_timeout_outlasts_the_runner_and_fits_inside_the_job(kind: str)
     runner_wait = _ssm_run_default("SSM_MAX_SECONDS")
     job_minutes = [int(m) for m in re.findall(r"^\s+timeout-minutes: (\d+)$", _workflow(), re.M)]
 
-    assert timeout == 2400
-    assert runner_wait == 2100
+    assert timeout == 7200
+    assert runner_wait == 6900
     assert "SSM_MAX_POLLS" not in SSM_RUN.read_text()
     # A slow apply must not be killed while the runner still waits for it, and the job must
     # outlive the command.
     assert timeout > runner_wait
-    assert job_minutes == [45, 45]
+    assert job_minutes == [130, 130]
     assert all(runner_wait < timeout < minutes * 60 for minutes in job_minutes)
 
 
@@ -2253,11 +2253,11 @@ def test_production_doc_review_fixes() -> None:
 
     # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
     assert "`TimedOut`" in deploying
-    assert "40 minutes" in deploying
+    assert "120 minutes" in deploying
     assert "30 minutes" not in text
-    # The runner's wait is 35 minutes of elapsed time since the send, not an estimate from polls.
-    assert "35 minutes (by the clock, not a count of polls)" in deploying
-    assert "about 35 minutes" not in text
+    # The runner's wait is 115 minutes of elapsed time since the send, not an estimate from polls.
+    assert "115 minutes (by the clock, not a count of polls)" in deploying
+    assert "about 115 minutes" not in text
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
     guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}"'
     assert guard in setup

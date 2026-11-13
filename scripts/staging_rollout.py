@@ -116,6 +116,9 @@ LOCAL_ROLLBACK = "a local image with no registry digest, or not running"
 PRODUCTION_RUNBOOK = "deploy/PRODUCTION.md"
 READY_STATE = "services are up on the new images but /readyz is failing"
 RERUN_HINT = "Re-run plan, then apply, once the cause is fixed."
+# The only stops that may roll back: both come after every app service was recreated.
+ROLLBACK_STEPS = frozenset({"readiness", "smoke"})
+ROLLED_BACK = "Fix forward, then re-run plan and apply."
 
 GHCR_OWNER = STAGING.image_owner
 APPS = ("python", "frontend")
@@ -1074,7 +1077,7 @@ def run_pre_change(
 class _Progress:
     """How far apply got, so a stop can say what changed and how to recover."""
 
-    # unchanged, backup, stopped, recreating, up, checks, check_unread or smoke
+    # unchanged, backup, stopped, recreating, up, checks, check_unread, smoke or rolled_back
     phase: str = "unchanged"
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
@@ -1205,7 +1208,9 @@ def _recreate(
     *,
     stopped: bool,
     target: Target = STAGING,
+    image: str = "new image",
 ) -> None:
+    """Recreate ``service`` on ``expected``; ``image`` names it in the stop message."""
     state = _recreate_state(service, stopped, target=target)
     up = runner.run(
         [
@@ -1238,7 +1243,7 @@ def _recreate(
         if waited >= HEALTH_WAIT:
             raise RolloutError(
                 f"recreate {service}",
-                f"{service} was not healthy on the new image within {HEALTH_WAIT} s",
+                f"{service} was not healthy on the {image} within {HEALTH_WAIT} s",
                 state,
             )
         sleep(HEALTH_POLL)
@@ -1455,6 +1460,72 @@ def _run_smoke(
     out("smoke frontend: ok")
 
 
+def _previous_refs(plan: Plan, target: Target) -> dict[str, str] | None:
+    """The image ref per app to roll back to, or None when anything about it is in doubt.
+
+    Only an image-only plan (nothing pending, so no migration ran) whose every app service ran a
+    registry digest of this target's owner, with gateway, worker and delivery on one ref, and
+    neither ref the one just deployed (a re-run of a failed deploy has no previous version left).
+    """
+    if plan.pending:
+        return None
+    refs: dict[str, str] = {}
+    for service in target.app_services:
+        image = plan.rollback.get(service)
+        if not isinstance(image, RunningImage):
+            return None
+        name, _, digest = image.ref.partition("@")
+        if not name.startswith(f"{target.image_owner}/") or not DIGEST_RE.fullmatch(digest):
+            return None
+        if refs.setdefault(SERVICE_APP[service], image.ref) != image.ref:
+            return None
+    if set(refs) != set(APPS) or any(refs[app] == plan.images[app] for app in APPS):
+        return None
+    return refs
+
+
+def _rollback_images(
+    runner: Runner,
+    plan: Plan,
+    sleep: Callable[[float], None],
+    out: Callable[[str], None],
+    *,
+    target: Target,
+) -> bool:
+    """Recreate the app services on the images they ran before apply; True once /readyz answers.
+
+    Runs nothing unless ``_previous_refs`` knows both refs. No smoke test and no check files for
+    the previous version: it was running before this deploy. A stop prints ``Stopped at
+    rollback: ...`` and returns False, leaving the caller's recovery lines to follow.
+    """
+    refs = _previous_refs(plan, target)
+    if refs is None:
+        return False
+    # A copy: plan.env keeps naming the deploy's images.
+    env = {**plan.env, **{IMAGE_ENV[app]: refs[app] for app in APPS}}
+    for app in APPS:
+        out(f"Rolling back to {refs[app]}…")
+    try:
+        for service in target.app_services:
+            _recreate(
+                runner,
+                env,
+                service,
+                refs[SERVICE_APP[service]],
+                sleep,
+                out,
+                stopped=False,
+                target=target,
+                image="previous image",
+            )
+        _await_ready(runner, env, sleep, target=target)
+    except RolloutError as error:
+        out(f"Stopped at rollback: {error.message}")
+        return False
+    out(f"Rolled back: the previous images are running; {plan.sha[:7]} is not.")
+    return True
+
+
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
     out(f"Stopped at {error.step}: {error.message}")
     if error.state:
@@ -1513,6 +1584,9 @@ def _report_recovery(
         return
     if progress.phase == "backup":
         out(f"Nothing on {target.name} was changed. {BACKUP_FAILED}")
+        return
+    if progress.phase == "rolled_back":
+        out(ROLLED_BACK)
         return
     if progress.phase == "check_unread":
         out("The check did not run and the services were not stopped; fix the check file.")
@@ -1583,6 +1657,7 @@ def apply(
     backup_installed: Path = BACKUP_INSTALLED,
 ) -> int:
     progress = _Progress()
+    plan: Plan | None = None
     try:
         if target.host_file is not None and host_digest is None:
             raise RolloutError("confirm", HOST_CHANGED)
@@ -1669,6 +1744,13 @@ def apply(
         return 0
     except RolloutError as error:
         _report_stop(error, out)
+        # Still a failed deploy after a rollback: apply returns 1, so nothing is recorded.
+        if (
+            plan is not None
+            and error.step in ROLLBACK_STEPS
+            and _rollback_images(runner, plan, sleep, out, target=target)
+        ):
+            progress.phase = "rolled_back"
         _report_recovery(progress, out, target=target)
         out(RERUN_HINT)
         return 1
