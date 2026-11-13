@@ -96,6 +96,21 @@ MIGRATION_APPROVAL = STAGING.migration_approval
 READY_PROBE = (
     "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)"
 )
+# The smoke test's frontend probe, run in the gateway container: the frontend is on the gateway's
+# `app` network (compose.staging-local-proposal.yml) as `frontend`, port 3000, and answers 200 at
+# /login (its own healthcheck asks the same).
+FRONTEND_PROBE = (
+    "import urllib.request;urllib.request.urlopen('http://frontend:3000/login', timeout=5)"
+)
+# Host-file keys for the smoke test's origin checks, with the name each check prints.
+SMOKE_ORIGINS = (
+    ("console origin", "CSA_STAGING_CONSOLE_ORIGIN"),
+    ("hooks origin", "CSA_STAGING_HOOKS_ORIGIN"),
+)
+SMOKE_CURL_TIMEOUT = "15"
+SMOKE_ORIGIN_TRIES = 3  # only the origin checks retry: the rest read the instance's own state
+SMOKE_ORIGIN_PAUSE = 5
+SMOKE_STATE = "services are up on the new images but the smoke test is failing"
 READY_TRIES = 5
 READY_PAUSE = 3
 HEALTH_POLL = 5
@@ -106,10 +121,15 @@ LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
 # One JSON object per running image: its repo digests and its labels (for the revision).
 RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
+# A container's image id and state, for the automatic rollback's record of what ran before.
+PREVIOUS_FORMAT = "{{.Image}} {{.State.Status}}"
 LOCAL_ROLLBACK = "a local image with no registry digest, or not running"
 PRODUCTION_RUNBOOK = "deploy/PRODUCTION.md"
 READY_STATE = "services are up on the new images but /readyz is failing"
 RERUN_HINT = "Re-run plan, then apply, once the cause is fixed."
+# The only stops that may roll back: both come after every app service was recreated.
+ROLLBACK_STEPS = frozenset({"readiness", "smoke"})
+ROLLED_BACK = "Fix forward, then re-run plan and apply."
 
 GHCR_OWNER = STAGING.image_owner
 APPS = ("python", "frontend")
@@ -492,6 +512,18 @@ def published_images(
     return images
 
 
+def images_from_digests(digests: Mapping[str, str], target: Target) -> dict[str, str]:
+    """Image refs for digests a caller resolved: no registry or GitHub lookup on this host."""
+    if set(digests) != set(APPS):
+        raise RolloutError("plan", f"image digests must name exactly {' and '.join(APPS)}")
+    images: dict[str, str] = {}
+    for app in APPS:
+        if not DIGEST_RE.fullmatch(digests[app]):
+            raise RolloutError("plan", f"the csa-{app} digest is malformed")
+        images[app] = f"{target.image_owner}/csa-{app}@{digests[app]}"
+    return images
+
+
 def publish_state(runner: Runner, sha: str) -> str:
     """Where the newest publish run for this SHA stands."""
     runs = _gh_json(
@@ -644,6 +676,40 @@ def _container_image(
     image_id = inspect.stdout.strip()
     if inspect.returncode != 0 or not image_id:
         return None
+    return _image_by_id(runner, env, image_id, target)
+
+
+def previous_images(
+    runner: Runner, env: Mapping[str, str], *, target: Target = STAGING
+) -> dict[str, list[RunningImage | None]]:
+    """Every replica of every app service: its image while it runs now, else None.
+
+    The automatic rollback goes back only to images that were running when apply began: a
+    container stopped by an earlier stop (a migrate or a check file) may not fit the schema.
+    """
+    return {
+        service: [
+            _running_container_image(runner, env, name, target)
+            for name in container_names(target, env, service)
+        ]
+        for service in target.app_services
+    }
+
+
+def _running_container_image(
+    runner: Runner, env: Mapping[str, str], name: str, target: Target
+) -> RunningImage | None:
+    """The image of container ``name`` when its state is running; restarting or exited is None."""
+    inspect = runner.run([*docker_base(), "inspect", "--format", PREVIOUS_FORMAT, name], env=env)
+    fields = inspect.stdout.split()
+    if inspect.returncode != 0 or len(fields) != 2 or fields[1] != "running":
+        return None
+    return _image_by_id(runner, env, fields[0], target)
+
+
+def _image_by_id(
+    runner: Runner, env: Mapping[str, str], image_id: str, target: Target
+) -> RunningImage | None:
     described = runner.run(
         [*docker_base(), "image", "inspect", "--format", RUNNING_FORMAT, image_id], env=env
     )
@@ -766,6 +832,12 @@ class Plan:
     host_values: dict[str, str] = field(default_factory=dict, repr=False)  # values never printed
     warnings: list[str] = field(default_factory=list)
     staged_on: str = ""  # when staging first ran this commit; gated targets only
+    # The digests the caller resolved; None when this host looked the images up itself.
+    image_digests: dict[str, str] | None = None
+    checkout: list[str] = field(default_factory=list)  # the migration versions this checkout has
+    # Every replica's image while it was running when the plan read it (None: not running or
+    # unknown); only the automatic rollback reads it, never the printed plan.
+    previous: dict[str, list[RunningImage | None]] = field(default_factory=dict, repr=False)
 
 
 def plan_steps(
@@ -818,6 +890,7 @@ def build_plan(
     expected_sha: str | None = None,
     target: Target = STAGING,
     expected_host_digest: str | None = None,
+    image_digests: Mapping[str, str] | None = None,
 ) -> Plan:
     if expected_sha is not None and not SHA_RE.fullmatch(expected_sha):
         raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
@@ -826,13 +899,20 @@ def build_plan(
         raise RolloutError(
             "confirm", f"HEAD changed since plan ({expected_sha[:7]} → {sha[:7]}); run plan again"
         )
-    # Before any image lookup: a gated target takes only commits staging has run.
-    staged_on = require_staged(runner, target, sha)
-    images = published_images(runner, sha, target=target)
-    if images is None:
-        raise RolloutError(
-            "plan", f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})"
-        )
+    if image_digests is not None:
+        # The caller resolved and gated these: this host makes no GitHub call at all.
+        staged_on = ""
+        images = images_from_digests(image_digests, target)
+    else:
+        # Before any image lookup: a gated target takes only commits staging has run.
+        staged_on = require_staged(runner, target, sha)
+        found = published_images(runner, sha, target=target)
+        if found is None:
+            raise RolloutError(
+                "plan",
+                f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})",
+            )
+        images = found
     flags = load_flags(repo / target.flags_file, target=target)
     host_values = load_host_values(target)
     # Before any docker command: replica counts and tuning must be what plan printed.
@@ -851,6 +931,7 @@ def build_plan(
     # Secrets first: a host with a missing file lists it instead of failing on a staging read.
     missing = missing_secrets(secret_paths(runner, env, target=target))
     rollback = running_images(runner, env, target=target)
+    previous = previous_images(runner, env, target=target)
     # Migrations come from this module's checkout, so main always passes REPO_ROOT.
     try:
         checkout = [version for version, _ in discover_migrations()]
@@ -874,6 +955,9 @@ def build_plan(
         host_values,
         warnings,
         staged_on,
+        dict(image_digests) if image_digests is not None else None,
+        checkout,
+        previous,
     )
 
 
@@ -883,7 +967,7 @@ def _pending_line(pending: Sequence[str]) -> str:
 
 def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     lines = [f"Target SHA: {plan.sha}"]
-    if target.staged_gate:
+    if target.staged_gate and plan.staged_on:
         lines.append(f"Staged on: {plan.staged_on}")
     lines.append("Images to deploy:")
     lines += [f"  {app}: {plan.images[app]}" for app in APPS]
@@ -915,6 +999,11 @@ def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
         command += f" --migrations {','.join(plan.pending)}"
     if target.host_file is not None:
         command += f" --host-digest {host_settings_digest(plan.host_values)}"
+    if plan.image_digests is not None:
+        command += (
+            f" --python-digest {plan.image_digests['python']}"
+            f" --frontend-digest {plan.image_digests['frontend']}"
+        )
     lines.append(command)
     return "\n".join(lines)
 
@@ -1050,7 +1139,8 @@ def run_pre_change(
 class _Progress:
     """How far apply got, so a stop can say what changed and how to recover."""
 
-    phase: str = "unchanged"  # unchanged, backup, stopped, recreating, up, checks or check_unread
+    # unchanged, backup, stopped, recreating, up, checks, check_unread, smoke or rolled_back
+    phase: str = "unchanged"
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
     rollback: Mapping[str, RunningImage | None] = field(default_factory=dict)
@@ -1180,7 +1270,9 @@ def _recreate(
     *,
     stopped: bool,
     target: Target = STAGING,
+    image: str = "new image",
 ) -> None:
+    """Recreate ``service`` on ``expected``; ``image`` names it in the stop message."""
     state = _recreate_state(service, stopped, target=target)
     up = runner.run(
         [
@@ -1213,7 +1305,7 @@ def _recreate(
         if waited >= HEALTH_WAIT:
             raise RolloutError(
                 f"recreate {service}",
-                f"{service} was not healthy on the new image within {HEALTH_WAIT} s",
+                f"{service} was not healthy on the {image} within {HEALTH_WAIT} s",
                 state,
             )
         sleep(HEALTH_POLL)
@@ -1314,6 +1406,211 @@ def _run_checks(
         )
 
 
+def _smoke_stop(message: str) -> RolloutError:
+    return RolloutError("smoke", message, SMOKE_STATE)
+
+
+def _smoke_migrations(
+    runner: Runner,
+    env: Mapping[str, str],
+    checkout_versions: Sequence[str],
+    target: Target,
+) -> None:
+    try:
+        recorded = applied_versions(runner, env, target=target)
+    except RolloutError as error:
+        raise _smoke_stop(error.message) from error
+    lacking = sorted(set(checkout_versions) - set(recorded))
+    extra = sorted(set(recorded) - set(checkout_versions))
+    if lacking:
+        raise _smoke_stop(f"schema_migrations lacks {', '.join(lacking)}")
+    if extra:
+        raise _smoke_stop(f"schema_migrations has {', '.join(extra)}, which this checkout lacks")
+
+
+def _smoke_replicas(runner: Runner, env: Mapping[str, str], target: Target) -> None:
+    for service in target.app_services:
+        expected = env[IMAGE_ENV[SERVICE_APP[service]]]
+        for name in container_names(target, env, service):
+            try:
+                healthy = _on_new_image(runner, env, name, expected, service, SMOKE_STATE, target)
+            except RolloutError as error:
+                raise _smoke_stop(f"{name} container not found") from error
+            if not healthy:
+                raise _smoke_stop(f"{name} is not healthy on the planned image")
+
+
+def _smoke_origin(runner: Runner, label: str, origin: str, sleep: Callable[[float], None]) -> None:
+    """The origin answers below 500 when requested from the host; its value is never printed.
+
+    A tunnel or proxy can blink, so a non-answer or a 5xx is retried: SMOKE_ORIGIN_TRIES attempts,
+    SMOKE_ORIGIN_PAUSE s apart. A runner error (no curl binary) is not a blink and stops at once.
+    """
+    argv = [
+        "curl",
+        "--silent",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code}",
+        "--max-time",
+        SMOKE_CURL_TIMEOUT,
+        "--url",
+        origin,
+    ]
+    failure = ""
+    for attempt in range(SMOKE_ORIGIN_TRIES):
+        if attempt:
+            sleep(SMOKE_ORIGIN_PAUSE)
+        try:
+            result = runner.run(argv)
+        except RolloutError as error:
+            raise _smoke_stop(error.message) from error
+        text = result.stdout.strip()
+        if result.returncode != 0 or not text.isdecimal():
+            failure = f"the {label} did not answer (curl exit {result.returncode})"
+        elif int(text) >= 500:
+            failure = f"the {label} answered {text}"
+        else:
+            return
+    raise _smoke_stop(failure)
+
+
+def _smoke_frontend(runner: Runner, env: Mapping[str, str], target: Target) -> None:
+    gateway = container_names(target, env, "gateway")[0]
+    try:
+        probe = runner.run(
+            [*docker_base(), "exec", gateway, "python", "-c", FRONTEND_PROBE], env=env
+        )
+    except RolloutError as error:
+        raise _smoke_stop(error.message) from error
+    if probe.returncode != 0:
+        raise _smoke_stop("the frontend did not answer over HTTP from the gateway container")
+
+
+def _run_smoke(
+    runner: Runner,
+    env: Mapping[str, str],
+    checkout_versions: Sequence[str],
+    host_values: Mapping[str, str],
+    out: Callable[[str], None],
+    progress: _Progress,
+    *,
+    target: Target,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """A read-only look at the running instance after the check files; no customer data.
+
+    One ``smoke <name>: ok`` line per passing check, in this order, and the first failure stops:
+    ``migrations`` (schema_migrations equals the checkout's), ``replicas`` (every replica of every
+    app service is healthy on the planned image), ``console origin`` and ``hooks origin`` (each
+    answers below 500 from the host; only when the host file holds both origins, so not on
+    staging; retried, see ``_smoke_origin``), ``frontend`` (it answers over HTTP from the gateway
+    container). Never an ``up``,
+    ``stop`` or write: a failure leaves the stack as it is for the caller to decide.
+    """
+    progress.phase = "smoke"
+    _smoke_migrations(runner, env, checkout_versions, target)
+    out("smoke migrations: ok")
+    _smoke_replicas(runner, env, target)
+    out("smoke replicas: ok")
+    if all(key in host_values for _, key in SMOKE_ORIGINS):
+        for label, key in SMOKE_ORIGINS:
+            _smoke_origin(runner, label, host_values[key], sleep)
+            out(f"smoke {label}: ok")
+    _smoke_frontend(runner, env, target)
+    out("smoke frontend: ok")
+
+
+def _previous_refs(plan: Plan, target: Target) -> dict[str, str] | None:
+    """The image ref per app to roll back to, or None when anything about it is in doubt.
+
+    Only an image-only plan (nothing pending, so no migration ran) in which every replica of
+    every app service was running when the plan read it, each on a registry digest of this
+    target's owner, every replica of gateway, worker and delivery on one ref and every frontend
+    replica on one ref, and neither ref the one just deployed (a re-run of a failed deploy has
+    no previous version left). A stopped container may be stopped for a reason (an earlier
+    migrate or check-file stop), so it is never brought back.
+    """
+    if plan.pending:
+        return None
+    refs: dict[str, str] = {}
+    for service in target.app_services:
+        images = plan.previous.get(service)
+        if not images:
+            return None
+        for image in images:
+            if not isinstance(image, RunningImage):
+                return None
+            name, _, digest = image.ref.partition("@")
+            if not name.startswith(f"{target.image_owner}/") or not DIGEST_RE.fullmatch(digest):
+                return None
+            if refs.setdefault(SERVICE_APP[service], image.ref) != image.ref:
+                return None
+    if set(refs) != set(APPS) or any(refs[app] == plan.images[app] for app in APPS):
+        return None
+    return refs
+
+
+def _rollback_images(
+    runner: Runner,
+    plan: Plan,
+    sleep: Callable[[float], None],
+    out: Callable[[str], None],
+    *,
+    target: Target,
+) -> bool:
+    """Recreate the app services on the images they ran before apply; True once /readyz answers.
+
+    Runs nothing unless ``_previous_refs`` knows both refs. After readiness every replica must be
+    healthy on its previous ref. No smoke test and no check files for the previous version: it
+    was running before this deploy. A stop prints ``Stopped at rollback: ...`` and returns
+    False, leaving the caller's recovery lines to follow.
+    """
+    refs = _previous_refs(plan, target)
+    if refs is None:
+        return False
+    # A copy: plan.env keeps naming the deploy's images.
+    env = {**plan.env, **{IMAGE_ENV[app]: refs[app] for app in APPS}}
+    for app in APPS:
+        out(f"Rolling back to {refs[app]}…")
+    try:
+        for service in target.app_services:
+            _recreate(
+                runner,
+                env,
+                service,
+                refs[SERVICE_APP[service]],
+                sleep,
+                out,
+                stopped=False,
+                target=target,
+                image="previous image",
+            )
+        _await_ready(runner, env, sleep, target=target)
+        _verify_rollback(runner, env, refs, target)
+    except RolloutError as error:
+        out(f"Stopped at rollback: {error.message}")
+        return False
+    out(f"Rolled back: the previous images are running; {plan.sha[:7]} is not.")
+    return True
+
+
+def _verify_rollback(
+    runner: Runner, env: Mapping[str, str], refs: Mapping[str, str], target: Target
+) -> None:
+    """Every replica of every app service is healthy on its previous ref; read-only."""
+    for service in target.app_services:
+        expected = refs[SERVICE_APP[service]]
+        for name in container_names(target, env, service):
+            try:
+                healthy = _on_new_image(runner, env, name, expected, service, "", target)
+            except RolloutError as error:
+                raise RolloutError("rollback", f"{name} container not found") from error
+            if not healthy:
+                raise RolloutError("rollback", f"{name} is not healthy on the previous image")
+
+
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
     out(f"Stopped at {error.step}: {error.message}")
     if error.state:
@@ -1373,6 +1670,9 @@ def _report_recovery(
     if progress.phase == "backup":
         out(f"Nothing on {target.name} was changed. {BACKUP_FAILED}")
         return
+    if progress.phase == "rolled_back":
+        out(ROLLED_BACK)
+        return
     if progress.phase == "check_unread":
         out("The check did not run and the services were not stopped; fix the check file.")
         return
@@ -1381,6 +1681,17 @@ def _report_recovery(
             "Investigate what the check found before the console is used again, "
             "then re-run plan and apply."
         )
+        return
+    if progress.phase == "smoke":
+        out("The new images are running, but a smoke check after the rollout failed.")
+        if progress.recorded:
+            out(
+                f"Migrations were applied: {', '.join(progress.recorded)}, so do not roll back "
+                "the schema; investigate, fix forward, then re-run plan and apply."
+            )
+            _report_backup(progress, out)
+        else:
+            _report_rollback(progress.rollback, out, target=target)
         return
     if progress.recorded is None:
         out("The migration state is unknown: check schema_migrations before restarting.")
@@ -1425,11 +1736,13 @@ def apply(
     out: Callable[[str], None] = print,
     target: Target = STAGING,
     host_digest: str | None = None,
+    image_digests: Mapping[str, str] | None = None,
     now: Callable[[], datetime] = _utc_now,
     backup_log: Path = BACKUP_LOG,
     backup_installed: Path = BACKUP_INSTALLED,
 ) -> int:
     progress = _Progress()
+    plan: Plan | None = None
     try:
         if target.host_file is not None and host_digest is None:
             raise RolloutError("confirm", HOST_CHANGED)
@@ -1442,6 +1755,7 @@ def apply(
             expected_sha=sha,
             target=target,
             expected_host_digest=host_digest,
+            image_digests=image_digests,
         )
         env = plan.env
         progress.pending = plan.pending
@@ -1494,6 +1808,16 @@ def apply(
         _await_ready(runner, env, sleep, target=target)
         progress.phase = "checks"
         _run_checks(runner, env, checks_dir, out, progress, target=target)
+        _run_smoke(
+            runner,
+            env,
+            plan.checkout,
+            plan.host_values,
+            out,
+            progress,
+            target=target,
+            sleep=sleep,
+        )
         status = runner.run(
             [*compose_base(target=target), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
         )
@@ -1505,6 +1829,13 @@ def apply(
         return 0
     except RolloutError as error:
         _report_stop(error, out)
+        # Still a failed deploy after a rollback: apply returns 1, so nothing is recorded.
+        if (
+            plan is not None
+            and error.step in ROLLBACK_STEPS
+            and _rollback_images(runner, plan, sleep, out, target=target)
+        ):
+            progress.phase = "rolled_back"
         _report_recovery(progress, out, target=target)
         out(RERUN_HINT)
         return 1
@@ -1568,13 +1899,33 @@ def _host_digest(value: str) -> str:
     return value
 
 
+def _image_digest(value: str) -> str:
+    if not DIGEST_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("must be sha256: and 64 lowercase hex characters")
+    return value
+
+
+def _add_digest_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--python-digest",
+        type=_image_digest,
+        help="the csa-python image digest, resolved by the caller",
+    )
+    command.add_argument(
+        "--frontend-digest",
+        type=_image_digest,
+        help="the csa-frontend image digest, resolved by the caller",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scripts.staging_rollout", description=__doc__)
     parser.add_argument(
         "--target", choices=TARGET_NAMES, default="staging", help="where to roll out"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("plan", help="show what a rollout of HEAD would do (read-only)")
+    plan = commands.add_parser("plan", help="show what a rollout of HEAD would do (read-only)")
+    _add_digest_options(plan)
     apply = commands.add_parser("apply", help="roll HEAD out to the target")
     apply.add_argument("--sha", required=True, help="the full target SHA, as plan printed")
     apply.add_argument("--migrations", help="comma-separated pending versions, as plan printed")
@@ -1583,6 +1934,7 @@ def _parser() -> argparse.ArgumentParser:
         type=_host_digest,
         help="the host settings digest, as plan printed (targets with a host file)",
     )
+    _add_digest_options(apply)
     record = commands.add_parser(
         "record-staged", help="record a staging rollout for production (retry after a failed write)"
     )
@@ -1594,6 +1946,12 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     target = get_target(args.target)
+    image_digests = None
+    if args.command != "record-staged":
+        if (args.python_digest is None) != (args.frontend_digest is None):
+            parser.error("--python-digest and --frontend-digest are given together or not at all")
+        if args.python_digest is not None:
+            image_digests = {"python": args.python_digest, "frontend": args.frontend_digest}
     if args.command == "apply":
         if target.host_file is not None and args.host_digest is None:
             parser.error(f"apply --target {target.name} requires --host-digest, as plan printed")
@@ -1618,6 +1976,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
                 checks_dir=CHECKS_DIR,
                 target=target,
                 host_digest=args.host_digest,
+                image_digests=image_digests,
             )
             if code == 0 and target.name == GATE_ENVIRONMENT:
                 # Not inside apply: a failed record must not turn a good rollout into a stop.
@@ -1631,6 +1990,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             secret_dir=secret_dir,
             checks_dir=CHECKS_DIR,
             target=target,
+            image_digests=image_digests,
         )
     except RolloutError as error:
         _report_stop(error, print)
