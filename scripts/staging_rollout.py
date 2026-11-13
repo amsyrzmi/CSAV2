@@ -87,6 +87,19 @@ MIGRATION_APPROVAL = STAGING.migration_approval
 READY_PROBE = (
     "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)"
 )
+# The smoke test's frontend probe, run in the gateway container: the frontend is on the gateway's
+# `app` network (compose.staging-local-proposal.yml) as `frontend`, port 3000, and answers 200 at
+# /login (its own healthcheck asks the same).
+FRONTEND_PROBE = (
+    "import urllib.request;urllib.request.urlopen('http://frontend:3000/login', timeout=5)"
+)
+# Host-file keys for the smoke test's origin checks, with the name each check prints.
+SMOKE_ORIGINS = (
+    ("console origin", "CSA_STAGING_CONSOLE_ORIGIN"),
+    ("hooks origin", "CSA_STAGING_HOOKS_ORIGIN"),
+)
+SMOKE_CURL_TIMEOUT = "15"
+SMOKE_STATE = "services are up on the new images but the smoke test is failing"
 READY_TRIES = 5
 READY_PAUSE = 3
 HEALTH_POLL = 5
@@ -759,6 +772,7 @@ class Plan:
     staged_on: str = ""  # when staging first ran this commit; gated targets only
     # The digests the caller resolved; None when this host looked the images up itself.
     image_digests: dict[str, str] | None = None
+    checkout: list[str] = field(default_factory=list)  # the migration versions this checkout has
 
 
 def plan_steps(
@@ -876,6 +890,7 @@ def build_plan(
         warnings,
         staged_on,
         dict(image_digests) if image_digests is not None else None,
+        checkout,
     )
 
 
@@ -1057,7 +1072,8 @@ def run_pre_change(
 class _Progress:
     """How far apply got, so a stop can say what changed and how to recover."""
 
-    phase: str = "unchanged"  # unchanged, backup, stopped, recreating, up, checks or check_unread
+    # unchanged, backup, stopped, recreating, up, checks, check_unread or smoke
+    phase: str = "unchanged"
     recorded: list[str] | None = field(default_factory=list)  # planned versions recorded
     pending: list[str] = field(default_factory=list)
     rollback: Mapping[str, RunningImage | None] = field(default_factory=dict)
@@ -1321,6 +1337,102 @@ def _run_checks(
         )
 
 
+def _smoke_stop(message: str) -> RolloutError:
+    return RolloutError("smoke", message, SMOKE_STATE)
+
+
+def _smoke_migrations(
+    runner: Runner,
+    env: Mapping[str, str],
+    checkout_versions: Sequence[str],
+    target: Target,
+) -> None:
+    try:
+        recorded = applied_versions(runner, env, target=target)
+    except RolloutError as error:
+        raise _smoke_stop(error.message) from error
+    lacking = sorted(set(checkout_versions) - set(recorded))
+    extra = sorted(set(recorded) - set(checkout_versions))
+    if lacking:
+        raise _smoke_stop(f"schema_migrations lacks {', '.join(lacking)}")
+    if extra:
+        raise _smoke_stop(f"schema_migrations has {', '.join(extra)}, which this checkout lacks")
+
+
+def _smoke_replicas(runner: Runner, env: Mapping[str, str], target: Target) -> None:
+    for service in target.app_services:
+        expected = env[IMAGE_ENV[SERVICE_APP[service]]]
+        for name in container_names(target, env, service):
+            try:
+                healthy = _on_new_image(runner, env, name, expected, service, SMOKE_STATE, target)
+            except RolloutError as error:
+                raise _smoke_stop(f"{name} container not found") from error
+            if not healthy:
+                raise _smoke_stop(f"{name} is not healthy on the planned image")
+
+
+def _smoke_origin(runner: Runner, label: str, origin: str) -> None:
+    """The origin answers below 500 when requested from the host; its value is never printed."""
+    result = runner.run(
+        [
+            "curl",
+            "--silent",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--max-time",
+            SMOKE_CURL_TIMEOUT,
+            "--url",
+            origin,
+        ]
+    )
+    text = result.stdout.strip()
+    if result.returncode != 0 or not text.isdecimal():
+        raise _smoke_stop(f"the {label} did not answer (curl exit {result.returncode})")
+    if int(text) >= 500:
+        raise _smoke_stop(f"the {label} answered {text}")
+
+
+def _smoke_frontend(runner: Runner, env: Mapping[str, str], target: Target) -> None:
+    gateway = container_names(target, env, "gateway")[0]
+    probe = runner.run([*docker_base(), "exec", gateway, "python", "-c", FRONTEND_PROBE], env=env)
+    if probe.returncode != 0:
+        raise _smoke_stop("the frontend did not answer over HTTP from the gateway container")
+
+
+def _run_smoke(
+    runner: Runner,
+    env: Mapping[str, str],
+    checkout_versions: Sequence[str],
+    host_values: Mapping[str, str],
+    out: Callable[[str], None],
+    progress: _Progress,
+    *,
+    target: Target,
+) -> None:
+    """A read-only look at the running instance after the check files; no customer data.
+
+    One ``smoke <name>: ok`` line per passing check, in this order, and the first failure stops:
+    ``migrations`` (schema_migrations equals the checkout's), ``replicas`` (every replica of every
+    app service is healthy on the planned image), ``console origin`` and ``hooks origin`` (each
+    answers below 500 from the host; only when the host file holds both origins, so not on
+    staging), ``frontend`` (it answers over HTTP from the gateway container). Never an ``up``,
+    ``stop`` or write: a failure leaves the stack as it is for the caller to decide.
+    """
+    progress.phase = "smoke"
+    _smoke_migrations(runner, env, checkout_versions, target)
+    out("smoke migrations: ok")
+    _smoke_replicas(runner, env, target)
+    out("smoke replicas: ok")
+    if all(key in host_values for _, key in SMOKE_ORIGINS):
+        for label, key in SMOKE_ORIGINS:
+            _smoke_origin(runner, label, host_values[key])
+            out(f"smoke {label}: ok")
+    _smoke_frontend(runner, env, target)
+    out("smoke frontend: ok")
+
+
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
     out(f"Stopped at {error.step}: {error.message}")
     if error.state:
@@ -1388,6 +1500,17 @@ def _report_recovery(
             "Investigate what the check found before the console is used again, "
             "then re-run plan and apply."
         )
+        return
+    if progress.phase == "smoke":
+        out("The new images are running, but a smoke check after the rollout failed.")
+        if progress.recorded:
+            out(
+                f"Migrations were applied: {', '.join(progress.recorded)}, so do not roll back "
+                "the schema; investigate, fix forward, then re-run plan and apply."
+            )
+            _report_backup(progress, out)
+        else:
+            _report_rollback(progress.rollback, out, target=target)
         return
     if progress.recorded is None:
         out("The migration state is unknown: check schema_migrations before restarting.")
@@ -1503,6 +1626,7 @@ def apply(
         _await_ready(runner, env, sleep, target=target)
         progress.phase = "checks"
         _run_checks(runner, env, checks_dir, out, progress, target=target)
+        _run_smoke(runner, env, plan.checkout, plan.host_values, out, progress, target=target)
         status = runner.run(
             [*compose_base(target=target), "ps", "--format", "{{.Service}} {{.Status}}"], env=env
         )

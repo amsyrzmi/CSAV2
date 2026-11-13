@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,8 +19,10 @@ from tests.test_staging_rollout import (
     DIGEST_A,
     DIGEST_B,
     FLAGS_TEXT,
+    FRONTEND_ID,
     FRONTEND_REF,
     PREV_SHA,
+    PYTHON_ID,
     PYTHON_REF,
     RUNNING_FORMAT,
     RUNNING_REF,
@@ -228,7 +230,7 @@ ELSEWHERE = dataclasses.replace(
 
 
 def elsewhere_runner(secret: Path) -> FakeRunner:
-    state = {"migrated": False}
+    state = {"migrated": False, "up": False}
 
     def select(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         versions = ("0484", "0485", "0486") if state["migrated"] else ("0484", "0485")
@@ -241,6 +243,21 @@ def elsewhere_runner(secret: Path) -> FakeRunner:
     def inspect_pulled(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         labels = {"org.opencontainers.image.revision": SHA}
         return ok(json.dumps([{"RepoDigests": [argv[-1]], "Config": {"Labels": labels}}]))
+
+    # The smoke test reads the containers after the recreates: healthy, on the planned images,
+    # and every origin answering. Before the first up the plan's rollback record keeps the old.
+    def up(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        state["up"] = True
+        return ok()
+
+    def after_up(text: str) -> Callable[[Sequence[str]], bool]:
+        return lambda argv: state["up"] and has(text)(argv)
+
+    def planned_image_id(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return ok((FRONTEND_ID if "frontend" in argv[-1] else PYTHON_ID) + "\n")
+
+    def planned_image(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        return ok(running_json(FRONTEND_REF if argv[-1] == FRONTEND_ID else PYTHON_REF))
 
     return FakeRunner(
         [
@@ -259,14 +276,18 @@ def elsewhere_runner(secret: Path) -> FakeRunner:
                 lambda argv: argv[3:5] == ["image", "inspect"] and "--format" not in argv,
                 inspect_pulled,
             ),
+            (has("{{.State.Health.Status}}"), ok("healthy\n")),
+            (after_up("inspect --format {{.Image}}"), planned_image_id),
+            (lambda argv: state["up"] and RUNNING_FORMAT in argv, planned_image),
             (has("inspect --format {{.Image}}"), ok(IMAGE_ONE + "\n")),
             (lambda argv: RUNNING_FORMAT in argv, ok(running_json(RUNNING_REF))),
             (lambda argv: "psql" in argv and "-c" in argv, select),
             (lambda argv: "psql" in argv and "-f" in argv, ok("0\n")),
             (has(" stop "), ok()),
             (has(" run --rm --no-deps migrate"), migrate),
-            (has(" up "), ok()),
+            (has(" up "), up),
             (lambda argv: argv[3:4] == ["exec"], ok()),
+            (lambda argv: argv[0] == "curl", ok("200")),
             (has(" ps "), ok("gateway Up\n")),
         ]
     )
@@ -686,7 +707,14 @@ def warning_rig(
 
     rig.runner.rules[:0] = [
         (has("merge-base --is-ancestor"), ancestry),
-        (lambda argv: RUNNING_FORMAT in argv, ok(running_json(RUNNING_REF, revision=revision))),
+        # The running containers keep this image until the first recreate; after it the rig's
+        # own answers (the planned images) serve the smoke test.
+        (
+            lambda argv: (
+                RUNNING_FORMAT in argv and not any("up" in seen for seen in rig.runner.argvs)
+            ),
+            ok(running_json(RUNNING_REF, revision=revision)),
+        ),
     ]
     return rig
 

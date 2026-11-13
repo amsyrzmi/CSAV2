@@ -26,6 +26,8 @@ DIGEST_B = "sha256:" + "b" * 64
 PYTHON_REF = f"ghcr.io/amsyrzmi/csa-python@{DIGEST_A}"
 FRONTEND_REF = f"ghcr.io/amsyrzmi/csa-frontend@{DIGEST_B}"
 RUNNING_REF = "ghcr.io/amsyrzmi/csa-python@sha256:" + "c" * 64
+PYTHON_ID = "sha256:" + "1" * 64  # the image ids the fake containers report once recreated
+FRONTEND_ID = "sha256:" + "2" * 64
 PREV_SHA = "0f9e8d7" + "1" * 33  # the revision the running images were built from
 PLANNED_SHA = "9f8e7d6" + "2" * 33  # a SHA the owner planned before HEAD moved
 RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
@@ -609,6 +611,11 @@ def labels(runner: FakeRunner) -> list[str]:
     return [label for argv in runner.argvs if (label := step_label(argv))]
 
 
+def labels_index(runner: FakeRunner, label: str) -> int:
+    """The position in ``runner.argvs`` of the first call with this label."""
+    return next(i for i, argv in enumerate(runner.argvs) if step_label(argv) == label)
+
+
 class ApplyRig:
     """A repo dir, a fake staging host, and a way to run ``apply`` against it."""
 
@@ -662,6 +669,23 @@ class ApplyRig:
         def is_pulled_inspect(argv: Sequence[str]) -> bool:
             return list(argv[3:5]) == ["image", "inspect"] and argv[-1] in IMAGE_REFS.values()
 
+        # The smoke test reads the containers after the recreates: healthy, on the planned
+        # images. Before the first up the plan's rollback record keeps the old image.
+        recreated = {"up": False}
+
+        def up(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            recreated["up"] = True
+            return ok()
+
+        def after_up(text: str) -> Predicate:
+            return lambda argv: recreated["up"] and has(text)(argv)
+
+        def planned_image_id(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            return ok((FRONTEND_ID if "frontend" in argv[-1] else PYTHON_ID) + "\n")
+
+        def planned_image(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+            return ok(running_json(FRONTEND_REF if argv[-1] == FRONTEND_ID else PYTHON_REF))
+
         paths = make_secret_files(secret_dir, *[n for n in secrets if not n.startswith("absent")])
         for name in secrets:
             paths.setdefault(name, secret_dir / "absent" / name)
@@ -673,7 +697,10 @@ class ApplyRig:
             (lambda argv: (step_label(argv) or "").startswith("pull"), ok()),
             (lambda argv: step_label(argv) == "stop", ok()),
             (lambda argv: step_label(argv) == "migrate", migrate),
-            (lambda argv: (step_label(argv) or "").startswith("up "), ok()),
+            (lambda argv: (step_label(argv) or "").startswith("up "), up),
+            (has("{{.State.Health.Status}}"), ok("healthy\n")),
+            (after_up("inspect --format {{.Image}}"), planned_image_id),
+            (lambda argv: recreated["up"] and RUNNING_FORMAT in argv, planned_image),
             (lambda argv: step_label(argv) == "ready", ok()),
             (lambda argv: step_label(argv) == "check", ok("0\n")),
             (lambda argv: step_label(argv) == "ps", ok("gateway Up 5 seconds\nworker Up\n")),
@@ -735,6 +762,8 @@ def test_apply_image_only_runs_steps_in_order(rig_factory: Callable[..., ApplyRi
         *UP_ALL,
         "ready",
         "check",
+        "select",
+        "ready",
         "ps",
     ]
     assert "gateway Up 5 seconds" in rig.text
@@ -789,6 +818,8 @@ def test_apply_with_migrations_stops_all_four_then_migrates_then_verifies(
         *UP_ALL,
         "ready",
         "check",
+        "select",
+        "ready",
         "ps",
     ]
     stop = next(a for a in rig.runner.argvs if step_label(a) == "stop")
@@ -996,7 +1027,9 @@ def image_after_up(service_label: str, *, recreated: bool = True) -> list[tuple[
 
     def digests(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         if state["up"] and recreated:
-            return ok(running_json(PYTHON_REF, revision=SHA))
+            return ok(
+                running_json(FRONTEND_REF if argv[-1] == FRONTEND_ID else PYTHON_REF, revision=SHA)
+            )
         return ok(running_json(RUNNING_REF))
 
     return [
@@ -1017,7 +1050,10 @@ def test_slow_start_counts_as_success_once_healthy(
     assert rig.apply() == 0
     seen = labels(rig.runner)
     assert seen[seen.index("up gateway") + 1 :][:3] == ["up worker", "up delivery", "up frontend"]
-    inspects = [a for a in rig.runner.argvs if is_health_inspect(a)]
+    before_checks = rig.runner.argvs[
+        : labels_index(rig.runner, "check")
+    ]  # the smoke test inspects too
+    inspects = [a for a in before_checks if is_health_inspect(a)]
     assert (
         inspects
         == [
