@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.storage.base import ObjectStore
+from csa.storage.base import ObjectStore, StorageError
 from csa.storage.multipart import OpenUpload
 from csa.training import limits
 from csa.training.video_jobs import (
@@ -52,9 +52,16 @@ class UploadsStore(RecordingStore):
     def __init__(self, root: Path) -> None:
         super().__init__(root)
         self.open_uploads: dict[UUID, list[OpenUpload]] = {}
+        self.fail_next_delete = False
 
     def list_uploads(self, tenant: UUID) -> list[OpenUpload]:
         return list(self.open_uploads.get(tenant, []))
+
+    def delete(self, tenant: UUID, name: str) -> None:
+        if self.fail_next_delete:
+            self.fail_next_delete = False
+            raise StorageError("object storage delete: synthetic failure")
+        super().delete(tenant, name)
 
 
 @pytest.fixture
@@ -763,3 +770,143 @@ async def test_claims_never_cross_companies(
     )
     with pytest.raises(JobLost):
         await stolen.heartbeat()
+
+
+async def test_a_stale_transcribing_attempt_cannot_write_into_the_summarising_job(
+    sessions: SessionWorld, owner_pool: AsyncConnectionPool, training_store: ObjectStore
+) -> None:
+    tenant = sessions.tenants[0]
+    await only_active(sessions, tenant)
+    item = await queued_video(sessions, tenant)
+    script = Script()
+    worker = processor(sessions, owner_pool, training_store, script)
+
+    transcribing = await worker.claim(UUID(tenant))
+    assert transcribing is not None and (transcribing.stage, transcribing.attempt) == (
+        "transcribing",
+        1,
+    )
+    old = JobHandle(sessions.pool, transcribing)
+
+    async def to_summary(claim: Claim, job: JobHandle) -> Literal["summarising"]:
+        return "summarising"
+
+    # The current attempt advances (through its own fresh handle); the summary is claimed as
+    # attempt 1 again, the same number the old transcribing attempt holds.
+    advancing = processor(sessions, owner_pool, training_store, Script(transcribe=to_summary))
+    assert await advancing.process(transcribing) == "summarising"
+    summarising = await worker.claim(UUID(tenant))
+    assert summarising is not None and (summarising.stage, summarising.attempt) == (
+        "summarising",
+        1,
+    )
+    before = await job_of(sessions, item)
+    assert before is not None and (before["stage"], before["status"]) == (
+        "summarising",
+        "processing",
+    )
+
+    with pytest.raises(JobLost):
+        async with old.tx() as conn:
+            await conn.execute(
+                "UPDATE training_video_jobs SET chunks_done = 9 WHERE item_id = %s", (item,)
+            )
+    with pytest.raises(JobLost):
+        await old.heartbeat()
+    # Its finish and its release are lost too.
+    assert await worker.process(transcribing) == "lost"
+    failing = processor(
+        sessions, owner_pool, training_store, Script(transcribe=raising(Transient(TRANSCRIPTION)))
+    )
+    assert await failing.process(transcribing) == "lost"
+
+    after = await job_of(sessions, item)
+    assert after is not None
+    assert {k: v for k, v in after.items() if k != "wait"} == {
+        k: v for k, v in before.items() if k != "wait"
+    }
+    found = await item_of(sessions, item)
+    assert found is not None and (found["status"], found["failure_code"]) == ("summarising", None)
+
+
+async def test_a_refused_file_left_by_a_failed_delete_goes_with_the_next_sweep(
+    sessions: SessionWorld,
+    owner_pool: AsyncConnectionPool,
+    training_store: UploadsStore,
+    tmp_path: Path,
+) -> None:
+    tenant = sessions.tenants[0]
+    await only_active(sessions, tenant)
+    refused_name, ready_name, running_name = (f"{uuid4()}.mp4" for _ in range(3))
+    refused_file = put_file(tmp_path, tenant, refused_name)
+    ready_file = put_file(tmp_path, tenant, ready_name)
+    running_part = put_file(tmp_path, tenant, f".{running_name}.part")
+    refused = await queued_video(sessions, tenant, storage_name=refused_name)
+    await video_row(sessions, tenant, status="ready", storage_name=ready_name)
+    running = await video_row(sessions, tenant, status="uploading", storage_name=running_name)
+    await upload_row(sessions, tenant, running)
+    # A retryable failure keeps its file: a manager may retry it.
+    retry_name = f"{uuid4()}.mp4"
+    retry_file = put_file(tmp_path, tenant, retry_name)
+    await video_row(
+        sessions, tenant, status="failed", storage_name=retry_name, failure_code=TRANSCRIPTION
+    )
+    training_store.fail_next_delete = True
+    worker = processor(
+        sessions,
+        owner_pool,
+        training_store,
+        Script(transcribe=raising(Permanent("training_video_codec"))),
+    )
+
+    assert await worker.run_once() == 1
+    assert refused_file.exists()  # the delete after the refusal failed
+
+    report = await worker.sweep_once()
+
+    assert report.removed == 1
+    assert not refused_file.exists()
+    assert ready_file.exists() and running_part.exists() and retry_file.exists()
+    found = await item_of(sessions, refused)
+    assert found is not None
+    assert (found["status"], found["failure_code"]) == ("failed", "training_video_codec")
+
+
+async def test_reserve_processing_refuses_seconds_outside_one_second_to_an_hour(
+    sessions: SessionWorld,
+) -> None:
+    tenant = sessions.tenants[0]
+    for seconds in (0, -5, limits.MAX_VIDEO_SECONDS + 1):
+        with pytest.raises(ValueError):
+            await reserve(sessions, tenant, uuid4(), seconds)
+    assert await reserve(sessions, tenant, uuid4(), 1) is None
+    assert await reserve(sessions, tenant, uuid4(), limits.MAX_VIDEO_SECONDS) is None
+    rows = await sessions.q(
+        "SELECT seconds FROM training_video_usage WHERE client_id = %s ORDER BY seconds", tenant
+    )
+    assert [row["seconds"] for row in rows] == [1, limits.MAX_VIDEO_SECONDS]
+
+
+async def test_concurrent_claims_of_one_company_take_one_job(
+    sessions: SessionWorld, owner_pool: AsyncConnectionPool, training_store: ObjectStore
+) -> None:
+    tenant = sessions.tenants[0]
+    await only_active(sessions, tenant)
+    for ago in (60, 30):
+        await queued_video(sessions, tenant, created_ago=ago)
+    worker = processor(sessions, owner_pool, training_store, Script())
+
+    for _ in range(5):
+        claims = await asyncio.gather(worker.claim(UUID(tenant)), worker.claim(UUID(tenant)))
+        assert sum(claim is not None for claim in claims) == 1
+        [running] = await sessions.q(
+            "SELECT count(*)::int AS n FROM training_video_jobs"
+            " WHERE client_id = %s AND status = 'processing'",
+            tenant,
+        )
+        assert running["n"] == 1
+        await sessions.q(
+            "UPDATE training_video_jobs SET status = 'queued', attempts = 0, locked_at = NULL"
+            " WHERE client_id = %s",
+            tenant,
+        )

@@ -7,7 +7,8 @@ for their quota check and write, so it never sees a file whose row is not yet co
 
 The keep set is every row's ``storage_name`` plus ``.<storage_name>.part`` of every row still
 ``uploading``: a sweep that a PDF failure or a removal triggers must not delete a video that is
-being uploaded right now.
+being uploaded right now. A video refused for its file (unreadable, too long, an unplayable codec)
+keeps its row but not its file, so a file whose delete failed at refusal goes with the next sweep.
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ async def cleanup(pool: AsyncConnectionPool, store: ObjectStore, client_id: UUID
     async with tx(pool, str(client_id)) as conn:
         await lock(conn, client_id)
         rows = await db.q.fetch_all("training/names.sql", (client_id,), conn=conn)
-        keep = {row["storage_name"] for row in rows}
+        # A refused video's file is no longer kept (its delete at refusal time may have failed).
+        keep = {row["storage_name"] for row in rows if not row["refused"]}
         keep |= {f".{row['storage_name']}.part" for row in rows if row["uploading"]}
         for name in await asyncio.to_thread(store.list_names, client_id):
             if STORED.fullmatch(name) and name not in keep:

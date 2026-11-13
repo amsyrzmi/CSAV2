@@ -5,6 +5,7 @@ WITH job AS (
     SET status = %(status)s::text, error_code = %(code)s::text, locked_at = NULL
     WHERE client_id = %(client_id)s
       AND item_id = %(item_id)s
+      AND stage = %(stage)s::text
       AND status = 'processing'
       AND attempts = %(attempt)s
     RETURNING client_id, item_id, status, error_code

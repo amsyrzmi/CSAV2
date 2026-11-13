@@ -4,12 +4,14 @@ A completed upload queues one job per video (stage ``transcribing``). The traini
 (``apps/training_worker``) runs ``VideoProcessor``: the owner pool lists the active companies, and
 for each, inside ``tx(app_pool, company)``, stale jobs are requeued and then at most one due job is
 claimed, oldest first, with ``FOR UPDATE SKIP LOCKED``, and only while no other job of that company
-is processing. The worker is a single process per deployment and handles one job at a time; the
-"one job of a company in flight" rule relies on that.
+is processing. Each claim first takes the company's claim lock (an advisory transaction lock apart
+from the upload lock), so two claims of one company cannot both pass that check. The worker is a
+single process per deployment and handles one job at a time.
 
 **The fence.** A claim adds one to ``attempts`` and stamps ``locked_at``. Every write a stage makes
 goes through ``JobHandle.tx()``, which locks the job row and refreshes ``locked_at`` only while the
-job is still ``processing`` at this attempt; otherwise it raises ``JobLost`` and nothing is written.
+job is still ``processing`` at this stage and attempt (attempts restart for the summary, so the
+stage is part of the fence); otherwise it raises ``JobLost`` and nothing is written.
 A job whose heartbeat is older than ``JOB_STALE_SECONDS`` is requeued (resuming at ``chunks_done``
 and its saved ``parts``) and claimed again with a higher attempt, so an old attempt that wakes up
 later cannot write. A removed item takes its job row with it (cascade), so its attempt stops the
@@ -173,6 +175,7 @@ class JobHandle:
                 {
                     "client_id": self.claim.client_id,
                     "item_id": self.claim.item_id,
+                    "stage": self.claim.stage,
                     "attempt": self.claim.attempt,
                 },
                 conn=conn,
@@ -213,7 +216,12 @@ async def reserve_processing(
     Takes the company lock (until ``conn``'s transaction ends), so two reservations cannot both
     take the last room. ``None`` when booked, or already booked for this item; otherwise the time
     at which enough booked seconds have aged out for this video to fit.
+
+    ``seconds`` is the video's duration rounded up, from 1 to ``MAX_VIDEO_SECONDS`` (the usage
+    row's own bounds); anything else is a ``ValueError`` and nothing is booked.
     """
+    if not 1 <= seconds <= limits.MAX_VIDEO_SECONDS:
+        raise ValueError("processing seconds must be from 1 to MAX_VIDEO_SECONDS")
     await lock(conn, client_id)
     row = await db.q.fetch_one(
         "training/video_usage_reserve.sql",
@@ -293,6 +301,9 @@ class VideoProcessor:
     async def claim(self, client_id: UUID) -> Claim | None:
         """Requeue the company's stale jobs, then claim its oldest due job (none while one runs)."""
         async with tx(self._app_pool, str(client_id)) as conn:
+            # The company's claim lock (not the upload lock): a second claim waits here, then sees
+            # the first one's job processing and takes nothing.
+            await db.q.execute("training/lock.sql", (f"{client_id}:training_jobs",), conn=conn)
             stale = await db.q.fetch_all(
                 "training/video_job_requeue_stale.sql",
                 {
@@ -385,6 +396,7 @@ class VideoProcessor:
                 {
                     "client_id": job.claim.client_id,
                     "item_id": job.claim.item_id,
+                    "stage": job.claim.stage,
                     "attempt": job.claim.attempt,
                     **params,
                 },
