@@ -3,7 +3,7 @@
 Every function runs inside the caller's tenant transaction (`tx(pool, client_id)`) and names the
 company in every statement. Refusals are `HTTPException`s with a short code: 404
 `invoice_not_found` (also for another company's invoice); 409 `invoice_already_paid`,
-`invoice_not_payable`, `subscription_cancelled`, `request_key_reused`, `invoice_paid` and
+`invoice_not_payable`, `request_key_reused`, `invoice_paid` and
 `invoice_void`; 422 `received_in_future`, `invalid_note` and `invalid_reason`.
 
 The ledger is the truth. An invoice becomes `paid` only in the transaction that inserts its
@@ -98,6 +98,9 @@ class MarkPaidOutcome:
     replayed: bool  # this request key had already paid the invoice; nothing was written now
     activated: bool  # the payment started a pending subscription
     resumed: bool  # the payment lifted an unpaid pause
+    # The invoice belongs to a cancelled subscription: the payment is on the ledger and the invoice
+    # is paid, but the subscription was left exactly as it was (it never resurrects).
+    recorded_only: bool
 
 
 def _record(row: dict[str, Any]) -> InvoiceRecord:
@@ -315,8 +318,11 @@ async def mark_paid(
     The same `request_key` again returns the first answer (`replayed=True`) and writes nothing. A
     pending subscription starts (event `activated`) and its opening invoice gets its first period; a
     subscription paused for being unpaid resumes (event `resumed_paid`) when none of its other
-    invoices is overdue. A void, draft or already paid invoice, or one of a cancelled subscription,
-    is refused; nothing is ever un-voided or un-cancelled.
+    invoices is overdue. A void, draft or already paid invoice is refused. An open invoice of a
+    cancelled subscription is still paid and recorded (money that arrived must be recordable), but
+    the subscription is not touched: no activation, no resume, no status or date change. The result
+    says `recorded_only` and a `payment_recorded` event with `recorded_only: true` goes on its
+    timeline. Nothing is ever un-voided or un-cancelled.
     """
     if received_at.tzinfo is None:
         raise ValueError("received_at must be timezone-aware")
@@ -334,13 +340,12 @@ async def mark_paid(
             replayed=True,
             activated=prior["activated"],
             resumed=prior["resumed"],
+            recorded_only=prior["recorded_only"],
         )
     if row["status"] == "paid":
         raise HTTPException(409, "invoice_already_paid")
     if row["status"] not in OPEN_STATUSES or row["amount"] <= 0:
         raise HTTPException(409, "invoice_not_payable")
-    if subscription is not None and subscription["status"] == "cancelled":
-        raise HTTPException(409, "subscription_cancelled")
     if received_at > datetime.now(UTC) + CLOCK_SKEW:
         raise HTTPException(422, "received_in_future")
     try:
@@ -386,7 +391,7 @@ async def mark_paid(
     if paid is None:
         raise RuntimeError(f"invoice {invoice_id} was not marked paid under its lock")
 
-    activated = resumed = False
+    activated = resumed = recorded_only = False
     if subscription is not None:
         actor = str(actor_user_id) if actor_user_id is not None else SYSTEM_ACTOR
         payload = {"invoice_id": invoice_id, "payment_id": str(payment_id), "via": "payment"}
@@ -425,6 +430,18 @@ async def mark_paid(
                 payload=payload,
             )
             resumed = True
+        elif subscription["status"] == "cancelled":
+            await record_event(
+                conn,
+                client_id,
+                subscription["id"],
+                actor=actor,
+                action="payment_recorded",
+                from_status="cancelled",
+                to_status="cancelled",
+                payload={**payload, "recorded_only": True},
+            )
+            recorded_only = True
     if actor_user_id is not None:
         await db.q.execute(
             "console/audit.sql",
@@ -448,6 +465,7 @@ async def mark_paid(
         replayed=False,
         activated=activated,
         resumed=resumed,
+        recorded_only=recorded_only,
     )
 
 

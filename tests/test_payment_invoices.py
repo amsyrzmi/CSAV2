@@ -539,26 +539,107 @@ async def test_mark_paid_records_one_payment_and_starts_the_pending_subscription
     assert len(await a.payments(opening.id)) == 1
 
 
-async def test_mark_paid_refuses_void_draft_cancelled_and_future(a: Ledger) -> None:
+async def test_mark_paid_refuses_void_draft_and_future(a: Ledger) -> None:
     contact = await a.contact()
     void = await a.invoice(status="void", contact=contact)
     draft = await a.invoice(status="draft", contact=contact)
     await refused(a.pay(void), 409, "invoice_not_payable")
     await refused(a.pay(draft), 409, "invoice_not_payable")
 
-    cancelled = await a.subscription(status="cancelled", cancelled_at=datetime.now(UTC))
-    left_open = await a.invoice(subscription=cancelled)
-    await refused(a.pay(left_open), 409, "subscription_cancelled")
-    assert (await a.row("subscriptions", cancelled))["status"] == "cancelled"
-
     issued = await a.invoice(contact=contact)
     tomorrow = datetime.now(UTC) + timedelta(days=1)
     await refused(a.pay(issued, received_at=tomorrow), 422, "received_in_future")
     await refused(a.pay(uuid.uuid4().hex), 404, "invoice_not_found")
-    for invoice_id in (void, draft, left_open, issued):
+    for invoice_id in (void, draft, issued):
         assert await a.payments(invoice_id) == []
     assert (await a.row("invoices", issued))["status"] == "issued"
     assert (await a.row("invoices", void))["status"] == "void"
+
+
+async def cancelled_with_open_invoice(a: Ledger) -> tuple[UUID, str]:
+    """A cancelled subscription whose running-period invoice was left open (cancel keeps it)."""
+    now = datetime.now(UTC)
+    sub = await a.subscription(
+        status="cancelled",
+        renews_at=now + timedelta(days=2),
+        renewal_anchor=now - timedelta(days=28),
+        cancelled_at=now - timedelta(days=1),
+    )
+    open_invoice = await a.invoice(
+        status="overdue", subscription=sub, period_start=now - timedelta(days=28)
+    )
+    return sub, open_invoice
+
+
+async def test_paying_an_open_invoice_of_a_cancelled_subscription_records_only(
+    a: Ledger,
+) -> None:
+    sub, invoice_id = await cancelled_with_open_invoice(a)
+    before = await a.row("subscriptions", sub)
+    key = uuid.uuid4()
+    received = datetime.now(UTC) - timedelta(hours=3)
+
+    paid = await a.pay(invoice_id, key, received_at=received)
+
+    assert (paid.replayed, paid.activated, paid.resumed, paid.recorded_only) == (
+        False,
+        False,
+        False,
+        True,
+    )
+    assert paid.invoice.status == "paid" and paid.invoice.paid_at == received
+    payments = await a.payments(invoice_id)
+    assert len(payments) == 1 and payments[0]["id"] == paid.payment_id
+    assert (payments[0]["amount"], payments[0]["idempotency_key"]) == (
+        Decimal("29.90"),
+        f"staff:{key}",
+    )
+    assert (await a.row("invoices", invoice_id))["status"] == "paid"
+    # The subscription row is exactly as it was: still cancelled, no dates or version moved.
+    assert await a.row("subscriptions", sub) == before
+    events = await a.events(sub, "payment_recorded")
+    assert len(events) == 1
+    assert (events[0]["from_status"], events[0]["to_status"]) == ("cancelled", "cancelled")
+    assert events[0]["payload"] == {
+        "invoice_id": invoice_id,
+        "payment_id": str(paid.payment_id),
+        "via": "payment",
+        "recorded_only": True,
+    }
+    for action in ("activated", "resumed_paid", "resumed"):
+        assert await a.events(sub, action) == []
+
+    replay = await a.pay(invoice_id, key, received_at=received)
+    assert replay.replayed is True and replay.payment_id == paid.payment_id
+    assert (replay.activated, replay.resumed, replay.recorded_only) == (False, False, True)
+    assert len(await a.payments(invoice_id)) == 1
+    assert len(await a.events(sub, "payment_recorded")) == 1
+    assert await a.row("subscriptions", sub) == before
+
+    await refused(a.pay(invoice_id, uuid.uuid4()), 409, "invoice_already_paid")
+    assert len(await a.payments(invoice_id)) == 1
+
+
+async def test_two_staff_paying_a_cancelled_subscriptions_invoice_at_once_pay_once(
+    a: Ledger,
+) -> None:
+    sub, invoice_id = await cancelled_with_open_invoice(a)
+    before = await a.row("subscriptions", sub)
+
+    results = await asyncio.gather(
+        a.pay(invoice_id, uuid.uuid4(), hold=HOLD),
+        a.pay(invoice_id, uuid.uuid4(), hold=HOLD),
+        return_exceptions=True,
+    )
+
+    wins = [r for r in results if isinstance(r, MarkPaidOutcome)]
+    losses: list[HTTPException] = [r for r in results if isinstance(r, HTTPException)]
+    assert len(wins) == 1 and len(losses) == 1, results
+    assert (losses[0].status_code, losses[0].detail) == (409, "invoice_already_paid")
+    assert wins[0].recorded_only is True and wins[0].replayed is False
+    assert len(await a.payments(invoice_id)) == 1
+    assert len(await a.events(sub, "payment_recorded")) == 1
+    assert await a.row("subscriptions", sub) == before
 
 
 async def test_two_staff_marking_paid_at_once_pay_once(a: Ledger) -> None:
