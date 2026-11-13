@@ -266,6 +266,7 @@ class VideoLibrary(Library):
 
     def start(self, request: Request) -> tuple[int, Any]:
         body = request.post_data_json
+        assert isinstance(body, dict)
         self.starts.append({**body, "key": request.headers.get("idempotency-key")})
         self.declared = body["byte_size"]
         self.piece_count = -(-self.declared // PIECE)
