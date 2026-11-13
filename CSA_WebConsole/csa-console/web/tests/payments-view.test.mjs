@@ -196,6 +196,10 @@ test("reminder days read as one plain sentence", () => {
   assert.equal(view.reminderDaysLabel([0]), "on the due day");
   assert.equal(view.reminderDaysLabel([-14, -3, 1, 2, 30]), "14 and 3 days before, 1, 2 and 30 days after");
   assert.equal(view.reminderDaysLabel([]), "no reminders");
+  // The form's sentence: an empty list says so plainly instead of "Reminders go out no reminders."
+  assert.equal(view.remindersSentence([-7, 0, 3, 7]), "Reminders go out 7 days before, on the due day, 3 and 7 days after.");
+  assert.equal(view.remindersSentence([1]), "Reminders go out 1 day after.");
+  assert.equal(view.remindersSentence([]), "No reminders are sent.");
   assert.equal(view.reminderDayLabel(-7), "7 days before");
   assert.equal(view.reminderDayLabel(0), "On the due day");
   assert.equal(view.reminderDayLabel(1), "1 day after");
@@ -208,9 +212,16 @@ test("the switch sentence follows the lead days", () => {
     "When this is on, invoices are made 1 day before each renewal and customers are reminded automatically.");
   assert.equal(view.shownLeadDays(" 5 ", 7), 5);
   for (const typed of ["", "0", "31", "x"]) assert.equal(view.shownLeadDays(typed, 7), 7, typed);
-  assert.equal(view.pauseLine(14), "Pause a subscription when an invoice is overdue for 14 days");
-  assert.equal(view.pauseLine(1), "Pause a subscription when an invoice is overdue for 1 day");
+  assert.equal(view.pauseLine(14), "Pause a subscription when an invoice is overdue for 14 days.");
+  assert.equal(view.pauseLine(1), "Pause a subscription when an invoice is overdue for 1 day.");
   assert.equal(view.pauseLine(null), "Subscriptions are not paused when an invoice is overdue.");
+});
+
+test("an unsaved switch says what is saved", () => {
+  assert.equal(view.switchSavedLine(true, true), null);
+  assert.equal(view.switchSavedLine(false, false), null);
+  assert.equal(view.switchSavedLine(true, false), "Not saved yet: payments are currently off.");
+  assert.equal(view.switchSavedLine(false, true), "Not saved yet: payments are currently on.");
 });
 
 test("reminder chips: up to 6 distinct whole days from -30 to 60, kept in order", () => {
@@ -298,6 +309,10 @@ test("a new method's body has only the kind's details, trimmed; bad fields are n
   assert.deepEqual(view.checkMethod({ ...transfer, account_number: "123456" }), {});
   assert.ok(view.checkMethod({ ...transfer, account_number: "12345" }).account_number);
   assert.ok(view.checkMethod({ ...transfer, account_number: "1".repeat(21) }).account_number);
+  // A pasted number with spaces around it is checked whole: 21 digits are refused, never cut to 20.
+  assert.equal(view.checkMethod({ ...transfer, account_number: `  ${"5".repeat(21)} ` }).account_number,
+    "Use digits only, 6 to 20 of them.");
+  assert.deepEqual(view.checkMethod({ ...transfer, account_number: `  ${"5".repeat(20)} ` }), {});
 });
 
 test("an edit sends only what changed, with the version it was read at", () => {
@@ -326,4 +341,15 @@ test("an edit sends only what changed, with the version it was read at", () => {
 test("the page view comes from ?view=", () => {
   assert.equal(view.paymentsView("settings"), "settings");
   for (const other of [null, undefined, "", "invoices", "SETTINGS", "x"]) assert.equal(view.paymentsView(other), "invoices");
+});
+
+test("a saved method replaces its row, or joins the end of the list", () => {
+  const other = { ...QR, id: "99999999-9999-4999-8999-999999999999" };
+  const renamed = { ...TRANSFER, label: "Renamed", version: TRANSFER.version + 1 };
+  const list = [TRANSFER, other];
+  assert.deepEqual(view.upsertMethod(list, renamed), [renamed, other]);
+  assert.deepEqual(list, [TRANSFER, other], "the list it was given is not changed");
+  const added = { ...TRANSFER, id: "88888888-8888-4888-8888-888888888888", label: "New" };
+  assert.deepEqual(view.upsertMethod(list, added), [TRANSFER, other, added]);
+  assert.deepEqual(view.upsertMethod([], added), [added]);
 });

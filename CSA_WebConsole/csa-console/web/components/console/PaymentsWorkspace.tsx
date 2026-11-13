@@ -12,6 +12,7 @@ import {
   getInvoice,
   getSettings,
   isNoAccess,
+  isNoActiveMethod,
   isRefusal,
   isVersionConflict,
   listAttention,
@@ -65,10 +66,13 @@ import {
   reminderDayLabel,
   reminderDaysLabel,
   reminderLine,
+  remindersSentence,
   settingsBody,
   settingsDraft,
   shownLeadDays,
+  switchSavedLine,
   todayInput,
+  upsertMethod,
   voidBody,
   type InvoiceList,
   type MethodDraft,
@@ -149,7 +153,15 @@ function Board({ tenantId, admin, initialInvoiceId }: {
   const [forbidden, setForbidden] = useState(false);
   const [refusal, setRefusal] = useState("");
   const [revision, setRevision] = useState(0);
-  const [openId, setOpenId] = useState<string | null>(initialInvoiceId || null);
+  // The view lives in the URL (?view=settings), so a link or a reload opens the same one.
+  const view = paymentsView(useSearchParams().get("view"));
+  // The drawer belongs to the invoices: ?invoice= is ignored on Settings, and switching to Settings closes it.
+  const [openId, setOpenId] = useState<string | null>(view === "settings" ? null : initialInvoiceId || null);
+  const [drawerView, setDrawerView] = useState(view);
+  if (drawerView !== view) {
+    setDrawerView(view);
+    if (view === "settings") setOpenId(null);
+  }
   const openerRef = useRef<HTMLElement | null>(null);
   const refused = useCallback((cause: unknown) => {
     if (isNoAccess(cause)) setForbidden(true);
@@ -159,8 +171,6 @@ function Board({ tenantId, admin, initialInvoiceId }: {
     openerRef.current = opener;
     setOpenId(invoiceId);
   };
-  // The view lives in the URL (?view=settings), so a link or a reload opens the same one.
-  const view = paymentsView(useSearchParams().get("view"));
   if (forbidden) return <Notice testId="payments-no-access">{NO_ACCESS}</Notice>;
   if (refusal) return <Notice error testId="payments-refused">{refusal}</Notice>;
   return (
@@ -681,16 +691,21 @@ function SettingsView({ tenantId, admin, onRefused }: {
     setMethods(list);
     return list;
   }, [tenantId]);
+  // The saved method shows at once; the reread then brings anything else that changed. If the
+  // reread fails, the list keeps the saved method, so it still matches "Added." or "Saved.".
+  const methodSaved = useCallback((saved: PaymentMethod) => {
+    setMethods((current) => upsertMethod(current ?? [], saved));
+    listMethods(tenantId).then(setMethods).catch(() => undefined);
+  }, [tenantId]);
   if (error) return <Notice error>{error}</Notice>;
   if (!settings || !methods) return <Notice>Loading the payment settings…</Notice>;
-  const payable = hasPayableMethod(methods);
   return (
     <>
       {admin
-        ? <SettingsForm tenantId={tenantId} settings={settings} payable={payable} onSaved={setSettings}
+        ? <SettingsForm tenantId={tenantId} settings={settings} methods={methods} onSaved={setSettings}
           onConflict={rereadSettings} />
         : <SettingsSummary settings={settings} />}
-      <Methods tenantId={tenantId} admin={admin} methods={methods} onChanged={() => rereadMethods()}
+      <Methods tenantId={tenantId} admin={admin} methods={methods} onSaved={methodSaved}
         onConflict={rereadMethods} />
     </>
   );
@@ -715,10 +730,11 @@ function SettingsSummary({ settings }: { settings: PaymentSettings }) {
   );
 }
 
-function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
-  tenantId: string | null; settings: PaymentSettings; payable: boolean;
+function SettingsForm({ tenantId, settings, methods, onSaved, onConflict }: {
+  tenantId: string | null; settings: PaymentSettings; methods: PaymentMethod[];
   onSaved: (settings: PaymentSettings) => void; onConflict: () => Promise<PaymentSettings>;
 }) {
+  const payable = hasPayableMethod(methods);
   const [draft, setDraft] = useState<SettingsDraft>(() => settingsDraft(settings));
   const [errors, setErrors] = useState<SettingsErrors>({});
   const [dayText, setDayText] = useState("");
@@ -731,7 +747,18 @@ function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
   const leadHelp = useId();
   const daysHelp = useId();
   const pauseHelp = useId();
-  const change = (next: Partial<SettingsDraft>) => { setDraft((current) => ({ ...current, ...next })); setNotice(""); };
+  // A refusal is about the form as it was: an edit, or a method added or changed, makes it stale.
+  const [seenMethods, setSeenMethods] = useState(methods);
+  if (seenMethods !== methods) {
+    setSeenMethods(methods);
+    setError("");
+  }
+  const change = (next: Partial<SettingsDraft>) => {
+    setDraft((current) => ({ ...current, ...next }));
+    setNotice("");
+    setError("");
+  };
+  const savedLine = switchSavedLine(draft.enabled, settings.enabled);
   function addDay() {
     const result = addReminderDay(draft.reminder_days, dayText);
     if ("error" in result) { setDayError(result.error); return; }
@@ -763,6 +790,8 @@ function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
           setError(paymentMessage(reread));
         }
       } else {
+        // Payments stayed off: the switch shows that, not the "on" the server refused.
+        if (isNoActiveMethod(cause)) setDraft((current) => ({ ...current, enabled: settings.enabled }));
         setError(setupMessage(cause));
       }
     } finally {
@@ -781,6 +810,7 @@ function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
             Send invoices and reminders
           </label>
           <div id={switchHelp}>
+            {savedLine && <p className={`${helpText} font-medium`} data-testid="payments-enabled-saved">{savedLine}</p>}
             <p className={helpText} data-testid="payments-lead-sentence">
               {leadSentence(shownLeadDays(draft.lead_days, settings.lead_days))}</p>
             {!payable && <p className={helpText} data-testid="payments-enable-hint">
@@ -800,7 +830,7 @@ function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
         <fieldset>
           <legend className="text-sm font-medium">Reminder days</legend>
           <p className={helpText} data-testid="settings-reminders-sentence">
-            Reminders go out {reminderDaysLabel(draft.reminder_days)}.</p>
+            {remindersSentence(draft.reminder_days)}</p>
           <ul className="mt-2 flex flex-wrap gap-2" data-testid="settings-reminder-chips">
             {draft.reminder_days.map((day) => (
               <li key={day} data-testid="settings-reminder-chip"
@@ -848,18 +878,18 @@ function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
   );
 }
 
-function Methods({ tenantId, admin, methods, onChanged, onConflict }: {
+function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
   tenantId: string | null; admin: boolean; methods: PaymentMethod[];
-  onChanged: () => Promise<unknown>; onConflict: () => Promise<PaymentMethod[]>;
+  onSaved: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod[]>;
 }) {
   // "new", a method id being edited, or null.
   const [editing, setEditing] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const titleId = useId();
-  const done = (text: string) => {
+  const done = (saved: PaymentMethod, text: string) => {
     setEditing(null);
     setNotice(text);
-    void onChanged().catch(() => undefined);
+    onSaved(saved);
   };
   return (
     <section aria-labelledby={titleId} data-testid="payment-methods" className={card}>
@@ -876,7 +906,7 @@ function Methods({ tenantId, admin, methods, onChanged, onConflict }: {
           <li key={method.id} data-testid="payment-method" className="rounded-md border border-ink-200 p-3 text-sm">
             {editing === method.id ? (
               <MethodForm tenantId={tenantId} method={method} onCancel={() => setEditing(null)}
-                onDone={() => done("Saved.")} onConflict={async () => (await onConflict()).find(
+                onDone={(saved) => done(saved, "Saved.")} onConflict={async () => (await onConflict()).find(
                   (row) => row.id === method.id) ?? null} />
             ) : (
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -905,7 +935,7 @@ function Methods({ tenantId, admin, methods, onChanged, onConflict }: {
       {admin && (editing === "new" ? (
         <div className="mt-4">
           <MethodForm tenantId={tenantId} method={null} onCancel={() => setEditing(null)}
-            onDone={() => done("Added.")} onConflict={async () => null} />
+            onDone={(saved) => done(saved, "Added.")} onConflict={async () => null} />
         </div>
       ) : (
         <button type="button" className={`${secondary} mt-4`} data-testid="method-add"
@@ -972,7 +1002,8 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
       setBusy(false);
     }
   }
-  const input = (name: Exclude<MethodField, "instructions">, extra: { maxLength: number; autoComplete?: string }) => (
+  // Bank details have no maxLength: a pasted number that is too long is refused whole, never cut short.
+  const input = (name: Exclude<MethodField, "instructions">, extra: { maxLength?: number; autoComplete?: string }) => (
     <div>
       <label className="block text-sm" htmlFor={`${formId}-${name}`}>{FIELD_LABELS[name]}</label>
       <input id={`${formId}-${name}`} className={field} data-testid={`method-${name.replaceAll("_", "-")}`}
@@ -999,10 +1030,10 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
       {draft.kind === "transfer" && <>
         {input("bank_name", { maxLength: 60 })}
         {input("account_name", { maxLength: 80 })}
-        {input("account_number", { maxLength: 20 })}
+        {input("account_number", {})}
       </>}
       {draft.kind === "qr" && <>
-        {input("duitnow_id", { maxLength: 40 })}
+        {input("duitnow_id", {})}
         {input("account_name", { maxLength: 80 })}
       </>}
       <div>

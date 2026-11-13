@@ -255,6 +255,9 @@ test("settings refusals read as the agreed sentences", () => {
   assert.equal(pay.isVersionConflict(new ApiError(409, "version_conflict", "version_conflict")), true);
   assert.equal(pay.isVersionConflict(new ApiError(409, "no_active_method", "no_active_method")), false);
   assert.equal(pay.isVersionConflict(new Error("version_conflict")), false);
+  assert.equal(pay.isNoActiveMethod(new ApiError(409, "no_active_method", "no_active_method")), true);
+  assert.equal(pay.isNoActiveMethod(new ApiError(409, "version_conflict", "version_conflict")), false);
+  assert.equal(pay.isNoActiveMethod(new Error("no_active_method")), false);
   // Bad details are 422 {"detail": "invalid_details"}; a gone method is 404 method_not_found.
   for (const code of ["invalid_details", "method_not_found"]) {
     const said = pay.setupMessage(new ApiError(code === "invalid_details" ? 422 : 404, code, code));

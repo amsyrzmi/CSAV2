@@ -227,6 +227,11 @@ export function reminderDaysLabel(days: number[]): string {
   return parts.join(", ") || "no reminders";
 }
 
+/** The form's sentence under "Reminder days". */
+export function remindersSentence(days: number[]): string {
+  return days.length ? `Reminders go out ${reminderDaysLabel(days)}.` : "No reminders are sent.";
+}
+
 /** One reminder chip: "7 days before", "On the due day", "1 day after". */
 export function reminderDayLabel(day: number): string {
   if (day === 0) return "On the due day";
@@ -247,7 +252,13 @@ export function shownLeadDays(typed: string, saved: number): number {
 /** The pause setting as staff read it. */
 export function pauseLine(days: number | null): string {
   if (days === null) return "Subscriptions are not paused when an invoice is overdue.";
-  return `Pause a subscription when an invoice is overdue for ${days} ${dayWord(days)}`;
+  return `Pause a subscription when an invoice is overdue for ${days} ${dayWord(days)}.`;
+}
+
+/** Next to the switch while it differs from what is saved: what is saved, or null when they match. */
+export function switchSavedLine(draftEnabled: boolean, savedEnabled: boolean): string | null {
+  if (draftEnabled === savedEnabled) return null;
+  return `Not saved yet: payments are currently ${savedEnabled ? "on" : "off"}.`;
 }
 
 const MAX_REMINDERS = 6;
@@ -343,6 +354,13 @@ export function methodPreview(method: Pick<PaymentMethod, "kind" | "label" | "de
   }
   const instructions = method.instructions.trim();
   return instructions ? `${line} ${instructions}` : line;
+}
+
+/** The list with a saved method in place of its old row, or added at the end; the list given is unchanged. */
+export function upsertMethod(methods: PaymentMethod[], saved: PaymentMethod): PaymentMethod[] {
+  return methods.some((method) => method.id === saved.id)
+    ? methods.map((method) => (method.id === saved.id ? saved : method))
+    : [...methods, saved];
 }
 
 /** The add or edit form as typed. Only the fields of its kind are sent. */

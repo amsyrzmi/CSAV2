@@ -350,6 +350,11 @@ export function isVersionConflict(cause: unknown): boolean {
   return cause instanceof ApiError && cause.code === "version_conflict";
 }
 
+/** Switching payments on with no active bank transfer or DuitNow method: the switch goes back to the saved state. */
+export function isNoActiveMethod(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === "no_active_method";
+}
+
 /**
  * The sentence for a failed settings or method save. Like `paymentMessage`, except FastAPI's 422
  * field list (a value the form's own checks let through) asks for a check instead of a retry.

@@ -820,6 +820,35 @@ async def test_platform_admins_name_the_tenant_and_a_link_opens_the_invoice(site
     await with_browser(body)
 
 
+async def test_the_invoice_drawer_stays_with_the_invoices(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        # ?invoice= opens nothing on the Settings view.
+        world = World(site.upstream)
+        path = f"/portal/payments?invoice={CLAIMED}&view=settings"
+        async with settings_page(browser, site, world, role="tenant_admin", path=path) as page:
+            await expect(page.get_by_test_id("payment-methods")).to_be_visible()
+            await expect(page.get_by_test_id("invoice-drawer")).to_have_count(0)
+
+        # An open drawer closes when the view moves to Settings (here with Forward).
+        world = World(site.upstream)
+        async with payments_page(browser, site, world, role="tenant_admin") as page:
+            await page.get_by_test_id("payments-settings-link").click()
+            await expect(page.get_by_test_id("payments-settings")).to_be_visible()
+            await page.go_back()
+            await expect(page).to_have_url(f"{site.base}/portal/payments")
+            drawer = await open_invoice(page, "K7QX-4MF")
+            await page.go_forward()
+            await expect(page).to_have_url(f"{site.base}/portal/payments?view=settings")
+            await expect(page.get_by_test_id("payments-settings")).to_be_visible()
+            await expect(drawer).to_have_count(0)
+            # Back on the invoices, the drawer does not come back by itself.
+            await page.go_back()
+            await expect(page.get_by_test_id("invoice-row").first).to_be_visible()
+            await expect(drawer).to_have_count(0)
+
+    await with_browser(body)
+
+
 async def no_sideways_scroll(page: Page) -> None:
     measured = await page.evaluate(
         "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth })"
@@ -847,14 +876,20 @@ async def test_payments_fits_a_phone(site: Site) -> None:
 
 @asynccontextmanager
 async def settings_page(
-    browser: Any, site: Site, world: World, *, role: str, width: int = 1280
+    browser: Any,
+    site: Site,
+    world: World,
+    *,
+    role: str,
+    width: int = 1280,
+    path: str = "/portal/payments?view=settings",
 ) -> AsyncIterator[Page]:
     async with payments_page(
         browser,
         site,
         world,
         role=role,
-        path="/portal/payments?view=settings",
+        path=path,
         wait_for_rows=False,
         width=width,
     ) as page:
@@ -892,13 +927,19 @@ async def test_admin_adds_a_transfer_method_and_switches_payments_on(site: Site)
             await expect(page.get_by_test_id("methods-empty")).to_be_visible()
             await expect(page.get_by_test_id("payments-enable-hint")).to_be_visible()
 
-            # Switching on with no method: the server refuses and the page says why.
+            # Switching on with no method: the server refuses, the page says why and the switch
+            # goes back to off, which is what is saved.
             switch = page.get_by_role("switch", name="Send invoices and reminders")
+            saved_line = page.get_by_test_id("payments-enabled-saved")
+            await expect(saved_line).to_have_count(0)
             await switch.check()
+            await expect(saved_line).to_have_text("Not saved yet: payments are currently off.")
             await page.get_by_test_id("settings-save").click()
             await expect(page.get_by_test_id("settings-error")).to_have_text(
                 "Add an active bank account or DuitNow ID before switching payments on."
             )
+            await expect(switch).not_to_be_checked()
+            await expect(saved_line).to_have_count(0)
             assert world.settings["enabled"] is False
 
             # Add a bank transfer method. Only bank transfer and DuitNow are offered.
@@ -911,6 +952,12 @@ async def test_admin_adds_a_transfer_method_and_switches_payments_on(site: Site)
             await form.get_by_test_id("method-bank-name").fill("Bank Contoh")
             await form.get_by_test_id("method-account-name").fill("Kedai Contoh")
             number = form.get_by_test_id("method-account-number")
+            # A pasted number that is too long is kept whole and refused, never cut to 20 digits.
+            await number.fill(f"  {'5' * 21} ")
+            await expect(number).to_have_value(f"  {'5' * 21} ")
+            await form.get_by_test_id("method-save").click()
+            await expect(form).to_contain_text("Use digits only, 6 to 20 of them.")
+            assert writes(world, "payments/methods") == []
             await number.fill("5120 0000 0012")
             await form.get_by_test_id("method-save").click()
             await expect(form).to_contain_text("Use digits only, 6 to 20 of them.")
@@ -943,6 +990,9 @@ async def test_admin_adds_a_transfer_method_and_switches_payments_on(site: Site)
                 }
             ], posts
             await expect(page.get_by_test_id("payments-enable-hint")).to_have_count(0)
+            # The refusal is stale now that a method exists; the switch is still off.
+            await expect(page.get_by_test_id("settings-error")).to_have_count(0)
+            await expect(switch).not_to_be_checked()
 
             # Lead days, reminder chips and the pause, then switch on.
             await page.get_by_test_id("settings-lead-days").fill("5")
@@ -960,11 +1010,13 @@ async def test_admin_adds_a_transfer_method_and_switches_payments_on(site: Site)
                 "Reminders go out 7 days before, on the due day, 3 and 14 days after."
             )
             await page.get_by_test_id("settings-pause-days").fill("21")
-            await expect(switch).to_be_checked()
+            await switch.check()
+            await expect(saved_line).to_have_text("Not saved yet: payments are currently off.")
             await page.get_by_test_id("settings-save").click()
             await expect(page.get_by_test_id("settings-notice")).to_have_text(
                 "Saved. Invoices and reminders are on."
             )
+            await expect(saved_line).to_have_count(0)
             puts = writes(world, "payments/settings")
             assert [c["body"] for c in puts] == [
                 {
@@ -1016,7 +1068,7 @@ async def test_staff_see_the_settings_without_edit_controls(site: Site) -> None:
                 "7 days before, on the due day, 3 and 7 days after"
             )
             await expect(page.get_by_test_id("settings-pause-value")).to_have_text(
-                "Pause a subscription when an invoice is overdue for 14 days"
+                "Pause a subscription when an invoice is overdue for 14 days."
             )
             await expect(page.get_by_test_id("payments-lead-sentence")).to_have_text(lead(7))
             # Every method is listed, turned-off ones too, each with the customer's line.
