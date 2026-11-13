@@ -96,6 +96,13 @@ class MultipartStore(Protocol):
         """Return a short-lived inline playback URL, or ``None`` when the gateway serves it."""
         ...
 
+    def object_size(self, tenant: UUID, name: str) -> int:
+        """Return the published object's size in bytes, as the store reports it.
+
+        Raises ``StorageNotFound`` when it does not exist; never echoes a key or URL.
+        """
+        ...
+
     def open_range(self, tenant: UUID, name: str) -> BinaryIO:
         """Open the published object as a seekable stream; the caller closes it."""
         ...

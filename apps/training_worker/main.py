@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 import httpx
 import structlog
-from csa.agents.kb.embedder import DefaultKbEmbedder, KbEmbedder
+from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.core import db
 from csa.core.liveness import TRAINING_WORKER_ALIVE_PATH, liveness_loop
 from csa.core.settings import Settings, get_settings
@@ -34,12 +34,12 @@ from csa.storage.multipart import MultipartStore
 from csa.training import limits
 from csa.training.video_jobs import (
     SUMMARY_FAILED,
-    TRANSCRIPTION_FAILED,
     Claim,
     JobHandle,
     Transient,
     VideoProcessor,
 )
+from csa.training.video_transcribe import TranscribeStage
 
 logger = structlog.get_logger(__name__)
 
@@ -50,22 +50,19 @@ POOL_SIZE = 2
 """Connections in each pool: the job loop and the sweep each hold at most one at a time."""
 
 
-class PendingStages:
-    """The stages' clients, held until the transcribe and summary stages exist.
+class WorkerStages:
+    """The worker's stages: transcribing runs; the summary is held until its stage exists.
 
-    Every job is retried later with the stage's retryable code, so nothing is lost: once the
-    stages ship, a manager's retry (or the next attempt) processes the video.
+    A summary job is retried later with the stage's retryable code, so nothing is lost: once the
+    summary stage ships, a manager's retry (or the next attempt) summarises the video.
     """
 
-    def __init__(
-        self, transcriber: SpeechTranscriber, model: GroqClient, embedder: KbEmbedder
-    ) -> None:
-        self.transcriber = transcriber
+    def __init__(self, transcribing: TranscribeStage, model: GroqClient) -> None:
+        self.transcribing = transcribing
         self.model = model
-        self.embedder = embedder
 
     async def transcribe(self, claim: Claim, job: JobHandle) -> Literal["summarising", "ready"]:
-        raise Transient(TRANSCRIPTION_FAILED)
+        return await self.transcribing.transcribe(claim, job)
 
     async def summarise(self, claim: Claim, job: JobHandle) -> None:
         raise Transient(SUMMARY_FAILED)
@@ -146,11 +143,17 @@ async def main() -> None:
     await app_pool.open(wait=True)
     http = httpx.AsyncClient()
     speech_key = settings.voice_transcription_key()
-    stages = PendingStages(
-        SpeechTranscriber(
-            str(settings.VOICE_STT_ENDPOINT),
-            settings.VOICE_STT_MODEL,
-            speech_key.get_secret_value() if speech_key else None,
+    if not isinstance(store, MultipartStore):  # prepare_training_store refused it already
+        raise RuntimeError("the training store cannot take video uploads")
+    stages = WorkerStages(
+        TranscribeStage(
+            store,
+            SpeechTranscriber(
+                str(settings.VOICE_STT_ENDPOINT),
+                settings.VOICE_STT_MODEL,
+                speech_key.get_secret_value() if speech_key else None,
+            ),
+            DefaultKbEmbedder.from_settings(settings),
         ),
         GroqClient(
             settings.GROQ_API_KEY.get_secret_value(),
@@ -158,7 +161,6 @@ async def main() -> None:
             http,
             str(settings.GROQ_CHAT_URL),
         ),
-        DefaultKbEmbedder.from_settings(settings),
     )
     processor = VideoProcessor(owner_pool, app_pool, store, stages)
     background = [

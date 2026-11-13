@@ -266,6 +266,14 @@ class S3ObjectStore:
         }
         return self._presign(self._key(tenant, name), ttl_seconds, overrides)
 
+    def object_size(self, tenant: UUID, name: str) -> int:
+        key = self._key(tenant, name)
+        try:
+            response = self.client.head_object(Bucket=self.bucket, Key=key)
+        except (ClientError, BotoCoreError) as exc:
+            raise self._error("head", exc) from exc
+        return int(response["ContentLength"])
+
     def open_range(self, tenant: UUID, name: str) -> BinaryIO:
         raise StorageError("object storage open range: not supported on s3, use playback")
 

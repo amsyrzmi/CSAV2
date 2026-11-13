@@ -401,6 +401,7 @@ def test_s3_errors_never_echo_the_key_or_url() -> None:
         ),
         ("abort_multipart_upload", lambda: store.abort_upload(tenant, name, "u-1")),
         ("list_multipart_uploads", lambda: store.list_uploads(tenant)),
+        ("head_object", lambda: store.object_size(tenant, name)),
     ]
     for operation, call in calls:
         with Stubber(client) as stubber:
@@ -418,6 +419,20 @@ def test_s3_errors_never_echo_the_key_or_url() -> None:
         assert "AccessDenied" in message, operation
         for secret in (key, name, str(tenant), url, "training/", FAKE_SECRET, BUCKET):
             assert secret not in message, (operation, secret)
+
+
+def test_object_size_on_both_backends(client: Any, tmp_path: Path) -> None:
+    """The size the worker checks after a failed remote probe; missing is ``StorageNotFound``."""
+    tenant, name = uuid4(), video_name()
+    s3 = S3ObjectStore(BUCKET, "training", client)
+    local = LocalObjectStore(tmp_path / "uploads")
+    for store in (s3, local):
+        assert isinstance(store, MultipartStore)
+        with pytest.raises(StorageNotFound) as missing:
+            store.object_size(tenant, name)
+        assert name not in str(missing.value) and str(tenant) not in str(missing.value)
+        store.put(tenant, name, source_bytes(1234))
+        assert store.object_size(tenant, name) == 1234
 
 
 def test_video_limits_match_the_design() -> None:

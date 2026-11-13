@@ -197,6 +197,15 @@ class LocalObjectStore:
         # The gateway serves local files itself, with Range support.
         return None
 
+    def object_size(self, tenant: UUID, name: str) -> int:
+        path = self._published_path(tenant, name, "size")
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            raise StorageNotFound("object storage size: object not found") from None
+        except OSError as exc:
+            raise _os_failure("size", exc) from None
+
     def open_range(self, tenant: UUID, name: str) -> BinaryIO:
         path = self._published_path(tenant, name, "open")
         try:
