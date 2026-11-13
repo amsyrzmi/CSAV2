@@ -33,6 +33,7 @@ import {
   readVideoSeconds,
   resumeVideo,
   sha256Hex,
+  uploadEnvironmentProblem,
   uploadVideo,
   UploadStopped,
   type UploadDeps,
@@ -47,6 +48,9 @@ type Phase = "idle" | "uploading" | "saving";
 const STOPPED_TEXT = "Upload stopped. Check your connection and select Continue.";
 /** Codes that mean the upload is gone: the next try starts over with a new key. */
 const GONE = new Set(["training_upload_closed", "training_not_found"]);
+
+/** The sentence for a page that cannot hash pieces (not https), else null. Checked before any key is made. */
+const secureProblem = () => uploadEnvironmentProblem({ isSecureContext: window.isSecureContext, subtle: window.crypto?.subtle });
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
@@ -130,7 +134,10 @@ export default function ItemDialog({
     setSeconds(null);
     setStopped(null);
     setProgress(null);
-    setProblem(next ? (uploadProblem(next) ?? "") : "");
+    // A video can only be sent from a secure page: say so as soon as one is chosen.
+    setProblem(
+      next ? (uploadProblem(next) ?? (fileKind(next.name) === "video" ? (secureProblem() ?? "") : "")) : "",
+    );
     const mine = ++picked.current;
     if (next && !uploadProblem(next) && fileKind(next.name) === "video")
       void readVideoSeconds(next).then((length) => {
@@ -159,7 +166,9 @@ export default function ItemDialog({
     const found = formProblems(form);
     setProblems(found);
     if (!target) {
-      const fileProblem = file ? (uploadProblem(file) ?? videoLengthProblem(seconds)) : "Choose a PDF or video file.";
+      const fileProblem = file
+        ? (uploadProblem(file) ?? (video ? (secureProblem() ?? videoLengthProblem(seconds)) : null))
+        : "Choose a PDF or video file.";
       if (fileProblem) {
         setProblem(fileProblem);
         return;

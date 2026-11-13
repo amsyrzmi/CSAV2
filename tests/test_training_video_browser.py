@@ -15,6 +15,7 @@ Videos are synthetic: a 3 s clip made with ffmpeg in the test (`requires_ffmpeg`
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -52,6 +53,7 @@ site = services.site
 
 PIECE = 8 * 1024 * 1024
 VIDEO_ROUTE = re.compile(r"/console/v1/training/items/([0-9a-f-]{36})/video")
+PIECES_ROUTE = re.compile(r"/console/v1/training/videos/([0-9a-f-]{36})/pieces/(\d+)")
 NEW_VIDEO = "88888888-8888-4888-8888-0000000000a1"
 NOT_READY = "88888888-8888-4888-8888-0000000000a2"
 
@@ -82,6 +84,8 @@ class Videos:
     bodies: dict[str, bytes | None] = field(default_factory=dict)
     ranges: list[tuple[str, str | None]] = field(default_factory=list)
     media_type: str = "video/mp4"
+    # PUTs that reached the stub itself (through the rewrite): headers as received, and the body.
+    puts: list[dict[str, Any]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -92,6 +96,30 @@ def videos(site: Site) -> Iterator[Videos]:
     base: Any = server.RequestHandlerClass
 
     class Handler(base):
+        def do_PUT(self) -> None:
+            path = self.path.partition("?")[0]
+            found = PIECES_ROUTE.fullmatch(path)
+            headers = {name.lower(): value for name, value in self.headers.items()}
+            if "chunked" in headers.get("transfer-encoding", "").lower():
+                body = b""
+                while True:
+                    size = int(self.rfile.readline().strip().split(b";")[0] or b"0", 16)
+                    body += self.rfile.read(size)
+                    self.rfile.readline()
+                    if size == 0:
+                        break
+            else:
+                body = self.rfile.read(int(headers.get("content-length", "0")))
+            if not found:
+                site.upstream.unexpected.append(f"PUT {self.path}")
+            store.puts.append({"path": path, "headers": headers, "body": body})
+            data = json.dumps({"number": int(found[2]) if found else 0, "received": 1}).encode()
+            self.send_response(200 if found else 500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self) -> None:
             path, _, query = self.path.partition("?")
             found = VIDEO_ROUTE.fullmatch(path)
@@ -157,6 +185,10 @@ class VideoLibrary(Library):
     fail_piece_once: dict[int, int] = field(default_factory=dict)
     # Video requests to refuse with 403 (an expired link) before serving.
     expire_links: int = 0
+    # Let piece PUTs go on through the rewrite to the stub instead of answering them here.
+    real_pieces: bool = False
+    # While set, the transcript answers only once it is set (the verdict arrives late).
+    transcript_gate: asyncio.Event | None = None
     fail_every_piece: set[int] = field(default_factory=set)
     forget_on_complete: set[int] = field(default_factory=set)
     piece_count: int = 0
@@ -170,6 +202,12 @@ class VideoLibrary(Library):
             else:
                 await request_route.continue_()
             return
+        path = urlsplit(request_route.request.url).path
+        if self.real_pieces and PIECES_ROUTE.fullmatch(path):
+            await request_route.continue_()
+            return
+        if self.transcript_gate is not None and path.endswith("/transcript"):
+            await self.transcript_gate.wait()
         await super().route(request_route)
 
     def answer(self, request: Request, path: str, query: str) -> tuple[int, Any]:
@@ -687,7 +725,36 @@ async def test_no_speech_video_shows_the_no_speech_sentence_and_no_summary_butto
 
 
 @requires_ffmpeg
-async def test_summary_is_being_made_for_a_video_without_one(
+async def test_summary_is_being_made_only_while_the_video_is_being_processed(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), videos=videos)
+        add_video(
+            library,
+            videos,
+            clip,
+            status="summarising",
+            processing={
+                "stage": "summarising",
+                "chunks_done": 0,
+                "chunks_total": None,
+                "waiting": False,
+            },
+        )
+        async with training_page(
+            browser, site, library, path=f"/portal/training/{ITEM}", wait="training-video-player"
+        ) as page:
+            await expect(page.get_by_test_id("training-summary-status")).to_have_text(
+                "The summary is being made."
+            )
+            await expect(page.get_by_test_id("training-summarise")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@requires_ffmpeg
+async def test_a_ready_video_with_speech_and_no_summary_does_not_claim_one_is_coming(
     site: Site, videos: Videos, clip: bytes
 ) -> None:
     async def body(browser: Any) -> None:
@@ -702,9 +769,8 @@ async def test_summary_is_being_made_for_a_video_without_one(
             wait="training-video-player",
         ) as page:
             await expect(page.get_by_test_id("training-summary-status")).to_have_text(
-                "The summary is being made."
+                "This video has no summary."
             )
-            await expect(page.get_by_test_id("training-summarise")).to_have_count(0)
 
     await with_browser(body)
 
@@ -867,5 +933,236 @@ async def test_phone_width_has_no_horizontal_scroll(
             wide_transcript = await page.get_by_test_id("training-transcript").bounding_box()
             assert wide_player and wide_transcript
             assert wide_transcript["x"] >= wide_player["x"] + wide_player["width"] - 1
+
+    await with_browser(body)
+
+
+# ---- Fixes after review ----------------------------------------------------------------
+
+
+async def test_a_piece_put_through_the_rewrite_keeps_its_length_hash_and_bytes(
+    site: Site, videos: Videos
+) -> None:
+    """The gateway refuses a piece whose Content-Length is not the piece size (422), so the
+    console's rewrite must not turn the streamed body into chunked encoding."""
+
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), videos=videos)
+        library.real_pieces = True
+        async with training_page(browser, site, library, wait="training-empty") as page:
+            seen = await page.evaluate(
+                """async ([id, size]) => {
+                    const bytes = new Uint8Array(size).map((_, i) => i % 251);
+                    const digest = await crypto.subtle.digest("SHA-256", bytes);
+                    const hex = (b) => b.toString(16).padStart(2, "0");
+                    const sha = Array.from(new Uint8Array(digest), hex).join("");
+                    const response = await fetch(`/console/v1/training/videos/${id}/pieces/1`, {
+                        method: "PUT",
+                        body: new Blob([bytes], { type: "application/octet-stream" }),
+                        headers: {
+                            "Content-Type": "application/octet-stream",
+                            "X-Piece-SHA256": sha,
+                            "X-CSRF-Token": "synthetic-csrf",
+                        },
+                        credentials: "same-origin",
+                    });
+                    return { status: response.status, sha };
+                }""",
+                [NEW_VIDEO, PIECE],
+            )
+        assert seen["status"] == 200, seen
+        assert len(videos.puts) == 1, videos.puts
+        put = videos.puts[0]
+        headers = put["headers"]
+        expected = (bytes(range(251)) * (PIECE // 251 + 1))[:PIECE]
+        assert headers.get("content-length") == str(PIECE), headers
+        assert "transfer-encoding" not in headers, headers
+        assert headers.get("x-piece-sha256") == seen["sha"], headers
+        assert headers.get("content-type") == "application/octet-stream", headers
+        assert hashlib.sha256(put["body"]).hexdigest() == seen["sha"]
+        assert put["body"] == expected, "the bytes that arrived are not the bytes that were sent"
+
+    await with_browser(body)
+
+
+async def next_push(page: Page, href: str) -> None:
+    """A client-side navigation made by a real click, as the assistant's link makes one."""
+    await page.evaluate(
+        """(href) => {
+            document.getElementById("test-push")?.remove();
+            const button = document.createElement("button");
+            button.id = "test-push";
+            button.textContent = "go";
+            button.style.cssText = "position:fixed;top:0;left:0;z-index:99999";
+            button.onclick = () => window.next.router.push(href);
+            document.body.append(button);
+        }""",
+        href,
+    )
+    await page.locator("#test-push").click()
+
+
+@requires_ffmpeg
+async def test_watch_from_seeks_a_video_that_is_already_open(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), can_manage=False, videos=videos)
+        add_video(library, videos, clip)
+        path = f"/portal/training/{ITEM}"
+        async with training_page(
+            browser, site, library, role="tenant_staff", path=path, wait="training-video-player"
+        ) as page:
+            player = page.get_by_test_id("training-video-player")
+
+            async def has_metadata() -> bool:
+                return await player.evaluate("v => v.readyState >= 1 && v.duration > 2")
+
+            await until(has_metadata, "the video did not load its metadata", 30)
+            assert await current_time(page) < 0.5
+            await page.evaluate("() => { window.__same_page = 1; }")
+            lines = page.get_by_test_id("training-transcript-line")
+            await expect(lines.nth(0)).to_have_attribute("aria-current", "true")
+
+            # "Watch from 00:01" for the video that is open: the page does not reload.
+            await next_push(page, f"{path}?t=1")
+            await expect(lines.nth(1)).to_have_attribute("aria-current", "true", timeout=10_000)
+            assert 1.0 <= await current_time(page) <= 2.3
+            assert await page.evaluate("() => window.__same_page") == 1, "the page reloaded"
+            assert page.url.endswith("?t=1"), page.url
+
+    await with_browser(body)
+
+
+@requires_ffmpeg
+async def test_a_second_error_in_a_row_restores_the_position_of_the_first(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), can_manage=False, videos=videos)
+        add_video(library, videos, clip)
+        async with training_page(
+            browser,
+            site,
+            library,
+            role="tenant_staff",
+            path=f"/portal/training/{ITEM}",
+            wait="training-video-player",
+        ) as page:
+            player = page.get_by_test_id("training-video-player")
+
+            async def has_metadata() -> bool:
+                return await player.evaluate("v => v.readyState >= 1 && v.duration > 2")
+
+            await until(has_metadata, "the video did not load its metadata", 30)
+            # Stop partway through, as a person who paused at 1.5 s would.
+            await player.evaluate("v => { v.currentTime = 1.5; v.pause(); }")
+
+            async def at_one_and_a_half() -> bool:
+                return abs(await current_time(page) - 1.5) < 0.2
+
+            await until(at_one_and_a_half, "the video did not stop at 1.5 s")
+            before = len(library.playbacks)
+            # The link expires: the player errors, and the new link's first request is refused
+            # too (the reload leaves the position at 0 for that second error).
+            library.expire_links = 1
+            await player.evaluate("v => v.dispatchEvent(new Event('error'))")
+
+            async def asked_twice() -> bool:
+                return len(library.playbacks) >= before + 2
+
+            await until(asked_twice, "a new link was not asked for twice", 30)
+
+            async def back_at_the_place() -> bool:
+                return await player.evaluate("v => v.readyState >= 1") and (
+                    abs(await current_time(page) - 1.5) < 0.3
+                )
+
+            await until(back_at_the_place, f"position lost: {await current_time(page)}", 30)
+            assert await player.evaluate("v => v.paused"), "a paused video must stay paused"
+            await expect(page.get_by_test_id("training-video-error")).to_have_count(0)
+
+    await with_browser(body)
+
+
+@requires_ffmpeg
+async def test_a_failed_video_does_not_say_its_summary_is_being_made(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), videos=videos)
+        add_video(
+            library,
+            videos,
+            clip,
+            status="failed",
+            failure="training_summary_unavailable",
+            speech="speech",
+        )
+        async with training_page(
+            browser, site, library, path=f"/portal/training/{ITEM}", wait="training-video-state"
+        ) as page:
+            status = page.get_by_test_id("training-summary-status")
+            await expect(status).to_have_text(
+                "The transcript is ready, but we could not write the summary. Select Try again."
+            )
+            await expect(page.get_by_test_id("training-summary-panel")).not_to_contain_text(
+                "being made"
+            )
+
+    await with_browser(body)
+
+
+@requires_ffmpeg
+async def test_no_speech_video_does_not_say_the_summary_is_being_made_while_it_waits(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), can_manage=False, videos=videos)
+        add_video(library, videos, clip, lines=[], speech="no_speech")
+        library.transcript_gate = asyncio.Event()
+        async with training_page(
+            browser,
+            site,
+            library,
+            role="tenant_staff",
+            path=f"/portal/training/{ITEM}",
+            wait="training-video-player",
+        ) as page:
+            panel = page.get_by_test_id("training-summary-panel")
+            await expect(panel).to_be_visible()
+            # The verdict has not arrived: the panel must not claim a summary is coming.
+            await asyncio.sleep(1.0)
+            await expect(panel).not_to_contain_text("being made")
+            library.transcript_gate.set()
+            await expect(page.get_by_test_id("training-summary-status")).to_have_text(
+                "This video has no speech, so there is no transcript or summary."
+            )
+            await expect(panel).not_to_contain_text("being made")
+
+    await with_browser(body)
+
+
+async def test_an_insecure_page_says_so_before_a_video_upload_starts(
+    site: Site, videos: Videos, tmp_path: Path
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), videos=videos)
+        async with training_page(browser, site, library, wait="training-empty") as page:
+            # As on a page opened over plain http from another machine: no secure context.
+            await page.evaluate(
+                "() => Object.defineProperty(window, 'isSecureContext', {value: false})"
+            )
+            await page.get_by_test_id("training-add").click()
+            dialog = page.get_by_test_id("training-dialog")
+            video = tmp_path / "synthetic-induction.mp4"
+            video.write_bytes(b"\x00\x00\x00\x18ftypisom" + bytes(100))
+            await dialog.get_by_test_id("training-file").set_input_files(str(video))
+            await dialog.get_by_test_id("training-dialog-save").click()
+            await expect(dialog.get_by_test_id("training-dialog-error")).to_have_text(
+                "Uploading a video needs a secure (https) connection. "
+                "Open the console over https and try again."
+            )
+            assert library.starts == [], "an upload was started without a way to hash its pieces"
 
     await with_browser(body)

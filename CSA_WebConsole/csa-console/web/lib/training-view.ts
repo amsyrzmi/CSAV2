@@ -225,6 +225,7 @@ export const VIDEO_SUMMARY_NOTE = "Written by the assistant from this video's tr
 export const SUMMARY_MAKING = "The summary is being made.";
 export const NO_SPEECH_TEXT = "This video has no speech, so there is no transcript or summary.";
 export const NO_AUDIO_TEXT = "This video has no sound, so there is no transcript or summary.";
+export const NO_SUMMARY_TEXT = "This video has no summary.";
 const WAITING_TEXT =
   "Waiting to start. Your company has used today's video processing, so this video will start when there is room.";
 
@@ -270,16 +271,22 @@ export function videoStateText(item: TrainingItem): string | null {
   return item.status === "transcribing" ? "Transcribing" : "Waiting to be processed";
 }
 
-export type VideoSummaryState = "summary" | "making" | "no_speech" | "no_audio";
+export type VideoSummaryState = "summary" | "making" | "no_speech" | "no_audio" | "failed" | "loading" | "none";
 
 /**
- * What the summary panel shows for a video. A silent video says so, whatever else it has; then a
- * stored summary; else the summary is on its way. `speech` is the transcript's verdict, null
- * until it is known. A video has no Summarise button: the job writes the summary.
+ * What the summary panel shows for a video, and only what is true. A silent video says so, whatever
+ * else it has. A failed video has no summary coming: its failure is the only thing to say. Then a
+ * stored summary; then, while the video is still being processed, that the summary is on its way.
+ * A ready video with no summary yet waits for the transcript's verdict (`speech`, null until
+ * known): without it nothing is claimed ("loading"); with speech and still no summary there is none.
+ * A video has no Summarise button: the job writes the summary.
  */
 export function videoSummaryState(item: TrainingItem, speech: VideoSpeech | null): VideoSummaryState {
   if (speech === "no_speech" || speech === "no_audio") return speech;
-  return item.has_summary ? "summary" : "making";
+  if (item.status === "failed") return "failed";
+  if (item.has_summary) return "summary";
+  if (item.status !== "ready") return "making";
+  return speech === null ? "loading" : "none";
 }
 
 /**

@@ -11,7 +11,8 @@ function moduleUrl(source) {
 }
 const {
   planPieces, uploadVideo, resumeVideo, UploadStopped, stamp, secondsFromQuery, currentLine, sha256Hex,
-  usableDuration, MAX_VIDEO_SECONDS, MAX_ACTIVE_PIECES, BACKOFF_MS,
+  usableDuration, MAX_VIDEO_SECONDS, MAX_ACTIVE_PIECES, BACKOFF_MS, chooseSeek, keepRestore, clampSeek,
+  uploadEnvironmentProblem, SECURE_CONTEXT_TEXT,
 } = await import(moduleUrl(
   (await readFile(new URL("../lib/training-video.ts", import.meta.url), "utf8")).replace(/import type [^;]+;/g, ""),
 ));
@@ -306,4 +307,38 @@ test("sha256Hex is the lower-case hex SHA-256 of the piece, read through crypto.
     await sha256Hex(new Blob([])),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   );
+});
+
+test("a link's ?t= wins over the position to restore, which wins over nothing", () => {
+  const link = { time: 195, play: false };
+  const back = { time: 0, play: false };
+  assert.equal(chooseSeek(link, back), link, "a pending ?t= beats a 0 restore left by a reload");
+  assert.equal(chooseSeek(null, back), back);
+  assert.equal(chooseSeek(link, null), link);
+  assert.equal(chooseSeek(null, null), null);
+});
+
+test("a second media error keeps the position the first one saved, not the 0 left by reloading", () => {
+  const first = keepRestore(null, { time: 41.5, play: true });
+  assert.deepEqual(first, { time: 41.5, play: true });
+  assert.equal(keepRestore(first, { time: 0, play: false }), first);
+});
+
+test("a seek past the end stops at the end, and an unknown end is trusted", () => {
+  assert.equal(clampSeek(195, 100), 100);
+  assert.equal(clampSeek(5, 100), 5);
+  assert.equal(clampSeek(195, Number.NaN), 195);
+  assert.equal(clampSeek(195, Number.POSITIVE_INFINITY), 195);
+});
+
+test("an insecure page cannot hash pieces: it says so in a plain sentence before anything is sent", () => {
+  assert.match(SECURE_CONTEXT_TEXT, /secure \(https\) connection/);
+  assert.equal(
+    SECURE_CONTEXT_TEXT,
+    "Uploading a video needs a secure (https) connection. Open the console over https and try again.",
+  );
+  assert.equal(uploadEnvironmentProblem({ isSecureContext: true, subtle: {} }), null);
+  assert.equal(uploadEnvironmentProblem({ isSecureContext: false, subtle: {} }), SECURE_CONTEXT_TEXT);
+  assert.equal(uploadEnvironmentProblem({ isSecureContext: true, subtle: undefined }), SECURE_CONTEXT_TEXT);
+  assert.equal(uploadEnvironmentProblem({}), SECURE_CONTEXT_TEXT);
 });

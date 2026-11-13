@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { getPlayback } from "@/lib/training-api";
+import { chooseSeek, clampSeek, keepRestore, type Resume } from "@/lib/training-video";
 import { Notice } from "../ui";
 import { refusalText } from "./shared";
 
@@ -13,8 +14,10 @@ const STUCK =
 /**
  * The video: a native player on the playback URL. A playback URL lasts 15 minutes, so when the
  * player reports an error (an expired link) the page asks for a new one and puts the player back
- * where it was, playing if it was playing. `startAt` (the page's `?t=`) is applied once, when the
- * first metadata is in. The parent keeps the element in `videoRef` to seek it from the transcript.
+ * where it was, playing if it was playing. `startAt` (the page's `?t=`) puts the player there: on
+ * load, once the first metadata is in (not playing), and whenever it changes while the page is open
+ * (the assistant's "Watch from" link for the video already on screen), straight away, playing. The
+ * parent keeps the element in `videoRef` to seek it from the transcript.
  */
 export default function VideoPlayer({
   tenantId,
@@ -34,9 +37,11 @@ export default function VideoPlayer({
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [problem, setProblem] = useState("");
-  // Where to put the player when the next source has its metadata, and the first `?t=` seek.
-  const restore = useRef<{ time: number; play: boolean } | null>(null);
-  const initial = useRef(startAt);
+  // Where to put the player when its metadata is in: a `?t=` that has not been applied yet, and the
+  // position saved before a media error.
+  const pending = useRef<Resume | null>(startAt !== null ? { time: startAt, play: false } : null);
+  const restore = useRef<Resume | null>(null);
+  const lastStart = useRef(startAt);
   const refreshes = useRef(0);
   const asking = useRef(false);
 
@@ -73,16 +78,28 @@ export default function VideoPlayer({
     };
   }, [tenantId, itemId]);
 
-  function seekWhenReady(video: HTMLVideoElement) {
-    const target = restore.current ?? (initial.current !== null ? { time: initial.current, play: false } : null);
-    restore.current = null;
-    initial.current = null;
-    if (!target) return;
-    const end = Number.isFinite(video.duration) ? video.duration : target.time;
-    video.currentTime = Math.min(target.time, end);
-    onTime(video.currentTime);
-    if (target.play) void video.play().catch(() => undefined);
-  }
+  const seekWhenReady = useCallback(
+    (video: HTMLVideoElement) => {
+      const target = chooseSeek(pending.current, restore.current);
+      pending.current = null;
+      restore.current = null;
+      if (!target) return;
+      video.currentTime = clampSeek(target.time, video.duration);
+      onTime(video.currentTime);
+      if (target.play) void video.play().catch(() => undefined);
+    },
+    [onTime],
+  );
+
+  // A new `?t=` on the page that is already open: go there now if the player can, else when it can.
+  useEffect(() => {
+    if (startAt === lastStart.current) return;
+    lastStart.current = startAt;
+    if (startAt === null) return;
+    pending.current = { time: startAt, play: true };
+    const video = videoRef.current;
+    if (video && video.readyState >= 1) seekWhenReady(video);
+  }, [startAt, videoRef, seekWhenReady]);
 
   function failed(video: HTMLVideoElement) {
     if (refreshes.current >= MAX_REFRESHES) {
@@ -90,7 +107,7 @@ export default function VideoPlayer({
       return;
     }
     refreshes.current += 1;
-    restore.current = { time: video.currentTime, play: !video.paused && !video.ended };
+    restore.current = keepRestore(restore.current, { time: video.currentTime, play: !video.paused && !video.ended });
     void load();
   }
 

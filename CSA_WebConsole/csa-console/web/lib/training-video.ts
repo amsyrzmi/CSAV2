@@ -310,6 +310,49 @@ export function readVideoSeconds(file: Blob, timeoutMs = 5000): Promise<number |
   });
 }
 
+// ---- Where the player goes ------------------------------------------------------------------
+
+/** A place to put the player: a time, and whether to play from there. */
+export interface Resume {
+  time: number;
+  play: boolean;
+}
+
+/**
+ * Where the player goes once its metadata is in: a link's `?t=` first (the person asked for that
+ * moment), else the position saved before a media error, else nowhere.
+ */
+export function chooseSeek(pending: Resume | null, restore: Resume | null): Resume | null {
+  return pending ?? restore;
+}
+
+/**
+ * The position to restore after a media error. A second error in a row keeps what the first
+ * saved: by then the reload has left the player at 0, which is not where the person was.
+ */
+export function keepRestore(existing: Resume | null, now: Resume): Resume {
+  return existing ?? now;
+}
+
+/** A time clamped to the end of the video; an end the browser does not know is trusted. */
+export function clampSeek(time: number, duration: number): number {
+  return Number.isFinite(duration) ? Math.min(time, duration) : time;
+}
+
+// ---- Secure context -----------------------------------------------------------------------------
+
+export const SECURE_CONTEXT_TEXT =
+  "Uploading a video needs a secure (https) connection. Open the console over https and try again.";
+
+/**
+ * Pieces are hashed with `crypto.subtle`, which browsers give only to secure pages (https or
+ * localhost), and a key comes from `crypto.randomUUID`, with the same rule. The sentence to show
+ * instead of an unhandled error when the page has neither, else null.
+ */
+export function uploadEnvironmentProblem(env: { isSecureContext?: boolean; subtle?: unknown }): string | null {
+  return env.isSecureContext === true && env.subtle ? null : SECURE_CONTEXT_TEXT;
+}
+
 // ---- Transcript ---------------------------------------------------------------------------------
 
 /** `m:ss`, and `h:mm:ss` from an hour. Whole seconds, rounded down. */

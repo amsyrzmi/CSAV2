@@ -192,8 +192,9 @@ function ItemPage({ scope, itemId }: { scope: Scope; itemId: string }) {
   const list = useTrainingList(scope.tenantId);
   const router = useRouter();
   const search = useSearchParams();
-  // The assistant's "Watch from" links open a video at a second: `?t=`.
-  const [startAt] = useState(() => secondsFromQuery(search.toString()));
+  // The assistant's "Watch from" links open a video at a second: `?t=`. The link may be for the
+  // video that is already open, so the player follows this as it changes.
+  const startAt = secondsFromQuery(search.toString());
   const [mode, setMode] = useState<TrainingViewMode | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [message, setMessage] = useState("");

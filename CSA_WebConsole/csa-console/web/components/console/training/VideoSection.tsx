@@ -122,7 +122,8 @@ export default function VideoSection({
         </div>
       )}
       {!playable && lines.length > 0 && <TranscriptPanel lines={lines} seconds={0} onSeek={() => undefined} />}
-      <VideoSummary key={id} tenantId={tenantId} item={item} speech={transcript?.speech ?? null} />
+      <VideoSummary key={id} tenantId={tenantId} item={item} speech={transcript?.speech ?? null}
+        speechFailed={transcriptError !== null} />
     </div>
   );
 }

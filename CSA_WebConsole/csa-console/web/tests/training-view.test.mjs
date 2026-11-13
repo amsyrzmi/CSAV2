@@ -13,7 +13,7 @@ const {
   refusalCopy, sizeText, pagesText, categoriesOf, filterItems, uploadProblem, summaryNote, summaryText,
   isItemId, isTrainingPagePath, itemHref, PROVIDER_NOTICE, TRUNCATED_NOTE, UNCATEGORISED, MAX_FILE_BYTES,
   MAX_VIDEO_BYTES, SOUND_NOTICE, HEVC_NOTE, watchHref, fileKind, durationText, videoStateText, failureCopy,
-  canRetry, videoSummaryState, videoLengthProblem, VIDEO_SUMMARY_NOTE,
+  canRetry, videoSummaryState, videoLengthProblem, VIDEO_SUMMARY_NOTE, SUMMARY_MAKING, NO_SUMMARY_TEXT,
 } = await import(moduleUrl(
   (await readFile(new URL("../lib/training-view.ts", import.meta.url), "utf8")).replace(/import type [^;]+;/g, ""),
 ));
@@ -281,12 +281,25 @@ test("a failed video's sentence has a Try again only for the codes worth another
   assert.equal(failureCopy("training_video_codec"), refusalCopy("training_video_codec"));
 });
 
-test("the summary panel for a video has four states and never asks for a summary", () => {
+test("the summary panel for a video never asks for a summary and never says what is not true", () => {
   assert.equal(videoSummaryState(video({ has_summary: true }), "speech"), "summary");
-  assert.equal(videoSummaryState(video({ status: "transcribing" }), null), "making");
-  assert.equal(videoSummaryState(video({ has_summary: false }), "speech"), "making");
+  assert.equal(videoSummaryState(video({ has_summary: true }), null), "summary");
   assert.equal(videoSummaryState(video(), "no_speech"), "no_speech");
   assert.equal(videoSummaryState(video(), "no_audio"), "no_audio");
   assert.equal(videoSummaryState(video({ has_summary: true }), "no_speech"), "no_speech");
+  // Being processed: the summary really is on its way.
+  for (const status of ["uploaded", "transcribing", "summarising"])
+    assert.equal(videoSummaryState(video({ status }), null), "making", status);
+  // A failed video has no summary coming: its failure is the only thing to say.
+  assert.equal(videoSummaryState(video({ status: "failed", failure: "training_video_unreadable" }), null), "failed");
+  assert.equal(videoSummaryState(video({ status: "failed", failure: "training_summary_unavailable" }), "speech"), "failed");
+  // A ready video with no summary yet: until the transcript says whether there is speech, say nothing false.
+  assert.equal(videoSummaryState(video(), null), "loading");
+  assert.equal(videoSummaryState(video(), "speech"), "none");
   assert.doesNotMatch(VIDEO_SUMMARY_NOTE, /slide/i);
+});
+
+test("the summary panel's failed state says the failure's sentence, not 'being made'", () => {
+  assert.notEqual(failureCopy("training_video_codec"), SUMMARY_MAKING);
+  assert.match(NO_SUMMARY_TEXT, /^[A-Z].*\.$/);
 });

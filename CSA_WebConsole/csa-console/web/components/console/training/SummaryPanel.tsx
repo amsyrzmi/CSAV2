@@ -4,8 +4,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { getSummary, makeSummary, type TrainingItem, type TrainingSummary, type VideoSpeech } from "@/lib/training-api";
 import { madeOnText, summaryView, type SummaryState } from "@/lib/training-form";
 import {
+  failureCopy,
   NO_AUDIO_TEXT,
   NO_SPEECH_TEXT,
+  NO_SUMMARY_TEXT,
   refusalCopy,
   SUMMARY_MAKING,
   summaryText,
@@ -186,16 +188,20 @@ export default function SummaryPanel({
  * A video's summary. The processing job writes it, so there is no Summarise button and no
  * provider notice here: the panel shows the stored summary (as text only), "The summary is being
  * made", or, for a video with no speech or no sound, that there is no transcript or summary.
- * `speech` is the transcript's verdict, null until it is known.
+ * `speech` is the transcript's verdict, null until it is known (`speechFailed`: it could not be
+ * read, so it stays unknown). Only what is true is said: a failed video shows its failure, and a
+ * ready video waits for the verdict instead of claiming a summary is on its way.
  */
 export function VideoSummary({
   tenantId,
   item,
   speech,
+  speechFailed = false,
 }: {
   tenantId: string | null;
   item: TrainingItem;
   speech: VideoSpeech | null;
+  speechFailed?: boolean;
 }) {
   const state = videoSummaryState(item, speech);
   const [read, setRead] = useState<{ summary: TrainingSummary | null; error: string | null } | null>(null);
@@ -224,6 +230,9 @@ export function VideoSummary({
     state === "no_speech" ? NO_SPEECH_TEXT
     : state === "no_audio" ? NO_AUDIO_TEXT
     : state === "making" ? SUMMARY_MAKING
+    : state === "failed" ? failureCopy(item.failure)
+    : state === "none" ? NO_SUMMARY_TEXT
+    : state === "loading" ? (speechFailed ? null : "Loading the summary…")
     : stored || read?.error ? null
     : "Loading the summary…";
   const madeOn = stored ? madeOnText(stored.summarised_at) : "";
@@ -231,7 +240,7 @@ export function VideoSummary({
   return (
     <section
       aria-labelledby={headingId}
-      aria-busy={state === "making" || (state === "summary" && !read)}
+      aria-busy={state === "making" || state === "loading" || (state === "summary" && !read)}
       data-testid="training-summary-panel"
       className="card min-w-0 space-y-4 rounded-[14px] p-4 sm:p-5"
     >
