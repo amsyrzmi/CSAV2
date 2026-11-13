@@ -188,6 +188,10 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
   draft: "Draft",
 };
 
+/** The 403 details from csa/payments/api.py `require_payments`. */
+const ROLE_REFUSED = "payments access requires an administrator or staff role";
+const TENANT_REFUSED = "payments tenant is not authorized";
+
 /** Payments refusals (csa/payments/api.py and invoices.py) in plain words. */
 export const PAYMENT_ERRORS: Record<string, string> = {
   invoice_already_paid: "Someone already marked this invoice paid.",
@@ -199,6 +203,8 @@ export const PAYMENT_ERRORS: Record<string, string> = {
   request_key_reused: "This payment was already recorded on another invoice. Close the form and open it again.",
   invalid_note: "The note is too long. Keep it to 300 characters.",
   invalid_reason: "Write a reason of up to 300 characters.",
+  // A platform admin on a company they cannot reach (csa/payments/api.py require_payments).
+  [TENANT_REFUSED]: "You can't open Payments for this company.",
 };
 
 const GENERIC = "The request failed. Try again.";
@@ -217,7 +223,26 @@ export function paymentMessage(cause: unknown): string {
   return cause.status >= 500 ? SERVER_FAILED : GENERIC;
 }
 
-/** A 403 for this login's role or company (not an inactive package): retrying will not help. */
+/** The 403 for this login's role: the page says Payments is for admins and staff. */
 export function isNoAccess(cause: unknown): boolean {
-  return cause instanceof ApiError && cause.status === 403 && cause.code !== "package_inactive";
+  return cause instanceof ApiError && cause.status === 403 && cause.code === ROLE_REFUSED;
+}
+
+/**
+ * Any other 403 (a company this login cannot reach, an inactive package): retrying will not
+ * help, so the page shows `paymentMessage` in place of the lists.
+ */
+export function isRefusal(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status === 403 && cause.code !== ROLE_REFUSED;
+}
+
+/** Codes that mean the invoice changed under the form: someone else paid or voided it first. */
+const STALE = new Set(["invoice_already_paid", "invoice_not_payable", "invoice_paid", "invoice_void"]);
+
+/**
+ * The sentence for a refusal that means the invoice changed under the form, or null. The drawer
+ * reads the invoice again and keeps this sentence on show, since the form that got it closes.
+ */
+export function staleMessage(cause: unknown): string | null {
+  return cause instanceof ApiError && STALE.has(cause.code) ? paymentMessage(cause) : null;
 }

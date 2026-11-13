@@ -126,3 +126,33 @@ test("an invoice is named by its reference and its customer by name", () => {
   assert.equal(view.customerLabel(invoice("inv_001", "issued", {
     contact: { id: "x", full_name: null, channels: [] } })), "Unnamed customer");
 });
+
+test("Load more belongs to the list it was read for: a late page for an old filter is dropped", () => {
+  const open = view.listKey(null, "open", "", 0);
+  const paid = view.listKey(null, "paid", "", 0);
+  assert.notEqual(open, paid);
+  assert.notEqual(view.listKey(null, "open", "ben", 0), open);
+  assert.notEqual(view.listKey(null, "open", "", 1), open);
+  assert.notEqual(view.listKey("tenant-a", "open", "", 0), open);
+
+  const first = view.firstPage(open, { items: [invoice("inv_0003"), invoice("inv_0002")], next_before: "inv_0002" });
+  assert.deepEqual(first.rows.map((row) => row.id), ["inv_0003", "inv_0002"]);
+  assert.equal(view.moreCursor(first, open), "inv_0002");
+  // Under a new chip the old cursor is not offered, before or after the new first page.
+  assert.equal(view.moreCursor(first, paid), null);
+  assert.equal(view.moreCursor(null, open), null);
+
+  const page2 = { items: [invoice("inv_0001")], next_before: null };
+  const more = view.appendPage(first, open, page2);
+  assert.deepEqual(more.rows.map((row) => row.id), ["inv_0003", "inv_0002", "inv_0001"]);
+  assert.equal(view.moreCursor(more, open), null);
+
+  // The chip changed while Load more was out: the new list gets none of the old rows.
+  const paidFirst = view.firstPage(paid, { items: [invoice("inv_0009", "paid")], next_before: null });
+  const late = view.appendPage(paidFirst, open, page2);
+  assert.equal(late, paidFirst);
+  assert.deepEqual(late.rows.map((row) => row.id), ["inv_0009"]);
+  // Late, before the new first page arrived: dropped too.
+  assert.equal(view.appendPage(first, paid, page2), first);
+  assert.equal(view.appendPage(null, open, page2), null);
+});

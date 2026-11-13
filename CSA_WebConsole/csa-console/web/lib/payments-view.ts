@@ -7,6 +7,7 @@ import type {
   AttentionKind,
   InvoiceFilter,
   InvoiceOut,
+  InvoicePage,
   InvoiceStatus,
   MethodKind,
   PaymentAttentionItem,
@@ -161,4 +162,31 @@ export function invoiceName(invoice: Pick<InvoiceOut, "reference">): string {
 export function customerLabel(invoice: Pick<InvoiceOut, "contact">): string {
   if (!invoice.contact) return "No customer";
   return invoice.contact.full_name || "Unnamed customer";
+}
+
+/** The invoice list as read, tagged with the filter (`listKey`) it was read for. */
+export interface InvoiceList {
+  key: string;
+  rows: InvoiceOut[];
+  next: string | null;
+}
+
+/** Names one list: a page read for another key never joins it. */
+export function listKey(tenantId: string | null, status: InvoiceFilter, q: string, revision: number): string {
+  return JSON.stringify([tenantId, status, q, revision]);
+}
+
+export function firstPage(key: string, page: InvoicePage): InvoiceList {
+  return { key, rows: page.items, next: page.next_before };
+}
+
+/** Adds a "Load more" page, unless the filter changed while it was out: then it is dropped. */
+export function appendPage(current: InvoiceList | null, key: string, page: InvoicePage): InvoiceList | null {
+  if (!current || current.key !== key) return current;
+  return { key, rows: [...current.rows, ...page.items], next: page.next_before };
+}
+
+/** The cursor "Load more" may send now: none while the rows shown belong to another filter. */
+export function moreCursor(current: InvoiceList | null, key: string): string | null {
+  return current && current.key === key ? current.next : null;
 }

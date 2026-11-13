@@ -2,41 +2,47 @@
 
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { consoleHref } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import {
   getInvoice,
   isNoAccess,
+  isRefusal,
   listAttention,
   listInvoices,
   openMarkPaid,
   paymentMessage,
+  staleMessage,
   STATUS_LABELS,
   voidInvoice,
   type InvoiceDetail,
   type InvoiceFilter,
-  type InvoiceOut,
   type MethodKind,
   type PaymentAttentionItem,
 } from "@/lib/payments-api";
 import {
+  appendPage,
   attentionCount,
   attentionGroups,
   canMarkPaid,
   canVoid,
   customerLabel,
   filterChips,
+  firstPage,
   formatAmount,
   invoiceName,
+  listKey,
   markPaidQuestion,
   METHOD_OPTIONS,
   methodLabel,
+  moreCursor,
   receivedAt,
   reminderLine,
   todayInput,
   voidBody,
+  type InvoiceList,
 } from "@/lib/payments-view";
 import { formatDateTime, formatDay } from "@/lib/subscriptions-api";
 import { StatusChips } from "./kit";
@@ -113,7 +119,7 @@ function Board({ tenantId, admin, initialInvoiceId }: {
   const openerRef = useRef<HTMLElement | null>(null);
   const refused = useCallback((cause: unknown) => {
     if (isNoAccess(cause)) setForbidden(true);
-    else if (cause instanceof ApiError && cause.code === "package_inactive") setRefusal(paymentMessage(cause));
+    else if (isRefusal(cause)) setRefusal(paymentMessage(cause));
   }, []);
   const open = (invoiceId: string, opener: HTMLElement | null) => {
     openerRef.current = opener;
@@ -205,11 +211,15 @@ function Invoices({ tenantId, revision, onOpen, onRefused }: {
   const [status, setStatus] = useState<InvoiceFilter>("open");
   const [draft, setDraft] = useState("");
   const [q, setQ] = useState("");
-  const [rows, setRows] = useState<InvoiceOut[] | null>(null);
-  const [next, setNext] = useState<string | null>(null);
+  // The rows carry the filter they were read for, so a late page for an old filter is dropped.
+  const [list, setList] = useState<InvoiceList | null>(null);
   const [error, setError] = useState("");
-  const [loadingMore, setLoadingMore] = useState(false);
+  // The key of the list a "Load more" is out for, if any.
+  const [loadingMore, setLoadingMore] = useState<string | null>(null);
   const titleId = useId();
+  const key = listKey(tenantId, status, q, revision);
+  const rows = list?.rows ?? null;
+  const next = moreCursor(list, key);
   // The box asks the server once typing pauses, not on every key.
   useEffect(() => {
     const timer = setTimeout(() => setQ(draft.trim()), SEARCH_DELAY_MS);
@@ -217,22 +227,30 @@ function Invoices({ tenantId, revision, onOpen, onRefused }: {
   }, [draft]);
   useEffect(() => {
     let live = true;
+    const read = listKey(tenantId, status, q, revision);
     listInvoices(tenantId, { status, q })
-      .then((page) => { if (live) { setRows(page.items); setNext(page.next_before); setError(""); } })
+      .then((page) => { if (live) { setList(firstPage(read, page)); setError(""); } })
       .catch((cause) => { if (live) { setError(paymentMessage(cause)); onRefused(cause); } });
     return () => { live = false; };
   }, [tenantId, status, q, revision, onRefused]);
+  // Answers for an older filter (the chip or search changed while it was out) are dropped.
+  const current = useRef(key);
+  useEffect(() => { current.current = key; }, [key]);
   async function more() {
-    if (!next || loadingMore) return;
-    setLoadingMore(true);
+    if (!next || loadingMore === key) return;
+    const asked = key;
+    setLoadingMore(asked);
     try {
       const page = await listInvoices(tenantId, { status, q, before: next });
-      setRows((current) => [...(current ?? []), ...page.items]);
-      setNext(page.next_before);
+      if (current.current !== asked) return;
+      setList((shown) => appendPage(shown, asked, page));
+      setError("");
     } catch (cause) {
+      if (current.current !== asked) return;
       setError(paymentMessage(cause));
+      onRefused(cause);
     } finally {
-      setLoadingMore(false);
+      setLoadingMore((out) => (out === asked ? null : out));
     }
   }
   const searching = Boolean(q);
@@ -290,8 +308,8 @@ function Invoices({ tenantId, revision, onOpen, onRefused }: {
       )}
       {next && (
         <div className="mt-4">
-          <button type="button" className={secondary} data-testid="invoices-more" disabled={loadingMore}
-            onClick={() => void more()}>{loadingMore ? "Loading…" : "Load more"}</button>
+          <button type="button" className={secondary} data-testid="invoices-more" disabled={loadingMore === key}
+            onClick={() => void more()}>{loadingMore === key ? "Loading…" : "Load more"}</button>
         </div>
       )}
     </section>
@@ -315,6 +333,9 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
   const [revision, setRevision] = useState(0);
   const [form, setForm] = useState<"pay" | "void" | null>(null);
   const [notice, setNotice] = useState("");
+  // Why the last action was refused when someone else changed the invoice first. The form that
+  // got the refusal closes, so the drawer keeps the sentence on show over the fresh read.
+  const [staleNotice, setStaleNotice] = useState("");
   useEffect(() => {
     let live = true;
     getInvoice(tenantId, id)
@@ -326,16 +347,25 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
     setDetail(value);
     setForm(null);
     setNotice(text);
+    setStaleNotice("");
     onChanged();
   }
-  // Someone else changed it first: read it again so the drawer shows where it stands.
-  const stale = () => { setForm(null); setRevision((value) => value + 1); onChanged(); };
+  // Someone else changed it first: say so, and read it again so the drawer shows where it stands.
+  const stale = (text: string) => {
+    setForm(null);
+    setNotice("");
+    setStaleNotice(text);
+    setRevision((value) => value + 1);
+    onChanged();
+  };
+  const startForm = (kind: "pay" | "void") => { setForm(kind); setNotice(""); setStaleNotice(""); };
   const title = detail ? `Invoice ${invoiceName(detail)}` : "Invoice";
   return (
     <SlideOver open={shown} onClose={onClose} title={title} returnFocusTo={returnFocusTo} widthClass="max-w-lg"
       testId="invoice-drawer" closeTestId="invoice-close">
       {error && <div className="mb-4"><Notice error>{error}</Notice></div>}
       {notice && <div className="mb-4"><Notice testId="invoice-notice">{notice}</Notice></div>}
+      {staleNotice && <div className="mb-4"><Notice warning testId="invoice-stale">{staleNotice}</Notice></div>}
       {!detail ? (!error && <Notice>Loading the invoice…</Notice>) : (
         <div className="space-y-4">
           <DrawerSection id="details" title="Details">
@@ -390,9 +420,9 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
           {!form && (canMarkPaid(detail.status) || canVoid(detail.status)) && (
             <div className="flex flex-wrap gap-2 border-t border-[color:var(--fs-border)] pt-4" data-testid="invoice-actions">
               {canMarkPaid(detail.status) && <button type="button" className={action} data-testid="invoice-mark-paid"
-                onClick={() => { setForm("pay"); setNotice(""); }}>Mark paid</button>}
+                onClick={() => startForm("pay")}>Mark paid</button>}
               {canVoid(detail.status) && <button type="button" className={secondary} data-testid="invoice-void"
-                onClick={() => { setForm("void"); setNotice(""); }}>Void</button>}
+                onClick={() => startForm("void")}>Void</button>}
             </div>
           )}
           {form === "pay" && <MarkPaidForm tenantId={tenantId} invoice={detail} onCancel={() => setForm(null)}
@@ -424,12 +454,9 @@ function Detail({ label, value, testId }: { label: string; value: string | null;
   );
 }
 
-/** Codes that mean the invoice changed under us: the drawer reads it again. */
-const STALE = new Set(["invoice_already_paid", "invoice_not_payable", "invoice_paid", "invoice_void"]);
-
 function MarkPaidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
   tenantId: string | null; invoice: InvoiceDetail; onCancel: () => void;
-  onDone: (value: InvoiceDetail) => void; onStale: () => void;
+  onDone: (value: InvoiceDetail) => void; onStale: (message: string) => void;
 }) {
   // One request key per opened form: a retry or a second click replays it, so the server
   // records this payment at most once.
@@ -453,9 +480,14 @@ function MarkPaidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
     try {
       onDone(await session.submit({ method_kind: method, received_at: receivedAt(day), note: note.trim() || null }));
     } catch (cause) {
+      // Someone else paid or voided it first: this form closes and the drawer says why.
+      const stale = staleMessage(cause);
+      if (stale) {
+        onStale(stale);
+        return;
+      }
       setError(paymentMessage(cause));
       setBusy(false);
-      if (cause instanceof ApiError && STALE.has(cause.code)) onStale();
     }
   }
   const reference = invoiceName(invoice);
@@ -508,7 +540,7 @@ function MarkPaidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
 
 function VoidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
   tenantId: string | null; invoice: InvoiceDetail; onCancel: () => void;
-  onDone: (value: InvoiceDetail) => void; onStale: () => void;
+  onDone: (value: InvoiceDetail) => void; onStale: (message: string) => void;
 }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -525,9 +557,13 @@ function VoidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
     try {
       onDone(await voidInvoice(tenantId, invoice.id, body));
     } catch (cause) {
+      const stale = staleMessage(cause);
+      if (stale) {
+        onStale(stale);
+        return;
+      }
       setError(paymentMessage(cause));
       setBusy(false);
-      if (cause instanceof ApiError && STALE.has(cause.code)) onStale();
     }
   }
   return (

@@ -8,6 +8,7 @@ server-side from a loopback stub, and Playwright answers every browser-side
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -149,6 +150,9 @@ class World:
         }
         self.page_size = 50
         self.forbidden = False
+        # While set, a "Load more" read waits for it before it answers.
+        self.hold_more: asyncio.Event | None = None
+        self.held_answered = asyncio.Event()
         self.mark_paid_errors: list[tuple[int, str]] = []
         self.keys: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
@@ -189,8 +193,13 @@ class World:
                 "body": body,
             }
         )
+        hold = self.hold_more if path == "payments/invoices" and "before" in params else None
+        if hold is not None:
+            await hold.wait()
         status, data = self.answer(request.method, path, params, body)
         await request_route.fulfill(status=status, json=data)
+        if hold is not None:
+            self.held_answered.set()
 
     def answer(self, method: str, path: str, params: dict[str, str], body: Any) -> tuple[int, Any]:
         platform = self.upstream.me["role"] == "platform_admin"
@@ -402,6 +411,42 @@ async def test_invoices_list_filters_searches_and_loads_more(site: Site) -> None
     await with_browser(body)
 
 
+async def test_a_late_load_more_never_joins_a_new_filter(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.page_size = 3
+        async with payments_page(browser, site, world) as page:
+            rows = page.get_by_test_id("invoice-row")
+            await page.get_by_test_id("invoices-status-all").click()
+            await expect(rows).to_have_count(3)
+            # "Load more" for All is still out when the chip changes to Paid.
+            world.hold_more = asyncio.Event()
+            await page.get_by_test_id("invoices-more").click()
+            await expect(page.get_by_test_id("invoices-more")).to_have_text("Loading…")
+            await page.get_by_test_id("invoices-status-paid").click()
+            await expect(rows).to_have_count(1)
+            await expect(rows.first).to_contain_text("M8VC-6TQ")
+            world.hold_more.set()
+            world.hold_more = None
+            await asyncio.wait_for(world.held_answered.wait(), timeout=15)
+            await page.wait_for_timeout(300)
+            # The old filter's page arrived late and was dropped: Paid still lists only paid.
+            await expect(rows).to_have_count(1)
+            await expect(rows.first).to_contain_text("M8VC-6TQ")
+            await expect(page.get_by_test_id("invoices-more")).to_have_count(0)
+
+            # A 403 on "Load more" ends the page like one on the first read.
+            await page.get_by_test_id("invoices-status-all").click()
+            await expect(rows).to_have_count(3)
+            world.forbidden = True
+            await page.get_by_test_id("invoices-more").click()
+            await expect(page.get_by_test_id("payments-no-access")).to_contain_text(
+                "Payments is for admins and staff."
+            )
+
+    await with_browser(body)
+
+
 async def test_mark_paid_asks_first_and_a_retry_reuses_the_request_key(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World(site.upstream)
@@ -495,21 +540,27 @@ async def test_a_refused_payment_says_why_and_a_new_form_has_a_new_key(site: Sit
             await drawer.get_by_role("button", name="Back").click()
             await drawer.get_by_role("button", name="Cancel").click()
             # Opening the form again is a new attempt with a new key.
-            world.mark_paid_errors = [(409, "invoice_already_paid")]
             await drawer.get_by_test_id("invoice-mark-paid").click()
             await drawer.get_by_test_id("mark-paid-continue").click()
+            # Someone else marks it paid while this form is open.
+            world.invoices[WAITING].update(status="paid", paid_at="2026-11-13T01:00:00Z")
+
+            def reads() -> int:
+                return len([c for c in world.calls if c["path"] == f"payments/invoices/{WAITING}"])
+
+            before = reads()
             await drawer.get_by_test_id("mark-paid-confirm").click()
-            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text(
-                "Waiting for payment"
-            )
+            # The form closes, the drawer says why, and the invoice is read again once.
+            stale = drawer.get_by_test_id("invoice-stale")
+            await expect(stale).to_have_text("Someone already marked this invoice paid.")
             sent = [
                 c["body"]["request_key"] for c in world.calls if c["path"].endswith("/mark-paid")
             ]
             assert len(sent) == 2 and sent[0] != sent[1], sent
-            # Already paid elsewhere: the form closes and the invoice is read again.
+            await expect(stale).to_have_attribute("role", "alert")
             await expect(drawer.get_by_test_id("mark-paid-form")).to_have_count(0)
-            reads = [c for c in world.calls if c["path"] == f"payments/invoices/{WAITING}"]
-            assert len(reads) == 2, reads
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text("Paid")
+            assert reads() == before + 1, (before, reads())
 
     await with_browser(body)
 
@@ -548,6 +599,22 @@ async def test_void_needs_a_reason_and_a_paid_invoice_cannot_be_voided(site: Sit
             await expect(drawer.get_by_test_id("invoice-payment")).to_contain_text("Synthetic User")
             await expect(drawer.get_by_test_id("invoice-actions")).to_have_count(0)
             await expect(drawer.get_by_test_id("invoice-void")).to_have_count(0)
+            await page.get_by_test_id("invoice-close").click()
+
+            # Someone else marks it paid while the void form is open: the drawer says why the
+            # void was refused and shows the invoice as it now stands.
+            await page.get_by_test_id("invoices-status-open").click()
+            drawer = await open_invoice(page, "B2RT-9PW")
+            await drawer.get_by_test_id("invoice-void").click()
+            await drawer.get_by_test_id("void-reason").fill("Customer cancelled")
+            world.invoices[WAITING].update(status="paid", paid_at="2026-11-13T01:00:00Z")
+            await drawer.get_by_test_id("void-confirm").click()
+            await expect(drawer.get_by_test_id("invoice-stale")).to_have_text(
+                "A paid invoice can't be voided."
+            )
+            await expect(drawer.get_by_test_id("invoice-stale")).to_have_attribute("role", "alert")
+            await expect(drawer.get_by_test_id("void-form")).to_have_count(0)
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text("Paid")
 
     await with_browser(body)
 

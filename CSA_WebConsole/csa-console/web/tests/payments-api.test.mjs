@@ -144,11 +144,42 @@ test("payment refusals read in plain words; unknown codes fall back to the gener
     "Something went wrong on our side. Try again.");
 });
 
-test("a 403 that is not about the package means this login has no access", () => {
+test("only the role refusal means this login has no access", () => {
   assert.equal(pay.isNoAccess(new ApiError(403, "payments access requires an administrator or staff role")), true);
   assert.equal(pay.isNoAccess(new ApiError(403, "x", "package_inactive")), false);
+  // A platform admin on a company they cannot reach is not told the page is for admins and staff.
+  assert.equal(pay.isNoAccess(new ApiError(403, "payments tenant is not authorized")), false);
   assert.equal(pay.isNoAccess(new ApiError(404, "invoice_not_found")), false);
   assert.equal(pay.isNoAccess(new Error("boom")), false);
+});
+
+test("a company this login cannot reach reads as a plain refusal that ends the page", () => {
+  const tenant = new ApiError(403, "payments tenant is not authorized");
+  assert.equal(pay.paymentMessage(tenant), "You can't open Payments for this company.");
+  assert.doesNotMatch(pay.paymentMessage(tenant), /admins and staff/);
+  assert.equal(pay.isRefusal(tenant), true);
+  assert.equal(pay.isRefusal(new ApiError(403, "x", "package_inactive")), true);
+  assert.equal(pay.isRefusal(new ApiError(403, "payments access requires an administrator or staff role")), false);
+  assert.equal(pay.isRefusal(new ApiError(409, "invoice_paid")), false);
+  assert.equal(pay.isRefusal(new Error("boom")), false);
+});
+
+test("a refusal because someone else got there first keeps its sentence for the drawer", () => {
+  const stale = {
+    invoice_already_paid: "Someone already marked this invoice paid.",
+    invoice_not_payable: "This invoice can't be paid: it is void.",
+    invoice_paid: "A paid invoice can't be voided.",
+    invoice_void: "This invoice is already void.",
+  };
+  for (const [code, sentence] of Object.entries(stale)) {
+    assert.equal(pay.staleMessage(new ApiError(409, code, code)), sentence, code);
+  }
+  for (const cause of [
+    new ApiError(422, "received_in_future", "received_in_future"),
+    new ApiError(503, "synthetic outage", "synthetic outage"),
+    new ApiError(404, "invoice_not_found", "invoice_not_found"),
+    new TypeError("fetch failed"),
+  ]) assert.equal(pay.staleMessage(cause), null, String(cause.message));
 });
 
 test("invoice statuses have their plain labels", () => {
