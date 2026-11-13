@@ -113,8 +113,9 @@ first failure with `Stopped at smoke: <reason>`.
 
 When the failure was at readiness or smoke, the rollout puts the previous images back, but only if
 all of this holds: no migration was pending or applied by this run, every replica of every
-previous app container was running, and all of them were on known registry image refs that agree
-per app. Anything else gets the ordinary recovery lines instead. A rollback always leaves the run
+previous app container was running, all of them were on known registry image refs that agree
+per app, and those refs differ from the images just deployed (a re-run of a failed deploy never
+rolls back onto the same images). Anything else gets the ordinary recovery lines instead. A rollback always leaves the run
 red (exit 1), so nothing is recorded as deployed. What you see and what to do:
 
 - `Rolling back to <ref>…` (one line per app), then
@@ -127,8 +128,9 @@ red (exit 1), so nothing is recorded as deployed. What you see and what to do:
 - `Stopped at smoke: <reason>` with no `Rolling back` line: the failure is real but the rollback
   was not allowed (a migration was applied, or the previous images are unknown or not all
   running). The new images are still running. The recovery lines that follow say which case it is:
-  with migrations applied, fix forward (or restore the backup, see Restoring a backup); for the
-  first deploy from local image tags, follow Rolling back to the local images under Break-glass.
+  with migrations applied the output says not to roll back the schema, and to investigate and fix
+  forward (it also names the backup taken at the start, for an owner decision, not as a step to
+  take); for the first deploy from local image tags, follow Rolling back to the local images under Break-glass.
 - `Stopped at rollback: <reason>` after `Rolling back to ...`: the rollback itself did not
   come up healthy. Do not start another run. Check the host (`docker ps` as `ubuntu`, the
   newest log in `/var/log/csa-prod-deploy/`) and decide by hand whether to fix forward or use the
@@ -582,20 +584,26 @@ Once the pull request that moves the digest lookup into the workflow is merged t
 instance's entry script and the two command documents must be updated together, and the new
 secret set, before the next run. The workflow now sends `pythonDigest` and `frontendDigest` to
 both documents, and its apply job refuses to start without `PROD_CONSOLE_ORIGIN`. The entry
-script and the documents must match: a run against a document or an entry script from before the
-change fails closed, and nothing is deployed. Do the four steps in this order. `<name>` is
+script and the documents must match, so update both before the next run. An old document sent
+by the new workflow is rejected by Systems Manager, which does not know the digest parameters (the run fails closed). A
+new entry script with an old document takes the break-glass path (the `gh` lookup) instead of
+failing. A new document sent to an old entry script is refused by the old script's argument-count
+check. Do the four steps in this order. `<name>` is
 `csa-production-plan` and then `csa-production-apply`; `<file>` is the matching
 `ssm-document-*.json` under `~/csa-deploy`.
 
 1. **Update both command documents** (CloudShell). First download the merged files, then run the
    two `aws` commands once for each document. `update-document` prints the new version number;
    use it in the next command for that document. Add `--region "$REGION"` if CloudShell's default
-   region is not the production one.
+   region is not the production one. The `grep` must print a non-zero count for each file. If it
+   prints 0, `raw.githubusercontent.com` has not caught up with the merge yet: wait a few minutes,
+   download again and re-check before running the `aws` commands.
 
    ```bash
-   cd ~/csa-deploy
+   mkdir -p ~/csa-deploy && cd ~/csa-deploy
    RAW=https://raw.githubusercontent.com/amsyrzmi/CSAV2/main/deploy/production
    curl -fsSLO "$RAW/ssm-document-plan.json" && curl -fsSLO "$RAW/ssm-document-apply.json"
+   grep -c pythonDigest ssm-document-plan.json ssm-document-apply.json
    aws ssm update-document --name <name> --content file://<file> --document-version '$LATEST'
    aws ssm update-document-default-version --name <name> --document-version <new version>
    ```

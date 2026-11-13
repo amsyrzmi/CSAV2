@@ -69,8 +69,10 @@ Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the re
      images; the fix is a new commit, not a re-run.
    - `Stopped at smoke:` without a rollback line: the new images are running and the rollback was
      not allowed (a migration, or unknown previous images). `Stopped at rollback:`: the
-     rollback itself failed; production may be unhealthy. Show the recovery lines and ask the
-     owner; do not start another run.
+     rollback itself failed; production may be unhealthy. Report the lines verbatim and ask the
+     owner; do not start another run yourself. If the lines include
+     `To roll back: git checkout <sha> ...`, that is the owner's decision: relay it, and a
+     rollback is then a new run with `sha` set, only after the owner's go.
 
 ## If something goes wrong
 
