@@ -234,8 +234,9 @@ check later.
     60-minute recording of speech (within 500 MB) on production and watch it: the `training_media_child`
     lines carry `elapsed_ms` (every one must be well under 300000), and
     `docker stats --no-stream csa-prod-training-worker-1` taken a few times during the job must stay
-    under its 256m limit. A child killed by its limit shows as the job retrying; note the numbers
-    either way.
+    under its 256m limit. A child stopped by the wall clock or killed by the OOM killer shows as the
+    job retrying (the file is kept); one stopped by its CPU limit on the probe refuses the file. Note
+    the numbers either way.
 28. **The real bucket (production).** Before the switch, the two checks in
     [OBJECT_STORAGE.md](./OBJECT_STORAGE.md) ("Checks only the real bucket can answer"): a piece with a
     wrong checksum is refused with `BadDigest`, and `ListParts` returns `ChecksumSHA256`; after the
@@ -249,6 +250,21 @@ check later.
     [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md)). Record that you accept it for production, or that the
     follow-up (the worker fetches the bytes itself) is funded first. It does not affect staging, which
     reads local files.
+30. **Two uploads at once (two tabs).** As the tenant admin open the library in two tabs and, at the
+    same time, add `/tmp/training-big.mp4` in one and another copy of it (under another title) in the
+    other. Expect both to finish: the second one keeps going, more slowly while the first holds most of
+    the gateway's room, and never stops with "Upload stopped. Check your connection and select
+    Continue." A third upload started while both run is refused with "Two videos are already being
+    added. Wait for one to finish, or remove one that stopped, then add this one."
+31. **A tiny tail chunk.** Make a video whose sound ends a fraction of a second into its last
+    5-minute part, for example 5 minutes and 0.05 seconds of speech or tone:
+    `ffmpeg -f lavfi -i testsrc2=duration=300.05:size=320x180:rate=25 -f lavfi -i sine=frequency=300:duration=300.05 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest /tmp/training-tail.mp4`.
+    Add it. The speech provider may reject a chunk under about 0.1 s. Expected today: the job is
+    retried (after the first part's `training_transcribe_chunk` line, the worker's log shows a
+    `training_transcribe_failed` line on each attempt), then the video ends `failed` with "We
+    could not make the transcript because the speech service did not answer. Select Try again."
+    Record what happened; if the provider accepts the tail, note that instead (skipping such tails is
+    a parked follow-up).
 
 ## What staging cannot show
 

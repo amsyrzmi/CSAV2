@@ -751,7 +751,7 @@ name, a URL, transcript text or ffmpeg's own output. The events to know:
 | `training_video_stage_error` (error) | An unexpected error inside a stage; the job is retried, then fails with the stage's retryable code. `outcome` is the exception class |
 | `training_video_job_error` (error) | A database error while claiming or running one company's job; the others go on |
 | `training_transcribe_probe`, `_chunk`, `_windows`, `_decided`, `_failed` | The steps of transcribing: the probe, each audio chunk (`chunk`, `chunks_total`, `audio_bytes`), the transcript windows (`segments`, `windows`, `model`), the speech verdict, a failure |
-| `training_media_child` | One ffprobe or ffmpeg child finished (duration and output size only) |
+| `training_media_child` | One ffprobe or ffmpeg child finished (duration and output size only). `outcome=killed code=failed` is a child ended by SIGKILL (usually the OOM killer) or another outside signal: the attempt is retried and the file kept. `outcome=killed code=training_video_unreadable` is its CPU or file-size limit or a crash: on the probe the file is refused, after the probe the attempt is retried |
 | `training_sweep` | The hourly sweep's totals: `abandoned`, `removed`, `aborted`, `pruned` |
 | `training_upload_abandoned` | An upload with no piece for 24 hours was removed |
 | `training_abort_failed`, `training_file_delete_failed`, `training_sweep_failed`, `training_jobs_loop_error`, `training_sweep_loop_error` | Something failed and will be tried again (an abort or delete by the next sweep, a loop on its next turn) |

@@ -17,7 +17,7 @@ for whoever sets the limit, neither changes the recommendation:
   an S3 client and an HTTP upload buffer for a ~1.7 MB audio chunk; none of that was measured. The
   headroom at 160 MB is about 27 MiB over the worst container peak (and about 62 MiB over the worst
   non-reclaimable peak). Running the same limit as the existing workers, 320 MB, is still inside
-  the rule (N at most 320) if the controller prefers margin.
+  the rule (N at most 320) if more margin is wanted.
 - Production reality was not provided (below), so whether the 2 GB host can take one more container
   of this size is not established by this document.
 
@@ -95,8 +95,8 @@ Both builds are GPL. Neither is an LGPL build, so neither can be called LGPL-cle
 used in-house on our own hosts and are not redistributed here; whoever later distributes an image
 outside the organisation should read the GPL terms. This is not legal advice.
 
-Capability output is in `/tmp/training-video-scratch/caps-a.txt` and `caps-b.txt` (scratch, not
-committed). The check was `ffmpeg -buildconf`, `-formats`, `-filters` and `-encoders`.
+The check was `ffmpeg -buildconf`, `-formats`, `-filters` and `-encoders` on each build; its output
+was not kept.
 
 ## Chosen ffmpeg source
 
@@ -115,8 +115,8 @@ FFMPEG_IMAGE=mwader/static-ffmpeg@sha256:11a44711684c0b9f754c047dcd64235b8b52dea
   `ffmpeg` sha256 `810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f3a15b0bf2c5c`,
   `ffprobe` sha256 `4818b8964b5d7b699370628a4154c97e88205678ee506ca72e9330600e917667`
   (linux/amd64 build).
-- B was built and its capabilities checked, but its memory was not measured: the brief measures B
-  only if A fails, and A did not.
+- B was built and its capabilities checked, but its memory was not measured: B was to be measured
+  only if A failed, and A did not.
 
 ## What was measured
 
@@ -127,10 +127,10 @@ as robust (they depend on container structure and buffers, not on content).
 - 3600.03 s, 509,685,688 bytes (486 MiB, 1,132,626 bit/s overall), H.264 1280x720 30 fps plus AAC
   (sine tone, 48 kHz, 64 kbit/s). `worst.mp4`: `ftyp, free, mdat, moov` (moov at the end).
   `worst-faststart.mp4`: `ftyp, moov, free, mdat`.
-- Built by encoding one 60 s segment with the brief's x264 settings (`-preset ultrafast -b:v 1050k
+- Built by encoding one 60 s segment with these x264 settings (`-preset ultrafast -b:v 1050k
   -maxrate 1050k -bufsize 2M -g 60`, aac 64k), then looping it 60 times with `-stream_loop 59 -c copy`.
-  The brief's single 60-minute encode of `testsrc2` would have taken about 40 minutes on this
-  loaded host (1.5x real time); the loop gives the same size, container layout and bit rate.
+  A single 60-minute encode of `testsrc2` would have taken about 40 minutes on this loaded host
+  (1.5x real time); the loop gives the same size, container layout and bit rate.
   Audio is repetitive, so audio encoder cost (the CPU figures below) is that of a pure tone.
 - `docker run --rm --memory=320m --memory-swap=320m --user 1000:1000 --read-only --tmpfs /tmp`
   on image A, file mounted read-only at `/in/video.mp4`, cgroup v2. One container per
@@ -138,7 +138,7 @@ as robust (they depend on container structure and buffers, not on content).
   csa.storage.s3, csa.decide.groq, csa.agents.kb.embedder, csa.speech, psycopg_pool, httpx` and
   then sleeps; a small driver (about 16 MiB, included in the cgroup numbers) then runs the case
   with `nice 10` and samples `/proc/<pid>/status` and the cgroup every 20 ms.
-- Input arguments match the plan's `input_args`: `-protocol_whitelist file -f mov -i <file>`,
+- Input arguments match `input_args` in `csa/training/media.py`: `-protocol_whitelist file -f mov -i <file>`,
   `-threads 1`, `-nostdin`, no stderr read. Cases:
   1. `ffprobe -v error -print_format json -show_format -show_streams` (stdout 4.4 KB).
   2. Loudness over the whole first audio stream: `-vn -map 0:a:0 -af
@@ -155,7 +155,8 @@ cache from reading the mounted file, which the kernel reclaims under pressure). 
 the highest sampled `anon` plus the highest sampled `shmem` from `memory.stat` (a sum of two
 maxima, so slightly conservative), the part that cannot be reclaimed.
 The Python baseline's `VmHWM` was 61.3 to 61.5 MiB in every run (imports took 17 to 29 s on this
-loaded host). OOM kills: 0 in every container (`memory.events` `max 0 oom 0 oom_kill 0`).
+loaded host; that timing is not tabulated here). OOM kills: 0 in every container (`memory.events`
+`max 0 oom 0 oom_kill 0`).
 
 | Case | File | Container peak MiB | Anon+shmem MiB | ffmpeg `VmPeak` MiB | ffmpeg `VmHWM` MiB | Wall s | CPU s |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -173,19 +174,21 @@ Conclusions from the table:
 - `-vn` and `-threads 1` keep ffmpeg's resident set at 34 to 54 MiB, so the container is dominated
   by the Python baseline (61 MiB) and the driver; ffmpeg adds at most about 54 MiB resident.
 - The 500 MB file is never held in memory. Where moov is at the end, the demuxer seeks to read it
-  and the extra cost is page cache (up to 57.6 MiB for ffprobe), not anonymous memory.
+  and the extra cost is page cache (up to 57.6 MiB for ffprobe, a figure not tabulated here), not
+  anonymous memory.
 - `-ss` before `-i` costs the same at 0, 1800 and 3300 s, so there is no start-offset penalty.
 - Chunk extraction costs about 22 CPU seconds per 300 s of audio here, almost all libopus encoding
   of a pure tone (decode and resample alone: 4.2 s on the host; 60 s of the same tone through
-  libopus alone: 2.7 s wall). A full 60-minute video is 12 chunks, so about 4.5 CPU minutes of
-  extraction plus 77 s of loudness; content-dependent, so remeasure with a real recording.
+  libopus alone: 2.7 s wall; both side measurements, not tabulated here). A full 60-minute video is
+  12 chunks, so about 4.5 CPU minutes of extraction plus 77 s of loudness; content-dependent, so
+  remeasure with a real recording.
 - ffmpeg's `VmPeak` of 174 to 218 MiB is address space, far above its resident size: it matters
   only for `RLIMIT_AS`, below.
 
-## Derived child limits (for Task 7)
+## Derived child limits
 
-Rules from the brief: CPU = 4 x worst measured CPU seconds; address space = 2 x worst `VmPeak`,
-rounded up to 64 MiB; wall = 4 x worst wall.
+The rules: CPU = 4 x worst measured CPU seconds; address space = 2 x worst `VmPeak`, rounded up to
+64 MiB; wall = 4 x worst wall.
 
 | Constant | Worst measured | Rule | Value |
 | --- | --- | --- | --- |
@@ -194,8 +197,9 @@ rounded up to 64 MiB; wall = 4 x worst wall.
 | `FFMPEG_CHILD_WALL_SECONDS` | 74.52 s | 4 x 74.52 = 298.08 | 300 |
 
 These are single-process limits for the slowest command (the loudness pass). The chunk command's
-own worst figures (22.2 CPU s, 33.0 s wall) would give 89 s and 132 s if Task 7 wants per-command
-limits. The wall limit was measured on a busy 8-core host; csa-prod is a 2 GB Lightsail instance
+own worst figures (22.2 CPU s, 33.0 s wall) would give 89 s and 132 s if per-command limits are
+wanted. The wall limit was measured on a busy 8-core host (its core count is not tabulated here);
+csa-prod is a 2 GB Lightsail instance
 whose CPU speed was not measured, so the wall limit is a starting value to check on the real host.
 The address-space limit of 448 MiB is above the container's own 160 to 320 MB cap, so the cgroup
 limit, not `RLIMIT_AS`, decides first; `RLIMIT_AS` only guards against runaway mappings.
@@ -212,7 +216,7 @@ limit, not `RLIMIT_AS`, decides first; `RLIMIT_AS` only guards against runaway m
 
 ## Reproduce
 
-Scratch lives in `/tmp/training-video-scratch` and is deleted afterwards. The drivers are not
-committed (the task forbids committing media or Dockerfiles); to repeat, build image A
-(`FROM` the base id, `COPY --from=<FFMPEG_IMAGE> /ffmpeg /ffprobe /usr/local/bin/`), create the two
-files as above, and run each case with the `docker run` line under "What was measured".
+The drivers and the media were not kept (no media or extra Dockerfiles are committed). To repeat,
+build image A (`FROM` the base id, `COPY --from=<FFMPEG_IMAGE> /ffmpeg /ffprobe /usr/local/bin/`),
+create the two files as above, and run each case with the `docker run` line under "What was
+measured".

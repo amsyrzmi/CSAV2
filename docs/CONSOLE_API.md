@@ -942,7 +942,9 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   speech is answered from; a manager is told when a video is still being processed. Anyone else
   gets the answer for a missing video: "I couldn't find that training video." when asking by id
   (the open record or a picked option), "I couldn't find a training video called ..." when
-  asking by title words. A transcript of at
+  asking by title words, and "There is no ready training video in the Training library yet."
+  (`training_none`) when nothing names a video and the company has no ready video with speech
+  (in Malay: "Belum ada video latihan yang sedia dalam Training library."). A transcript of at
   most 40,000 characters is sent whole as `[mm:ss] text` lines; a longer one sends the 8
   windows nearest the question (embedded with the gateway's knowledge base embedder; the
   windows must have been made by the same model, otherwise "I can't search this video right
@@ -2066,7 +2068,7 @@ upload can resume. While `TRAINING_VIDEO_ENABLED` is off (the default) the four 
 | What | Limit |
 |---|---|
 | One video | 500 MiB (`500 * 1024 * 1024` bytes) |
-| Videos in one company | 50 |
+| Videos in one company | 50, a refused video's row included until it is removed |
 | Total size of one company's videos | 5 GiB, counting uploads still open at their declared size (PDFs are counted apart) |
 | Uploads open at once in one company | 2 |
 | Piece size | 8 MiB, the last piece the remainder |
@@ -2090,7 +2092,11 @@ per company at once, oldest first. A manager sees the progress in `processing` a
   heartbeat is 10 minutes old.
 - A refusal of the file itself (`training_video_unreadable`, `training_video_too_long`,
   `training_video_codec`) fails the video at once and deletes the stored file, so its bytes stop
-  counting against the 5 GiB; the row stays so the manager sees why. It cannot be retried.
+  counting against the 5 GiB; the row stays so the manager sees why, and it still counts toward the
+  50 videos until it is removed. It cannot be retried. `training_video_unreadable` is decided by
+  the probe only: an ffmpeg child killed by the OOM killer, or a loudness or chunk pass that fails
+  after the probe accepted the file, is a failure worth trying again, and on S3 a probe that fails
+  while the store holds the full size refuses the file only on the stage's last attempt.
 - At most 5 hours of video per company are processed in any 24 hours. The seconds are booked before
   the first chunk is sent, and deleting a video does not give them back. A video past the limit
   waits (`processing.waiting` is `true`) until enough booked time is more than 24 hours old.

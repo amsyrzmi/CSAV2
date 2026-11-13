@@ -229,7 +229,7 @@ Constants in `csa/training/limits.py`.
 |---|---|
 | One video | 500 MiB |
 | Length | 60 minutes (the worker measures it; the console also refuses an over-long file before sending when the browser can read its length) |
-| Videos per company | 50 |
+| Videos per company | 50; a video refused for a reason in its file keeps its row (so the manager sees why) and counts toward the 50 until it is removed, although its bytes no longer count |
 | Total size of videos per company | 5 GiB, counting an upload in progress at its declared size; a video refused for a reason in its file stops counting when its file is deleted |
 | Uploads open at once, per company | 2 |
 | Piece | 8 MiB, the last piece the remainder; 4 pieces at once per gateway process (the console sends up to 3 at once) |
@@ -276,8 +276,10 @@ GPL v3 or later, pinned by digest): 523 MB became 901 MB on disk.
   [OBJECT_STORAGE.md](./OBJECT_STORAGE.md#iam-policy-for-the-training-worker-key)). Until the owner
   makes that key it mounts the disabled placeholder.
 - **Memory.** The production default limit is 256m (`CSA_PROD_MEM_TRAINING_WORKER`, `oom_score_adj`
-  600, so the OOM killer takes it before a customer-turn worker; the job resumes after its heartbeat
-  goes stale). [TRAINING_VIDEO_CAPACITY.md](./TRAINING_VIDEO_CAPACITY.md) recommended 160 MB, but
+  600, so the OOM killer takes it before a customer-turn worker). If the OOM killer takes the ffmpeg
+  child, the attempt fails as worth trying again and is retried after its wait, the file kept; if it
+  takes the Python process, the job is requeued once its heartbeat is 10 minutes old. Either costs
+  one of the stage's 3 attempts. [TRAINING_VIDEO_CAPACITY.md](./TRAINING_VIDEO_CAPACITY.md) recommended 160 MB, but
   that was measured with the Python imports only, without the pools, the S3 client and the chunk
   upload buffer, so the shipped default is higher. Whether the 2 GB production host can take the
   extra container is not established: see the capacity document and `deploy/PRODUCTION.md`, "Training
@@ -320,8 +322,8 @@ claimed again, or whose item was removed, writes nothing and stops quietly.
 
 | Kind | What | What happens |
 |---|---|---|
-| Worth trying again | The speech service, the model, the embedding service or the store did not answer; the worker was killed or stopped beating; an unexpected error in a stage | The job goes back to `queued` and waits 60 s times the attempt number; at most 3 attempts per stage (the summary stage starts again at 0). After the third the video is `failed` with `training_transcription_unavailable`, `training_summary_unavailable` or `training_storage_unavailable`, and a manager can press "Try again" (`POST /training/items/{id}/retry`): the job is queued again at the stage that failed with its attempts reset, and resumes at `chunks_done` or the saved parts |
-| The file itself | `training_video_unreadable` (ffprobe cannot read it, or the store holds the full size and it still fails), `training_video_too_long` (over 60 minutes), `training_video_codec` (a picture or sound codec outside the lists) | `failed` at once, no retry. The stored file is deleted (if that delete fails the hourly sweep does it), the row stays so the manager sees why, and its bytes stop counting. The manager adds a new file |
+| Worth trying again | The speech service, the model, the embedding service or the store did not answer; the worker or its ffmpeg child was killed (the OOM killer) or stopped beating; ffmpeg failed on the loudness or a chunk after the probe had accepted the file (for example a full `/tmp`); on S3, the probe failed on an attempt before the last; an unexpected error in a stage | The job goes back to `queued` and waits 60 s times the attempt number; at most 3 attempts per stage (the summary stage starts again at 0). After the third the video is `failed` with `training_transcription_unavailable`, `training_summary_unavailable` or `training_storage_unavailable`, and a manager can press "Try again" (`POST /training/items/{id}/retry`): the job is queued again at the stage that failed with its attempts reset, and resumes at `chunks_done` or the saved parts |
+| The file itself | `training_video_unreadable` (ffprobe cannot read it, ends on its CPU or file-size limit or crashes; on S3, the store holds the full size and the read still fails on the stage's last attempt), `training_video_too_long` (over 60 minutes), `training_video_codec` (a picture or sound codec outside the lists) | `failed` at once, no retry. The stored file is deleted (if that delete fails the hourly sweep does it), the row stays so the manager sees why, and its bytes stop counting. The manager adds a new file |
 | The daily cap | 5 hours of video per company in any rolling 24 hours, booked per video before its first chunk is sent | The job waits (`processing.waiting`, the list says "Waiting to start") with its attempt given back, and runs when enough booked time is more than 24 hours old. Deleting a video does not give its seconds back |
 
 ### The hourly sweep
