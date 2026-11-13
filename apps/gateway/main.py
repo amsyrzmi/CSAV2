@@ -40,6 +40,7 @@ from csa.console.router import build_router
 from csa.console.tiktok_connect import build_tiktok_connect
 from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
+from csa.core.langfuse import LangfuseSink
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import Settings, get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
@@ -166,14 +167,23 @@ def create_app() -> FastAPI:
         training_http: httpx.AsyncClient | None = None
         calendar_http: httpx.AsyncClient | None = None
         jev_http: httpx.AsyncClient | None = None
+        langfuse_sink: LangfuseSink | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # Langfuse (OTLP), only with both keys: one generation per model call, sliced by
+            # client, agent and job.
+            if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY:
+                langfuse_sink = LangfuseSink(
+                    public_key=settings.LANGFUSE_PUBLIC_KEY,
+                    secret_key=settings.LANGFUSE_SECRET_KEY,
+                    base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+                )
             # One ledger meter for the gateway: every Groq client below books its token usage to
-            # it. The trace-store mirror is wired separately.
-            meter = LedgerMeter(pool, mirror=None)
+            # it, and mirrors each call to Langfuse when the sink is configured.
+            meter = LedgerMeter(pool, mirror=langfuse_sink)
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on
@@ -328,6 +338,8 @@ def create_app() -> FastAPI:
                     await calendar_http.aclose()
                 if jev_http is not None:
                     await jev_http.aclose()
+                if langfuse_sink is not None:
+                    await langfuse_sink.aclose()
             finally:
                 try:
                     if identity_pool is not None:

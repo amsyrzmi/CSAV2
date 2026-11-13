@@ -626,9 +626,11 @@ async def run_until_stopped(
     llm_http: httpx.AsyncClient,
     deps: PostgresTurnDependencies | None,
     pools: Sequence[_Closable],
+    langfuse: LangfuseSink | None = None,
 ) -> None:
     """Run `work` until it ends or the process is told to stop, then shut down in order: the
-    background tasks, the HTTP client, the booking mail still on its way, and last the pools.
+    background tasks, the HTTP client, the booking mail still on its way, the pools, and last
+    the Langfuse spans still queued.
 
     Once shutdown has begun, a second SIGTERM or SIGINT is logged and ignored, so it can't cut the
     drain or the pool close short.
@@ -639,7 +641,11 @@ async def run_until_stopped(
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await llm_http.aclose()
-        await drain_then_close(deps, *pools)
+        try:
+            await drain_then_close(deps, *pools)
+        finally:
+            if langfuse is not None:
+                await langfuse.aclose()
 
     await run_until_signalled(work, shut_down)
 
@@ -725,9 +731,19 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     await app_pool.open(wait=True)
     await checkpoint_pool.open(wait=True)
     llm_http = httpx.AsyncClient()
-    # One ledger meter for the worker: every provider client below books its token usage to it.
-    # The trace-store mirror is wired separately.
-    meter = LedgerMeter(app_pool, mirror=None)
+    # Langfuse (OTLP), only with both keys: graph node events and one generation per model call.
+    langfuse_sink = (
+        LangfuseSink(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+        )
+        if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
+        else None
+    )
+    # One ledger meter for the worker: every provider client below books its token usage to it,
+    # and each call is mirrored to Langfuse as a generation when the sink is configured.
+    meter = LedgerMeter(app_pool, mirror=langfuse_sink)
     # One mailer for the worker, built once: booking mail after a turn, and the reminder job.
     mailer = Mailer.from_settings(settings)
     coordinator: CoordinatorRuntime | None = None
@@ -752,16 +768,6 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 meter=meter,
             ),
             compose_fallback=compose_fallback,
-        )
-        langfuse_sink = (
-            LangfuseSink(
-                public_key=settings.LANGFUSE_PUBLIC_KEY,
-                secret_key=settings.LANGFUSE_SECRET_KEY,
-                base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
-                http_client=llm_http,
-            )
-            if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
-            else None
         )
         turn_deps = build_turn_dependencies(settings, app_pool, llm, llm_http, mailer=mailer)
         coordinator = build_runtime(
@@ -830,6 +836,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         llm_http=llm_http,
         deps=turn_deps,
         pools=(checkpoint_pool, app_pool, owner_pool),
+        langfuse=langfuse_sink,
     )
 
 

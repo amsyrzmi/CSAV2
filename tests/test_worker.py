@@ -10,6 +10,7 @@ import signal
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import psycopg
@@ -703,3 +704,17 @@ async def test_the_customer_jev_client_closes_with_the_worker() -> None:
         loop.remove_signal_handler(signal.SIGTERM)
         loop.remove_signal_handler(signal.SIGINT)
     assert http.is_closed
+
+
+async def test_the_langfuse_sink_closes_with_the_worker() -> None:
+    http = httpx.AsyncClient()
+    langfuse = AsyncMock()
+    loop = asyncio.get_running_loop()
+    try:
+        await run_until_stopped(
+            asyncio.sleep(0), background=[], llm_http=http, deps=None, pools=(), langfuse=langfuse
+        )
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)
+    langfuse.aclose.assert_awaited_once()
