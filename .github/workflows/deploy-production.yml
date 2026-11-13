@@ -160,6 +160,10 @@ jobs:
             exit 0
           fi
           [ "$EXPLICIT" = "false" ] || { echo "the plan did not say whether the sha was explicit" >&2; exit 1; }
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ || "$SHA" == *$'\n'* ]]; then
+            echo "the plan's sha is not a full commit sha" >&2
+            exit 1
+          fi
           tip="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)" || { echo "could not read the tip of main" >&2; exit 1; }
           if [[ ! "$tip" =~ ^[0-9a-f]{40}$ || "$tip" == *$'\n'* ]]; then
             echo "could not read the tip of main" >&2

@@ -1912,9 +1912,23 @@ def test_apply_checks_the_tip_before_the_aws_credentials_step(harness: Harness) 
     assert moved.returncode != 0
     assert MOVED_MESSAGE in moved.stderr.decode()
     assert moved.stdout == b""
-    # It read the tip once and ran nothing else (the stub aws and ssm_run would have logged).
+    # It read the tip once and did nothing else.
     assert harness.calls() == [["gh", "api", "repos/example/repo/commits/main", "--jq", ".sha"]]
-    assert harness.aws_calls() == []
+
+
+def test_no_step_can_run_after_a_failed_step() -> None:
+    # A failed check stops the job only because every later step keeps GitHub's default
+    # `success()` condition: one `if: always()` (or `!cancelled()`) on the AWS credentials or the
+    # apply step would let a stale run apply. So no step has an `if:` or `continue-on-error:`;
+    # the only conditions are the two job-level main-only guards.
+    code = [line for line in _workflow().splitlines() if not line.lstrip().startswith("#")]
+    conditions = [line.strip() for line in code if re.match(r"^\s*(?:- )?if:", line)]
+    assert conditions == ["if: github.ref == 'refs/heads/main'"] * 2
+    for job, body in _jobs().items():
+        assert "    if: github.ref == 'refs/heads/main'\n" in body, job
+        for step in _steps(job):
+            assert not re.search(r"^\s*(?:if|continue-on-error):", step, flags=re.MULTILINE), step
+    assert not any("continue-on-error" in line for line in code)
 
 
 def test_apply_tip_check_passes_when_main_is_unchanged_and_fails_closed(harness: Harness) -> None:
@@ -1929,6 +1943,16 @@ def test_apply_tip_check_passes_when_main_is_unchanged_and_fails_closed(harness:
     for garbage in ("", "not-a-sha", SHA[:7], SHA.upper(), f"{SHA}\n{SHA}"):
         result = _tip_check(harness, explicit="false", tip=garbage)
         assert result.returncode != 0, garbage
+        assert "could not read the tip of main" in result.stderr.decode(), garbage
+        assert "main moved" not in result.stderr.decode(), garbage
+    # A planned sha that is not a full sha is refused with its own message, before the tip read.
+    for bad_sha in ("", "not-a-sha", SHA[:7], SHA.upper(), f"{SHA}\n{SHA}"):
+        harness.log.unlink(missing_ok=True)
+        result = _tip_check(harness, explicit="false", tip=TIP, sha=bad_sha)
+        assert result.returncode != 0, bad_sha
+        assert "the plan's sha is not a full commit sha" in result.stderr.decode(), bad_sha
+        assert "main moved" not in result.stderr.decode(), bad_sha
+        assert harness.calls() == [], bad_sha
     # A missing or unexpected explicit flag does not skip the check.
     for flag in ("", "TRUE", "yes", "1"):
         result = _tip_check(harness, explicit=flag, tip=TIP)
@@ -2310,7 +2334,10 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_CONSOLE_ORIGIN",
     }
     assert environments == {"production", "production-plan"}
-    # The runbook gains PROD_CONSOLE_ORIGIN in the runbook task; it is exempt until then.
+    # TEMPORARY exemption: Task 8 (the runbook) adds PROD_CONSOLE_ORIGIN to the setup section.
+    # When it does, the assertion below fails: Task 8 removes it and this exemption together, so
+    # the secret is then required like every other.
+    assert "PROD_CONSOLE_ORIGIN" not in setup, "Task 8: drop the exemption and this assertion"
     for name in (names - {"PROD_CONSOLE_ORIGIN"}) | environments:
         assert name in setup, name
 
