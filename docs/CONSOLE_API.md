@@ -2437,9 +2437,8 @@ onboarding/disabled. Normal KB polling processes only `pilot`/`active` tenants, 
 shadow gate intentionally produces no sends, even when KB ingestion succeeds.
 
 ## Invoices (LG13)
-- `GET /console/v1/invoices?limit=50` lists invoices.
-- `GET /console/v1/invoices/{id}/download-link` returns **501** until M6 supplies a real artifact-serving path. The placeholder signing-key fallback is removed. The adopted UI does not offer downloads.
-- Payments 1 changes these in a later task: the invoice agent's reads show only invoices a customer may hear about (no draft or void; `paid` only with its ledger row), the download-link route goes away and `amount` becomes a decimal string. Staff invoice work is under [Payments](#payments) (`/console/v1/payments`).
+- `GET /console/v1/invoices?limit=50` lists invoices. `amount` is a decimal string (`"199.50"`), never a number.
+- Since Payments 1 there is no download link: the route (which only ever answered 501) and the invoice agent's `download_link` action are gone. The invoice agent's reads show only invoices a customer may hear about (no draft or void; `paid` only with its ledger row). Staff invoice work is under [Payments](#payments) (`/console/v1/payments`).
 
 ## OpenAPI
 The gateway serves `/openapi.json` and `/docs` only outside production; Redoc is disabled.

@@ -62,10 +62,22 @@ def test_migration_backfill_members_match_catalogue():
     for pkg, member in pairs:
         migrated.setdefault(pkg, set()).add(member)
     catalogue = {k: set(v) for k, v in backfill_members().items() if v}
-    # 0450 is history: 0530 moved kb_agent to its own add-on, and only that differs.
+    # 0450 is history: 0530 moved kb_agent to its own add-on, and 0591 added payment_agent to
+    # Subscriptions (its row mirrors subscription_agent's switches); only those differ.
     assert catalogue.pop("knowledge_base") == {"kb_agent"}
     catalogue["customer_support"].add("kb_agent")
+    catalogue["subscriptions"].remove("payment_agent")
     assert migrated == catalogue
+
+
+def test_subscriptions_carry_the_payment_agent_and_the_payments_tab():
+    subscriptions = package("subscriptions")
+    assert subscriptions.capabilities == ("subscription_agent", "payment_agent")
+    assert subscriptions.tabs == ("subscriptions", "payments")
+    assert "invoices" in subscriptions.summary and "reminders" in subscriptions.summary
+    assert backfill_members()["subscriptions"] == ("subscription_agent", "payment_agent")
+    sql = MIGRATIONS.joinpath("0591_payment_agent.sql").read_text()
+    assert "'payment_agent'" in sql and "s.name = 'subscription_agent'" in sql
 
 
 def test_hr_package_modules_match_hr_agent_settings_check():

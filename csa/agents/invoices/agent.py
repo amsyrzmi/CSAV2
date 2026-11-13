@@ -1,12 +1,13 @@
-"""Invoice agent: contact-authorized status, listing, and signed download links (LG13)."""
+"""Invoice agent: contact-authorized status and listing (LG13).
+
+Only invoices a customer may hear about are read (`db/sql/invoices/*_by_contact.sql`): never a
+draft or a void one, and a `paid` one only with its payments row. How to pay, and whether a payment
+was recorded, are the payment agent's (`csa.agents.payments`).
+"""
 
 from __future__ import annotations
 
-import hmac
-import time
-from hashlib import sha256
 from typing import Any
-from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -22,28 +23,7 @@ from csa.contracts.facts import (
 )
 from csa.contracts.plan import RiskClass
 from csa.core import db
-from csa.core.settings import get_settings
 from csa.core.tenancy import tx
-
-DEFAULT_LINK_TTL_SECONDS = 900  # 15 minutes
-
-
-def generate_invoice_signature(
-    client_id: UUID, invoice_id: str, expires_at: int, secret: str
-) -> str:
-    """Generate HMAC-SHA256 signature for secure expiring invoice download URLs."""
-    payload = f"{client_id}:{invoice_id}:{expires_at}".encode()
-    return hmac.new(secret.encode(), payload, sha256).hexdigest()
-
-
-def verify_invoice_signature(
-    client_id: UUID, invoice_id: str, expires_at: int, sig: str, secret: str
-) -> bool:
-    """Verify an expiring invoice download signature."""
-    if int(time.time()) > expires_at:
-        return False
-    expected = generate_invoice_signature(client_id, invoice_id, expires_at, secret)
-    return hmac.compare_digest(expected, sig)
 
 
 class InvoiceAgent:
@@ -55,7 +35,6 @@ class InvoiceAgent:
     ACTION_RISK: dict[str, RiskClass] = {
         "status": "read",
         "list": "read",
-        "download_link": "read",
     }
 
     def risk(self, inp: BaseModel) -> RiskClass:
@@ -67,7 +46,6 @@ class InvoiceAgent:
         handler = {
             "status": self._status,
             "list": self._list,
-            "download_link": self._download_link,
         }[inp.action]
         return await handler(ctx, inp)
 
@@ -156,59 +134,6 @@ class InvoiceAgent:
                     source="invoice_agent",
                 )
             )
-        return self._ok(ctx, facts)
-
-    async def _download_link(self, ctx: AgentContext, inp: InvoiceInput) -> AgentResult:
-        if not ctx.contact_id:
-            return self._error(
-                ctx,
-                "unauthorized",
-                "validation",
-                "download link requires authenticated contact context",
-            )
-
-        async with tx(ctx.pool, str(ctx.client_id)) as conn:
-            row = await db.q.fetch_one(
-                "invoices/get_by_contact.sql",
-                (ctx.client_id, inp.invoice_id, inp.order_id, ctx.contact_id),
-                conn=conn,
-            )
-
-        if not row:
-            return self._error(
-                ctx,
-                "invoice_not_found",
-                "not_found",
-                f"no invoice matching #{inp.invoice_id or inp.order_id} found for contact",
-            )
-
-        try:
-            settings = get_settings()
-            secret = (
-                settings.INVOICE_SIGNING_SECRET.get_secret_value()
-                if settings.INVOICE_SIGNING_SECRET
-                else settings.CREDENTIALS_KEY.get_secret_value()
-            )
-            base_url = str(settings.PUBLIC_BASE_URL).rstrip("/")
-        except Exception:
-            secret = "fallback_dev_signing_key_secret_123"
-            base_url = "http://localhost:18080"
-        expires_at = int(time.time()) + DEFAULT_LINK_TTL_SECONDS
-        sig = generate_invoice_signature(ctx.client_id, row["id"], expires_at, secret)
-
-        download_url = (
-            f"{base_url}/api/v1/invoices/{row['id']}/download"
-            f"?client_id={ctx.client_id}&expires={expires_at}&sig={sig}"
-        )
-
-        facts = [
-            Fact(
-                id=f"invoice_dl_{row['id']}",
-                text=f"Secure download link for invoice #{row['id']}: {download_url} (valid 15m).",
-                kind="verbatim",
-                source="invoice_agent",
-            )
-        ]
         return self._ok(ctx, facts)
 
     def _ok(

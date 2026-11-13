@@ -93,7 +93,7 @@ export function popCursor(stack: number[]): number[] {
   return stack.slice(0, -1);
 }
 
-/** The nine capabilities that record runs, with a short name where two share a title. */
+/** The ten capabilities that record runs, with a short name where two share a title. */
 const CAPABILITIES: { value: string; short: string }[] = [
   { value: "kb_agent", short: "" },
   { value: "ticket_agent", short: "tickets" },
@@ -102,7 +102,8 @@ const CAPABILITIES: { value: string; short: string }[] = [
   { value: "order_approval", short: "approvals" },
   { value: "invoice_agent", short: "" },
   { value: "ecommerce_agent", short: "" },
-  { value: "subscription_agent", short: "" },
+  { value: "subscription_agent", short: "plans" },
+  { value: "payment_agent", short: "payments" },
   { value: "booking_agent", short: "" },
 ];
 

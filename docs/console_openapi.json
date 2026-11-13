@@ -8322,7 +8322,7 @@
         "properties": {
           "amount": {
             "title": "Amount",
-            "type": "number"
+            "type": "string"
           },
           "client_id": {
             "format": "uuid",
@@ -14790,30 +14790,6 @@
           }
         },
         "title": "ShipTo",
-        "type": "object"
-      },
-      "SignedDownloadLinkOut": {
-        "additionalProperties": false,
-        "properties": {
-          "download_url": {
-            "title": "Download Url",
-            "type": "string"
-          },
-          "expires_at": {
-            "title": "Expires At",
-            "type": "integer"
-          },
-          "invoice_id": {
-            "title": "Invoice Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "invoice_id",
-          "download_url",
-          "expires_at"
-        ],
-        "title": "SignedDownloadLinkOut",
         "type": "object"
       },
       "SignupOut": {
@@ -29978,79 +29954,6 @@
           }
         },
         "summary": "List Invoices"
-      }
-    },
-    "/console/v1/invoices/{invoice_id}/download-link": {
-      "get": {
-        "operationId": "get_invoice_download_link_console_v1_invoices__invoice_id__download_link_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "invoice_id",
-            "required": true,
-            "schema": {
-              "title": "Invoice Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "client_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Client Id"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-client-id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Client-Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SignedDownloadLinkOut"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Invoice Download Link"
       }
     },
     "/console/v1/kb/documents": {

@@ -39,11 +39,24 @@ def _cap(name: str) -> CapabilityOut:
 async def test_catalogue_permissions_and_implementation_states(
     role: Role | None, subscribe: bool, toggle: bool
 ) -> None:
-    caps = [_cap(name) for name in ("invoice_agent", "booking_agent", "ecommerce_agent", "unknown")]
+    caps = [
+        _cap(name)
+        for name in (
+            "invoice_agent",
+            "booking_agent",
+            "ecommerce_agent",
+            "payment_agent",
+            "unknown",
+        )
+    ]
     with patch("csa.console.agents.list_capabilities", return_value=caps):
         rows = {row.name: row for row in await list_agents(AsyncMock(), uuid4(), role=role)}
     assert rows["invoice_agent"].readiness == "available"
-    assert "PDF" in rows["invoice_agent"].detail
+    assert "PDF" in rows["invoice_agent"].detail and "link" in rows["invoice_agent"].detail
+    payments = rows["payment_agent"]
+    assert (payments.title, payments.implementation) == ("Payments", "local")
+    assert payments.readiness == "available" and not payments.specialized
+    assert "invoice" in payments.detail and "never marks" in payments.detail
     assert rows["booking_agent"].implementation == "local"
     assert rows["ecommerce_agent"].readiness == "setup_required"
     assert rows["lhdn_agent"].implementation == "not_implemented"

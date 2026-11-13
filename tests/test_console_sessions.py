@@ -617,9 +617,12 @@ async def test_tenant_onboarding_provisions_disabled_capabilities_and_atomic_aud
         "order_agent",
         "booking_agent",
         "subscription_agent",
+        "payment_agent",
     }
     assert all(not row["is_enabled"] and not row["client_enabled"] for row in rows)
     assert all(row["input_schema"].get("type") == "object" for row in rows)
+    payments = next(row for row in rows if row["name"] == "payment_agent")
+    assert set(payments["input_schema"]["properties"]) == {"action", "reference", "note"}
     created = await sessions.q(
         "SELECT actor_id,details FROM console_audit WHERE client_id=%s AND action='tenant.created'",
         sessions.tenants[0],

@@ -18,6 +18,7 @@ from csa.agents.invoices.agent import InvoiceAgent
 from csa.agents.kb.agent import KbAgent
 from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
+from csa.agents.payments.agent import PaymentAgent
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent
 from csa.agents.tickets.agent import TicketAgent
 from csa.console.access import authenticate, human_admin, tenant
@@ -36,6 +37,7 @@ _AGENTS = (
     InvoiceAgent,
     BookingAgent,
     SubscriptionAgent,
+    PaymentAgent,
 )
 
 

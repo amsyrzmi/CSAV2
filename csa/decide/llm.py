@@ -77,7 +77,7 @@ _SHOP_STOCK_RULE = (
 # Shown to the classifier and the planner (with their rules) only for a company that has them
 # switched on (Context.capabilities), so the bot fits a company that sells only TikTok Shop
 # products as well as one that sells plans. Every other agent is shown to all.
-_COMPANY_AGENTS = frozenset({"subscription_agent", "ecommerce_agent"})
+_COMPANY_AGENTS = frozenset({"subscription_agent", "ecommerce_agent", "payment_agent"})
 
 # Subscriptions (spec 6): the planner is told which action each kind of question uses, that the
 # server (not the model) finds the customer's subscriptions, and that a pause, cancel or change

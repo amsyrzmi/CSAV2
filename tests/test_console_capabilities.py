@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -148,7 +149,7 @@ def test_invoices_console_endpoints(
             "contact_id": uuid.uuid4(),
             "order_id": "ORD-123",
             "status": "unpaid",
-            "amount": 199.50,
+            "amount": Decimal("199.50"),
             "currency": "MYR",
             "issued_at": datetime(2026, 4, 10),
             "due_at": datetime(2026, 4, 25),
@@ -176,14 +177,15 @@ def test_invoices_console_endpoints(
         assert len(invoices) == 1
         assert invoices[0]["id"] == "INV-1001"
         assert invoices[0]["contact_name"] == "John Doe"
+        # Money is a decimal string, never a float.
+        assert invoices[0]["amount"] == "199.50"
 
-        # 2. Download link
+        # 2. The download link route is gone (it only ever answered 501).
         dl_resp = client.get("/console/v1/invoices/INV-1001/download-link", headers=headers)
-        assert dl_resp.status_code == 501
-        assert "M6" in dl_resp.json()["detail"]
+        assert dl_resp.status_code in (404, 405)
         assert [c.args[1:] for c in gate.await_args_list] == [
             (client_id, frozenset({"orders_products"}), frozenset({"active"}))
-        ] * 2
+        ]
 
 
 # --- last_change (0502): action derivation and the actor rule, without a database.

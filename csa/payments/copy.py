@@ -5,6 +5,9 @@ and due date, a method's details and the instructions staff wrote for it) and no
 typed, so a reference, an amount or an account number is always inserted exactly as stored.
 Staff-only fields (void reason, who voided, payment notes, a claim note) are never read here.
 
+The customer bot's payment agent answers only with these texts (`invoice_line`, `method_line`,
+`reference_line` and the agent's own lines at the end), so its reply is exact without a model.
+
 Amounts are written with `csa.agents.facts.money` ("MYR 1,059.90"). Dates are the local date in
 the company's time zone, day, month name and year ("20 December 2026", "20 Disember 2026"): the
 day of a booking reminder's date (`csa.bookings.bot.format_slot`), with no time, since an invoice
@@ -52,8 +55,8 @@ def local_date(value: datetime, locale: Locale, tz: str | ZoneInfo) -> str:
     return f"{local.day} {_MONTHS[locale][local.month - 1]} {local.year}"
 
 
-def _ref(inv: InvoiceRecord) -> str:
-    # Invoices made before references existed carry none; their id is what staff see for them.
+def ref_of(inv: InvoiceRecord) -> str:
+    """The reference a customer pays with; an invoice made before references existed has its id."""
     return inv.reference or inv.id
 
 
@@ -64,7 +67,7 @@ def invoice_line(inv: InvoiceRecord, locale: Locale, tz: str | ZoneInfo) -> str:
     """
     amount = money(inv.amount, inv.currency)
     if locale == "ms":
-        head = f"Invois {_ref(inv)}: {amount}"
+        head = f"Invois {ref_of(inv)}: {amount}"
         plan = f" untuk {inv.plan_name}" if inv.plan_name else ""
         if inv.due_at is None:
             return f"{head}{plan}."
@@ -72,7 +75,7 @@ def invoice_line(inv: InvoiceRecord, locale: Locale, tz: str | ZoneInfo) -> str:
         if inv.status == "overdue":
             return f"{head}{plan}, tarikh akhir {date} dah lepas."
         return f"{head}{plan}, kena bayar sebelum {date}."
-    head = f"Invoice {_ref(inv)}: {amount}"
+    head = f"Invoice {ref_of(inv)}: {amount}"
     plan = f" for {inv.plan_name}" if inv.plan_name else ""
     if inv.due_at is None:
         return f"{head}{plan}."
@@ -122,7 +125,7 @@ def _first_line(
     """The first line, chosen by the real local due date against `today`, not by the step: a
     step-0 reminder held back a day by quiet hours or the daily cap says "was due on"."""
     amount = money(inv.amount, inv.currency)
-    ref = _ref(inv)
+    ref = ref_of(inv)
     zone = _zone(tz)
     # An invoice without a due date (none is reminded) reads as due today.
     due = inv.due_at.astimezone(zone).date() if inv.due_at is not None else today
@@ -166,7 +169,7 @@ def reminder_text(
     """
     lines = [_first_line(inv, today=today, brand=brand, locale=locale, tz=tz)]
     lines += [method_line(m, locale) for m in methods]
-    lines.append(reference_line([_ref(inv)], locale))
+    lines.append(reference_line([ref_of(inv)], locale))
     if locale == "ms":
         lines.append(
             "Kalau dah bayar, balas sini dan bagitahu bila ya."
@@ -180,3 +183,107 @@ def reminder_text(
             else "If you've already paid, please let us know when."
         )
     return "\n".join(lines)
+
+
+# --- the payment agent's own lines ----------------------------------------------------------------
+
+
+def _amount(inv: InvoiceRecord) -> str:
+    return money(inv.amount, inv.currency)
+
+
+def claimed_line(inv: InvoiceRecord, locale: Locale) -> str:
+    """The customer said they paid; staff have not confirmed it."""
+    if locale == "ms":
+        return (
+            f"Invois {ref_of(inv)} ({_amount(inv)}): awak dah bagitahu dah bayar. Belum disahkan "
+            "lagi; kami sahkan bila duit dah masuk akaun."
+        )
+    return (
+        f"Invoice {ref_of(inv)} ({_amount(inv)}): you told us you paid. It isn't confirmed yet; "
+        "we confirm it once it shows in our account."
+    )
+
+
+def unpaid_line(inv: InvoiceRecord, locale: Locale) -> str:
+    """An open invoice with no payment on the ledger."""
+    if locale == "ms":
+        return (
+            f"Invois {ref_of(inv)} ({_amount(inv)}) belum dibayar. Belum ada bayaran direkodkan "
+            "untuknya."
+        )
+    return (
+        f"Invoice {ref_of(inv)} ({_amount(inv)}) is not paid yet. No payment has been recorded "
+        "for it."
+    )
+
+
+def paid_line(inv: InvoiceRecord, paid_at: datetime, locale: Locale, tz: str | ZoneInfo) -> str:
+    """A paid invoice; the caller passes only one whose payment is on the ledger."""
+    when = local_date(paid_at, locale, tz)
+    if locale == "ms":
+        return f"Invois {ref_of(inv)} ({_amount(inv)}) dah dibayar pada {when}."
+    return f"Invoice {ref_of(inv)} ({_amount(inv)}) was paid on {when}."
+
+
+def after_paying_line(locale: Locale) -> str:
+    """What to do once paid: the payment is confirmed when it reaches the company's account."""
+    if locale == "ms":
+        return (
+            "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+            "akaun."
+        )
+    return (
+        "After paying, tell me when and from which bank, and we'll confirm once it shows in our "
+        "account."
+    )
+
+
+def which_line(refs: Sequence[str], locale: Locale) -> str:
+    """The customer says they paid and more than one invoice is waiting."""
+    listed = ", ".join(refs)
+    if locale == "ms":
+        return f"Ada lebih dari satu invois menunggu: {listed}. Yang mana satu awak bayar?"
+    return f"You have more than one invoice waiting: {listed}. Which one did you pay?"
+
+
+def claim_noted_line(ref: str, locale: Locale) -> str:
+    """The claim is recorded for staff; the invoice is not paid until they confirm it."""
+    if locale == "ms":
+        return (
+            f"Terima kasih, saya dah catat awak bayar invois {ref}. Kami sahkan bila duit dah "
+            "masuk akaun; sebelum tu ia belum ditanda dibayar."
+        )
+    return (
+        f"Thanks, I've noted that you paid invoice {ref}. We'll confirm once it shows in our "
+        "account; until then it isn't marked as paid."
+    )
+
+
+def already_paid_line(ref: str, locale: Locale) -> str:
+    if locale == "ms":
+        return f"Invois {ref} dah dibayar."
+    return f"Invoice {ref} is already paid."
+
+
+def nothing_due_line(locale: Locale) -> str:
+    if locale == "ms":
+        return "Takde invois yang perlu dibayar sekarang."
+    return "You have no invoice waiting for payment."
+
+
+def reference_unknown_line(ref: str, locale: Locale) -> str:
+    """`ref` is what the customer typed (normalised when it is a reference), never a stored one."""
+    if locale == "ms":
+        return f"Saya tak jumpa invois {ref} dalam chat ni."
+    return f"I can't find invoice {ref} on this chat."
+
+
+def not_set_up_line(locale: Locale) -> str:
+    """The company has not switched payments on (or has no way to pay set up)."""
+    if locale == "ms":
+        return (
+            "Butiran bayaran belum disediakan kat sini lagi. Saya boleh hantar soalan ni kepada "
+            "team."
+        )
+    return "Payment details aren't set up in this chat yet. I can pass your question to the team."

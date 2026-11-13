@@ -40,6 +40,7 @@ const CAPABILITY_AVATARS = new Map<string, AgentId>([
   ["invoice_agent", "invoices"],
   ["ecommerce_agent", "ecommerce"],
   ["subscription_agent", "subscriptions"],
+  ["payment_agent", "subscriptions"],
   ["booking_agent", "bookings"],
   ["lhdn_agent", "einvoicing"],
 ]);

@@ -386,7 +386,23 @@ def test_capabilities_cover_plannable_agents() -> None:
         "invoice_agent",
         "booking_agent",
         "subscription_agent",
+        "payment_agent",
     }
+
+
+@pytest.mark.parametrize("call", ["classify", "plan"])
+async def test_the_payment_agent_is_named_only_to_a_company_that_has_it(call: str) -> None:
+    for ctx in (Context(), Context(capabilities=["subscription_agent", "ecommerce_agent"])):
+        system, _ = await _prompts_for(ctx, call)
+        assert "payment_agent" not in system, call
+    system, _ = await _prompts_for(Context(capabilities=["payment_agent"]), call)
+    assert "payment_agent" in system
+    assert "the server finds the invoices from this chat" in system
+    if call == "plan":
+        schemas = json.loads(
+            system.split("Agent input schemas: ", 1)[1].split(". Agent purposes")[0]
+        )
+        assert set(schemas["payment_agent"]["properties"]) == {"action", "reference", "note"}
 
 
 async def test_callback_turn_skips_llm_classification() -> None:

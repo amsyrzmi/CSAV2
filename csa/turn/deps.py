@@ -32,6 +32,7 @@ from csa.agents.invoices.agent import InvoiceAgent
 from csa.agents.kb.agent import KbAgent
 from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
+from csa.agents.payments.agent import PaymentAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
 from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN
@@ -128,7 +129,7 @@ CAPABILITIES = {
         "order number"
     ),
     "kb_agent": "Knowledge base search and FAQ lookup for business questions and product docs",
-    "invoice_agent": "Invoice lookup, status check, and signed download links",
+    "invoice_agent": "Invoice lookup and status",
     "booking_agent": (
         "Free times for a service, booking, moving and cancelling the customer's own "
         "appointments, and looking up their bookings"
@@ -137,6 +138,11 @@ CAPABILITIES = {
         "The plans on offer, the customer's own plan (found from this chat), signing the "
         "customer up for a plan, and requests to pause, cancel or change it that staff decide; "
         "no billing changes"
+    ),
+    "payment_agent": (
+        "How to pay the customer's own invoices (bank account, DuitNow and the invoice "
+        "reference), whether a payment was recorded, and noting that the customer says they "
+        "paid; the server finds the invoices from this chat"
     ),
 }
 
@@ -149,6 +155,7 @@ _PLANNABLE: dict[str, Any] = {
     "invoice_agent": InvoiceAgent,
     "booking_agent": BookingAgent,
     "subscription_agent": SubscriptionAgent,
+    "payment_agent": PaymentAgent,
 }
 
 
@@ -170,9 +177,25 @@ def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
     ]
 
 
+def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
+    """The facts (with their turn ids) of every payment task that answered in this turn.
+
+    Such a turn's reply is these facts as they stand (`compose`): an account number, a reference
+    or an amount must reach the customer exactly as the database holds it, and "paid" only when
+    the ledger says so, which a model's rewording could not promise.
+    """
+    return [
+        (f"{result.task_id}:{fact.id}", fact)
+        for result in state.results
+        if result.ok and result.agent == PaymentAgent.name
+        for fact in result.facts
+    ]
+
+
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
-    """The facts of a booking write, as they stand, as the reply (the agent writes them to be
-    read by a customer). Marked `template`, so the coordinator's check is grounding alone."""
+    """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
+    a booking write's, or a payment answer's. Marked `template`, so the coordinator's check is
+    grounding alone."""
     return Draft(
         text="\n".join(fact.text for _, fact in written)[:8000],
         language=language if len(language) >= 2 else "en",
@@ -279,6 +302,7 @@ class PostgresTurnDependencies:
             "invoice_agent",
             "booking_agent",
             "subscription_agent",
+            "payment_agent",
         }
     )
 
@@ -320,6 +344,7 @@ class PostgresTurnDependencies:
                 "invoice_agent": InvoiceAgent(),
                 "booking_agent": self._booking_agent,
                 "subscription_agent": SubscriptionAgent(),
+                "payment_agent": PaymentAgent(),
             },
             breaker=CircuitBreaker(store=PostgresBreakerStore(app_pool)),
             recorder=PostgresRunRecorder(app_pool),
@@ -548,6 +573,9 @@ class PostgresTurnDependencies:
             pool=self._pool,
             pending_actions=self._pending,
             timezone=row["timezone"],
+            # The language this turn is answered in where an agent words its facts itself (the
+            # payment agent); a channel that reports none ("und") falls to the word detector.
+            locale=_turn_language(envelope),
             callback_action_id=envelope.callback.action_id if envelope.callback else None,
         )
         if task.agent == "booking_agent":
@@ -567,6 +595,11 @@ class PostgresTurnDependencies:
         return []
 
     async def compose(self, state: TurnState) -> Draft:
+        paid = payment_facts(state)
+        if paid and not _hands_off(state):
+            # Facts only, in the language the agent wrote them in; the model is never asked. Other
+            # tasks' facts are left out (the planner plans payment tasks alone).
+            return _facts_draft(paid, _turn_language(state.envelope))
         written = booking_write_facts(state)
         if not written:
             return await self._compose(state)
@@ -602,9 +635,7 @@ class PostgresTurnDependencies:
                 language=state.envelope.message.language,
                 composer="template",
             )
-        if (state.handoff is not None and state.handoff.required) or (
-            state.plan is not None and state.plan.reply_strategy == "escalate"
-        ):
+        if _hands_off(state):
             return await self._handoff_draft(state)
         language = state.envelope.message.language
         brand = await self._client_brand(state.envelope.client_id)
@@ -1053,6 +1084,18 @@ def _handoff_may_be_written(state: TurnState) -> bool:
     return reason in {"plan_escalated", LADDER_REASON} and (
         state.route not in _TEMPLATE_HANDOFF_ROUTES
     )
+
+
+def _hands_off(state: TurnState) -> bool:
+    """Whether this turn's reply is the handoff reply (a person is being asked in)."""
+    return (state.handoff is not None and state.handoff.required) or (
+        state.plan is not None and state.plan.reply_strategy == "escalate"
+    )
+
+
+def _turn_language(envelope: Envelope) -> str:
+    """The channel's language for the message, else the word detector's."""
+    return resolve_language(None, envelope.message.language, envelope.message.body_redacted)
 
 
 def _require_conversation(envelope: Envelope) -> UUID:
