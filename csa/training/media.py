@@ -13,6 +13,19 @@ video is parsed as a damaged video, never followed; ``-protocol_whitelist`` allo
 for a local path and ``https,tls,tcp`` for a presigned S3 URL; mov's data references stay off.
 Every audio command takes ``-vn`` and ``-threads 1``.
 
+A presigned URL's query string is a credential, so an https source is read with ``-tls_verify 1``
+against ``_CA_FILE`` (the runtime image's Debian bundle; the static build's own default path does
+not exist there and the empty environment hides ``SSL_CERT_FILE``). A missing bundle is
+``MediaUnavailable("failed")``, never an unverified read. Known gap, measured on the pinned 7.1.1
+build: its OpenSSL backend verifies the certificate chain but NOT the hostname (also not with
+``-verifyhost``), so any certificate from a trusted CA is accepted for any host. The storage smoke
+(Task 13) must account for that; ``tests/test_training_media.py`` holds a strict xfail that turns
+red once a newer build starts checking.
+
+A WebM without a duration (browser MediaRecorder output: no Duration, no Cues) is measured by a
+second child that demuxes it without decoding (``-c copy`` to the null muxer, stopped just past
+``MAX_VIDEO_SECONDS``) and reads the last ``out_time_us`` from ``-progress``.
+
 Outcomes: a file the tool cannot read (it fails, is killed at a limit, floods stdout or answers
 with something unusable) is ``MediaRefused("training_video_unreadable")``; a codec outside the
 library's sets is ``MediaRefused("training_video_codec")``. ``MediaUnavailable`` is
@@ -62,12 +75,15 @@ AUDIO_BITRATE = "32k"
 EXIT_NOT_READY = 125  # the limits could not be set
 EXIT_NO_TOOL = 126  # the tool could not be executed
 
+_CA_FILE = "/etc/ssl/certs/ca-certificates.crt"
+"""CA bundle for presigned URLs (python:3.12-slim-bookworm); tests replace it, user data never."""
+
 _CHILD_OPEN_FILES = 64
 _CHILD_FILE_BYTES = MAX_AUDIO_BYTES  # the largest file a tool writes is one audio chunk
 _MAX_DURATION_MS = 2**31 - 1
 
 _LIMITED_EXEC = (
-    "import os, resource, sys\n"
+    "import os, resource, signal, sys\n"
     "try:\n"
     "    cpu, memory, file_bytes, files = (int(value) for value in sys.argv[1:5])\n"
     "    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu + 1))\n"
@@ -76,6 +92,10 @@ _LIMITED_EXEC = (
     "    resource.setrlimit(resource.RLIMIT_NOFILE, (files, files))\n"
     "    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
     "    os.nice(10)\n"
+    # Python ignores these two; ignored signals survive execve, so put the defaults back: a tool
+    # past the file-size limit is then killed by SIGXFSZ instead of seeing a write error.
+    "    signal.signal(signal.SIGPIPE, signal.SIG_DFL)\n"
+    "    signal.signal(signal.SIGXFSZ, signal.SIG_DFL)\n"
     "except BaseException:\n"
     f"    os._exit({EXIT_NOT_READY})\n"
     "try:\n"
@@ -130,16 +150,31 @@ def input_args(source: str, container: VideoContainer) -> list[str]:
     # mov can point at other files (data references); keep that off, as it is by default.
     format_options = ["-enable_drefs", "0"] if demuxer == "mov" else []
     if source.startswith("https://"):
+        if not os.path.isfile(_CA_FILE):
+            raise MediaUnavailable("failed")  # never read a presigned URL unverified
         whitelist, url = "https,tls,tcp", source
+        tls_options = ["-tls_verify", "1", "-ca_file", _CA_FILE]
     elif source.startswith("/"):
-        whitelist, url = "file", f"file:{source}"
+        whitelist, url, tls_options = "file", f"file:{source}", []
     else:
         raise ValueError("a media source is an absolute path or an https URL")
-    return ["-protocol_whitelist", whitelist, "-f", demuxer, *format_options, "-i", url]
+    return [
+        "-protocol_whitelist",
+        whitelist,
+        *tls_options,
+        "-f",
+        demuxer,
+        *format_options,
+        "-i",
+        url,
+    ]
 
 
 async def probe(source: str, container: VideoContainer) -> Probe:
-    """Duration and the first video and audio streams' codecs (ffprobe; no frame is decoded)."""
+    """Duration and the first video and audio streams' codecs (ffprobe; no frame is decoded).
+
+    A WebM that declares no duration is measured by demuxing it (see the module docstring).
+    """
     args = [
         "-v",
         "error",
@@ -152,7 +187,38 @@ async def probe(source: str, container: VideoContainer) -> Probe:
         "-show_entries",
         "format=duration:stream=codec_type,codec_name:stream_disposition=attached_pic",
     ]
-    return await _run("ffprobe", "probe", args, source, _parse_probe)
+    may_lack_duration = container == "webm"
+    found = await _run(
+        "ffprobe", "probe", args, source, lambda output: _parse_probe(output, may_lack_duration)
+    )
+    if found.duration_ms is not None:
+        return Probe(found.duration_ms, found.video_codec, found.audio_codec, found.has_audio)
+    duration_ms = await _demuxed_duration_ms(source, container)
+    return Probe(duration_ms, found.video_codec, found.audio_codec, found.has_audio)
+
+
+async def _demuxed_duration_ms(source: str, container: VideoContainer) -> int:
+    """How far a demux pass gets (packets copied to the null muxer, nothing decoded)."""
+    args = [
+        *_COMMON,
+        "-threads",
+        "1",
+        *input_args(source, container),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-t",
+        str(limits.MAX_VIDEO_SECONDS + 1),
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        "100000",
+        "-f",
+        "null",
+        "-",
+    ]
+    return await _run("ffmpeg", "duration", args, source, _parse_out_time)
 
 
 def check_playable(p: Probe) -> Literal["hevc"] | None:
@@ -272,16 +338,23 @@ class _ProbeOutput(_Loose):
     format: _Format
 
 
-def _parse_probe(output: bytes) -> Probe:
+@dataclass(frozen=True)
+class _Probed:
+    duration_ms: int | None
+    video_codec: str | None
+    audio_codec: str | None
+    has_audio: bool
+
+
+def _parse_probe(output: bytes, may_lack_duration: bool) -> _Probed:
     parsed = _ProbeOutput.model_validate_json(output)
-    if parsed.format.duration is None:
-        raise ValueError("no duration")
-    seconds = float(parsed.format.duration)
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise ValueError("no usable duration")
-    duration_ms = round(seconds * 1000)
-    if duration_ms > _MAX_DURATION_MS:
-        raise ValueError("duration out of range")
+    declared = parsed.format.duration
+    if declared is None or declared == "N/A":
+        if not may_lack_duration:
+            raise ValueError("no duration")
+        duration_ms = None
+    else:
+        duration_ms = _milliseconds(float(declared) * 1000)
     videos = [
         stream
         for stream in parsed.streams
@@ -290,12 +363,32 @@ def _parse_probe(output: bytes) -> Probe:
     audios = [stream for stream in parsed.streams if stream.codec_type == "audio"]
     if not videos and not audios:
         raise ValueError("no video or audio stream")
-    return Probe(
+    return _Probed(
         duration_ms=duration_ms,
         video_codec=videos[0].codec_name if videos else None,
         audio_codec=audios[0].codec_name if audios else None,
         has_audio=bool(audios),
     )
+
+
+def _milliseconds(value: float) -> int:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("no usable duration")
+    duration_ms = round(value)
+    if duration_ms < 1 or duration_ms > _MAX_DURATION_MS:
+        raise ValueError("duration out of range")
+    return duration_ms
+
+
+def _parse_out_time(output: bytes) -> int:
+    reached: int | None = None
+    for line in output.decode("ascii").splitlines():
+        key, _, value = line.partition("=")
+        if key == "out_time_us" and value.strip().isdigit():
+            reached = int(value)
+    if reached is None:
+        raise ValueError("no packet demuxed")
+    return _milliseconds(reached / 1000)
 
 
 def _parse_peak(output: bytes) -> float:
@@ -380,7 +473,8 @@ async def _run[Result](
             outcome, code = "missing", "ffmpeg_missing"
             raise MediaUnavailable("ffmpeg_missing")
         if returncode < 0:
-            # A signal: SIGXCPU or SIGKILL at the CPU limit, SIGXFSZ, or a crash.
+            # A signal: SIGXCPU or SIGKILL at the CPU limit, SIGXFSZ at the file-size limit (the
+            # bootstrap restores its default), or a crash.
             outcome, code = "killed", UNREADABLE
             raise MediaRefused(UNREADABLE)
         if returncode != 0:
