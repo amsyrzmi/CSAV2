@@ -8191,6 +8191,7 @@
       },
       "ItemOut": {
         "additionalProperties": false,
+        "description": "One library item. A PDF has a view mode and a page count; a video has a duration instead.\n\n``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.\n``status`` is ``ready`` for every PDF.",
         "properties": {
           "byte_size": {
             "title": "Byte Size",
@@ -8209,6 +8210,28 @@
             "title": "Description",
             "type": "string"
           },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
           "has_summary": {
             "title": "Has Summary",
             "type": "boolean"
@@ -8218,9 +8241,58 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "enum": [
+              "pdf",
+              "video"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "const": "hevc",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
           "page_count": {
-            "title": "Page Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "processing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Processing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "uploading",
+              "uploaded",
+              "transcribing",
+              "summarising",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
           },
           "title": {
             "title": "Title",
@@ -8238,16 +8310,24 @@
             "title": "Uploaded By Name"
           },
           "view_mode": {
-            "enum": [
-              "slides",
-              "document"
+            "anyOf": [
+              {
+                "enum": [
+                  "slides",
+                  "document"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "View Mode",
-            "type": "string"
+            "title": "View Mode"
           }
         },
         "required": [
           "id",
+          "kind",
           "title",
           "description",
           "category",
@@ -8256,7 +8336,12 @@
           "byte_size",
           "created_at",
           "uploaded_by_name",
-          "has_summary"
+          "has_summary",
+          "status",
+          "duration_ms",
+          "failure",
+          "processing",
+          "notice"
         ],
         "title": "ItemOut",
         "type": "object"
@@ -12070,6 +12155,47 @@
           "enabled"
         ],
         "title": "PrivateAccessSave",
+        "type": "object"
+      },
+      "Processing": {
+        "additionalProperties": false,
+        "description": "A video's progress, for managers; ``waiting`` says the daily processing limit is used.",
+        "properties": {
+          "chunks_done": {
+            "title": "Chunks Done",
+            "type": "integer"
+          },
+          "chunks_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Total"
+          },
+          "stage": {
+            "enum": [
+              "transcribing",
+              "summarising"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "waiting": {
+            "title": "Waiting",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stage",
+          "chunks_done",
+          "chunks_total",
+          "waiting"
+        ],
+        "title": "Processing",
         "type": "object"
       },
       "ProductPage": {

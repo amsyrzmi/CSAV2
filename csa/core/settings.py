@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     # Training library PDFs land in TRAINING_UPLOAD_ROOT/<client_id>/; without it the routes
     # answer 503.
     TRAINING_UPLOAD_ROOT: Path | None = None
+    # Video in the training library: while false, starting a video upload answers 503
+    # training_video_unavailable and no new video can be added.
+    TRAINING_VIDEO_ENABLED: bool = False
     KB_INGEST_ENABLED: bool = False
     # Where KB, HR and training files live: the *_UPLOAD_ROOT folders ("local") or one S3
     # bucket ("s3").

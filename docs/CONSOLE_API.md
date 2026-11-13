@@ -1876,13 +1876,14 @@ not make one the booking, its mail and the answer are as without Meet, and the j
 
 ## Training library
 
-A company's own training PDFs: staff list them and open them, tenant admins and the company's HR
+A company's own training PDFs and videos: staff list them and open them, tenant admins and the company's HR
 owner add, edit and remove them, and anyone may ask for a stored summary. The web client is
 `TrainingWorkspace` under `/training` and `/portal/training`. Operations, settings and what is out
 of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` (assistant page key)
 and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
-`docs/console_openapi.json` as `ItemOut`, `ItemList`, `ItemPatch`, `SummaryRequest`, `SummaryOut`
-and `NoSummary`.
+`docs/console_openapi.json` as `ItemOut`, `Processing`, `ItemList`, `ItemPatch`, `SummaryRequest`,
+`SummaryOut` and `NoSummary`. Migrations `0600` and `0601` add video to the same items and the tables
+behind it.
 
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
 every role, a platform admin included, gets 403 `package_inactive` until it is activated) and for
@@ -1913,13 +1914,13 @@ Who may call:
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary}`. `view_mode` is `slides` or `document`. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
+| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
 | `POST /training/items` | manage | 201 `ItemOut`. `multipart/form-data` with one part named `file` and no other field, plus the `Idempotency-Key` header (a UUID). Title is the file name without `.pdf` (cut to 120 characters), `view_mode` is `slides` when the first page is landscape (its `/Rotate` counted), else `document`. Step one of the two-step upload, below |
-| `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below |
-| `DELETE /training/items/{id}` | manage | 204. Removes the row, then the file |
-| `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below |
-| `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model |
-| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below |
+| `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below. On a video `title`, `description` and `category` work in every state; `view_mode` is 422 `training_not_pdf` and nothing in that request is applied |
+| `DELETE /training/items/{id}` | manage | 204. Removes the row (a video's pieces, job, transcript and search windows go with it, in any state), then the file or the unfinished upload and the store's multipart upload. The video's processing-usage row stays, so deleting does not give its seconds back |
+| `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below. A video is 404 `training_not_found` here |
+| `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model. Works for a video as for a PDF; a video that is not `ready` is 404 for a reader, and a silent or failed video answers `{"summary": null}` to a manager |
+| `POST /training/items/{id}/summary` | read; `regenerate: true` needs manage | Body `SummaryRequest` `{regenerate?: false}`. The body is required (an empty POST is 422); send `{}` for a plain read-or-make. 200 `SummaryOut` `{summary, key_points, truncated, model, summarised_at}`. Returns the stored summary; makes and stores one first when there is none. `regenerate: true` makes a new one and replaces the stored text. Details below. On a video it is 409 `training_summary_automatic` (a video's summary is made when it is processed), after the 403 for `regenerate: true` from a non-manager and the 404 for an item the caller cannot see |
 
 ### Limits
 
@@ -1990,13 +1991,14 @@ a plain sentence (see below).
 | 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit or remove; anyone but a manager sending `regenerate: true` |
 | 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |
-| 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company |
+| 409 | `training_library_full` | The upload would pass 300 items or 500 MB for the company (PDFs only; videos are counted apart) |
+| 409 | `training_summary_automatic` | `POST .../summary` on a video |
 | 413 | `training_file_too_large` | The file is over 25 MB, or the body passes the bound |
 | 413 | `training_upload_invalid` | The multipart headers pass 8 KB |
 | 415 | `training_upload_invalid` | The body is not `multipart/form-data` |
 | 422 | `training_upload_invalid` | Anything else wrong with the form: no file, two files, another field name, a malformed body |
 | 422 | `training_name_invalid` | The file name fails the name rule above |
-| 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty |
+| 422 | `training_not_pdf` | Extension is not `.pdf`, the content does not start with `%PDF-`, or the file is empty; also `view_mode` in a `PATCH` of a video |
 | 422 | `training_pdf_damaged` | The PDF cannot be read, has no pages, or its page tree is broken or hostile |
 | 422 | `training_pdf_protected` | The PDF is encrypted |
 | 422 | `training_pdf_too_many_pages` | More than 300 pages (a page count that lies is caught after the walk) |

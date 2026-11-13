@@ -16,6 +16,9 @@ from pydantic import (
 )
 
 ViewMode = Literal["slides", "document"]
+Kind = Literal["pdf", "video"]
+VideoStatus = Literal["uploading", "uploaded", "transcribing", "summarising", "ready", "failed"]
+Stage = Literal["transcribing", "summarising"]
 
 TITLE_MAX_CHARS = 120
 DESCRIPTION_MAX_CHARS = 1000
@@ -58,17 +61,38 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Processing(_Model):
+    """A video's progress, for managers; ``waiting`` says the daily processing limit is used."""
+
+    stage: Stage
+    chunks_done: int
+    chunks_total: int | None
+    waiting: bool
+
+
 class ItemOut(_Model):
+    """One library item. A PDF has a view mode and a page count; a video has a duration instead.
+
+    ``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.
+    ``status`` is ``ready`` for every PDF.
+    """
+
     id: UUID
+    kind: Kind
     title: str
     description: str
     category: str
-    view_mode: ViewMode
-    page_count: int
+    view_mode: ViewMode | None
+    page_count: int | None
     byte_size: int
     created_at: AwareDatetime
     uploaded_by_name: str | None
     has_summary: bool
+    status: VideoStatus
+    duration_ms: int | None
+    failure: str | None
+    processing: Processing | None
+    notice: Literal["hevc"] | None
 
 
 class ItemList(_Model):

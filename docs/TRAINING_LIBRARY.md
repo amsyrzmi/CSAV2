@@ -41,8 +41,9 @@ exactly one write, asking for a summary (`POST /training/items/{id}/summary`); t
 |---|---|
 | One file | 25 MB |
 | Pages in one PDF | 300 |
-| Items per company | 300 |
-| Total size per company | 500 MB |
+| PDFs per company | 300 |
+| Total size of PDFs per company | 500 MB |
+| Videos per company | 50, 5 GB (counting uploads in progress), 2 uploads open at once; PDFs and videos are counted apart |
 | Title / description / category | 120 / 1000 / 60 characters |
 | Text sent for one summary | first 24,000 characters |
 
@@ -65,6 +66,7 @@ it for itself with `max_file`.
 | `STORAGE_BACKEND` | `local` (default) or `s3`; see [OBJECT_STORAGE.md](./OBJECT_STORAGE.md). |
 | `TRAINING_UPLOAD_ROOT` | Local backend only: the folder for training PDFs, stored as `<root>/<company id>/<uuid>.pdf`. Unset means the store is not configured and every training route answers 503 `training_storage_unavailable`. It may not be, contain or sit inside `KB_UPLOAD_ROOT` or `HR_UPLOAD_ROOT`. |
 | S3 `training/` prefix | With `STORAGE_BACKEND=s3` the files go under `training/<company id>/<name>` in the same bucket, with the same SSE-S3 settings. `TRAINING_UPLOAD_ROOT` must then be unset (anything else stops the process at startup). The application key needs list, read, write and delete on `training/*`: see the IAM statement and the lifecycle rules in [OBJECT_STORAGE.md](./OBJECT_STORAGE.md). A deleted object stays recoverable there for 7 days as a non-current version. |
+| `TRAINING_VIDEO_ENABLED` | `false` by default. While false, starting a video upload answers 503 `training_video_unavailable`; existing videos are still listed, edited and removed, and removal aborts an unfinished upload. |
 | `GROQ_API_KEY`, `GROQ_MODEL` | The language-model provider's key and model name, used by summaries (the same settings the assistants use). `GROQ_API_KEY` is a required setting, so the model client is always built at startup when the console's identity block runs; a first summary answers 503 `training_assistant_unavailable` for want of a client only when that block did not run. |
 
 Staging mounts a new volume for the local root on the gateway only (`staging-training-uploads`, in
@@ -194,16 +196,23 @@ not inspected; the viewer is meant to run with scripting off.
 ## Operations
 
 - **Removing an item** deletes the row and writes `training.item_removed`, then sweeps the company's
-  files. A download already open still finishes. If the sweep fails the row is already gone, the
+  files. For a video, in any state, the row's pieces, job, transcript and search windows go with it;
+  when an upload was open the store's multipart upload is aborted before the sweep (a failed abort is
+  logged as `training_abort_failed` and the hourly sweep of open uploads settles it); the video's
+  processing-usage row stays. A download already open still finishes. If the sweep fails the row is already gone, the
   failure is logged (`training_cleanup_failed`), and the next sweep removes the file.
-- **The reconcile sweep** (`cleanup` in `csa/training/service.py`) lists the company's stored names
-  and deletes those that have no row, under the same per-company lock as an upload. It runs after
+- **The reconcile sweep** (`cleanup` in `csa/training/store_sweep.py`, also importable from
+  `csa/training/service.py`) lists the company's stored names and deletes those that have no row,
+  under the same per-company lock as an upload. A row keeps its `storage_name`, and a video still
+  `uploading` also keeps `.<storage_name>.part`, so a sweep after a failed PDF never removes a video
+  that is being uploaded. It runs after
   every failed upload that got as far as writing and after every removal. A failed upload therefore
   leaves no orphan and no row; a lost commit acknowledgement is settled against the committed rows
   rather than by guessing.
 - **A stray file** (an orphan from a crash between a write and the sweep) is deleted by the next
   failed upload or removal in that company. The sweep only ever touches names of the form
-  `<uuid>.pdf` (and the local store's `.<uuid>.pdf.part` temporary files). Any other name in the
+  `<uuid>.pdf`, `<uuid>.mp4`, `.m4v`, `.mov` or `.webm` (and the local store's `.<name>.part`
+  temporary files). Any other name in the
   company's folder or prefix is left alone, so remove it by hand from the volume or the `training/`
   prefix. Never delete a `<uuid>.pdf` that has a row: the item would answer 503
   `training_storage_unavailable` on open (the log line `training_file_missing` carries the item id).

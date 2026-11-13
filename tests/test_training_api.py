@@ -36,6 +36,12 @@ ITEM_FIELDS = {
     "created_at",
     "uploaded_by_name",
     "has_summary",
+    "kind",
+    "status",
+    "duration_ms",
+    "failure",
+    "processing",
+    "notice",
 }
 
 
