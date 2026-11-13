@@ -1,4 +1,5 @@
 import { api, patch, post } from "./api";
+import type { InvoiceStatus } from "./payments-api";
 import type { ProposalOut } from "./workspace-api";
 
 /** Mirrors of csa/subscriptions/contracts.py. Decimals arrive as JSON strings. */
@@ -86,9 +87,21 @@ export interface SubscriptionEventOut {
   created_at: string;
 }
 
+/** Mirrors InvoiceBrief: the subscription's open invoice as its drawer shows it. Money is a string. */
+export interface InvoiceBrief {
+  id: string;
+  reference: string | null;
+  status: InvoiceStatus;
+  amount: string;
+  currency: string;
+  due_at: string | null;
+}
+
 export interface SubscriptionDetail {
   subscription: SubscriptionOut;
   events: SubscriptionEventOut[];
+  /** The invoice still waiting for payment, if any (Payments). */
+  open_invoice: InvoiceBrief | null;
 }
 
 export interface SubscriptionCreateIn {
@@ -166,6 +179,10 @@ export interface SignupOut {
   created_at: string;
   decided_at: string | null;
   source_channel: string | null;
+  /** The invoice issued when an automatic sign-up started waiting for payment. */
+  invoice_reference: string | null;
+  /** The email the customer gave at sign-up for payment reminders. Staff only. */
+  email: string | null;
 }
 
 export interface SignupPage {
@@ -499,7 +516,7 @@ export function eventSentence(
         plan("plan")} plan. Waiting to start.`;
       break;
     case "activated":
-      sentence = "Subscription started.";
+      sentence = p.via === "payment" ? "Subscription started when the payment was recorded." : "Subscription started.";
       break;
     case "pending_expired":
       sentence = "Expired before it started, so it was cancelled.";
@@ -544,6 +561,18 @@ export function eventSentence(
       break;
     case "renewed":
       sentence = `Renewed for another period. Next renewal on ${day("renews_at")}.`;
+      break;
+    // Payments (csa/payments/invoices.py mark_paid and the payments due job).
+    case "payment_recorded":
+      sentence = p.recorded_only === true
+        ? "A payment was recorded; the cancelled subscription stays cancelled."
+        : "A payment was recorded.";
+      break;
+    case "resumed_paid":
+      sentence = "Resumed after the overdue payment was recorded.";
+      break;
+    case "suspended_unpaid":
+      sentence = "Paused because an invoice stayed unpaid.";
       break;
     default:
       sentence = "Subscription updated.";

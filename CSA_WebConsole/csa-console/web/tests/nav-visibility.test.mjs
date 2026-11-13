@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { navigationFor, businessPages, knowledgePages, bookingsPages, currentChild, entryForPath, groupParentCurrent } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
+const { navigationFor, businessPages, knowledgePages, bookingsPages, currentChild, entryForPath, groupParentCurrent, consoleHref } = await import(moduleUrl(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8")));
 
 const staff = { role: "tenant_staff", user: { email: "s@example.test", display_name: "S", must_change_password: false }, memberships: [], active_client_id: "t", csrf_token: "" };
 const active = (...keys) => keys.map((key) => ({ key, status: "active" }));
@@ -74,6 +74,33 @@ test("Subscriptions follows its package for members and is always there for plat
   assert.equal(admin.find((l) => l.label === "Subscriptions")?.href, "/subscriptions");
 });
 
+test("Payments shows for admins and staff with an active Subscriptions package, right after Subscriptions", () => {
+  for (const role of ["tenant_admin", "tenant_staff"]) {
+    const links = navigationFor({ ...staff, role }, active("subscriptions", "bookings"));
+    const link = links.find((l) => l.label === "Payments");
+    assert.equal(link?.key, "payments", role);
+    assert.equal(link?.href, "/portal/payments", role);
+    assert.equal(link?.children, undefined, role);
+    const order = links.map((l) => l.label);
+    assert.equal(order.indexOf("Payments"), order.indexOf("Subscriptions") + 1, role);
+  }
+  // Read-only members get 403 on every Payments route, so they get no link.
+  assert.ok(!labels({ ...staff, role: "read_only" }, active("subscriptions")).includes("Payments"));
+  for (const packages of [[], active("customer_support", "bookings"), [{ key: "subscriptions", status: "suspended" }],
+    [{ key: "subscriptions", status: "requested" }]]) {
+    assert.ok(!labels({ ...staff, role: "tenant_admin" }, packages).includes("Payments"), JSON.stringify(packages));
+  }
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.equal(admin.find((l) => l.label === "Payments")?.href, "/payments");
+});
+
+test("consoleHref writes a page path the way the navigation does", () => {
+  assert.equal(consoleHref(false, "payments"), "/portal/payments");
+  assert.equal(consoleHref(true, "payments"), "/payments");
+  assert.equal(consoleHref(true, "payments", { client_id: "t1", invoice: "inv 1" }), "/payments?client_id=t1&invoice=inv+1");
+  assert.equal(consoleHref(false, "payments", { client_id: null, invoice: "inv_1" }), "/portal/payments?invoice=inv_1");
+});
+
 test("Bookings follows its own package, with or without Customer support, and platform admins keep it", () => {
   for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
     const alone = navigationFor({ ...staff, role }, active("bookings"));
@@ -83,7 +110,9 @@ test("Bookings follows its own package, with or without Customer support, and pl
     assert.ok(!alone.some((l) => l.label === "Customer inbox"), "Bookings needs no Customer support");
   }
   const withOthers = labels(staff, active("bookings", "subscriptions", "orders_products"));
-  assert.equal(withOthers.indexOf("Bookings"), withOthers.indexOf("Subscriptions") + 1);
+  // Payments sits between Subscriptions and Bookings.
+  assert.equal(withOthers.indexOf("Bookings"), withOthers.indexOf("Subscriptions") + 2);
+  assert.equal(withOthers.indexOf("Bookings"), withOthers.indexOf("Payments") + 1);
   for (const packages of [[], active("customer_support", "subscriptions"), [{ key: "bookings", status: "suspended" }],
     [{ key: "bookings", status: "requested" }], [{ key: "bookings", status: "available" }]]) {
     assert.ok(!labels(staff, packages).includes("Bookings"), JSON.stringify(packages));
@@ -202,8 +231,8 @@ test("children never add a top-level key", () => {
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  // 16 since Connections joined.
-  assert.equal(keys.size, 16);
+  // 17 since Payments joined.
+  assert.equal(keys.size, 17);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
@@ -211,7 +240,7 @@ test("child literals are href-first so the contract regex never reads them", asy
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
     "activity", "bookings", "business", "connections", "email", "hr", "inbox", "knowledge_base", "members", "overview",
-    "password", "services", "subscriptions", "team", "tenants", "training_library",
+    "password", "payments", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });
 

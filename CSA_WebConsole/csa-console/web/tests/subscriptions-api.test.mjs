@@ -267,6 +267,22 @@ test("timeline events read as plain sentences from action and payload", () => {
   assert.equal(say("something_new", {}), "Subscription updated.");
 });
 
+test("payment events read as plain sentences", () => {
+  const say = (action, payload = {}, actor = "22222222-2222-4222-8222-222222222222") =>
+    subs.eventSentence({ id: 1, actor, action, from_status: null, to_status: null, payload,
+      created_at: "2026-11-12T01:15:00Z" });
+  const paid = { invoice_id: "inv_0001", payment_id: "11111111-1111-4111-8111-111111111111", via: "payment" };
+  assert.equal(say("payment_recorded", paid), "A payment was recorded.");
+  assert.equal(say("payment_recorded", { ...paid, recorded_only: true }),
+    "A payment was recorded; the cancelled subscription stays cancelled.");
+  assert.equal(say("resumed_paid", paid), "Resumed after the overdue payment was recorded.");
+  assert.equal(say("suspended_unpaid", { invoice_id: "inv_0001" }, "system:payments_due"),
+    "Paused because an invoice stayed unpaid.");
+  // A pending subscription started by its payment says so; a staff start reads as before.
+  assert.equal(say("activated", paid), "Subscription started when the payment was recorded.");
+  assert.equal(say("activated", {}), "Subscription started.");
+});
+
 test("action buttons follow the executor's allowed starting states", () => {
   const sub = (status, cancel_at_period_end = false, renews_at = "2026-11-27T01:15:00Z") =>
     ({ status, cancel_at_period_end, renews_at });
