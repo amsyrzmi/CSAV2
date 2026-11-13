@@ -433,6 +433,9 @@ async def test_another_customers_reference_is_not_found_and_not_touched(shop: Sh
     assert typo == [
         ("payment_reference_unknown_1", "I can't find invoice hello there! on this chat.")
     ]
+    # Whitespace runs collapse and control characters go before the cut: one line, always.
+    odd = facts(await shop.run(mine, {"action": "status", "reference": "ab\n\x07c\t\x1bd  e"}))
+    assert odd == [("payment_reference_unknown_1", "I can't find invoice ab c d e on this chat.")]
 
 
 @requires_docker
@@ -478,3 +481,70 @@ async def test_no_fact_carries_a_staff_only_field(shop: Shop) -> None:
     # The void invoice is not one the customer may hear about.
     assert void_ref in everything  # only as the reference they typed, answered "can't find"
     assert everything.count(f"invoice {void_ref} on this chat") == 1
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_payments_on_without_a_transfer_or_qr_method_is_not_set_up(shop: Shop) -> None:
+    contact = await shop.ledger.contact()
+    await shop.invoice(contact)
+    await shop.method("qr", QR, active=False)
+    await shop.w.q(
+        "UPDATE payment_methods SET is_active = false WHERE client_id = %s AND kind <> 'cash'",
+        shop.client,
+    )
+    # Only cash (never listed) is left: the customer is never told to pay nowhere.
+    assert facts(await shop.run(contact, {"action": "instructions"})) == [
+        ("payment_not_set_up_1", NOT_SET_UP_EN)
+    ]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_claim_on_an_invoice_waiting_for_cash_says_it_is_not_paid(shop: Shop) -> None:
+    contact = await shop.ledger.contact()
+    invoice_id, ref = await shop.invoice(contact, status="cash_pending", amount="29.90")
+
+    got = facts(await shop.run(contact, {"action": "claim_paid", "reference": ref}))
+
+    assert got == [
+        (
+            "payment_status_1",
+            f"Invoice {ref} (MYR 29.90) is not paid yet. No payment has been recorded for it.",
+        )
+    ]
+    row = await shop.row(invoice_id)
+    assert row["status"] == "cash_pending" and row["claim_note"] is None
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_instructions_for_the_customers_own_paid_invoice_say_it_is_paid(shop: Shop) -> None:
+    contact = await shop.ledger.contact()
+    await shop.invoice(contact, amount="29.90")
+    paid_at = datetime.now(UTC) - timedelta(days=2)
+    paid_id, paid = await shop.invoice(contact, status="paid", paid_at=paid_at)
+    await shop.ledger.ledger_payment(paid_id, received_at=paid_at)
+
+    got = facts(await shop.run(contact, {"action": "instructions", "reference": paid}))
+
+    assert got == [("payment_already_paid_1", f"Invoice {paid} is already paid.")]
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_a_claim_with_several_claimed_and_none_waiting_repeats_each_claim(
+    shop: Shop,
+) -> None:
+    contact = await shop.ledger.contact()
+    _, first = await shop.invoice(contact, status="proof_submitted", amount="29.90")
+    _, second = await shop.invoice(
+        contact, status="proof_submitted", amount="39.90", due_at=DUE + timedelta(days=1)
+    )
+
+    got = facts(await shop.run(contact, {"action": "claim_paid", "note": "paid again"}))
+
+    assert got == [
+        ("payment_claim_already_1", claimed_en(first, "MYR 29.90")),
+        ("payment_claim_already_2", claimed_en(second, "MYR 39.90")),
+    ]

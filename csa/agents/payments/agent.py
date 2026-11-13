@@ -73,6 +73,12 @@ def _disabled(ctx: AgentContext) -> AgentResult:
     )
 
 
+def _echo(text: str) -> str:
+    """The customer's text as it may be repeated in a reply: one line of printable characters
+    (whitespace runs collapse, control characters go), cut to 12 characters."""
+    return "".join(char for char in " ".join(text.split()) if char.isprintable())[:12]
+
+
 class PaymentAgent:
     name = SOURCE
     Input = PaymentInput
@@ -107,7 +113,7 @@ class PaymentAgent:
                 limit=INVOICE_LIMIT,
             )
             if inp.reference is not None and not invoices:
-                typed = normalise_reference(inp.reference) or inp.reference[:12]
+                typed = normalise_reference(inp.reference) or _echo(inp.reference)
                 line = copy.reference_unknown_line(typed, locale)
                 return _answer(ctx, [("payment_reference_unknown_1", line)])
             if inp.action == "instructions":

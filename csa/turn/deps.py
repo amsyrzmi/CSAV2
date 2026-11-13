@@ -177,6 +177,32 @@ def booking_write_facts(state: TurnState) -> list[tuple[str, Fact]]:
     ]
 
 
+def write_facts(state: TurnState) -> list[tuple[str, Fact]]:
+    """The facts (with their turn ids) of every other agent's write that ran in this turn.
+
+    A write is a planned task whose action is not a read in its agent's `ACTION_RISK`: a booking
+    made, moved or cancelled, a ticket opened or changed, a sign-up or plan request, an order
+    draft. Its facts are true whether it was done or refused. Payment tasks are left out
+    (`payment_facts`), and so is a follow-up task, which is only ever a read (`_admit`).
+    """
+    if state.plan is None:
+        return []
+    writes = {
+        task.task_id
+        for task in state.plan.tasks
+        if task.agent != PaymentAgent.name
+        and task.agent in _PLANNABLE
+        and _PLANNABLE[task.agent].ACTION_RISK.get(str(task.input.get("action")))
+        in {"draft", "commit"}
+    }
+    return [
+        (f"{result.task_id}:{fact.id}", fact)
+        for result in state.results
+        if result.ok and result.task_id in writes
+        for fact in result.facts
+    ]
+
+
 def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
     """The facts (with their turn ids) of every payment task that answered in this turn.
 
@@ -194,8 +220,8 @@ def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
 
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
-    a booking write's, or a payment answer's. Marked `template`, so the coordinator's check is
-    grounding alone."""
+    a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
+    the coordinator's check is grounding alone."""
     return Draft(
         text="\n".join(fact.text for _, fact in written)[:8000],
         language=language if len(language) >= 2 else "en",
@@ -597,9 +623,12 @@ class PostgresTurnDependencies:
     async def compose(self, state: TurnState) -> Draft:
         paid = payment_facts(state)
         if paid and not _hands_off(state):
-            # Facts only, in the language the agent wrote them in; the model is never asked. Other
-            # tasks' facts are left out (the planner plans payment tasks alone).
-            return _facts_draft(paid, _turn_language(state.envelope))
+            # Facts only; the model is never asked. The payment facts are worded in the turn's
+            # language where copy has it (English or Malay, else English); the draft is marked
+            # with the turn's language either way. What another task wrote this turn (a booking, a
+            # ticket, a request) has happened, so the customer is told it first, as its agent
+            # worded it; other tasks' reads are left out (the planner plans payment tasks alone).
+            return _facts_draft([*write_facts(state), *paid], _turn_language(state.envelope))
         written = booking_write_facts(state)
         if not written:
             return await self._compose(state)

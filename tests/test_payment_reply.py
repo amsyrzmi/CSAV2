@@ -98,8 +98,13 @@ def _state(
     handoff: bool = False,
     strategy: str = "auto_reply",
     draft: Draft | None = None,
+    actions: dict[str, str] | None = None,
 ) -> TurnState:
-    tasks = [Task(task_id=r.task_id, agent=r.agent, input={"action": "x"}) for r in results]
+    planned = actions or {}
+    tasks = [
+        Task(task_id=r.task_id, agent=r.agent, input={"action": planned.get(r.task_id, "x")})
+        for r in results
+    ]
     facts = [
         fact.model_copy(update={"id": f"{r.task_id}:{fact.id}"})
         for r in results
@@ -180,6 +185,80 @@ async def test_a_turn_without_payment_tasks_is_composed_as_before() -> None:
     failed = _state([_result("t0-payment_agent", "payment_agent", [], ok=False)])
     again = await _deps(model).compose(failed)
     assert again.composer == "primary" and len(model.calls) == 2
+
+
+BOOKED = ("booking_booked_1", "Booked: Haircut on Tuesday 17 March 2031 at 15:00.")
+TICKET = ("ticket_created_1", "Ticket TCK-2031 is open: card payment refused.")
+SIGNUP = ("subscription_signup_1", "Your sign-up request for Basic is with the team.")
+
+
+@pytest.mark.parametrize(
+    ("agent", "action", "fact"),
+    [
+        ("booking_agent", "book", BOOKED),
+        ("ticket_agent", "create", TICKET),
+        ("subscription_agent", "request_signup", SIGNUP),
+    ],
+)
+async def test_a_payment_reply_keeps_what_the_turn_wrote(
+    agent: str, action: str, fact: tuple[str, str]
+) -> None:
+    # "Book me Tuesday 3pm, and how do I pay?": the write has committed, so the customer is told
+    # it, then how to pay; still the facts as they stand, and the model is never asked.
+    model = Model({"reply": "Pay to account 512000000099.", "used_fact_ids": []})
+    made = _deps(model, semantic_verify=True)
+    write_id = f"t0-{agent}"
+    state = _state(
+        [
+            _result(write_id, agent, [fact]),
+            _result("t1-payment_agent", "payment_agent", FACTS),
+        ],
+        actions={write_id: action, "t1-payment_agent": "instructions"},
+    )
+
+    draft = await made.compose(state)
+
+    assert draft == Draft(
+        text="\n".join([fact[1], *(text for _, text in FACTS)]),
+        language="en",
+        fact_ids=[f"{write_id}:{fact[0]}", *(f"t1-payment_agent:{i}" for i, _ in FACTS)],
+        composer="template",
+    )
+    assert f"account {ACCOUNT}," in draft.text
+    assert await made.verify(state.model_copy(update={"draft": draft})) == Verification(ok=True)
+    assert model.calls == []
+
+
+async def test_a_payment_reply_still_leaves_out_other_tasks_reads() -> None:
+    # Reads of other tasks (and a write that failed, which has no facts) stay out, as before.
+    model = Model({"reply": "We open at 9.", "used_fact_ids": []})
+    reads = _state(
+        [
+            _result("t0-kb_agent", "kb_agent", [("kb_1", "We open at 9 every day.")]),
+            _result("t1-booking_agent", "booking_agent", [("slot_1", "Tuesday 15:00 is free.")]),
+            _result("t2-payment_agent", "payment_agent", FACTS),
+        ],
+        actions={"t1-booking_agent": "availability", "t2-payment_agent": "instructions"},
+    )
+    failed = _state(
+        [
+            _result("t0-ticket_agent", "ticket_agent", [("ticket_1", "TCK-2031 is open.")]),
+            _result("t1-booking_agent", "booking_agent", [], ok=False),
+            _result("t2-payment_agent", "payment_agent", FACTS),
+        ],
+        actions={
+            "t0-ticket_agent": "get",
+            "t1-booking_agent": "book",
+            "t2-payment_agent": "instructions",
+        },
+    )
+
+    for state in (reads, failed):
+        draft = await _deps(model).compose(state)
+        assert draft.text == "\n".join(text for _, text in FACTS)
+        assert draft.fact_ids == [f"t2-payment_agent:{fact_id}" for fact_id, _ in FACTS]
+        assert draft.composer == "template"
+    assert model.calls == []
 
 
 async def test_grounding_refuses_an_invented_account_number() -> None:
