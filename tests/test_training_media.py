@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import struct
@@ -519,7 +520,9 @@ async def test_child_runs_under_the_limits_niced_without_stdin_or_stderr(
     status = Path(f"{report}.status").read_text()
     ignored = re.search(r"^SigIgn:\s*([0-9a-f]+)$", status, re.MULTILINE)
     assert ignored is not None
-    assert int(ignored.group(1), 16) == 0
+    # Only these two: pytest itself may run with others ignored (SIGHUP under nohup).
+    assert int(ignored.group(1), 16) & (1 << (signal.SIGPIPE - 1)) == 0
+    assert int(ignored.group(1), 16) & (1 << (signal.SIGXFSZ - 1)) == 0
     # The bootstrap replaced itself with the tool: no Python process stays in between.
     assert Path(f"{report}.exe").read_text().strip() == os.path.realpath("/bin/sh")
 
@@ -968,8 +971,17 @@ async def test_webm_without_a_duration_is_measured_by_demuxing(
     ).stdout
     assert shown.strip() == b"N/A"  # the precondition: ffprobe alone cannot tell
 
+    commands: list[list[str]] = []
+    original_command = media._command
+
+    def recording(tool: str, args: list[str]) -> list[str]:
+        commands.append(args)
+        return original_command(tool, args)
+
+    monkeypatch.setattr(media, "_command", recording)
     with capture_logs() as logs:
         found = await probe(str(webm), "webm")
+    assert _contains(commands[-1], ["-stats_period", "1"])  # progress once a second
     assert abs(found.duration_ms - 6000) <= 150
     assert (found.video_codec, found.audio_codec, found.has_audio) == ("vp9", "opus", True)
     assert [(entry["action"], entry["outcome"]) for entry in logs] == [

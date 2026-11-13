@@ -213,7 +213,7 @@ async def _demuxed_duration_ms(source: str, container: VideoContainer) -> int:
         "-progress",
         "pipe:1",
         "-stats_period",
-        "100000",
+        "1",  # one progress block a second keeps a slow source under the cap
         "-f",
         "null",
         "-",
