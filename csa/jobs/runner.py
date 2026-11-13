@@ -25,6 +25,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
+from csa.jobs.payment_reminders import run_payment_reminder_queue
 from csa.jobs.payments import run_payments_due
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
@@ -102,6 +103,16 @@ def build_default_registry(
             every=timedelta(minutes=15),
             fn=run_payments_due,
             per_client=True,
+        )
+    )
+    # Per company, each invoice in its own transaction on the app pool, like the booking reminders.
+    registry.register(
+        Job(
+            name="payment_reminder_queue",
+            every=timedelta(minutes=15),
+            fn=run_payment_reminder_queue,
+            per_client=True,
+            own_transactions=True,
         )
     )
     registry.register(

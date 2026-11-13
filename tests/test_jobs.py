@@ -19,6 +19,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
+from csa.jobs.payment_reminders import run_payment_reminder_queue
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
@@ -531,6 +532,14 @@ async def test_registry_runs_the_booking_reminders_every_five_minutes() -> None:
         assert send is not None and send.per_client is False
         assert send.every == timedelta(minutes=5) and send.timeout > 30
         assert send.fn is not run_reminder_mail  # the registry binds the mailer around it
+
+
+async def test_registry_queues_payment_reminders_every_fifteen_minutes_per_company() -> None:
+    job = build_default_registry().get("payment_reminder_queue")
+    assert job is not None and job.fn is run_payment_reminder_queue
+    assert job.every == timedelta(minutes=15)
+    # Per company, each invoice in its own transaction on the app pool.
+    assert job.per_client is True and job.own_transactions is True
 
 
 async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner() -> None:
