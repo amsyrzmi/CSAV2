@@ -175,12 +175,12 @@ def test_production_env_file_loads() -> None:
     flags = sr.load_flags(path, PRODUCTION)
     assert flags.keys() == SIX_SWITCHES
     assert flags == {
-        "CSA_STAGING_WORKSPACE_ASSISTANT": "false",
-        "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_disabled_model_key",
+        "CSA_STAGING_WORKSPACE_ASSISTANT": "true",
+        "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_model_key",
         "CSA_STAGING_INVITE_MAIL": "true",
         "CSA_STAGING_EMAIL_ASSISTANT": "true",
-        "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "false",
-        "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "false",
+        "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "true",
+        "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "true",
     }
     text = path.read_text(encoding="utf-8")
     assert not any(marker in text for marker in ("http", "://", ".fourstacks"))
