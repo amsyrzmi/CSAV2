@@ -180,6 +180,7 @@ def create_app() -> FastAPI:
                     public_key=settings.LANGFUSE_PUBLIC_KEY,
                     secret_key=settings.LANGFUSE_SECRET_KEY,
                     base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+                    pseudonym_key=settings.langfuse_pseudonym_key(),
                 )
             # One ledger meter for the gateway: every Groq client below books its token usage to
             # it, and mirrors each call to Langfuse when the sink is configured.

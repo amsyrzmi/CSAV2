@@ -31,6 +31,7 @@ from csa.billing.langfuse_check import (
 from csa.billing.memo import USAGE_MEMO
 from csa.console.billing import billing_now
 from csa.console.billing_admin import langfuse_source
+from csa.core.langfuse import pseudonym
 from structlog.testing import capture_logs
 from structlog.typing import EventDict
 
@@ -44,6 +45,7 @@ CLIENT = uuid.UUID("00000000-0000-4000-8000-00000000c0de")
 PUBLIC = "pk-lf-synthetic"
 SECRET = "sk-lf-synthetic-secret"
 LF_BASE = "https://langfuse.example"
+PSEUDONYM_KEY = bytes(range(32))
 ADMIN = f"{BASE}/admin"
 OVERVIEW = f"{ADMIN}/overview"
 
@@ -106,6 +108,7 @@ async def read(
     base_url: str = LF_BASE + "/",
     public_key: str | None = PUBLIC,
     secret_key: str | None = SECRET,
+    pseudonym_key: bytes | None = PSEUDONYM_KEY,
     start: date = OCT.start,
     end: date = OCT.end,
     until: datetime | None = None,
@@ -118,6 +121,7 @@ async def read(
                 base_url=base_url,
                 public_key=public_key,
                 secret_key=secret_key,
+                pseudonym_key=pseudonym_key,
                 client_id=CLIENT,
                 start=start,
                 end=end,
@@ -150,9 +154,17 @@ async def test_reads_the_metrics_v2_api_with_basic_auth_client_filter_and_window
         {"measure": "inputTokens", "aggregation": "sum"},
         {"measure": "outputTokens", "aggregation": "sum"},
     ]
+    # The sink's pseudonym of the client id, never the raw id (owner 2026-11-13).
     assert query["filters"] == [
-        {"column": "userId", "operator": "=", "value": str(CLIENT), "type": "string"}
+        {
+            "column": "userId",
+            "operator": "=",
+            "value": pseudonym("client", CLIENT, PSEUDONYM_KEY),
+            "type": "string",
+        }
     ]
+    for spelling in (str(CLIENT), CLIENT.hex):
+        assert spelling not in str(request.url).lower()
     assert query.get("dimensions", []) == []
     assert "timeDimension" not in query
     # 5 Oct 00:00 and 5 Nov 00:00 in Kuala Lumpur (UTC+8), as UTC.
@@ -322,6 +334,19 @@ async def test_unconfigured_keys_are_none_without_a_request(
     assert logs == [{"event": "langfuse_check_unconfigured", "log_level": "error"}]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pseudonym_key", [None, b"", b"short-key"])
+async def test_a_missing_pseudonym_key_is_none_without_a_request(
+    pseudonym_key: bytes | None,
+) -> None:
+    totals, seen, logs = await read(
+        metrics_reply([{"sum_inputTokens": 1, "sum_outputTokens": 1}]),
+        pseudonym_key=pseudonym_key,
+    )
+    assert (totals, seen) == (None, [])
+    assert logs == [{"event": "langfuse_check_unconfigured", "log_level": "error"}]
+
+
 # --- the admin route -------------------------------------------------------------------------
 
 
@@ -337,6 +362,7 @@ class FakeLangfuse:
         self.status: int | None = None
         self.requests: list[httpx.Request] = []
         self.public_key: str | None = PUBLIC
+        self.pseudonym_key: bytes | None = PSEUDONYM_KEY
         self.base_url: str = LF_BASE
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -356,7 +382,11 @@ def fake_langfuse(sessions: SessionWorld) -> Iterator[FakeLangfuse]:
     async def source() -> AsyncIterator[LangfuseSource]:
         async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
             yield LangfuseSource(
-                http=http, base_url=fake.base_url, public_key=fake.public_key, secret_key=SECRET
+                http=http,
+                base_url=fake.base_url,
+                public_key=fake.public_key,
+                secret_key=SECRET,
+                pseudonym_key=fake.pseudonym_key,
             )
 
     sessions.app.dependency_overrides[billing_now] = lambda: NOW
@@ -406,7 +436,8 @@ async def test_the_check_matches_when_langfuse_agrees_with_the_whole_cycle_ledge
     }
     [request] = fake_langfuse.requests
     query = query_of(request)
-    assert query["filters"][0]["value"] == tenant
+    assert query["filters"][0]["value"] == pseudonym("client", uuid.UUID(tenant), PSEUDONYM_KEY)
+    assert tenant not in str(request.url)
     assert query["toTimestamp"] == "2026-10-20T03:55:00.000Z"
 
 
@@ -433,7 +464,7 @@ async def test_drift_adds_the_langfuse_drift_warning_and_a_past_cycle_can_be_che
 
 @requires_docker
 @pytest.mark.asyncio
-@pytest.mark.parametrize("down", ["status", "unconfigured", "malformed_url"])
+@pytest.mark.parametrize("down", ["status", "unconfigured", "no_pseudonym_key", "malformed_url"])
 async def test_langfuse_down_is_unavailable_and_the_billed_figures_do_not_move(
     sessions: SessionWorld, fake_langfuse: FakeLangfuse, down: str
 ) -> None:
@@ -445,6 +476,8 @@ async def test_langfuse_down_is_unavailable_and_the_billed_figures_do_not_move(
         fake_langfuse.status = 500
     elif down == "malformed_url":
         fake_langfuse.base_url = "https://[::1"
+    elif down == "no_pseudonym_key":
+        fake_langfuse.pseudonym_key = None
     else:
         fake_langfuse.public_key = None
     response = await w.admin.get(check_path(tenant))

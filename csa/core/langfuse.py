@@ -13,20 +13,29 @@ processor's thread, and a failed export is logged and never reaches the caller.
 
 Privacy: no prompt, reply or customer text and no cost goes on a span. A generation carries the
 model, token counts and identifiers only; a node event carries the redacted summary from
-``csa.graph.events.summarize``. The ledger, not Langfuse, is the billing authority.
+``csa.graph.events.summarize``, scrubbed again here to code-shaped values. The ledger, not
+Langfuse, is the billing authority.
+
+Owner decision 2026-11-13: no raw client or conversation id goes to Langfuse Cloud. ``user.id`` and
+``session.id`` are keyed pseudonyms (``pseudonym``), keyed by a server-side secret that is never a
+Langfuse credential; without a usable key the sink exports nothing (fail closed). The trace id is
+the random execution UUID and stays as is.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 import structlog
@@ -45,7 +54,15 @@ if TYPE_CHECKING:
     from csa.metering.context import Job, MeterContext
     from csa.metering.meter import Usage
 
-__all__ = ["SHUTDOWN_TIMEOUT_MILLIS", "LangfuseSink", "build_otlp_exporter"]
+__all__ = [
+    "PSEUDONYM_KEY_MIN_BYTES",
+    "SHUTDOWN_TIMEOUT_MILLIS",
+    "LangfuseSink",
+    "PseudonymKind",
+    "build_otlp_exporter",
+    "pseudonym",
+    "usable_pseudonym_key",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -71,6 +88,70 @@ _OBS_USAGE = "langfuse.observation.usage_details"
 
 # Node events come from the customer-turn graph only.
 _TURN_JOB: Job = "customer_turn"
+
+PseudonymKind = Literal["client", "conversation"]
+# The pseudonym key is 32 bytes when derived; a shorter configured key is refused.
+PSEUDONYM_KEY_MIN_BYTES = 32
+_PSEUDONYM_HEX_CHARS = 32
+
+# A summary value Langfuse may see: a short code such as ``order_status`` (starts with a letter,
+# no spaces, no ``@`` or ``+``), and no UUID or 32-hex run inside it.
+_CODE_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,63}")
+_UUID_LIKE = re.compile(
+    r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", re.IGNORECASE
+)
+_REDACTED = "[redacted]"
+_SUMMARY_MAX_DEPTH = 4
+
+# The probe's fixed user: no caller-supplied identifier reaches Langfuse.
+_PROBE_USER = "admin"
+_PROBE_NAME = "csa-test-verification"
+
+
+def pseudonym(kind: PseudonymKind, value: UUID, key: bytes) -> str:
+    """The stable keyed pseudonym Langfuse sees in place of a client or conversation id.
+
+    HMAC-SHA256 over ``b"csa-langfuse:<kind>:" + value.bytes``, hex, cut to 32 characters. The
+    sink (``user.id``, ``session.id``) and the reconciliation check (``userId`` filter) both call
+    this, so they always agree. ``key`` must be a server-side secret, never a Langfuse key.
+    """
+    message = b"csa-langfuse:" + kind.encode("ascii") + b":" + value.bytes
+    return hmac.new(key, message, hashlib.sha256).hexdigest()[:_PSEUDONYM_HEX_CHARS]
+
+
+def usable_pseudonym_key(key: bytes | None, *, forbidden: tuple[bytes, ...] = ()) -> bool:
+    """Whether ``key`` may key pseudonyms: long enough and not one of the Langfuse credentials."""
+    return (
+        key is not None and len(key) >= PSEUDONYM_KEY_MIN_BYTES and all(key != f for f in forbidden)
+    )
+
+
+def _code(value: str) -> bool:
+    return bool(_CODE_VALUE.fullmatch(value)) and _UUID_LIKE.search(value) is None
+
+
+def _scrub(value: Any, depth: int = 0) -> Any:
+    """A summary reduced to what Langfuse may see: numbers, booleans and short codes.
+
+    Anything else (free text, a UUID, an email or phone number) becomes ``[redacted]``; keys that
+    are not codes are dropped.
+    """
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        return value if _code(value) else _REDACTED
+    if depth >= _SUMMARY_MAX_DEPTH:
+        return _REDACTED
+    if isinstance(value, Mapping):
+        return {
+            str(k): _scrub(v, depth + 1)
+            for k, v in value.items()
+            if isinstance(k, str) and _code(k)
+        }
+    if isinstance(value, list | tuple):
+        return [_scrub(item, depth + 1) for item in value]
+    return _REDACTED
+
 
 # The trace id the next root span takes; set only around ``start_span`` on the caller's thread.
 _PENDING_TRACE_ID: ContextVar[int | None] = ContextVar("csa_langfuse_trace_id", default=None)
@@ -209,23 +290,28 @@ class _BoundedBatchProcessor(BatchSpanProcessor):
 
 
 def _trace_attributes(
-    client_id: UUID | str, conversation_id: UUID | None, job: Job, *, agent_id: str
+    client_id: UUID, conversation_id: UUID | None, job: Job, *, agent_id: str, key: bytes
 ) -> dict[str, Any]:
-    """Trace-level attributes, copied onto every span (v4 filters observations, not traces)."""
+    """Trace-level attributes, copied onto every span (v4 filters observations, not traces).
+
+    ``user.id`` and ``session.id`` are pseudonyms, never the raw ids.
+    """
     attrs: dict[str, Any] = {
         _TRACE_NAME: job,
         _TRACE_TAGS: [agent_id, job],
-        _USER_ID: str(client_id),
+        _USER_ID: pseudonym("client", client_id, key),
     }
     if conversation_id is not None:
-        attrs[_SESSION_ID] = str(conversation_id)
+        attrs[_SESSION_ID] = pseudonym("conversation", conversation_id, key)
     return attrs
 
 
 class LangfuseSink:
     """Exports redacted node events and model generations to Langfuse as OTel spans.
 
-    Implements ``GenerationMirror`` (``submit``) for ``LedgerMeter``.
+    Implements ``GenerationMirror`` (``submit``) for ``LedgerMeter``. ``pseudonym_key`` keys the
+    ``user.id`` and ``session.id`` pseudonyms; when it is missing, too short or equal to a Langfuse
+    key the sink logs an error once and exports nothing (fail closed, never a raw id).
     """
 
     def __init__(
@@ -234,6 +320,7 @@ class LangfuseSink:
         secret_key: SecretStr | str,
         base_url: str = "https://cloud.langfuse.com",
         *,
+        pseudonym_key: bytes | None,
         exporter: SpanExporter | None = None,
         max_queue_size: int = 2048,
         max_export_batch_size: int = 256,
@@ -242,6 +329,11 @@ class LangfuseSink:
     ) -> None:
         """Build the dedicated provider; ``exporter`` replaces the OTLP exporter (tests)."""
         secret = secret_key.get_secret_value() if isinstance(secret_key, SecretStr) else secret_key
+        if usable_pseudonym_key(pseudonym_key, forbidden=(secret.encode(), public_key.encode())):
+            self._key: bytes | None = pseudonym_key
+        else:
+            self._key = None
+            logger.error("langfuse_pseudonym_key_missing")
         inner = (
             exporter
             if exporter is not None
@@ -270,10 +362,13 @@ class LangfuseSink:
 
     def submit(self, ctx: MeterContext, usage: Usage) -> None:
         """Enqueue one generation: model and token counts, no prompt, reply or cost."""
+        key = self._key
+        if key is None:
+            return
         try:
             agent_id = JOB_AGENT[ctx.job]
             attrs = _trace_attributes(
-                ctx.client_id, ctx.conversation_id, ctx.job, agent_id=agent_id
+                ctx.client_id, ctx.conversation_id, ctx.job, agent_id=agent_id, key=key
             )
             attrs.update(
                 {
@@ -313,17 +408,23 @@ class LangfuseSink:
         duration_ms: int,
         summary: dict[str, Any],
     ) -> bool:
-        """Enqueue one node execution as a span on the turn's trace; ``False`` if it could not."""
+        """Enqueue one node execution as a span on the turn's trace; ``False`` if it could not.
+
+        The summary is scrubbed to numbers, booleans and short codes before it leaves.
+        """
+        key = self._key
+        if key is None:
+            return False
         try:
             attrs = _trace_attributes(
-                client_id, conversation_id, _TURN_JOB, agent_id=JOB_AGENT[_TURN_JOB]
+                client_id, conversation_id, _TURN_JOB, agent_id=JOB_AGENT[_TURN_JOB], key=key
             )
             attrs.update(
                 {
                     _OBS_TYPE: "span",
                     _OBS_LEVEL: "ERROR" if status == "error" else "DEFAULT",
                     _OBS_STATUS_MESSAGE: status,
-                    _OBS_OUTPUT: json.dumps(summary, default=str),
+                    _OBS_OUTPUT: json.dumps(_scrub(summary)),
                     f"{_OBS_METADATA}.node": node,
                     f"{_OBS_METADATA}.duration_ms": str(duration_ms),
                 }
@@ -349,8 +450,7 @@ class LangfuseSink:
     async def send_test_trace(
         self,
         *,
-        name: str = "csa-test-verification",
-        user_id: str = "admin",
+        name: str = _PROBE_NAME,
         metadata: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Send one probe span and flush; ``(ok, langfuse_trace_id)`` from the export result.
@@ -362,18 +462,25 @@ class LangfuseSink:
         each queued batch (up to its 10 s deadline per batch), off the event loop; and with
         ``OTEL_SDK_DISABLED=true`` no span is recorded or exported, so ``ok`` is true while
         nothing reached Langfuse.
+
+        The user is a fixed ``admin``, a name that is not a short code becomes the default, and
+        metadata is scrubbed like a node summary. Without a usable pseudonym key nothing is sent
+        and ``ok`` is false.
         """
         trace_id = uuid4()
+        if self._key is None:
+            return False, trace_id.hex
         attrs: dict[str, Any] = {
-            _TRACE_NAME: name,
+            _TRACE_NAME: name if _code(name) else _PROBE_NAME,
             _TRACE_TAGS: ["verification", "csa-rebuild"],
-            _USER_ID: user_id,
+            _USER_ID: _PROBE_USER,
             _OBS_TYPE: "span",
             _OBS_STATUS_MESSAGE: "ok",
             _OBS_OUTPUT: json.dumps({"status": "ready", "csa_runtime": "active"}),
         }
-        for key, value in _metadata(metadata or {"source": "csa_verification"}).items():
-            attrs[f"{_TRACE_METADATA}.{key}"] = value
+        scrubbed = _scrub(metadata or {"source": "csa_verification"})
+        for field, value in _metadata(scrubbed).items():
+            attrs[f"{_TRACE_METADATA}.{field}"] = value
         failures_before = self._exporter.failures
         try:
             now = time.time_ns()

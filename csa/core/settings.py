@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -147,6 +149,9 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: SecretStr | None = None
     LANGFUSE_BASE_URL: str | None = None
+    # Keys the pseudonyms Langfuse sees instead of client and conversation ids (owner 2026-11-13).
+    # Unset: derived from CREDENTIALS_KEY. Never a Langfuse key: Langfuse receives those.
+    LANGFUSE_PSEUDONYM_KEY: SecretStr | None = Field(default=None, min_length=32)
 
     # Local adapter bootstrap inputs; normal channel traffic reads encrypted
     # credentials from channel_credentials instead.
@@ -189,6 +194,12 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_google_api_key(cls, value: object) -> object:
         """Treat an empty optional key as disabled, as in the checked-in env template."""
+        return None if value == "" else value
+
+    @field_validator("LANGFUSE_PSEUDONYM_KEY", mode="before")
+    @classmethod
+    def _validate_langfuse_pseudonym_key(cls, value: object) -> object:
+        """Blank means unset (derived from CREDENTIALS_KEY), as in the checked-in env template."""
         return None if value == "" else value
 
     @field_validator("CREDENTIALS_KEY")
@@ -534,6 +545,18 @@ class Settings(BaseSettings):
         """
         raw = self.CREDENTIALS_KEY.get_secret_value()
         return base64.b64decode(raw[len(_CREDENTIALS_KEY_PREFIX) :], validate=True)
+
+    def langfuse_pseudonym_key(self) -> bytes:
+        """The key for ``csa.core.langfuse.pseudonym``: ``LANGFUSE_PSEUDONYM_KEY`` when set, else
+        a sub-key derived from ``CREDENTIALS_KEY`` (HMAC-SHA256 over a fixed label), so the
+        credentials key itself is never used. Rotating whichever key is used changes every
+        pseudonym Langfuse holds.
+        """
+        if self.LANGFUSE_PSEUDONYM_KEY is not None:
+            return self.LANGFUSE_PSEUDONYM_KEY.get_secret_value().encode()
+        return hmac.new(
+            self.credentials_key_bytes(), b"csa-langfuse-pseudonym-key:v1", hashlib.sha256
+        ).digest()
 
 
 @lru_cache(maxsize=1)

@@ -61,6 +61,22 @@ def test_bad_credentials_key_bad_base64_raises() -> None:
         _settings(CREDENTIALS_KEY="base64:!!!not-base64!!!")
 
 
+def test_langfuse_pseudonym_key_is_derived_from_the_credentials_key_when_unset() -> None:
+    derived = _settings().langfuse_pseudonym_key()
+    assert len(derived) == 32
+    assert derived == _settings(LANGFUSE_PSEUDONYM_KEY="").langfuse_pseudonym_key()
+    assert derived != b"\x01" * 32  # a sub-key, never the credentials key itself
+    other = "base64:" + base64.b64encode(b"\x02" * 32).decode("ascii")
+    assert _settings(CREDENTIALS_KEY=other).langfuse_pseudonym_key() != derived
+
+
+def test_langfuse_pseudonym_key_uses_the_dedicated_setting_and_refuses_a_short_one() -> None:
+    explicit = "p" * 40
+    assert _settings(LANGFUSE_PSEUDONYM_KEY=explicit).langfuse_pseudonym_key() == explicit.encode()
+    with pytest.raises(ValidationError):
+        _settings(LANGFUSE_PSEUDONYM_KEY="too-short")
+
+
 def test_repr_does_not_leak_secrets() -> None:
     s = _settings()
     rendered = repr(s) + str(s)

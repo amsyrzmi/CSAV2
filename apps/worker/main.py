@@ -737,6 +737,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
             public_key=settings.LANGFUSE_PUBLIC_KEY,
             secret_key=settings.LANGFUSE_SECRET_KEY,
             base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+            pseudonym_key=settings.langfuse_pseudonym_key(),
         )
         if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
         else None
