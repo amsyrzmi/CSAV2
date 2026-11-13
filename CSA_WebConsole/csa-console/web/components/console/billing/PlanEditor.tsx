@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useId, useRef, useState } from "react";
 import { postPlan, type Bundle, type Stage } from "@/lib/billing-admin-api";
 import {
-  bundleLabel, fullDay, planBody, planErrorMessage, stageLabel, suggestedDates,
+  bundleLabel, fullDay, initialPlanChoice, planBody, planChoiceReady, planErrorMessage, stageLabel, suggestedDates,
+  type CurrentPlan,
 } from "@/lib/billing-admin-view";
 import { action, field, Notice, secondary } from "../ui";
 
@@ -15,22 +17,22 @@ const BUNDLES: Bundle[] = ["individual", "curated", "complete"];
  * bundle in force), effective date with suggested 5ths, and a required reason. A termination asks
  * for a second confirmation. Platform admins only: the page and the API both check.
  *
- * `terminatedOn` is the company's termination date when the caller knows it (the Billing page
- * does); termination is final, so no form is offered then. Without it, the server refuses.
+ * `current` is the company's plan from the overview, or null when the caller does not know it (the
+ * overview is loading, failed, or does not list the company). A known plan starts the form on it,
+ * and a termination (final) shows a notice instead of a form. An unknown plan starts both selects
+ * on "Choose…" and keeps Save disabled until the admin picks a stage, and a bundle unless
+ * terminating, so no guessed plan is ever sent.
  */
-export function PlanEditor({
-  clientId, name, stage: currentStage = null, bundle: currentBundle = null, terminatedOn = null, onSaved,
-}: {
+export function PlanEditor({ clientId, name, current, onSaved }: {
   clientId: string;
   name: string;
-  stage?: Stage | null;
-  bundle?: Bundle | null;
-  terminatedOn?: string | null;
+  current: CurrentPlan | null;
   onSaved?: () => void;
 }) {
   const id = useId();
-  const [stage, setStage] = useState<Stage>(currentStage && currentStage !== "terminated" ? currentStage : "pilot");
-  const [bundle, setBundle] = useState<Bundle>(currentBundle ?? "individual");
+  const [initial] = useState(() => initialPlanChoice(current));
+  const [stage, setStage] = useState<Stage | "">(initial.stage);
+  const [bundle, setBundle] = useState<Bundle | "">(initial.bundle);
   const [date, setDate] = useState("");
   const [reason, setReason] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -39,24 +41,27 @@ export function PlanEditor({
   const [saved, setSaved] = useState("");
   const working = useRef(false);
 
-  if (terminatedOn !== null) {
+  if (current?.terminated_on) {
     return (
       <Notice testId="billing-plan-final">
-        {name} was terminated on {fullDay(terminatedOn)}. Termination is final, so no further plan changes can be saved.
+        {name} was terminated on {fullDay(current.terminated_on)}. Termination is final, so no further plan changes can be saved.
       </Notice>
     );
   }
 
-  const suggestions = suggestedDates(new Date(), stage);
+  const suggestions = suggestedDates(new Date(), stage || "pilot");
   const terminating = stage === "terminated";
+  const ready = planChoiceReady({ stage, bundle });
 
   async function save() {
     if (working.current) return;
+    const body = planBody({ stage, bundle, effective_from: date, reason });
+    if (!body) return;
     working.current = true;
     setBusy(true);
     setError("");
     try {
-      const row = await postPlan(clientId, planBody({ stage, bundle, effective_from: date, reason }));
+      const row = await postPlan(clientId, body);
       setSaved(
         row.stage === "terminated"
           ? `Saved: ${name} is terminated from ${fullDay(row.effective_from)}.`
@@ -79,6 +84,10 @@ export function PlanEditor({
     event.preventDefault();
     setSaved("");
     setError("");
+    if (!ready) {
+      setError(terminating ? "Choose a stage." : "Choose a stage and a bundle.");
+      return;
+    }
     if (!reason.trim()) {
       setError("Write a reason for this change. It is kept in the audit log.");
       return;
@@ -98,11 +107,18 @@ export function PlanEditor({
 
   return (
     <form onSubmit={submit} className="space-y-4" data-testid="billing-plan-form" aria-label={`Billing plan for ${name}`}>
+      {current === null && (
+        <Notice warning testId="billing-plan-unknown">
+          Current plan unknown — see <Link href="/billing" className="underline underline-offset-2">Billing</Link>.
+          Choose the stage and bundle yourself: nothing is filled in for you.
+        </Notice>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label htmlFor={`${id}-stage`} className="mb-2 block text-sm">Stage</label>
           <select id={`${id}-stage`} className={field} value={stage} disabled={busy}
-            onChange={(e) => change(() => setStage(e.target.value as Stage))}>
+            onChange={(e) => change(() => setStage(e.target.value as Stage | ""))}>
+            {stage === "" && <option value="">Choose…</option>}
             {STAGES.map((value) => <option key={value} value={value}>{stageLabel(value)}</option>)}
           </select>
         </div>
@@ -110,7 +126,8 @@ export function PlanEditor({
           <div>
             <label htmlFor={`${id}-bundle`} className="mb-2 block text-sm">Bundle</label>
             <select id={`${id}-bundle`} className={field} value={bundle} disabled={busy}
-              onChange={(e) => change(() => setBundle(e.target.value as Bundle))}>
+              onChange={(e) => change(() => setBundle(e.target.value as Bundle | ""))}>
+              {bundle === "" && <option value="">Choose…</option>}
               {BUNDLES.map((value) => <option key={value} value={value}>{bundleLabel(value)}</option>)}
             </select>
           </div>
@@ -162,7 +179,7 @@ export function PlanEditor({
           </div>
         </div>
       ) : (
-        <button type="submit" className={action} disabled={busy}>
+        <button type="submit" className={action} disabled={busy || !ready}>
           {busy ? "Saving…" : terminating ? "Terminate…" : "Save plan"}
         </button>
       )}

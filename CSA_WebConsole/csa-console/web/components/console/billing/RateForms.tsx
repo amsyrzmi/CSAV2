@@ -2,7 +2,7 @@
 
 import { useId, useRef, useState } from "react";
 import { LEDGER_PROVIDERS, postFx, postPrice, type Provider } from "@/lib/billing-admin-api";
-import { fullDay, fxErrorMessage, isUsdAmount, klDateTime, priceErrorMessage } from "@/lib/billing-admin-view";
+import { fullDay, fxErrorMessage, isUsdAmount, isUsdToMyr, klDateTime, priceErrorMessage } from "@/lib/billing-admin-view";
 import { action, field, Notice, Panel } from "../ui";
 
 const PROVIDER_NAMES: Record<Provider, string> = { groq: "Groq", gemini: "Gemini" };
@@ -135,8 +135,8 @@ export function FxForm({ onSaved }: { onSaved?: () => void }) {
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const start = klDateTime(date, time);
-    // The rate shares the USD amount's shape; the server also caps it below 1,000.
-    if (!isUsdAmount(rate.trim()) || !start) {
+    // The rate shares the USD amount's shape and, like the server, must be below 1,000.
+    if (!isUsdToMyr(rate.trim()) || !start) {
       setSaved("");
       setError(fxErrorMessage({ status: 422, code: "form" }));
       return;
@@ -155,7 +155,7 @@ export function FxForm({ onSaved }: { onSaved?: () => void }) {
           <label htmlFor={`${id}-rate`} className="mb-2 block text-sm">MYR for 1 USD</label>
           <input id={`${id}-rate`} className={`${field} max-w-xs`} inputMode="decimal" required value={rate} disabled={busy}
             aria-describedby={`${id}-rate-hint`} onChange={(e) => setRate(e.target.value)} />
-          <p id={`${id}-rate-hint`} className="mt-2 text-sm text-ink-600">Above zero, at most 8 decimal places.</p>
+          <p id={`${id}-rate-hint`} className="mt-2 text-sm text-ink-600">Above zero and below 1,000, at most 8 decimal places.</p>
         </div>
         <StartFields id={id} date={date} time={time} busy={busy} onDate={setDate} onTime={setTime} />
         {error && <Notice error testId="billing-fx-error">{error}</Notice>}

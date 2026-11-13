@@ -1,4 +1,4 @@
-import type { AdminCompanyOut, AdminWarning, BillingPlanIn, Bundle, Stage } from "./billing-admin-api";
+import type { AdminCompanyOut, AdminOverviewOut, AdminWarning, BillingPlanIn, Bundle, Stage } from "./billing-admin-api";
 import { countText, cycleLabel, formatRm } from "./credit-view";
 
 /**
@@ -17,6 +17,8 @@ const TIME_ONLY = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DECIMAL4 = /^(-?)(\d+)(?:\.(\d{1,4}))?$/;
 // What BillingPriceIn and BillingFxIn accept: positive, at most 8 decimal places, below 100000.
 const USD_AMOUNT = /^\d{1,5}(?:\.\d{1,8})?$/;
+// UsdToMyr's ceiling: a rate must be below 1,000 MYR for 1 USD.
+const FX_CEILING = BigInt(1000);
 
 /** The plan rule codes, as PlanRuleCode in csa/billing/plans.py lists them. */
 export const PLAN_RULE_CODES = [
@@ -80,8 +82,10 @@ const PLAN_MESSAGES: Record<(typeof PLAN_RULE_CODES)[number] | string, string> =
     "This company has been terminated, and termination is final. No further plan changes can be saved.",
   first_row_must_be_pilot_or_collaborator:
     "This company has no plan yet, so there is nothing to terminate. Start it on Pilot or Collaborator first.",
+  // Two causes: Pilot dated after a Collaborator plan, or Collaborator dated before a Pilot plan
+  // already scheduled for a later 5th.
   bundle_change_same_stage_only:
-    "A Pilot plan can only follow a Pilot plan, and must not come after a Collaborator plan. Keep Pilot and change only the bundle, or choose Collaborator.",
+    "A Pilot plan can never come after a Collaborator plan. This change would do that: either it starts Pilot after a Collaborator plan, or it starts Collaborator before a Pilot plan already scheduled for a later 5th. Pick a date after any scheduled Pilot plan, or a stage that keeps Pilot before Collaborator.",
   before_join_date:
     "That date is before this company's join date, when its billing started. Pick a date on or after the join date.",
   "tenant not found": "That company no longer exists. Reload the page.",
@@ -106,7 +110,7 @@ const VALIDATION = {
   plan: "Check the form: choose a stage, a bundle (not needed to terminate) and a date, and write a short reason.",
   price:
     "Check the form: choose a provider, type the model name exactly as the provider writes it, enter both prices above zero with at most 8 decimal places, and pick a start date and time.",
-  fx: "Check the form: enter a rate above zero with at most 8 decimal places, and pick a start date and time.",
+  fx: "Check the form: enter a rate above zero and below 1,000, with at most 8 decimal places, and pick a start date and time.",
 };
 
 function explain(cause: unknown, own: Record<string, string>, validation: string): string {
@@ -134,6 +138,23 @@ export function priceErrorMessage(cause: unknown): string {
 /** The FX form's plain-English sentence for a refusal. */
 export function fxErrorMessage(cause: unknown): string {
   return explain(cause, FX_MESSAGES, VALIDATION.fx);
+}
+
+const OVERVIEW_MESSAGES: Record<string, string> = {
+  cycle_must_start_on_a_fifth: "That is not a billing cycle. Choose a cycle from the list.",
+  cycle_not_found: "That billing cycle has not started yet. Choose the current cycle or an earlier one.",
+  platform_admin_only: SHARED.platform_admin_only,
+};
+
+/** The Billing page's plain-English sentence when the overview cannot be read; never a raw code. */
+export function overviewErrorMessage(cause: unknown): string {
+  const found = refusal(cause);
+  if (!found) return "We could not reach the server to load billing. Check your connection and try again.";
+  const { status, code } = found;
+  if (Object.hasOwn(OVERVIEW_MESSAGES, code)) return OVERVIEW_MESSAGES[code];
+  if (status === 401) return "Your session has ended. Sign in again, then try again.";
+  if (status >= 500) return "Something went wrong on our side while loading billing. Try again.";
+  return "We could not load billing for that cycle. Reload the page or choose another cycle.";
 }
 
 // ---- Money and counts ----
@@ -201,7 +222,7 @@ export function fullDay(day: string): string {
  * The company's plan in words: "Pilot, Individual", "Not set up", "Terminated on 10 Nov 2026",
  * or a plan with its termination still ahead ("...; terminates on 1 Dec 2026").
  */
-export function planStatus(company: AdminCompanyOut, now: Date = new Date()): string {
+export function planStatus(company: CurrentPlan, now: Date = new Date()): string {
   const plan = company.stage === null ? "Not set up" : `${stageLabel(company.stage)}, ${bundleLabel(company.bundle)}`;
   if (company.terminated_on === null) return plan;
   if (company.terminated_on <= klToday(now)) return `Terminated on ${fullDay(company.terminated_on)}`;
@@ -285,11 +306,58 @@ export function isUsdAmount(text: string): boolean {
   return USD_AMOUNT.test(text) && /[1-9]/.test(text);
 }
 
-export interface PlanForm { stage: Stage; bundle: Bundle; effective_from: string; reason: string }
+/** A USD to MYR rate the server accepts: a USD amount below 1,000, compared as whole digits. */
+export function isUsdToMyr(text: string): boolean {
+  if (!isUsdAmount(text)) return false;
+  return BigInt(text.split(".")[0]) < FX_CEILING;
+}
 
-/** The plan request: a termination leaves the bundle out, so the server keeps the one in force. */
-export function planBody(form: PlanForm): BillingPlanIn {
+// ---- The plan form ----
+
+/** What the plan form knows about a company's plan; null when it does not know it. */
+export type CurrentPlan = Pick<AdminCompanyOut, "stage" | "bundle" | "terminated_on">;
+
+/** The stage and bundle the form shows; "" is the empty "Choose…" option. */
+export interface PlanChoice { stage: Stage | ""; bundle: Bundle | "" }
+
+/**
+ * Where the form starts. A known plan starts on itself (a company not set up yet starts on Pilot,
+ * Individual, the usual first plan). An unknown plan starts on nothing chosen: guessing would let a
+ * wrong plan be saved that the server accepts, such as a bundle change or a same-date correction.
+ */
+export function initialPlanChoice(current: CurrentPlan | null): PlanChoice {
+  if (current === null) return { stage: "", bundle: "" };
+  const stage = current.stage === "pilot" || current.stage === "collaborator" ? current.stage : "pilot";
+  return { stage, bundle: current.bundle ?? "individual" };
+}
+
+/** Whether the choice can be sent: a stage, and a bundle unless terminating (which keeps the bundle in force). */
+export function planChoiceReady(choice: PlanChoice): boolean {
+  if (choice.stage === "") return false;
+  return choice.stage === "terminated" || choice.bundle !== "";
+}
+
+/** One company's plan from the overview, or null when there is no overview or it is not listed. */
+export function currentPlanOf(overview: AdminOverviewOut | null, clientId: string): CurrentPlan | null {
+  const found = overview?.companies.find((company) => company.client_id === clientId);
+  return found ? { stage: found.stage, bundle: found.bundle, terminated_on: found.terminated_on } : null;
+}
+
+/** The editor heading's label for the plan shown: "Now" for the open cycle, "In this cycle" for a closed one. */
+export function planNowLabel(final: boolean): string {
+  return final ? "In this cycle" : "Now";
+}
+
+export interface PlanForm extends PlanChoice { effective_from: string; reason: string }
+
+/**
+ * The plan request, or null until a stage (and a bundle unless terminating) is chosen. A
+ * termination leaves the bundle out, so the server keeps the one in force.
+ */
+export function planBody(form: PlanForm): BillingPlanIn | null {
+  if (!planChoiceReady(form) || form.stage === "") return null;
   const reason = form.reason.trim();
   if (form.stage === "terminated") return { stage: form.stage, effective_from: form.effective_from, reason };
+  if (form.bundle === "") return null;
   return { stage: form.stage, bundle: form.bundle, effective_from: form.effective_from, reason };
 }

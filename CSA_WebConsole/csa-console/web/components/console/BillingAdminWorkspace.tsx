@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchOverview, type AdminOverviewOut } from "@/lib/billing-admin-api";
 import {
-  costPerExecutionText, cycleOptions, marginText, planStatus, rawCostText, tokenText, warningSentences, workbookNote,
+  costPerExecutionText, cycleOptions, marginText, overviewErrorMessage, planNowLabel, planStatus, rawCostText, tokenText,
+  warningSentences, workbookNote,
 } from "@/lib/billing-admin-view";
 import { countText, cycleLabel, formatRm } from "@/lib/credit-view";
 import { PlanEditor } from "./billing/PlanEditor";
@@ -15,10 +16,6 @@ const cell = "border-b border-ink-100 px-3 py-2 align-top";
 const head = "border-b border-ink-200 px-3 py-2 text-left align-bottom font-medium text-ink-600";
 const amount = `${cell} text-right tabular-nums whitespace-nowrap`;
 const amountHead = `${head} text-right`;
-
-function message(cause: unknown): string {
-  return cause instanceof Error && cause.message ? cause.message : "We could not load billing. Try again.";
-}
 
 /**
  * The platform team's Billing page: every company's usage, raw cost, tokens, bill and AI margin
@@ -39,12 +36,16 @@ export function BillingAdminWorkspace() {
   useEffect(() => {
     const controller = new AbortController();
     fetchOverview(picked || null, controller.signal)
-      .then((found) => { setOverview(found); setLoading(false); })
+      .then((found) => {
+        if (controller.signal.aborted) return;
+        setOverview(found);
+        setLoading(false);
+      })
       .catch((cause) => {
         if (controller.signal.aborted) return;
         // A failed read must not leave another cycle's figures looking current.
         setOverview(null);
-        setError(message(cause));
+        setError(overviewErrorMessage(cause));
         setLoading(false);
       });
     return () => controller.abort();
@@ -102,12 +103,12 @@ export function BillingAdminWorkspace() {
                 className="font-(family-name:--fs-font-heading) text-base font-semibold">
                 Billing plan: {company.name}
               </h2>
-              <p className="mt-1 text-sm text-ink-600">Now: {planStatus(company)}</p>
+              <p className="mt-1 text-sm text-ink-600">{planNowLabel(overview?.final ?? false)}: {planStatus(company)}</p>
             </div>
             <button type="button" className={secondary} onClick={() => setEditing(null)}>Close</button>
           </div>
-          <PlanEditor key={company.client_id} clientId={company.client_id} name={company.name}
-            stage={company.stage} bundle={company.bundle} terminatedOn={company.terminated_on} onSaved={reload} />
+          <PlanEditor key={`${company.client_id}:${overview?.cycle_start ?? ""}`} clientId={company.client_id} name={company.name}
+            current={company} onSaved={reload} />
         </section>
       )}
       <div className="grid items-start gap-5 xl:grid-cols-[repeat(2,minmax(0,1fr))]">

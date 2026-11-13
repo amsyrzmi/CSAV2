@@ -20,7 +20,8 @@ const {
   warningSentences, planErrorMessage, priceErrorMessage, fxErrorMessage, PLAN_RULE_CODES,
   rawCostText, marginText, costPerExecutionText, workbookNote, tokenText, stageLabel, bundleLabel,
   planStatus, klToday, cycleStartOf, addMonths, cycleOptions, suggestedDates, klDateTime,
-  isUsdAmount, planBody, fullDay,
+  isUsdAmount, planBody, fullDay, initialPlanChoice, planChoiceReady, currentPlanOf, planNowLabel,
+  overviewErrorMessage, isUsdToMyr,
 } = view;
 
 // 13 Nov 2026, 12:00 in Kuala Lumpur.
@@ -251,6 +252,79 @@ test("a termination leaves the bundle out; any other plan sends it", () => {
     { stage: "terminated", effective_from: "2026-11-13", reason: "Left" });
   assert.deepEqual(planBody({ stage: "collaborator", bundle: "curated", effective_from: "2026-12-05", reason: "Converted" }),
     { stage: "collaborator", bundle: "curated", effective_from: "2026-12-05", reason: "Converted" });
+});
+
+// ---- The plan form's starting point and its submit rule ----
+
+test("a known plan starts the form on that plan; a company not set up starts on Pilot, Individual", () => {
+  assert.deepEqual(initialPlanChoice(company({ stage: "collaborator", bundle: "complete" })),
+    { stage: "collaborator", bundle: "complete" });
+  assert.deepEqual(initialPlanChoice(company({ stage: "pilot", bundle: "curated" })), { stage: "pilot", bundle: "curated" });
+  assert.deepEqual(initialPlanChoice(company({ stage: null, bundle: null })), { stage: "pilot", bundle: "individual" });
+});
+
+test("an unknown plan starts the form on nothing chosen, never on Pilot, Individual", () => {
+  assert.deepEqual(initialPlanChoice(null), { stage: "", bundle: "" });
+  assert.equal(planChoiceReady(initialPlanChoice(null)), false);
+});
+
+test("the plan can be submitted only once a stage, and a bundle unless terminating, are chosen", () => {
+  assert.equal(planChoiceReady({ stage: "", bundle: "" }), false);
+  assert.equal(planChoiceReady({ stage: "pilot", bundle: "" }), false);
+  assert.equal(planChoiceReady({ stage: "", bundle: "curated" }), false);
+  assert.equal(planChoiceReady({ stage: "collaborator", bundle: "curated" }), true);
+  // A termination keeps the bundle in force, so the form does not ask for one.
+  assert.equal(planChoiceReady({ stage: "terminated", bundle: "" }), true);
+  assert.equal(planBody({ stage: "pilot", bundle: "", effective_from: "2026-12-05", reason: "x" }), null);
+  assert.equal(planBody({ stage: "", bundle: "curated", effective_from: "2026-12-05", reason: "x" }), null);
+  assert.deepEqual(planBody({ stage: "terminated", bundle: "", effective_from: "2026-11-13", reason: "Left" }),
+    { stage: "terminated", effective_from: "2026-11-13", reason: "Left" });
+});
+
+test("the Tenants page finds a tenant's plan in the overview, or knows it does not know it", () => {
+  const overview = { cycle_start: "2026-11-05", cycle_end: "2026-12-05", final: false,
+    companies: [company({ stage: "collaborator", bundle: "curated", terminated_on: "2026-12-01" })] };
+  assert.deepEqual(currentPlanOf(overview, company().client_id),
+    { stage: "collaborator", bundle: "curated", terminated_on: "2026-12-01" });
+  assert.equal(currentPlanOf(overview, "22222222-2222-4222-8222-222222222222"), null);
+  assert.equal(currentPlanOf(null, company().client_id), null);
+});
+
+test("the editor heading says Now only for the open cycle", () => {
+  assert.equal(planNowLabel(false), "Now");
+  assert.equal(planNowLabel(true), "In this cycle");
+});
+
+// ---- Overview errors and the FX cap ----
+
+test("overview errors read as plain English, never a code", () => {
+  assert.match(overviewErrorMessage(err(422, "cycle_must_start_on_a_fifth")), /cycle/i);
+  assert.match(overviewErrorMessage(err(404, "cycle_not_found")), /not started/);
+  assert.match(overviewErrorMessage(err(403, "platform_admin_only")), /platform/);
+  assert.match(overviewErrorMessage(new TypeError("Failed to fetch")), /reach/);
+  for (const [status, code] of [[422, "cycle_must_start_on_a_fifth"], [404, "cycle_not_found"], [403, "platform_admin_only"],
+    [401, "Request failed (401)"], [404, "Request failed (404)"], [422, "Request failed (422)"], [400, "odd_code"],
+    [500, "Something went wrong on our side. Try again."], [503, "x"]]) {
+    const message = overviewErrorMessage(err(status, code));
+    assert.ok(message.length > 20, code);
+    assert.doesNotMatch(message, JARGON, `${code}: ${message}`);
+  }
+  assert.doesNotMatch(overviewErrorMessage(new Error("cycle_not_found")), JARGON);
+});
+
+test("a USD to MYR rate is a USD-shaped amount below 1,000, compared exactly", () => {
+  for (const ok of ["4.4", "4.47123456", "0.00000001", "999.99999999", "0999.5"]) assert.ok(isUsdToMyr(ok), ok);
+  for (const bad of ["1000", "1000.0", "1000.00000001", "01000", "99999", "0", "0.000", "-4.4", "4.471234567", "", "4,4", "1e2"]) {
+    assert.ok(!isUsdToMyr(bad), bad);
+  }
+  assert.match(fxErrorMessage(err(422, "Request failed (422)")), /1,000/);
+});
+
+test("a Pilot after Collaborator refusal fits both causes and does not say to choose Collaborator", () => {
+  const message = planErrorMessage(err(422, "bundle_change_same_stage_only"));
+  assert.match(message, /Pilot plan can never come after a Collaborator plan/);
+  assert.match(message, /already scheduled/);
+  assert.doesNotMatch(message, /choose Collaborator/i);
 });
 
 // ---- The API client: paths, methods and CSRF ----
