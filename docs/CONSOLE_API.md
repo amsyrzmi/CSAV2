@@ -1278,13 +1278,16 @@ A customer signs up for a plan in the chat; the bot files one `signup_requests` 
 `0580`) and the request waits for staff, or for the plan: a plan with `signup_mode: "auto"`
 approves it in the same transaction as the filing. `SignupOut` is `{id, contact: {id, full_name,
 phone, email}, plan_code, plan_name, full_name, phone, phone_verified, status, decided_via,
-decline_reason, subscription_id, created_at, decided_at, source_channel, invoice_reference}`. `contact` is the
+decline_reason, subscription_id, created_at, decided_at, source_channel, invoice_reference, email}`. `contact` is the
 contact record as it stands. `full_name` and `phone` are what the customer typed (the phone
 normalised); the typed phone stays on the request and is never copied to the contact, and no
 route edits a contact's phone: when the customer already has another contact, staff link the two
 contacts by hand (`POST /links`). `phone_verified` is true only when the
 contact's phone was verified by its channel and equals the typed number. `source_channel` is the
-channel of the contact's newest identity (null when it has none). `status` is `pending`,
+channel of the contact's newest identity (null when it has none). `email` is the address the
+customer gave in the chat for payment reminders (asked on WhatsApp while payments are on; lower
+case, a claim nobody checked; it also fills the contact's `customer_given_email` only when the
+contact has no address, never its `email`), null when none. `status` is `pending`,
 `approved`, `declined` or `expired`; `decided_via` is `staff` or `auto`.
 
 - One open request per customer and plan: a repeat returns the open one, and a live (active,

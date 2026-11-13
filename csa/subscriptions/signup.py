@@ -4,8 +4,10 @@ An approval creates one `pending` subscription (price and currency are the plan'
 and, while the company's payments are on, its opening invoice in the same transaction; staff start
 it later, a payment of that invoice starts it, or it expires. Nothing here charges, and the typed
 sign-up phone stays on the request: it is never written to the contact, so a typed number can never
-link its owner's contact to the person who typed it. Every function takes a connection inside a
-tenant transaction.
+link its owner's contact to the person who typed it. An email given at sign-up (for payment
+reminders) is stored on the request in lower case and fills only the contact's
+`customer_given_email`, and only while the contact has no address at all: never its `email`, which
+identity and linking trust. Every function takes a connection inside a tenant transaction.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from fastapi import HTTPException
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
+from csa.bookings.notify import clean_address
 from csa.core import db
 from csa.core.phone import normalise_my_phone
 from csa.payments.invoices import issue_opening_invoice
@@ -105,16 +108,26 @@ async def file_signup(
     plan_code: str,
     full_name: str,
     phone: str,
+    *,
+    email: str | None = None,
 ) -> SignupFiled:
     """File one pending request for the contact, or say why none was filed.
 
     A repeat returns the open request (`exists`). An archived or unknown plan is `unknown_plan`,
     one closed to sign-ups is `closed`, and a live subscription on the plan is `has_plan`; none of
     them writes anything. A plan that approves by itself is approved in this same transaction.
+    `email` (checked as a booking's address is, 422 `invalid_email` otherwise) is stored on a new
+    request and fills the contact's empty `customer_given_email`; a repeat changes neither.
     """
     typed = normalise_my_phone(phone)  # cheap, and a no-op on a number already normalised
     if typed is None:
         raise HTTPException(422, "invalid_phone")
+    given: str | None = None
+    if email is not None:
+        address = clean_address(email)
+        if address is None:
+            raise HTTPException(422, "invalid_email")
+        given = address.lower()
     name = full_name.strip()
     if not 1 <= len(name) <= MAX_NAME:
         raise HTTPException(422, "invalid_name")
@@ -136,6 +149,7 @@ async def file_signup(
             "plan_code": plan_code,
             "full_name": name,
             "phone": typed,
+            "email": given,
         },
         conn=conn,
     )
@@ -149,6 +163,12 @@ async def file_signup(
             raise HTTPException(409, "signup_changed")
         return SignupFiled(await get_signup(conn, client_id, existing["id"]), False, "exists")
     request_id: UUID = inserted["id"]
+    if given is not None:
+        await db.q.execute(
+            "subscriptions/contact_given_email_fill.sql",
+            {"client_id": client_id, "contact_id": contact_id, "email": given},
+            conn=conn,
+        )
     if plan["signup_mode"] == "auto":
         return SignupFiled(await auto_approve(conn, client_id, request_id), True, "filed")
     return SignupFiled(await get_signup(conn, client_id, request_id), True, "filed")

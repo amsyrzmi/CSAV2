@@ -243,6 +243,9 @@ class SignupOut(Contract):
     # The reference of the approved subscription's first invoice (issued at approval while
     # payments are on); null when none was issued or it is void.
     invoice_reference: str | None
+    # The address the customer gave in the chat for payment reminders (asked on WhatsApp while
+    # payments are on), lower case; a claim nobody checked. Null when none was given.
+    email: str | None
 
 
 class SignupPage(Contract):

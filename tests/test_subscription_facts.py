@@ -317,6 +317,44 @@ def test_signup_facts_use_the_exact_copy() -> None:
     )
 
 
+def test_the_sign_up_email_facts_and_read_back_use_the_exact_copy() -> None:
+    def text(*args: Any, **kwargs: Any) -> str:
+        return signup_fact(*args, **kwargs).text
+
+    assert text("email_ask") == (
+        "If you'd like payment reminders by email, tell me your email address, or say skip."
+    )
+    # Said to the customer (it can be sent as it stands), never to the composer.
+    assert text("email_invalid") == (
+        "That email address does not look right. Please type it again, or say skip."
+    )
+    assert signup_fact("email_ask", n=2).id == "signup_email_ask_2"
+    assert signup_fact("email_invalid").id == "signup_email_invalid_1"
+    base: dict[str, Any] = {"plan": "Plan Besar", "name": "Ali Bin Abu", "phone": "+60123456789"}
+    assert text("readback", **base, email="ali.abu@example.com", with_email=True) == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789, email "
+        "ali.abu@example.com. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert text("readback", **base, email=None, with_email=True) == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789, no email. Is that right? "
+        "Reply yes to sign up. Nothing is filed until you do."
+    )
+    # Where the email was never asked (Telegram, payments off) the read-back names none at all.
+    assert text("readback", **base, email="ali.abu@example.com") == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
+    )
+    readback = signup_fact(
+        "readback",
+        plan="Plan Besar",
+        name="Ali Bin Abu",
+        phone="+60123456789",
+        email="ali.abu@example.com",
+        with_email=True,
+    )
+    assert "example" not in readback.id
+
+
 def test_signup_fact_ids_are_constants_with_an_index() -> None:
     assert signup_fact("missing", plan="A", field="full name").id == "signup_missing_1"
     assert signup_fact("data_note", n=2).id == "signup_data_note_2"

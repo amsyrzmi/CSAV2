@@ -2099,13 +2099,17 @@ _SIGNUP_PLAN_RULE_TEXT = (
     "latest assistant message in <recent_messages> read back a sign-up and this message clearly "
     "says yes to it, in any language (for example yes, ok, ya, betul, boleh); anything else is "
     "not a yes, so leave confirmed out. A different plan restarts the read-back: plan "
-    "request_signup with the new plan and no confirmed. "
+    "request_signup with the new plan and no confirmed. Put email only when the customer gives "
+    "an email address in this message (for payment reminders): copy it exactly as it shows, a "
+    "placeholder such as [EMAIL_0] included, never invented. When the server asked for an email "
+    "and the customer does not want to give one (for example 'skip', 'tak payah', 'takde'), set "
+    "skip_email true and leave email out. "
 )
 _SIGNUP_CLASSIFY_RULE_TEXT = (
     " Asking to sign up for, subscribe to or join a plan, and a short answer that continues a "
-    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]' or a yes), has "
-    "intent subscription and subscription_agent should be scored (for example 'nak daftar plan "
-    "Besar')."
+    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]', an email "
+    "address, a skip or a yes), has intent subscription and subscription_agent should be scored "
+    "(for example 'nak daftar plan Besar')."
 )
 _SENTIMENT_RULE_TEXT = (
     " Sentiment angry is only for insults, threats or fury at the business; complaints, "
@@ -2833,6 +2837,14 @@ async def test_the_sign_up_rules_are_said_with_the_subscription_rules() -> None:
     actions = schemas["subscription_agent"]["properties"]["action"]["enum"]
     assert "request_signup" in actions
     assert {"full_name", "phone", "confirmed"} <= set(schemas["subscription_agent"]["properties"])
+    # The optional email at sign-up (WhatsApp, for payment reminders): a placeholder copied, never
+    # an address written by the model, and the customer's skip in English or Malay.
+    for words in ("[EMAIL_0]", "never invented", "'skip', 'tak payah', 'takde'", "skip_email"):
+        assert words in plan, words
+    fields = schemas["subscription_agent"]["properties"]
+    assert {"email", "skip_email"} <= set(fields)
+    assert "[EMAIL_0]" in fields["email"]["description"]
+    assert "skip" in fields["skip_email"]["description"]
 
 
 @pytest.mark.parametrize("call", ["classify", "plan"])

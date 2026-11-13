@@ -113,7 +113,11 @@ _SIGNUP_PLAN_RULE = (
     "latest assistant message in <recent_messages> read back a sign-up and this message clearly "
     "says yes to it, in any language (for example yes, ok, ya, betul, boleh); anything else is "
     "not a yes, so leave confirmed out. A different plan restarts the read-back: plan "
-    "request_signup with the new plan and no confirmed. "
+    "request_signup with the new plan and no confirmed. Put email only when the customer gives "
+    "an email address in this message (for payment reminders): copy it exactly as it shows, a "
+    "placeholder such as [EMAIL_0] included, never invented. When the server asked for an email "
+    "and the customer does not want to give one (for example 'skip', 'tak payah', 'takde'), set "
+    "skip_email true and leave email out. "
 )
 # Said to the classifier every turn of a company with subscription_agent.
 _SUBSCRIPTION_CLASSIFY_RULE = (
@@ -123,9 +127,9 @@ _SUBSCRIPTION_CLASSIFY_RULE = (
 )
 _SIGNUP_CLASSIFY_RULE = (
     " Asking to sign up for, subscribe to or join a plan, and a short answer that continues a "
-    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]' or a yes), has "
-    "intent subscription and subscription_agent should be scored (for example 'nak daftar plan "
-    "Besar')."
+    "sign-up in <recent_messages> (a name, a phone number, '[shared phone number]', an email "
+    "address, a skip or a yes), has intent subscription and subscription_agent should be scored "
+    "(for example 'nak daftar plan Besar')."
 )
 # Payments (payment_agent, said only to a company that has it): which action each kind of question
 # uses. The server finds the invoices and writes every amount, account number and reference, so the

@@ -2,9 +2,11 @@
 -- verified (0581) and is the number typed on the request; a different typed number is not.
 -- source_channel: the newest channel identity of the contact. invoice_reference: the reference of
 -- the approved subscription's first invoice that is not void or draft (the opening invoice
--- issued at approval), NULL when there is none.
+-- issued at approval), NULL when there is none. email: the address the customer gave at sign-up
+-- for payment reminders (NULL when none).
 SELECT r.id, r.contact_id, c.full_name AS contact_full_name, c.phone AS contact_phone,
        c.email AS contact_email, r.plan_code, p.name AS plan_name, r.full_name, r.phone,
+       r.email,
        (c.phone_verified_at IS NOT NULL
         AND coalesce(c.phone_digits = public.my_phone_digits(r.phone), false)) AS phone_verified,
        r.status, r.decided_via, r.decline_reason, r.subscription_id, r.created_at, r.decided_at,

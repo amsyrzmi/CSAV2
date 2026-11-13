@@ -233,22 +233,46 @@ def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
 
 
 def with_real_email(task: Task, raw: str) -> Task | None:
-    """The booking task with its email swapped for the address the customer really wrote.
+    """The task with its email swapped for the address the customer really wrote.
 
-    The planner may name `[EMAIL_n]` (or a literal address, which is only a guess); only an
-    address that is in the raw message survives, so a model can never invent one. Without one the
-    field is dropped. None when that leaves a `save_details` with nothing to save.
+    A booking task's `customer_email`, and a sign-up's (`subscription_agent` `request_signup`)
+    `email`. The planner may name `[EMAIL_n]` (or a literal address, which is only a guess); only
+    an address that is in the raw message survives, so a model can never invent one. Without one
+    the field is dropped. A sign-up also keeps a word with an @ that the customer typed whole but
+    that redaction did not take for an address (so no placeholder was made for it): the agent
+    checks it, and tells them when it does not look right. None when a `save_details` is left with
+    nothing to save; a sign-up is never None.
     """
-    given = task.input.get("customer_email")
+    signup = task.agent == "subscription_agent" and task.input.get("action") == "request_signup"
+    key = "email" if signup else "customer_email"
+    given = task.input.get(key)
     if given is None:
         return task
-    payload = {k: v for k, v in task.input.items() if k != "customer_email"}
-    address = real_email(str(given), raw)
+    payload = {k: v for k, v in task.input.items() if k != key}
+    value = str(given)
+    address = real_email(value, raw)
+    if address is None and signup:
+        address = _typed_word(value, raw)
     if address is not None:
-        payload["customer_email"] = address
+        payload[key] = address
     elif task.input.get("action") == "save_details" and not payload.get("customer_name"):
         return None
     return task.model_copy(update={"input": payload})
+
+
+# What may wrap a word the customer typed: "(ali@example)," is the word ali@example.
+_WORD_EDGES = "\"'()<>[]{},.;:!?"
+
+
+def _typed_word(value: str, raw: str) -> str | None:
+    """`value` as the customer typed it, when it has an @ and is one whole word of `raw`.
+
+    A whole word only, so a part of a longer address is never taken for the address."""
+    wanted = value.strip()
+    if "@" not in wanted:
+        return None
+    words = (word.strip(_WORD_EDGES) for word in raw.split())
+    return next((word for word in words if word.casefold() == wanted.casefold()), None)
 
 
 _PHONE_PLACEHOLDER = re.compile(r"\[PHONE_[0-9]{1,3}\]")
@@ -606,7 +630,7 @@ class PostgresTurnDependencies:
             locale=_turn_language(envelope),
             callback_action_id=envelope.callback.action_id if envelope.callback else None,
         )
-        if task.agent == "booking_agent":
+        if task.agent in ("booking_agent", "subscription_agent"):
             # The planner saw only redacted text, so it can name an address but not write one.
             real = with_real_email(task, envelope.message.body_raw)
             if real is None:

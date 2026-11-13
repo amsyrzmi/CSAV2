@@ -14841,6 +14841,17 @@
             ],
             "title": "Decline Reason"
           },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
           "full_name": {
             "title": "Full Name",
             "type": "string"
@@ -14933,7 +14944,8 @@
           "created_at",
           "decided_at",
           "source_channel",
-          "invoice_reference"
+          "invoice_reference",
+          "email"
         ],
         "title": "SignupOut",
         "type": "object"

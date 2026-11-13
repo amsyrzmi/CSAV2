@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, LiteralString
 from uuid import UUID, uuid4
 
 import psycopg
@@ -1686,3 +1686,240 @@ async def test_a_draft_of_another_contact_or_conversation_is_not_read(world: Wor
     others = [r for r in await drafts(world) if (r["contact_id"], r["conversation_id"]) != mine]
     assert [r["payload"]["full_name"] for r in others] == ["Someone Else"] * 2  # type: ignore[index]
     assert all(r["status"] == "open" for r in others)
+
+
+# --- the optional email at sign-up (WhatsApp with payments on, for payment reminders) -----------
+
+EMAIL_ASK = "If you'd like payment reminders by email, tell me your email address, or say skip."
+EMAIL_INVALID = "That email address does not look right. Please type it again, or say skip."
+
+
+def test_the_sign_up_input_takes_an_email_or_a_skip() -> None:
+    inp = SubscriptionInput(action="request_signup", plan_code="Plan Besar")
+    assert (inp.email, inp.skip_email) == (None, False)
+    given = SubscriptionInput.model_validate(
+        {"action": "request_signup", "email": " [EMAIL_0] ", "skip_email": True}
+    )
+    assert (given.email, given.skip_email) == ("[EMAIL_0]", True)
+    assert SubscriptionInput.model_validate({"action": "request_signup", "email": ""}).email is None
+    with pytest.raises(ValidationError):
+        SubscriptionInput.model_validate({"action": "request_signup", "email": "a" * 255})
+    descriptions = {n: f.description for n, f in SubscriptionInput.model_fields.items()}
+    assert "[EMAIL_0]" in str(descriptions["email"])
+    assert "skip" in str(descriptions["skip_email"])
+
+
+def test_a_sign_up_email_is_only_one_the_customer_really_wrote() -> None:
+    from csa.turn.deps import with_real_email
+
+    raw = "it's Ali.Abu@Example.com thanks"
+    swapped = with_real_email(_signup_task(email="[EMAIL_0]"), raw)
+    assert swapped is not None and swapped.input["email"] == "Ali.Abu@Example.com"
+    typed = with_real_email(_signup_task(email="ali.abu@example.com"), raw)
+    assert typed is not None and typed.input["email"] == "Ali.Abu@Example.com"
+    # A planner-invented address, or a placeholder this message does not hold, is dropped; the
+    # sign-up itself stands (never None).
+    for invented in ("guess@example.com", "[EMAIL_1]", "Ali.Abu@Example.co", "abu@example.com"):
+        dropped = with_real_email(_signup_task(email=invented, full_name="Ali"), raw)
+        assert dropped is not None
+        assert dropped.input == {"action": "request_signup", "full_name": "Ali"}, invented
+    # What the customer typed that is not an address (no placeholder for it) reaches the agent as
+    # they typed it, so they are told it does not look right.
+    bad = with_real_email(_signup_task(email="ali@gmail"), "my email ali@gmail")
+    assert bad is not None and bad.input["email"] == "ali@gmail"
+    other = Task(task_id="t", agent="subscription_agent", input={"action": "mine", "email": "x"})
+    assert with_real_email(other, raw) is other
+
+
+async def contact_emails(world: World) -> tuple[object, object]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT email, customer_given_email FROM contacts WHERE id=%s",
+                (world.ctx.contact_id,),
+            )
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+async def request_emails(world: World) -> list[object]:
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT email FROM signup_requests WHERE client_id=%s ORDER BY created_at",
+                (world.ctx.client_id,),
+            )
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+async def whatsapp_signup(world: World, *, payments: bool = True) -> AgentContext:
+    """A WhatsApp chat whose phone the channel verified, with the company's payments on."""
+    if payments:
+        await payments_on(world)
+    return await signup_chat(world, channel="whatsapp", phone=TYPED, verified=True)
+
+
+READ_PLAIN = (
+    "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat. Is that "
+    "right? Reply yes to sign up. Nothing is filed until you do."
+)
+
+
+@requires_docker
+async def test_on_whatsapp_the_email_is_asked_once_after_the_name_and_filed(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    first = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(first) == ["signup_missing", "signup_data_note"]
+    asked = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert [(f.id, f.text) for f in asked.facts] == [("signup_email_ask_1", EMAIL_ASK)]
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="Ali.Abu@Example.com")
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, email "
+        "ali.abu@example.com. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert await signups(world) == []
+    # The yes: the planner's placeholder resolves nothing in "yes", the draft keeps the address.
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == ["ali.abu@example.com"]
+    # Only the given address is filled: never the contact's own email, never a link.
+    assert await contact_emails(world) == (None, "ali.abu@example.com")
+    assert "ali.abu@example.com" not in await all_pending_text(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        for table in ("contact_links", "contact_link_reviews"):
+            found = await (
+                await conn.execute(
+                    f"SELECT count(*) FROM {table} WHERE client_id=%s",
+                    (world.ctx.client_id,),
+                )
+            ).fetchone()
+            assert found == (0,), table
+
+
+@requires_docker
+async def test_skip_or_a_second_turn_without_an_address_files_with_no_email(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world)
+    asked = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(asked) == ["signup_email_ask", "signup_data_note"]
+    skipped = await signup_turn(world, ctx, **BESAR, **ALI, skip_email=True)
+    assert _kinds(skipped) == ["signup_readback"]
+    assert skipped.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, no "
+        "email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == [None]
+    assert await contact_emails(world) == (None, None)
+
+
+@requires_docker
+async def test_an_answer_without_an_address_after_the_ask_reads_back_with_no_email(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    read = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text.endswith(
+        "no email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+
+
+@requires_docker
+async def test_an_invalid_email_is_asked_again_once_then_left_out(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    bad = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@gmail")
+    assert [(f.id, f.text) for f in bad.facts] == [("signup_email_invalid_1", EMAIL_INVALID)]
+    again = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@still-bad")
+    assert _kinds(again) == ["signup_readback"]
+    assert ", no email." in again.facts[0].text and "still-bad" not in again.facts[0].text
+    # A good address after that is still taken (read back again with it).
+    good = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(good) == ["signup_readback"]
+    assert ", email ali@example.com." in good.facts[0].text
+
+
+@requires_docker
+async def test_an_invalid_email_then_a_good_one_is_read_back(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    await signup_turn(world, ctx, **BESAR, **ALI)
+    await signup_turn(world, ctx, **BESAR, **ALI, email="ali@gmail")
+    good = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(good) == ["signup_readback"]
+    assert ", email ali@example.com." in good.facts[0].text
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == ["ali@example.com"]
+
+
+@pytest.mark.parametrize("channel", ["telegram", "web"])
+@requires_docker
+async def test_telegram_and_the_web_sandbox_never_ask(world: World, channel: str) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world, channel=channel, phone=TYPED, verified=True)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert _kinds(filed) == ["signup_filed"]
+    assert await request_emails(world) == [None]
+    assert await contact_emails(world) == (None, None)
+
+
+@requires_docker
+async def test_with_payments_off_whatsapp_never_asks(world: World) -> None:
+    ctx = await whatsapp_signup(world, payments=False)
+    read = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+
+
+@pytest.mark.parametrize("column", ["email", "customer_given_email"])
+@requires_docker
+async def test_a_contact_with_an_address_on_file_is_never_asked_and_keeps_it(
+    world: World, column: str
+) -> None:
+    ctx = await whatsapp_signup(world)
+    on_file: dict[str, LiteralString] = {
+        "email": "UPDATE contacts SET email='first@example.com' WHERE id=%s",
+        "customer_given_email": (
+            "UPDATE contacts SET customer_given_email='first@example.com' WHERE id=%s"
+        ),
+    }
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(on_file[column], (world.ctx.contact_id,))
+    read = await signup_turn(world, ctx, **BESAR, **ALI, email="second@example.com")
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text == READ_PLAIN
+    await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert await request_emails(world) == [None]
+    expected = ("first@example.com", None) if column == "email" else (None, "first@example.com")
+    assert await contact_emails(world) == expected
+
+
+@requires_docker
+async def test_with_payments_on_a_free_plan_sign_up_promises_no_invoice(world: World) -> None:
+    await payments_on(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO plans (client_id,code,name,price) VALUES (%s,'percuma','Plan Percuma',0)",
+            (world.ctx.client_id,),
+        )
+    ctx = await signup_chat(world)
+    free = {"plan_code": "Plan Percuma"}
+    await signup_turn(world, ctx, **free, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **free, **ALI, confirmed=True)
+    assert [(f.id, f.text) for f in filed.facts] == [
+        (
+            "signup_filed_1",
+            "Your sign-up for Plan Percuma was received. The team will review it and tell you "
+            "what happens next. Nothing is active yet.",
+        )
+    ]

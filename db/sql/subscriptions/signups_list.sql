@@ -2,6 +2,7 @@
 -- (approved, declined or expired). Same columns as signup_get.sql.
 SELECT r.id, r.contact_id, c.full_name AS contact_full_name, c.phone AS contact_phone,
        c.email AS contact_email, r.plan_code, p.name AS plan_name, r.full_name, r.phone,
+       r.email,
        (c.phone_verified_at IS NOT NULL
         AND coalesce(c.phone_digits = public.my_phone_digits(r.phone), false)) AS phone_verified,
        r.status, r.decided_via, r.decline_reason, r.subscription_id, r.created_at, r.decided_at,

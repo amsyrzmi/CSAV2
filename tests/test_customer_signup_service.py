@@ -33,10 +33,13 @@ async def file(
     tenant: str | None = None,
     name: str = "Aisha Rahman",
     phone: str = TYPED,
+    email: str | None = None,
 ) -> SignupFiled:
     tenant = tenant or w.tenants[0]
     async with tx(w.pool, tenant) as conn:
-        return await signup.file_signup(conn, UUID(tenant), UUID(contact), plan, name, phone)
+        return await signup.file_signup(
+            conn, UUID(tenant), UUID(contact), plan, name, phone, email=email
+        )
 
 
 async def approve(w: SessionWorld, request_id: UUID, *, tenant: str | None = None) -> Any:
@@ -666,3 +669,75 @@ async def test_a_manual_create_racing_an_approve_gives_one_live_subscription(
         contact,
     )
     assert live == [{"n": 1}]
+
+
+# --- the email given at sign-up (WhatsApp, for payment reminders) ------------------------------
+
+
+async def contact_emails(w: SessionWorld, contact: str) -> dict[str, Any]:
+    [row] = await w.q("SELECT email, customer_given_email FROM contacts WHERE id=%s", contact)
+    return row
+
+
+async def test_a_given_email_is_stored_lower_case_and_fills_an_empty_given_email(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await w.q("UPDATE contacts SET email=NULL WHERE id=%s", contact)
+
+    filed = await file(w, contact, email="  Aisha.Rahman@Example.COM ")
+
+    assert filed.outcome == "filed" and filed.request is not None
+    assert filed.request.email == "aisha.rahman@example.com"
+    stored = await w.q("SELECT email FROM signup_requests WHERE id=%s", filed.request.id)
+    assert stored == [{"email": "aisha.rahman@example.com"}]
+    # A claim nobody checked: the given address only, never the contact's own email.
+    assert await contact_emails(w, contact) == {
+        "email": None,
+        "customer_given_email": "aisha.rahman@example.com",
+    }
+    # The staff list shows it.
+    async with tx(w.pool, w.tenants[0]) as conn:
+        page = await signup.list_signups(
+            conn, UUID(w.tenants[0]), status="pending", before=None, limit=50
+        )
+    assert [item.email for item in page.items] == ["aisha.rahman@example.com"]
+
+
+async def test_a_given_email_never_overwrites_an_address_on_file(sessions: SessionWorld) -> None:
+    w = sessions
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    given = await seed_customer(w, w.tenants[0], name="Given Contoh", email="unused@example.test")
+    await w.q(
+        "UPDATE contacts SET email=NULL, customer_given_email='first@example.test' WHERE id=%s",
+        given,
+    )
+    own = await seed_customer(w, w.tenants[0], name="Own Contoh", email="own@example.test")
+
+    for contact in (given, own):
+        filed = await file(w, contact, email="second@example.test")
+        assert filed.request is not None and filed.request.email == "second@example.test"
+    assert await contact_emails(w, given) == {
+        "email": None,
+        "customer_given_email": "first@example.test",
+    }
+    assert await contact_emails(w, own) == {
+        "email": "own@example.test",
+        "customer_given_email": None,
+    }
+
+
+async def test_no_email_files_none_and_a_bad_one_files_nothing(sessions: SessionWorld) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await w.q("UPDATE contacts SET email=NULL WHERE id=%s", contact)
+    assert await refusal(file(w, contact, email="not-an-address")) == (422, "invalid_email")
+    assert await count(w, "signup_requests") == 0
+    filed = await file(w, contact)
+    assert filed.request is not None and filed.request.email is None
+    assert await contact_emails(w, contact) == {"email": None, "customer_given_email": None}
+    # A repeat with an address returns the open request as it was, and fills nothing.
+    again = await file(w, contact, email="late@example.test")
+    assert again.outcome == "exists" and again.request is not None and again.request.email is None
+    assert await contact_emails(w, contact) == {"email": None, "customer_given_email": None}

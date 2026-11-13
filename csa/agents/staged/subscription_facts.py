@@ -179,6 +179,8 @@ SignupKind = Literal[
     "data_note",
     "readback",
     "phone_invalid",
+    "email_ask",
+    "email_invalid",
     "filed",
     "filed_auto",
     "filed_auto_invoice",
@@ -200,13 +202,17 @@ def signup_fact(
     phone: str | None = None,
     ref: str | None = None,
     payments: bool = False,
+    email: str | None = None,
+    with_email: bool = False,
 ) -> Fact:
     """One sign-up fact; its id is the kind and its place in the result (`signup_missing_1`).
 
-    `payments`: the company's payments are on, so an approved plan gets an invoice (`filed`).
-    `ref`: the reference of the opening invoice an auto plan's approval issued
-    (`filed_auto_invoice`).
+    `payments`: the company's payments are on and the plan is priced, so an approved plan gets an
+    invoice (`filed`). `ref`: the reference of the opening invoice an auto plan's approval issued
+    (`filed_auto_invoice`). `with_email`: the email was asked (WhatsApp), so the read-back names
+    `email`, the customer's own address, or says there is none.
     """
+    given = (f", email {email}" if email else ", no email") if with_email else ""
     filed_next = (
         "The team will review it; once it is approved you'll get an invoice with how to pay, and "
         "the plan starts when the payment is confirmed."
@@ -217,12 +223,18 @@ def signup_fact(
         "missing": f"To sign up for {plan} I still need your {field}.",
         "data_note": SIGNUP_DATA_NOTE,
         "readback": (
-            f"Sign-up for {plan}: name {name}, phone {phone}. Is that right? Reply yes to sign "
-            "up. Nothing is filed until you do."
+            f"Sign-up for {plan}: name {name}, phone {phone}{given}. Is that right? Reply yes "
+            "to sign up. Nothing is filed until you do."
         ),
         "phone_invalid": (
             "That phone number does not look right. Please type it again with the area or "
             "country code."
+        ),
+        "email_ask": (
+            "If you'd like payment reminders by email, tell me your email address, or say skip."
+        ),
+        "email_invalid": (
+            "That email address does not look right. Please type it again, or say skip."
         ),
         "filed": f"Your sign-up for {plan} was received. {filed_next} Nothing is active yet.",
         "filed_auto": (
