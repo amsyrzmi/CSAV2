@@ -45,7 +45,7 @@ from uuid import UUID
 import structlog
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
-from pydantic import BaseModel, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, Field, StringConstraints, ValidationError, field_validator
 
 from csa.agents.kb.embedder import KbEmbedder, KbEmbeddingError, vector_to_sql
 from csa.core import db
@@ -122,13 +122,39 @@ class AskUnavailable(Exception):
 
 
 class AskDraft(BaseModel):
-    """The model's answer, as it must be before anything is shown."""
+    """The model's answer, as it must be before anything is shown.
+
+    A good answer is not thrown away for running long: more than five cited seconds keep the
+    first five (every one is checked afterwards), and an answer past ``ANSWER_MAX_CHARS`` is cut
+    after its last whole sentence (or word) that fits, ending with an ellipsis.
+    """
 
     found: bool
     answer: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=ANSWER_MAX_CHARS)
     ]
     cited_seconds: list[int] = Field(default_factory=list, max_length=MAX_CITED)
+
+    @field_validator("cited_seconds", mode="before")
+    @classmethod
+    def first_five(cls, value: Any) -> Any:
+        return value[:MAX_CITED] if isinstance(value, list) else value
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def fit(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if len(text) <= ANSWER_MAX_CHARS:
+            return text
+        room = text[: ANSWER_MAX_CHARS - 1]  # one character for the ellipsis
+        sentence = max(room.rfind(mark) for mark in (". ", "! ", "? ", "\n"))
+        if sentence >= ANSWER_MAX_CHARS // 2:
+            room = room[: sentence + 1]
+        elif (space := room.rfind(" ")) > 0:
+            room = room[:space]
+        return room.rstrip() + "…"
 
 
 @dataclass(frozen=True)
@@ -369,22 +395,41 @@ def user_message(context: AskContext, question: str, language: str) -> str:
     )
 
 
+def _start(line: ContextLine) -> int:
+    return line.start_ms
+
+
 def checked_seconds(cited: Sequence[int], context: AskContext) -> list[int]:
     """The cited seconds that fall inside a line that was sent, each snapped to that line's
     start, without duplicates, in order. Anything else (a time the model made up) is dropped.
 
     A line covers the whole seconds from its start to its end rounded up, so a citation of
-    the second a short segment is shown at still counts.
+    the second a short segment is shown at still counts. Lines touch (segments and windows are
+    back to back), so a second that is a line's own stamp goes to that line, and any other
+    second to the containing line that starts latest, never to the line that ends there.
     """
     kept: set[int] = set()
     for second in cited:
         if second < 0:
             continue
-        for line in context.lines:
-            if line.start_ms // 1000 <= second <= -(-line.end_ms // 1000):
-                kept.add(line.start_ms // 1000)
-                break
+        stamped = [line for line in context.lines if line.start_ms // 1000 == second]
+        containing = [
+            line
+            for line in context.lines
+            if line.start_ms // 1000 <= second <= -(-line.end_ms // 1000)
+        ]
+        chosen = stamped[0] if stamped else max(containing, key=_start, default=None)
+        if chosen is not None:
+            kept.add(chosen.start_ms // 1000)
     return sorted(kept)
+
+
+_MARKDOWN = re.compile(r"([\\*_`\[\]()<>])")
+
+
+def _markdown_text(text: str) -> str:
+    """Staff text inside the answer's markdown: one line, every markdown character escaped."""
+    return _MARKDOWN.sub(r"\\\1", " ".join(text.split()))
 
 
 def _times(seconds: Sequence[int], joiner: str) -> str:
@@ -430,9 +475,9 @@ async def answer(
     with_times, without, joiner = _FROM.get(language, _FROM["en"])
     title = _plain(context.title, TITLE_CHARS) or "?"
     line = (
-        with_times.format(title=title, times=_times(seconds, joiner))
+        with_times.format(title=_markdown_text(title), times=_times(seconds, joiner))
         if seconds
-        else without.format(title=title)
+        else without.format(title=_markdown_text(title))
     )
     sources = [
         TrainingSource(item_id=context.item_id, title=title, start_seconds=second)

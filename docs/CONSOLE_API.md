@@ -939,8 +939,10 @@ configured planner a `page_context` turn returns 503 `planner_unavailable`.
   picked `item_id`, else every one of the `item` words in the title (case-insensitive), else the
   open record `{kind: "training_item", id}`, else the company's only ready video; several give a
   `clarification` with up to 5 videos (option value: an item id). Only a `ready` video with
-  speech is answered from; a manager is told when a video is still being processed, anyone else
-  gets "I couldn't find a training video called ..." as for a missing one. A transcript of at
+  speech is answered from; a manager is told when a video is still being processed. Anyone else
+  gets the answer for a missing video: "I couldn't find that training video." when asking by id
+  (the open record or a picked option), "I couldn't find a training video called ..." when
+  asking by title words. A transcript of at
   most 40,000 characters is sent whole as `[mm:ss] text` lines; a longer one sends the 8
   windows nearest the question (embedded with the gateway's knowledge base embedder; the
   windows must have been made by the same model, otherwise "I can't search this video right

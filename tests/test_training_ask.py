@@ -320,3 +320,102 @@ async def test_transcript_phrase_is_never_returned_by_kb_search(sessions: Sessio
     assert rows, "the knowledge base search ran over the company's own chunks"
     assert all("zebra" not in str(row["content"]) for row in rows)
     assert all("lantern" not in str(row["title"]) for row in rows)
+
+
+def _lines(*spans: tuple[int, int]) -> ask.AskContext:
+    return ask.AskContext(
+        item_id=uuid4(),
+        title="Onboarding basics",
+        lines=[ask.ContextLine(start, end, f"line {i}") for i, (start, end) in enumerate(spans)],
+        summary=None,
+        whole=True,
+    )
+
+
+async def test_a_cited_stamp_snaps_to_its_own_line_when_lines_touch() -> None:
+    # Whisper segments are back to back: the second at the shared edge is the next line's stamp.
+    segments = _lines((190_000, 195_000), (195_000, 199_000))
+    assert ask.checked_seconds([195], segments) == [195]
+    assert ask.checked_seconds([190, 192, 197], segments) == [190, 195]
+    # A boundary inside a second: 195.4 s is shown as [03:15], the next line's stamp.
+    inside = _lines((190_000, 195_400), (195_400, 199_000))
+    assert ask.checked_seconds([195], inside) == [195]
+    assert ask.checked_seconds([194], inside) == [190]
+    # build_windows windows touch too: 120 is the second window's stamp, not the first's end.
+    windows = _lines((60_000, 120_400), (120_400, 181_000))
+    assert ask.checked_seconds([120], windows) == [120]
+    assert ask.checked_seconds([61, 119, 150, 181, 182], windows) == [60, 120]
+    # A second inside two overlapping lines goes to the one that starts latest.
+    overlap = _lines((100_000, 130_000), (110_000, 140_000))
+    assert ask.checked_seconds([115], overlap) == [110]
+    assert ask.checked_seconds([105], overlap) == [100]
+
+
+async def test_six_cited_seconds_keep_the_answer_and_a_long_answer_is_cut_with_an_ellipsis() -> (
+    None
+):
+    context = _lines((0, 10_000), (10_000, 20_000))
+    model = StubModel({"found": True, "answer": "Fine.", "cited_seconds": [1, 2, 3, 4, 5, 15]})
+    result = await ask.answer(model, context, QUESTION, "en")
+    # The first five are kept (and checked); the answer is not thrown away.
+    assert [source.start_seconds for source in result.sources] == [0]
+    draft = ask.AskDraft.model_validate(
+        {"found": True, "answer": "x", "cited_seconds": list(range(9))}
+    )
+    assert draft.cited_seconds == [0, 1, 2, 3, 4]
+    words = ("Refunds need the receipt. " * 80).strip()  # about 2,000 characters
+    long = ask.AskDraft.model_validate({"found": True, "answer": words, "cited_seconds": []})
+    assert len(long.answer) <= ask.ANSWER_MAX_CHARS
+    assert long.answer.startswith("Refunds need the receipt.")
+    assert long.answer.endswith("receipt.…")  # cut after a whole sentence, marked as cut
+    one_word = ask.AskDraft.model_validate(
+        {"found": True, "answer": "word " * 300 + "z" * 50, "cited_seconds": []}
+    )
+    assert len(one_word.answer) <= ask.ANSWER_MAX_CHARS and one_word.answer.endswith("word…")
+    short = ask.AskDraft.model_validate({"found": True, "answer": "  Fine.  ", "cited_seconds": []})
+    assert short.answer == "Fine."
+
+
+async def test_title_markdown_is_escaped_in_the_answer() -> None:
+    context = ask.AskContext(
+        item_id=uuid4(),
+        title="a *b* [x](http://e.test) _c_ `d` <e>",
+        lines=[ask.ContextLine(0, 5_000, "Refunds need a receipt.")],
+        summary=None,
+        whole=True,
+    )
+    model = StubModel({"found": True, "answer": "Keep it.", "cited_seconds": [1]})
+    result = await ask.answer(model, context, QUESTION, "en")
+    assert result.markdown == (
+        "Keep it.\n\nFrom *a \\*b\\* \\[x\\]\\(http://e.test\\) \\_c\\_ \\`d\\` \\<e\\>*, at 00:00."
+    )
+    assert "[x](" not in result.markdown
+    # The source keeps the title as text: the console renders it, never as markdown.
+    assert result.sources[0].title == "a *b* [x](http://e.test) _c_ `d` <e>"
+
+
+async def test_exactly_40000_characters_go_whole_and_40001_are_searched(
+    sessions: SessionWorld,
+) -> None:
+    tenant = sessions.tenants[0]
+
+    async def video_of(size: int, title: str) -> ask.VideoRef:
+        found = await video(sessions, tenant, title=title)
+        # 20 lines "[mm:ss] " + text joined by newlines: 20 * 8 + 19 + the texts.
+        texts = ["x" * 1991] * 19 + ["x" * (size - 160 - 19 - 1991 * 19)]
+        for i, text in enumerate(texts):
+            start = i * 60_000
+            await put_segment(sessions, tenant, str(found.id), i, start, start + 59_000, text)
+            await put_window(sessions, tenant, str(found.id), i, start, f"refund window {i}")
+        return found
+
+    at_limit = await video_of(limits.ASK_WHOLE_MAX_CHARS, "At the limit")
+    whole = await ask.build_context(sessions.pool, UUID(tenant), at_limit, QUESTION, None)
+    assert whole.whole is True and whole.chars == 40_000 and len(whole.lines) == 20
+    over = await video_of(limits.ASK_WHOLE_MAX_CHARS + 1, "One over")
+    with pytest.raises(ask.AskUnavailable):
+        await ask.build_context(sessions.pool, UUID(tenant), over, QUESTION, None)
+    searched = await ask.build_context(
+        sessions.pool, UUID(tenant), over, QUESTION, DefaultKbEmbedder()
+    )
+    assert searched.whole is False and len(searched.lines) == limits.ASK_NEAREST_WINDOWS
