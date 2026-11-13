@@ -3,9 +3,12 @@
 # command to finish and print its output. The deploy-production workflow runs it from main:
 #   ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]
 # Each action has its own document with the action fixed inside it: plan sends csa-production-plan
-# with the sha only, apply sends csa-production-apply with the sha, the host digest and, when any
-# are pending, the migrations (the document defaults them to empty).
-# Needs AWS_REGION and INSTANCE_ID; AWS credentials come from the environment and are never printed.
+# with the sha, apply sends csa-production-apply with the sha, the host digest and, when any are
+# pending, the migrations (the document defaults them to empty). Both also send the two image
+# digests the rollout will use.
+# Needs AWS_REGION, INSTANCE_ID, PYTHON_DIGEST and FRONTEND_DIGEST (each image digest is
+# sha256: and 64 lowercase hex characters); AWS credentials come from the environment and are
+# never printed.
 # Exit: 0 when the command succeeded, 124 when it was still running once SSM_MAX_SECONDS had passed
 # since the send, 64 for a refused argument or setting (nothing is sent), 1 for anything else.
 set -euo pipefail
@@ -16,9 +19,10 @@ export AWS_PAGER=""
 
 : "${SSM_POLL_SECONDS:=5}"
 # The wait is bounded by elapsed time, not by a number of polls (each poll also spends time in
-# get-command-invocation). It must stay shorter than the documents' timeoutSeconds (2400), which
-# must stay shorter than the workflow jobs' timeout-minutes (45).
-: "${SSM_MAX_SECONDS:=2100}"
+# get-command-invocation). It must stay shorter than the documents' timeoutSeconds (7200), which
+# must stay shorter than the workflow jobs' timeout-minutes (130). It outlasts the worst case of
+# an apply that rolls back (two passes of four recreates at up to 300 s up plus 300 s health).
+: "${SSM_MAX_SECONDS:=6900}"
 # send-command returns before the invocation exists, so the first polls may not find it yet.
 MISSING_POLLS=5
 # A command the instance has not picked up within this many seconds never runs.
@@ -43,6 +47,8 @@ valid '^[a-z0-9-]+$' "${AWS_REGION:-}" || die "AWS_REGION must be set to the AWS
 valid '^m?i-[0-9a-f]{8,17}$' "${INSTANCE_ID:-}" || die "INSTANCE_ID must be set to the instance id"
 valid '^[0-9]+$' "$SSM_POLL_SECONDS" || die "SSM_POLL_SECONDS must be a whole number of seconds"
 valid '^[1-9][0-9]*$' "$SSM_MAX_SECONDS" || die "SSM_MAX_SECONDS must be a positive whole number of seconds"
+valid '^sha256:[0-9a-f]{64}$' "${PYTHON_DIGEST:-}" || die "PYTHON_DIGEST must be set to the csa-python image digest"
+valid '^sha256:[0-9a-f]{64}$' "${FRONTEND_DIGEST:-}" || die "FRONTEND_DIGEST must be set to the csa-frontend image digest"
 
 if [[ "$#" -lt 2 || "$#" -gt 4 ]]; then
     die "usage: ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]"
@@ -60,15 +66,18 @@ valid '^([0-9]{4}(,[0-9]{4})*)?$' "$migrations" || die "migrations must be comma
 if [[ "$action" == "apply" ]]; then
     valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
     document="csa-production-apply"
-    filter='{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]}'
+    filter='{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]'
+    filter+=', pythonDigest: [$python], frontendDigest: [$frontend]}'
     filter+=' | if $migrations == "" then del(.migrations) else . end'
     parameters="$(jq -cn --arg sha "$sha" --arg migrations "$migrations" --arg digest "$digest" \
-        "$filter")"
+        --arg python "$PYTHON_DIGEST" --arg frontend "$FRONTEND_DIGEST" "$filter")"
 else
     [[ -z "$migrations" ]] || die "plan takes no migrations"
     [[ -z "$digest" ]] || die "plan takes no host digest"
     document="csa-production-plan"
-    parameters="$(jq -cn --arg sha "$sha" '{sha: [$sha]}')"
+    parameters="$(jq -cn --arg sha "$sha" --arg python "$PYTHON_DIGEST" \
+        --arg frontend "$FRONTEND_DIGEST" \
+        '{sha: [$sha], pythonDigest: [$python], frontendDigest: [$frontend]}')"
 fi
 
 sent="$(aws ssm send-command --region "$AWS_REGION" --document-name "$document" \
