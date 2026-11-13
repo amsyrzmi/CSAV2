@@ -14,6 +14,7 @@ const {
   isItemId, isTrainingPagePath, itemHref, PROVIDER_NOTICE, TRUNCATED_NOTE, UNCATEGORISED, MAX_FILE_BYTES,
   MAX_VIDEO_BYTES, SOUND_NOTICE, HEVC_NOTE, watchHref, fileKind, durationText, videoStateText, failureCopy,
   canRetry, videoSummaryState, videoLengthProblem, VIDEO_SUMMARY_NOTE, SUMMARY_MAKING, NO_SUMMARY_TEXT,
+  videoSummaryStatus, SUMMARY_AFTER_UPLOAD, SUMMARY_UNAVAILABLE, NO_SPEECH_TEXT, NO_AUDIO_TEXT,
 } = await import(moduleUrl(
   (await readFile(new URL("../lib/training-view.ts", import.meta.url), "utf8")).replace(/import type [^;]+;/g, ""),
 ));
@@ -290,6 +291,8 @@ test("the summary panel for a video never asks for a summary and never says what
   // Being processed: the summary really is on its way.
   for (const status of ["uploaded", "transcribing", "summarising"])
     assert.equal(videoSummaryState(video({ status }), null), "making", status);
+  // Still uploading: nothing is being made yet.
+  assert.equal(videoSummaryState(video({ status: "uploading" }), null), "uploading");
   // A failed video has no summary coming: its failure is the only thing to say.
   assert.equal(videoSummaryState(video({ status: "failed", failure: "training_video_unreadable" }), null), "failed");
   assert.equal(videoSummaryState(video({ status: "failed", failure: "training_summary_unavailable" }), "speech"), "failed");
@@ -302,4 +305,30 @@ test("the summary panel for a video never asks for a summary and never says what
 test("the summary panel's failed state says the failure's sentence, not 'being made'", () => {
   assert.notEqual(failureCopy("training_video_codec"), SUMMARY_MAKING);
   assert.match(NO_SUMMARY_TEXT, /^[A-Z].*\.$/);
+});
+
+test("the summary panel says one true sentence per state, and is busy only while something is coming", () => {
+  // A failed video's failure is said once, above the player; the summary panel only says there is none.
+  assert.deepEqual(videoSummaryStatus("failed", false), { sentence: NO_SUMMARY_TEXT, busy: false });
+  assert.deepEqual(videoSummaryStatus("none", false), { sentence: NO_SUMMARY_TEXT, busy: false });
+  assert.deepEqual(videoSummaryStatus("making", false), { sentence: SUMMARY_MAKING, busy: true });
+  // An upload still arriving: no summary is being made yet.
+  assert.deepEqual(videoSummaryStatus("uploading", false), { sentence: SUMMARY_AFTER_UPLOAD, busy: false });
+  assert.notEqual(SUMMARY_AFTER_UPLOAD, SUMMARY_MAKING);
+  assert.doesNotMatch(SUMMARY_AFTER_UPLOAD, /being made/);
+  assert.deepEqual(videoSummaryStatus("no_speech", false), { sentence: NO_SPEECH_TEXT, busy: false });
+  assert.deepEqual(videoSummaryStatus("no_audio", false), { sentence: NO_AUDIO_TEXT, busy: false });
+  assert.deepEqual(videoSummaryStatus("loading", false), { sentence: "Loading the summary…", busy: true });
+  // The transcript could not be read: a short neutral sentence, never an empty busy panel.
+  assert.deepEqual(videoSummaryStatus("loading", true), { sentence: SUMMARY_UNAVAILABLE, busy: false });
+  assert.match(SUMMARY_UNAVAILABLE, /^[A-Z].*\.$/);
+  for (const failure of ["training_video_unreadable", "training_summary_unavailable"])
+    assert.notEqual(videoSummaryStatus("failed", false).sentence, failureCopy(failure));
+});
+
+test("two open uploads: the sentence says a stopped one can be removed to make room", () => {
+  assert.equal(
+    refusalCopy("training_uploads_in_progress"),
+    "Two videos are already being added. Wait for one to finish, or remove one that stopped, then add this one.",
+  );
 });

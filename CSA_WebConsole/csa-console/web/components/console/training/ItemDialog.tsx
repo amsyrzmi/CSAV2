@@ -5,6 +5,7 @@ import { ApiError } from "@/lib/api";
 import {
   completeVideo,
   patchItem,
+  pieceCsrf,
   putPiece,
   removeItem,
   startVideo,
@@ -150,9 +151,11 @@ export default function ItemDialog({
 
   /** The video, in pieces; `resume` carries on a stopped upload instead of starting one. */
   function sendVideo(source: File, key: string, resume: UploadStopped | null): Promise<TrainingItem> {
+    // One CSRF token for all of this upload's pieces, not one fetch per piece.
+    const csrf = pieceCsrf();
     const deps: UploadDeps = {
       start: () => startVideo(tenantId, source, key),
-      put: (itemId, number, piece, sha) => putPiece(tenantId, itemId, number, piece, sha),
+      put: (itemId, number, piece, sha) => putPiece(tenantId, itemId, number, piece, sha, csrf),
       status: (itemId) => uploadStatus(tenantId, itemId),
       complete: (itemId) => completeVideo(tenantId, itemId),
       sha256: sha256Hex,

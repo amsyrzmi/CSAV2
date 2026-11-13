@@ -184,9 +184,30 @@ export function startVideo(tenantId: string | null, file: File, key: string): Pr
   });
 }
 
+/** One upload's CSRF token, shared by its pieces (`pieceCsrf`, then pass it to every `putPiece`). */
+export interface PieceCsrf {
+  token: Promise<string> | null;
+}
+
+/** A fresh holder: the first piece fetches the token, the others reuse it. */
+export function pieceCsrf(): PieceCsrf {
+  return { token: null };
+}
+
+const CSRF_REFUSED = "invalid csrf token";
+
+async function csrfToken(): Promise<string> {
+  const found = await decode<{ csrf_token: string }>(
+    await fetch("/console/v1/auth/csrf", { credentials: "same-origin", cache: "no-store" }),
+  );
+  return found.csrf_token;
+}
+
 /**
  * One piece, raw, with its SHA-256. A 503 carries its `Retry-After` seconds in `ApiError.body` as
- * `retry_after`, which the upload engine waits for.
+ * `retry_after`, which the upload engine waits for. The CSRF token comes from `csrf`, fetched once
+ * per upload (not once per piece); a 403 `invalid csrf token` fetches a new one and sends the piece
+ * once more, and a second such refusal is the answer.
  */
 export async function putPiece(
   tenantId: string | null,
@@ -194,28 +215,42 @@ export async function putPiece(
   number: number,
   piece: Blob,
   sha256: string,
+  csrf: PieceCsrf = pieceCsrf(),
 ): Promise<void> {
-  const csrf = await decode<{ csrf_token: string }>(
-    await fetch("/console/v1/auth/csrf", { credentials: "same-origin", cache: "no-store" }),
-  );
-  const response = await fetch(videoPath(tenantId, `/${encodeURIComponent(itemId)}/pieces/${number}`), {
-    method: "PUT",
-    body: piece,
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "X-Piece-SHA256": sha256,
-      "X-CSRF-Token": csrf.csrf_token,
-    },
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  const retryAfter = Number(response.headers.get("Retry-After"));
-  try {
-    await decode<unknown>(response);
-  } catch (cause) {
-    if (cause instanceof ApiError && Number.isFinite(retryAfter) && retryAfter > 0)
-      cause.body = { ...cause.body, retry_after: retryAfter };
-    throw cause;
+  for (let renewed = false; ; renewed = true) {
+    const pending = (csrf.token ??= csrfToken());
+    let token: string;
+    try {
+      token = await pending;
+    } catch (cause) {
+      if (csrf.token === pending) csrf.token = null; // the next piece asks again
+      throw cause;
+    }
+    const response = await fetch(videoPath(tenantId, `/${encodeURIComponent(itemId)}/pieces/${number}`), {
+      method: "PUT",
+      body: piece,
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Piece-SHA256": sha256,
+        "X-CSRF-Token": token,
+      },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    try {
+      await decode<unknown>(response);
+      return;
+    } catch (cause) {
+      if (!renewed && cause instanceof ApiError && cause.status === 403 && cause.code === CSRF_REFUSED) {
+        // Another piece may have renewed it already; only a token still in use is replaced.
+        if (csrf.token === pending) csrf.token = null;
+        continue;
+      }
+      if (cause instanceof ApiError && Number.isFinite(retryAfter) && retryAfter > 0)
+        cause.body = { ...cause.body, retry_after: retryAfter };
+      throw cause;
+    }
   }
 }
 

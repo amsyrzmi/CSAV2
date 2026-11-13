@@ -56,6 +56,7 @@ function harness(count, { put, complete, status } = {}) {
     },
     sha256: async (blob) => `sha-${blob.start}`,
     sleep: async (ms) => { log.sleeps.push(ms); },
+    random: () => 0.5,
   };
   return { deps, log };
 }
@@ -143,6 +144,82 @@ test("a busy answer with no Retry-After waits two seconds", async () => {
   });
   await uploadVideo(fakeFile(10), deps, () => {});
   assert.deepEqual(log.sleeps, [2000]);
+});
+
+test("a busy wait is jittered around Retry-After, so two uploads do not poll in step", async () => {
+  for (const [random, expected] of [[0, 1500], [0.5, 2000], [0.999, 2499]]) {
+    const { deps, log } = harness(1, {
+      put: (number, attempt) => { if (attempt === 1) throw failure(503, "training_busy", { body: { retry_after: 2 } }); },
+    });
+    deps.random = () => random;
+    await uploadVideo(fakeFile(10), deps, () => {});
+    assert.deepEqual(log.sleeps, [expected], String(random));
+  }
+});
+
+const busy = () => failure(503, "training_busy", { body: { retry_after: 2 } });
+const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+
+test("two uploads at once: workers starved of room give their pieces back while one keeps storing", async () => {
+  // The other upload holds all of the gateway's slots but one, and a piece takes a while to
+  // store (a real one ~20 s), so two of this upload's three workers run out of busy waits.
+  let slots = 1;
+  const stored = [];
+  const { deps, log } = harness(6, {
+    put: async (number) => {
+      if (slots === 0) throw busy();
+      slots -= 1;
+      try {
+        await tick();
+      } finally {
+        slots += 1;
+      }
+      stored.push(number);
+    },
+  });
+  const item = await uploadVideo(fakeFile(5 * PIECE + 3), deps, () => {});
+  assert.equal(item, DONE, "the second upload keeps going instead of stopping with Check your connection");
+  assert.deepEqual([...stored].sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
+  assert.equal(log.completes, 1);
+  assert.ok(log.sleeps.length > 20, "more busy waits in all than one worker may spend");
+});
+
+test("when every worker is starved and nothing is stored, the upload stops naming every missing piece", async () => {
+  const { deps, log } = harness(5, { put: () => { throw busy(); } });
+  const stopped = await uploadVideo(fakeFile(4 * PIECE + 1), deps, () => {}).then(() => null, (error) => error);
+  assert.ok(stopped instanceof UploadStopped);
+  assert.deepEqual(stopped.missing, [1, 2, 3, 4, 5]);
+  assert.equal(log.completes, 0);
+  // Each of the three workers waited its full allowance for room, then gave up: no retries.
+  assert.equal(log.sleeps.length, 3 * 20);
+  assert.ok(log.sleeps.every((ms) => ms === 2000));
+});
+
+test("a starved worker comes back once another piece is stored", async () => {
+  let room = false;
+  let inFlight = 0;
+  let most = 0;
+  const { deps } = harness(4, {
+    put: async (number) => {
+      // Piece 1 is slow, and the gateway is full for every other piece until it is stored.
+      if (number === 1) {
+        for (let i = 0; i < 30; i += 1) await tick();
+        room = true;
+        return;
+      }
+      if (!room) throw busy();
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      try {
+        for (let i = 0; i < 3; i += 1) await tick();
+      } finally {
+        inFlight -= 1;
+      }
+    },
+  });
+  const item = await uploadVideo(fakeFile(3 * PIECE + 1), deps, () => {});
+  assert.equal(item, DONE);
+  assert.equal(most, 3, "once there is room, three pieces are in flight again, not one");
 });
 
 test("three retries fail: UploadStopped names the missing pieces, and resume sends only those", async () => {

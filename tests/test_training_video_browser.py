@@ -190,6 +190,8 @@ class VideoLibrary(Library):
     # While set, the transcript answers only once it is set (the verdict arrives late).
     transcript_gate: asyncio.Event | None = None
     fail_every_piece: set[int] = field(default_factory=set)
+    # While set, the transcript read is refused with this status (the read failed).
+    transcript_status: int | None = None
     forget_on_complete: set[int] = field(default_factory=set)
     piece_count: int = 0
     declared: int = 0
@@ -229,6 +231,8 @@ class VideoLibrary(Library):
                     }
                 if found[2] == "transcript" and method == "GET":
                     self.transcript_reads.append(item["id"])
+                    if self.transcript_status is not None:
+                        return self.transcript_status, {"detail": "training_storage_unavailable"}
                     return 200, self.transcripts.get(
                         item["id"], {"language": None, "speech": None, "segments": []}
                     )
@@ -1103,13 +1107,44 @@ async def test_a_failed_video_does_not_say_its_summary_is_being_made(
         async with training_page(
             browser, site, library, path=f"/portal/training/{ITEM}", wait="training-video-state"
         ) as page:
-            status = page.get_by_test_id("training-summary-status")
-            await expect(status).to_have_text(
+            failure = (
                 "The transcript is ready, but we could not write the summary. Select Try again."
             )
-            await expect(page.get_by_test_id("training-summary-panel")).not_to_contain_text(
-                "being made"
+            # The failure is said once, in the manager's notice; the panel only has no summary.
+            await expect(page.get_by_test_id("training-video-state")).to_have_text(failure)
+            await expect(page.get_by_text(failure, exact=True)).to_have_count(1)
+            status = page.get_by_test_id("training-summary-status")
+            await expect(status).to_have_text("This video has no summary.")
+            panel = page.get_by_test_id("training-summary-panel")
+            await expect(panel).not_to_contain_text("being made")
+            await expect(panel).to_have_attribute("aria-busy", "false")
+
+    await with_browser(body)
+
+
+@requires_ffmpeg
+async def test_a_transcript_that_cannot_be_read_leaves_no_empty_busy_summary_panel(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), can_manage=False, videos=videos)
+        add_video(library, videos, clip, has_summary=False)
+        library.transcript_status = 503
+        async with training_page(
+            browser,
+            site,
+            library,
+            role="tenant_staff",
+            path=f"/portal/training/{ITEM}",
+            wait="training-video-player",
+        ) as page:
+            await expect(page.get_by_test_id("training-transcript-error")).to_be_visible()
+            panel = page.get_by_test_id("training-summary-panel")
+            await expect(page.get_by_test_id("training-summary-status")).to_have_text(
+                "The summary cannot be shown right now."
             )
+            await expect(panel).to_have_attribute("aria-busy", "false")
+            await expect(panel).not_to_contain_text("being made")
 
     await with_browser(body)
 

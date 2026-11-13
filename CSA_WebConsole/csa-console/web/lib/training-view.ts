@@ -56,7 +56,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
     "This upload was stopped, so nothing more can be added to it. Refresh the page, then add the video again.",
   training_busy: "The library is busy with other uploads. Wait a minute and try again.",
   training_uploads_in_progress:
-    "Two videos are already being added. Wait for one to finish, then add this one.",
+    "Two videos are already being added. Wait for one to finish, or remove one that stopped, then add this one.",
   training_video_unavailable: "Adding videos is not switched on yet. Ask your administrator.",
   training_summary_automatic:
     "A video's summary is made for you once it has been processed, so there is nothing to summarise by hand.",
@@ -223,6 +223,9 @@ export const HEVC_NOTE =
 /** Under a video's summary. */
 export const VIDEO_SUMMARY_NOTE = "Written by the assistant from this video's transcript.";
 export const SUMMARY_MAKING = "The summary is being made.";
+export const SUMMARY_AFTER_UPLOAD = "The summary is made once the video has finished uploading.";
+/** The transcript could not be read, so whether a summary exists is unknown. */
+export const SUMMARY_UNAVAILABLE = "The summary cannot be shown right now.";
 export const NO_SPEECH_TEXT = "This video has no speech, so there is no transcript or summary.";
 export const NO_AUDIO_TEXT = "This video has no sound, so there is no transcript or summary.";
 export const NO_SUMMARY_TEXT = "This video has no summary.";
@@ -271,12 +274,20 @@ export function videoStateText(item: TrainingItem): string | null {
   return item.status === "transcribing" ? "Transcribing" : "Waiting to be processed";
 }
 
-export type VideoSummaryState = "summary" | "making" | "no_speech" | "no_audio" | "failed" | "loading" | "none";
+export type VideoSummaryState =
+  | "summary"
+  | "making"
+  | "uploading"
+  | "no_speech"
+  | "no_audio"
+  | "failed"
+  | "loading"
+  | "none";
 
 /**
  * What the summary panel shows for a video, and only what is true. A silent video says so, whatever
- * else it has. A failed video has no summary coming: its failure is the only thing to say. Then a
- * stored summary; then, while the video is still being processed, that the summary is on its way.
+ * else it has. A failed video has no summary coming. Then a stored summary; then, while the video
+ * is still being processed, that the summary is on its way (not while it is still uploading).
  * A ready video with no summary yet waits for the transcript's verdict (`speech`, null until
  * known): without it nothing is claimed ("loading"); with speech and still no summary there is none.
  * A video has no Summarise button: the job writes the summary.
@@ -285,8 +296,39 @@ export function videoSummaryState(item: TrainingItem, speech: VideoSpeech | null
   if (speech === "no_speech" || speech === "no_audio") return speech;
   if (item.status === "failed") return "failed";
   if (item.has_summary) return "summary";
+  if (item.status === "uploading") return "uploading";
   if (item.status !== "ready") return "making";
   return speech === null ? "loading" : "none";
+}
+
+/**
+ * The summary panel's sentence for a state, and whether the panel is busy (something is on its
+ * way). A failed video's failure is said once, in the manager's notice above the player, so here
+ * it only has no summary. `speechFailed`: the transcript could not be read, so a ready video's
+ * verdict will not come; the panel says so briefly instead of staying empty and busy. The
+ * `summary` state's sentence depends on the summary read, which the panel makes itself.
+ */
+export function videoSummaryStatus(
+  state: Exclude<VideoSummaryState, "summary">,
+  speechFailed: boolean,
+): { sentence: string; busy: boolean } {
+  switch (state) {
+    case "no_speech":
+      return { sentence: NO_SPEECH_TEXT, busy: false };
+    case "no_audio":
+      return { sentence: NO_AUDIO_TEXT, busy: false };
+    case "making":
+      return { sentence: SUMMARY_MAKING, busy: true };
+    case "uploading":
+      return { sentence: SUMMARY_AFTER_UPLOAD, busy: false };
+    case "failed":
+    case "none":
+      return { sentence: NO_SUMMARY_TEXT, busy: false };
+    case "loading":
+      return speechFailed
+        ? { sentence: SUMMARY_UNAVAILABLE, busy: false }
+        : { sentence: "Loading the summary…", busy: true };
+  }
 }
 
 /**

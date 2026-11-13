@@ -21,7 +21,11 @@ export const MAX_ACTIVE_PIECES = 3;
 export const BACKOFF_MS: readonly number[] = [1000, 2000, 4000];
 const DEFAULT_BUSY_MS = 2000;
 const MAX_BUSY_MS = 30_000;
-/** Waits for room on the gateway that one piece may spend before they count as failures. */
+/**
+ * Waits for room on the gateway one worker may spend on a piece. Then it puts the piece back and
+ * ends: another upload (another tab) is holding the room, and its slot is better given up than
+ * turned into a "Check your connection" stop. A worker comes back when this upload stores a piece.
+ */
 const MAX_BUSY_WAITS = 20;
 
 // ---- Pieces -----------------------------------------------------------------------------------
@@ -78,6 +82,8 @@ export interface UploadDeps {
   complete(itemId: string): Promise<TrainingItem>;
   sha256(piece: Blob): Promise<string>;
   sleep(ms: number): Promise<void>;
+  /** 0 to 1, for the jitter on busy waits; `Math.random` when left out. */
+  random?(): number;
 }
 
 export interface UploadProgress {
@@ -116,41 +122,49 @@ function isFatal(error: unknown): boolean {
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
-function busyWait(error: unknown): number | null {
+/**
+ * The wait a refusal for room asks for (`Retry-After`, else 2 s), give or take a quarter, so two
+ * uploads polling one gateway do not keep asking at the same moment; null for any other failure.
+ */
+function busyWait(error: unknown, random: () => number): number | null {
   const { status, code, body } = failureOf(error);
   if (status !== 503 || code !== "training_busy") return null;
   const seconds = Number(body?.retry_after);
-  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, MAX_BUSY_MS) : DEFAULT_BUSY_MS;
+  const base = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, MAX_BUSY_MS) : DEFAULT_BUSY_MS;
+  return Math.min(Math.round(base * (0.75 + 0.5 * random())), MAX_BUSY_MS);
 }
 
 /**
- * One piece, until the server holds it: a refusal for room waits `Retry-After`; any other failure
- * waits 1 s, 2 s, then 4 s and tries again; the fourth failure gives the piece up (returns
- * false). A refusal that retrying cannot mend is thrown as it is.
+ * One piece, until the server holds it (`stored`): a refusal for room waits about `Retry-After`,
+ * up to `MAX_BUSY_WAITS` times (then `starved`); any other failure waits 1 s, 2 s, then 4 s and
+ * tries again, and the fourth gives the piece up (`failed`). A refusal that retrying cannot mend
+ * is thrown as it is.
  */
 async function sendPiece(
   file: Sliceable,
   piece: PiecePlan,
   plan: UploadPlan,
   deps: UploadDeps,
-): Promise<boolean> {
+): Promise<"stored" | "starved" | "failed"> {
   const blob = file.slice(piece.start, piece.end, "application/octet-stream");
   const sha = await deps.sha256(blob);
+  const random = deps.random ?? Math.random;
   let failures = 0;
   let busy = 0;
   for (;;) {
     try {
       await deps.put(plan.itemId, piece.number, blob, sha);
-      return true;
+      return "stored";
     } catch (error) {
       if (isFatal(error)) throw error;
-      const wait = busyWait(error);
-      if (wait !== null && busy < MAX_BUSY_WAITS) {
+      const wait = busyWait(error, random);
+      if (wait !== null) {
+        if (busy >= MAX_BUSY_WAITS) return "starved";
         busy += 1;
         await deps.sleep(wait);
         continue;
       }
-      if (failures >= BACKOFF_MS.length) return false;
+      if (failures >= BACKOFF_MS.length) return "failed";
       await deps.sleep(BACKOFF_MS[failures]);
       failures += 1;
     }
@@ -158,8 +172,11 @@ async function sendPiece(
 }
 
 /**
- * Sends `numbers` (up to three at a time), reporting each stored piece. After a piece is given up
- * nothing new starts; the ones in flight finish, and the pieces not stored are returned.
+ * Sends `numbers` (up to three at a time), reporting each stored piece, and returns the pieces not
+ * stored. After a piece fails its retries nothing new starts; the ones in flight finish. A worker
+ * starved of room puts its piece back and ends quietly while the others go on, and each stored
+ * piece brings ended workers back (up to three again); only when every worker has ended starved
+ * with nothing stored since is the upload stopped, with the pieces still queued as missing.
  */
 async function sendAll(
   file: Sliceable,
@@ -173,23 +190,43 @@ async function sendAll(
   const queue = numbers.map((number) => pieces[number - 1]).filter(Boolean);
   let stopped = false;
   let fatal: { error: unknown } | null = null;
+  let workers = 0;
+  const running: Promise<void>[] = [];
   const worker = async () => {
-    for (let piece = queue.shift(); piece && !stopped; piece = queue.shift()) {
-      try {
-        if (!(await sendPiece(file, piece, plan, deps))) {
+    try {
+      for (let piece = queue.shift(); piece && !stopped; piece = queue.shift()) {
+        let sent: Awaited<ReturnType<typeof sendPiece>>;
+        try {
+          sent = await sendPiece(file, piece, plan, deps);
+        } catch (error) {
+          stopped = true;
+          fatal ??= { error };
+          return;
+        }
+        if (sent === "failed") {
           stopped = true;
           return;
         }
-      } catch (error) {
-        stopped = true;
-        fatal ??= { error };
-        return;
+        if (sent === "starved") {
+          queue.unshift(piece);
+          return;
+        }
+        held.add(piece.number);
+        onProgress({ done: held.size, total: plan.pieceCount });
+        // Room came free: bring back workers that ended starved (one piece stays for this one).
+        while (!stopped && workers < MAX_ACTIVE_PIECES && queue.length > 1) start();
       }
-      held.add(piece.number);
-      onProgress({ done: held.size, total: plan.pieceCount });
+    } finally {
+      workers -= 1;
     }
   };
-  await Promise.all(Array.from({ length: Math.min(MAX_ACTIVE_PIECES, queue.length) }, worker));
+  const start = () => {
+    workers += 1;
+    running.push(worker());
+  };
+  for (let first = Math.min(MAX_ACTIVE_PIECES, queue.length); first > 0; first -= 1) start();
+  // Workers started while others run are awaited too.
+  for (let awaited = 0; awaited < running.length; awaited += 1) await running[awaited];
   if (fatal) throw (fatal as { error: unknown }).error;
   return numbers.filter((number) => !held.has(number));
 }

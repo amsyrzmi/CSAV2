@@ -4,15 +4,11 @@ import { useEffect, useId, useRef, useState } from "react";
 import { getSummary, makeSummary, type TrainingItem, type TrainingSummary, type VideoSpeech } from "@/lib/training-api";
 import { madeOnText, summaryView, type SummaryState } from "@/lib/training-form";
 import {
-  failureCopy,
-  NO_AUDIO_TEXT,
-  NO_SPEECH_TEXT,
-  NO_SUMMARY_TEXT,
   refusalCopy,
-  SUMMARY_MAKING,
   summaryText,
   VIDEO_SUMMARY_NOTE,
   videoSummaryState,
+  videoSummaryStatus,
 } from "@/lib/training-view";
 import { TechnicalDetails } from "../kit";
 import { action, Notice, secondary } from "../ui";
@@ -189,8 +185,9 @@ export default function SummaryPanel({
  * provider notice here: the panel shows the stored summary (as text only), "The summary is being
  * made", or, for a video with no speech or no sound, that there is no transcript or summary.
  * `speech` is the transcript's verdict, null until it is known (`speechFailed`: it could not be
- * read, so it stays unknown). Only what is true is said: a failed video shows its failure, and a
- * ready video waits for the verdict instead of claiming a summary is on its way.
+ * read, so it stays unknown and the panel says the summary cannot be shown). Only what is true is
+ * said: a failed video has no summary (its failure is in the manager's notice above, said once),
+ * and a ready video waits for the verdict instead of claiming a summary is on its way.
  */
 export function VideoSummary({
   tenantId,
@@ -226,21 +223,17 @@ export function VideoSummary({
 
   const stored = state === "summary" && read?.summary ? read.summary : null;
   const text = stored ? summaryText(stored) : null;
-  const sentence =
-    state === "no_speech" ? NO_SPEECH_TEXT
-    : state === "no_audio" ? NO_AUDIO_TEXT
-    : state === "making" ? SUMMARY_MAKING
-    : state === "failed" ? failureCopy(item.failure)
-    : state === "none" ? NO_SUMMARY_TEXT
-    : state === "loading" ? (speechFailed ? null : "Loading the summary…")
-    : stored || read?.error ? null
-    : "Loading the summary…";
+  const status =
+    state === "summary"
+      ? { sentence: stored || read?.error ? null : "Loading the summary…", busy: !read }
+      : videoSummaryStatus(state, speechFailed);
+  const sentence = status.sentence;
   const madeOn = stored ? madeOnText(stored.summarised_at) : "";
 
   return (
     <section
       aria-labelledby={headingId}
-      aria-busy={state === "making" || state === "loading" || (state === "summary" && !read)}
+      aria-busy={status.busy}
       data-testid="training-summary-panel"
       className="card min-w-0 space-y-4 rounded-[14px] p-4 sm:p-5"
     >
