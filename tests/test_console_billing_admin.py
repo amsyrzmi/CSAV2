@@ -30,6 +30,7 @@ from csa.console.billing_admin import (
     BillingPlanOut,
     BillingPriceIn,
     BillingPriceOut,
+    LangfuseCheckOut,
 )
 from csa.core.tenancy import tx
 from csa.metering.meter import LEDGER_PROVIDERS
@@ -57,6 +58,7 @@ ADMIN_MODELS: tuple[type[BaseModel], ...] = (
     BillingPriceOut,
     BillingFxIn,
     BillingFxOut,
+    LangfuseCheckOut,
 )
 
 
@@ -70,6 +72,10 @@ def pinned_clock(sessions: SessionWorld) -> Iterator[None]:
 
 def plan_path(client_id: str) -> str:
     return f"{ADMIN}/clients/{client_id}/plan"
+
+
+def check_path(client_id: str) -> str:
+    return f"{ADMIN}/clients/{client_id}/langfuse-check"
 
 
 async def company(w: SessionWorld, name: str) -> str:
@@ -121,10 +127,11 @@ def round_to(value: Decimal, places: str) -> str:
 
 
 async def requests_for(w: SessionWorld, client: httpx.AsyncClient, tenant: str) -> list:
-    """One request to each of the four routes, with a valid CSRF token for the writes."""
+    """One request to each of the five routes, with a valid CSRF token for the writes."""
     model = model_name()
     return [
         await client.get(f"{OVERVIEW}?client_id={tenant}"),
+        await client.get(check_path(tenant)),
         await w.mutate(
             client,
             plan_path(tenant),
@@ -177,6 +184,7 @@ async def test_machine_principal_and_anonymous_are_refused(
         headers = {"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": tenant}
         refused = [
             await machine.get(OVERVIEW, headers=headers),
+            await machine.get(check_path(tenant), headers=headers),
             await machine.post(plan_path(tenant), json={}, headers=headers),
             await machine.post(PRICES, json={}, headers=headers),
             await machine.post(FX, json={}, headers=headers),
@@ -798,4 +806,10 @@ def test_client_models_still_carry_no_cost_field_and_admin_models_are_not_on_cli
     for name in admin_names:
         assert not re.search(rf"/{name}\b", text), name
     admin_routes = {p for p in document["paths"] if p.startswith(ADMIN)}
-    assert admin_routes == {OVERVIEW, PRICES, FX, f"{ADMIN}/clients/{{client_id}}/plan"}
+    assert admin_routes == {
+        OVERVIEW,
+        PRICES,
+        FX,
+        f"{ADMIN}/clients/{{client_id}}/plan",
+        f"{ADMIN}/clients/{{client_id}}/langfuse-check",
+    }

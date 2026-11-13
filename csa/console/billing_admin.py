@@ -9,6 +9,10 @@ included, gets 403 ``platform_admin_only``, and the router's session check answe
 - ``POST /clients/{client_id}/plan``: a plan row through ``insert_plan`` (rules 1 to 7, audited).
 - ``POST /prices`` and ``POST /fx``: an effective-dated price or FX row, under the shadow rule
   (``check_new_price_date``), audited.
+- ``GET /clients/{client_id}/langfuse-check?cycle=``: one company's ledger tokens for the cycle
+  against Langfuse's (``csa.billing.langfuse_check``), on demand only: the overview never calls
+  Langfuse, so it stays fast and a Langfuse outage or rate limit never touches it. The check
+  reports and changes nothing.
 
 Cross-tenant reads never widen ``csa_app``: the companies are listed from ``public.clients`` (as
 the onboarding admin list does), then each company's usage is read in its own ``tx()`` for that
@@ -28,12 +32,13 @@ RM0.01 for the bill and the margin, RM0.0001 for raw cost and cost per execution
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, date, datetime, time
 from decimal import ROUND_HALF_UP, Context, Decimal, Inexact
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg.errors import UniqueViolation
 from psycopg_pool import AsyncConnectionPool
@@ -41,6 +46,16 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from csa.billing.config import ShadowRuleError, check_new_price_date
 from csa.billing.cycles import KL, Cycle, kl_today
+from csa.billing.langfuse_check import (
+    DEFAULT_BASE_URL,
+    SETTLE,
+    TIMEOUT,
+    CheckResult,
+    LangfuseSource,
+    check_window,
+    drift,
+    langfuse_tokens,
+)
 from csa.billing.memo import USAGE_MEMO
 from csa.billing.plans import Bundle, PlanRow, PlanRuleError, Stage, insert_plan, pilot_ended
 from csa.billing.service import CycleUsage, UsageStatus, cycle_usage
@@ -48,6 +63,7 @@ from csa.console.billing import Money2, Money4, billing_now, pick_cycle
 from csa.console.contracts import ConsoleActor
 from csa.console.identity import IdentityService
 from csa.core import db
+from csa.core.settings import get_settings
 from csa.core.tenancy import tx
 from csa.metering.meter import LEDGER_PROVIDERS
 
@@ -61,8 +77,10 @@ __all__ = [
     "BillingPlanOut",
     "BillingPriceIn",
     "BillingPriceOut",
+    "LangfuseCheckOut",
     "build_billing_admin_router",
     "company_out",
+    "langfuse_source",
     "platform_admin",
 ]
 
@@ -80,6 +98,8 @@ _UNIT = Decimal("0.0001")
 AdminWarning = Literal[
     "pilot_ended", "usage_after_termination", "not_set_up_with_usage", "pending_prices"
 ]
+# Only the on-demand Langfuse check raises this one; the overview never does.
+LangfuseWarning = Literal["langfuse_drift"]
 
 # A positive, finite input with at most 8 decimal places, bounded well above any real value.
 UsdPerMtok = Annotated[
@@ -144,6 +164,33 @@ class AdminOverviewOut(BaseModel):
     cycle_end: date
     final: bool
     companies: list[AdminCompanyOut]
+
+
+class LangfuseCheckOut(BaseModel):
+    """One company's ledger tokens for a cycle against Langfuse's, for the platform admin only.
+
+    Both sides cover ``[cycle_start 00:00 KL, checked_until)``: the whole cycle once it has
+    closed, else up to a few minutes ago (usage that recent may not have reached Langfuse yet).
+    The ledger side is every recorded call in that window, billed or not (usage before a plan or
+    after a termination included), since every call is mirrored. ``result``: ``match`` when input
+    and output each agree within 1% or 100 tokens, whichever is larger; ``drift`` otherwise (with
+    the warning ``langfuse_drift``); ``unavailable`` when Langfuse is not configured, not reachable
+    or answered an error (its figures are then ``None``). The ledger is the authority: no billed
+    figure depends on this.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: UUID
+    cycle_start: date
+    cycle_end: date
+    checked_until: AwareDatetime
+    result: CheckResult
+    ledger_input_tokens: int
+    ledger_output_tokens: int
+    langfuse_input_tokens: int | None
+    langfuse_output_tokens: int | None
+    warnings: list[LangfuseWarning]
 
 
 class BillingPlanIn(BaseModel):
@@ -329,6 +376,66 @@ async def _overview(pool: AsyncConnectionPool, cycle: Cycle, now: datetime) -> A
     )
 
 
+async def langfuse_source() -> AsyncIterator[LangfuseSource]:
+    """The sink's Langfuse credentials and a short-lived HTTP client (a dependency for tests)."""
+    settings = get_settings()
+    secret = settings.LANGFUSE_SECRET_KEY
+    async with httpx.AsyncClient(timeout=TIMEOUT) as http:
+        yield LangfuseSource(
+            http=http,
+            base_url=settings.LANGFUSE_BASE_URL or DEFAULT_BASE_URL,
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=None if secret is None else secret.get_secret_value(),
+        )
+
+
+async def _langfuse_check(
+    pool: AsyncConnectionPool,
+    source: LangfuseSource,
+    client_id: UUID,
+    cycle: Cycle,
+    now: datetime,
+) -> LangfuseCheckOut:
+    begin, finish = check_window(cycle.start, cycle.end, now - SETTLE)
+    async with tx(pool, str(client_id)) as conn:
+        if await db.q.fetch_one("console/client_get.sql", (client_id,), conn=conn) is None:
+            raise HTTPException(404, "tenant not found")
+        ledger = (0, 0)
+        if finish > begin:
+            row = await db.q.fetch_one(
+                "billing/usage_token_totals.sql",
+                {"client_id": client_id, "start": begin, "end": finish},
+                conn=conn,
+            )
+            if row is None:  # an aggregate always returns one row
+                raise RuntimeError("usage_token_totals.sql returned no row")
+            ledger = (int(row["prompt_tokens"]), int(row["completion_tokens"]))
+    # Langfuse is read after the transaction closes: a slow Langfuse never holds a connection.
+    totals = await langfuse_tokens(
+        source.http,
+        base_url=source.base_url,
+        public_key=source.public_key,
+        secret_key=source.secret_key,
+        client_id=client_id,
+        start=cycle.start,
+        end=cycle.end,
+        until=now - SETTLE,
+    )
+    result = drift(ledger, totals)
+    return LangfuseCheckOut(
+        client_id=client_id,
+        cycle_start=cycle.start,
+        cycle_end=cycle.end,
+        checked_until=max(finish, begin).astimezone(UTC),
+        result=result,
+        ledger_input_tokens=ledger[0],
+        ledger_output_tokens=ledger[1],
+        langfuse_input_tokens=None if totals is None else totals.input_tokens,
+        langfuse_output_tokens=None if totals is None else totals.output_tokens,
+        warnings=["langfuse_drift"] if result == "drift" else [],
+    )
+
+
 def _identity(request: Request) -> IdentityService:
     service = getattr(request.app.state, "identity_service", None)
     if not isinstance(service, IdentityService):  # a signed-in human implies one
@@ -399,6 +506,26 @@ def build_billing_admin_router() -> APIRouter:
         404 in the future.
         """
         return await _overview(request.app.state.pool, pick_cycle(cycle, now), now)
+
+    @router.get("/clients/{client_id}/langfuse-check", response_model=LangfuseCheckOut)
+    async def langfuse_check(
+        request: Request,
+        client_id: UUID,
+        _actor: Annotated[ConsoleActor, Depends(platform_admin)],
+        now: Annotated[datetime, Depends(billing_now)],
+        source: Annotated[LangfuseSource, Depends(langfuse_source)],
+        cycle: Annotated[date | None, Query()] = None,
+    ) -> LangfuseCheckOut:
+        """One company's ledger tokens for a cycle against Langfuse's. Platform admin only.
+
+        Asked for on demand (one Langfuse request per call; Langfuse Cloud rate-limits its
+        Metrics API), never by the overview. ``cycle`` follows the overview's rules (default the
+        current cycle; 422 off a 5th, 404 in the future); an unknown company is 404. A Langfuse
+        that is unset, unreachable or failing is ``unavailable``, never an error status: the
+        check only reports and changes no figure.
+        """
+        picked = pick_cycle(cycle, now)
+        return await _langfuse_check(request.app.state.pool, source, client_id, picked, now)
 
     @router.post("/clients/{client_id}/plan", response_model=BillingPlanOut, status_code=201)
     async def add_plan(

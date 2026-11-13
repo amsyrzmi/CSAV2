@@ -1,4 +1,6 @@
-import type { AdminCompanyOut, AdminOverviewOut, AdminWarning, BillingPlanIn, Bundle, Stage } from "./billing-admin-api";
+import type {
+  AdminCompanyOut, AdminOverviewOut, AdminWarning, BillingPlanIn, Bundle, LangfuseCheckOut, LangfuseWarning, Stage,
+} from "./billing-admin-api";
 import { countText, cycleLabel, formatRm } from "./credit-view";
 
 /**
@@ -37,7 +39,7 @@ function plural(count: number, one: string, many: string): string {
 
 // ---- Warnings ----
 
-function warningSentence(warning: AdminWarning | string, company: AdminCompanyOut): string {
+function warningSentence(warning: AdminWarning | LangfuseWarning | string, company: AdminCompanyOut): string {
   switch (warning) {
     case "pilot_ended":
       return "Pilot period has ended: convert to collaborator or terminate";
@@ -47,14 +49,48 @@ function warningSentence(warning: AdminWarning | string, company: AdminCompanyOu
       return `Has usage but no billing plan yet: ${plural(company.usage_without_plan, "execution", "executions")}, not billed`;
     case "pending_prices":
       return `Some usage has no price yet: ${plural(company.unpriced_calls, "call", "calls")} in ${plural(company.unpriced_executions, "execution", "executions")}`;
+    case "langfuse_drift":
+      return "Langfuse shows different token totals from our records for this cycle. The bill uses our records; check that usage is reaching Langfuse";
     default:
       return "Something about this company's billing needs a look";
   }
 }
 
-/** The company's warnings as plain sentences, in the server's order. */
-export function warningSentences(company: AdminCompanyOut): string[] {
-  return company.warnings.map((warning) => warningSentence(warning, company));
+/**
+ * The company's warnings as plain sentences, in the server's order, then those of a Langfuse
+ * check of the same company and cycle when one has been run.
+ */
+export function warningSentences(company: AdminCompanyOut, check: Pick<LangfuseCheckOut, "warnings"> | null = null): string[] {
+  const warnings: (AdminWarning | LangfuseWarning)[] = [...company.warnings, ...(check?.warnings ?? [])];
+  return warnings.map((warning) => warningSentence(warning, company));
+}
+
+// ---- The Langfuse check ----
+
+const CHECK_LABELS: Record<LangfuseCheckOut["result"], string> = {
+  match: "Matches Langfuse",
+  drift: "Does not match Langfuse",
+  unavailable: "Langfuse not reachable",
+};
+
+/** The check's outcome in three words or so. */
+export function langfuseCheckLabel(check: LangfuseCheckOut): string {
+  return CHECK_LABELS[check.result] ?? "Langfuse not reachable";
+}
+
+/**
+ * The check in a sentence or two: both sides' token totals when they differ. While the cycle is
+ * open the last few minutes are left out on both sides, and the sentence says so.
+ */
+export function langfuseCheckDetail(check: LangfuseCheckOut, final: boolean): string {
+  const recent = final ? "" : " Usage from the last few minutes is left out, as it can take a moment to reach Langfuse.";
+  if (check.result === "match") return `Langfuse has the same token totals as our records, within 1%.${recent}`;
+  if (check.result === "drift" && check.langfuse_input_tokens !== null && check.langfuse_output_tokens !== null) {
+    return `Our records: ${countText(check.ledger_input_tokens)} tokens in, ${countText(check.ledger_output_tokens)} out. `
+      + `Langfuse: ${countText(check.langfuse_input_tokens)} in, ${countText(check.langfuse_output_tokens)} out. `
+      + `The bill always uses our records.${recent}`;
+  }
+  return "Nothing was compared, and the bill is not affected. Try again later.";
 }
 
 // ---- Errors ----
@@ -155,6 +191,23 @@ export function overviewErrorMessage(cause: unknown): string {
   if (status === 401) return "Your session has ended. Sign in again, then try again.";
   if (status >= 500) return "Something went wrong on our side while loading billing. Try again.";
   return "We could not load billing for that cycle. Reload the page or choose another cycle.";
+}
+
+const CHECK_MESSAGES: Record<string, string> = {
+  platform_admin_only: "Only the platform team can run this check. Sign in with a platform account.",
+  "tenant not found": "That company no longer exists. Reload the page.",
+  cycle_must_start_on_a_fifth: OVERVIEW_MESSAGES.cycle_must_start_on_a_fifth,
+  cycle_not_found: OVERVIEW_MESSAGES.cycle_not_found,
+};
+
+/** The sentence when our own server could not run the Langfuse check (not Langfuse being down). */
+export function langfuseCheckErrorMessage(cause: unknown): string {
+  const found = refusal(cause);
+  if (!found) return "We could not reach the server to run the check. Check your connection and try again.";
+  const { status, code } = found;
+  if (Object.hasOwn(CHECK_MESSAGES, code)) return CHECK_MESSAGES[code];
+  if (status === 401) return "Your session has ended. Sign in again, then try again.";
+  return "The check could not be run this time. Try again in a moment.";
 }
 
 // ---- Money and counts ----

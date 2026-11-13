@@ -14,6 +14,9 @@ export type UsageStatus = "ok" | "pending_prices" | "not_set_up";
 export type Stage = "pilot" | "collaborator" | "terminated";
 export type Bundle = "individual" | "curated" | "complete";
 export type AdminWarning = "pilot_ended" | "usage_after_termination" | "not_set_up_with_usage" | "pending_prices";
+/** Raised only by the on-demand Langfuse check, never by the overview. */
+export type LangfuseWarning = "langfuse_drift";
+export type LangfuseResult = "match" | "drift" | "unavailable";
 
 /** The providers the ledger records (LEDGER_PROVIDERS in csa/metering/meter.py). */
 export const LEDGER_PROVIDERS = ["groq", "gemini"] as const;
@@ -49,6 +52,24 @@ export interface AdminOverviewOut {
   cycle_end: string;
   final: boolean;
   companies: AdminCompanyOut[];
+}
+
+/**
+ * One company's ledger tokens for a cycle against Langfuse's. Both sides cover the cycle up to
+ * `checked_until` (a few minutes ago while the cycle is open). Langfuse's figures are null when it
+ * is `unavailable`. The ledger is the authority: nothing billed depends on this check.
+ */
+export interface LangfuseCheckOut {
+  client_id: string;
+  cycle_start: string;
+  cycle_end: string;
+  checked_until: string;
+  result: LangfuseResult;
+  ledger_input_tokens: number;
+  ledger_output_tokens: number;
+  langfuse_input_tokens: number | null;
+  langfuse_output_tokens: number | null;
+  warnings: LangfuseWarning[];
 }
 
 export interface BillingPlanIn {
@@ -102,6 +123,12 @@ const BASE = "/console/v1/billing/admin";
 export function fetchOverview(cycle?: string | null, signal?: AbortSignal): Promise<AdminOverviewOut> {
   const query = cycle ? `?${new URLSearchParams({ cycle })}` : "";
   return api(`${BASE}/overview${query}`, { signal });
+}
+
+/** One company's ledger tokens for the cycle starting `cycle` against Langfuse's (asked for on demand). */
+export function fetchLangfuseCheck(clientId: string, cycle: string, signal?: AbortSignal): Promise<LangfuseCheckOut> {
+  const query = new URLSearchParams({ cycle });
+  return api(`${BASE}/clients/${encodeURIComponent(clientId)}/langfuse-check?${query}`, { signal });
 }
 
 /** A new plan row for one company (CSRF-protected, audited). */

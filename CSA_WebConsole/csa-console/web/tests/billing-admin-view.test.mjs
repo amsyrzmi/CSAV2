@@ -21,7 +21,7 @@ const {
   rawCostText, marginText, costPerExecutionText, workbookNote, tokenText, stageLabel, bundleLabel,
   planStatus, klToday, cycleStartOf, addMonths, cycleOptions, suggestedDates, klDateTime,
   isUsdAmount, planBody, fullDay, initialPlanChoice, planChoiceReady, currentPlanOf,
-  overviewErrorMessage, isUsdToMyr,
+  overviewErrorMessage, isUsdToMyr, langfuseCheckLabel, langfuseCheckDetail, langfuseCheckErrorMessage,
 } = view;
 
 // 13 Nov 2026, 12:00 in Kuala Lumpur.
@@ -77,6 +77,57 @@ test("each warning reads as a plain sentence, with counts where they help", () =
 test("an unknown warning still reads as a sentence, never a raw code", () => {
   const [sentence] = warningSentences(company({ warnings: ["something_new"] }));
   assert.ok(sentence && !sentence.includes("_"), sentence);
+});
+
+// ---- The Langfuse check ----
+
+function check(overrides = {}) {
+  return {
+    client_id: company().client_id,
+    cycle_start: "2026-11-05",
+    cycle_end: "2026-12-05",
+    checked_until: "2026-11-13T03:55:00Z",
+    result: "match",
+    ledger_input_tokens: 3234567,
+    ledger_output_tokens: 7655,
+    langfuse_input_tokens: 3234500,
+    langfuse_output_tokens: 7655,
+    warnings: [],
+    ...overrides,
+  };
+}
+
+test("a Langfuse drift adds a plain warning after the company's own", () => {
+  const drifted = check({ result: "drift", warnings: ["langfuse_drift"] });
+  const sentences = warningSentences(company({ warnings: ["pilot_ended"] }), drifted);
+  assert.equal(sentences.length, 2);
+  assert.match(sentences[0], /Pilot period/);
+  assert.match(sentences[1], /Langfuse/);
+  assert.match(sentences[1], /bill uses our records/);
+  assert.doesNotMatch(sentences[1], /_/);
+  assert.deepEqual(warningSentences(company(), check()), []);
+  assert.deepEqual(warningSentences(company(), null), []);
+});
+
+test("the Langfuse check reads as match, does not match, or not reachable", () => {
+  assert.equal(langfuseCheckLabel(check()), "Matches Langfuse");
+  assert.equal(langfuseCheckLabel(check({ result: "drift" })), "Does not match Langfuse");
+  assert.equal(langfuseCheckLabel(check({ result: "unavailable" })), "Langfuse not reachable");
+});
+
+test("the Langfuse check detail shows both sides' tokens on drift, and never changes the bill", () => {
+  const drifted = langfuseCheckDetail(check({ result: "drift", langfuse_input_tokens: 1234567, langfuse_output_tokens: 7000 }), true);
+  assert.match(drifted, /Our records: 3,234,567 tokens in, 7,655 out/);
+  assert.match(drifted, /Langfuse: 1,234,567 in, 7,000 out/);
+  assert.match(drifted, /bill always uses our records/);
+  assert.doesNotMatch(drifted, /few minutes/);
+  const open = langfuseCheckDetail(check(), false);
+  assert.match(open, /within 1%/);
+  assert.match(open, /last few minutes/);
+  const down = langfuseCheckDetail(check({ result: "unavailable", langfuse_input_tokens: null, langfuse_output_tokens: null }), true);
+  assert.match(down, /Nothing was compared/);
+  assert.match(down, /bill is not affected/);
+  for (const text of [drifted, open, down]) assert.doesNotMatch(text, /_|null|undefined|NaN/);
 });
 
 // ---- Error codes as plain English ----
@@ -307,6 +358,19 @@ test("overview errors read as plain English, never a code", () => {
   assert.doesNotMatch(overviewErrorMessage(new Error("cycle_not_found")), JARGON);
 });
 
+test("Langfuse check errors read as plain English, never a code", () => {
+  assert.match(langfuseCheckErrorMessage(new TypeError("Failed to fetch")), /reach/);
+  assert.match(langfuseCheckErrorMessage(err(403, "platform_admin_only")), /platform/);
+  assert.match(langfuseCheckErrorMessage(err(404, "tenant not found")), /no longer exists/);
+  assert.match(langfuseCheckErrorMessage(err(404, "cycle_not_found")), /not started/);
+  for (const [status, code] of [[401, "Request failed (401)"], [403, "platform_admin_only"], [404, "tenant not found"],
+    [422, "cycle_must_start_on_a_fifth"], [500, "x"], [400, "odd_code"]]) {
+    const message = langfuseCheckErrorMessage(err(status, code));
+    assert.ok(message.length > 20, code);
+    assert.doesNotMatch(message, JARGON, `${code}: ${message}`);
+  }
+});
+
 test("a USD to MYR rate is a USD-shaped amount below 1,000, compared exactly", () => {
   for (const ok of ["4.4", "4.47123456", "0.00000001", "999.99999999", "0999.5"]) assert.ok(isUsdToMyr(ok), ok);
   for (const bad of ["1000", "1000.0", "1000.00000001", "01000", "99999", "0", "0.000", "-4.4", "4.471234567", "", "4,4", "1e2"]) {
@@ -341,6 +405,13 @@ test("the overview is a GET of the admin route, with the cycle when one is chose
   assert.deepEqual(plain.map(([p, i]) => [p, i?.method ?? "GET"]), [["/console/v1/billing/admin/overview", "GET"]]);
   const [, picked] = await capture(() => client.fetchOverview("2026-10-05"), () => Response.json(body));
   assert.deepEqual(picked.map(([p]) => p), ["/console/v1/billing/admin/overview?cycle=2026-10-05"]);
+});
+
+test("the Langfuse check is a GET for one company and the cycle shown", async () => {
+  const [, requests] = await capture(() => client.fetchLangfuseCheck("a b/1", "2026-10-05"), () => Response.json(check()));
+  assert.deepEqual(requests.map(([p, i]) => [p, i?.method ?? "GET"]), [
+    ["/console/v1/billing/admin/clients/a%20b%2F1/langfuse-check?cycle=2026-10-05", "GET"],
+  ]);
 });
 
 test("the three writes POST JSON with the CSRF token", async () => {
@@ -385,7 +456,7 @@ test("the API types mirror the admin models field for field", { skip: noService(
     return [...body.matchAll(/^ {4}(\w+): /gm)].map((m) => m[1]);
   };
   for (const name of ["AdminCompanyOut", "AdminOverviewOut", "BillingPlanIn", "BillingPlanOut",
-    "BillingPriceIn", "BillingPriceOut", "BillingFxIn", "BillingFxOut"]) {
+    "BillingPriceIn", "BillingPriceOut", "BillingFxIn", "BillingFxOut", "LangfuseCheckOut"]) {
     assert.deepEqual(fields(name), model(name), name);
   }
 });

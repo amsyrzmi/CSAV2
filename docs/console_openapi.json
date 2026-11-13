@@ -9429,6 +9429,93 @@
         "title": "KbGapOut",
         "type": "object"
       },
+      "LangfuseCheckOut": {
+        "additionalProperties": false,
+        "description": "One company's ledger tokens for a cycle against Langfuse's, for the platform admin only.\n\nBoth sides cover ``[cycle_start 00:00 KL, checked_until)``: the whole cycle once it has\nclosed, else up to a few minutes ago (usage that recent may not have reached Langfuse yet).\nThe ledger side is every recorded call in that window, billed or not (usage before a plan or\nafter a termination included), since every call is mirrored. ``result``: ``match`` when input\nand output each agree within 1% or 100 tokens, whichever is larger; ``drift`` otherwise (with\nthe warning ``langfuse_drift``); ``unavailable`` when Langfuse is not configured, not reachable\nor answered an error (its figures are then ``None``). The ledger is the authority: no billed\nfigure depends on this.",
+        "properties": {
+          "checked_until": {
+            "format": "date-time",
+            "title": "Checked Until",
+            "type": "string"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "langfuse_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Langfuse Input Tokens"
+          },
+          "langfuse_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Langfuse Output Tokens"
+          },
+          "ledger_input_tokens": {
+            "title": "Ledger Input Tokens",
+            "type": "integer"
+          },
+          "ledger_output_tokens": {
+            "title": "Ledger Output Tokens",
+            "type": "integer"
+          },
+          "result": {
+            "enum": [
+              "match",
+              "drift",
+              "unavailable"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "const": "langfuse_drift",
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "client_id",
+          "cycle_start",
+          "cycle_end",
+          "checked_until",
+          "result",
+          "ledger_input_tokens",
+          "ledger_output_tokens",
+          "langfuse_input_tokens",
+          "langfuse_output_tokens",
+          "warnings"
+        ],
+        "title": "LangfuseCheckOut",
+        "type": "object"
+      },
       "LastChange": {
         "additionalProperties": false,
         "properties": {
@@ -17644,6 +17731,64 @@
         "tags": [
           "console identity"
         ]
+      }
+    },
+    "/console/v1/billing/admin/clients/{client_id}/langfuse-check": {
+      "get": {
+        "description": "One company's ledger tokens for a cycle against Langfuse's. Platform admin only.\n\nAsked for on demand (one Langfuse request per call; Langfuse Cloud rate-limits its\nMetrics API), never by the overview. ``cycle`` follows the overview's rules (default the\ncurrent cycle; 422 off a 5th, 404 in the future); an unknown company is 404. A Langfuse\nthat is unset, unreachable or failing is ``unavailable``, never an error status: the\ncheck only reports and changes no figure.",
+        "operationId": "langfuse_check_console_v1_billing_admin_clients__client_id__langfuse_check_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseCheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Langfuse Check"
       }
     },
     "/console/v1/billing/admin/clients/{client_id}/plan": {

@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchOverview, type AdminOverviewOut } from "@/lib/billing-admin-api";
+import { fetchLangfuseCheck, fetchOverview, type AdminOverviewOut, type LangfuseCheckOut } from "@/lib/billing-admin-api";
 import {
-  costPerExecutionText, cycleOptions, marginText, overviewErrorMessage, planStatus, rawCostText, tokenText,
-  warningSentences, workbookNote,
+  costPerExecutionText, cycleOptions, langfuseCheckDetail, langfuseCheckErrorMessage, langfuseCheckLabel, marginText,
+  overviewErrorMessage, planStatus, rawCostText, tokenText, warningSentences, workbookNote,
 } from "@/lib/billing-admin-view";
 import { countText, cycleLabel, formatRm } from "@/lib/credit-view";
 import { PlanEditor } from "./billing/PlanEditor";
@@ -16,6 +16,17 @@ const cell = "border-b border-ink-100 px-3 py-2 align-top";
 const head = "border-b border-ink-200 px-3 py-2 text-left align-bottom font-medium text-ink-600";
 const amount = `${cell} text-right tabular-nums whitespace-nowrap`;
 const amountHead = `${head} text-right`;
+
+/** One company's Langfuse check for one cycle, keyed `${cycle_start}:${client_id}`. */
+type CheckState =
+  | { status: "checking" }
+  | { status: "done"; check: LangfuseCheckOut }
+  | { status: "failed"; message: string };
+type Checks = Record<string, CheckState>;
+
+function checkKey(cycleStart: string, clientId: string): string {
+  return `${cycleStart}:${clientId}`;
+}
 
 /**
  * The platform team's Billing page: every company's usage, raw cost, tokens, bill and AI margin
@@ -31,6 +42,8 @@ export function BillingAdminWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
+  const [checks, setChecks] = useState<Checks>({});
+  const checking = useRef(new Map<string, AbortController>());
   const editor = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -55,16 +68,53 @@ export function BillingAdminWorkspace() {
     if (editing) editor.current?.focus();
   }, [editing]);
 
+  useEffect(() => {
+    const running = checking.current;
+    return () => {
+      for (const controller of running.values()) controller.abort();
+      running.clear();
+    };
+  }, []);
+
+  // A check answers for the figures it was run against: a reload or another cycle drops them.
+  function forgetChecks() {
+    for (const controller of checking.current.values()) controller.abort();
+    checking.current.clear();
+    setChecks({});
+  }
+
   function reload() {
     setError("");
     setLoading(true);
+    forgetChecks();
     setAttempt((value) => value + 1);
   }
 
   function pick(cycle: string) {
     setError("");
     setLoading(true);
+    forgetChecks();
     setPicked(cycle);
+  }
+
+  function runCheck(clientId: string, cycleStart: string) {
+    const key = checkKey(cycleStart, clientId);
+    checking.current.get(key)?.abort();
+    const controller = new AbortController();
+    checking.current.set(key, controller);
+    setChecks((all) => ({ ...all, [key]: { status: "checking" } }));
+    fetchLangfuseCheck(clientId, cycleStart, controller.signal)
+      .then((check) => {
+        if (controller.signal.aborted) return;
+        setChecks((all) => ({ ...all, [key]: { status: "done", check } }));
+      })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        setChecks((all) => ({ ...all, [key]: { status: "failed", message: langfuseCheckErrorMessage(cause) } }));
+      })
+      .finally(() => {
+        if (checking.current.get(key) === controller) checking.current.delete(key);
+      });
   }
 
   const selected = picked || overview?.cycle_start || "";
@@ -93,7 +143,7 @@ export function BillingAdminWorkspace() {
         <div role="status" aria-busy="true" className="mb-6" data-testid="billing-loading"><Notice>Loading billing...</Notice></div>
       ) : (
         <div aria-busy={loading} className={`mb-6 ${loading ? "opacity-60 transition-opacity" : "transition-opacity"}`}>
-          <CompanyTable overview={overview} editing={editing} onEdit={setEditing} />
+          <CompanyTable overview={overview} editing={editing} onEdit={setEditing} checks={checks} onCheck={runCheck} />
         </div>
       )}
       {company && (
@@ -122,8 +172,9 @@ export function BillingAdminWorkspace() {
 
 const COLUMNS = 12;
 
-function CompanyTable({ overview, editing, onEdit }: {
+function CompanyTable({ overview, editing, onEdit, checks, onCheck }: {
   overview: AdminOverviewOut; editing: string | null; onEdit: (clientId: string) => void;
+  checks: Checks; onCheck: (clientId: string, cycleStart: string) => void;
 }) {
   const dates = cycleLabel(overview.cycle_start, overview.cycle_end);
   return (
@@ -157,8 +208,11 @@ function CompanyTable({ overview, editing, onEdit }: {
               <th scope="col" className={amountHead}>Unpriced calls</th>
             </tr></thead>
             {overview.companies.map((company) => {
-              const warnings = warningSentences(company);
-              const edge = warnings.length > 0 ? "border-b-0" : "";
+              const state = checks[checkKey(overview.cycle_start, company.client_id)];
+              const done = state?.status === "done" ? state.check : null;
+              const warnings = warningSentences(company, done);
+              const detail = done ? langfuseCheckDetail(done, overview.final) : state?.status === "failed" ? state.message : "";
+              const edge = warnings.length > 0 || detail ? "border-b-0" : "";
               return (
                 <tbody key={company.client_id} data-testid="billing-company-row">
                   <tr>
@@ -173,6 +227,18 @@ function CompanyTable({ overview, editing, onEdit }: {
                           Billing plan
                         </button>
                       )}
+                      <div className="mt-2">
+                        <button type="button" className={`${secondary} whitespace-nowrap font-normal`}
+                          disabled={state?.status === "checking"}
+                          aria-label={`Check against Langfuse: ${company.name}`}
+                          onClick={() => onCheck(company.client_id, overview.cycle_start)}>
+                          {state?.status === "checking" ? "Checking..." : "Check against Langfuse"}
+                        </button>
+                      </div>
+                      <span role="status" className="mt-1 block text-xs font-normal text-ink-600" data-testid="billing-langfuse-result">
+                        {state?.status === "done" ? langfuseCheckLabel(state.check)
+                          : state?.status === "failed" ? "Check not run" : ""}
+                      </span>
                     </th>
                     <td className={`${cell} ${edge}`}>{planStatus(company)}</td>
                     <td className={`${amount} ${edge}`}>{countText(company.executions)}</td>
@@ -189,13 +255,22 @@ function CompanyTable({ overview, editing, onEdit }: {
                     </td>
                     <td className={`${amount} ${edge}`}>{countText(company.unpriced_calls)}</td>
                   </tr>
-                  {warnings.length > 0 && (
+                  {(warnings.length > 0 || detail) && (
                     <tr>
                       <td colSpan={COLUMNS} className={`${cell} pt-0`} data-testid="billing-warnings">
-                        <span className="font-medium">Needs attention for {company.name}:</span>
-                        <ul className="mt-1 list-disc space-y-1 pl-5">
-                          {warnings.map((sentence) => <li key={sentence}>{sentence}</li>)}
-                        </ul>
+                        {warnings.length > 0 && (
+                          <>
+                            <span className="font-medium">Needs attention for {company.name}:</span>
+                            <ul className="mt-1 list-disc space-y-1 pl-5">
+                              {warnings.map((sentence) => <li key={sentence}>{sentence}</li>)}
+                            </ul>
+                          </>
+                        )}
+                        {detail && (
+                          <p className={warnings.length > 0 ? "mt-2" : ""} data-testid="billing-langfuse-detail">
+                            <span className="font-medium">Langfuse check:</span> {detail}
+                          </p>
+                        )}
                       </td>
                     </tr>
                   )}
