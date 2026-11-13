@@ -190,20 +190,15 @@ case "$2" in
     *) exit 2 ;;
 esac
 """
-# The gh stub serves `gh api <path>` from JSON files in $STUB_GH_DIR.
+# The gh stub answers only the tip read the apply job makes: `gh api repos/<repo>/commits/main
+# --jq .sha`. It prints $STUB_TIP, or fails when $STUB_GH_FAIL is set.
 GH_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'gh\t%s\n' "$*" >> "$STUB_LOG"
-IFS=' '
-[[ "$1" == api && $# -eq 2 ]] || exit 2
-case "$2" in
-    *"/statuses?per_page=100")
-        id="${2%/statuses*}"
-        cat "$STUB_GH_DIR/statuses-${id##*/}.json"
-        ;;
-    *"/deployments?environment=staging&per_page=100") cat "$STUB_GH_DIR/deployments.json" ;;
-    *) exit 2 ;;
-esac
+[[ $# -eq 4 && "$1" == api && "$2" == "repos/example/repo/commits/main" ]] || exit 2
+[[ "$3" == --jq && "$4" == .sha ]] || exit 2
+[[ -z "${STUB_GH_FAIL:-}" ]] || { echo "gh: boom" >&2; exit 1; }
+printf '%s\n' "$STUB_TIP"
 """
 
 
@@ -221,7 +216,6 @@ class Harness:
         self.log_dir = tmp_path / "logs"
         self.python = tmp_path / "python-stub"
         self.polls = tmp_path / "polls"
-        self.gh_dir = tmp_path / "gh"
         self._write_stub(self.bin / "git", GIT_STUB)
         self._write_stub(self.bin / "aws", AWS_STUB)
         self._write_stub(self.bin / "gh", GH_STUB)
@@ -1383,7 +1377,11 @@ def test_deploy_files_hold_no_account_instance_region_or_address(path: Path) -> 
 
 # --- the deploy-production workflow -------------------------------------------------------------
 
-JOB_PERMISSIONS = ["contents: read", "deployments: read", "id-token: write"]
+# The plan job also reads the Actions runs of the ci workflow (the resolver's CI check).
+JOB_PERMISSIONS = {
+    "plan": ["actions: read", "contents: read", "deployments: read", "id-token: write"],
+    "apply": ["contents: read", "deployments: read", "id-token: write"],
+}
 PIN = re.compile(r"^\s*(?:- )?uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
 
 
@@ -1466,7 +1464,7 @@ def test_workflow_triggers_permissions_and_pinning() -> None:
     assert "required: false" in sha_input
     assert "type: string" in sha_input
     (description,) = [line for line in sha_input if line.startswith("description:")]
-    assert "empty = newest staged commit" in description
+    assert "empty = the tip of main" in description
     assert _children(text, "permissions:") == ["contents: read"]
     assert _children(text, "concurrency:") == [
         "group: deploy-production",
@@ -1478,7 +1476,7 @@ def test_workflow_triggers_permissions_and_pinning() -> None:
     jobs = _jobs()
     assert list(jobs) == ["plan", "apply"]
     for name, body in jobs.items():
-        assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS, name
+        assert _children("  job:\n" + body, "    permissions:") == JOB_PERMISSIONS[name], name
         assert "    runs-on: ubuntu-24.04\n" in body
         assert "    if: github.ref == 'refs/heads/main'\n" in body, name
     assert "    environment: production-plan\n" in jobs["plan"]
@@ -1501,7 +1499,7 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
     text = _workflow()
     blocks = _run_blocks(text)
 
-    assert len(blocks) == 6
+    assert len(blocks) == 8
     for block in blocks:
         assert block.startswith("set -euo pipefail\n"), block
         assert "${{" not in block, block
@@ -1510,6 +1508,9 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
         "sha: ${{ steps.parse.outputs.sha }}",
         "migrations: ${{ steps.parse.outputs.migrations }}",
         "host_digest: ${{ steps.parse.outputs.host_digest }}",
+        "python_digest: ${{ steps.target.outputs.python_digest }}",
+        "frontend_digest: ${{ steps.target.outputs.frontend_digest }}",
+        "explicit: ${{ steps.target.outputs.explicit }}",
     }
     assert set(_children(text, "    outputs:")) == outputs
     for line in text.splitlines():
@@ -1525,13 +1526,15 @@ def test_workflow_never_interpolates_inputs_into_run_text() -> None:
             ), line
 
 
-def _variables_env(**overrides: str | None) -> dict[str, str]:
+def _variables_env(job: str, **overrides: str | None) -> dict[str, str]:
     env = {
         "PATH": "/usr/bin:/bin",
         "ROLE_ARN": "arn:aws:iam::<account-id>:role/example",
         "AWS_REGION": REGION,
         "INSTANCE_ID": INSTANCE,
     }
+    if job == "apply":
+        env["PROD_CONSOLE_ORIGIN"] = "https://console.example.test"
     for name, value in overrides.items():
         if value is None:
             env.pop(name)
@@ -1549,11 +1552,14 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
     text = _workflow()
     body = _jobs()[job]
     role, other_role = ROLE_SECRETS[job], ROLE_SECRETS["apply" if job == "plan" else "plan"]
-    assert _children("  job:\n" + body, "    env:") == [
+    expected_env = [
         f"ROLE_ARN: ${{{{ secrets.{role} }}}}",
         "AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}",
         "INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}",
     ]
+    if job == "apply":
+        expected_env.append("PROD_CONSOLE_ORIGIN: ${{ secrets.PROD_CONSOLE_ORIGIN }}")
+    assert _children("  job:\n" + body, "    env:") == expected_env
     assert other_role not in body
     for gone in ("vars.PROD_DEPLOY_ROLE_ARN", "vars.PROD_INSTANCE_ID", "PROD_DEPLOY_ROLE_ARN"):
         assert gone not in text
@@ -1561,17 +1567,22 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
     assert f"role-to-assume: ${{{{ secrets.{role} }}}}" in configure
     assert "aws-region: ${{ vars.PROD_DEPLOY_REGION }}" in configure
     assert "mask-aws-account-id: true" in configure
-    assert _steps(job)[0].startswith("name: Require the deploy variables\n")
+    # Plan resolves the commit first (it needs no AWS variable); apply checks the variables first.
+    names = [step.split("\n", 1)[0] for step in _steps(job)]
+    assert names.index("name: Require the deploy variables") == (2 if job == "plan" else 0)
 
     name = "Require the deploy variables"
-    assert _run_step(job, name, _variables_env(), tmp_path).returncode == 0
-    for variable, setting in [
+    assert _run_step(job, name, _variables_env(job), tmp_path).returncode == 0
+    settings = [
         ("ROLE_ARN", role),
         ("AWS_REGION", "PROD_DEPLOY_REGION"),
         ("INSTANCE_ID", "PROD_INSTANCE_ID"),
-    ]:
+    ]
+    if job == "apply":
+        settings.append(("PROD_CONSOLE_ORIGIN", "PROD_CONSOLE_ORIGIN"))
+    for variable, setting in settings:
         for value in ("", None):
-            result = _run_step(job, name, _variables_env(**{variable: value}), tmp_path)
+            result = _run_step(job, name, _variables_env(job, **{variable: value}), tmp_path)
             assert result.returncode != 0
             assert setting.encode() in result.stderr
 
@@ -1591,109 +1602,107 @@ def test_workflow_runs_the_scripts_from_a_main_checkout(job: str) -> None:
     (configure,) = [i for i, step in enumerate(steps) if "configure-aws-credentials@" in step]
     scripts = [i for i, step in enumerate(steps) if "deploy/production/" in step]
     assert scripts
-    assert checkout < configure < min(scripts)
+    assert checkout < min(scripts)
+    # The instance scripts (and nothing else) need the AWS session.
+    first_ssm = next(i for i, step in enumerate(steps) if "ssm_run.sh" in step)
+    assert checkout < configure < first_ssm
     invoked = re.findall(r"deploy/production/\w+\.sh[^\n>|]*", "".join(steps))
     expected = {
         "plan": [
+            'deploy/production/resolve_commit.sh "$INPUT_SHA" ',
             'deploy/production/ssm_run.sh plan "$SHA" ',
             'deploy/production/parse_plan.sh "$RUNNER_TEMP/plan.txt" "$SHA" ',
         ],
-        "apply": ['deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" '],
+        "apply": [
+            'deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" "$HOST_DIGEST" ',
+            'deploy/production/public_smoke.sh "$PROD_CONSOLE_ORIGIN"',
+        ],
     }
     assert invoked == expected[job]
 
 
-def _resolve(
-    harness: Harness, input_sha: str, *, locale: str = "C"
-) -> subprocess.CompletedProcess[bytes]:
-    harness.gh_dir.mkdir(exist_ok=True)
+# The commit resolution itself (the staged gate, the newest-staged search, the CI, image and
+# main checks, the malformed-input refusals) lives in deploy/production/resolve_commit.sh and is
+# tested in tests/test_production_resolve.py. The workflow tests below cover only the wiring.
+
+RESOLVE_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'resolve_commit\t%s\n' "$*" >> "$STUB_LOG"
+env_line="GH_TOKEN=$GH_TOKEN REPOSITORY=$REPOSITORY"
+printf '%s\n' "$env_line" >> "$STUB_LOG.env"
+printf '%s' "$STUB_RESOLVE_OUTPUT"
+echo "stub message" >&2
+exit "${STUB_RESOLVE_STATUS:-0}"
+"""
+
+
+def test_the_workflow_resolves_with_the_script_after_checking_out_main(harness: Harness) -> None:
+    steps = _steps("plan")
+    assert steps[0].startswith("uses: actions/checkout@")
+    assert _children("      - " + steps[0], "        with:")[0] == "ref: main"
+    resolve = steps[1]
+    assert resolve.startswith("name: Resolve and check the commit\n")
+    assert "id: target\n" in resolve
+    assert _children("      - " + resolve, "        env:") == [
+        "INPUT_SHA: ${{ inputs.sha }}",
+        "GH_TOKEN: ${{ github.token }}",
+        "REPOSITORY: ${{ github.repository }}",
+    ]
+    (block,) = _run_blocks(resolve)
+    assert block == (
+        'set -euo pipefail\ndeploy/production/resolve_commit.sh "$INPUT_SHA" >> "$GITHUB_OUTPUT"\n'
+    )
+    # The old inline shell block (deployments listing and the jq search) is gone.
+    assert "deployments?environment" not in _workflow()
+    assert "Resolve the commit to deploy" not in _workflow()
+
+    # Run it with a stub script: arguments and environment reach it, stdout lands in the output
+    # file, and a failure fails the step.
+    work = harness.root / "work"
+    scripts = work / "deploy" / "production"
+    scripts.mkdir(parents=True)
+    harness._write_stub(scripts / "resolve_commit.sh", RESOLVE_STUB)
+    output = harness.root / "github-output"
     env = harness.env(
-        INPUT_SHA=input_sha,
+        INPUT_SHA="",
         GH_TOKEN="test-token",
         REPOSITORY="example/repo",
-        RUNNER_TEMP=str(harness.root),
-        GITHUB_OUTPUT=str(harness.root / "github-output"),
-        STUB_GH_DIR=str(harness.gh_dir),
-        LC_ALL=locale,
-        LANG=locale,
+        GITHUB_OUTPUT=str(output),
+        STUB_RESOLVE_OUTPUT=f"sha={SHA}\nexplicit=false\n",
     )
-    return _run_step("plan", "Resolve the commit to deploy", env, harness.root)
-
-
-def _deployments(harness: Harness, *deployments: tuple[object, str, list[str]]) -> None:
-    harness.gh_dir.mkdir(exist_ok=True)
-    listing = [{"id": number, "sha": sha} for number, sha, _states in deployments]
-    (harness.gh_dir / "deployments.json").write_text(json.dumps(listing))
-    for number, _sha, states in deployments:
-        statuses = [{"state": state} for state in states]
-        (harness.gh_dir / f"statuses-{number}.json").write_text(json.dumps(statuses))
-
-
-def _github_output(harness: Harness) -> str:
-    path = harness.root / "github-output"
-    return path.read_text() if path.exists() else ""
-
-
-def test_workflow_uses_a_valid_input_sha_without_asking_github(harness: Harness) -> None:
-    result = _resolve(harness, SHA)
-
+    result = _run_step("plan", "Resolve and check the commit", env, work)
     assert result.returncode == 0, result.stderr
-    assert _github_output(harness) == f"sha={SHA}\n"
-    assert harness.calls() == []
+    assert output.read_text() == f"sha={SHA}\nexplicit=false\n"
+    assert harness.calls() == [["resolve_commit", ""]]
+    assert Path(f"{harness.log}.env").read_text() == "GH_TOKEN=test-token REPOSITORY=example/repo\n"
 
-
-@pytest.mark.parametrize("locale", LOCALES)
-@pytest.mark.parametrize("value", [value for value in BAD_VALUES["sha"] if value])
-def test_workflow_refuses_a_bad_input_sha(harness: Harness, value: str, locale: str) -> None:
-    result = _resolve(harness, value, locale=locale)
-
-    assert result.returncode != 0
-    assert _github_output(harness) == ""
-    assert harness.calls() == []
-
-
-def test_workflow_resolves_the_newest_successful_staging_deployment(harness: Harness) -> None:
-    newest, older, oldest = "a" * 40, "b" * 40, "c" * 40
-    _deployments(
-        harness,
-        (3, newest, ["in_progress", "failure"]),
-        (2, older, ["success", "inactive"]),
-        (1, oldest, ["success"]),
+    output.unlink()
+    env = harness.env(
+        INPUT_SHA=SHA,
+        GH_TOKEN="test-token",
+        REPOSITORY="example/repo",
+        GITHUB_OUTPUT=str(output),
+        STUB_RESOLVE_STATUS="1",
     )
-    result = _resolve(harness, "")
+    result = _run_step("plan", "Resolve and check the commit", env, work)
+    assert result.returncode == 1
+    assert b"stub message" in result.stderr  # the script's own message stays in the log
+    assert not output.exists() or output.read_text() == ""
+    assert harness.calls()[-1] == ["resolve_commit", SHA]
 
-    assert result.returncode == 0, result.stderr
-    assert _github_output(harness) == f"sha={older}\n"
-    listing = "repos/example/repo/deployments?environment=staging&per_page=100"
-    assert harness.calls() == [
-        ["gh", "api", listing],
-        ["gh", "api", "repos/example/repo/deployments/3/statuses?per_page=100"],
-        ["gh", "api", "repos/example/repo/deployments/2/statuses?per_page=100"],
+
+def test_the_input_description_says_tip_of_main() -> None:
+    (description,) = [
+        line for line in _children(_workflow(), "      sha:") if line.startswith("description:")
     ]
-
-
-@pytest.mark.parametrize(
-    "deployments",
-    [
-        pytest.param([], id="no-deployments"),
-        pytest.param([(2, "a" * 40, ["failure"]), (1, "b" * 40, [])], id="none-succeeded"),
-        pytest.param([("2; id", "a" * 40, ["success"])], id="malformed-id"),
-        pytest.param([(2, "A" * 40, ["success"])], id="malformed-sha"),
-    ],
-)
-def test_workflow_refuses_when_no_staged_commit_is_found(
-    harness: Harness, deployments: list[tuple[object, str, list[str]]]
-) -> None:
-    _deployments(harness, *deployments)
-    result = _resolve(harness, "")
-
-    assert result.returncode != 0
-    assert _github_output(harness) == ""
+    assert description == 'description: "Full commit SHA on main (empty = the tip of main)"'
+    assert "newest staged" not in _workflow()
 
 
 SSM_RUN_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'ssm_run\t%s\n' "$*" >> "$STUB_LOG"
+printf '%s %s\n' "${PYTHON_DIGEST-unset}" "${FRONTEND_DIGEST-unset}" >> "$STUB_LOG.digests"
 printf '%s' "$STUB_SSM_OUTPUT"
 exit "${STUB_SSM_STATUS:-0}"
 """
@@ -1815,6 +1824,8 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
     output = harness.root / "github-output"
     env = harness.env(
         SHA=SHA,
+        PYTHON_DIGEST=PY_DIGEST,
+        FRONTEND_DIGEST=FE_DIGEST,
         RUNNER_TEMP=str(harness.root),
         GITHUB_STEP_SUMMARY=str(summary),
         GITHUB_OUTPUT=str(output),
@@ -1825,6 +1836,7 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
 
     assert planned.returncode == status
     assert harness.calls() == [["ssm_run", "plan", SHA]]
+    assert Path(f"{harness.log}.digests").read_text() == f"{PY_DIGEST} {FE_DIGEST}\n"
     assert _unbracketed(planned.stdout) == GOOD_PLAN
     assert summary.read_text() == (f"### Production plan for `{SHA}`\n\n````\n{GOOD_PLAN}````\n")
     if status:
@@ -1843,6 +1855,8 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
         SHA=SHA,
         MIGRATIONS=migrations,
         HOST_DIGEST=DIGEST,
+        PYTHON_DIGEST=PY_DIGEST,
+        FRONTEND_DIGEST=FE_DIGEST,
         RUNNER_TEMP=str(harness.root),
         GITHUB_STEP_SUMMARY=str(summary),
         STUB_SSM_OUTPUT="applied\n",
@@ -1852,8 +1866,145 @@ def test_workflow_apply_sends_exactly_the_planned_values(harness: Harness, migra
 
     assert result.returncode == 3
     assert harness.calls() == [["ssm_run", "apply", SHA, migrations, DIGEST]]
+    assert Path(f"{harness.log}.digests").read_text() == f"{PY_DIGEST} {FE_DIGEST}\n"
     assert _unbracketed(result.stdout) == "applied\n"
     assert summary.read_text() == f"### Production apply of `{SHA}`\n\n````\napplied\n````\n"
+
+
+TIP = "f" * 40
+MOVED_MESSAGE = "main moved to fffffff since this run's plan; start the workflow again"
+CHECK_NAME = "Check the commit is still current"
+
+
+def _tip_check(
+    harness: Harness, *, explicit: str, tip: str = TIP, fail: bool = False, sha: str = SHA
+) -> subprocess.CompletedProcess[bytes]:
+    extra = {"STUB_GH_FAIL": "1"} if fail else {}
+    env = harness.env(
+        SHA=sha,
+        EXPLICIT=explicit,
+        GH_TOKEN="test-token",
+        REPOSITORY="example/repo",
+        STUB_TIP=tip,
+        **extra,
+    )
+    return _run_step("apply", CHECK_NAME, env, harness.root)
+
+
+def test_apply_checks_the_tip_before_the_aws_credentials_step(harness: Harness) -> None:
+    steps = _steps("apply")
+    names = [step.split("\n", 1)[0] for step in steps]
+    check = names.index(f"name: {CHECK_NAME}")
+    (configure,) = [i for i, step in enumerate(steps) if "configure-aws-credentials@" in step]
+    # Before the AWS session and before anything that sends to the instance.
+    assert check < configure
+    assert all(check < i for i, step in enumerate(steps) if "ssm_run.sh" in step)
+    assert _children("      - " + steps[check], "        env:") == [
+        "SHA: ${{ needs.plan.outputs.sha }}",
+        "EXPLICIT: ${{ needs.plan.outputs.explicit }}",
+        "GH_TOKEN: ${{ github.token }}",
+        "REPOSITORY: ${{ github.repository }}",
+    ]
+    assert 'gh api "repos/$REPOSITORY/commits/main"' in _run_blocks(steps[check])[0]
+
+    # Run the step with a stub gh that reports a moved tip.
+    moved = _tip_check(harness, explicit="false")
+    assert moved.returncode != 0
+    assert MOVED_MESSAGE in moved.stderr.decode()
+    assert moved.stdout == b""
+    # It read the tip once and ran nothing else (the stub aws and ssm_run would have logged).
+    assert harness.calls() == [["gh", "api", "repos/example/repo/commits/main", "--jq", ".sha"]]
+    assert harness.aws_calls() == []
+
+
+def test_apply_tip_check_passes_when_main_is_unchanged_and_fails_closed(harness: Harness) -> None:
+    unchanged = _tip_check(harness, explicit="false", tip=SHA)
+    assert unchanged.returncode == 0, unchanged.stderr
+    assert harness.aws_calls() == []
+
+    # A tip that cannot be read, or is not a full sha, never passes.
+    failed = _tip_check(harness, explicit="false", fail=True)
+    assert failed.returncode != 0
+    assert "could not read the tip of main" in failed.stderr.decode()
+    for garbage in ("", "not-a-sha", SHA[:7], SHA.upper(), f"{SHA}\n{SHA}"):
+        result = _tip_check(harness, explicit="false", tip=garbage)
+        assert result.returncode != 0, garbage
+    # A missing or unexpected explicit flag does not skip the check.
+    for flag in ("", "TRUE", "yes", "1"):
+        result = _tip_check(harness, explicit=flag, tip=TIP)
+        assert result.returncode != 0, flag
+
+
+def test_the_staleness_check_is_skipped_for_an_explicit_sha(harness: Harness) -> None:
+    result = _tip_check(harness, explicit="true", tip=TIP)
+
+    assert result.returncode == 0, result.stderr
+    # Not even a read of the tip: an explicit sha may be older than main on purpose.
+    assert harness.calls() == []
+
+
+def test_digests_reach_ssm_run_through_the_environment_only() -> None:
+    plan_step = _step("plan", "Plan on the production instance")
+    apply_step = _step("apply", "Apply on the production instance")
+    for step, job in ((plan_step, "plan"), (apply_step, "apply")):
+        source = "steps.target" if job == "plan" else "needs.plan"
+        environment = _children("      - " + step, "        env:")
+        assert f"PYTHON_DIGEST: ${{{{ {source}.outputs.python_digest }}}}" in environment
+        assert f"FRONTEND_DIGEST: ${{{{ {source}.outputs.frontend_digest }}}}" in environment
+        (block,) = _run_blocks(step)
+        # ssm_run.sh reads both from its environment: neither is an argument nor spliced in.
+        (call,) = [line for line in block.splitlines() if "deploy/production/ssm_run.sh" in line]
+        assert "DIGEST" not in call.replace("$HOST_DIGEST", "")
+        assert "${{" not in block
+    # No other step or job output carries a digest into a script.
+    for line in _workflow().splitlines():
+        if "python_digest" in line or "frontend_digest" in line:
+            stripped = line.strip()
+            assert re.fullmatch(
+                r"(?:python_digest|frontend_digest|PYTHON_DIGEST|FRONTEND_DIGEST): "
+                r"\$\{\{ (?:steps\.target|needs\.plan)\.outputs\.(?:python|frontend)_digest \}\}",
+                stripped,
+            ), line
+
+
+def test_the_public_smoke_step_runs_last_and_the_secret_is_required_up_front(
+    tmp_path: Path,
+) -> None:
+    steps = _steps("apply")
+    assert steps[-1].startswith("name: Public smoke test\n")
+    assert _run_blocks(steps[-1]) == [
+        'set -euo pipefail\ndeploy/production/public_smoke.sh "$PROD_CONSOLE_ORIGIN"\n'
+    ]
+    # No `if:` that could run it after a failed apply, and no other use of the origin.
+    assert "if:" not in steps[-1]
+    assert "continue-on-error" not in _workflow()
+    code = [line for line in _workflow().splitlines() if not line.lstrip().startswith("#")]
+    # The job env, the up-front requirement and the smoke step: nothing else names the origin.
+    assert len([line for line in code if "PROD_CONSOLE_ORIGIN" in line]) == 3
+    names = [step.split("\n", 1)[0] for step in steps]
+    assert names.index("name: Apply on the production instance") == len(steps) - 2
+
+    # The up-front check is the first step, so an empty secret stops before anything is sent.
+    assert names[0] == "name: Require the deploy variables"
+    result = _run_step(
+        "apply",
+        "Require the deploy variables",
+        _variables_env("apply", PROD_CONSOLE_ORIGIN=""),
+        tmp_path,
+    )
+    assert result.returncode != 0
+    assert b"PROD_CONSOLE_ORIGIN" in result.stderr
+
+
+def test_permissions_are_unchanged_except_actions_read_on_plan() -> None:
+    text = _workflow()
+    assert _children(text, "permissions:") == ["contents: read"]
+    jobs = _jobs()
+    plan = _children("  job:\n" + jobs["plan"], "    permissions:")
+    apply = _children("  job:\n" + jobs["apply"], "    permissions:")
+    assert apply == ["contents: read", "deployments: read", "id-token: write"]
+    assert plan == ["actions: read", *apply]
+    assert "packages:" not in text
 
 
 # --- backup.sh: the instance's backup, kept in the repository ------------------------------------
@@ -2156,9 +2307,11 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_APPLY_ROLE_ARN",
         "PROD_INSTANCE_ID",
         "PROD_DEPLOY_REGION",
+        "PROD_CONSOLE_ORIGIN",
     }
     assert environments == {"production", "production-plan"}
-    for name in names | environments:
+    # The runbook gains PROD_CONSOLE_ORIGIN in the runbook task; it is exempt until then.
+    for name in (names - {"PROD_CONSOLE_ORIGIN"}) | environments:
         assert name in setup, name
 
 

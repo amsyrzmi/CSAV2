@@ -1,21 +1,26 @@
 # Deploy one commit on main to production through AWS Systems Manager Run Command. Manual
-# dispatch only. `plan` resolves the commit (the `sha` input, or the newest commit with a
-# successful `staging` deployment), sends the read-only plan to the instance and shows it in the
-# job summary. `apply` waits for the `production` environment approval, then sends exactly the
-# SHA, migrations and host settings digest that plan printed; the rollout on the instance refuses
-# if either has changed. AWS access is a short-lived OIDC role session, and each job has its own
-# role: the plan role can send only the plan document, which has the action fixed to plan, so the
-# reviewer-less `production-plan` environment can never apply. The role ARNs and the instance id
-# are environment secrets (masked in the public logs), the region a repository variable; a missing
-# one stops the run before any AWS call. Both jobs run only for main, and the runner scripts always
-# come from a checkout of main, never from the commit being deployed.
+# dispatch only. `plan` resolves and checks the commit (the `sha` input, or the tip of main) with
+# deploy/production/resolve_commit.sh: its ci run succeeded, it was staged, both images are
+# published for it and it is on main; a failed check stops the run before anything is sent. It then
+# sends the read-only plan, with the image digests, to the instance and shows it in the job
+# summary. `apply` waits for the `production` environment approval, then (unless the sha was given
+# explicitly) checks that main has not moved since the plan, and sends exactly the SHA, migrations,
+# host settings digest and image digests that plan used; the rollout on the instance refuses if
+# the SHA, migrations or host settings digest have changed. When the apply succeeds, a public smoke
+# test asks the console origin for its login page. AWS access is a short-lived OIDC role session,
+# and each job has its own role: the plan role can send only the plan document, which has the
+# action fixed to plan, so the reviewer-less `production-plan` environment can never apply. The
+# role ARNs, the instance id and the console origin are environment secrets (masked in the public
+# logs), the region a repository variable; a missing one stops the run before any AWS call. Both
+# jobs run only for main, and the runner scripts always come from a checkout of main, never from
+# the commit being deployed.
 name: deploy-production
 
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Full commit SHA on main to deploy (empty = newest staged commit: the newest successful staging deployment)"
+        description: "Full commit SHA on main (empty = the tip of main)"
         required: false
         type: string
         default: ""
@@ -34,6 +39,7 @@ jobs:
     environment: production-plan
     timeout-minutes: 130
     permissions:
+      actions: read
       contents: read
       deployments: read
       id-token: write
@@ -41,19 +47,22 @@ jobs:
       sha: ${{ steps.parse.outputs.sha }}
       migrations: ${{ steps.parse.outputs.migrations }}
       host_digest: ${{ steps.parse.outputs.host_digest }}
+      python_digest: ${{ steps.target.outputs.python_digest }}
+      frontend_digest: ${{ steps.target.outputs.frontend_digest }}
+      explicit: ${{ steps.target.outputs.explicit }}
     env:
       ROLE_ARN: ${{ secrets.PROD_PLAN_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
       INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
     steps:
-      - name: Require the deploy variables
-        run: |
-          set -euo pipefail
-          [ -n "${ROLE_ARN:-}" ] || { echo "secret PROD_PLAN_ROLE_ARN is not set on the production-plan environment" >&2; exit 1; }
-          [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
-          [ -n "${INSTANCE_ID:-}" ] || { echo "secret PROD_INSTANCE_ID is not set on the production-plan environment" >&2; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
 
-      - name: Resolve the commit to deploy
+      # The script prints sha, the two image digests, staged_on and explicit on success, and one
+      # message on stderr (kept in the log) with a non-zero exit on any failed check.
+      - name: Resolve and check the commit
         id: target
         env:
           INPUT_SHA: ${{ inputs.sha }}
@@ -61,42 +70,14 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # A UTF-8 locale lets Unicode digits through [0-9].
-          export LC_ALL=C
-          if [ -n "$INPUT_SHA" ]; then
-            if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ || "$INPUT_SHA" == *$'\n'* ]]; then
-              echo "sha must be the full 40 character lowercase commit SHA" >&2
-              exit 1
-            fi
-            sha="$INPUT_SHA"
-          else
-            sha=""
-            gh api "repos/$REPOSITORY/deployments?environment=staging&per_page=100" > "$RUNNER_TEMP/deployments.json"
-            jq -r '.[] | "\(.id) \(.sha)"' "$RUNNER_TEMP/deployments.json" > "$RUNNER_TEMP/candidates.txt"
-            # Newest first: the first deployment with a success status is the newest staged commit.
-            while read -r id candidate; do
-              if [[ ! "$id" =~ ^[0-9]+$ || ! "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "gh returned an unexpected deployment listing" >&2
-                exit 1
-              fi
-              gh api "repos/$REPOSITORY/deployments/$id/statuses?per_page=100" > "$RUNNER_TEMP/statuses.json"
-              if jq -e 'any(.[]; .state == "success")' "$RUNNER_TEMP/statuses.json" > /dev/null; then
-                sha="$candidate"
-                break
-              fi
-            done < "$RUNNER_TEMP/candidates.txt"
-            if [ -z "$sha" ]; then
-              echo "no successful staging deployment found" >&2
-              exit 1
-            fi
-          fi
-          echo "Commit to deploy: $sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          deploy/production/resolve_commit.sh "$INPUT_SHA" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-          persist-credentials: false
+      - name: Require the deploy variables
+        run: |
+          set -euo pipefail
+          [ -n "${ROLE_ARN:-}" ] || { echo "secret PROD_PLAN_ROLE_ARN is not set on the production-plan environment" >&2; exit 1; }
+          [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "secret PROD_INSTANCE_ID is not set on the production-plan environment" >&2; exit 1; }
 
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -108,6 +89,8 @@ jobs:
       - name: Plan on the production instance
         env:
           SHA: ${{ steps.target.outputs.sha }}
+          PYTHON_DIGEST: ${{ steps.target.outputs.python_digest }}
+          FRONTEND_DIGEST: ${{ steps.target.outputs.frontend_digest }}
         run: |
           set -euo pipefail
           status=0
@@ -150,6 +133,7 @@ jobs:
       ROLE_ARN: ${{ secrets.PROD_APPLY_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
       INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
+      PROD_CONSOLE_ORIGIN: ${{ secrets.PROD_CONSOLE_ORIGIN }}
     steps:
       - name: Require the deploy variables
         run: |
@@ -157,6 +141,35 @@ jobs:
           [ -n "${ROLE_ARN:-}" ] || { echo "secret PROD_APPLY_ROLE_ARN is not set on the production environment" >&2; exit 1; }
           [ -n "${AWS_REGION:-}" ] || { echo "repository variable PROD_DEPLOY_REGION is not set" >&2; exit 1; }
           [ -n "${INSTANCE_ID:-}" ] || { echo "secret PROD_INSTANCE_ID is not set on the production environment" >&2; exit 1; }
+          [ -n "${PROD_CONSOLE_ORIGIN:-}" ] || { echo "secret PROD_CONSOLE_ORIGIN is not set on the production environment" >&2; exit 1; }
+
+      # An approval can arrive long after the plan. Unless the sha was given explicitly (a
+      # rollback to an older staged commit), main must still be at the planned commit. This reads
+      # the tip and sends nothing; any failure to read it fails the step.
+      - name: Check the commit is still current
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+          EXPLICIT: ${{ needs.plan.outputs.explicit }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if [ "$EXPLICIT" = "true" ]; then
+            echo "The sha was given explicitly; the tip of main is not checked."
+            exit 0
+          fi
+          [ "$EXPLICIT" = "false" ] || { echo "the plan did not say whether the sha was explicit" >&2; exit 1; }
+          tip="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)" || { echo "could not read the tip of main" >&2; exit 1; }
+          if [[ ! "$tip" =~ ^[0-9a-f]{40}$ || "$tip" == *$'\n'* ]]; then
+            echo "could not read the tip of main" >&2
+            exit 1
+          fi
+          if [ "$tip" != "$SHA" ]; then
+            echo "main moved to ${tip:0:7} since this run's plan; start the workflow again" >&2
+            exit 1
+          fi
+          echo "main is still at the planned commit."
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,6 +188,8 @@ jobs:
           SHA: ${{ needs.plan.outputs.sha }}
           MIGRATIONS: ${{ needs.plan.outputs.migrations }}
           HOST_DIGEST: ${{ needs.plan.outputs.host_digest }}
+          PYTHON_DIGEST: ${{ needs.plan.outputs.python_digest }}
+          FRONTEND_DIGEST: ${{ needs.plan.outputs.frontend_digest }}
         run: |
           set -euo pipefail
           status=0
@@ -194,3 +209,8 @@ jobs:
             echo '````'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+      - name: Public smoke test
+        run: |
+          set -euo pipefail
+          deploy/production/public_smoke.sh "$PROD_CONSOLE_ORIGIN"
