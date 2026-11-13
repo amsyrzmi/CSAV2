@@ -66,7 +66,7 @@ CURL_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'curl\t%s\n' "$*" >> "$STUB_LOG"
 IFS=' '
-cat >> "$STUB_STDIN_LOG"
+stdin="$(cat)"
 headers=""
 url=""
 while [[ $# -gt 0 ]]; do
@@ -78,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+printf '%s\t%s\n' "$url" "${stdin//$'\n'/ }" >> "$STUB_STDIN_LOG"
 case "$url" in
     https://ghcr.io/token\?*)
         app="${url##*/csa-}"
@@ -288,9 +289,22 @@ def test_registry_calls_use_the_owner_the_accept_types_and_keep_the_token_off_ar
     argv_log = harness.log.read_text()
     assert GH_TOKEN not in argv_log
     assert REGISTRY_TOKEN not in argv_log
-    stdin_log = harness.stdin_log.read_text()
-    assert GH_TOKEN in stdin_log
-    assert f"Bearer {REGISTRY_TOKEN}" in stdin_log
+    # GH_TOKEN is only for gh: curl never gets it, on argv or on stdin. The token request is
+    # anonymous (nothing on stdin, no credentials option); the HEAD carries the registry token.
+    stdin_lines = [line.split("\t") for line in harness.stdin_log.read_text().splitlines()]
+    assert len(stdin_lines) == 4
+    assert GH_TOKEN not in harness.stdin_log.read_text()
+    for url, stdin in stdin_lines:
+        if "/token?" in url:
+            assert stdin == ""
+        else:
+            assert f"Bearer {REGISTRY_TOKEN}" in stdin
+    for command in curls:
+        assert "--max-time 30" in command
+        if "ghcr.io/token" in command:
+            assert "-K" not in command.split()
+            assert "-u" not in command.split()
+            assert "--user" not in command.split()
     assert GH_TOKEN not in result.stdout + result.stderr
     assert REGISTRY_TOKEN not in result.stdout + result.stderr
 
@@ -564,8 +578,8 @@ def test_a_tip_that_is_not_a_full_sha_is_refused(harness: Harness) -> None:
     _assert_refused(harness.run())
 
 
-@pytest.mark.parametrize("token", [None, "", "bad token", 'quote"inside'])
-def test_a_missing_or_unsafe_gh_token_is_refused_before_any_call(
+@pytest.mark.parametrize("token", [None, ""])
+def test_a_missing_or_empty_gh_token_is_refused_before_any_call(
     harness: Harness, token: str | None
 ) -> None:
     result = harness.run(token=token)

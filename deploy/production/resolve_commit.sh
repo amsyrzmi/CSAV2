@@ -8,8 +8,9 @@
 # nothing on stdout: 1 the input, 2 the commit is on main, 3 its ci run on main succeeded, 4 it
 # has a success status on a staging Deployment (this is the staged gate, since a host given image
 # digests skips its own), 5 both images are tagged with the sha in the registry and their digests
-# are readable. Every gh or curl failure and every malformed answer fails closed. The token is
-# only ever passed to curl on stdin and is never printed.
+# are readable. Every gh or curl failure and every malformed answer fails closed. GH_TOKEN is
+# read only by gh and is never printed; the registry gets an anonymous token, and that bearer
+# token reaches curl on stdin, never on a command line.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -36,7 +37,7 @@ gh_get() {
 
 [[ "$#" -le 1 ]] || die "usage: resolve_commit.sh [<sha>]"
 input="${1:-}"
-[[ -n "${GH_TOKEN:-}" ]] && valid '^[A-Za-z0-9_.-]+$' "$GH_TOKEN" || die "GH_TOKEN must be set to a plain token"
+[[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN must be set"
 [[ -n "${REPOSITORY:-}" ]] && valid '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "$REPOSITORY" \
     || die "REPOSITORY must be set to owner/name"
 owner="${REPOSITORY%%/*}"
@@ -107,8 +108,8 @@ if [[ -z "$staged_on" ]]; then
     die "main's tip $sha7 is not staged yet; wait for deploy-staging"
 fi
 
-# 5. Both images carry the full sha as a tag; read their digests from the registry. The token goes
-# to curl on stdin (a curl config), never on a command line.
+# 5. Both images carry the full sha as a tag; read their digests from the registry. The bearer
+# token goes to curl on stdin (a curl config), never on a command line.
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
@@ -118,13 +119,14 @@ registry_digest() {
     local app="$1" token_body token code line name digest found=0
     local repo="$owner/csa-$app"
     local headers="$work/headers-$app"
-    token_body="$(printf 'user = "token:%s"\n' "$GH_TOKEN" \
-        | curl -sf -K - "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" 2> /dev/null)" \
+    # An anonymous pull token (the images are public): no credentials go to the registry's token endpoint.
+    token_body="$(curl -sf --max-time 30 \
+        "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" < /dev/null 2> /dev/null)" \
         || die "could not get a registry token for csa-$app"
     token="$(jq -r '.token | strings' <<< "$token_body" 2> /dev/null)" || die "unexpected registry token answer for csa-$app"
     valid '^[A-Za-z0-9._~+/=-]+$' "$token" || die "unexpected registry token answer for csa-$app"
     code="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
-        | curl -s --head -K - -o /dev/null -D "$headers" -w '%{http_code}' -H "Accept: $ACCEPT" \
+        | curl -s --max-time 30 --head -K - -o /dev/null -D "$headers" -w '%{http_code}' -H "Accept: $ACCEPT" \
             "https://ghcr.io/v2/$repo/manifests/$sha" 2> /dev/null)" \
         || die "could not reach the registry for csa-$app"
     [[ "$code" != "404" ]] || die "images for $sha7 are not published (csa-$app)"
