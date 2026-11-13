@@ -208,11 +208,14 @@ no provider.
   here once your plan is set up." No cards, no RM 0.00 figures.
 - **Zero usage** (Ihsan): cards Executions 0, AI Usage Charges RM 0.00, Platform fee RM 119.99,
   Bill so far RM 119.99; "No AI Usage Charges in this cycle yet." under By AI agent. No charts.
-- **Terminated** (Ihsan after checklist item 9.7): a termination dated the current cycle's start (the join
-  date here) leaves nothing billed: every card RM 0.00 or 0, and the same "No AI Usage Charges in
-  this cycle yet" copy, with "Bill so far, final on 5 Dec" still shown. There is no "terminated" wording
-  on the Credit tab (the client API carries no termination field). A termination dated later in the
-  cycle shows "Billed to <date>" and a prorated fee instead.
+- **Terminated** (Ihsan after checklist item 9.7): in the billing cycle that contains the termination
+  date, the Credit tab shows this notice above the cards: "Your plan ended on <date>. The figures below
+  are the final AI Usage Charges and bill for your last billing period." The cards, agent table and
+  charts show that last period, billed from the cycle start (or join date) up to the termination day. A
+  termination dated the current cycle's start (the join date here) leaves nothing billed: every card
+  RM 0.00 or 0, with the notice still shown. A termination dated later in the cycle shows "Billed to
+  <date>" and a prorated fee. Pick any later cycle (the picker still lists it, at RM 0.00) and the page
+  shows only "Your plan has ended.", with no cards, table or charts.
 - **Staff or read-only member:** no Credit link in the rail; `/portal/credit` is a 404 page and
   the two `/console/v1/billing/usage*` routes answer 403.
 
@@ -366,7 +369,6 @@ Stop the gateway and the web console with Ctrl-C, and close the terminals that l
 
 ## Known gaps seen in the 2026-11-13 run
 
-- A terminated company's Credit tab has no wording that says so (section 4).
 - On the Tenants page, a company with no plan is offered "5 Dec 2026" and later 5ths as quick
   dates, but its first plan must start inside the current cycle; those dates are refused with the
   "first plan must start inside the current billing cycle" sentence.
