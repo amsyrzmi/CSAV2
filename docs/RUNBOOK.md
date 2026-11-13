@@ -504,9 +504,9 @@ open row shows:
 **Approve** makes one subscription with the status "Waiting to start" (pending) on that plan and marks
 the sign-up approved; the customer is not messaged about the approval itself and nothing is charged. With the
 company's payments on (section "Payments"), approving also makes the first invoice (not for a free plan), and
-the next payment reminder run tells the customer how to pay (or lists the invoice under "Needs a nudge" when
-no channel reaches them). **Decline** takes an optional
-reason that only staff see; it is never sent to the customer. If a colleague decided the same sign-up
+the next payment reminder run, within 15 minutes, sends the customer that invoice with how to pay (or lists it
+under "Needs a nudge" when no channel reaches them). **Decline** takes an optional reason that only staff see;
+it is never sent to the customer. If a colleague decided the same sign-up
 first, the answer is `signup_not_pending` and the list reloads. `signup_has_plan` means the customer
 already has a live subscription on that plan (added by hand, or approved from another sign-up): decline
 the extra sign-up. `plan_not_open` means the plan was archived or closed to sign-ups after the customer
@@ -516,8 +516,11 @@ the sign-up is approved straight away and the subscription waits to start. "Clos
 plan stops the bot offering it; people already on it keep it. Archiving a plan is not blocked by open
 sign-ups; closing it to sign-ups is how a company stops them.
 
-**Tell the customer.** Approve, decline and expiry do not message the customer, so after approving or
-declining a sign-up, message the customer from the Inbox yourself (an automatic notice is a follow-up). If the customer's chat was moved by a link, the Inbox answers 409 "This conversation has no active channel to reply on." until the customer writes again on that channel (known follow-up); reply on the channel the customer last used, or wait for their next message.
+**Tell the customer.** Approve, decline and expiry do not message the customer (except the invoice reminder when
+payments are on, above), so after approving or declining a sign-up, message the customer from the Inbox yourself
+(an automatic notice is a follow-up). If the customer's chat was moved by a link, the Inbox answers 409 "This
+conversation has no active channel to reply on." until the customer writes again on that channel (known
+follow-up); reply on the channel the customer last used, or wait for their next message.
 
 **Start or cancel a pending subscription.** With the company's payments on, paying the first invoice starts
 a pending subscription (Mark paid, section "Payments"), so staff do not normally start it; "Start
@@ -670,19 +673,22 @@ capability. The owner's checks are in [CUSTOMER_BOT_RETEST.md](CUSTOMER_BOT_RETE
 The design, with the build's deviations, is `docs/superpowers/specs/2026-11-11-payments-design.md`, section 11.
 
 **Switch payments on.** Payments are off for every company until an admin turns them on, so nothing is invoiced
-or sent on rollout. Payments, Settings (the "Settings" link beside "Invoices" at the top of the page, which is the address
-`/payments?view=settings`, or `/portal/payments?view=settings` in the company's own console) is admin-only
-to change; staff see it read-only. It is a view of the same page, not a separate page. First add at least one method under "Payment methods": "Add a payment
-method", then "Bank transfer" (bank name, account name, account number of 6 to 20 digits) or "DuitNow" (the
-DuitNow ID and account name), with optional instructions of up to 500 characters that customers read after the
-bank line. Each method shows "Customers see:" with the exact line a customer gets. A method can be turned off
-and edited but never deleted. Cash cannot be added here (cash is paid through a booking, which is Payments 2);
-it does not count toward switching on. Then turn on "Send invoices and reminders" and save. Saving with no
-active bank or DuitNow method is refused ("Add an active bank account or DuitNow ID before switching payments
-on."), and so is turning off the last active method while payments are on ("Keep one active method while
-payments are on."). A company with no saved settings reads as off, 7 days, reminders `-7, 0, 3, 7`, no pause.
-If two admins save at once the second sees "Someone else changed this. Check and save again." Settings and
-methods are audited (`payments.settings.updated`, `payments.method.created`, `payments.method.updated`).
+or sent on rollout. Payments, Settings (the "Settings" link beside "Invoices" at the top of the page, which is
+the address `/payments?view=settings`, or `/portal/payments?view=settings` in the company's own console) is
+admin-only to change; staff see it read-only. It is a view of the same page, not a separate page. First add at
+least one method under "Payment methods": "Add a payment method", then "Bank transfer" (bank name, account name,
+account number of 6 to 20 digits) or "DuitNow" (the DuitNow ID and account name), with optional instructions of
+up to 500 characters that customers read after the bank line. Each method shows "Customers see:" with the exact
+line a customer gets. A method can be turned off and edited but never deleted. Customers are shown only the
+first four active bank and DuitNow methods, in the order of the list (a company with more than four sees the
+rest only in the console), so a reminder or a reply stays one chat message. Cash cannot be added here (cash is
+paid through a booking, which is Payments 2); it does not count toward switching on. Then turn on "Send invoices
+and reminders" and save. Saving with no active bank or DuitNow method is refused ("Add an active bank account or
+DuitNow ID before switching payments on."), and so is turning off the last active method while payments are on
+("Keep one active method while payments are on."). A company with no saved settings reads as off, 7 days,
+reminders `-7, 0, 3, 7`, no pause. If two admins save at once the second sees "Someone else changed this. Check
+and save again." Settings and methods are audited (`payments.settings.updated`, `payments.method.created`,
+`payments.method.updated`).
 
 The settings are: "Days before each renewal to make the invoice" (1 to 30, default 7), "Reminder days" (days
 from the due date, at most 6, from -30 to 60; `-7` is 7 days before, `0` the due day, default `-7, 0, 3, 7`),
@@ -695,9 +701,11 @@ never for a plan priced at zero. The `payments_due` job runs every 15 minutes an
 
 1. A pending subscription ("Waiting to start") that has no opening invoice gets one, due `lead_days` after it is
    issued. Normally this is not the job: approving a sign-up (by staff or automatically) with payments on makes
-   the opening invoice in the same step. The job covers
-   subscriptions approved while payments were off, and ones staff made pending by hand. A void opening invoice is
-   never made again.
+   the opening invoice in the same step. The job covers subscriptions approved while payments were off, and ones
+   staff made pending by hand. A void opening invoice is never made again. Keep the Subscriptions setting
+   "Pending sign-ups expire after N days" at 0 (never) or at or above `lead_days`: a pending subscription that
+   expires first voids its opening invoice before its due date, and a customer who pays after that needs a new
+   subscription.
 2. An active subscription that is not cancelling at the end of its period gets the invoice for its next period
    once that period starts within `lead_days` (and is still in the future), due on the day the period starts. The
    amount is the plan's price in effect at that date (a plan change scheduled before then is used); it is frozen
@@ -717,6 +725,10 @@ subscription's renewal date with its newest invoice if you suspect it (follow-up
 is not renewed while it is paused, so its renewal date can fall behind; when it is paid, the subscription gets a
 fresh period from the payment day, and the periods missed during the pause are not invoiced. A subscription that
 is paused or cancelling at the end of its period gets no invoice for the next period.
+
+Switching payments back on after a while off: the next run marks every `issued` invoice whose due date passed
+`overdue`, and with the pause setting on it can pause those customers' subscriptions in the same run. Look at
+the open invoices first (the SQL below) and void the ones nobody owes any more.
 
 **Read the list and the drawer.** Payments shows "Needs attention" above the invoice list. The list has the
 chips Open (the default: waiting for payment, overdue, customer says paid, cash at meeting), Overdue, Customer
@@ -756,12 +768,28 @@ period is not made again. Cancelling a subscription, or the expiry of a pending 
 the periods that will not run, the opening invoice included; the invoice of the period already running stays
 owed. Staff "Start subscription" (see Customer onboarding) keeps the opening invoice open and payable.
 
+- Voiding the overdue invoice of a subscription paused for non-payment does not resume it: resume it from
+  Subscriptions by hand.
+- "Extend renewal" voids the open invoices of periods that start from now on, "Customer says paid" ones
+  included (`void_reason` `subscription_changed`); the opening invoice and the running period's invoice stay.
+  The job then makes the invoice for the new renewal date. If the customer had already paid or claimed the
+  voided one, settle it with them by hand.
+- A pause from Subscriptions voids nothing. If the paused subscription will not run the period an open invoice
+  is for, void that invoice (or collect it) yourself.
+- A payment that arrives for a void invoice cannot be recorded ("This invoice can't be paid: it is void.", 409
+  `invoice_not_payable`). If the customer should have the plan, add the subscription again from Subscriptions
+  and start it by hand, and keep that payment in the company's own records: there is no console way to make an
+  invoice by hand in this release.
+
 **Needs attention.** Three groups, each oldest first, an invoice once per group, and none for paid, void or
 draft invoices:
 
 - "Customer says paid": the customer told the bot they paid (status "Customer says paid"). The bot says it is
-  noted and not yet confirmed. Check the company's bank account, then Mark paid, or message the customer from the
-  Inbox if nothing arrived. The note is the customer's own words and is not checked.
+  noted and not yet confirmed. Check the company's bank account, then Mark paid, or message the customer from
+  the Inbox if nothing arrived. The note is the customer's own words and is not checked. While an invoice is
+  "Customer says paid" it gets no reminders, never turns overdue and never pauses the subscription, and there is
+  no console button to reject the claim yet (follow-up): if nothing arrived, use the operator step "Reject a
+  customer's claim" below.
 - "Needs a nudge": the newest reminder of an issued or overdue invoice found no channel (no Telegram chat, no
   WhatsApp chat open within 23 hours, no email), or the company's replies are off. Nobody was told. Message the
   customer from the Inbox, or phone them, then Mark paid when they pay. An invoice is listed once however many
@@ -772,14 +800,17 @@ draft invoices:
   again.
 
 **Reminders.** The `payment_reminder_queue` job runs every 15 minutes for each company. A step is owed once its
-date has come (the due date plus the step's days). Only the newest owed step is sent; older owed steps are
-recorded as skipped and never sent late (a worker that was down, or payments just switched on). Each step is made
-once per invoice. Nothing is sent between 21:00 and 09:00 in the company's time zone (it goes in the morning), a
-customer gets at most one reminder a day (a second invoice's reminder goes the next day), and only invoices that
-are waiting for payment or overdue are reminded: not "Customer says paid", void or paid ones, nor an invoice
-without a reference. A reminder is the same text as the bot's payment answer (in English or Malay, from the
-contact's language): what is owed and when, how to pay, the reference to use, and what to do if already paid. The
-channel is the first that works:
+date has come (the due date plus the step's days). An opening invoice (a sign-up's first invoice) owes its
+earliest step as soon as it is made, so the customer learns how to pay at once whatever "Days before each
+renewal" and the reminder days are; its later steps count from the due date. Only the newest owed step is sent;
+older owed steps are recorded as skipped and never sent late (a worker that was down, or payments just switched
+on). Each step is made once per invoice. Nothing is sent between 21:00 and 09:00 in the company's time zone (it
+goes in the morning), a customer gets at most one reminder a day (a second invoice's reminder goes the next
+day), and only invoices that are waiting for payment or overdue are reminded: not "Customer says paid", void or
+paid ones, nor an invoice without a reference, nor the next period's invoice of a subscription that is
+cancelling at the end of its period (its queued email is dropped too). A reminder is the same text as the bot's
+payment answer (in English or Malay, from the contact's language): what is owed and when, how to pay, the
+reference to use, and what to do if already paid. The channel is the first that works:
 
 1. Telegram, when the customer has a Telegram chat and the company's automatic messages are allowed.
 2. WhatsApp, only in a chat where the customer wrote in the last 23 hours (WhatsApp does not allow a company to
@@ -790,15 +821,20 @@ channel is the first that works:
    and it waits for 09:00 in quiet hours. A queued row older than 48 hours is dropped and never sent late.
 4. Otherwise a "no channel" row, shown under "Needs a nudge".
 
+A reminder row's status `sent` means the message was written for the delivery worker, not that it reached the
+customer: a Telegram or WhatsApp delivery that fails afterwards shows in the delivery dead letters and the staff
+notices, not on the invoice (feeding it back is a follow-up).
+
 No reminder of any kind goes out while the company's customer replies are Off or its Customer support is
 suspended (the same rule as booking reminders), mail included; each such invoice then shows under "Needs a
-nudge". If a company switches payments off, its queued
-reminder email rows stay queued (nothing is sent or dropped while it is off) and are dropped at the next claim
-once they are more than 48 hours old; a company that switches payments back on later does not send old mail.
+nudge". If a company switches payments off, its queued reminder email rows stay queued (nothing is sent or
+dropped while it is off) and are dropped at the next claim once they are more than 48 hours old; a company that
+switches payments back on later does not send old mail.
 
-**The pause switch.** Leave "Pause a subscription when an invoice is overdue for N days" blank unless the company
-wants subscriptions of customers who do not pay paused automatically. When set, see rule 4 above. To undo it for one customer, resume the subscription from
-Subscriptions (the pause stays off for that invoice), or Mark paid.
+**The pause switch.** Leave "Pause a subscription when an invoice is overdue for N days" blank unless the
+company wants subscriptions of customers who do not pay paused automatically. When set, see rule 4 above. To
+undo it for one customer, resume the subscription from Subscriptions (the pause stays off for that invoice), or
+Mark paid.
 
 **Look at a company's invoices by hand.** For example the newest 20, and the reminder rows of one invoice:
 
@@ -818,8 +854,9 @@ append-only for the application role (`csa_app` can read and add rows, not chang
 database owner can fix a mistake (an invoice marked paid by mistake, or against the wrong invoice). Do it in one
 transaction, and look at the rows before you change anything:
 
-1. Stop only if the customer really did pay: if so, nothing needs fixing. Find the company id, the invoice id
-   (the drawer address `?invoice=<id>`, or the SQL above) and, if it has one, the subscription id.
+1. Check the company's bank account first. Stop if the customer really did pay: nothing needs fixing. Otherwise
+   find the company id, the invoice id (the drawer address `?invoice=<id>`, or the SQL above) and, if it has
+   one, the subscription id.
 2. As the database owner, open a transaction and read the rows. Check that you have the right invoice and exactly
    one payment, and read the subscription's latest events: an `activated` or `resumed_paid` event whose payload
    names this payment shows that the payment started or resumed the subscription.
@@ -847,8 +884,10 @@ transaction, and look at the rows before you change anything:
    VALUES ('<client id>', 'payments.invoice.payment_removed', '<invoice id>',
            '{"by": "operator", "why": "<one line>"}');
    ```
-4. Read the three SELECTs again and check the invoice is open and has no payment. Then `COMMIT;`, or `ROLLBACK;` if
-   anything looks wrong.
+4. Read the three SELECTs again and check the invoice is open and has no payment. Then `COMMIT;`, or `ROLLBACK;`
+   if anything looks wrong. Tell the staff member who marked it paid to reload the page and not to retry from a
+   tab that was open before the fix: the deleted payment took its request key with it, so a retry from that old
+   form would record a fresh payment.
 5. Act on the subscription by hand, from the console: if the payment started it ("activated") or resumed it
    ("resumed_paid"), decide with the customer whether it should stay. Cancel it from Subscriptions to undo the
    start (cancel voids an opening invoice that has no period, but leaves a running period's invoice owed, so void
@@ -861,6 +900,41 @@ A payment of the wrong amount cannot happen through Mark paid (the amount is cop
 or over payment is a Payments 2 statement exception. An invoice made with the wrong amount is voided with a reason,
 and a void invoice for a period is not made again; there is no console way to make an invoice by hand in this
 release, so ask a developer.
+
+**Reject a customer's claim.** Until a "Reject claim" button is built (the first follow-up, an owner decision),
+a false "I paid" is put back by the database owner. Check the bank account first. Then, in one transaction,
+look, put the invoice back to "Waiting for payment" (the job marks it overdue within 15 minutes if its due date
+has passed; the claim note and time stay on the invoice for the record), and write an audit row. Each statement
+must report one row:
+
+```sql
+BEGIN;
+SELECT id, reference, status, due_at, claim_note, claimed_at, subscription_id
+FROM public.invoices WHERE client_id = '<client id>' AND id = '<invoice id>';
+UPDATE public.invoices SET status = 'issued'
+WHERE client_id = '<client id>' AND id = '<invoice id>' AND status = 'proof_submitted';
+INSERT INTO public.console_audit (client_id, action, target_id, details)
+VALUES ('<client id>', 'payments.invoice.claim_rejected', '<invoice id>',
+        '{"by": "operator", "why": "<one line>"}');
+COMMIT;
+```
+
+Reminders, overdue and the pause rule then apply again from the next run. Tell the customer from the Inbox; if
+they say they paid again, the bot notes a new claim.
+
+**Before deploying 0590.** The migration stops (with the services already stopped for it) when an invoice has a
+status outside the seven, a negative amount or a currency that is not three upper-case letters. Run these on the
+target database first and fix any row they return (an unknown status becomes `void` or one of the seven; `RM` or
+`myr` becomes `MYR`); plans and subscriptions have no such check, but a plan's currency is copied to its
+subscriptions and invoices, so fix those too:
+
+```sql
+SELECT status, count(*) FROM public.invoices GROUP BY 1;
+SELECT id, currency FROM public.invoices WHERE currency !~ '^[A-Z]{3}$';
+SELECT client_id, code, currency FROM public.plans WHERE currency !~ '^[A-Z]{3}$';
+SELECT id, currency FROM public.subscriptions WHERE currency !~ '^[A-Z]{3}$';
+SELECT count(*) FROM public.invoices WHERE amount < 0;
+```
 
 **Roll back migrations 0590 and 0591.** Needed when going back to an image older than the payments
 release: its readiness check wants the highest applied version to equal its own. Roll back in reverse
@@ -879,14 +953,14 @@ public.payment_methods, public.payment_settings;` (every payment on the ledger, 
 setting is lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_pause_reason_chk, DROP
 COLUMN pause_reason;`, `DROP INDEX public.invoices_reference_uq, public.invoices_subscription_period_uq,
 public.invoices_open, public.invoices_contact;`, `ALTER TABLE public.invoices DROP CONSTRAINT
-invoices_subscription_fk, DROP CONSTRAINT invoices_status_chk, DROP CONSTRAINT invoices_amount_chk,
-DROP CONSTRAINT invoices_client_id_key, DROP COLUMN reference, DROP COLUMN method_kind, DROP COLUMN
-subscription_id, DROP COLUMN period_start, DROP COLUMN period_end, DROP COLUMN reminded_at, DROP COLUMN
-claim_note, DROP COLUMN claimed_at, DROP COLUMN void_reason, DROP COLUMN voided_at, DROP COLUMN
-voided_by;` (the checks on those columns go with them; the references, claims and void reasons are
-lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_client_id_key;`, and last
-`DELETE FROM public.schema_migrations WHERE version = '0590';`, or the runner thinks it is still
-applied. Then start the older images.
+invoices_subscription_fk, DROP CONSTRAINT invoices_status_chk, DROP CONSTRAINT invoices_amount_chk, DROP
+CONSTRAINT invoices_currency_chk, DROP CONSTRAINT invoices_client_id_key, DROP COLUMN reference, DROP
+COLUMN method_kind, DROP COLUMN subscription_id, DROP COLUMN period_start, DROP COLUMN period_end, DROP
+COLUMN reminded_at, DROP COLUMN claim_note, DROP COLUMN claimed_at, DROP COLUMN void_reason, DROP COLUMN
+voided_at, DROP COLUMN voided_by;` (the checks on those columns go with them; the references, claims and
+void reasons are lost), `ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_client_id_key;`,
+and last `DELETE FROM public.schema_migrations WHERE version = '0590';`, or the runner thinks it is
+still applied. Then start the older images.
 
 ## Stuck knowledge uploads
 

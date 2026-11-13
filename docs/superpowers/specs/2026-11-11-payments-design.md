@@ -252,9 +252,13 @@ cash through Bookings) is not part of it.
    Telegram has no email fallback.
 9. **Quiet hours (21:00 to 09:00), one reminder per contact per day, and the reminder language from `contacts.locale`
    are constants.** *If wrong:* a company wanting other hours needs a code change.
-10. **`payment_agent` is switched on by 0591 wherever `subscription_agent` is on** and says "payment details aren't set
-    up" until the company switches payments on. *If wrong:* such companies' customers get that honest answer instead
-    of a team handoff.
+10. **`payment_agent` is switched on by 0591 wherever `subscription_agent` is on, but offered to the classifier and
+    planner only while the company's payments are on** (`payment_settings.enabled`, read every turn in
+    `load_context`, never cached; final review ruling I5). With payments off, "how do I pay?" goes to the agents that
+    answered it before (knowledge, orders, invoices) and no payment prompt rule (the dispute escalation included) is
+    told; the agent's own "payment details aren't set up" answer stays as the backstop for a turn that races a
+    switch-off. *If wrong:* a company that takes payments its own way gets no payment answers until it switches
+    payments on.
 11. **Staff "Start subscription" stays as an override.** It gives the opening invoice its first period (the new start
     to the new renewal date) and leaves it open and payable; paying it later only records the payment. Opening
     invoices are due `lead_days` after issue; a pending subscription whose customer said they paid is not expired;
