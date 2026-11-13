@@ -16,18 +16,14 @@ model, token counts and identifiers only; a node event carries the redacted summ
 ``csa.graph.events.summarize``, scrubbed again here to code-shaped values. The ledger, not
 Langfuse, is the billing authority.
 
-Owner decision 2026-11-13: no raw client or conversation id goes to Langfuse Cloud. ``user.id`` and
-``session.id`` are keyed pseudonyms (``pseudonym``), keyed by a server-side secret that is never a
-Langfuse credential; without a usable key the sink exports nothing (fail closed). The trace id is
-the random execution UUID and stays as is.
+Owner decision 2026-11-13: client and conversation UUIDs may be sent to Langfuse Cloud
+(``user.id``, ``session.id``); free text is still scrubbed from node summaries.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
-import hmac
 import json
 import os
 import re
@@ -35,7 +31,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import structlog
@@ -54,15 +50,7 @@ if TYPE_CHECKING:
     from csa.metering.context import Job, MeterContext
     from csa.metering.meter import Usage
 
-__all__ = [
-    "PSEUDONYM_KEY_MIN_BYTES",
-    "SHUTDOWN_TIMEOUT_MILLIS",
-    "LangfuseSink",
-    "PseudonymKind",
-    "build_otlp_exporter",
-    "pseudonym",
-    "usable_pseudonym_key",
-]
+__all__ = ["SHUTDOWN_TIMEOUT_MILLIS", "LangfuseSink", "build_otlp_exporter"]
 
 logger = structlog.get_logger(__name__)
 
@@ -89,11 +77,6 @@ _OBS_USAGE = "langfuse.observation.usage_details"
 # Node events come from the customer-turn graph only.
 _TURN_JOB: Job = "customer_turn"
 
-PseudonymKind = Literal["client", "conversation"]
-# The pseudonym key is 32 bytes when derived; a shorter configured key is refused.
-PSEUDONYM_KEY_MIN_BYTES = 32
-_PSEUDONYM_HEX_CHARS = 32
-
 # A summary value Langfuse may see: a short code such as ``order_status`` (starts with a letter,
 # no spaces, no ``@`` or ``+``), and no UUID or 32-hex run inside it.
 _CODE_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,63}")
@@ -106,24 +89,6 @@ _SUMMARY_MAX_DEPTH = 4
 # The probe's fixed user: no caller-supplied identifier reaches Langfuse.
 _PROBE_USER = "admin"
 _PROBE_NAME = "csa-test-verification"
-
-
-def pseudonym(kind: PseudonymKind, value: UUID, key: bytes) -> str:
-    """The stable keyed pseudonym Langfuse sees in place of a client or conversation id.
-
-    HMAC-SHA256 over ``b"csa-langfuse:<kind>:" + value.bytes``, hex, cut to 32 characters. The
-    sink (``user.id``, ``session.id``) and the reconciliation check (``userId`` filter) both call
-    this, so they always agree. ``key`` must be a server-side secret, never a Langfuse key.
-    """
-    message = b"csa-langfuse:" + kind.encode("ascii") + b":" + value.bytes
-    return hmac.new(key, message, hashlib.sha256).hexdigest()[:_PSEUDONYM_HEX_CHARS]
-
-
-def usable_pseudonym_key(key: bytes | None, *, forbidden: tuple[bytes, ...] = ()) -> bool:
-    """Whether ``key`` may key pseudonyms: long enough and not one of the Langfuse credentials."""
-    return (
-        key is not None and len(key) >= PSEUDONYM_KEY_MIN_BYTES and all(key != f for f in forbidden)
-    )
 
 
 def _code(value: str) -> bool:
@@ -290,28 +255,23 @@ class _BoundedBatchProcessor(BatchSpanProcessor):
 
 
 def _trace_attributes(
-    client_id: UUID, conversation_id: UUID | None, job: Job, *, agent_id: str, key: bytes
+    client_id: UUID | str, conversation_id: UUID | None, job: Job, *, agent_id: str
 ) -> dict[str, Any]:
-    """Trace-level attributes, copied onto every span (v4 filters observations, not traces).
-
-    ``user.id`` and ``session.id`` are pseudonyms, never the raw ids.
-    """
+    """Trace-level attributes, copied onto every span (v4 filters observations, not traces)."""
     attrs: dict[str, Any] = {
         _TRACE_NAME: job,
         _TRACE_TAGS: [agent_id, job],
-        _USER_ID: pseudonym("client", client_id, key),
+        _USER_ID: str(client_id),
     }
     if conversation_id is not None:
-        attrs[_SESSION_ID] = pseudonym("conversation", conversation_id, key)
+        attrs[_SESSION_ID] = str(conversation_id)
     return attrs
 
 
 class LangfuseSink:
     """Exports redacted node events and model generations to Langfuse as OTel spans.
 
-    Implements ``GenerationMirror`` (``submit``) for ``LedgerMeter``. ``pseudonym_key`` keys the
-    ``user.id`` and ``session.id`` pseudonyms; when it is missing, too short or equal to a Langfuse
-    key the sink logs an error once and exports nothing (fail closed, never a raw id).
+    Implements ``GenerationMirror`` (``submit``) for ``LedgerMeter``.
     """
 
     def __init__(
@@ -320,7 +280,6 @@ class LangfuseSink:
         secret_key: SecretStr | str,
         base_url: str = "https://cloud.langfuse.com",
         *,
-        pseudonym_key: bytes | None,
         exporter: SpanExporter | None = None,
         max_queue_size: int = 2048,
         max_export_batch_size: int = 256,
@@ -329,11 +288,6 @@ class LangfuseSink:
     ) -> None:
         """Build the dedicated provider; ``exporter`` replaces the OTLP exporter (tests)."""
         secret = secret_key.get_secret_value() if isinstance(secret_key, SecretStr) else secret_key
-        if usable_pseudonym_key(pseudonym_key, forbidden=(secret.encode(), public_key.encode())):
-            self._key: bytes | None = pseudonym_key
-        else:
-            self._key = None
-            logger.error("langfuse_pseudonym_key_missing")
         inner = (
             exporter
             if exporter is not None
@@ -362,13 +316,10 @@ class LangfuseSink:
 
     def submit(self, ctx: MeterContext, usage: Usage) -> None:
         """Enqueue one generation: model and token counts, no prompt, reply or cost."""
-        key = self._key
-        if key is None:
-            return
         try:
             agent_id = JOB_AGENT[ctx.job]
             attrs = _trace_attributes(
-                ctx.client_id, ctx.conversation_id, ctx.job, agent_id=agent_id, key=key
+                ctx.client_id, ctx.conversation_id, ctx.job, agent_id=agent_id
             )
             attrs.update(
                 {
@@ -412,12 +363,9 @@ class LangfuseSink:
 
         The summary is scrubbed to numbers, booleans and short codes before it leaves.
         """
-        key = self._key
-        if key is None:
-            return False
         try:
             attrs = _trace_attributes(
-                client_id, conversation_id, _TURN_JOB, agent_id=JOB_AGENT[_TURN_JOB], key=key
+                client_id, conversation_id, _TURN_JOB, agent_id=JOB_AGENT[_TURN_JOB]
             )
             attrs.update(
                 {
@@ -464,12 +412,9 @@ class LangfuseSink:
         nothing reached Langfuse.
 
         The user is a fixed ``admin``, a name that is not a short code becomes the default, and
-        metadata is scrubbed like a node summary. Without a usable pseudonym key nothing is sent
-        and ``ok`` is false.
+        metadata is scrubbed like a node summary.
         """
         trace_id = uuid4()
-        if self._key is None:
-            return False, trace_id.hex
         attrs: dict[str, Any] = {
             _TRACE_NAME: name if _code(name) else _PROBE_NAME,
             _TRACE_TAGS: ["verification", "csa-rebuild"],

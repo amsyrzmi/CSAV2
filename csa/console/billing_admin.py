@@ -395,7 +395,6 @@ async def langfuse_source() -> AsyncIterator[LangfuseSource]:
             base_url=settings.LANGFUSE_BASE_URL or DEFAULT_BASE_URL,
             public_key=settings.LANGFUSE_PUBLIC_KEY,
             secret_key=None if secret is None else secret.get_secret_value(),
-            pseudonym_key=settings.langfuse_pseudonym_key(),
         )
 
 
@@ -426,7 +425,6 @@ async def _langfuse_check(
         base_url=source.base_url,
         public_key=source.public_key,
         secret_key=source.secret_key,
-        pseudonym_key=source.pseudonym_key,
         client_id=client_id,
         start=cycle.start,
         end=cycle.end,

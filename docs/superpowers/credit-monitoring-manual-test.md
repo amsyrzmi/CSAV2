@@ -290,24 +290,10 @@ difference (Langfuse has nothing). A "match" needs real calls made through the g
 keys set (section 7). The Hobby plan limits the Metrics API to 100 requests a day; a 429 shows as
 "Langfuse not reachable".
 
-**No raw ids in Langfuse (owner decision 2026-11-13).** Langfuse never receives a client id or a
-conversation id. Its user id and session id are opaque 32-character hex strings: keyed pseudonyms
-(HMAC-SHA256) of the client id and the conversation id. The key is `LANGFUSE_PSEUDONYM_KEY` when
-set, otherwise a sub-key derived from `CREDENTIALS_KEY`; it is never a Langfuse key. The same
-client always gets the same user id while that key stays the same; changing the key (or
-`CREDENTIALS_KEY`, when the pseudonym key is unset) gives every client a new user id, and the check
-then finds nothing for usage sent before the change. Without a usable key the sink sends nothing
-and logs `langfuse_pseudonym_key_missing`, and the check answers "Langfuse not reachable".
-
-To find a company's traces in Langfuse, filter by its pseudonym. Run this with the same
-environment as the gateway (the demo env loaded, or on the host with the service's env); it prints
-only the pseudonym, never the key:
-
-```bash
-uv run python -c 'import sys, uuid; from csa.core.langfuse import pseudonym; from csa.core.settings import get_settings; print(pseudonym("client", uuid.UUID(sys.argv[1]), get_settings().langfuse_pseudonym_key()))' <client-uuid>
-```
-
-Use `"conversation"` in place of `"client"` with a conversation id to get its session id.
+**Ids in Langfuse (owner decision 2026-11-13).** Langfuse receives the client's UUID as its user
+id and the conversation's UUID as its session id, so a company's traces are found in Langfuse by
+filtering on its client id. Node summaries are still scrubbed: free text, email addresses, phone
+numbers and other UUIDs in them show as `[redacted]`.
 
 ## 7. Owner-only live checks
 
@@ -332,8 +318,8 @@ Langfuse test project only, on this isolated stack (or staging), never productio
    `usageMetadata.promptTokenCount` and `candidatesTokenCount` plus `thoughtsTokenCount` as
    completion. A row with zero completion tokens on a real reply means a field name is wrong.
 2. **Langfuse attributes.** In the Langfuse test project, find the generations for those calls:
-   user id = the company's pseudonym (section 6, an opaque 32-hex string, never the client id;
-   session id likewise for the conversation), trace name = the job (for example `workspace_assistant`),
+   user id = the company's client id (its UUID), session id = the conversation UUID where there is
+   one, trace name = the job (for example `workspace_assistant`),
    and the agent and job tags; model and input/output usage filled; no prompt or reply text. Then
    press "Check against Langfuse" for that company and cycle: it should say "Matches Langfuse".
    Check that the Metrics API's `inputTokens` / `outputTokens` (`/api/public/v2/metrics`) read back

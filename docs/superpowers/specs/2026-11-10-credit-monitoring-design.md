@@ -247,8 +247,8 @@ test per entry point asserting that a ledger row appears with the right client, 
 
 ### Langfuse (OTLP)
 
-Owner decision 2026-11-13: no raw client or conversation ids to Langfuse Cloud; `user.id` and
-`session.id` are keyed pseudonyms (`csa.core.langfuse.pseudonym`) and the check filters by the same.
+Owner decision 2026-11-13: client and conversation UUIDs may be sent to Langfuse Cloud (user.id,
+session.id); free text is still scrubbed from node summaries.
 
 - Migrate `LangfuseSink` to OTLP/HTTP: traces to `<base>/api/public/otel/v1/traces`, Basic auth
   with the existing public and secret keys, header `x-langfuse-ingestion-version: 4` (builder

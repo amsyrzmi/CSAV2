@@ -6,8 +6,7 @@ the best-effort mirror, saw the same tokens; it never changes a billed figure.
 Langfuse side: the public Metrics API v2, ``GET /api/public/v2/metrics?query=<JSON>`` with Basic
 auth (public key as username, secret key as password), on the ``observations`` view, summing the
 ``inputTokens`` and ``outputTokens`` measures, filtered by ``userId`` (the sink sets ``user.id`` to
-the client's keyed pseudonym, ``csa.core.langfuse.pseudonym``, on every span; never the raw id,
-owner 2026-11-13) between ``fromTimestamp`` and ``toTimestamp``. With no dimensions the
+the client id on every span) between ``fromTimestamp`` and ``toTimestamp``. With no dimensions the
 reply is ``{"data": [{"sum_inputTokens": n, "sum_outputTokens": n}]}``. Sources (read
 2026-11-13): https://langfuse.com/docs/metrics/features/metrics-api and the public OpenAPI spec
 (https://cloud.langfuse.com/generated/api/openapi.yml, ``/api/public/v2/metrics``).
@@ -19,8 +18,7 @@ self-hosted Langfuse v4 or later. On Langfuse Cloud the Metrics API is rate limi
 organisation (Hobby: 100 requests a day; Core: 100 an hour; Pro and up: 500 an hour; HTTP 429),
 which is why the check is asked for one company at a time and never on an overview load.
 
-``langfuse_tokens`` answers ``None`` (and logs an error) when the keys or the pseudonym key are
-unset, the base URL is
+``langfuse_tokens`` answers ``None`` (and logs an error) when the keys are unset, the base URL is
 malformed, Langfuse cannot be reached or does not answer within ``REQUEST_DEADLINE_S``, it answers
 an error status, or the reply is not the documented shape: never a guess.
 Logs carry only the event, the HTTP status or the exception type; never keys, URLs or bodies.
@@ -40,7 +38,6 @@ import httpx
 import structlog
 
 from csa.billing.cycles import KL
-from csa.core.langfuse import pseudonym, usable_pseudonym_key
 
 __all__ = [
     "ABS_TOLERANCE",
@@ -87,14 +84,12 @@ class LangfuseTotals:
 
 @dataclass(frozen=True)
 class LangfuseSource:
-    """Where to read from: an HTTP client, the sink's credentials and its pseudonym key (``None``
-    when unset)."""
+    """Where to read from: an HTTP client and the sink's credentials (``None`` when unset)."""
 
     http: httpx.AsyncClient
     base_url: str
     public_key: str | None
     secret_key: str | None
-    pseudonym_key: bytes | None
 
 
 def _midnight(d: date) -> datetime:
@@ -155,13 +150,15 @@ def _totals(body: Any) -> LangfuseTotals | None:
     return LangfuseTotals(tokens_in, tokens_out)
 
 
-def _query(user_id: str, begin: datetime, finish: datetime) -> str:
+def _query(client_id: UUID, begin: datetime, finish: datetime) -> str:
     return json.dumps(
         {
             "view": "observations",
             "dimensions": [],
             "metrics": [{"measure": m, "aggregation": "sum"} for m in _MEASURES],
-            "filters": [{"column": "userId", "operator": "=", "value": user_id, "type": "string"}],
+            "filters": [
+                {"column": "userId", "operator": "=", "value": str(client_id), "type": "string"}
+            ],
             "fromTimestamp": _iso_ms(begin),
             "toTimestamp": _iso_ms(finish),
         },
@@ -175,7 +172,6 @@ async def langfuse_tokens(
     base_url: str,
     public_key: str | None,
     secret_key: str | None,
-    pseudonym_key: bytes | None,
     client_id: UUID,
     start: date,
     end: date,
@@ -184,17 +180,11 @@ async def langfuse_tokens(
     """Langfuse's input and output token totals for ``client_id`` over ``check_window``.
 
     ``start`` and ``end`` are Kuala Lumpur dates (``end`` exclusive), queried as UTC instants.
-    Langfuse is asked about the client's pseudonym, the same one the sink sends. An empty window
-    is zero without a request. ``None`` (with an error log) when either key is unset or blank,
-    the pseudonym key is missing or unusable, the base URL is malformed, Langfuse is unreachable
-    or too slow, answers an error status, or replies off-shape.
+    An empty window is zero without a request. ``None`` (with an error log) when either key is
+    unset or blank, the base URL is malformed, Langfuse is unreachable or too slow, answers an
+    error status, or replies off-shape.
     """
     if not (public_key and public_key.strip() and secret_key and secret_key.strip()):
-        logger.error("langfuse_check_unconfigured")
-        return None
-    if pseudonym_key is None or not usable_pseudonym_key(
-        pseudonym_key, forbidden=(secret_key.encode(), public_key.encode())
-    ):
         logger.error("langfuse_check_unconfigured")
         return None
     begin, finish = check_window(start, end, until)
@@ -204,9 +194,7 @@ async def langfuse_tokens(
         async with asyncio.timeout(REQUEST_DEADLINE_S):
             response = await http.get(
                 f"{base_url.rstrip('/')}{METRICS_PATH}",
-                params={
-                    "query": _query(pseudonym("client", client_id, pseudonym_key), begin, finish)
-                },
+                params={"query": _query(client_id, begin, finish)},
                 auth=httpx.BasicAuth(public_key, secret_key),
                 timeout=TIMEOUT,
             )

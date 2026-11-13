@@ -18,12 +18,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from csa.core import langfuse as langfuse_module
-from csa.core.langfuse import (
-    SHUTDOWN_TIMEOUT_MILLIS,
-    LangfuseSink,
-    build_otlp_exporter,
-    pseudonym,
-)
+from csa.core.langfuse import SHUTDOWN_TIMEOUT_MILLIS, LangfuseSink, build_otlp_exporter
 from csa.graph.events import PostgresEventSink, summarize
 from csa.metering.context import JOB_AGENT, JOB_LABELS, MeterContext
 from csa.metering.meter import GenerationMirror, Usage
@@ -35,8 +30,6 @@ from structlog.testing import capture_logs
 PUBLIC_KEY = "pk-lf-synthetic"
 SECRET_KEY = "sk-lf-synthetic"
 BASE_URL = "https://langfuse.example.test"
-# A synthetic server-side pseudonym key (never a Langfuse credential).
-PSEUDONYM_KEY = bytes(range(32))
 
 USAGE = Usage(
     provider="groq",
@@ -48,7 +41,6 @@ USAGE = Usage(
 
 
 def _sink(exporter: SpanExporter, **kwargs: Any) -> LangfuseSink:
-    kwargs.setdefault("pseudonym_key", PSEUDONYM_KEY)
     return LangfuseSink(PUBLIC_KEY, SECRET_KEY, BASE_URL, exporter=exporter, **kwargs)
 
 
@@ -124,9 +116,8 @@ def test_generation_span_carries_model_usage_user_session_and_job(
         "input": 1200,
         "output": 340,
     }
-    assert ctx.conversation_id is not None
-    assert attrs["user.id"] == pseudonym("client", ctx.client_id, PSEUDONYM_KEY)
-    assert attrs["session.id"] == pseudonym("conversation", ctx.conversation_id, PSEUDONYM_KEY)
+    assert attrs["user.id"] == str(ctx.client_id)
+    assert attrs["session.id"] == str(ctx.conversation_id)
     assert attrs["langfuse.trace.name"] == "customer_turn"
     assert tuple(attrs["langfuse.trace.tags"]) == ("support", "customer_turn")
     assert attrs["langfuse.observation.metadata.agent"] == "support"
@@ -214,21 +205,7 @@ async def test_no_span_carries_prompt_reply_or_cost(
             assert "parcel" not in text, (span.name, key)
 
 
-# --- pseudonyms: no raw client or conversation id reaches Langfuse (owner 2026-11-13) ---------
-
-
-def test_pseudonym_is_deterministic_keyed_32_hex_and_per_kind() -> None:
-    value = UUID("00000000-0000-4000-8000-00000000c0de")
-    first = pseudonym("client", value, PSEUDONYM_KEY)
-
-    assert first == pseudonym("client", value, PSEUDONYM_KEY)
-    assert len(first) == 32
-    assert all(c in "0123456789abcdef" for c in first)
-    assert first != pseudonym("conversation", value, PSEUDONYM_KEY)
-    assert first != pseudonym("client", value, bytes(reversed(range(32))))
-    assert first != pseudonym("client", uuid4(), PSEUDONYM_KEY)
-    assert first not in {str(value), value.hex, str(value).upper(), value.hex.upper()}
-    assert value.hex not in first and value.hex[:8] not in first
+# --- privacy: ids only where approved, nothing else identifying ------------------------------
 
 
 def _spellings(value: UUID) -> list[str]:
@@ -254,9 +231,18 @@ def _walk(value: Any) -> list[str]:
     return [str(value)]
 
 
-async def test_no_raw_identifier_free_text_or_key_material_reaches_a_span(
+# The only attributes allowed to carry the client and conversation ids.
+_ID_ATTRIBUTES = {"user.id", "session.id"}
+
+
+async def test_no_free_text_contact_detail_or_key_material_reaches_a_span(
     memory: tuple[LangfuseSink, InMemorySpanExporter],
 ) -> None:
+    """Owner decision 2026-11-13: the client and conversation UUIDs may go to Langfuse Cloud as
+    ``user.id`` and ``session.id`` (exactly ``str(uuid)``). Nothing else identifying may: no free
+    text, email, phone number, other UUID or key material anywhere on a span, and the two ids
+    appear in no attribute but those two (summaries and probe metadata are scrubbed).
+    """
     sink, exporter = memory
     client_id, conversation_id, employee_id = uuid4(), uuid4(), uuid4()
     ctx = MeterContext(
@@ -282,63 +268,37 @@ async def test_no_raw_identifier_free_text_or_key_material_reaches_a_span(
 
     spans = _spans(sink, exporter)
     assert len(spans) == 3
-    banned = [
-        *_spellings(client_id),
-        *_spellings(conversation_id),
+    always_banned = [
         *_spellings(employee_id),
         email,
         phone,
         "asked about",
-        PSEUDONYM_KEY.hex(),
-        base64.b64encode(PSEUDONYM_KEY).decode(),
         SECRET_KEY,
+        base64.b64encode(f"{PUBLIC_KEY}:{SECRET_KEY}".encode()).decode(),
     ]
+    approved_ids = [*_spellings(client_id), *_spellings(conversation_id)]
     for span in spans:
-        texts = [span.name, *_walk(dict(span.attributes or {}))]
-        texts += _walk(dict(span.resource.attributes))
+        attrs = dict(span.attributes or {})
+        texts = [span.name, *_walk(dict(span.resource.attributes))]
+        texts += [t for k, v in attrs.items() if k not in _ID_ATTRIBUTES for t in _walk(v)]
         for text in texts:
-            for needle in banned:
-                assert needle not in text, (span.name, needle)
+            for needle in [*always_banned, *approved_ids]:
                 assert needle.lower() not in text.lower(), (span.name, needle)
+        for key in _ID_ATTRIBUTES & attrs.keys():
+            for needle in always_banned:
+                assert needle.lower() not in str(attrs[key]).lower(), (span.name, needle)
+    probe, *turn = sorted(spans, key=lambda span: _attrs(span)["user.id"] != "admin")
+    assert _attrs(probe)["user.id"] == "admin"
+    assert "session.id" not in _attrs(probe)
+    for span in turn:
+        assert _attrs(span)["user.id"] == str(client_id)
+        assert _attrs(span)["session.id"] == str(conversation_id)
     event = next(s for s in spans if s.name == "order_agent:plan_args")
     output = json.loads(_attrs(event)["langfuse.observation.output"])
     # Code-shaped values survive; identifiers, contact details and free text do not.
     assert output["intent"] == "order_status"
     assert output["confidence"] == 0.9
-
-
-@pytest.mark.parametrize("key", [None, b"", b"short-key"])
-async def test_a_missing_pseudonym_key_fails_closed(key: bytes | None) -> None:
-    exporter = InMemorySpanExporter()
-    with capture_logs() as logs:
-        sink = _sink(exporter, pseudonym_key=key)
-    try:
-        assert {"event": "langfuse_pseudonym_key_missing", "log_level": "error"} in logs
-        ctx = _ctx()
-        sink.submit(ctx, USAGE)
-        assert await _send_event(sink, client_id=ctx.client_id) is False
-        ok, _ = await sink.send_test_trace()
-        assert ok is False
-        assert sink.force_flush() is True
-        assert exporter.get_finished_spans() == ()
-    finally:
-        await sink.aclose()
-
-
-async def test_the_langfuse_secret_key_is_never_the_pseudonym_key() -> None:
-    exporter = InMemorySpanExporter()
-    secret = "sk-lf-synthetic-" + "s" * 32
-    with capture_logs() as logs:
-        sink = LangfuseSink(
-            PUBLIC_KEY, secret, BASE_URL, exporter=exporter, pseudonym_key=secret.encode()
-        )
-    try:
-        assert {"event": "langfuse_pseudonym_key_missing", "log_level": "error"} in logs
-        sink.submit(_ctx(), USAGE)
-        assert sink.force_flush() is True
-        assert exporter.get_finished_spans() == ()
-    finally:
-        await sink.aclose()
+    assert output["task_id"] == output["reason"] == output["handoff_reason"] == "[redacted]"
 
 
 # --- node events -------------------------------------------------------------------------------
@@ -384,8 +344,8 @@ async def test_send_event_emits_a_span_on_the_turn_trace(
     assert attrs["langfuse.observation.type"] == "span"
     assert attrs["langfuse.observation.level"] == "DEFAULT"
     assert attrs["langfuse.observation.status_message"] == "ok"
-    assert attrs["user.id"] == pseudonym("client", client_id, PSEUDONYM_KEY)
-    assert attrs["session.id"] == pseudonym("conversation", conversation_id, PSEUDONYM_KEY)
+    assert attrs["user.id"] == str(client_id)
+    assert attrs["session.id"] == str(conversation_id)
     assert attrs["langfuse.trace.name"] == "customer_turn"
     assert tuple(attrs["langfuse.trace.tags"]) == ("support", "customer_turn")
     assert attrs["langfuse.observation.metadata.node"] == "plan_args"
@@ -615,7 +575,7 @@ async def test_sink_builds_the_otlp_exporter_when_none_is_injected(
         return InMemorySpanExporter()
 
     monkeypatch.setattr(langfuse_module, "build_otlp_exporter", fake_build)
-    sink = LangfuseSink(PUBLIC_KEY, SECRET_KEY, BASE_URL, pseudonym_key=PSEUDONYM_KEY)
+    sink = LangfuseSink(PUBLIC_KEY, SECRET_KEY, BASE_URL)
     await sink.aclose()
 
     assert calls == [(PUBLIC_KEY, SECRET_KEY, BASE_URL)]
