@@ -621,14 +621,17 @@ def test_no_rollback_when_a_migration_was_applied(
 
 
 @pytest.mark.parametrize(
-    "refs",
-    [{"frontend": None}, dict.fromkeys(PREVIOUS)],
+    "previous",
+    [
+        lambda: Previous(frontend=None),
+        lambda: Previous(gateway=None, worker=None, delivery=None, frontend=None),
+    ],
     ids=["one-local-tag", "first-deploy-on-local-tags"],
 )
 def test_no_rollback_when_a_previous_image_is_unknown(
-    rig_factory: Callable[..., ApplyRig], refs: dict[str, str | None]
+    rig_factory: Callable[..., ApplyRig], previous: Callable[[], Previous]
 ) -> None:
-    rig = rig_factory(overrides=[*Previous(**refs).rules(), NEVER_READY])
+    rig = rig_factory(overrides=[*previous().rules(), NEVER_READY])
     assert rig.apply() == 1
     assert_no_rollback(rig)
     assert "Rollback images:" in rig.lines
