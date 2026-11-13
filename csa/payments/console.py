@@ -89,23 +89,20 @@ async def list_invoices(
 
 
 async def invoice_detail(
-    conn: Conn,
-    client_id: UUID,
-    invoice_id: str,
-    *,
-    identity_pool: AsyncConnectionPool | None,
-) -> InvoiceDetail:
-    """One invoice with its payment and reminders; 404 `invoice_not_found` (others' too)."""
+    conn: Conn, client_id: UUID, invoice_id: str
+) -> tuple[InvoiceDetail, UUID | None]:
+    """One invoice with its payment and reminders, and who recorded the payment (a user id);
+    404 `invoice_not_found` (others' too). The payment's `created_by_name` is left empty: the
+    caller fills it with `with_recorder_name` once its transaction is over, so the identity pool
+    is never waited on while the invoice or subscription is locked."""
     key = {"client_id": client_id, "invoice_id": invoice_id}
     row = await db.q.fetch_one("payments/invoice_detail.sql", key, conn=conn)
     if row is None:
         raise HTTPException(404, "invoice_not_found")
     payment = None
+    creator: UUID | None = None
     if row["payment_id"] is not None:
-        creator: UUID | None = row["payment_created_by"]
-        names = await member_names(
-            identity_pool, client_id, {creator} if creator is not None else set()
-        )
+        creator = row["payment_created_by"]
         payment = PaymentOut(
             id=row["payment_id"],
             amount=row["payment_amount"],
@@ -114,18 +111,35 @@ async def invoice_detail(
             method_kind=row["payment_method_kind"],
             source=row["payment_source"],
             matched_by=row["payment_matched_by"],
-            created_by_name=names.get(creator) if creator is not None else None,
+            created_by_name=None,
             note=row["payment_note"],
             created_at=row["payment_created_at"],
         )
     reminders = await db.q.fetch_all("payments/invoice_reminders.sql", key, conn=conn)
-    return InvoiceDetail.model_validate(
+    detail = InvoiceDetail.model_validate(
         _invoice_fields(row)
         | {
             "payment": payment,
             "reminders": [ReminderOut.model_validate(r) for r in reminders],
         }
     )
+    return detail, creator
+
+
+async def with_recorder_name(
+    detail: InvoiceDetail,
+    creator: UUID | None,
+    client_id: UUID,
+    *,
+    identity_pool: AsyncConnectionPool | None,
+) -> InvoiceDetail:
+    """The detail with the name of the member who recorded its payment, outside any tenant
+    transaction; no name when there is none or the identity pool fails (`member_names`)."""
+    if detail.payment is None or creator is None:
+        return detail
+    names = await member_names(identity_pool, client_id, {creator})
+    payment = detail.payment.model_copy(update={"created_by_name": names.get(creator)})
+    return detail.model_copy(update={"payment": payment})
 
 
 async def attention(conn: Conn, client_id: UUID) -> PaymentAttentionPage:

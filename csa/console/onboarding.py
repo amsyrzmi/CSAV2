@@ -39,6 +39,9 @@ _AGENTS = (
     SubscriptionAgent,
     PaymentAgent,
 )
+# A display name that is not the agent's name title-cased: 0591 seeds "Payments" for every company
+# that existed then, and a later company reads the same.
+_DISPLAY_NAMES = {PaymentAgent.name: "Payments"}
 
 
 class ClientIn(BaseModel):
@@ -92,7 +95,9 @@ async def create_client(
                 (
                     client_id,
                     agent.name,
-                    agent.name.removesuffix("_agent").replace("_", " ").title(),
+                    _DISPLAY_NAMES.get(
+                        agent.name, agent.name.removesuffix("_agent").replace("_", " ").title()
+                    ),
                     "CSAV2 capability; enable deliberately after configuration",
                     f"python:{agent.name}",
                     Jsonb(agent.Input.model_json_schema()),

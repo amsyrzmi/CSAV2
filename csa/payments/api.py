@@ -171,9 +171,10 @@ def build_payments_router() -> APIRouter:
     ) -> InvoiceDetail:
         staff(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            return await console.invoice_detail(
-                conn, client_id, invoice_id, identity_pool=_identity_pool(request)
-            )
+            detail, creator = await console.invoice_detail(conn, client_id, invoice_id)
+        return await console.with_recorder_name(
+            detail, creator, client_id, identity_pool=_identity_pool(request)
+        )
 
     @router.post("/invoices/{invoice_id}/mark-paid", response_model=InvoiceDetail)
     async def mark_paid(
@@ -195,9 +196,11 @@ def build_payments_router() -> APIRouter:
                 received_at=payload.received_at or datetime.now(UTC),
                 note=payload.note,
             )
-            return await console.invoice_detail(
-                conn, client_id, invoice_id, identity_pool=_identity_pool(request)
-            )
+            detail, creator = await console.invoice_detail(conn, client_id, invoice_id)
+        # The recorder's name is read once the transaction (and its locks) is over.
+        return await console.with_recorder_name(
+            detail, creator, client_id, identity_pool=_identity_pool(request)
+        )
 
     @router.post("/invoices/{invoice_id}/void", response_model=InvoiceDetail)
     async def void(
@@ -212,9 +215,10 @@ def build_payments_router() -> APIRouter:
             await invoices.void_invoice(
                 conn, client_id, invoice_id, actor_user_id=actor.user_id, reason=payload.reason
             )
-            return await console.invoice_detail(
-                conn, client_id, invoice_id, identity_pool=_identity_pool(request)
-            )
+            detail, creator = await console.invoice_detail(conn, client_id, invoice_id)
+        return await console.with_recorder_name(
+            detail, creator, client_id, identity_pool=_identity_pool(request)
+        )
 
     @router.get("/attention", response_model=PaymentAttentionPage)
     async def attention(

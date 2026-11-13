@@ -9,8 +9,10 @@ plan change the bound version also carries the target plan's price, currency and
 
 Invoices follow in the same transaction, under the subscription lock taken first (the payments
 lock order): ``cancel_now`` voids the open invoices of periods that will not run and the opening
-invoice (the running period's invoice stays owed), and ``activate`` gives the opening invoice its
-first period, so an open one stays payable and a later payment only records it.
+invoice (the running period's invoice stays owed), ``extend_renewal`` voids the open invoices of
+periods from now on (``subscription_changed``; the invoice job reissues for the new date), and
+``activate`` gives the opening invoice its first period, so an open one stays payable and a later
+payment only records it. ``pause`` voids nothing.
 """
 
 from __future__ import annotations
@@ -480,6 +482,18 @@ class SubscriptionActionExecutor:
                     action.subscription_id,
                     reason="subscription_cancelled",
                     from_period=now,
+                )
+            elif action.action == "extend_renewal":
+                # The next period now starts later: an invoice already issued (or claimed) for a
+                # period from now on names the wrong dates. Void it; the invoice job issues the
+                # one for the new renewal date. The opening invoice and the running period's stay.
+                await void_for_subscription(
+                    conn,
+                    client_id,
+                    action.subscription_id,
+                    reason="subscription_changed",
+                    from_period=now,
+                    include_opening=False,
                 )
             elif action.action == "activate":
                 # Started by hand: the opening invoice (the one with no period yet), when there

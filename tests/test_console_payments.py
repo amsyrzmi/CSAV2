@@ -673,3 +673,98 @@ async def test_attention_lists_each_invoice_once_per_kind(sessions: SessionWorld
     assert abs((since[failing] - (now - timedelta(days=4))).total_seconds()) < 5
     assert items[0]["invoice"]["claim_note"] == "Sent from Synthetic Bank"
     assert "closed@example.test" not in response.text
+
+
+async def test_company_b_cannot_change_company_as_method(sessions: SessionWorld) -> None:
+    w = sessions
+    admin_a, _ = await w.member(role="tenant_admin")
+    admin_b, _ = await w.member(role="tenant_admin", tenant=w.tenants[1])
+    made = await w.mutate(
+        admin_a, f"{BASE}/methods", {"kind": "transfer", "label": "Bank", "details": TRANSFER}
+    )
+    assert made.status_code == 201, made.text
+    method = made.json()
+
+    crossing = await w.mutate(
+        admin_b,
+        f"{BASE}/methods/{method['id']}",
+        {"label": "Taken over", "version": method["version"]},
+        method="PATCH",
+    )
+    assert crossing.status_code == 404 and crossing.json() == {"detail": "method_not_found"}
+    [stored] = await w.q("SELECT label, version FROM payment_methods WHERE id=%s", method["id"])
+    assert stored == {"label": "Bank", "version": method["version"]}
+
+
+async def test_search_wildcards_are_literal_and_a_bad_cursor_is_an_empty_page(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    plain = await seed_contact(w, w.tenants[0], name="Aisha Rahman")
+    odd = await seed_contact(w, w.tenants[0], name="Budi 100% Santoso_x", phone="+60 19 888 0000")
+    plain_id, _ = await seed_invoice(w, w.tenants[0], contact=plain)
+    odd_id, _ = await seed_invoice(w, w.tenants[0], contact=odd)
+
+    async def ids(query: str) -> list[str]:
+        response = await staff.get(f"{BASE}/invoices?status=all&{query}")
+        assert response.status_code == 200, response.text
+        return [item["id"] for item in response.json()["items"]]
+
+    # '%' and '_' match only themselves, never any text.
+    assert await ids("q=%25") == [odd_id]
+    assert await ids("q=_") == [odd_id]
+    assert await ids("q=a%25a") == []
+    assert plain_id not in await ids("q=%25") + await ids("q=_")
+    # A cursor the company does not have, or one that is no invoice id at all, is an empty page.
+    assert await ids(f"before=inv_{'0' * 25}") == []
+    assert await ids("before=not-an-id%27%3B") == []
+
+
+async def test_the_recorders_name_is_read_after_the_write_commits(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The identity pool is asked once the invoice's lock is released; when it fails, the
+    payment is still recorded and shows no name."""
+    import psycopg
+    from csa.payments import console
+
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    first, _ = await seed_invoice(w, w.tenants[0])
+    second, _ = await seed_invoice(w, w.tenants[0])
+    real = console.member_names
+    seen: list[str] = []
+
+    async def probe(*args: object, **kwargs: object) -> dict[uuid.UUID, str]:
+        # Another session can lock the invoice at once (NOWAIT) only if the write has committed.
+        async with await psycopg.AsyncConnection.connect(w.owner_dsn) as other:
+            async with other.transaction():
+                rows = await other.execute(
+                    "SELECT status FROM invoices WHERE id = %s FOR UPDATE NOWAIT", (first,)
+                )
+                seen.extend(r[0] for r in await rows.fetchall())
+        return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(console, "member_names", probe)
+    paid = await w.mutate(
+        staff,
+        f"{BASE}/invoices/{first}/mark-paid",
+        {"request_key": str(uuid.uuid4()), "method_kind": "transfer"},
+    )
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["payment"]["created_by_name"] == "Synthetic Member"
+    assert seen == ["paid"]
+
+    def failing_tx(*_: object, **__: object) -> object:
+        raise RuntimeError("identity pool down")
+
+    monkeypatch.setattr(console, "member_names", real)
+    monkeypatch.setattr(console, "tx", failing_tx)
+    down = await w.mutate(
+        staff,
+        f"{BASE}/invoices/{second}/mark-paid",
+        {"request_key": str(uuid.uuid4()), "method_kind": "cash"},
+    )
+    assert down.status_code == 200, down.text
+    assert down.json()["status"] == "paid" and down.json()["payment"]["created_by_name"] is None

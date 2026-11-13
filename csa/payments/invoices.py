@@ -3,8 +3,9 @@
 Every function runs inside the caller's tenant transaction (`tx(pool, client_id)`) and names the
 company in every statement. Refusals are `HTTPException`s with a short code: 404
 `invoice_not_found` (also for another company's invoice); 409 `invoice_already_paid`,
-`invoice_not_payable`, `request_key_reused`, `invoice_paid` and
-`invoice_void`; 422 `received_in_future`, `invalid_note` and `invalid_reason`.
+`invoice_not_payable`, `request_key_reused`, `invoice_paid` and `invoice_void`; 422
+`received_in_future`. `invalid_note` and `invalid_reason` (422) are a direct caller's guard only:
+the console routes validate the note and the reason in their bodies first (a field-list 422).
 
 The ledger is the truth. An invoice becomes `paid` only in the transaction that inserts its
 `payments` row (`invoice_mark_paid.sql` matches only when that row exists), and `payments` is
@@ -29,6 +30,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
+import structlog
 from fastapi import HTTPException
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
@@ -39,6 +41,8 @@ from csa.payments.contracts import OPEN_STATUSES, InvoiceStatus, MethodKind
 from csa.payments.reference import new_invoice_id, new_reference, normalise_reference
 from csa.payments.settings import get_settings
 from csa.subscriptions.service import record_event
+
+logger = structlog.get_logger(__name__)
 
 Conn = AsyncConnection[Any]
 
@@ -373,7 +377,9 @@ async def mark_paid(
     except UniqueViolation as exc:  # the locks above make these unreachable; never a 500 if not
         if exc.diag.constraint_name == "payments_idempotency_uq":
             raise HTTPException(409, "request_key_reused") from exc
-        raise HTTPException(409, "invoice_already_paid") from exc
+        if exc.diag.constraint_name == "payments_one_per_invoice":
+            raise HTTPException(409, "invoice_already_paid") from exc
+        raise  # any other unique key is a bug, never an "already paid"
     if payment is None:
         raise RuntimeError(f"payment insert for invoice {invoice_id} returned no row")
     payment_id: UUID = payment["id"]
@@ -407,11 +413,22 @@ async def mark_paid(
                 to_status=applied["status"],
                 payload=payload,
             )
-            await db.q.execute(
+            stamped = await db.q.fetch_all(
                 "payments/invoice_set_period.sql",
                 {"client_id": client_id, "subscription_id": subscription["id"]},
                 conn=conn,
             )
+            if [r["id"] for r in stamped] != [invoice_id]:
+                # The paid invoice should be the opening one and get the first period. Logged,
+                # never raised: the payment stands (money received is always recordable), and
+                # staff see an invoice without its period.
+                logger.error(
+                    "payment_activation_period_unset",
+                    client_id=str(client_id),
+                    invoice_id=invoice_id,
+                    subscription_id=str(subscription["id"]),
+                    stamped=len(stamped),
+                )
             activated = True
         elif (
             subscription["status"] == "paused"
@@ -514,19 +531,27 @@ async def void_for_subscription(
     client_id: UUID,
     subscription_id: UUID,
     *,
-    reason: Literal["subscription_cancelled", "subscription_expired"],
+    reason: Literal["subscription_cancelled", "subscription_expired", "subscription_changed"],
     from_period: datetime,
+    include_opening: bool = True,
 ) -> int:
     """Void the subscription's open invoices for periods from `from_period` on, and its opening one.
 
-    A running period's invoice (period_start before `from_period`) is left alone. Returns how many
-    were voided. The subscription lock comes first (a no-op when the caller already holds it).
+    A running period's invoice (period_start before `from_period`) is left alone; so is the opening
+    invoice (no period yet) when `include_opening` is false (a renewal date moved: the
+    subscription goes on, the opening invoice stays owed). Returns how many were voided. The
+    subscription lock comes first (a no-op when the caller already holds it).
     """
     key = {"client_id": client_id, "subscription_id": subscription_id}
     await db.q.fetch_one("subscriptions/subscription_lock.sql", key, conn=conn)
     rows = await db.q.fetch_all(
         "payments/void_for_subscription.sql",
-        {**key, "reason": reason, "from_period": from_period},
+        {
+            **key,
+            "reason": reason,
+            "from_period": from_period,
+            "include_opening": include_opening,
+        },
         conn=conn,
     )
     return len(rows)

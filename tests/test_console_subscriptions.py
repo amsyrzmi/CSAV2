@@ -625,6 +625,18 @@ async def test_plan_sign_up_switches_travel_through_the_plan_routes(sessions: Se
     assert refused.status_code == 422
 
 
+async def test_plan_currency_must_be_three_upper_case_letters(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    body = {"name": "Gold", "price": "59.90"}
+    for n, bad in enumerate(("RM", "myr", "MYRR", "")):
+        refused = await w.mutate(staff, f"{BASE}/plans", {**body, "code": f"c{n}", "currency": bad})
+        assert refused.status_code == 422, (bad, refused.text)
+    made = await w.mutate(staff, f"{BASE}/plans", {**body, "code": "ok", "currency": "SGD"})
+    assert made.status_code == 201, made.text
+    assert made.json()["currency"] == "SGD"
+
+
 async def test_pending_filter_and_a_signup_subscription_reads_without_a_renewal(
     sessions: SessionWorld,
 ) -> None:

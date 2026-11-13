@@ -45,7 +45,7 @@ class PlanIn(Contract):
     code: str = Field(pattern=r"^[a-z0-9_-]{1,64}$")
     name: str = Field(min_length=1, max_length=120)
     price: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
-    currency: str = "MYR"
+    currency: str = Field(default="MYR", pattern=r"^[A-Z]{3}$")
     billing_interval: Interval = "month"
     features: list[str] = Field(default_factory=list, max_length=20)
     sort_order: int = 0

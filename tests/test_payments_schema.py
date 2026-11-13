@@ -190,6 +190,20 @@ def test_invoice_status_check_takes_the_seven_and_refuses_others(migrated_dsn: s
         assert row["convalidated"] is True
 
 
+def test_invoice_currency_is_three_upper_case_letters(migrated_dsn: str) -> None:
+    c = _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        conn.execute(*_invoice(c, currency="MYR"))
+        conn.execute(*_invoice(c, currency="SGD"))
+        for bad in ("RM", "myr", "MYRR", "MY1", ""):
+            with pytest.raises(errors.CheckViolation):
+                conn.execute(*_invoice(c, currency=bad))
+        [row] = conn.execute(
+            "SELECT convalidated FROM pg_constraint WHERE conname = 'invoices_currency_chk'"
+        )
+        assert row["convalidated"] is True
+
+
 def test_reference_check_and_uniqueness(migrated_dsn: str) -> None:
     a, b = _company(migrated_dsn), _company(migrated_dsn)
     with _owner(migrated_dsn) as conn:
@@ -509,7 +523,7 @@ def test_signup_email_lower_case_only(migrated_dsn: str) -> None:
                 signup("bad", bad)
 
 
-def test_0590_refuses_unknown_invoice_statuses(
+def test_0590_refuses_unknown_invoice_statuses_and_currencies(
     pg_container: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     container: Any = pg_container
@@ -556,6 +570,17 @@ def test_0590_refuses_unknown_invoice_statuses(
     assert "sent" in str(raised.value)
     with _owner(at) as conn:
         conn.execute("UPDATE invoices SET status = 'void' WHERE status = 'sent'")
+        conn.execute(*_invoice(client, currency="RM"))
+        conn.execute(*_invoice(client, currency="myr"))
+    with psycopg.connect(at, autocommit=True) as conn:
+        with pytest.raises(psycopg.errors.RaiseException) as raised:
+            with conn.transaction():
+                conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+    message = str(raised.value)
+    assert "0590: invoices hold currencies that are not three upper-case letters" in message
+    assert "'RM'" in message and "'myr'" in message
+    with _owner(at) as conn:
+        conn.execute("UPDATE invoices SET currency = 'MYR' WHERE currency IN ('RM', 'myr')")
     with psycopg.connect(at, autocommit=True) as conn:
         with conn.transaction():
             conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
@@ -605,5 +630,5 @@ def test_max_applied_version_is_the_expected_one(migrated_dsn: str) -> None:
     with _owner(migrated_dsn) as conn:
         [row] = conn.execute("SELECT max(version) AS v FROM schema_migrations")
         applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
-    assert row["v"] == EXPECTED_SCHEMA_VERSION == "0591"
+    assert row["v"] == EXPECTED_SCHEMA_VERSION
     assert {"0590", "0591"} <= applied

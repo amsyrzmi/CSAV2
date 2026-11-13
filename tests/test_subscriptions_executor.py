@@ -1012,7 +1012,9 @@ async def issue_opening(w: SessionWorld, sub: str) -> invoices.InvoiceRecord:
     return issued
 
 
-async def seed_invoice(w: SessionWorld, sub: str, period_start: datetime, status: str) -> str:
+async def seed_invoice(
+    w: SessionWorld, sub: str, period_start: datetime | None, status: str
+) -> str:
     """An invoice for the period starting at `period_start`, written as the job would leave it."""
     invoice_id = new_invoice_id(datetime.now(UTC))
     await w.q(
@@ -1084,6 +1086,68 @@ async def test_cancel_now_voids_the_next_period_and_keeps_the_running_one(
     assert (await invoice_row(w, upcoming))["void_reason"] == "subscription_cancelled"
     # The period that already ran is still owed: its invoice stays open for staff to settle.
     assert [i["id"] for i in await open_invoices(w, sub)] == [running]
+
+
+async def test_extend_renewal_voids_the_next_period_invoices_and_the_job_reissues_one(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await payments_on(w)
+    sub = await subscribe(w, staff)
+    now = datetime.now(UTC)
+    old_renewal = now + timedelta(days=3)
+    await w.q("UPDATE subscriptions SET renews_at = %s WHERE id=%s", old_renewal, sub)
+    async with tx(w.pool, w.tenants[0]) as conn:
+        issued = await invoices.issue_period_invoice(conn, UUID(w.tenants[0]), UUID(sub), now=now)
+    assert issued is not None and issued.period_start == old_renewal
+    running = await seed_invoice(w, sub, now - timedelta(days=27), "overdue")
+    # A customer already said they paid a later period's invoice: it is voided too (staff see
+    # the claim on the void invoice and settle it by hand).
+    claimed = await seed_invoice(w, sub, now + timedelta(days=40), "proof_submitted")
+    # An invoice with no period (an opening one) is never touched by an extension.
+    opening = await seed_invoice(w, sub, None, "issued")
+
+    new_renewal = now + timedelta(days=5)
+    created = await propose(
+        w, staff, sub, {"action": "extend_renewal", "renews_at": new_renewal.isoformat()}
+    )
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    for voided_id in (issued.id, claimed):
+        voided = await invoice_row(w, voided_id)
+        assert voided["status"] == "void" and voided["void_reason"] == "subscription_changed"
+        assert voided["voided_at"] is not None and voided["voided_by"] is None
+    assert (await invoice_row(w, running))["status"] == "overdue"
+    assert (await invoice_row(w, opening))["status"] == "issued"
+
+    # The invoice job issues the new period's invoice: one open invoice per future period.
+    async with tx(w.pool, w.tenants[0]) as conn:
+        reissued = await invoices.issue_period_invoice(
+            conn, UUID(w.tenants[0]), UUID(sub), now=datetime.now(UTC)
+        )
+    assert reissued is not None and reissued.id != issued.id
+    future = [
+        i for i in await open_invoices(w, sub) if i["period_start"] and i["period_start"] > now
+    ]
+    assert [(i["id"], i["period_start"]) for i in future] == [
+        (reissued.id, (await row(w, sub))["renews_at"])
+    ]
+
+
+async def test_pause_does_not_void_the_next_period_invoice(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await subscribe(w, staff)
+    upcoming = await seed_invoice(w, sub, datetime.now(UTC) + timedelta(days=3), "issued")
+    resume = (datetime.now(UTC) + timedelta(days=30)).date().isoformat()
+    created = await propose(w, staff, sub, {"action": "pause", "resume_at": resume})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+    assert (await invoice_row(w, upcoming))["status"] == "issued"
 
 
 async def test_start_gives_the_open_opening_invoice_its_period_and_it_stays_payable(

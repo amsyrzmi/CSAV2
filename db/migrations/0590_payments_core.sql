@@ -1,7 +1,8 @@
 -- Payments 1, core: what an invoice needs to be issued with a reference, paid on a ledger, reminded
 --   and answered about. The platform never holds money: nothing here is a gateway, card or provider.
 -- invoices (baseline, no migration touched it): the status list gets a check (draft, issued,
---   proof_submitted, paid, overdue, void, cash_pending) and amount must be 0 or more. New nullable
+--   proof_submitted, paid, overdue, void, cash_pending), amount must be 0 or more and currency three
+--   upper-case letters (invoices_currency_chk, like payments.currency). New nullable
 --   columns: reference (the customer-visible code, XXXX-XXC: six characters from 2-9 and A-Z without
 --   I, L, O, a dash after the fourth, one check character; unique per company), method_kind (qr,
 --   transfer or cash), subscription_id with period_start and period_end (the billing period the
@@ -42,9 +43,12 @@
 --   UPDATE invoices (0100). Count the rows first:
 --   SELECT status, count(*) FROM public.invoices GROUP BY 1; the migration stops with
 --   "0590: invoices hold statuses outside the new list: ..." if any row has a status outside the
---   seven, and with a similar message for a negative amount. Fix those rows (an invoice of an unknown
---   status becomes 'void' or one of the seven) and run it again. Adding the two unique constraints
---   builds an index over invoices and over subscriptions under a short lock.
+--   seven, with "0590: invoices hold currencies that are not three upper-case letters: ..." for a
+--   currency such as 'RM' or 'myr' (SELECT currency, count(*) FROM public.invoices WHERE currency
+--   !~ '^[A-Z]{3}$' GROUP BY 1;), and with a similar message for a negative amount. Fix those rows
+--   (an invoice of an unknown status becomes 'void' or one of the seven; 'RM' or 'myr' becomes
+--   'MYR') and run it again. Adding the two unique constraints builds an index over invoices and
+--   over subscriptions under a short lock.
 -- Rollback (as the database owner, with the services stopped; the older image's readiness check wants
 --   the highest applied version to equal its own), in this order, after 0591 is rolled back:
 --   DROP TABLE public.invoice_reminders, public.payments, public.payment_methods,
@@ -55,10 +59,11 @@
 --     public.invoices_open, public.invoices_contact;
 --   ALTER TABLE public.invoices DROP CONSTRAINT invoices_subscription_fk, DROP CONSTRAINT
 --     invoices_status_chk, DROP CONSTRAINT invoices_amount_chk, DROP CONSTRAINT
---     invoices_client_id_key, DROP COLUMN reference, DROP COLUMN method_kind, DROP COLUMN
---     subscription_id, DROP COLUMN period_start, DROP COLUMN period_end, DROP COLUMN reminded_at,
---     DROP COLUMN claim_note, DROP COLUMN claimed_at, DROP COLUMN void_reason, DROP COLUMN
---     voided_at, DROP COLUMN voided_by;  (the check constraints on the dropped columns go with them)
+--     invoices_currency_chk, DROP CONSTRAINT invoices_client_id_key, DROP COLUMN reference,
+--     DROP COLUMN method_kind, DROP COLUMN subscription_id, DROP COLUMN period_start, DROP COLUMN
+--     period_end, DROP COLUMN reminded_at, DROP COLUMN claim_note, DROP COLUMN claimed_at, DROP
+--     COLUMN void_reason, DROP COLUMN voided_at, DROP COLUMN voided_by;  (the check constraints on
+--     the dropped columns go with them)
 --   ALTER TABLE public.subscriptions DROP CONSTRAINT subscriptions_client_id_key;
 --   Finally delete the schema_migrations row for 0590, or the runner thinks it is still applied.
 
@@ -80,6 +85,14 @@ BEGIN
                         'cash_pending');
   IF unknown IS NOT NULL THEN
     RAISE EXCEPTION '0590: invoices hold statuses outside the new list: %', unknown;
+  END IF;
+  SELECT string_agg(DISTINCT quote_literal(currency), ', ' ORDER BY quote_literal(currency))
+    INTO unknown
+    FROM public.invoices
+   WHERE currency !~ '^[A-Z]{3}$';
+  IF unknown IS NOT NULL THEN
+    RAISE EXCEPTION '0590: invoices hold currencies that are not three upper-case letters: %',
+      unknown;
   END IF;
   IF EXISTS (SELECT 1 FROM public.invoices WHERE amount < 0) THEN
     RAISE EXCEPTION '0590: invoices hold a negative amount';
@@ -111,6 +124,7 @@ BEGIN
             'CHECK (status IN (''draft'', ''issued'', ''proof_submitted'', ''paid'', ''overdue'','
             || ' ''void'', ''cash_pending''))'],
       ARRAY['invoices', 'invoices_amount_chk', 'CHECK (amount >= 0)'],
+      ARRAY['invoices', 'invoices_currency_chk', 'CHECK (currency ~ ''^[A-Z]{3}$'')'],
       ARRAY['invoices', 'invoices_reference_chk',
             'CHECK (reference IS NULL OR reference ~ ''^[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{3}$'')'],
       ARRAY['invoices', 'invoices_method_kind_chk',

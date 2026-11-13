@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any, LiteralString
 from uuid import UUID
 
 import pytest
 from csa.core.tenancy import tx
+from csa.payments.reference import new_invoice_id, new_reference
 from csa.subscriptions import service, signup
 from csa.subscriptions.contracts import SubscriptionCreateIn
 from csa.subscriptions.signup import SignupFiled
@@ -578,6 +580,54 @@ async def test_approve_issues_the_opening_invoice_in_the_same_transaction(
     off = await approve(w, second.id)
     assert off.status == "approved" and off.invoice_reference is None
     assert await invoices_of(w, off.subscription_id) == []
+
+
+async def test_the_sign_up_shows_its_opening_invoice_never_a_later_one(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    contact, _ = await world(w)
+    await payments_on(w)
+    request = (await file(w, contact)).request
+    assert request is not None
+    decided = await approve(w, request.id)
+    [opening] = await invoices_of(w, decided.subscription_id)
+    # A later period's invoice, issued after the opening one.
+    later = new_reference()
+    await w.q(
+        "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference, status, "
+        "amount, currency, issued_at, due_at, period_start, period_end) "
+        "VALUES (%s, %s, %s, %s, %s, 'issued', 29.90, 'MYR', now() + interval '1 minute', "
+        "now() + interval '30 days', now() + interval '30 days', now() + interval '60 days')",
+        new_invoice_id(datetime.now(UTC)),
+        w.tenants[0],
+        contact,
+        decided.subscription_id,
+        later,
+    )
+
+    async def shown() -> list[str | None]:
+        async with tx(w.pool, w.tenants[0]) as conn:
+            one = await signup.get_signup(conn, UUID(w.tenants[0]), request.id)
+            page = await signup.list_signups(
+                conn, UUID(w.tenants[0]), status="decided", before=None, limit=50
+            )
+        return [one.invoice_reference, *[i.invoice_reference for i in page.items]]
+
+    assert await shown() == [opening["reference"], opening["reference"]]
+    # Paid, the opening invoice gets its period and is still the one shown.
+    await w.q(
+        "UPDATE invoices SET period_start = now(), period_end = now() + interval '30 days' "
+        "WHERE id = %s",
+        opening["id"],
+    )
+    assert await shown() == [opening["reference"], opening["reference"]]
+    # Voided, it shows none: never the later period's reference in its place.
+    await w.q(
+        "UPDATE invoices SET status = 'void', period_start = NULL, period_end = NULL WHERE id = %s",
+        opening["id"],
+    )
+    assert await shown() == [None, None]
 
 
 async def test_approve_rolled_back_leaves_no_invoice(

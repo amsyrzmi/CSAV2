@@ -12866,6 +12866,7 @@
           },
           "currency": {
             "default": "MYR",
+            "pattern": "^[A-Z]{3}$",
             "title": "Currency",
             "type": "string"
           },

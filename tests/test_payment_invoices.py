@@ -539,6 +539,95 @@ async def test_mark_paid_records_one_payment_and_starts_the_pending_subscription
     assert len(await a.payments(opening.id)) == 1
 
 
+async def test_a_unique_violation_maps_by_its_constraint_name(
+    a: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only payments_one_per_invoice reads as "already paid"; any other unique key is a bug and
+    is raised as it is (the locks make both unreachable in practice)."""
+    from psycopg.errors import UniqueViolation
+
+    contact = await a.contact()
+    target = await a.invoice(contact=contact)
+    other = await a.invoice(contact=contact)
+    taken = (await a.row("invoices", other))["reference"]
+    real = db.q.fetch_one
+    mode = {"clash": "reference"}
+
+    async def clashing(path: str, params: Any = None, *, conn: Any) -> Any:
+        if path == "payments/payment_insert.sql":
+            if mode["clash"] == "reference":
+                await conn.execute(
+                    "UPDATE invoices SET reference = %s WHERE id = %s", (taken, target)
+                )
+            else:  # a payment for the invoice slipped in under another key
+                await conn.execute(
+                    "INSERT INTO payments (client_id, invoice_id, amount, currency, received_at,"
+                    " source, matched_by, idempotency_key) SELECT client_id, id, amount,"
+                    " currency, now(), 'staff', 'staff', 'staff:slipped' FROM invoices"
+                    " WHERE id = %s",
+                    (target,),
+                )
+        return await real(path, params, conn=conn)
+
+    monkeypatch.setattr(db.q, "fetch_one", clashing)
+    with pytest.raises(UniqueViolation) as raised:
+        await a.pay(target)
+    assert raised.value.diag.constraint_name == "invoices_reference_uq"
+    mode["clash"] = "payment"
+    await refused(a.pay(target), 409, "invoice_already_paid")
+    monkeypatch.setattr(db.q, "fetch_one", real)
+    assert await a.payments(target) == []
+
+
+async def test_paying_an_invoice_that_is_not_the_opening_one_logs_the_unset_period(
+    a: Ledger,
+) -> None:
+    from structlog.testing import capture_logs
+
+    await a.payments_on()
+    sub = await a.subscription(status="pending")
+    stamped = datetime.now(UTC) - timedelta(days=3)
+    invoice_id = await a.invoice(subscription=sub, period_start=stamped)
+
+    with capture_logs() as logs:
+        paid = await a.pay(invoice_id)
+
+    assert paid.activated is True and paid.invoice.status == "paid"
+    assert len(await a.payments(invoice_id)) == 1  # the payment stands
+    (entry,) = [e for e in logs if e["event"] == "payment_activation_period_unset"]
+    assert entry["invoice_id"] == invoice_id and entry["stamped"] == 0
+    assert entry["subscription_id"] == str(sub)
+
+
+async def test_the_opening_invoice_paid_gets_the_period_and_nothing_is_logged(a: Ledger) -> None:
+    from structlog.testing import capture_logs
+
+    await a.payments_on()
+    sub = await a.subscription(status="pending")
+    opening = await a.run(invoices.issue_opening_invoice, sub, now=datetime.now(UTC))
+    assert opening is not None
+    with capture_logs() as logs:
+        paid = await a.pay(opening.id)
+    assert paid.invoice.period_start is not None
+    assert not [e for e in logs if e["event"] == "payment_activation_period_unset"]
+
+
+async def test_a_void_opening_invoice_is_never_given_a_period(a: Ledger) -> None:
+    sub = await a.subscription(status="active", renews_at=datetime.now(UTC) + timedelta(days=10))
+    void = await a.invoice(subscription=sub, status="void")
+
+    async def stamp(conn: Any, client_id: UUID) -> list[dict[str, Any]]:
+        return await db.q.fetch_all(
+            "payments/invoice_set_period.sql",
+            {"client_id": client_id, "subscription_id": sub},
+            conn=conn,
+        )
+
+    assert await a.run(stamp) == []
+    row = await a.row("invoices", void)
+    assert row["period_start"] is None and row["period_end"] is None
+
+
 async def test_mark_paid_refuses_void_draft_and_future(a: Ledger) -> None:
     contact = await a.contact()
     void = await a.invoice(status="void", contact=contact)
