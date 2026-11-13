@@ -112,6 +112,8 @@ LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
 # One JSON object per running image: its repo digests and its labels (for the revision).
 RUNNING_FORMAT = '{"digests": {{json .RepoDigests}}, "labels": {{json .Config.Labels}} }'
+# A container's image id and state, for the automatic rollback's record of what ran before.
+PREVIOUS_FORMAT = "{{.Image}} {{.State.Status}}"
 LOCAL_ROLLBACK = "a local image with no registry digest, or not running"
 PRODUCTION_RUNBOOK = "deploy/PRODUCTION.md"
 READY_STATE = "services are up on the new images but /readyz is failing"
@@ -653,6 +655,40 @@ def _container_image(
     image_id = inspect.stdout.strip()
     if inspect.returncode != 0 or not image_id:
         return None
+    return _image_by_id(runner, env, image_id, target)
+
+
+def previous_images(
+    runner: Runner, env: Mapping[str, str], *, target: Target = STAGING
+) -> dict[str, list[RunningImage | None]]:
+    """Every replica of every app service: its image while it runs now, else None.
+
+    The automatic rollback goes back only to images that were running when apply began: a
+    container stopped by an earlier stop (a migrate or a check file) may not fit the schema.
+    """
+    return {
+        service: [
+            _running_container_image(runner, env, name, target)
+            for name in container_names(target, env, service)
+        ]
+        for service in target.app_services
+    }
+
+
+def _running_container_image(
+    runner: Runner, env: Mapping[str, str], name: str, target: Target
+) -> RunningImage | None:
+    """The image of container ``name`` when its state is running; restarting or exited is None."""
+    inspect = runner.run([*docker_base(), "inspect", "--format", PREVIOUS_FORMAT, name], env=env)
+    fields = inspect.stdout.split()
+    if inspect.returncode != 0 or len(fields) != 2 or fields[1] != "running":
+        return None
+    return _image_by_id(runner, env, fields[0], target)
+
+
+def _image_by_id(
+    runner: Runner, env: Mapping[str, str], image_id: str, target: Target
+) -> RunningImage | None:
     described = runner.run(
         [*docker_base(), "image", "inspect", "--format", RUNNING_FORMAT, image_id], env=env
     )
@@ -778,6 +814,9 @@ class Plan:
     # The digests the caller resolved; None when this host looked the images up itself.
     image_digests: dict[str, str] | None = None
     checkout: list[str] = field(default_factory=list)  # the migration versions this checkout has
+    # Every replica's image while it was running when the plan read it (None: not running or
+    # unknown); only the automatic rollback reads it, never the printed plan.
+    previous: dict[str, list[RunningImage | None]] = field(default_factory=dict, repr=False)
 
 
 def plan_steps(
@@ -871,6 +910,7 @@ def build_plan(
     # Secrets first: a host with a missing file lists it instead of failing on a staging read.
     missing = missing_secrets(secret_paths(runner, env, target=target))
     rollback = running_images(runner, env, target=target)
+    previous = previous_images(runner, env, target=target)
     # Migrations come from this module's checkout, so main always passes REPO_ROOT.
     try:
         checkout = [version for version, _ in discover_migrations()]
@@ -896,6 +936,7 @@ def build_plan(
         staged_on,
         dict(image_digests) if image_digests is not None else None,
         checkout,
+        previous,
     )
 
 
@@ -1463,22 +1504,28 @@ def _run_smoke(
 def _previous_refs(plan: Plan, target: Target) -> dict[str, str] | None:
     """The image ref per app to roll back to, or None when anything about it is in doubt.
 
-    Only an image-only plan (nothing pending, so no migration ran) whose every app service ran a
-    registry digest of this target's owner, with gateway, worker and delivery on one ref, and
-    neither ref the one just deployed (a re-run of a failed deploy has no previous version left).
+    Only an image-only plan (nothing pending, so no migration ran) in which every replica of
+    every app service was running when the plan read it, each on a registry digest of this
+    target's owner, every replica of gateway, worker and delivery on one ref and every frontend
+    replica on one ref, and neither ref the one just deployed (a re-run of a failed deploy has
+    no previous version left). A stopped container may be stopped for a reason (an earlier
+    migrate or check-file stop), so it is never brought back.
     """
     if plan.pending:
         return None
     refs: dict[str, str] = {}
     for service in target.app_services:
-        image = plan.rollback.get(service)
-        if not isinstance(image, RunningImage):
+        images = plan.previous.get(service)
+        if not images:
             return None
-        name, _, digest = image.ref.partition("@")
-        if not name.startswith(f"{target.image_owner}/") or not DIGEST_RE.fullmatch(digest):
-            return None
-        if refs.setdefault(SERVICE_APP[service], image.ref) != image.ref:
-            return None
+        for image in images:
+            if not isinstance(image, RunningImage):
+                return None
+            name, _, digest = image.ref.partition("@")
+            if not name.startswith(f"{target.image_owner}/") or not DIGEST_RE.fullmatch(digest):
+                return None
+            if refs.setdefault(SERVICE_APP[service], image.ref) != image.ref:
+                return None
     if set(refs) != set(APPS) or any(refs[app] == plan.images[app] for app in APPS):
         return None
     return refs
@@ -1494,9 +1541,10 @@ def _rollback_images(
 ) -> bool:
     """Recreate the app services on the images they ran before apply; True once /readyz answers.
 
-    Runs nothing unless ``_previous_refs`` knows both refs. No smoke test and no check files for
-    the previous version: it was running before this deploy. A stop prints ``Stopped at
-    rollback: ...`` and returns False, leaving the caller's recovery lines to follow.
+    Runs nothing unless ``_previous_refs`` knows both refs. After readiness every replica must be
+    healthy on its previous ref. No smoke test and no check files for the previous version: it
+    was running before this deploy. A stop prints ``Stopped at rollback: ...`` and returns
+    False, leaving the caller's recovery lines to follow.
     """
     refs = _previous_refs(plan, target)
     if refs is None:
@@ -1519,11 +1567,27 @@ def _rollback_images(
                 image="previous image",
             )
         _await_ready(runner, env, sleep, target=target)
+        _verify_rollback(runner, env, refs, target)
     except RolloutError as error:
         out(f"Stopped at rollback: {error.message}")
         return False
     out(f"Rolled back: the previous images are running; {plan.sha[:7]} is not.")
     return True
+
+
+def _verify_rollback(
+    runner: Runner, env: Mapping[str, str], refs: Mapping[str, str], target: Target
+) -> None:
+    """Every replica of every app service is healthy on its previous ref; read-only."""
+    for service in target.app_services:
+        expected = refs[SERVICE_APP[service]]
+        for name in container_names(target, env, service):
+            try:
+                healthy = _on_new_image(runner, env, name, expected, service, "", target)
+            except RolloutError as error:
+                raise RolloutError("rollback", f"{name} container not found") from error
+            if not healthy:
+                raise RolloutError("rollback", f"{name} is not healthy on the previous image")
 
 
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:

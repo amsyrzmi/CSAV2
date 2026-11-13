@@ -12,9 +12,11 @@ from scripts.staging_rollout import Completed, RolloutError
 
 from tests.test_rollout_gate import record_rules
 from tests.test_rollout_production import (
+    BACKUP_ARGV,
     HOST_REQUIRED,
     OBJECT_AT_START,
     PROD,
+    STARTED,
     TS_AT_START,
     BackupRig,
 )
@@ -466,28 +468,50 @@ ROLLED_BACK = [
 
 
 class Previous:
-    """What the plan reads as running before the first ``up``: one image per service.
+    """What ran before the deploy, as the plan reads it and as the rollback's check reads it.
 
-    A ref of None is an image with no registry digest (a local tag). It also counts the ``up``
-    calls, so a rule can tell the deploy's recreates from the rollback's.
+    ``refs`` maps a service to its image ref and ``containers`` one container to its own (None: a
+    local tag with no registry digest); ``states`` gives a container a state other than running.
+    It counts the ``up`` calls, so a rule can tell the deploy's recreates from the rollback's.
     """
 
-    def __init__(self, **refs: str | None) -> None:
-        self.refs: dict[str, str | None] = {**PREVIOUS, **refs}
+    def __init__(
+        self,
+        target: Target = STAGING,
+        *,
+        containers: Mapping[str, str | None] | None = None,
+        states: Mapping[str, str] | None = None,
+        **refs: str | None,
+    ) -> None:
+        services = {**PREVIOUS, **refs}
+        containers = containers or {}
+        self.states = states or {}
+        self.base = sr.compose_base(target=target)
+        self.first_pass = len(target.app_services)
         self.ups = 0
-        self.ids = {
-            sr.container_names(STAGING, {}, service)[0]: "sha256:" + f"{0xA0 + index:064x}"
-            for index, service in enumerate(STAGING.app_services)
-        }
-        self.by_id = {
-            self.ids[sr.container_names(STAGING, {}, service)[0]]: self.refs[service]
-            for service in STAGING.app_services
-        }
+        self.ids: dict[str, str] = {}
+        self.by_id: dict[str, str | None] = {}
+        for service in target.app_services:
+            for name in sr.container_names(target, {}, service):
+                self.ids[name] = "sha256:" + f"{0xA0 + len(self.ids):064x}"
+                self.by_id[self.ids[name]] = containers.get(name, services[service])
 
     def watch(self, argv: Sequence[str]) -> bool:
-        if (step_label(argv) or "").startswith("up "):
+        if list(argv[: len(self.base)]) == self.base and argv[
+            len(self.base) : len(self.base) + 1
+        ] == ["up"]:
             self.ups += 1
         return False
+
+    def active(self) -> bool:
+        """Before the first ``up`` (the plan) or after the rollback's (its replica check)."""
+        return self.ups == 0 or self.ups > self.first_pass
+
+    def image_id(self, argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        name = argv[-1]
+        if sr.PREVIOUS_FORMAT in argv:
+            return ok(f"{self.ids[name]} {self.states.get(name, 'running')}\n")
+        return ok(self.ids[name] + "\n")
 
     def described(self, argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
         ref = self.by_id[argv[-1]]
@@ -497,22 +521,24 @@ class Previous:
         return [
             (self.watch, ok()),
             (
-                lambda argv: self.ups == 0 and has("inspect --format {{.Image}}")(argv),
-                lambda argv, env: ok(self.ids[argv[-1]] + "\n"),
+                lambda argv: self.active() and has("inspect --format {{.Image}}")(argv),
+                self.image_id,
             ),
-            (lambda argv: self.ups == 0 and RUNNING_FORMAT in argv, self.described),
+            (lambda argv: self.active() and RUNNING_FORMAT in argv, self.described),
         ]
 
     def ready_until_rollback(self) -> tuple[Predicate, Answer]:
         """/readyz fails on the deploy's images and answers once the rollback recreated them."""
         return (
             lambda argv: step_label(argv) == "ready",
-            lambda argv, env: ok() if self.ups > len(UP_ALL) else fail(1),
+            lambda argv, env: ok() if self.ups > self.first_pass else fail(1),
         )
 
 
 NEVER_READY: tuple[Predicate, Answer] = (lambda argv: step_label(argv) == "ready", fail(1))
 UNHEALTHY: tuple[Predicate, Answer] = (has("{{.State.Health.Status}}"), ok("unhealthy\n"))
+# The smoke test's last check fails; the rollback never runs it, so its replica check still passes.
+FRONTEND_DOWN: tuple[Predicate, Answer] = (lambda argv: argv[-1] == sr.FRONTEND_PROBE, fail(1))
 
 
 def up_calls(rig: ApplyRig) -> list[tuple[str, dict[str, str]]]:
@@ -571,11 +597,13 @@ def test_a_readiness_failure_on_an_image_only_deploy_rolls_back_and_still_exits_
 
 def test_a_smoke_failure_rolls_back(rig_factory: Callable[..., ApplyRig]) -> None:
     previous = Previous()
-    rig = rig_factory(overrides=[*previous.rules(), UNHEALTHY])
+    rig = rig_factory(overrides=[*previous.rules(), FRONTEND_DOWN])
     assert rig.apply() == 1
     seen = labels(rig.runner)
-    # Neither the check files nor the smoke test run again for the previous version.
-    assert seen[seen.index("check") :] == ["check", "select", *UP_ALL, "ready"]
+    # Neither the check files nor the smoke test run again for the previous version (the
+    # smoke test's frontend probe is a docker exec, labelled "ready" like the readiness probe).
+    assert seen[seen.index("check") :] == ["check", "select", "ready", *UP_ALL, "ready"]
+    assert sum(argv[-1] == sr.FRONTEND_PROBE for argv in rig.runner.argvs) == 1
     assert [label for label, _ in up_calls(rig)] == [*UP_ALL, *UP_ALL]
     start = next(i for i, line in enumerate(rig.lines) if line.startswith("Stopped at smoke: "))
     assert rig.lines[start + 1 :] == [sr.SMOKE_STATE, *ROLLED_BACK]
@@ -675,3 +703,176 @@ def test_staging_never_records_after_a_rollback(
     assert "Rolled back: the previous images are running; a1b2c3d is not." in out
     assert "Recorded" not in out
     assert not any(argv[0] == "gh" and "--method" in argv for argv in rig.runner.argvs)
+
+
+# --- only running containers, every replica, and only after readiness or smoke --------------
+
+STAGING_CONTAINERS = [
+    name for service in STAGING.app_services for name in sr.container_names(STAGING, {}, service)
+]
+
+
+def previous_reads(runner: FakeRunner) -> list[str]:
+    """The containers whose state and image the plan read for the rollback."""
+    return [argv[-1] for argv in runner.argvs if sr.PREVIOUS_FORMAT in argv]
+
+
+def test_running_previous_containers_still_roll_back(
+    rig_factory: Callable[..., ApplyRig],
+) -> None:
+    previous = Previous()
+    rig = rig_factory(overrides=[*previous.rules(), previous.ready_until_rollback()])
+    assert rig.apply() == 1
+    assert previous_reads(rig.runner) == STAGING_CONTAINERS
+    assert rig.lines[-len(ROLLED_BACK) :] == ROLLED_BACK
+
+
+@pytest.mark.parametrize(
+    ("applied", "states"),
+    [
+        (("0484", "0485", "0486"), dict.fromkeys(STAGING_CONTAINERS, "exited")),
+        (("0484", "0485"), dict.fromkeys(STAGING_CONTAINERS, "exited")),
+        (("0484", "0485"), {"csa-staging-worker-1": "restarting"}),
+    ],
+    ids=["stopped-by-an-earlier-migrate-stop", "stopped-by-a-check-file-stop", "one-restarting"],
+)
+def test_no_rollback_when_the_previous_containers_were_not_running(
+    rig_factory: Callable[..., ApplyRig], applied: tuple[str, ...], states: dict[str, str]
+) -> None:
+    # An earlier migrate stop left 0486 applied with the old images stopped: the re-run's plan is
+    # image-only and their digests agree, but those images must never meet the new schema. A
+    # check-file stop leaves them stopped for investigation.
+    rig = rig_factory(
+        applied=applied, checkout=applied, overrides=[*Previous(states=states).rules(), NEVER_READY]
+    )
+    assert rig.apply() == 1
+    assert previous_reads(rig.runner) == STAGING_CONTAINERS
+    assert_no_rollback(rig)
+    old: list[str] = []
+    sr._report_rollback(
+        {service: sr.RunningImage(ref, PREV_SHA) for service, ref in PREVIOUS.items()},
+        old.append,
+    )
+    start = rig.lines.index(sr.READY_STATE)
+    assert rig.lines[start + 1 :] == [*old, RERUN]
+
+
+@pytest.mark.parametrize(
+    ("failure", "step", "ups"),
+    [
+        ((lambda argv: step_label(argv) == "pull python", fail(1)), "pull", []),
+        (
+            (
+                lambda argv: (
+                    step_label(argv) == "up worker"
+                    or ("{{.State.Health.Status}}" in argv and argv[-1] == "csa-staging-worker-1")
+                ),
+                lambda argv, env: fail(1) if "up" in argv else ok("unhealthy\n"),
+            ),
+            "recreate worker",
+            ["up gateway", "up worker"],
+        ),
+    ],
+    ids=["pull", "recreate"],
+)
+def test_no_rollback_for_a_pull_or_recreate_failure(
+    rig_factory: Callable[..., ApplyRig],
+    failure: tuple[Predicate, Answer],
+    step: str,
+    ups: list[str],
+) -> None:
+    rig = rig_factory(overrides=[*Previous().rules(), failure])
+    assert rig.apply() == 1
+    assert any(line.startswith(f"Stopped at {step}: ") for line in rig.lines)
+    assert [label for label, _ in up_calls(rig)] == ups
+    assert not any(line.startswith(("Rolling back", "Rolled back")) for line in rig.lines)
+
+
+class ImageOnlyProduction(BackupRig):
+    """A production apply with nothing pending: a backup first, and the worker on two replicas."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        super().__init__(tmp_path, monkeypatch, f"{TS_AT_START} ok 3097983 bytes")
+        monkeypatch.setattr(
+            sr, "discover_migrations", lambda: [(v, Path(f"{v}_x.sql")) for v in CHECKOUT]
+        )
+
+    def apply_image_only(self) -> int:
+        digest = self.digest()
+        self.runner.calls.clear()
+        return sr.apply(
+            self.runner,
+            self.repo,
+            [],
+            sha=SHA,
+            docker_config=self.docker_config,
+            secret_dir=self.secret_dir,
+            checks_dir=self.checks,
+            sleep=lambda _: None,
+            out=self.lines.append,
+            target=self.target,
+            host_digest=digest,
+            now=lambda: STARTED,
+            backup_log=self.box.log,
+            backup_installed=self.box.installed,
+        )
+
+    def ups(self) -> list[tuple[str, dict[str, str]]]:
+        base = sr.compose_base(target=self.target)
+        return [
+            (argv[-1], env or {})
+            for argv, env, _ in self.runner.calls
+            if argv[: len(base)] == base and argv[len(base) : len(base) + 1] == ["up"]
+        ]
+
+
+PROD_CONTAINERS = [
+    "csa-prod-gateway-1",
+    "csa-prod-worker-1",
+    "csa-prod-worker-2",
+    "csa-prod-delivery-1",
+    "csa-prod-frontend-1",
+]
+
+
+def test_production_rolls_back_every_worker_replica_and_backs_up_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = ImageOnlyProduction(tmp_path, monkeypatch)
+    previous = Previous(rig.target)
+    rig.runner.rules[:0] = [*previous.rules(), previous.ready_until_rollback()]
+    assert rig.apply_image_only() == 1, "\n".join(rig.lines)
+    assert previous_reads(rig.runner) == PROD_CONTAINERS
+    assert rig.lines[-len(ROLLED_BACK) :] == ROLLED_BACK
+    assert rig.runner.argvs.count(BACKUP_ARGV) == 1
+    ups = rig.ups()
+    python = sr.IMAGE_ENV["python"]
+    assert [service for service, _ in ups] == ["gateway", "worker", "delivery", "frontend"] * 2
+    assert [env[python] for _, env in ups[4:]] == [PREV_PYTHON] * 4
+    # After the rollback's recreates every replica is checked healthy on its previous image.
+    last_up = max(i for i, argv in enumerate(rig.runner.argvs) if "up" in argv)
+    checked = [
+        argv[-1] for argv in rig.runner.argvs[last_up:] if "{{.State.Health.Status}}" in argv
+    ]
+    assert checked == PROD_CONTAINERS
+
+
+@pytest.mark.parametrize(
+    ("containers", "states"),
+    [({"csa-prod-worker-2": OTHER_PYTHON}, {}), ({}, {"csa-prod-worker-2": "exited"})],
+    ids=["replica-2-on-another-image", "replica-2-stopped"],
+)
+def test_production_no_rollback_when_worker_replica_2_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    containers: dict[str, str],
+    states: dict[str, str],
+) -> None:
+    rig = ImageOnlyProduction(tmp_path, monkeypatch)
+    previous = Previous(rig.target, containers=containers, states=states)
+    rig.runner.rules[:0] = [*previous.rules(), NEVER_READY]
+    assert rig.apply_image_only() == 1
+    assert [service for service, _ in rig.ups()] == ["gateway", "worker", "delivery", "frontend"]
+    assert not any(line.startswith(("Rolling back", "Rolled back")) for line in rig.lines)
+    assert rig.runner.argvs.count(BACKUP_ARGV) == 1
+    assert rig.lines[-1] == RERUN
