@@ -1374,6 +1374,68 @@ Audit actions: `subscriptions.plan.created`, `subscriptions.plan.updated`,
 `subscriptions.created`, `subscriptions.request.approved`, `subscriptions.request.declined`,
 plus the `workspace.proposal.*` rows the registry writes for every card.
 
+## Payments
+
+Payments 1 (migrations `0590`, `0591`). Staff see the company's invoices, record a payment that
+arrived ("Mark paid"), void an invoice, and set up how customers pay. The platform never holds
+money: there is no gateway, card or provider here.
+
+Routes, under `/console/v1/payments` with the usual tenant selection. Human sessions only (the
+machine token is refused) and behind the `subscriptions` package gate (active status only; an
+inactive package is 403 `package_inactive`):
+
+| Method/path | Who | Result |
+|---|---|---|
+| `GET /settings` | staff | `PaymentSettingsOut` `{enabled, lead_days, reminder_days, suspend_after_days, version}`; a company that never saved reads `{false, 7, [-7, 0, 3, 7], null, 0}` |
+| `PUT /settings` | admins | Body `PaymentSettingsIn` (`lead_days` 1-30, `reminder_days` at most 6 distinct days from -30 to 60, stored sorted, `suspend_after_days` null or 1-90, `version`); returns `PaymentSettingsOut`. The first save sends `version: 0`; an older version is 409 `version_conflict`; `enabled: true` without an active `qr` or `transfer` method is 409 `no_active_method` (cash does not count); audited `payments.settings.updated` |
+| `GET /methods` | staff | `MethodOut[]` `{id, kind, label, details, instructions, is_active, sort_order, version}`, by sort order then label, inactive ones included |
+| `POST /methods` | admins | Body `MethodIn` `{kind (qr\|transfer\|cash), label (1-60), details, instructions?, is_active?, sort_order? (0-100)}`; 201 `MethodOut` (version 1). `details` must fit the kind: `transfer` `{bank_name, account_name, account_number (6-20 digits)}`, `qr` `{duitnow_id, account_name}`, `cash` `{}`; otherwise 422 `invalid_details`; audited `payments.method.created` |
+| `PATCH /methods/{id}` | admins | Body `MethodPatch` (any of `label`, `details` (replaces the whole object), `instructions`, `is_active`, `sort_order`, plus `version`); the kind never changes. 404 `method_not_found` (also another company's id); 409 `version_conflict`; 409 `last_active_method` (turning off the last active `qr`/`transfer` method while payments are on); 422 `invalid_details`; audited `payments.method.updated`. A method is never deleted |
+| `GET /invoices?status=&q=&before=&limit=` | staff | `InvoicePage` `{items: InvoiceOut[], next_before}`, newest `issued_at` first (then id). See filters and cursor below |
+| `GET /invoices/{id}` | staff | `InvoiceDetail`: `InvoiceOut` plus `payment` (`PaymentOut` or `null`) and `reminders` (`ReminderOut[]`, oldest first). `id` is at most 64 characters (422 otherwise); 404 `invoice_not_found` for an unknown id or another company's |
+| `POST /invoices/{id}/mark-paid` | staff | Body `MarkPaidIn` `{request_key (uuid), method_kind (qr\|transfer\|cash), received_at? (with a time zone; now when left out), note? (at most 300)}`; returns the `InvoiceDetail` after the payment. One `payments` ledger row (amount and currency are the invoice's), the invoice `paid`; a pending subscription starts and an unpaid pause lifts as the ledger rules say; an open invoice of a cancelled subscription is a normal 200 that only records the payment (the subscription is untouched). The same `request_key` again returns the same detail and records nothing. 404 `invoice_not_found`; 409 `invoice_already_paid`, `invoice_not_payable` (void, draft or zero), `request_key_reused` (the key already paid another invoice); 422 `received_in_future` (more than 5 minutes ahead), `invalid_note`; audited `payments.invoice.paid` |
+| `POST /invoices/{id}/void` | staff | Body `VoidIn` `{reason (1-300 after trimming)}`; returns the `InvoiceDetail`. 404 `invoice_not_found`; 409 `invoice_paid`, `invoice_void`; 422 `invalid_reason`; audited `payments.invoice.voided` |
+| `GET /attention` | staff | `PaymentAttentionPage` `{items: [{kind, invoice: InvoiceOut, since}]}`, kinds in this order, at most 100 invoices each, each kind oldest `since` first: `proof_submitted` (open invoices a customer said they paid; `since` = `claimed_at`), `needs_nudge` (issued or overdue invoices whose newest reminder row is `no_channel`: no channel could reach the customer; once per invoice; `since` = that row's `created_at`), `reminder_failed` (open invoices with a `failed` reminder in the last 14 days; once per invoice; `since` = the newest failure). A paid, void or draft invoice never appears. Payments 2 adds unmatched statement lines, amount mismatches and duplicate references |
+
+"Staff" are platform admins (with `?client_id=`), `tenant_admin` and `tenant_staff`; "admins" are
+platform admins and `tenant_admin`. `read_only` members get 403 on every Payments route, reads
+included, and another company's `client_id` is 403. Refusals are `{"detail": "<code>"}`; a body
+that fails the models' own checks is FastAPI's 422 field list, except method details that do not
+fit the kind, which are `{"detail": "invalid_details"}` on `POST /methods` and `PATCH /methods/{id}`
+alike.
+
+### Invoice models
+
+- `InvoiceOut`: `{id, reference, status, amount, currency, issued_at, due_at, paid_at,
+  period_start, period_end, subscription_id, plan_name, contact, claim_note, claimed_at,
+  method_kind, void_reason, voided_at, reminded_at}`. `status` is `draft`, `issued`,
+  `proof_submitted`, `paid`, `overdue`, `void` or `cash_pending`. `plan_name` is the first line
+  item's description, frozen at issue. `contact` is `ContactBrief` `{id, full_name, channels}`
+  (the contact's distinct `contact_identities` channels now, as in `LinkedContact`; no phone,
+  email or address) or `null`. `void_reason` and `voided_at` are staff-only and never reach a
+  customer.
+- `PaymentOut`: `{id, amount, currency, received_at, method_kind, source (statement\|staff\|cash),
+  matched_by (auto\|staff), created_by_name, note, created_at}`. `created_by_name` is the display
+  name of the console user who recorded it (a member of the company or a platform admin), `null`
+  for a system payment or when the name cannot be read.
+- `ReminderOut`: `{step, channel (telegram\|whatsapp\|email\|none), status (queued\|sending\|sent\|failed\|dropped\|skipped\|no_channel), created_at, sent_at}`. The address a reminder went to is
+  never in any Payments response.
+- Money (`amount`) is a decimal string with two places (`"59.90"`), never a JSON number.
+
+### Invoice list filters and cursor
+
+- `status`: `open` (the default: `issued`, `overdue`, `proof_submitted`, `cash_pending`),
+  `overdue`, `proof_submitted`, `paid`, `void`, or `all` (every status, `draft` included; drafts
+  are listed only under `all`, and Payments 1 never creates one). Any other value is 422.
+- `q` (at most 100 characters): an invoice reference typed in any case, with spaces or dashes
+  (`k7qx 4mf` finds `K7QX-4MF`; it must carry a valid check character), or a case-insensitive part
+  of the contact's name (`%` and `_` are literal), or, when the term reads like a phone number with
+  3 or more digits, the digits of the contact's phone. The parts are alternatives.
+- `limit` 1-100 (default 50). `next_before` is the id of the last invoice on the page when there
+  is another page, else `null`; send it back unchanged as `before` (at most 64 characters) for
+  the next page. The page after it continues the `(issued_at DESC, id DESC)` order. Treat it as
+  opaque; an id the company does not have gives an empty page.
+
 ## Business management (M6A/B; offline local reads and store records)
 
 Only verified human platform administrators (explicit selected tenant), tenant
@@ -2377,6 +2439,7 @@ shadow gate intentionally produces no sends, even when KB ingestion succeeds.
 ## Invoices (LG13)
 - `GET /console/v1/invoices?limit=50` lists invoices.
 - `GET /console/v1/invoices/{id}/download-link` returns **501** until M6 supplies a real artifact-serving path. The placeholder signing-key fallback is removed. The adopted UI does not offer downloads.
+- Payments 1 changes these in a later task: the invoice agent's reads show only invoices a customer may hear about (no draft or void; `paid` only with its ledger row), the download-link route goes away and `amount` becomes a decimal string. Staff invoice work is under [Payments](#payments) (`/console/v1/payments`).
 
 ## OpenAPI
 The gateway serves `/openapi.json` and `/docs` only outside production; Redoc is disabled.

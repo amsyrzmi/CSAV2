@@ -5,10 +5,20 @@ Money is `Decimal` (a string in JSON), never a float. Every model refuses fields
 
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from csa.console.contracts import Contract
 
@@ -70,7 +80,14 @@ class MethodIn(Contract):
 
     @model_validator(mode="after")
     def details_fit_the_kind(self) -> MethodIn:
-        self.details = validate_details(self.kind, self.details)
+        # The error type `invalid_details` lets the console route answer 422 `invalid_details`,
+        # the same body PATCH gives when the service finds the details do not fit.
+        try:
+            self.details = validate_details(self.kind, self.details)
+        except ValidationError as exc:
+            raise PydanticCustomError(
+                "invalid_details", "details do not fit the method kind"
+            ) from exc
         return self
 
 
@@ -120,3 +137,111 @@ class PaymentSettingsIn(Contract):
         if len(set(days)) != len(days):
             raise ValueError("reminder_days must be distinct")
         return sorted(days)
+
+
+InvoiceFilter = Literal["open", "overdue", "proof_submitted", "paid", "void", "all"]
+AttentionKind = Literal["proof_submitted", "needs_nudge", "reminder_failed"]
+ReminderChannel = Literal["telegram", "whatsapp", "email", "none"]
+ReminderStatus = Literal["queued", "sending", "sent", "failed", "dropped", "skipped", "no_channel"]
+PaymentSource = Literal["statement", "staff", "cash"]
+MatchedBy = Literal["auto", "staff"]
+
+# The statuses each list filter shows. Drafts are never made in Payments 1; only `all` lists them.
+FILTER_STATUSES: dict[str, tuple[str, ...]] = {
+    "open": ("issued", "overdue", "proof_submitted", "cash_pending"),
+    "overdue": ("overdue",),
+    "proof_submitted": ("proof_submitted",),
+    "paid": ("paid",),
+    "void": ("void",),
+    "all": ("draft", "issued", "proof_submitted", "paid", "overdue", "void", "cash_pending"),
+}
+
+
+class ContactBrief(Contract):
+    """The invoice's customer: no phone, email or address, only the channels they are on."""
+
+    id: UUID
+    full_name: str | None
+    channels: list[str]  # the distinct contact_identities channels of the contact now
+
+
+class InvoiceOut(Contract):
+    """An invoice as staff see it, staff-only fields (void reason and time) included."""
+
+    id: str
+    reference: str | None
+    status: InvoiceStatus
+    amount: Decimal
+    currency: str
+    issued_at: datetime
+    due_at: datetime | None
+    paid_at: datetime | None
+    period_start: datetime | None
+    period_end: datetime | None
+    subscription_id: UUID | None
+    plan_name: str | None  # the first line item's description, frozen at issue
+    contact: ContactBrief | None
+    claim_note: str | None
+    claimed_at: datetime | None
+    method_kind: MethodKind | None
+    void_reason: str | None
+    voided_at: datetime | None
+    reminded_at: datetime | None
+
+
+class PaymentOut(Contract):
+    """The invoice's ledger row."""
+
+    id: UUID
+    amount: Decimal
+    currency: str
+    received_at: datetime
+    method_kind: MethodKind | None
+    source: PaymentSource
+    matched_by: MatchedBy
+    created_by_name: str | None  # the console user who recorded it; None for the system
+    note: str | None
+    created_at: datetime
+
+
+class ReminderOut(Contract):
+    """One reminder step. The address it went to is never shown."""
+
+    step: int
+    channel: ReminderChannel
+    status: ReminderStatus
+    created_at: datetime
+    sent_at: datetime | None
+
+
+class InvoiceDetail(InvoiceOut):
+    payment: PaymentOut | None
+    reminders: list[ReminderOut]  # oldest first
+
+
+class InvoicePage(Contract):
+    items: list[InvoiceOut]
+    next_before: str | None  # pass back as `before` for the next page; None on the last page
+
+
+class MarkPaidIn(Contract):
+    request_key: UUID  # the same key again returns the first answer and records nothing
+    method_kind: MethodKind
+    received_at: AwareDatetime | None = None  # now when left out
+    note: str | None = Field(default=None, max_length=300)
+
+
+class VoidIn(Contract):
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+
+
+class PaymentAttentionItem(Contract):
+    """Named apart from the email module's AttentionItem, which the console contract has."""
+
+    kind: AttentionKind
+    invoice: InvoiceOut
+    since: datetime
+
+
+class PaymentAttentionPage(Contract):
+    items: list[PaymentAttentionItem]
