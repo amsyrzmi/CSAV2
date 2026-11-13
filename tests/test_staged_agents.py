@@ -35,8 +35,10 @@ from csa.agents.staged.service import (
     resolve_subscription,
 )
 from csa.contracts.callbacks import PendingActionStore
+from csa.contracts.envelope import Envelope
 from csa.contracts.facts import AgentResult
 from csa.contracts.plan import Task
+from csa.contracts.state import Context
 from csa.core import db
 from csa.core.tenancy import tx
 from psycopg.conninfo import make_conninfo
@@ -1690,7 +1692,10 @@ async def test_a_draft_of_another_contact_or_conversation_is_not_read(world: Wor
 
 # --- the optional email at sign-up (WhatsApp with payments on, for payment reminders) -----------
 
-EMAIL_ASK = "If you'd like payment reminders by email, tell me your email address, or say skip."
+EMAIL_ASK = (
+    "If you'd like payment reminders by email, tell me your email address, or say skip. We keep "
+    "it on your contact record to send you messages about your plan and bookings."
+)
 EMAIL_INVALID = "That email address does not look right. Please type it again, or say skip."
 
 
@@ -1857,6 +1862,89 @@ async def test_an_invalid_email_then_a_good_one_is_read_back(world: World) -> No
     filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
     assert _kinds(filed) == ["signup_filed"]
     assert await request_emails(world) == ["ali@example.com"]
+
+
+def whatsapp_envelope(ctx: AgentContext, raw: str) -> Envelope:
+    """The customer's WhatsApp message `raw` in the chat of `ctx`, redacted as the channel does."""
+    from csa.core.pii import redact
+
+    return Envelope.model_validate(
+        {
+            "trace_id": str(uuid4()),
+            "received_at": datetime(2029, 1, 1, tzinfo=UTC),
+            "channel": "whatsapp",
+            "idempotency_key": f"wa-{uuid4()}",
+            "client_id": str(ctx.client_id),
+            "contact": {
+                "id": str(ctx.contact_id),
+                "external_id": "60123456789",
+                "channel": "whatsapp",
+                "display_name": None,
+            },
+            "conversation": {
+                "id": str(ctx.conversation_id),
+                "channel_thread": str(ctx.conversation_id),
+                "turn_count": 1,
+                "status": "open",
+            },
+            "message": {"body_raw": raw, "body_redacted": redact(raw), "language": "en"},
+            "meta": {},
+        }
+    )
+
+
+async def spoke_turn(world: World, ctx: AgentContext, raw: str, **fields: object) -> AgentResult:
+    """One turn through the turn's own dependency hook (`execute_spoke`), as the planner asked."""
+    from csa.turn.deps import PostgresTurnDependencies
+
+    deps = PostgresTurnDependencies(world.ctx.pool)
+    result = await deps.execute_spoke(
+        _signup_task(**fields), whatsapp_envelope(ctx, raw), Context()
+    )
+    await reply_sent(world, ctx)
+    return result
+
+
+@requires_docker
+async def test_the_turn_hands_a_sign_up_only_the_address_the_customer_wrote(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    raw = "Ali Bin Abu, Ali.Abu@Example.com"
+    # The planner saw "[EMAIL_0]"; the agent gets the real address, so it is read back.
+    read = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
+    assert read.error is None and _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert ", email ali.abu@example.com." in read.facts[0].text
+
+
+@requires_docker
+async def test_the_turn_drops_an_address_the_planner_invented(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    invented = await spoke_turn(
+        world, ctx, "Ali Bin Abu", **BESAR, **ALI, email="guess@example.com"
+    )
+    # Nothing reached the agent, so it asks; the invented address is never read back.
+    assert invented.error is None
+    assert _kinds(invented) == ["signup_email_ask", "signup_data_note"]
+    assert "guess@example.com" not in " ".join(f.text for f in invented.facts)
+
+
+@requires_docker
+async def test_an_over_long_address_is_invalid_and_the_turn_keeps_the_name(world: World) -> None:
+    ctx = await whatsapp_signup(world)
+    long_address = "a" * 288 + "@example.com"
+    assert len(long_address) == 300
+    raw = f"Ali Bin Abu, {long_address}"
+    bad = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
+    assert bad.error is None  # not invalid_input: the turn's name and phone are not lost
+    assert _kinds(bad) == ["signup_email_invalid", "signup_data_note"]
+    assert bad.facts[0].text == EMAIL_INVALID
+    # The draft kept the name and the phone: a skip reads them back.
+    read = await spoke_turn(world, ctx, "skip", **BESAR, skip_email=True)
+    assert _kinds(read) == ["signup_readback"]
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone the number already on this chat, no "
+        "email. Is that right? Reply yes to sign up. Nothing is filed until you do."
+    )
+    assert long_address not in await all_pending_text(world)
 
 
 @pytest.mark.parametrize("channel", ["telegram", "web"])

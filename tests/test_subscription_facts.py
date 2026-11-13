@@ -322,7 +322,8 @@ def test_the_sign_up_email_facts_and_read_back_use_the_exact_copy() -> None:
         return signup_fact(*args, **kwargs).text
 
     assert text("email_ask") == (
-        "If you'd like payment reminders by email, tell me your email address, or say skip."
+        "If you'd like payment reminders by email, tell me your email address, or say skip. "
+        "We keep it on your contact record to send you messages about your plan and bookings."
     )
     # Said to the customer (it can be sent as it stands), never to the composer.
     assert text("email_invalid") == (

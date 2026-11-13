@@ -253,12 +253,22 @@ def with_real_email(task: Task, raw: str) -> Task | None:
     address = real_email(value, raw)
     if address is None and signup:
         address = _typed_word(value, raw)
+    if signup and address is not None and len(address) > _LONGEST_EMAIL:
+        # No real address is that long, and the sign-up input holds no more: the agent gets a
+        # word that is no address, so it answers `email_invalid` and the turn keeps the name
+        # and phone (a longer value would fail the whole task as invalid input).
+        address = _TOO_LONG_EMAIL
     if address is not None:
         payload[key] = address
     elif task.input.get("action") == "save_details" and not payload.get("customer_name"):
         return None
     return task.model_copy(update={"input": payload})
 
+
+# The longest address a sign-up passes on (`SubscriptionInput.email`'s limit), and what it passes
+# for a longer one: not an address (no @), so the agent's check refuses it.
+_LONGEST_EMAIL = 254
+_TOO_LONG_EMAIL = "[EMAIL_TOO_LONG]"
 
 # What may wrap a word the customer typed: "(ali@example)," is the word ali@example.
 _WORD_EDGES = "\"'()<>[]{},.;:!?"

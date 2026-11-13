@@ -231,7 +231,8 @@ def signup_fact(
             "country code."
         ),
         "email_ask": (
-            "If you'd like payment reminders by email, tell me your email address, or say skip."
+            "If you'd like payment reminders by email, tell me your email address, or say skip. "
+            "We keep it on your contact record to send you messages about your plan and bookings."
         ),
         "email_invalid": (
             "That email address does not look right. Please type it again, or say skip."
