@@ -17,6 +17,16 @@
       "type": "String",
       "description": "12 character lowercase hex host settings digest, as the plan printed it.",
       "allowedPattern": "^[0-9a-f]{12}$"
+    },
+    "pythonDigest": {
+      "type": "String",
+      "description": "Digest of the csa-python image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "frontendDigest": {
+      "type": "String",
+      "description": "Digest of the csa-frontend image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
     }
   },
   "mainSteps": [
@@ -27,7 +37,7 @@
         "timeoutSeconds": "2400",
         "runCommand": [
           "set -eu",
-          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy apply \"{{ sha }}\" \"{{ migrations }}\" \"{{ hostDigest }}\""
+          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy apply \"{{ sha }}\" \"{{ migrations }}\" \"{{ hostDigest }}\" \"{{ pythonDigest }}\" \"{{ frontendDigest }}\""
         ]
       }
     }

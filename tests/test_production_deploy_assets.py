@@ -44,9 +44,13 @@ WORKFLOW = ROOT / ".github" / "workflows" / "deploy-production.yml"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 MIGRATIONS = "0486,0487"
 DIGEST = "0123456789ab"
+IMAGE_HEX = "0123456789abcdef" * 4
+PY_DIGEST = "sha256:" + IMAGE_HEX
+FE_DIGEST = "sha256:" + "fedcba9876543210" * 4
+IMAGE_DIGEST_PATTERN = "^sha256:[0-9a-f]{64}$"
 
 # The entry script's arguments, in order; the two Systems Manager documents each fix the action.
-PARAMETERS = ("action", "sha", "migrations", "hostDigest")
+PARAMETERS = ("action", "sha", "migrations", "hostDigest", "pythonDigest", "frontendDigest")
 
 # One table of values that must be refused, keyed by argument (and Systems Manager parameter)
 # name. The entry script, ssm_run.sh and the document pattern tests all read it, so the layers
@@ -69,14 +73,42 @@ BAD_VALUES: dict[str, list[str]] = {
     "migrations": ["0486;id", "0486,", "abc", "04861", "048\u0666"],
     "hostDigest": [DIGEST[:-1], DIGEST + "0", DIGEST.upper(), "$(id)", DIGEST[:-1] + "\u0661"],
 }
-# Refusals beyond the per-value patterns: the digest is required for apply and empty for plan.
+# Both image digests share one pattern, so one list of refused values serves both.
+for _name in ("pythonDigest", "frontendDigest"):
+    BAD_VALUES[_name] = [
+        ("sha256:" + IMAGE_HEX).upper(),
+        "sha256:" + IMAGE_HEX.upper(),
+        "sha256:" + IMAGE_HEX[:63],
+        "sha256:" + IMAGE_HEX + "0",
+        "sha512:" + IMAGE_HEX,
+        PY_DIGEST + "\n",
+        "$(id)",
+        "sha256:" + IMAGE_HEX[:-1] + "\u0660",
+    ]
+# Refusals beyond the per-value patterns: the host digest is required for apply and empty for
+# plan, and the two image digests come together (six arguments) or not at all (four at most).
 ENTRY_ONLY_BAD_ARGUMENTS = [
     pytest.param(["apply", SHA, "", ""], id="apply-without-digest"),
     pytest.param(["plan", SHA, "", DIGEST], id="plan-with-digest"),
-    pytest.param(["plan", SHA, "", "", "extra"], id="too-many-arguments"),
+    pytest.param(["plan", SHA, "", "", "extra"], id="five-arguments"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST], id="one-image-digest"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST, FE_DIGEST, "extra"], id="seven-arguments"),
+    pytest.param(["plan", SHA, "", DIGEST, PY_DIGEST, FE_DIGEST], id="plan-with-host-digest"),
+    pytest.param(["apply", SHA, "", "", PY_DIGEST, FE_DIGEST], id="apply-without-host-digest"),
+    pytest.param(["plan", SHA, "", "", "", FE_DIGEST], id="plan-python-digest-empty"),
+    pytest.param(["plan", SHA, "", "", PY_DIGEST, ""], id="plan-frontend-digest-empty"),
+    pytest.param(["apply", SHA, "", DIGEST, "", FE_DIGEST], id="apply-python-digest-empty"),
+    pytest.param(["apply", SHA, "", DIGEST, PY_DIGEST, ""], id="apply-frontend-digest-empty"),
     pytest.param(["plan"], id="no-sha"),
 ]
-DEFAULTS = {"action": "apply", "sha": SHA, "migrations": MIGRATIONS, "hostDigest": DIGEST}
+DEFAULTS = {
+    "action": "apply",
+    "sha": SHA,
+    "migrations": MIGRATIONS,
+    "hostDigest": DIGEST,
+    "pythonDigest": PY_DIGEST,
+    "frontendDigest": FE_DIGEST,
+}
 
 
 def _bad_argument_vectors() -> list[object]:
@@ -330,6 +362,96 @@ def test_entry_apply_without_migrations_omits_the_flag(harness: Harness) -> None
     ]
 
 
+ROLLOUT = ["python", "-m", "scripts.staging_rollout", "--target", "production"]
+IMAGE_OPTIONS = ["--python-digest", PY_DIGEST, "--frontend-digest", FE_DIGEST]
+
+
+@pytest.mark.parametrize(
+    ("args", "rollout"),
+    [
+        pytest.param(
+            ["plan", SHA, "", "", PY_DIGEST, FE_DIGEST], ["plan", *IMAGE_OPTIONS], id="plan"
+        ),
+        pytest.param(
+            ["apply", SHA, MIGRATIONS, DIGEST, PY_DIGEST, FE_DIGEST],
+            [
+                "apply",
+                "--sha",
+                SHA,
+                "--migrations",
+                MIGRATIONS,
+                "--host-digest",
+                DIGEST,
+                *IMAGE_OPTIONS,
+            ],
+            id="apply-with-migrations",
+        ),
+        pytest.param(
+            ["apply", SHA, "", DIGEST, PY_DIGEST, FE_DIGEST],
+            ["apply", "--sha", SHA, "--host-digest", DIGEST, *IMAGE_OPTIONS],
+            id="apply-without-migrations",
+        ),
+    ],
+)
+def test_entry_passes_both_digests_to_the_rollout(
+    harness: Harness, args: list[str], rollout: list[str]
+) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 0, result.stderr
+    assert [call for call in harness.calls() if call[0] == "python"] == [[*ROLLOUT, *rollout]]
+
+
+@pytest.mark.parametrize(
+    ("args", "rollout"),
+    [
+        pytest.param(["plan", SHA], ["plan"], id="plan-two-arguments"),
+        pytest.param(["plan", SHA, ""], ["plan"], id="plan-three-arguments"),
+        pytest.param(["plan", SHA, "", ""], ["plan"], id="plan-four-arguments"),
+        pytest.param(
+            ["apply", SHA, MIGRATIONS, DIGEST],
+            ["apply", "--sha", SHA, "--migrations", MIGRATIONS, "--host-digest", DIGEST],
+            id="apply-with-migrations",
+        ),
+        pytest.param(
+            ["apply", SHA, "", DIGEST],
+            ["apply", "--sha", SHA, "--host-digest", DIGEST],
+            id="apply-without-migrations",
+        ),
+    ],
+)
+def test_entry_without_digests_runs_the_old_path(
+    harness: Harness, args: list[str], rollout: list[str]
+) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 0, result.stderr
+    (call,) = [call for call in harness.calls() if call[0] == "python"]
+    assert call == [*ROLLOUT, *rollout]
+    assert "--python-digest" not in call
+    assert "--frontend-digest" not in call
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["plan", SHA, "", "", PY_DIGEST], id="plan-five-arguments"),
+        pytest.param(["apply", SHA, "", DIGEST, FE_DIGEST], id="apply-five-arguments"),
+        pytest.param(["plan", SHA, "", "", PY_DIGEST, ""], id="plan-frontend-empty"),
+        pytest.param(["plan", SHA, "", "", "", FE_DIGEST], id="plan-python-empty"),
+        pytest.param(["apply", SHA, "", DIGEST, "", FE_DIGEST], id="apply-python-empty"),
+        pytest.param(["apply", SHA, "", DIGEST, PY_DIGEST, ""], id="apply-frontend-empty"),
+    ],
+)
+def test_entry_refuses_one_digest_without_the_other(harness: Harness, args: list[str]) -> None:
+    result = harness.run(args)
+
+    assert result.returncode == 64
+    assert b"both image digests" in result.stderr
+    assert harness.calls() == []
+    assert not harness.log_dir.exists()
+
+
 def test_entry_tees_output_to_a_named_log_and_returns_the_rollout_status(
     harness: Harness,
 ) -> None:
@@ -455,17 +577,25 @@ def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
 DOCUMENTS = {"plan": PLAN_DOCUMENT, "apply": APPLY_DOCUMENT}
 DOCUMENT_NAMES = {"plan": "csa-production-plan", "apply": "csa-production-apply"}
 DOCUMENT_PATTERNS = {
-    "plan": {"sha": "^[0-9a-f]{40}$"},
+    "plan": {
+        "sha": "^[0-9a-f]{40}$",
+        "pythonDigest": IMAGE_DIGEST_PATTERN,
+        "frontendDigest": IMAGE_DIGEST_PATTERN,
+    },
     "apply": {
         "sha": "^[0-9a-f]{40}$",
         "migrations": "^([0-9]{4}(,[0-9]{4})*)?$",
         "hostDigest": "^[0-9a-f]{12}$",
+        "pythonDigest": IMAGE_DIGEST_PATTERN,
+        "frontendDigest": IMAGE_DIGEST_PATTERN,
     },
 }
 ENTRY_COMMAND = "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy "
 DOCUMENT_COMMANDS = {
-    "plan": ENTRY_COMMAND + 'plan "{{ sha }}" "" ""',
-    "apply": ENTRY_COMMAND + 'apply "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"',
+    "plan": ENTRY_COMMAND + 'plan "{{ sha }}" "" "" "{{ pythonDigest }}" "{{ frontendDigest }}"',
+    "apply": ENTRY_COMMAND
+    + 'apply "{{ sha }}" "{{ migrations }}" "{{ hostDigest }}"'
+    + ' "{{ pythonDigest }}" "{{ frontendDigest }}"',
 }
 
 
@@ -593,6 +723,8 @@ SSM_ENV = {
     "AWS_REGION": REGION,
     "INSTANCE_ID": INSTANCE,
     "SSM_POLL_SECONDS": "0",
+    "PYTHON_DIGEST": PY_DIGEST,
+    "FRONTEND_DIGEST": FE_DIGEST,
     "AWS_ACCESS_KEY_ID": "test-access-key-id",
     "AWS_SECRET_ACCESS_KEY": SECRET,
     "AWS_SESSION_TOKEN": TOKEN,
@@ -657,6 +789,8 @@ def test_ssm_run_fails_closed_without_instance_or_region(
         ("SSM_MAX_SECONDS", "0"),
         ("SSM_MAX_SECONDS", "-1"),
         ("SSM_MAX_SECONDS", "1.5"),
+        ("PYTHON_DIGEST", "sha256:abc"),
+        ("FRONTEND_DIGEST", FE_DIGEST + "\n"),
     ],
 )
 def test_ssm_run_refuses_malformed_settings(harness: Harness, name: str, value: str) -> None:
@@ -675,7 +809,13 @@ SSM_ONLY_BAD_ARGUMENTS = [pytest.param(["plan", SHA, MIGRATIONS, ""], id="plan-w
 @pytest.mark.parametrize("locale", LOCALES)
 @pytest.mark.parametrize("args", _bad_argument_vectors() + SSM_ONLY_BAD_ARGUMENTS)
 def test_ssm_run_rejects_bad_arguments(harness: Harness, args: list[str], locale: str) -> None:
-    result = harness.ssm(args, LC_ALL=locale, LANG=locale)
+    # The entry script takes the image digests as arguments five and six; ssm_run.sh reads them
+    # from the environment, so the same vectors are replayed that way.
+    env = {"LC_ALL": locale, "LANG": locale}
+    if len(args) == len(PARAMETERS):
+        env |= {"PYTHON_DIGEST": args[4], "FRONTEND_DIGEST": args[5]}
+        args = args[:4]
+    result = harness.ssm(args, **env)
 
     assert result.returncode == 64
     assert harness.calls() == []
@@ -695,7 +835,13 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
     assert result.returncode == code, result.stderr
     send, poll = harness.aws_calls()
     assert send == _send_argv("csa-production-apply", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA], "migrations": [MIGRATIONS], "hostDigest": [DIGEST]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "migrations": [MIGRATIONS],
+        "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
     assert poll == POLL_ARGV
     assert result.stdout == b"remote output\n"
     assert b"remote stderr\n" in result.stderr
@@ -708,14 +854,19 @@ def test_ssm_run_sends_the_document_with_separate_parameters_and_exits_with_the_
 
 def test_ssm_run_apply_without_migrations_omits_the_parameter(harness: Harness) -> None:
     # The apply document defaults migrations to "", so an empty list is left out rather than
-    # sent as an explicit empty String; sha and hostDigest are always sent.
+    # sent as an explicit empty String; the other parameters are always sent.
     assert _document("apply")["parameters"]["migrations"]["default"] == ""
     result = harness.ssm(["apply", SHA, "", DIGEST])
 
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
     assert send == _send_argv("csa-production-apply", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA], "hostDigest": [DIGEST]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
 
 
 @pytest.mark.parametrize("migrations", ["0486", MIGRATIONS])
@@ -728,10 +879,12 @@ def test_ssm_run_apply_sends_a_non_empty_migrations_list(harness: Harness, migra
         "sha": [SHA],
         "migrations": [migrations],
         "hostDigest": [DIGEST],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
     }
 
 
-def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbatim(
+def test_ssm_run_plan_sends_the_sha_and_digests_to_the_plan_document_and_prints_verbatim(
     harness: Harness,
 ) -> None:
     remote = "Target SHA: x\n  indented   line\n\nno final newline"
@@ -740,8 +893,50 @@ def test_ssm_run_plan_sends_only_the_sha_to_the_plan_document_and_prints_verbati
     assert result.returncode == 0, result.stderr
     send, _poll = harness.aws_calls()
     assert send == _send_argv("csa-production-plan", send[9])
-    assert json.loads(send[9]) == {"sha": [SHA]}
+    assert json.loads(send[9]) == {
+        "sha": [SHA],
+        "pythonDigest": [PY_DIGEST],
+        "frontendDigest": [FE_DIGEST],
+    }
     assert result.stdout == remote.encode()
+
+
+@pytest.mark.parametrize(
+    ("args", "document"),
+    [
+        pytest.param(["plan", SHA], "csa-production-plan", id="plan"),
+        pytest.param(["apply", SHA, MIGRATIONS, DIGEST], "csa-production-apply", id="apply"),
+    ],
+)
+def test_ssm_run_sends_both_digests_for_plan_and_apply(
+    harness: Harness, args: list[str], document: str
+) -> None:
+    other_python = "sha256:" + "1" * 64
+    other_frontend = "sha256:" + "2" * 64
+    result = harness.ssm(args, PYTHON_DIGEST=other_python, FRONTEND_DIGEST=other_frontend)
+
+    assert result.returncode == 0, result.stderr
+    send, _poll = harness.aws_calls()
+    assert send == _send_argv(document, send[9])
+    parameters = json.loads(send[9])
+    assert parameters["pythonDigest"] == [other_python]
+    assert parameters["frontendDigest"] == [other_frontend]
+
+
+@pytest.mark.parametrize("args", [["plan", SHA], ["apply", SHA, "", DIGEST]], ids=["plan", "apply"])
+@pytest.mark.parametrize("name", ["PYTHON_DIGEST", "FRONTEND_DIGEST"])
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_ssm_run_refuses_missing_digest_env_and_sends_nothing(
+    harness: Harness, args: list[str], name: str, value: str | None
+) -> None:
+    if value is None:
+        result = harness.ssm(args, unset=[name])
+    else:
+        result = harness.ssm(args, **{name: value})
+
+    assert result.returncode == 64
+    assert name.encode() in result.stderr
+    assert harness.calls() == []
 
 
 def test_ssm_run_polls_through_inprogress_and_times_out(harness: Harness) -> None:

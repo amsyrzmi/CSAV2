@@ -6,6 +6,16 @@
       "type": "String",
       "description": "Full 40 character lowercase commit sha on main.",
       "allowedPattern": "^[0-9a-f]{40}$"
+    },
+    "pythonDigest": {
+      "type": "String",
+      "description": "Digest of the csa-python image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "frontendDigest": {
+      "type": "String",
+      "description": "Digest of the csa-frontend image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
     }
   },
   "mainSteps": [
@@ -16,7 +26,7 @@
         "timeoutSeconds": "2400",
         "runCommand": [
           "set -eu",
-          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy plan \"{{ sha }}\" \"\" \"\""
+          "exec runuser -u ubuntu -- /usr/local/sbin/csa-prod-deploy plan \"{{ sha }}\" \"\" \"\" \"{{ pythonDigest }}\" \"{{ frontendDigest }}\""
         ]
       }
     }
