@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -44,13 +45,15 @@ if TYPE_CHECKING:
     from csa.metering.context import Job, MeterContext
     from csa.metering.meter import Usage
 
-__all__ = ["LangfuseSink", "build_otlp_exporter"]
+__all__ = ["SHUTDOWN_TIMEOUT_MILLIS", "LangfuseSink", "build_otlp_exporter"]
 
 logger = structlog.get_logger(__name__)
 
 OTLP_TRACES_PATH = "/api/public/otel/v1/traces"
 INGESTION_VERSION = "4"
 EXPORT_TIMEOUT_SECONDS = 10.0
+# How long close waits for queued spans before giving up on them (inside Docker's stop grace).
+SHUTDOWN_TIMEOUT_MILLIS = 3000
 
 # Langfuse OTel attribute names (property mapping, Langfuse v4).
 _TRACE_NAME = "langfuse.trace.name"
@@ -73,17 +76,39 @@ _TURN_JOB: Job = "customer_turn"
 _PENDING_TRACE_ID: ContextVar[int | None] = ContextVar("csa_langfuse_trace_id", default=None)
 
 
+# The OTLP exporter merges these environment variables into its request headers. They belong to
+# the global collector (csa/core/tracing.py), so their headers must never be sent to Langfuse.
+_ENV_HEADER_VARIABLES = ("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_HEADERS")
+
+
 def build_otlp_exporter(public_key: str, secret_key: str, base_url: str) -> OTLPSpanExporter:
-    """The OTLP/HTTP exporter aimed at Langfuse's v4 trace endpoint for one project's keys."""
+    """The OTLP/HTTP exporter aimed at Langfuse's v4 trace endpoint for one project's keys.
+
+    Only the protocol headers and our two are sent: headers from the OTLP environment variables
+    are stripped (with a warning naming the variable, never its value).
+    """
+    for variable in _ENV_HEADER_VARIABLES:
+        if os.environ.get(variable):
+            logger.warning("langfuse_env_otlp_headers_ignored", variable=variable)
     creds = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode("ascii")
-    return OTLPSpanExporter(
+    ours = {
+        "authorization": f"Basic {creds}",
+        "x-langfuse-ingestion-version": INGESTION_VERSION,
+    }
+    exporter = OTLPSpanExporter(
         endpoint=f"{base_url.rstrip('/')}{OTLP_TRACES_PATH}",
-        headers={
-            "Authorization": f"Basic {creds}",
-            "x-langfuse-ingestion-version": INGESTION_VERSION,
-        },
+        headers=ours,
         timeout=EXPORT_TIMEOUT_SECONDS,
     )
+    # The SDK keeps the merged, lower-cased headers on its HTTP client (pinned 1.45.1; the
+    # header test reads the same dict). Keep the SDK's own user agent, nothing from the env.
+    client = exporter._client
+    client._headers = {
+        "content-type": "application/x-protobuf",
+        "user-agent": client._headers.get("user-agent", "csa-langfuse"),
+        **ours,
+    }
+    return exporter
 
 
 class _TraceIdFromContext(RandomIdGenerator):
@@ -124,13 +149,22 @@ class _LoggedExporter(SpanExporter):
 
 
 class _BoundedBatchProcessor(BatchSpanProcessor):
-    """A ``BatchSpanProcessor`` that logs, through structlog, the spans a full queue drops."""
+    """A ``BatchSpanProcessor`` that logs the spans a full queue drops and shuts down in bounded
+    time."""
 
     _DROP_LOG_INTERVAL_SECONDS = 60.0
 
-    def __init__(self, exporter: SpanExporter, *, max_queue_size: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        exporter: SpanExporter,
+        *,
+        max_queue_size: int,
+        shutdown_timeout_millis: int,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(exporter, max_queue_size=max_queue_size, **kwargs)
         self._queue_limit = max_queue_size
+        self._shutdown_timeout_millis = shutdown_timeout_millis
         self._dropped = 0
         self._last_drop_log = float("-inf")
 
@@ -149,6 +183,29 @@ class _BoundedBatchProcessor(BatchSpanProcessor):
                     dropped_total=self._dropped,
                 )
         super().on_end(span)
+
+    def shutdown(self) -> None:
+        """Drain within ``shutdown_timeout_millis``, then give up on the rest with a warning.
+
+        ``BatchSpanProcessor.shutdown`` takes no timeout and joins its worker for 30 s, while the
+        final drain retries each batch for up to the exporter deadline; during a Langfuse outage
+        that outlasts Docker's stop grace. The inner processor (pinned SDK 1.45.1) takes one: it
+        joins the worker for that long, stops further batches and shuts the exporter down. A
+        batch already in export keeps running on the daemon worker thread and is abandoned.
+        """
+        inner = self._batch_processor
+        inner.shutdown(timeout_millis=self._shutdown_timeout_millis)
+        queue = getattr(inner, "_queue", None)
+        worker = getattr(inner, "_worker_thread", None)
+        unsent = len(queue) if queue is not None else 0
+        in_progress = bool(worker is not None and worker.is_alive())
+        if unsent or in_progress:
+            logger.warning(
+                "langfuse_shutdown_incomplete",
+                unsent_spans=unsent,
+                export_in_progress=in_progress,
+                timeout_ms=self._shutdown_timeout_millis,
+            )
 
 
 def _trace_attributes(
@@ -181,6 +238,7 @@ class LangfuseSink:
         max_queue_size: int = 2048,
         max_export_batch_size: int = 256,
         schedule_delay_millis: int = 2000,
+        shutdown_timeout_millis: int = SHUTDOWN_TIMEOUT_MILLIS,
     ) -> None:
         """Build the dedicated provider; ``exporter`` replaces the OTLP exporter (tests)."""
         secret = secret_key.get_secret_value() if isinstance(secret_key, SecretStr) else secret_key
@@ -202,6 +260,7 @@ class LangfuseSink:
                 max_queue_size=max_queue_size,
                 max_export_batch_size=max_export_batch_size,
                 schedule_delay_millis=schedule_delay_millis,
+                shutdown_timeout_millis=shutdown_timeout_millis,
             )
         )
         self._tracer = self._provider.get_tracer("csa.langfuse")
@@ -266,7 +325,7 @@ class LangfuseSink:
                     _OBS_STATUS_MESSAGE: status,
                     _OBS_OUTPUT: json.dumps(summary, default=str),
                     f"{_OBS_METADATA}.node": node,
-                    f"{_OBS_METADATA}.duration_ms": duration_ms,
+                    f"{_OBS_METADATA}.duration_ms": str(duration_ms),
                 }
             )
             if agent:
@@ -294,7 +353,16 @@ class LangfuseSink:
         user_id: str = "admin",
         metadata: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
-        """Send one probe span and flush; ``(ok, langfuse_trace_id)`` from the export result."""
+        """Send one probe span and flush; ``(ok, langfuse_trace_id)`` from the export result.
+
+        ``ok`` is true when the flush ran and no export failed meanwhile. Caveats: a failing
+        batch of other spans exported during the probe also makes ``ok`` false (a false
+        negative, never a false positive from a failed export); the SDK ignores flush timeouts
+        (pinned 1.45.1), so during an outage the flush lasts as long as the exporter retries
+        each queued batch (up to its 10 s deadline per batch), off the event loop; and with
+        ``OTEL_SDK_DISABLED=true`` no span is recorded or exported, so ``ok`` is true while
+        nothing reached Langfuse.
+        """
         trace_id = uuid4()
         attrs: dict[str, Any] = {
             _TRACE_NAME: name,
@@ -310,7 +378,7 @@ class LangfuseSink:
         try:
             now = time.time_ns()
             self._emit(trace_id, "system-readiness-probe", attrs, start_ns=now, end_ns=now)
-            flushed = await asyncio.to_thread(self._provider.force_flush, 15_000)
+            flushed = await asyncio.to_thread(self._provider.force_flush)
         except Exception as exc:
             logger.error("langfuse_test_trace_failed", error_type=type(exc).__name__)
             return False, trace_id.hex
@@ -321,12 +389,16 @@ class LangfuseSink:
 
     # --- lifecycle -----------------------------------------------------------------------------
 
-    def force_flush(self, timeout_millis: int = 15_000) -> bool:
-        """Export everything queued now (blocking; for tests and shutdown)."""
-        return self._provider.force_flush(timeout_millis)
+    def force_flush(self) -> bool:
+        """Export everything queued now (blocking, no timeout in SDK 1.45.1; for tests)."""
+        return self._provider.force_flush()
 
     async def aclose(self) -> None:
-        """Flush what is queued and stop the exporter thread, off the event loop."""
+        """Flush what is queued and stop, off the event loop, within ``shutdown_timeout_millis``.
+
+        The bound holds inside the worker thread (see ``_BoundedBatchProcessor.shutdown``), so
+        ``asyncio.run`` joining its default executor at exit cannot hang on it either.
+        """
         if self._closed:
             return
         self._closed = True

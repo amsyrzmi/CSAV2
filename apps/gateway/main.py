@@ -338,8 +338,6 @@ def create_app() -> FastAPI:
                     await calendar_http.aclose()
                 if jev_http is not None:
                     await jev_http.aclose()
-                if langfuse_sink is not None:
-                    await langfuse_sink.aclose()
             finally:
                 try:
                     if identity_pool is not None:
@@ -348,7 +346,13 @@ def create_app() -> FastAPI:
                     try:
                         await pool.close()
                     finally:
-                        shutdown_logging()
+                        try:
+                            # Bounded (a few seconds) even while Langfuse is down; after the
+                            # pools, and before logging stops so its warnings are written.
+                            if langfuse_sink is not None:
+                                await langfuse_sink.aclose()
+                        finally:
+                            shutdown_logging()
 
     app = FastAPI(
         title="csa-gateway",

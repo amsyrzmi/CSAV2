@@ -10,6 +10,7 @@ import base64
 import inspect
 import json
 import threading
+import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -17,8 +18,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from csa.core import langfuse as langfuse_module
-from csa.core.langfuse import LangfuseSink, build_otlp_exporter
-from csa.graph.events import PostgresEventSink
+from csa.core.langfuse import SHUTDOWN_TIMEOUT_MILLIS, LangfuseSink, build_otlp_exporter
+from csa.graph.events import PostgresEventSink, summarize
 from csa.metering.context import JOB_AGENT, JOB_LABELS, MeterContext
 from csa.metering.meter import GenerationMirror, Usage
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
@@ -162,17 +163,46 @@ def test_generation_ignores_the_ambient_span(
     other.shutdown()
 
 
-def test_no_span_carries_prompt_reply_or_cost(
+# Synthetic customer text standing in for a real prompt and reply; it must never reach a span.
+PROMPT_TEXT = "synthetic-customer-prompt where is my parcel 7781"
+REPLY_TEXT = "synthetic-bot-reply your parcel ships tomorrow"
+
+
+async def test_no_span_carries_prompt_reply_or_cost(
     memory: tuple[LangfuseSink, InMemorySpanExporter],
 ) -> None:
     sink, exporter = memory
-    sink.submit(_ctx(), USAGE)
+    ctx = _ctx()
+    # The node summary comes from the graph's own redaction over an update holding the texts.
+    agent, summary = summarize(
+        "compose",
+        {
+            "messages": [{"role": "user", "text": PROMPT_TEXT}],
+            "draft": {"text": REPLY_TEXT, "language": "ms", "fact_ids": ["f1"]},
+            "signals": {"intent": "order_status", "provider": "groq"},
+        },
+    )
+    sink.submit(ctx, USAGE)
+    await _send_event(
+        sink, client_id=ctx.client_id, trace_id=ctx.trace_id, agent=agent, summary=summary
+    )
+    await sink.send_test_trace()
 
-    [span] = _spans(sink, exporter)
-    for key in _attrs(span):
-        lowered = key.lower()
-        for banned in ("prompt", "completion", "reply", "cost", "input", "output"):
-            assert banned not in lowered, key
+    spans = _spans(sink, exporter)
+    assert len(spans) == 3
+    for span in spans:
+        attrs = _attrs(span)
+        is_generation = attrs["langfuse.observation.type"] == "generation"
+        banned_keys = ["prompt", "completion", "reply", "cost", "langfuse.observation.input"]
+        if is_generation:
+            banned_keys += ["input", "output"]
+        for key, value in attrs.items():
+            for banned in banned_keys:
+                assert banned not in key.lower(), (span.name, key)
+            text = json.dumps(list(value)) if isinstance(value, tuple) else str(value)
+            assert PROMPT_TEXT not in text, (span.name, key)
+            assert REPLY_TEXT not in text, (span.name, key)
+            assert "parcel" not in text, (span.name, key)
 
 
 # --- node events -------------------------------------------------------------------------------
@@ -224,6 +254,7 @@ async def test_send_event_emits_a_span_on_the_turn_trace(
     assert tuple(attrs["langfuse.trace.tags"]) == ("support", "customer_turn")
     assert attrs["langfuse.observation.metadata.node"] == "plan_args"
     assert attrs["langfuse.observation.metadata.agent"] == "order_agent"
+    assert attrs["langfuse.observation.metadata.duration_ms"] == "45"
     assert json.loads(attrs["langfuse.observation.output"]) == {
         "intent": "order_status",
         "confidence": 0.95,
@@ -344,6 +375,83 @@ async def test_submit_and_send_event_after_close_do_not_raise() -> None:
 
     sink.submit(_ctx(), USAGE)
     await _send_event(sink)
+
+
+class StuckExporter(SpanExporter):
+    """An export that hangs (Langfuse unreachable) and a shutdown that does not unstick it."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.unstick = threading.Event()
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        self.entered.set()
+        self.unstick.wait(30)
+        return SpanExportResult.FAILURE
+
+    def shutdown(self) -> None:
+        return None
+
+
+async def test_close_is_bounded_while_the_export_hangs() -> None:
+    assert SHUTDOWN_TIMEOUT_MILLIS <= 3000
+    exporter = StuckExporter()
+    sink = _sink(exporter, max_export_batch_size=1)
+    try:
+        sink.submit(_ctx(), USAGE)
+        assert exporter.entered.wait(5)
+        sink.submit(_ctx(), USAGE)
+        sink.submit(_ctx(), USAGE)
+
+        with capture_logs() as logs:
+            started = time.monotonic()
+            await sink.aclose()
+            elapsed = time.monotonic() - started
+
+        assert elapsed < SHUTDOWN_TIMEOUT_MILLIS / 1000 + 2.0
+        [warning] = [e for e in logs if e["event"] == "langfuse_shutdown_incomplete"]
+        assert warning["log_level"] == "warning"
+        assert warning["unsent_spans"] >= 1
+        assert warning["export_in_progress"] is True
+        assert SECRET_KEY not in json.dumps(warning, default=str)
+    finally:
+        exporter.unstick.set()
+
+
+async def test_spans_queued_before_close_are_still_exported() -> None:
+    exporter = InMemorySpanExporter()
+    sink = _sink(exporter, schedule_delay_millis=60_000)
+    for _ in range(3):
+        sink.submit(_ctx(), USAGE)
+    assert exporter.get_finished_spans() == ()
+
+    with capture_logs() as logs:
+        await sink.aclose()
+
+    assert len(exporter.get_finished_spans()) == 3
+    assert not [e for e in logs if e["event"] == "langfuse_shutdown_incomplete"]
+
+
+@pytest.mark.parametrize(
+    "variable", ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
+)
+def test_environment_otlp_headers_never_reach_langfuse(
+    monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.setenv(variable, "x-collector-token=synthetic-env-secret")
+    with capture_logs() as logs:
+        exporter = build_otlp_exporter(PUBLIC_KEY, SECRET_KEY, BASE_URL)
+    try:
+        headers = exporter._client._headers
+        assert "x-collector-token" not in headers
+        assert "synthetic-env-secret" not in json.dumps(headers)
+        assert headers["x-langfuse-ingestion-version"] == "4"
+        assert headers["content-type"] == "application/x-protobuf"
+        [warning] = [e for e in logs if e["event"] == "langfuse_env_otlp_headers_ignored"]
+        assert warning["variable"] == variable
+        assert "synthetic-env-secret" not in json.dumps(warning, default=str)
+    finally:
+        exporter.shutdown()
 
 
 # --- transport configuration -------------------------------------------------------------------
