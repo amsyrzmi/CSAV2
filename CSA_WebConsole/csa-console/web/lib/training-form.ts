@@ -8,6 +8,7 @@ import type { TrainingItem, TrainingPatch, TrainingSummary, TrainingViewMode } f
 import { formatWhen } from "@/lib/email-recipients";
 import { shortDate } from "@/lib/services-view";
 import {
+  durationText,
   pagesText,
   PROVIDER_NOTICE,
   refusalCopy,
@@ -47,9 +48,9 @@ const CONTROL_BUT_BREAKS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 /** A textarea may hand back CR LF; the server takes line feeds only. */
 const lineFeeds = (text: string) => text.replace(/\r\n?/g, "\n");
 
-/** The title the server gives an upload: the file name without `.pdf`, at most 120 characters. */
+/** The title the server gives an upload: the file name without its extension, at most 120 characters. */
 export function titleFromFileName(name: string): string {
-  return [...name.trim().replace(/\.pdf$/i, "")].slice(0, TITLE_MAX).join("").trim();
+  return [...name.trim().replace(/\.(pdf|mp4|m4v|mov|webm)$/i, "")].slice(0, TITLE_MAX).join("").trim();
 }
 
 export type FormProblems = Partial<Record<"title" | "description" | "category", string>>;
@@ -92,6 +93,7 @@ export function formToPatch(form: ItemForm, before: TrainingItem | null): Traini
 
 /** Step two of an upload failed: the item is there under the title from its file name. */
 export const PATCH_FAILED = "The PDF was added under its file name. Edit its details to rename it.";
+export const VIDEO_PATCH_FAILED = "The video was added under its file name. Edit its details to rename it.";
 
 // ---- One idempotency key per picked file ------------------------------------------------------
 
@@ -154,7 +156,9 @@ export function madeOnText(iso: string, timeZone?: string): string {
 export function itemFacts(item: TrainingItem): string[] {
   const facts = [
     item.category.trim() || UNCATEGORISED,
-    pagesText(item.page_count),
+    item.kind === "video"
+      ? ["Video", durationText(item.duration_ms)].filter(Boolean).join(", ")
+      : pagesText(item.page_count ?? 0),
     sizeText(item.byte_size),
     addedText(item),
     item.uploaded_by_name ? `Added by ${item.uploaded_by_name}` : "",

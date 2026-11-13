@@ -12,10 +12,13 @@ function moduleUrl(source) {
 const {
   refusalCopy, sizeText, pagesText, categoriesOf, filterItems, uploadProblem, summaryNote, summaryText,
   isItemId, isTrainingPagePath, itemHref, PROVIDER_NOTICE, TRUNCATED_NOTE, UNCATEGORISED, MAX_FILE_BYTES,
+  MAX_VIDEO_BYTES, SOUND_NOTICE, HEVC_NOTE, watchHref, fileKind, durationText, videoStateText, failureCopy,
+  canRetry, videoSummaryState, videoLengthProblem, VIDEO_SUMMARY_NOTE,
 } = await import(moduleUrl(
   (await readFile(new URL("../lib/training-view.ts", import.meta.url), "utf8")).replace(/import type [^;]+;/g, ""),
 ));
 
+const UNSUPPORTED = "Only PDF files and MP4, M4V, MOV or WebM videos can be added. Choose one of those files.";
 const ID = "44444444-4444-4444-8444-444444444444";
 
 // Every code docs/CONSOLE_API.md lists for the training routes, and the platform refusals a
@@ -26,6 +29,12 @@ const TRAINING_CODES = [
   "training_library_full", "training_name_invalid", "training_upload_invalid", "training_key_conflict",
   "training_storage_unavailable", "training_parser_unavailable", "training_not_found", "training_no_text",
   "training_assistant_unavailable", "training_forbidden",
+  // Videos (docs/CONSOLE_API.md, "Video uploads", "Video processing", "The video route").
+  "training_not_video", "training_piece_invalid", "training_piece_corrupt", "training_piece_missing",
+  "training_upload_closed", "training_busy", "training_uploads_in_progress", "training_video_unavailable",
+  "training_summary_automatic", "training_retry_not_allowed", "training_transcription_unavailable",
+  "training_summary_unavailable", "training_video_unreadable", "training_video_too_long", "training_video_codec",
+  "training_range_not_satisfiable",
 ];
 const PLATFORM_CODES = [
   "package_inactive", "write permission required", "machine principal has read-only access",
@@ -123,8 +132,8 @@ test("uploadProblem stops the plain cases before anything is sent", () => {
   assert.equal(MAX_FILE_BYTES, 25 * 1024 * 1024);
   assert.equal(uploadProblem({ name: "Policy.pdf", size: 1000 }), null);
   assert.equal(uploadProblem({ name: "POLICY.PDF", size: MAX_FILE_BYTES }), null);
-  assert.equal(uploadProblem({ name: "Policy.docx", size: 1000 }), refusalCopy("training_not_pdf"));
-  assert.equal(uploadProblem({ name: "pdf", size: 1000 }), refusalCopy("training_not_pdf"));
+  assert.equal(uploadProblem({ name: "Policy.docx", size: 1000 }), UNSUPPORTED);
+  assert.equal(uploadProblem({ name: "pdf", size: 1000 }), UNSUPPORTED);
   assert.match(uploadProblem({ name: "Empty.pdf", size: 0 }), /empty/i);
   assert.equal(uploadProblem({ name: "Big.pdf", size: MAX_FILE_BYTES + 1 }), refusalCopy("training_file_too_large"));
   assert.equal(uploadProblem({ name: "a/b.pdf", size: 10 }), refusalCopy("training_name_invalid"));
@@ -177,4 +186,107 @@ test("itemHref opens an item under the viewer's base and keeps the platform tena
   assert.equal(itemHref(ID, true, null), `/training/${ID}`);
   assert.equal(itemHref(null, true, "t1"), "/training?client_id=t1");
   assert.equal(itemHref(null, false, null), "/portal/training");
+});
+
+const MIB = 1024 * 1024;
+
+test("uploadProblem accepts a video beside a PDF, up to 500 MiB", () => {
+  assert.equal(MAX_VIDEO_BYTES, 500 * MIB);
+  for (const name of ["Induction.mp4", "Induction.M4V", "clip.mov", "Recording.webm"])
+    assert.equal(uploadProblem({ name, size: 1000 }), null, name);
+  assert.equal(uploadProblem({ name: "Induction.mp4", size: MAX_VIDEO_BYTES }), null);
+  assert.equal(uploadProblem({ name: "Induction.mp4", size: MAX_VIDEO_BYTES + 1 }), refusalCopy("training_file_too_large", "video"));
+  assert.match(uploadProblem({ name: "Big.mp4", size: 501 * MIB }), /500 MB/);
+  assert.equal(uploadProblem({ name: "Old.avi", size: 1000 }), UNSUPPORTED);
+  assert.match(refusalCopy("training_not_video"), /MP4/);
+  assert.match(uploadProblem({ name: "Empty.mp4", size: 0 }), /empty/i);
+  assert.equal(uploadProblem({ name: "a/b.mp4", size: 10 }), refusalCopy("training_name_invalid"));
+  // A PDF keeps its own limit; a video over it is fine.
+  assert.equal(uploadProblem({ name: "Big.pdf", size: MAX_FILE_BYTES + 1 }), refusalCopy("training_file_too_large"));
+});
+
+test("the file's kind follows its extension, in any case", () => {
+  assert.equal(fileKind("a.PDF"), "pdf");
+  for (const name of ["a.mp4", "a.M4V", "a.mov", "a.WebM"]) assert.equal(fileKind(name), "video", name);
+  assert.equal(fileKind("a.avi"), null);
+  assert.equal(fileKind("mp4"), null);
+});
+
+test("a video's size sentence says 500 MB, not 25 MB, and a full library says videos", () => {
+  assert.match(refusalCopy("training_file_too_large", "video"), /500 MB/);
+  assert.match(refusalCopy("training_file_too_large"), /25 MB/);
+  assert.match(refusalCopy("training_library_full", "video"), /video/i);
+  assert.equal(refusalCopy("training_library_full"), refusalCopy("training_library_full", "pdf"));
+});
+
+test("the video's length is refused over 60 minutes when it is known, and never when it is not", () => {
+  assert.equal(videoLengthProblem(3600), null);
+  assert.equal(videoLengthProblem(3601), refusalCopy("training_video_too_long"));
+  assert.equal(videoLengthProblem(null), null);
+  assert.match(refusalCopy("training_video_too_long"), /60 minutes/);
+});
+
+test("the sound notice says the audio goes to the speech service, in plain words", () => {
+  assert.match(SOUND_NOTICE, /sound/i);
+  assert.match(SOUND_NOTICE, /speech/i);
+  assert.match(SOUND_NOTICE, /^[A-Z].*\.$/);
+  assert.match(HEVC_NOTE, /some browsers/i);
+});
+
+test("watchHref adds the second to the item's page and keeps a platform admin's company", () => {
+  assert.equal(watchHref(ID, 195, false, null), `/portal/training/${ID}?t=195`);
+  assert.equal(watchHref(ID, 195, true, "t 9"), `/training/${ID}?client_id=t+9&t=195`);
+  assert.equal(watchHref(ID, 0, true, null), `/training/${ID}?t=0`);
+});
+
+test("durations read in plain words", () => {
+  assert.equal(durationText(null), "");
+  assert.equal(durationText(45_000), "45 seconds");
+  assert.equal(durationText(1_000), "1 second");
+  assert.equal(durationText(60_000), "1 min");
+  assert.equal(durationText(15 * 60_000 + 20_000), "15 min");
+  assert.equal(durationText(3_600_000), "1 h");
+  assert.equal(durationText(3_900_000), "1 h 5 min");
+});
+
+const video = (extra = {}) => ({
+  id: ID, kind: "video", title: "T", description: "", category: "", view_mode: null, page_count: null,
+  byte_size: 10, created_at: "2026-11-13T00:00:00Z", uploaded_by_name: null, has_summary: false,
+  status: "ready", duration_ms: 3000, failure: null, processing: null, notice: null, ...extra,
+});
+
+test("managers see what a video is doing, in words", () => {
+  const processing = (extra) => ({ stage: "transcribing", chunks_done: 3, chunks_total: 12, waiting: false, ...extra });
+  assert.equal(videoStateText(video()), null);
+  assert.equal(videoStateText(video({ status: "uploading" })), "Uploading");
+  assert.equal(videoStateText(video({ status: "uploaded", processing: processing({ chunks_done: 0, chunks_total: null }) })),
+    "Waiting to be processed");
+  assert.equal(videoStateText(video({ status: "transcribing", processing: processing() })), "Transcribing, 3 of 12 parts");
+  assert.equal(videoStateText(video({ status: "transcribing", processing: processing({ chunks_total: null }) })), "Transcribing");
+  assert.equal(videoStateText(video({ status: "summarising", processing: processing({ stage: "summarising" }) })), "Writing the summary");
+  const waiting = videoStateText(video({ status: "uploaded", processing: processing({ waiting: true, chunks_total: null }) }));
+  assert.match(waiting, /today/i);
+  assert.match(waiting, /^[A-Z].*\.$/);
+  assert.equal(videoStateText(video({ status: "failed", failure: "training_video_unreadable" })), refusalCopy("training_video_unreadable"));
+});
+
+test("a failed video's sentence has a Try again only for the codes worth another go", () => {
+  for (const code of ["training_transcription_unavailable", "training_summary_unavailable", "training_storage_unavailable"])
+    assert.equal(canRetry(video({ status: "failed", failure: code })), true, code);
+  for (const code of ["training_video_unreadable", "training_video_too_long", "training_video_codec"])
+    assert.equal(canRetry(video({ status: "failed", failure: code })), false, code);
+  assert.equal(canRetry(video({ status: "ready" })), false);
+  assert.equal(canRetry(video({ status: "failed", failure: null })), false);
+  assert.equal(failureCopy(null), refusalCopy(""));
+  assert.equal(failureCopy("training_video_codec"), refusalCopy("training_video_codec"));
+});
+
+test("the summary panel for a video has four states and never asks for a summary", () => {
+  assert.equal(videoSummaryState(video({ has_summary: true }), "speech"), "summary");
+  assert.equal(videoSummaryState(video({ status: "transcribing" }), null), "making");
+  assert.equal(videoSummaryState(video({ has_summary: false }), "speech"), "making");
+  assert.equal(videoSummaryState(video(), "no_speech"), "no_speech");
+  assert.equal(videoSummaryState(video(), "no_audio"), "no_audio");
+  assert.equal(videoSummaryState(video({ has_summary: true }), "no_speech"), "no_speech");
+  assert.doesNotMatch(VIDEO_SUMMARY_NOTE, /slide/i);
 });

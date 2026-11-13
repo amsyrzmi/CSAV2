@@ -265,3 +265,19 @@ test("a download is saved under the item's title, as a PDF name a computer accep
   assert.equal(form.downloadName("   "), "training.pdf");
   assert.equal(form.downloadName("..."), "training.pdf");
 });
+
+test("a video's title is its file name without the video extension", () => {
+  for (const name of ["Induction.mp4", "Induction.M4V", "Induction.mov", "Induction.WebM"])
+    assert.equal(form.titleFromFileName(name), "Induction", name);
+  assert.equal(form.titleFromFileName("Induction.pdf"), "Induction");
+});
+
+test("a video row shows its length and a PDF row its pages", () => {
+  const base = {
+    category: "", page_count: null, byte_size: 2048, created_at: "2026-11-13T00:00:00Z", uploaded_by_name: null,
+  };
+  assert.deepEqual(form.itemFacts({ ...base, kind: "video", duration_ms: 195_000 }).slice(0, 3),
+    ["Uncategorised", "Video, 3 min", "2 KB"]);
+  assert.equal(form.itemFacts({ ...base, kind: "video", duration_ms: null })[1], "Video");
+  assert.equal(form.itemFacts({ ...base, kind: "pdf", page_count: 3, duration_ms: null })[1], "3 pages");
+});

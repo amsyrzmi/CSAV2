@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { ArrowUp, MessageSquare, X } from "lucide-react";
@@ -22,6 +23,7 @@ import {
   tabLabel,
   turnErrorText,
   typedMessage,
+  watchHref,
   type Outgoing,
 } from "@/lib/assistant-view";
 import { isHrPagePath, navigateLandingPath } from "@/lib/hr-paths";
@@ -614,6 +616,32 @@ function TurnResult({
       return (
         <>
           <p className={`${box} whitespace-pre-wrap break-words`}>{view.text}</p>
+          {copy(view.text)}
+        </>
+      );
+    case "training_answer":
+      // An answer from a video's transcript, with a link to each moment it came from.
+      return (
+        <>
+          <div className={box} data-testid="assistant-training-answer">
+            <p className="whitespace-pre-wrap break-words">{view.text}</p>
+            {view.sources.length > 0 && (
+              <ul className="mt-3 flex flex-wrap gap-2">
+                {view.sources.map((source, index) => (
+                  <li key={`${source.itemId}-${source.seconds}-${index}`} className="min-w-0">
+                    <Link
+                      href={watchHref(source.itemId, source.seconds, me, tenant)}
+                      data-testid="assistant-watch-link"
+                      aria-label={`${source.label}: ${source.title}`}
+                      className={`${starterLook} max-w-full break-words text-left no-underline`}
+                    >
+                      {source.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           {copy(view.text)}
         </>
       );

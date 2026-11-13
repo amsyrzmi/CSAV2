@@ -45,6 +45,7 @@ const en = {
   stock_not_given: "Not given",
   stock_total: "Total in stock: {total}",
   stock_off_sale: "Not on sale on TikTok Shop right now.",
+  watch_from: "Watch from {time}",
   // Dock: context line, loading, notices.
   on_tab: "On {tab}",
   no_tab_context: "No tab context",
@@ -164,6 +165,7 @@ const ms: Record<PanelKey, string> = {
   stock_not_given: "Tidak diberi",
   stock_total: "Jumlah dalam stok: {total}",
   stock_off_sale: "Tidak dijual di TikTok Shop sekarang.",
+  watch_from: "Tonton dari {time}",
   on_tab: "Pada tab {tab}",
   no_tab_context: "Tiada konteks tab",
   loading: "Memuatkan perbualan anda…",

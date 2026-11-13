@@ -1,8 +1,17 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { getSummary, makeSummary, type TrainingItem } from "@/lib/training-api";
-import { summaryView, type SummaryState } from "@/lib/training-form";
+import { getSummary, makeSummary, type TrainingItem, type TrainingSummary, type VideoSpeech } from "@/lib/training-api";
+import { madeOnText, summaryView, type SummaryState } from "@/lib/training-form";
+import {
+  NO_AUDIO_TEXT,
+  NO_SPEECH_TEXT,
+  refusalCopy,
+  SUMMARY_MAKING,
+  summaryText,
+  VIDEO_SUMMARY_NOTE,
+  videoSummaryState,
+} from "@/lib/training-view";
 import { TechnicalDetails } from "../kit";
 import { action, Notice, secondary } from "../ui";
 import { codeOf, muted } from "./shared";
@@ -167,6 +176,90 @@ export default function SummaryPanel({
               Cancel
             </button>
           </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * A video's summary. The processing job writes it, so there is no Summarise button and no
+ * provider notice here: the panel shows the stored summary (as text only), "The summary is being
+ * made", or, for a video with no speech or no sound, that there is no transcript or summary.
+ * `speech` is the transcript's verdict, null until it is known.
+ */
+export function VideoSummary({
+  tenantId,
+  item,
+  speech,
+}: {
+  tenantId: string | null;
+  item: TrainingItem;
+  speech: VideoSpeech | null;
+}) {
+  const state = videoSummaryState(item, speech);
+  const [read, setRead] = useState<{ summary: TrainingSummary | null; error: string | null } | null>(null);
+  const headingId = useId();
+  const itemId = item.id;
+
+  useEffect(() => {
+    if (state !== "summary") return;
+    let live = true;
+    getSummary(tenantId, itemId).then(
+      (summary) => {
+        if (live) setRead({ summary, error: null });
+      },
+      (cause: unknown) => {
+        if (live) setRead({ summary: null, error: codeOf(cause) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [state, tenantId, itemId]);
+
+  const stored = state === "summary" && read?.summary ? read.summary : null;
+  const text = stored ? summaryText(stored) : null;
+  const sentence =
+    state === "no_speech" ? NO_SPEECH_TEXT
+    : state === "no_audio" ? NO_AUDIO_TEXT
+    : state === "making" ? SUMMARY_MAKING
+    : stored || read?.error ? null
+    : "Loading the summary…";
+  const madeOn = stored ? madeOnText(stored.summarised_at) : "";
+
+  return (
+    <section
+      aria-labelledby={headingId}
+      aria-busy={state === "making" || (state === "summary" && !read)}
+      data-testid="training-summary-panel"
+      className="card min-w-0 space-y-4 rounded-[14px] p-4 sm:p-5"
+    >
+      <h2 id={headingId} className="font-(family-name:--fs-font-heading) text-base font-semibold">Summary</h2>
+      {sentence && (
+        <p role="status" aria-live="polite" data-testid="training-summary-status" data-state={state} className="text-sm">
+          {sentence}
+        </p>
+      )}
+      {read?.error && <Notice error testId="training-summary-error">{refusalCopy(read.error)}</Notice>}
+      {stored && text && (
+        <div data-testid="training-summary" className="min-w-0 space-y-3 [overflow-wrap:anywhere]">
+          {text.paragraphs.map((paragraph, index) => (
+            <p key={index} className="text-sm leading-6 whitespace-pre-line">{paragraph}</p>
+          ))}
+          {text.points.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold">Key points</h3>
+              <ul data-testid="training-summary-points" className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6">
+                {text.points.map((point, index) => <li key={index}>{point}</li>)}
+              </ul>
+            </div>
+          )}
+          {madeOn && <p className={muted} data-testid="training-summary-made">{madeOn}</p>}
+          <p className={muted} data-testid="training-summary-note">{VIDEO_SUMMARY_NOTE}</p>
+          <TechnicalDetails testId="training-summary-tech">
+            <p className="text-sm">Model: {stored.model}</p>
+          </TechnicalDetails>
         </div>
       )}
     </section>

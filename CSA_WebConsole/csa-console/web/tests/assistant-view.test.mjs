@@ -15,6 +15,7 @@ const emailUrl = await load("email-recipients.ts");
 const view = await import(await load("assistant-view.ts", {
   '"@/lib/navigation"': JSON.stringify(await load("navigation.ts")),
   '"@/lib/email-recipients"': JSON.stringify(emailUrl),
+  '"@/lib/training-view"': JSON.stringify(await load("training-view.ts")),
   '"@/lib/assistant-copy"': JSON.stringify(await load("assistant-copy.ts", {
     '"@/lib/email-recipients"': JSON.stringify(emailUrl),
   })),
@@ -528,4 +529,36 @@ test("a retry card the dock was told about is withdrawn with the other open card
   assert.deepEqual(view.openProposals([], { r: retried }, now).map((p) => p.id), ["r"]);
   assert.deepEqual(view.openProposals([], { r: proposal("r", { status: "executed" }) }, now), []);
   assert.deepEqual(view.openProposals([], { r: proposal("r", { expires_at: "2026-10-26T00:10:00Z" }) }, now), []);
+});
+
+// Training videos: the assistant answers from a transcript and links to the moment.
+const ASK_ID = "55555555-5555-4555-8555-555555555555";
+const OTHER_ID = "66666666-6666-4666-8666-666666666666";
+const askResult = {
+  action: "training_ask",
+  markdown: "Wear boots.\n\nFrom Safety induction, at 03:15 and 75:00.",
+  sources: [
+    { item_id: ASK_ID, title: "Safety induction", start_seconds: 195 },
+    { item_id: OTHER_ID, title: "Fire drill", start_seconds: 4500 },
+  ],
+};
+
+test("a training answer shows the text and one Watch from link per source", () => {
+  const shown = view.resultView(askResult);
+  assert.equal(shown.kind, "training_answer");
+  assert.equal(shown.text, askResult.markdown);
+  assert.deepEqual(shown.sources.map((s) => [s.itemId, s.title, s.seconds, s.label]), [
+    [ASK_ID, "Safety induction", 195, "Watch from 03:15"],
+    [OTHER_ID, "Fire drill", 4500, "Watch from 75:00"],
+  ]);
+});
+
+test("the links open the item with ?t= and keep a platform admin's company", () => {
+  assert.equal(view.watchHref(ASK_ID, 195, staff, "t1"), `/portal/training/${ASK_ID}?t=195`);
+  assert.equal(view.watchHref(ASK_ID, 195, admin, "t9"), `/training/${ASK_ID}?client_id=t9&t=195`);
+});
+
+test("a training answer with no sources has no links, and Malay gets Malay link text", () => {
+  assert.deepEqual(view.resultView({ ...askResult, sources: [] }).sources, []);
+  assert.equal(view.resultView(askResult, "ms").sources[0].label, "Tonton dari 03:15");
 });
