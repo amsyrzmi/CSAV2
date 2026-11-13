@@ -7974,6 +7974,70 @@
         "title": "InviteIn",
         "type": "object"
       },
+      "InvoiceBrief": {
+        "additionalProperties": false,
+        "description": "An open invoice as the subscription detail shows it (no staff-only fields).",
+        "properties": {
+          "amount": {
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "issued",
+              "proof_submitted",
+              "paid",
+              "overdue",
+              "void",
+              "cash_pending"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "status",
+          "amount",
+          "currency",
+          "due_at"
+        ],
+        "title": "InvoiceBrief",
+        "type": "object"
+      },
       "InvoiceItemOut": {
         "additionalProperties": false,
         "properties": {
@@ -13745,6 +13809,17 @@
             "title": "Id",
             "type": "string"
           },
+          "invoice_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Reference"
+          },
           "phone": {
             "title": "Phone",
             "type": "string"
@@ -13816,7 +13891,8 @@
           "subscription_id",
           "created_at",
           "decided_at",
-          "source_channel"
+          "source_channel",
+          "invoice_reference"
         ],
         "title": "SignupOut",
         "type": "object"
@@ -14246,13 +14322,24 @@
             "title": "Events",
             "type": "array"
           },
+          "open_invoice": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvoiceBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "subscription": {
             "$ref": "#/components/schemas/SubscriptionOut"
           }
         },
         "required": [
           "subscription",
-          "events"
+          "events",
+          "open_invoice"
         ],
         "title": "SubscriptionDetail",
         "type": "object"

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.payments.reference import new_invoice_id, new_reference
 from csa.subscriptions import signup
 from csa.subscriptions.api import build_subscriptions_router
 
@@ -367,9 +368,12 @@ async def test_default_renewal_follows_the_tenant_calendar(sessions: SessionWorl
         "timezone"
     ] == "Asia/Kuala_Lumpur"
     await seed_plan(w, w.tenants[0], "basic")
-    contact = await seed_customer(w, w.tenants[0])
 
     async def renews(started: str) -> datetime:
+        # One customer per call: a customer holds a plan once (409 `subscription_exists`).
+        contact = await seed_customer(
+            w, w.tenants[0], email=f"synthetic-{uuid.uuid4()}@example.test"
+        )
         response = await w.mutate(
             staff,
             BASE,
@@ -823,3 +827,89 @@ async def test_customer_lookup_omits_a_merged_shell(sessions: SessionWorld) -> N
     found = await reader.get(f"{BASE}/customers?q=ali")
     assert [c["id"] for c in found.json()] == [live]
     assert [c["id"] for c in (await reader.get(f"{BASE}/customers")).json()] == [live]
+
+
+async def test_manual_create_on_a_held_plan_is_409(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    contact = await seed_customer(w, w.tenants[0])
+    body = {"contact_id": contact, "plan_code": "basic"}
+
+    first = await w.mutate(staff, BASE, body)
+    assert first.status_code == 201, first.text
+    again = await w.mutate(staff, BASE, body)
+    assert again.status_code == 409 and again.json()["detail"] == "subscription_exists"
+    # A paused or a pending (approved sign-up) subscription holds the plan as well.
+    for status in ("paused", "pending"):
+        await w.q("UPDATE subscriptions SET status=%s WHERE id=%s", status, first.json()["id"])
+        held = await w.mutate(staff, BASE, body)
+        assert held.status_code == 409 and held.json()["detail"] == "subscription_exists"
+    rows = await w.q("SELECT id FROM subscriptions WHERE client_id=%s", w.tenants[0])
+    assert len(rows) == 1
+    audited = await w.q(
+        "SELECT target_id FROM console_audit WHERE client_id=%s AND action=%s",
+        w.tenants[0],
+        "subscriptions.created",
+    )
+    assert len(audited) == 1
+
+    # Another plan is fine, and so is the same plan once the old subscription is cancelled.
+    other_plan = await w.mutate(staff, BASE, {"contact_id": contact, "plan_code": "gold"})
+    assert other_plan.status_code == 201, other_plan.text
+    await w.q("UPDATE subscriptions SET status='cancelled' WHERE id=%s", first.json()["id"])
+    renewed = await w.mutate(staff, BASE, body)
+    assert renewed.status_code == 201, renewed.text
+
+
+async def test_detail_shows_the_newest_open_invoice(sessions: SessionWorld) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    reader, _ = await w.member(role="read_only")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    contact = await seed_customer(w, w.tenants[0])
+    await w.q("INSERT INTO payment_settings (client_id, enabled) VALUES (%s, true)", w.tenants[0])
+    request = await file_signup_for(w, w.tenants[0], contact)
+    approved = await w.mutate(staff, f"{BASE}/signups/{request.id}/approve")
+    assert approved.status_code == 200, approved.text
+    reference = approved.json()["invoice_reference"]
+    assert reference is not None
+    sub = approved.json()["subscription_id"]
+
+    detail = await reader.get(f"{BASE}/{sub}")
+    assert detail.status_code == 200, detail.text
+    [invoice] = await w.q("SELECT id, due_at FROM invoices WHERE subscription_id=%s", sub)
+    assert detail.json()["open_invoice"] == {
+        "id": invoice["id"],
+        "reference": reference,
+        "status": "issued",
+        "amount": "29.90",
+        "currency": "MYR",
+        "due_at": detail.json()["open_invoice"]["due_at"],
+    }
+    assert when(detail.json()["open_invoice"]["due_at"]) == invoice["due_at"]
+
+    # A newer open invoice is the one shown; a void one never is.
+    newer = new_invoice_id(datetime.now(UTC))
+    await w.q(
+        "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference, status, "
+        "amount, currency, issued_at, due_at, period_start, period_end) "
+        "VALUES (%s,%s,%s,%s,%s,'overdue',31.00,'MYR',now() + interval '1 minute',"
+        "now() - interval '1 day', now(), now() + interval '30 days')",
+        newer,
+        w.tenants[0],
+        contact,
+        sub,
+        new_reference(),
+    )
+    shown = (await reader.get(f"{BASE}/{sub}")).json()["open_invoice"]
+    assert (shown["id"], shown["status"], shown["amount"]) == (newer, "overdue", "31.00")
+    await w.q("UPDATE invoices SET status='void' WHERE subscription_id=%s", sub)
+    assert (await reader.get(f"{BASE}/{sub}")).json()["open_invoice"] is None
+
+    # A subscription added by hand has never had an invoice.
+    other = await seed_customer(w, w.tenants[0], name="Budi", email="budi@example.test")
+    made = await w.mutate(staff, BASE, {"contact_id": other, "plan_code": "basic"})
+    assert made.status_code == 201, made.text
+    assert (await reader.get(f"{BASE}/{made.json()['id']}")).json()["open_invoice"] is None

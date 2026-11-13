@@ -1185,8 +1185,8 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 | `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active, paused or pending subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
-| `GET /{id}` | any tenant member | `{subscription, events}`, events being the timeline. 404 `subscription_not_found` |
-| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`; audited `subscriptions.created` |
+| `GET /{id}` | any tenant member | `{subscription, events, open_invoice}`, events being the timeline; `open_invoice` is the newest open invoice of the subscription (`InvoiceBrief` `{id, reference, status, amount, currency, due_at}`, status `issued`, `overdue`, `proof_submitted` or `cash_pending`) or `null`. 404 `subscription_not_found` |
+| `POST` (the collection) | writers | Body `{contact_id, plan_code, started_at?, renews_at?}`; 201 `SubscriptionOut`, active at the plan's current price. An explicit `renews_at` sets the cycle's day; a defaulted one keeps `started_at`'s day. 422 `plan_unavailable` (missing or archived plan), 422 `renews_at_before_start`, 404 `contact_not_found`, 409 `subscription_exists` (the customer already has an active, paused or pending subscription on the plan; it takes the sign-up approval's per-customer-and-plan lock, so racing an approval leaves one); audited `subscriptions.created` |
 | `POST /{id}/actions` | writers | Body `{action, reason?, ...}`; 201 `ProposalOut` (the card), `Cache-Control: no-store`. Nothing changes until the same login session confirms the card at `POST /console/v1/workspace/proposals/{id}/confirm` |
 | `GET /signups?status=pending\|decided&before&limit` | any tenant member | `{items, next_cursor}` of `SignupOut` (newest first, keyset `before`, `limit` 1-100; `pending` is the default, `decided` is approved, declined and expired) |
 | `POST /signups/{id}/approve` | writers | No body; returns the approved `SignupOut`. Creates one `pending` subscription at the plan's price now. 404 `signup_not_found`; 409 `signup_not_pending`; 409 `signup_has_plan` (the customer already has an active, paused or pending subscription on the plan, for example added by hand; the request stays pending for staff to decline); 409 `plan_not_open` (the plan was archived or closed to sign-ups; the request stays pending); audited `subscriptions.signup.approved` |
@@ -1278,7 +1278,7 @@ A customer signs up for a plan in the chat; the bot files one `signup_requests` 
 `0580`) and the request waits for staff, or for the plan: a plan with `signup_mode: "auto"`
 approves it in the same transaction as the filing. `SignupOut` is `{id, contact: {id, full_name,
 phone, email}, plan_code, plan_name, full_name, phone, phone_verified, status, decided_via,
-decline_reason, subscription_id, created_at, decided_at, source_channel}`. `contact` is the
+decline_reason, subscription_id, created_at, decided_at, source_channel, invoice_reference}`. `contact` is the
 contact record as it stands. `full_name` and `phone` are what the customer typed (the phone
 normalised); the typed phone stays on the request and is never copied to the contact, and no
 route edits a contact's phone: when the customer already has another contact, staff link the two
@@ -1300,6 +1300,12 @@ channel of the contact's newest identity (null when it has none). `status` is `p
 - Decline stores the optional reason for staff only; it is never sent to the customer.
 - Staff start a pending subscription with the `activate` action; otherwise it expires after the
   company's `pending_expiry_days`.
+- Payments (migration `0590`): while the company's payments are on, the approval (staff or
+  automatic) also issues the subscription's opening invoice in the same transaction, and
+  `SignupOut.invoice_reference` is its reference (`null` when payments were off, or the invoice
+  is void). Marking it paid starts the subscription. Staff may still start it with `activate`:
+  the open opening invoice then gets the first period (`started_at` to `renews_at`), stays
+  payable, and paying it later only records the payment.
 
 ### Request queue
 
@@ -1342,6 +1348,15 @@ to the job's batch size (100) of rows with `FOR UPDATE SKIP LOCKED`:
    or missing `renews_at` set as in a manual resume.
 4. Renew: an active, unflagged subscription whose `renews_at` has passed advances to the
    next step of its renewal cycle (`renewed`).
+
+Invoices (payments): rule 1 voids the open invoices of periods that will not run
+(`period_start` at or after the period end) with `void_reason` `subscription_cancelled` and keeps
+the invoice of the period that ran. Rule 5 (pending expiry) skips a pending subscription that has a
+`proof_submitted` or `cash_pending` invoice (the customer said they paid, or cash is waiting) and
+voids the expired one's opening invoice (`subscription_expired`). `cancel_now` voids the same way
+as rule 1, from now: the opening invoice and the invoices of later periods (`subscription_cancelled`).
+Rule 2 runs before rule 4, so a plan change due at `renews_at` applies to the period that starts
+then.
 
 A row moves at most one step per rule per run, so a long-lapsed renewal catches up one
 interval per run. Nothing is charged. Renewal and resume arithmetic and the resume date

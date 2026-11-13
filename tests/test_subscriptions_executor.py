@@ -14,6 +14,9 @@ import httpx
 import psycopg
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
+from csa.core.tenancy import tx
+from csa.payments import invoices
+from csa.payments.reference import new_invoice_id, new_reference
 from csa.subscriptions.api import build_subscriptions_router
 from csa.subscriptions.executor import SubscriptionActionExecutor
 from csa.workspace.executors import build_proposal_registry
@@ -987,3 +990,160 @@ async def test_two_actors_activating_at_once_start_it_once(sessions: SessionWorl
         await direct_execute(w, me, payload, str(uuid.uuid4()), "2")
     assert refused.value.status_code == 422 and refused.value.detail == "action_not_allowed"
     assert (await row(w, sub))["version"] == 2
+
+
+# --- invoices (payments) -------------------------------------------------------------------------
+
+
+async def payments_on(w: SessionWorld) -> None:
+    await w.q(
+        "INSERT INTO payment_settings (client_id, enabled) VALUES (%s, true) "
+        "ON CONFLICT (client_id) DO UPDATE SET enabled = true",
+        w.tenants[0],
+    )
+
+
+async def issue_opening(w: SessionWorld, sub: str) -> invoices.InvoiceRecord:
+    async with tx(w.pool, w.tenants[0]) as conn:
+        issued = await invoices.issue_opening_invoice(
+            conn, UUID(w.tenants[0]), UUID(sub), now=datetime.now(UTC)
+        )
+    assert issued is not None
+    return issued
+
+
+async def seed_invoice(w: SessionWorld, sub: str, period_start: datetime, status: str) -> str:
+    """An invoice for the period starting at `period_start`, written as the job would leave it."""
+    invoice_id = new_invoice_id(datetime.now(UTC))
+    await w.q(
+        "INSERT INTO invoices (id, client_id, contact_id, subscription_id, reference, status, "
+        "amount, currency, issued_at, due_at, period_start, period_end) "
+        "SELECT %s, client_id, contact_id, id, %s, %s, 29.90, 'MYR', now(), %s, %s, "
+        "%s::timestamptz + interval '1 month' FROM subscriptions WHERE id = %s",
+        invoice_id,
+        new_reference(),
+        status,
+        period_start,
+        period_start,
+        period_start,
+        sub,
+    )
+    return invoice_id
+
+
+async def invoice_row(w: SessionWorld, invoice_id: str) -> dict[str, Any]:
+    return (await w.q("SELECT * FROM invoices WHERE id=%s", invoice_id))[0]
+
+
+async def open_invoices(w: SessionWorld, sub: str) -> list[dict[str, Any]]:
+    return await w.q(
+        "SELECT id, period_start FROM invoices WHERE subscription_id=%s "
+        "AND status IN ('issued','overdue','proof_submitted','cash_pending')",
+        sub,
+    )
+
+
+async def test_cancel_now_voids_the_opening_invoice_of_a_pending_subscription(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await payments_on(w)
+    sub = await pending_subscription(w, staff)
+    opening = await issue_opening(w, sub)
+
+    created = await propose(w, staff, sub, {"action": "cancel_now", "reason": "changed mind"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    assert (await row(w, sub))["status"] == "cancelled"
+    voided = await invoice_row(w, opening.id)
+    assert voided["status"] == "void" and voided["void_reason"] == "subscription_cancelled"
+    assert voided["voided_at"] is not None and voided["voided_by"] is None
+    assert await open_invoices(w, sub) == []
+
+
+async def test_cancel_now_voids_the_next_period_and_keeps_the_running_one(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    sub = await subscribe(w, staff)
+    now = datetime.now(UTC)
+    running = await seed_invoice(w, sub, now - timedelta(days=10), "overdue")
+    upcoming = await seed_invoice(w, sub, now + timedelta(days=20), "proof_submitted")
+
+    created = await propose(w, staff, sub, {"action": "cancel_now"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    assert (await row(w, sub))["status"] == "cancelled"
+    assert (await invoice_row(w, upcoming))["status"] == "void"
+    assert (await invoice_row(w, upcoming))["void_reason"] == "subscription_cancelled"
+    # The period that already ran is still owed: its invoice stays open for staff to settle.
+    assert [i["id"] for i in await open_invoices(w, sub)] == [running]
+
+
+async def test_start_gives_the_open_opening_invoice_its_period_and_it_stays_payable(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, me = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await payments_on(w)
+    sub = await pending_subscription(w, staff)
+    opening = await issue_opening(w, sub)
+
+    created = await propose(w, staff, sub, {"action": "activate", "reason": "paid in cash"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    started = await row(w, sub)
+    assert started["status"] == "active" and started["version"] == 2
+    invoice = await invoice_row(w, opening.id)
+    assert invoice["status"] == "issued"
+    assert invoice["period_start"] == started["started_at"]
+    assert invoice["period_end"] == started["renews_at"]
+
+    # Paying it later records the payment and changes nothing on the running subscription.
+    async with tx(w.pool, w.tenants[0]) as conn:
+        outcome = await invoices.mark_paid(
+            conn,
+            UUID(w.tenants[0]),
+            opening.id,
+            actor_user_id=UUID(me["user"]["id"]),
+            request_key=uuid.uuid4(),
+            method_kind="transfer",
+            received_at=datetime.now(UTC) - timedelta(minutes=5),
+            note=None,
+        )
+    assert outcome.invoice.status == "paid"
+    assert (outcome.activated, outcome.resumed, outcome.recorded_only) == (False, False, False)
+    assert await row(w, sub) == started
+
+
+async def test_plan_price_change_after_issue_keeps_the_invoice_amount(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    await seed_plan(w, w.tenants[0], "basic", "29.90")
+    await seed_plan(w, w.tenants[0], "gold", "59.90")
+    await payments_on(w)
+    sub = await subscribe(w, staff)
+    await w.q("UPDATE subscriptions SET renews_at = now() + interval '3 days' WHERE id=%s", sub)
+    async with tx(w.pool, w.tenants[0]) as conn:
+        issued = await invoices.issue_period_invoice(
+            conn, UUID(w.tenants[0]), UUID(sub), now=datetime.now(UTC)
+        )
+    assert issued is not None and str(issued.amount) == "29.90"
+
+    created = await propose(w, staff, sub, {"action": "change_plan", "plan_code": "gold"})
+    assert created.status_code == 201, created.text
+    assert (await confirm(w, staff, created.json()["id"])).status_code == 200
+
+    assert str((await row(w, sub))["price"]) == "59.90"
+    kept = await invoice_row(w, issued.id)
+    assert str(kept["amount"]) == "29.90" and kept["status"] == "issued"

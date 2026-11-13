@@ -6,6 +6,11 @@ change and records one ``subscription_events`` row keyed by the proposal id, so 
 again after the commit replays that event's receipt instead of acting twice. For an immediate
 plan change the bound version also carries the target plan's price, currency and interval
 (``bound_version``), because a plan edit does not bump the subscription's version.
+
+Invoices follow in the same transaction, under the subscription lock taken first (the payments
+lock order): ``cancel_now`` voids the open invoices of periods that will not run and the opening
+invoice (the running period's invoice stays owed), and ``activate`` gives the opening invoice its
+first period, so an open one stays payable and a later payment only records it.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from csa.console.kb_uploads import audit
 from csa.console.services import ACTIVE_ONLY, require_package
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.payments.invoices import void_for_subscription
 from csa.subscriptions.api import require_subscriptions_write
 from csa.subscriptions.contracts import Action, ActionIn
 from csa.subscriptions.service import Conn, get_request_row, get_subscription_out, record_event
@@ -467,6 +473,19 @@ class SubscriptionActionExecutor:
             )
             if applied is None:
                 raise RuntimeError(f"subscription {action.subscription_id} apply matched no row")
+            if action.action == "cancel_now":
+                await void_for_subscription(
+                    conn,
+                    client_id,
+                    action.subscription_id,
+                    reason="subscription_cancelled",
+                    from_period=now,
+                )
+            elif action.action == "activate":
+                # Started by hand: the opening invoice (the one with no period yet), when there
+                # is one, covers the first period (the new started_at to renews_at). It keeps its
+                # status, so an open one stays payable and paying it only records the payment.
+                await db.q.execute("payments/invoice_set_period.sql", key, conn=conn)
             details: dict[str, Any] = {}
             match action.action:
                 case "activate":
