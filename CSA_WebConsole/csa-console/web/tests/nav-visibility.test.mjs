@@ -168,6 +168,29 @@ test("Credit is for the company's Admin only, after Team, with no package and no
   }
 });
 
+test("Billing is for platform admins only, after Members, at /billing, with no sub-pages; Credit is unchanged", () => {
+  for (const packages of [[], active("customer_support", "hr", "staff_email")]) {
+    const links = navigationFor({ ...staff, role: "platform_admin" }, packages);
+    const link = links.find((l) => l.label === "Billing");
+    assert.equal(link?.key, "billing", JSON.stringify(packages));
+    assert.equal(link?.href, "/billing");
+    assert.equal(link?.children, undefined);
+    const names = links.map((l) => l.label);
+    assert.equal(names.indexOf("Billing"), names.indexOf("Members") + 1);
+    assert.equal(entryForPath(links, "/billing")?.key, "billing");
+    // The platform team never gets the client's Credit tab.
+    assert.ok(!links.some((l) => l.key === "credit"));
+  }
+  // A company's Admin, staff and read-only members never see it, with every package active.
+  for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
+    const links = navigationFor({ ...staff, role }, active("customer_support", "hr", "staff_email"));
+    assert.ok(!links.some((l) => l.key === "billing" || l.label === "Billing" || l.href === "/billing"), role);
+  }
+  // The client's Credit link is as it was: tenant_admin only, /portal/credit.
+  const tenant = navigationFor({ ...staff, role: "tenant_admin" }, []);
+  assert.deepEqual(tenant.find((l) => l.key === "credit"), { href: "/portal/credit", label: "Credit", key: "credit" });
+});
+
 test("Password opens the in-shell page: /password for platform admins, /portal/password for tenant roles", () => {
   const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
   assert.equal(admin.find((l) => l.key === "password")?.href, "/password");
@@ -220,15 +243,15 @@ test("children never add a top-level key", () => {
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  // 17 since Credit joined.
-  assert.equal(keys.size, 17);
+  // 18 since Billing joined.
+  assert.equal(keys.size, 18);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
   const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
-    "activity", "bookings", "business", "connections", "credit", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "activity", "billing", "bookings", "business", "connections", "credit", "email", "hr", "inbox", "knowledge_base", "members", "overview",
     "password", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });

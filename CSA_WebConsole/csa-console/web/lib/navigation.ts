@@ -5,7 +5,7 @@ export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
   | "team" | "password" | "subscriptions" | "bookings" | "training_library" | "connections"
-  | "credit";
+  | "credit" | "billing";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
 export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
@@ -160,6 +160,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     { key: "connections", label: "Connections", href: to("connections") },
     { key: "tenants", label: "Tenants", href: "/settings/clients", show: admin },
     { key: "members", label: "Members", href: "/settings/team", show: admin },
+    // Every company's usage, raw cost and margin, and the billing plan, price and FX forms.
+    { key: "billing", label: "Billing", href: "/billing", show: admin },
     { key: "team", label: "Team", href: "/portal/team", show: me.role === "tenant_admin" },
     // The company's own usage and bill, for its Admin only and with no package. The platform
     // team reads every company's billing on its own page.

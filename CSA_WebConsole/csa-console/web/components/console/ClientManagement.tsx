@@ -1,7 +1,9 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api, post, patch } from "@/lib/api";
 import type { Agent, Capability, Client } from "@/lib/identity-contracts";
+import { PlanEditor } from "./billing/PlanEditor";
 import { action, field, Heading, Notice, Panel } from "./ui";
 
 export function ClientManagement() {
@@ -218,6 +220,19 @@ export function ClientManagement() {
                   })}
                 </ul>
               )}
+            </Panel>
+          )}
+          {selected && (
+            <Panel title="Billing plan">
+              <p className="mb-5 text-sm text-ink-600">
+                The stage and bundle this tenant is billed on. Its current plan, usage and bill
+                are on the <Link href="/billing" className="underline underline-offset-2">Billing</Link> page.
+              </p>
+              <PlanEditor
+                key={selected}
+                clientId={selected}
+                name={clients?.find((client) => client.id === selected)?.name ?? "This tenant"}
+              />
             </Panel>
           )}
         </div>
