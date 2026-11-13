@@ -1,6 +1,6 @@
 # Object storage (S3)
 
-Knowledge-base uploads, HR documents and training library PDFs are stored through one interface
+Knowledge-base uploads, HR documents and training library files (PDFs and videos) are stored through one interface
 with two backends: the local `*_UPLOAD_ROOT` folders (the default; dev, CI and current staging) or one S3 bucket.
 The database keeps only file names, so the backend is a deployment choice, not a data change.
 
@@ -44,6 +44,15 @@ The application key can list only under `kb/`, `hr/` and `training/`, read and w
 write (never read or delete) under `backups/`. It has no permission on object versions, so a
 leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
 
+Training videos arrive piece by piece as an S3 multipart upload, which the gateway starts, fills,
+completes and, when a video is removed, aborts. The calls it makes and the permission each needs:
+`CreateMultipartUpload`, `UploadPart` and `CompleteMultipartUpload` need `s3:PutObject` (already
+granted); `AbortMultipartUpload` needs `s3:AbortMultipartUpload`; `ListParts` (only when S3 refuses
+a completion, to find which pieces to send again) needs `s3:ListMultipartUploadParts`; `HeadObject`
+(only when a completion's answer was lost) and the presigned playback link need `s3:GetObject`
+(already granted). The statement `TrainingMultipart` below adds the two new actions, on `training/`
+only. The gateway never lists open uploads; the training worker does.
+
 ```json
 {
   "Version": "2012-10-17",
@@ -64,6 +73,12 @@ leaked key cannot destroy history. Replace `<bucket>` with the bucket name.
         "arn:aws:s3:::<bucket>/hr/*",
         "arn:aws:s3:::<bucket>/training/*"
       ]
+    },
+    {
+      "Sid": "TrainingMultipart",
+      "Effect": "Allow",
+      "Action": ["s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+      "Resource": "arn:aws:s3:::<bucket>/training/*"
     },
     {
       "Sid": "BackupsPutOnly",
@@ -107,6 +122,58 @@ has the same list right, so the same answer is expected, but it has not been che
 retry treats 404 as "this file is gone" and anything else as an error. The key goes in the secret files
 `storage/s3_worker_access_key_id` and `storage/s3_worker_secret_access_key` (`deploy/PRODUCTION.md`).
 
+## IAM policy for the training worker key
+
+The training worker (`python -m apps.training_worker.main`) transcribes and summarises videos and
+sweeps abandoned uploads. Production gives it a third key, limited to `training/`, so it never
+holds the application key or the knowledge-base worker key. Its calls and their permissions:
+
+| Call | Why | Permission |
+| --- | --- | --- |
+| `ListObjectsV2` under `training/` | startup check; the hourly sweep of stored names | `s3:ListBucket` with prefix `training/*` |
+| `ListMultipartUploads` under `training/<company>/` | the hourly sweep of open uploads no row keeps | `s3:ListBucketMultipartUploads` on the bucket |
+| `AbortMultipartUpload` | abort those uploads | `s3:AbortMultipartUpload` on `training/*` |
+| `HeadObject` | the video's size, when ffmpeg cannot read it | `s3:GetObject` on `training/*` |
+| presigned `GetObject` (15 minutes) | ffmpeg and ffprobe read the video through the link | `s3:GetObject` on `training/*` |
+| `DeleteObject` | a refused video, and stored names no row keeps | `s3:DeleteObject` on `training/*` |
+It never writes: no `s3:PutObject`. `s3:ListBucketMultipartUploads` is granted on the bucket with no
+prefix condition, so that one action sees the names of every open multipart upload in
+`s3:ListBucketMultipartUploads`, so that one action sees the names of every open multipart upload in
+the bucket (names only: it cannot read, finish or abort one outside `training/`). Replace `<bucket>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListTrainingOnly",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<bucket>",
+      "Condition": { "StringLike": { "s3:prefix": ["training/*"] } }
+    },
+    {
+      "Sid": "ListOpenUploads",
+      "Effect": "Allow",
+      "Action": "s3:ListBucketMultipartUploads",
+      "Resource": "arn:aws:s3:::<bucket>"
+    },
+    {
+      "Sid": "ReadDeleteAbortTrainingFiles",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+      "Resource": "arn:aws:s3:::<bucket>/training/*"
+    }
+  ]
+}
+```
+
+The key goes in the secret files `storage/s3_training_access_key_id` and
+`storage/s3_training_secret_access_key`, and `deploy/production-rollout.env` names it with
+`CSA_PROD_S3_TRAINING_KEY=prod_s3_training` (`deploy/PRODUCTION.md`, "Training video"). Until then
+the training worker reads the disabled placeholder and stays idle while video is off; with video on
+and the placeholder it refuses to start.
+
 ## Bucket settings
 
 - Private, with all four "Block public access" options on.
@@ -134,7 +201,14 @@ retry treats 404 as "this file is gone" and anything else as an error. The key g
   - `backups/`: current versions expire after 14 days.
   - Whole bucket: non-current versions expire after 7 days, expired object delete markers are
     removed (`ExpiredObjectDeleteMarker: true`), and incomplete multipart uploads are aborted
-    after 1 day.
+    after 2 days (`AbortIncompleteMultipartUpload`, `DaysAfterInitiation: 2`).
+
+  The 2 days are for `training/`: a video upload is kept open while pieces keep arriving and is
+  abandoned only after 24 hours with no new piece, so a rule that counts from the upload's start
+  must give it longer than that. Before training video, this rule said 1 day; change it to 2
+  before video is switched on. A separate `training/` rule at 2 days is not enough while the
+  whole-bucket rule says 1: both apply to `training/`, and the shorter one aborts first. The rule
+  is a backstop; the training worker aborts abandoned uploads itself every hour.
 
 ## Copy existing local files into S3
 
@@ -220,12 +294,42 @@ docker exec csa-prod-gateway-1 python -m scripts.storage_smoke
 
 It writes one small object per store, under a random tenant id in the `kb`, `hr` and `training` prefixes, and
 checks the startup check, put and read, listing, streaming, delete, and reading a missing name, then
-removes them. It prints one `PASS` or `FAIL` line per check and never prints keys or contents.
+removes them. The training store also gets a multipart upload of three pieces (about 10 MiB),
+completed and read back whole, a second upload aborted after one piece, and a GET of the first 16
+bytes through a presigned playback link, which must answer 206 as it does for a browser's video
+element. The multipart lines fail on an application key without `s3:AbortMultipartUpload`. It
+prints one `PASS` or `FAIL` line per check and never prints keys, links, object names or contents.
 Exit code 0 means every check passed, 1 means a check failed, 2 means the settings are unusable.
+Run it in the gateway only: the training worker's key cannot write.
 
 Reading a missing object may answer `StorageNotFound` (S3 404) or `StorageError` (S3 403, which
 a prefix-conditioned policy can return for a missing key). Both pass; the line says which one
 happened.
+
+## Checks only the real bucket can answer
+
+The test double (moto) accepts a piece whose checksum is wrong and leaves `ChecksumSHA256` out of
+`ListParts`, so two behaviours the upload code relies on are proven only on the real bucket. Run
+this once in CloudShell with the admin login before video is switched on (replace `<bucket>`):
+
+```bash
+B=<bucket>; K="training/smoke-check-$(date +%s).bin"
+head -c 1024 /dev/urandom > part.bin
+GOOD=$(openssl dgst -sha256 -binary part.bin | base64)
+BAD=$(printf other | openssl dgst -sha256 -binary | base64)
+U=$(aws s3api create-multipart-upload --bucket "$B" --key "$K" --checksum-algorithm SHA256 --query UploadId --output text)
+# 1. Must fail with BadDigest: the gateway reads that as "send this piece again".
+aws s3api upload-part --bucket "$B" --key "$K" --upload-id "$U" --part-number 1 --body part.bin --checksum-sha256 "$BAD"
+# 2. Must succeed, and list-parts must print the same value as: echo "$GOOD"
+aws s3api upload-part --bucket "$B" --key "$K" --upload-id "$U" --part-number 1 --body part.bin --checksum-sha256 "$GOOD"
+aws s3api list-parts --bucket "$B" --key "$K" --upload-id "$U" --query 'Parts[].ChecksumSHA256'
+echo "$GOOD"
+aws s3api abort-multipart-upload --bucket "$B" --key "$K" --upload-id "$U"
+rm part.bin
+```
+
+If step 1 succeeds, or step 2 prints no checksum, stop: a corrupted piece would not be caught by
+S3 and a refused completion could not name the pieces to resend. Report it before video is on.
 
 ## Behaviour notes
 

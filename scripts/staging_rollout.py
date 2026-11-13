@@ -43,6 +43,7 @@ SERVICE_APP = {
     "worker": "python",
     "delivery": "python",
     "frontend": "frontend",
+    "training-worker": "python",
 }
 STOP_SERVICES = STAGING.stop_services
 FLAGS_FILE = STAGING.flags_file
@@ -91,7 +92,7 @@ READY_TRIES = 5
 READY_PAUSE = 3
 HEALTH_POLL = 5
 HEALTH_WAIT = 300
-STOPPED_NAMES = "gateway, frontend, worker and delivery"
+STOPPED_NAMES = "gateway, frontend, worker, delivery and training-worker"
 ALL_STOPPED = f"{STOPPED_NAMES} are stopped"
 LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
@@ -211,7 +212,7 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
         value = value.strip()
-        allowed = OPTIONAL_FLAG_VALUES.get(key)
+        allowed = OPTIONAL_FLAG_VALUES.get(key) or target.optional_values.get(key)
         if allowed is not None and value not in allowed:
             # The value is not echoed: the file is not secret, but a bad line may still be a typo
             # of something that is.
@@ -1088,7 +1089,7 @@ def _migrate(
         env,
         "stop",
         "compose stop",
-        "some of gateway, frontend, worker and delivery may still be running; check compose ps",
+        f"some of {STOPPED_NAMES} may still be running; check compose ps",
     )
     out(f"Applying migrations {', '.join(pending)}…")
     approval, approved = target.migration_approval

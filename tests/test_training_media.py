@@ -217,6 +217,28 @@ def test_ci_installs_the_pinned_ffmpeg_and_requires_it() -> None:
     assert steps.index(install) < steps.index(pytest_step)
 
 
+def test_dockerfile_and_ci_pin_the_same_ffmpeg() -> None:
+    dockerfile = (REPO_ROOT / "deploy" / "Dockerfile").read_text()
+    # Only the runtime stage ships: the copy must be there, not in the build stage.
+    runtime = dockerfile.split(" AS runtime", 1)[1]
+    copies = re.findall(
+        r"^COPY --from=(\S+@sha256:[0-9a-f]{64}) /ffmpeg /ffprobe /usr/local/bin/$",
+        runtime,
+        flags=re.MULTILINE,
+    )
+    assert len(copies) == 1, "the runtime stage does not copy ffmpeg and ffprobe by digest"
+    assert runtime.index("COPY --from=" + copies[0]) < runtime.index("USER 1000:1000")
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    steps: list[dict[str, object]] = workflow["jobs"]["tests"]["steps"]
+    install = next(step for step in steps if "docker create" in str(step.get("run", "")))
+    env = install["env"]
+    assert isinstance(env, dict)
+    assert env["FFMPEG_IMAGE"] == copies[0]
+    # Every reference to that image in either file is the same digest-pinned one.
+    references = re.findall(r"mwader/static-ffmpeg[^\s\"']*", dockerfile + yaml.safe_dump(env))
+    assert set(references) == {copies[0]}
+
+
 async def test_missing_tool_is_unavailable_without_a_child(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spawned: list[int]
 ) -> None:

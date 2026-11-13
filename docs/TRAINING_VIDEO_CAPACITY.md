@@ -21,6 +21,9 @@ for whoever sets the limit, neither changes the recommendation:
 - Production reality was not provided (below), so whether the 2 GB host can take one more container
   of this size is not established by this document.
 
+The production default chosen afterwards is 256m (`CSA_PROD_MEM_TRAINING_WORKER`, tunable from the
+host env file), not 160: the 160 was measured with the import set alone.
+
 ## Limits on paper (`deploy/compose.production.yml`)
 
 Defaults; every one can be overridden from the host env file (`CSA_PROD_MEM_*`).
@@ -61,6 +64,13 @@ unpacked, "content size" is compressed (what a pull transfers).
 | base (csa-python) | 523 MB | 124 MB | |
 | A: base + static ffmpeg and ffprobe (`COPY --from=<digest>`) | 901 MB | 231 MB | +378 MB / +107 MB |
 | B: base + Debian `apt-get install --no-install-recommends ffmpeg` | 1.16 GB | 295 MB | +637 MB / +171 MB |
+
+Image size after this change: 901 MB disk usage (523 MB before), built locally on 2026-11-13 from
+`deploy/Dockerfile` the way the CI `package` job builds it (release context, the same build
+arguments, `linux/amd64`). That is image A above. In it, `ffprobe -version` runs as user 1000 and
+reports 7.1.1, the two binaries' sha256 equal the CI pins below, and
+`/etc/ssl/certs/ca-certificates.crt` exists: an `https` ffprobe with `-tls_verify 1 -ca_file` that
+bundle completes the TLS handshake, and fails with `certificate verify failed` without it.
 
 The static `ffmpeg` and `ffprobe` are about 135 MB each, because each carries the full codec set.
 A copies both. If image size matters later, ffprobe can be replaced by `ffmpeg -i` parsing or the

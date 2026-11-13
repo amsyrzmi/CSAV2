@@ -9,7 +9,8 @@ can run it before the switch. With it on it refuses to start without ``VOICE_STT
 training store, builds and checks only the training store (its key may be scoped to ``training/``;
 the KB and HR stores are never built), opens a small owner pool (to list active companies) and a
 small app pool (everything else, inside each company's transaction), and runs the job loop, the
-hourly sweep and the liveness heartbeat until SIGTERM or SIGINT.
+hourly sweep and the liveness heartbeat until SIGTERM or SIGINT. On S3 it also refuses a placeholder
+key: production mounts the disabled placeholder until the owner makes the training key.
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ POLL_SECONDS = 5.0
 POOL_SIZE = 2
 """Connections in each pool: the job loop and the sweep each hold at most one at a time."""
 
+PLACEHOLDER_KEYS = frozenset({"disabled", "staging-disabled-no-model-access"})
+"""Values a deployment writes while a key is not made yet (production mounts the staging
+disabled-model-key file as the training S3 key until the owner makes the real one)."""
+
 
 class WorkerStages:
     """The worker's stages: transcribing and the summary, each in its own module."""
@@ -61,6 +66,11 @@ class WorkerStages:
 
 async def prepare_training_store(settings: Settings) -> ObjectStore:
     """Build and check the training store only; refuse to start without one that takes pieces."""
+    key = settings.S3_ACCESS_KEY_ID
+    if settings.STORAGE_BACKEND == "s3" and (
+        key is None or key.get_secret_value().strip() in PLACEHOLDER_KEYS
+    ):
+        raise RuntimeError("TRAINING_VIDEO_ENABLED needs the training worker's own S3 key")
     store = build_stores(settings).training
     if store is None:
         raise RuntimeError("TRAINING_VIDEO_ENABLED needs the training store")

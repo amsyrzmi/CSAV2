@@ -13,8 +13,8 @@ The production stack is the three staging Compose files plus `deploy/compose.pro
 applied last. The overlay changes only:
 
 - files (knowledge base, HR and training library) live in S3 (`STORAGE_BACKEND=s3`) and no upload volume is mounted;
-- two workers, and memory limits and OOM priorities so the kernel kills a worker or the frontend
-  before Postgres;
+- two workers, one training worker (video jobs), and memory limits and OOM priorities so the
+  kernel kills the training worker, then a worker or the frontend, before Postgres;
 - Postgres settings for a 2 GB host;
 - the gateway joins the `edge` network so the tunnel connector can reach it;
 - the database image can be named by the operator (`CSA_PROD_DB_IMAGE`) while the registry package
@@ -66,17 +66,17 @@ commit in `/home/ubuntu/CSAV2` and runs
    runs the rollout with `/opt/csa-deploy/venv/bin/python` through `csa-prod-deploy`.
 4. **Approve or reject** the `production` deployment on the run page ("Review deployments"). One
    approval from either reviewer is enough; self-approval is allowed. Approval is the decision,
-   so read the plan first: a migration stops gateway, frontend, both workers and delivery (console
-   unavailable, bot replies delayed, not lost), and a downgrade warning means the target is older
-   than what runs now. Reject to cancel; nothing on production has changed (only
+   so read the plan first: a migration stops gateway, frontend, both workers, delivery and the
+   training worker (console unavailable, bot replies delayed, not lost), and a downgrade warning
+   means the target is older than what runs now. Reject to cancel; nothing on production has changed (only
    the deploy checkout moved to the commit).
 5. **Read the result** in the `apply` job's summary. `apply` checks out `main` again at approval
    time for its runner scripts, then sends the planned values; on the instance the rollout
    re-derives the plan and refuses if anything changed. It checks the compose config, takes and
    verifies a backup (`Backup taken: backups/csa_staging-<timestamp>.dump`), pulls and verifies
    the images by digest, applies the pending migrations (services stopped), recreates gateway,
-   worker (both replicas), delivery and frontend, waits for `/readyz`, runs the check files, and
-   ends with `Rollout of <sha7> finished.`. On a stop it prints `Stopped at <step>: ...`, the state
+   worker (both replicas), delivery, frontend and training worker, waits for `/readyz`, runs the
+   check files, and ends with `Rollout of <sha7> finished.`. On a stop it prints `Stopped at <step>: ...`, the state
    production is in, the recovery lines for how far it got, and
    `Re-run plan, then apply, once the cause is fixed.` It never retries, restarts or rolls back by
    itself. Every run is also logged on the instance in
@@ -532,7 +532,7 @@ rm -f /var/tmp/csa-restore.dump
 **2. Restore over the live database (owner only, deliberate).** This replaces everything written
 since the backup. Do step 1 first and keep the dump. Then, as `ubuntu`:
 
-1. Stop the services that write: `docker stop csa-prod-gateway-1 csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1`.
+1. Stop the services that write: `docker stop csa-prod-gateway-1 csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1 csa-prod-training-worker-1`.
 2. Back up the current state first, so it can be recovered: `/srv/csa-prod/backup/backup.sh && tail -n 1 /srv/csa-prod/backup/backup.log`.
 3. Replace the database, one line at a time, stopping if one fails:
 
@@ -547,7 +547,7 @@ since the backup. Do step 1 first and keep the dump. Then, as `ubuntu`:
    and the newest file in the deployed commit (`ls ~/CSAV2/db/migrations/*.sql | tail -n 1`, after
    checking that `git -C ~/CSAV2 rev-parse HEAD` is the commit production runs). If
    they match, start the containers again with
-   `docker start csa-prod-gateway-1 csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1`.
+   `docker start csa-prod-gateway-1 csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1 csa-prod-training-worker-1`.
    If the dump is older, do not start them: start `deploy-production` with `sha` set to the commit
    production runs, which applies the missing migrations and recreates the services.
 5. Check readiness (exit 0 and no output means ready; the gateway can take about 45 seconds):
@@ -579,17 +579,17 @@ deploy uses instead.
    docker pull "$CSA_STAGING_PYTHON_IMAGE" && docker pull "$CSA_STAGING_FRONTEND_IMAGE"
    ```
 
-4. Only if the commit has migrations the database lacks: stop the four services, then migrate.
+4. Only if the commit has migrations the database lacks: stop the five services, then migrate.
 
    ```bash
-   csa_compose stop gateway frontend worker delivery
+   csa_compose stop gateway frontend worker delivery training-worker
    CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging csa_compose --profile migration-approved run --rm --no-deps migrate
    ```
 
 5. Recreate the services one by one, in this order, and read each result:
 
    ```bash
-   for S in gateway worker delivery frontend; do
+   for S in gateway worker delivery frontend training-worker; do
      csa_compose up --detach --wait --wait-timeout 300 --no-deps --pull never "$S" || break
    done
    ```
@@ -614,6 +614,9 @@ for S in gateway worker delivery frontend; do
 done
 ```
 
+Those images predate the training worker (they have no `apps.training_worker`), so stop it rather
+than recreating it: `csa_compose stop training-worker`.
+
 Then check readiness as above. Do not delete the local tags until a scripted deploy has succeeded.
 If migrations were applied, do not roll back; fix forward.
 
@@ -623,6 +626,7 @@ If migrations were applied, do not roll back; fix forward.
 | --- | --- | --- |
 | gateway | application key (`csa-prod-app`) | `kb/`, `hr/` and `training/` read, write, delete; `backups/` put-only |
 | worker (two replicas) | worker key (`csa-prod-worker`) | `kb/` read only |
+| training worker | training worker key (`csa-prod-training`), until made: the disabled placeholder | `training/` list, read, delete and abort uploads; no write |
 | delivery, frontend, database | none | |
 
 The worker only reads knowledge-base files, so a leaked worker key cannot read HR documents or
@@ -637,6 +641,10 @@ Under the host's secret directory (`CSA_STAGING_SECRET_DIR`, mode `0400`, owner 
 
 - `storage/s3_app_access_key_id`, `storage/s3_app_secret_access_key`
 - `storage/s3_worker_access_key_id`, `storage/s3_worker_secret_access_key`
+- `storage/s3_training_access_key_id`, `storage/s3_training_secret_access_key`: only once
+  `deploy/production-rollout.env` has `CSA_PROD_S3_TRAINING_KEY=prod_s3_training` (Training video,
+  below). Until then the training worker mounts the existing `runtime/staging_disabled_model_key`
+  file for both names and needs no new file.
 
 Compose refuses to start a service whose secret file is missing. Create them with a hidden prompt
 or a pipe, never as a command argument, so a key never lands in shell history or a log:
@@ -715,9 +723,9 @@ credentials. Start only the services that serve the console.
 Every number the capacity test may change has the default the tests pin. For scripted deploys,
 set an override in `/srv/csa-prod/host.env` (it wins over the repository file for these keys
 only); the plan lists the keys under `Host overrides:` and `apply` refuses if they changed since
-the plan. The next `deploy-production` recreates gateway, worker, delivery and frontend with the
-new values. A rollout never recreates the database, embeddings or tunnel connector, so a change
-to `CSA_PROD_MEM_DB`, `_EMBEDDINGS`, `_CLOUDFLARED` or a `CSA_PROD_PG_*` value takes effect only
+the plan. The next `deploy-production` recreates gateway, worker, delivery, frontend and the
+training worker with the new values. A rollout never recreates the database, embeddings or tunnel
+connector, so a change to `CSA_PROD_MEM_DB`, `_EMBEDDINGS`, `_CLOUDFLARED` or a `CSA_PROD_PG_*` value takes effect only
 when the owner recreates that service by hand (`csa_compose up --detach --no-deps <service>`). A
 migration is never involved.
 
@@ -725,12 +733,79 @@ migration is never involved.
 | --- | --- | --- |
 | `CSA_PROD_WORKER_REPLICAS` | `2` | Number of workers. Set `1` first if memory is tight. |
 | `CSA_PROD_MEM_DB`, `_GATEWAY`, `_WORKER`, `_DELIVERY`, `_FRONTEND`, `_EMBEDDINGS`, `_CLOUDFLARED` | `640m`, `400m`, `320m`, `200m`, `256m`, `1100m`, `96m` | Container memory limit (the worker value is per replica). |
+| `CSA_PROD_MEM_TRAINING_WORKER` | `256m` | The training worker's memory limit (one container; `oom_score_adj` 600, the first the OOM killer takes). |
 | `CSA_PROD_PG_SHARED_BUFFERS` | `192MB` | Postgres `shared_buffers`. |
 | `CSA_PROD_PG_EFFECTIVE_CACHE` | `512MB` | Postgres `effective_cache_size`. |
 | `CSA_PROD_PG_WORK_MEM` | `4MB` | Postgres `work_mem`. |
 | `CSA_PROD_PG_MAINTENANCE_MEM` | `64MB` | Postgres `maintenance_work_mem`. |
 | `CSA_PROD_PG_MAX_CONNECTIONS` | `60` | Postgres `max_connections`. |
 | `CSA_PROD_GROQ_CHAT_URL` | Groq | Model endpoint. Capacity test only (below); never accepted in `host.env`. |
+
+## Training video
+
+The training worker (`training-worker`, `python -m apps.training_worker.main`, the same image) runs
+on staging and production from this change on. With `CSA_STAGING_TRAINING_VIDEO` unset it opens
+nothing and only touches its liveness file; the gateway refuses new video uploads. One process,
+always: never give it replicas.
+
+### Owner steps before video is switched on
+
+1. **Production host capacity.** The compose memory limits already sum to 3332m against a 2048 MB
+   host, and the training worker adds 256m (3588m). Limits are caps, not use, so send the owner's
+   `docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'` and `free -m` from csa-prod, taken
+   at a busy time, before the switch. If the headroom is not there, the choices are a larger host,
+   one worker (`CSA_PROD_WORKER_REPLICAS=1`) or a lower `CSA_PROD_MEM_TRAINING_WORKER`.
+2. **The training worker key** (`csa-prod-training`): create it with the policy in
+   `docs/OBJECT_STORAGE.md` ("IAM policy for the training worker key"), then write its two files
+   with the hidden-prompt block under "Secret files the overlay needs" (names
+   `s3_training_access_key_id` and `s3_training_secret_access_key`).
+3. **The application key** gains `s3:AbortMultipartUpload` and `s3:ListMultipartUploadParts` on
+   `training/*` (the `TrainingMultipart` statement in `docs/OBJECT_STORAGE.md`).
+4. **The bucket lifecycle**: incomplete multipart uploads abort after 2 days, not 1
+   (`docs/OBJECT_STORAGE.md`, "Bucket settings").
+5. **The real-bucket check** in `docs/OBJECT_STORAGE.md` ("Checks only the real bucket can
+   answer"): `BadDigest` for a wrong checksum, and `ListParts` returning `ChecksumSHA256`.
+6. **The speech endpoint.** The worker sends each video's audio, in 5-minute chunks, to Groq's
+   transcription endpoint (`VOICE_STT_ENDPOINT`, set in the compose file) with the model key. Review
+   the provider's retention terms for that audio, as `docs/CONSOLE_VOICE.md` already requires for
+   console voice, and decide whether they are acceptable for training recordings.
+7. **Staging disk.** Staging keeps videos on the `staging-training-uploads` volume (up to 5 GB per
+   company, uploads in progress included). Check free space on the staging host (`df -h /`) before
+   switching staging on.
+8. **The switch** is a reviewed pull request, never a hand edit on a host: `CSA_STAGING_TRAINING_VIDEO=true`
+   in `deploy/staging-rollout.env` (staging), and in `deploy/production-rollout.env` both
+   `CSA_STAGING_TRAINING_VIDEO=true` and `CSA_PROD_S3_TRAINING_KEY=prod_s3_training` (production,
+   after steps 1 to 6). The rollout refuses any other value for either. The next rollout recreates
+   the gateway and the training worker with video on; `plan` lists the two key files as missing
+   if step 2 was skipped. With video on and the placeholder key, the training worker refuses to
+   start, so `apply` stops at `recreate training-worker`.
+9. **After the switch**: `docker exec csa-prod-gateway-1 python -m scripts.storage_smoke` (every
+   line PASS, including the multipart and presigned range lines), then the training retest in
+   `docs/TRAINING_RETEST.md`.
+
+A future Content-Security-Policy for the console must allow the video source: on S3 the player loads
+a presigned link from the bucket's regional host (`media-src https://<bucket>.s3.<region>.amazonaws.com`),
+on the local backend the gateway's own origin. No CSP sets `media-src` today.
+
+### Known limits
+
+- **TLS hostname.** The pinned ffmpeg 7.1.1 verifies the certificate chain of the presigned S3 link
+  against the image's CA bundle but does not check the host name (module docstring of
+  `csa/training/media.py`; a strict-xfail test turns red once a newer build does). Someone able to
+  intercept the worker's traffic (DNS or network position) and holding any publicly trusted
+  certificate could read that one video's link for its 15 minutes and feed the worker other bytes
+  (still decoded inside the hardened child). The owner either accepts this, or funds the follow-up
+  in which the worker fetches the bytes from S3 itself (boto3 checks host names) and hands them to
+  ffmpeg locally.
+- **One gateway process.** The limit on upload pieces in flight is per process. The gateway runs one
+  uvicorn process; do not add `--workers` (or a second gateway) without moving that limit into the
+  database.
+- **Host capacity**: step 1 above. The 256m default is a ceiling chosen before production use was
+  seen; tune it with `CSA_PROD_MEM_TRAINING_WORKER` in `/srv/csa-prod/host.env`.
+- **Real-bucket behaviour** (step 5) and the https read inside the real runtime image: the image
+  built from this change has `/etc/ssl/certs/ca-certificates.crt`, and an https ffprobe there
+  completes the TLS handshake with it (`docs/TRAINING_VIDEO_CAPACITY.md`). The first video on
+  production is the end-to-end check against the bucket's own host.
 
 ## Pointing the model at a stub (capacity test only)
 

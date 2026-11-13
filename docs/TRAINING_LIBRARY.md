@@ -69,9 +69,9 @@ it for itself with `max_file`.
 | `TRAINING_VIDEO_ENABLED` | `false` by default. While false, starting a video upload answers 503 `training_video_unavailable`; existing videos are still listed, edited and removed, and removal aborts an unfinished upload. |
 | `GROQ_API_KEY`, `GROQ_MODEL` | The language-model provider's key and model name, used by summaries (the same settings the assistants use). `GROQ_API_KEY` is a required setting, so the model client is always built at startup when the console's identity block runs; a first summary answers 503 `training_assistant_unavailable` for want of a client only when that block did not run. |
 
-Staging mounts a new volume for the local root on the gateway only (`staging-training-uploads`, in
-`deploy/compose.staging-pipeline.yml`, at `/var/lib/csa/training-uploads`); the worker and delivery
-services never mount it. `scripts/staging_reset.py` lists that volume, so a reset empties it with
+Staging mounts a new volume for the local root on the gateway and the training worker
+(`staging-training-uploads`, in `deploy/compose.staging-pipeline.yml`, at
+`/var/lib/csa/training-uploads`); the worker and delivery services never mount it. `scripts/staging_reset.py` lists that volume, so a reset empties it with
 the database. Migrations `0540` and `0541` stop all four services when applied, as the staging tool
 already says.
 

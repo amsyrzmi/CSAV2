@@ -5,15 +5,15 @@
 # It changes only what production does differently from staging, and nothing here is specific to
 # one cloud host, so the same file moves to EC2 unchanged:
 #   * files live in S3, not in local volumes (STORAGE_BACKEND=s3);
-#   * two workers, and memory limits sized for a 2 GB host, so the kernel's OOM killer picks a
-#     worker or the frontend before Postgres;
+#   * two workers, and memory limits sized for a 2 GB host, so the kernel's OOM killer picks the
+#     training worker, then a worker or the frontend, before Postgres;
 #   * Postgres settings for 2 GB;
 #   * the gateway joins the `edge` network so the tunnel connector can reach it;
 #   * the database image can be named by the operator while the registry package is private.
 #
 # Not secrets: the bucket and region are named in the operator's env file (CSA_PROD_S3_BUCKET,
-# CSA_PROD_S3_REGION), never in this repository. The four S3 key values are secret FILES only,
-# never environment variables: an environment variable would win over the secret file
+# CSA_PROD_S3_REGION), never in this repository. The S3 key values are secret FILES only, never
+# environment variables: an environment variable would win over the secret file
 # (docs/OBJECT_STORAGE.md).
 #
 # The memory, worker-count and Postgres numbers are starting values. The capacity gate (spec
@@ -105,6 +105,29 @@ services:
     mem_limit: ${CSA_PROD_MEM_DELIVERY:-200m}
     oom_score_adj: 300
 
+  training-worker:
+    environment:
+      <<: [*s3-env, *model-url]
+      # The staging file already blanks KB_UPLOAD_ROOT and never sets HR_UPLOAD_ROOT here.
+      TRAINING_UPLOAD_ROOT: ""
+    # Its own key, limited to training/ (docs/OBJECT_STORAGE.md, "IAM policy for the training
+    # worker key"); never the application key or the kb/ worker key. Until the owner makes it,
+    # CSA_PROD_S3_TRAINING_KEY is unset and both names read the disabled placeholder: compose
+    # renders and the worker idles while video is off, and refuses to start if video is switched on
+    # with the placeholder. The real files are needed only once the switch names them
+    # (CSA_PROD_S3_TRAINING_KEY=prod_s3_training, a reviewed change to production-rollout.env).
+    secrets:
+      - source: ${CSA_PROD_S3_TRAINING_KEY:-prod_s3_training_disabled}_access_key_id
+        target: S3_ACCESS_KEY_ID
+      - source: ${CSA_PROD_S3_TRAINING_KEY:-prod_s3_training_disabled}_secret_access_key
+        target: S3_SECRET_ACCESS_KEY
+    volumes: !reset []
+    # 256m, not the 160 MB measured: that was the import set alone, without pools, the S3 client
+    # and the upload buffer. Above the workers' 500, so the OOM killer takes a video job first; the
+    # job is picked up again once its heartbeat goes stale (10 minutes; it costs one attempt of 3).
+    mem_limit: ${CSA_PROD_MEM_TRAINING_WORKER:-256m}
+    oom_score_adj: 600
+
   frontend:
     mem_limit: ${CSA_PROD_MEM_FRONTEND:-256m}
     oom_score_adj: 300
@@ -128,3 +151,14 @@ secrets:
     file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_worker_access_key_id
   prod_s3_worker_secret_access_key:
     file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_worker_secret_access_key
+  # The training worker key: training/ only. Compose leaves a declared secret nothing uses out of
+  # its config, so these two files are needed only once CSA_PROD_S3_TRAINING_KEY names them.
+  prod_s3_training_access_key_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_training_access_key_id
+  prod_s3_training_secret_access_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/storage/s3_training_secret_access_key
+  # Until then: the existing disabled placeholder (the same file as staging_disabled_model_key).
+  prod_s3_training_disabled_access_key_id:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/runtime/staging_disabled_model_key
+  prod_s3_training_disabled_secret_access_key:
+    file: ${CSA_STAGING_SECRET_DIR:?absolute secret directory required}/runtime/staging_disabled_model_key

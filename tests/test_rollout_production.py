@@ -98,7 +98,8 @@ def test_container_names_default_and_override() -> None:
 def test_restart_command_starts_every_replica() -> None:
     assert sr.restart_command(PROD, {}) == (
         "docker --host unix:///var/run/docker.sock start csa-prod-gateway-1 "
-        "csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1"
+        "csa-prod-frontend-1 csa-prod-worker-1 csa-prod-worker-2 csa-prod-delivery-1 "
+        "csa-prod-training-worker-1"
     )
     assert sr.restart_command(STAGING, {}) == sr.RESTART_COMMAND
 
@@ -321,7 +322,7 @@ def test_apply_against_a_target_uses_only_its_names(
     )
     ready = [argv for argv, _, _ in runner.calls if argv[3:4] == ["exec"]]
     assert ready and all("csa-prod-gateway-1" in argv for argv in ready)
-    assert "Stopping gateway, frontend, worker, delivery…" in lines
+    assert "Stopping gateway, frontend, worker, delivery, training-worker…" in lines
 
 
 # --- the repo switch file with an allow-listed host overlay -----------------------------------
