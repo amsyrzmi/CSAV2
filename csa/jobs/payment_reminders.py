@@ -16,11 +16,19 @@ gate; an email row when the contact has an address (`contacts.email`, else the a
 chat) and `customers_remindable` holds; else `no_channel`. A chat message is written for the
 delivery worker in the invoice's transaction, `reviewed`, as booking reminders are.
 
+The payment_reminder_mail job (`run_payment_reminder_mail`) sends the queued email rows, once for
+every company, as booking reminder mail does (`csa.jobs.bookings.run_reminder_mail`): the owner
+connection only lists which companies have rows, and each row is then claimed (`sending`,
+committed before the send, so it is never sent twice), checked again and settled in its own
+company's transaction, as `csa_app`. The mail is built at send time, from what is true then.
+
 Logs carry categories and ids only: never an address, an amount, a name or a message.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -31,10 +39,12 @@ import psycopg
 import structlog
 from psycopg_pool import AsyncConnectionPool
 
-from csa.bookings import bot
+from csa.bookings import bot, notify
+from csa.console.mail_templates import payment_reminder_mail
+from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
 from csa.core.tenancy import tx
-from csa.jobs.bookings import customers_remindable
+from csa.jobs.bookings import LOST_AFTER, MAIL_STATS, _take_turns, customers_remindable
 from csa.jobs.clock import Clock
 from csa.jobs.subscriptions import PACKAGE_KEYS, PACKAGE_STATUSES
 from csa.payments import notices
@@ -94,6 +104,10 @@ def _local_day(now: datetime, zone: ZoneInfo) -> tuple[datetime, datetime]:
     day = now.astimezone(zone).date()
     start = datetime.combine(day, time(0), tzinfo=zone)
     return start, datetime.combine(day + timedelta(days=1), time(0), tzinfo=zone)
+
+
+def _invoice_record(row: Mapping[str, Any]) -> InvoiceRecord:
+    return InvoiceRecord(**{name: row[name] for name in _RECORD_FIELDS})
 
 
 async def _load_company(conn: Conn, client_id: UUID) -> _Company | None:
@@ -204,7 +218,7 @@ async def _remind(
         return done
 
     step: int = due["newest"]
-    invoice = InvoiceRecord(**{name: locked[name] for name in _RECORD_FIELDS})
+    invoice = _invoice_record(locked)
     text = reminder_text(
         invoice,
         company.methods,
@@ -320,4 +334,228 @@ async def run_payment_reminder_queue(
         if len(page) < limit:
             break
         after = {"after_due": page[-1]["due_at"], "after_id": page[-1]["id"]}
+    return stats
+
+
+# --- sending the queued mail --------------------------------------------------------------------
+
+
+async def _compose(conn: Conn, row: Mapping[str, Any], now: datetime) -> OutgoingMail | None:
+    """The mail this claimed row owes now, or none if it is no longer owed (the row is dropped).
+
+    Everything is read again here, as late as it can be, in the claim's transaction: the
+    company's switches (subscriptions package active, payments on, `customers_remindable`), the
+    invoice (still issued or overdue, still with its contact), the contact, and the contact's
+    address as it is now, which must be the one the row was queued for. The text is built now,
+    with today's local date, so a reminder queued yesterday says what is true today.
+    """
+    client_id: UUID = row["client_id"]
+    company = await _load_company(conn, client_id)
+    if company is None or not company.email:
+        return None
+    found = await db.q.fetch_one(
+        "payments/invoice_get.sql",
+        {"client_id": client_id, "invoice_id": row["invoice_id"]},
+        conn=conn,
+    )
+    if found is None or found["status"] not in REMINDABLE or found["contact_id"] is None:
+        return None
+    contact = await db.q.fetch_one(
+        "payments/reminder_contact.sql",
+        {"client_id": client_id, "contact_id": found["contact_id"]},
+        conn=conn,
+    )
+    if contact is None:
+        return None
+    # The address the queue would choose now (`notices.reminder_address`) must be the row's. The
+    # mail goes to it as the contact spells it, as booking reminders do; the row keeps lower case.
+    address = notices.reminder_address(contact["email"], contact["customer_given_email"])
+    to = notify.clean_address(contact["email"] or contact["customer_given_email"])
+    if address is None or to is None or address != row["address"]:
+        return None
+    invoice = _invoice_record(found)
+    locale = locale_of(contact["locale"])
+    text = reminder_text(
+        invoice,
+        company.methods,
+        today=now.astimezone(company.zone).date(),
+        brand=company.brand,
+        locale=locale,
+        tz=company.zone,
+    )
+    return payment_reminder_mail(
+        to=to,
+        name=contact["full_name"],
+        brand=company.brand,
+        subject_ref=invoice.reference or invoice.id,
+        text=text,
+        locale=locale,
+    )
+
+
+async def _settle(conn: Conn, row: Mapping[str, Any], status: str, now: datetime) -> None:
+    await db.q.execute(
+        "payments/reminder_settle.sql",
+        {
+            "client_id": row["client_id"],
+            "id": row["id"],
+            "status": status,
+            "sent_at": now if status == "sent" else None,
+        },
+        conn=conn,
+    )
+
+
+async def _try_one(
+    app_pool: AsyncConnectionPool, mailer: Mailer, clock: Clock, client_id: UUID, row_id: UUID
+) -> str | None:
+    """Claim one row, check it, send it, settle it. Returns how it ended, or none if another run
+    had taken it. The caller holds a send slot, so every check is as close to the send as it can be.
+
+    The claim and the checks are one short transaction in the company's own tenant scope; it
+    commits before the send, so a row that is `sending` is never taken again, and the send itself
+    runs with no transaction open. A row dropped or failed while composing is settled in that same
+    transaction. A failed send is settled `failed` and never retried.
+    """
+    async with tx(app_pool, str(client_id)) as conn:
+        row = await db.q.fetch_one(
+            "payments/reminder_claim_one.sql", {"client_id": client_id, "id": row_id}, conn=conn
+        )
+        if row is None:
+            return None
+        try:
+            async with conn.transaction():
+                composed = await _compose(conn, row, clock.now())
+        except Exception as exc:
+            # The class only: an error message can carry an address, an amount or a name.
+            logger.error("payment_reminder_mail_failed", category=type(exc).__name__)
+            await _settle(conn, row, "failed", clock.now())
+            return "failed"
+        if composed is None:
+            await _settle(conn, row, "dropped", clock.now())
+            return "dropped"
+    try:
+        status = "sent" if await mailer.send(composed) == "sent" else "failed"
+    except Exception as exc:
+        logger.error("payment_reminder_mail_failed", category=type(exc).__name__)
+        status = "failed"
+    try:
+        async with tx(app_pool, str(client_id)) as conn:
+            await _settle(conn, row, status, clock.now())
+    except Exception as exc:
+        logger.error("payment_reminder_settle_failed", category=type(exc).__name__)
+    return status
+
+
+async def _company_rows(
+    app_pool: AsyncConnectionPool,
+    client_id: UUID,
+    *,
+    lost: bool,
+    lost_before: datetime,
+    batch_size: int,
+) -> tuple[int, list[tuple[UUID, UUID]]]:
+    """In the company's own transaction: settle its lost rows `failed` (see `LOST_AFTER`), then
+    list up to `batch_size` of its queued rows. Returns `(rows found lost, queued rows)`."""
+    async with tx(app_pool, str(client_id)) as scoped:
+        swept = []
+        if lost:
+            swept = await db.q.fetch_all(
+                "payments/reminders_lost.sql",
+                {"client_id": client_id, "lost_before": lost_before},
+                conn=scoped,
+            )
+        queued = []
+        if batch_size > 0:
+            queued = await db.q.fetch_all(
+                "payments/reminders_queued.sql",
+                {"client_id": client_id, "batch_size": batch_size},
+                conn=scoped,
+            )
+    return len(swept), [(client_id, row["id"]) for row in queued]
+
+
+async def run_payment_reminder_mail(
+    conn: psycopg.AsyncConnection[Any],
+    app_pool: AsyncConnectionPool,
+    mailer: Mailer | None,
+    clock: Clock,
+    *,
+    batch_size: int = 100,
+) -> dict[str, int]:
+    """Send the queued payment reminder email rows of every live company whose payments are on.
+
+    `conn` is the runner's owner connection and is used only to list which companies have rows to
+    work on (`reminders_companies.sql`); everything else, for each company, runs through that
+    company's own transaction on `app_pool` (as `csa_app`, row security on). A company that is not
+    pilot or active, or whose payments are off (the subscriptions package not active or
+    `payment_settings.enabled` false), is not listed for sending: its rows stay `queued`, and are
+    checked again, and sent or dropped, when it is live and on again. In the company's quiet hours
+    (`is_quiet`) its rows also wait, for the morning.
+
+    With no mailer, or mail switched off, nothing is touched and the rows stay `queued`. Otherwise
+    a company's rows left `sending` since before `LOST_AFTER` are settled `failed` and counted as
+    `lost` (whatever its switches say), and up to `batch_size` rows are worked on, taking one from
+    each company in turn (`_take_turns`), a few at a time (`notify.SIMULTANEOUS`). A row is claimed
+    as `sending` only when it has a send slot, in a short transaction that also checks it again
+    (`_compose`) and commits before the send. It is then settled `sent`, `failed` or `dropped`. A
+    failed send is not retried. A row whose claim fails is counted in `errors` and left as it was,
+    for the next run, and the other rows still go.
+    """
+    stats: dict[str, int] = dict.fromkeys(MAIL_STATS, 0)
+    if mailer is None or not mailer.enabled:
+        return stats
+    now = clock.now()
+    lost_before = now - LOST_AFTER
+    async with conn.transaction():
+        companies = await db.q.fetch_all(
+            "payments/reminders_companies.sql",
+            {
+                "lost_before": lost_before,
+                "package_keys": PACKAGE_KEYS,
+                "package_statuses": PACKAGE_STATUSES,
+            },
+            conn=conn,
+        )
+    lists: list[list[tuple[UUID, UUID]]] = []
+    for company in companies:
+        sending = company["queued"] and not is_quiet(now, ZoneInfo(company["timezone"]))
+        room = batch_size if sending and len(lists) < batch_size else 0
+        if not room and not company["lost"]:
+            continue
+        try:
+            lost, queued = await _company_rows(
+                app_pool,
+                company["client_id"],
+                lost=company["lost"],
+                lost_before=lost_before,
+                batch_size=room,
+            )
+        except Exception as exc:
+            stats["errors"] += 1
+            logger.error("payment_reminder_list_failed", category=type(exc).__name__)
+            continue
+        stats["lost"] += lost
+        if queued:
+            lists.append(queued)
+    if stats["lost"]:
+        logger.warning("payment_reminder_mail_lost", count=stats["lost"])
+    gate = asyncio.Semaphore(notify.SIMULTANEOUS)
+
+    async def one(client_id: UUID, row_id: UUID) -> str | None:
+        async with gate:
+            try:
+                return await _try_one(app_pool, mailer, clock, client_id, row_id)
+            except Exception as exc:
+                # The claim's transaction failed and rolled back: the row is as it was.
+                logger.error("payment_reminder_claim_failed", category=type(exc).__name__)
+                return "errors"
+
+    work = _take_turns(lists, batch_size)
+    for status in await asyncio.gather(*(one(client_id, row_id) for client_id, row_id in work)):
+        if status == "errors":
+            stats["errors"] += 1
+        elif status is not None:
+            stats["claimed"] += 1
+            stats[status] += 1
     return stats

@@ -12,6 +12,7 @@ from csa.console.mailer import Mailer
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.jobs.bookings import (
+    MAIL_STATS,
     run_pending_expiry,
     run_reminder_mail,
     run_reminder_queue,
@@ -19,7 +20,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import FakeClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
-from csa.jobs.payment_reminders import run_payment_reminder_queue
+from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
@@ -540,6 +541,19 @@ async def test_registry_queues_payment_reminders_every_fifteen_minutes_per_compa
     assert job.every == timedelta(minutes=15)
     # Per company, each invoice in its own transaction on the app pool.
     assert job.per_client is True and job.own_transactions is True
+
+
+async def test_registry_sends_payment_reminder_mail_every_five_minutes_for_everyone() -> None:
+    mailer = Mailer(None, "FourStacks <no-reply@fourstacks.my>")
+    for registry in (build_default_registry(), build_default_registry(mailer)):
+        job = registry.get("payment_reminder_mail")
+        # One run for everyone, as the owner, and room for a batch of slow sends.
+        assert job is not None and job.per_client is False
+        assert job.every == timedelta(minutes=5) and job.timeout > 30
+        assert job.fn is not run_payment_reminder_mail  # the registry binds the mailer around it
+        # With no app pool, nothing is touched: every count is zero.
+        idle = await job.fn(None, FakeClock(datetime(2031, 1, 1, tzinfo=UTC)), batch_size=10)  # type: ignore[call-arg, arg-type]
+        assert idle == dict.fromkeys(MAIL_STATS, 0)
 
 
 async def test_registry_clears_old_booking_turn_actions_once_a_day_as_the_owner() -> None:

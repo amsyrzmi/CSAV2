@@ -25,7 +25,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
-from csa.jobs.payment_reminders import run_payment_reminder_queue
+from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
 from csa.jobs.payments import run_payments_due
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
@@ -43,9 +43,9 @@ def build_default_registry(
 ) -> JobRegistry:
     """Build the standard production registry of scheduled jobs.
 
-    `mailer` sends the booking reminders and lapse notices by email, and `app_pool` is the pool
-    every company's rows are read and written through. With either missing, the mail job runs and
-    sends nothing, so the rows wait in the queue for a worker that has both.
+    `mailer` sends the booking reminders, lapse notices and payment reminders by email, and
+    `app_pool` is the pool every company's rows are read and written through. With either missing,
+    the mail jobs run and send nothing, so the rows wait in the queue for a worker that has both.
     `calendar` brings people's Google events in line with their bookings; without it that job idles.
     """
     registry = JobRegistry()
@@ -164,6 +164,26 @@ def build_default_registry(
             name="booking_reminder_mail",
             every=timedelta(minutes=5),
             fn=booking_reminder_mail,
+            per_client=False,
+            timeout=150.0,
+            batch_size=50,
+        )
+    )
+
+    async def payment_reminder_mail(
+        conn: psycopg.AsyncConnection[Any], clock: Clock, *, batch_size: int
+    ) -> dict[str, Any]:
+        if app_pool is None:
+            return dict.fromkeys(MAIL_STATS, 0)
+        return await run_payment_reminder_mail(conn, app_pool, mailer, clock, batch_size=batch_size)
+
+    # The payment reminder email rows, sent as the booking reminders are: once for every company,
+    # each row then claimed, checked and settled in its own company's transaction.
+    registry.register(
+        Job(
+            name="payment_reminder_mail",
+            every=timedelta(minutes=5),
+            fn=payment_reminder_mail,
             per_client=False,
             timeout=150.0,
             batch_size=50,

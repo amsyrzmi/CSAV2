@@ -703,3 +703,61 @@ async def test_one_failing_invoice_is_logged_by_class_and_the_rest_go(
 
         monkeypatch.setattr(notices, "chat_message", real)
         assert (await run(app_dsn, client))["sent"] == 1  # retried on the next run
+
+
+async def test_a_dropped_email_row_does_not_use_the_daily_cap(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, support=None, reminder_days=[0])
+        person = await contact(conn, client, email="dropped@example.test")
+        first = await invoice(conn, client, person)
+        second = await invoice(conn, client, person, due_at=NOW + timedelta(hours=2))
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "queued": 1}
+        # Paid before the mail job sent it: the mail job drops the row, and nothing reached them.
+        await conn.execute("UPDATE invoices SET status = 'paid' WHERE id = %s", (first,))
+        await conn.execute(
+            "UPDATE invoice_reminders SET status = 'dropped' WHERE invoice_id = %s", (first,)
+        )
+
+        later = NOW + timedelta(hours=3)  # the same local day
+        assert await run(app_dsn, client, later) == ZERO | {"invoices": 1, "queued": 1}
+        assert (second, 0, "email", "dropped@example.test", "queued") in shape(
+            await reminders(conn, client)
+        )
+
+
+async def test_the_daily_cap_follows_the_local_day_west_of_utc(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn, reminder_days=[0])
+        await conn.execute(
+            "UPDATE clients SET timezone = 'America/Chicago' WHERE id = %s", (client,)
+        )
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        # Chicago is UTC-6 in November: UTC midnight is 18:00 local on the same evening.
+        evening = datetime(2026, 11, 20, 23, 30, tzinfo=UTC)  # 17:30 local, 20 November
+        first = await invoice(conn, client, person, due_at=evening - timedelta(minutes=30))
+        second = await invoice(conn, client, person, due_at=evening + timedelta(minutes=45))
+
+        assert await run(app_dsn, client, evening) == ZERO | {"invoices": 1, "sent": 1}
+        # 18:30 local, the same local day though the UTC date has changed: capped.
+        after_midnight_utc = evening + timedelta(hours=1)
+        assert await run(app_dsn, client, after_midnight_utc) == ZERO | {
+            "invoices": 1,
+            "capped": 1,
+        }
+        assert await run(app_dsn, client, evening + timedelta(hours=3)) == ZERO | {
+            "invoices": 1,
+            "capped": 1,
+        }  # 20:30 local
+        # 09:00 local the next morning it goes.
+        morning = datetime(2026, 11, 21, 15, 0, tzinfo=UTC)
+        assert await run(app_dsn, client, morning) == ZERO | {"invoices": 1, "sent": 1}
+        assert [m["key"] for m in await outbound(conn, client)] == [
+            f"invoice:{first}:reminder:0",
+            f"invoice:{second}:reminder:0",
+        ]
