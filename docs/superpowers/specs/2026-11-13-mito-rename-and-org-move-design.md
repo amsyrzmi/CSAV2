@@ -1,7 +1,14 @@
 # Mito rename, organisation move and CI shards: design
 
-Status: brainstormed with the owner on 2026-11-13; project 1 (shards) is designed here in full, projects 2 to 4
-are scoped and each gets its own design round before it is built.
+Status: CANCELLED by the owner on 2026-11-13, before any of it was built. The owner chose to start payments
+(P1, P2) and then the training library instead, because this work would take about 3 to 5 working days before
+payments could start. The document is kept as reference: the facts in section 3 (public images, the AWS deploy
+trust naming the repository, CI cost, the shard imbalance) and the approaches stay true if the work is revived.
+Nothing below is scheduled. Revive it by asking for the Mito rename, the organisation move or the shard
+rebalance; an unfinished plan for the shards is on the local branch `chore/ci-shards`, not merged.
+
+Original status: brainstormed with the owner on 2026-11-13; project 1 (shards) was designed here in full,
+projects 2 to 4 were scoped and each was to get its own design round before it is built.
 
 ## 1. Intent
 
