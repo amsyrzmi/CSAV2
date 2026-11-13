@@ -358,3 +358,15 @@ async def test_the_training_worker_refuses_to_start_on_the_placeholder_key(tmp_p
     assert settings.TRAINING_VIDEO_ENABLED is True
     with pytest.raises(RuntimeError, match="training worker's own S3 key"):
         await prepare_training_store(settings)
+
+
+def test_one_placeholder_list_serves_settings_and_the_training_worker() -> None:
+    import apps.training_worker.main as training_main
+    from csa.core import settings as settings_module
+
+    # The host-side secret tool stays stdlib-only, so it keeps its own literal; it must be one
+    # of the placeholders the application reads as "no key".
+    assert staging_secrets.DISABLED_MODEL_KEY in settings_module.KEY_PLACEHOLDERS
+    assert "disabled" in settings_module.KEY_PLACEHOLDERS
+    assert not hasattr(training_main, "PLACEHOLDER_KEYS")
+    assert training_main.KEY_PLACEHOLDERS is settings_module.KEY_PLACEHOLDERS

@@ -31,7 +31,15 @@ from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
-from scripts.rollout_targets import BACKUP_SCRIPT, STAGING, Target, get_target
+from scripts.rollout_targets import (
+    BACKUP_SCRIPT,
+    STAGING,
+    TRAINING_KEY_SWITCH,
+    TRAINING_KEY_VALUES,
+    TRAINING_VIDEO_SWITCH,
+    Target,
+    get_target,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
@@ -234,6 +242,18 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
                     "flags",
                     f"{path.name}: {key}={flags[key]} needs {JEV_KEY_ON[0]}={JEV_KEY_ON[1]}",
                 )
+    # Where the training worker holds an S3 key (production), video on with the placeholder key
+    # would recreate the gateway with video on while the training worker refuses to start.
+    real_key = TRAINING_KEY_VALUES[-1]
+    if (
+        TRAINING_KEY_SWITCH in target.optional_keys
+        and flags.get(TRAINING_VIDEO_SWITCH) == "true"
+        and flags.get(TRAINING_KEY_SWITCH) != real_key
+    ):
+        raise RolloutError(
+            "flags",
+            f"{path.name}: {TRAINING_VIDEO_SWITCH}=true needs {TRAINING_KEY_SWITCH}={real_key}",
+        )
     return flags
 
 

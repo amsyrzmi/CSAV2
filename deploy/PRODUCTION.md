@@ -614,8 +614,9 @@ for S in gateway worker delivery frontend; do
 done
 ```
 
-Those images predate the training worker (they have no `apps.training_worker`), so stop it rather
-than recreating it: `csa_compose stop training-worker`.
+If the deploy being rolled back was the first to carry the training worker, those images predate
+it (they have no `apps.training_worker`), so stop it rather than recreating it:
+`csa_compose stop training-worker`.
 
 Then check readiness as above. Do not delete the local tags until a scripted deploy has succeeded.
 If migrations were applied, do not roll back; fix forward.
@@ -624,7 +625,7 @@ If migrations were applied, do not roll back; fix forward.
 
 | Service | S3 key | Allowed |
 | --- | --- | --- |
-| gateway | application key (`csa-prod-app`) | `kb/`, `hr/` and `training/` read, write, delete; `backups/` put-only |
+| gateway | application key (`csa-prod-app`) | `kb/`, `hr/` and `training/` read, write, delete; abort a multipart upload and list its parts under `training/`; `backups/` put-only |
 | worker (two replicas) | worker key (`csa-prod-worker`) | `kb/` read only |
 | training worker | training worker key (`csa-prod-training`), until made: the disabled placeholder | `training/` list, read, delete and abort uploads; no write |
 | delivery, frontend, database | none | |
@@ -748,13 +749,40 @@ on staging and production from this change on. With `CSA_STAGING_TRAINING_VIDEO`
 nothing and only touches its liveness file; the gateway refuses new video uploads. One process,
 always: never give it replicas.
 
+### Before the first production deploy of this change
+
+The training worker starts with that deploy, video on or off. Idle it still holds a Python process
+(about 60 MiB resident), and the image is about 378 MB larger on disk (901 MB against 523 MB), with
+the previous image kept on the host for a rollback. The compose memory limits already sum to 3332m
+against a 2048 MB host, and the training worker adds 256m (3588m). Limits are caps, not use, so
+before approving that deploy send, from csa-prod and taken at a busy time:
+
+```bash
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'
+free -m
+df -h /
+```
+
+If the headroom is not there, the choices are a larger host, one worker
+(`CSA_PROD_WORKER_REPLICAS=1`) or a lower `CSA_PROD_MEM_TRAINING_WORKER`, decided before the deploy.
+
+### Rolling back past this change
+
+A scripted `deploy-production` to a commit from before this change runs `main`'s runner, which
+recreates `training-worker` too, against that commit's compose file, which has no such service. It
+stops at `recreate training-worker` after gateway, worker, delivery and frontend are already back
+on the older images, and the old training worker container keeps running, idle, on the newer image.
+Production is otherwise rolled back; remove that container by hand:
+`docker rm -f csa-prod-training-worker-1`.
+
+On staging a rollback runs the older checkout's own runner, which does not know the training
+worker: it finishes, and leaves the container running idle on the newer image. Remove it the same
+way: `docker rm -f csa-staging-training-worker-1`.
+
 ### Owner steps before video is switched on
 
-1. **Production host capacity.** The compose memory limits already sum to 3332m against a 2048 MB
-   host, and the training worker adds 256m (3588m). Limits are caps, not use, so send the owner's
-   `docker stats --no-stream --format '{{.Name}} {{.MemUsage}}'` and `free -m` from csa-prod, taken
-   at a busy time, before the switch. If the headroom is not there, the choices are a larger host,
-   one worker (`CSA_PROD_WORKER_REPLICAS=1`) or a lower `CSA_PROD_MEM_TRAINING_WORKER`.
+1. **Production host capacity.** Take the three readings above again before the switch: a video
+   job adds ffmpeg (up to about 54 MiB resident) and the job's buffers to the idle worker.
 2. **The training worker key** (`csa-prod-training`): create it with the policy in
    `docs/OBJECT_STORAGE.md` ("IAM policy for the training worker key"), then write its two files
    with the hidden-prompt block under "Secret files the overlay needs" (names
@@ -777,8 +805,10 @@ always: never give it replicas.
    `CSA_STAGING_TRAINING_VIDEO=true` and `CSA_PROD_S3_TRAINING_KEY=prod_s3_training` (production,
    after steps 1 to 6). The rollout refuses any other value for either. The next rollout recreates
    the gateway and the training worker with video on; `plan` lists the two key files as missing
-   if step 2 was skipped. With video on and the placeholder key, the training worker refuses to
-   start, so `apply` stops at `recreate training-worker`.
+   if step 2 was skipped. On production `plan` refuses video on without the key switch
+   (`CSA_STAGING_TRAINING_VIDEO=true needs CSA_PROD_S3_TRAINING_KEY=prod_s3_training`) before
+   anything changes; and should a training worker ever start with video on and the placeholder
+   key, it refuses to start.
 9. **After the switch**: `docker exec csa-prod-gateway-1 python -m scripts.storage_smoke` (every
    line PASS, including the multipart and presigned range lines), then the training retest in
    `docs/TRAINING_RETEST.md`.

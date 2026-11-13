@@ -114,6 +114,8 @@ _ORIGIN_KEYS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGI
 # name another declared secret (the application key) as the training worker's.
 TRAINING_KEY_SWITCH = "CSA_PROD_S3_TRAINING_KEY"
 TRAINING_KEY_VALUES = ("prod_s3_training_disabled", "prod_s3_training")
+# Video in the training library (gateway and training worker).
+TRAINING_VIDEO_SWITCH = "CSA_STAGING_TRAINING_VIDEO"
 
 # The instance's backup script, installed from deploy/production/backup.sh. Production runs it
 # before anything changes; the rollout checks the installed copy matches the repository's.

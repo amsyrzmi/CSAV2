@@ -11,6 +11,7 @@ import boto3
 import httpx
 import pytest
 import requests
+from botocore.exceptions import ClientError
 from csa.core.settings import Settings
 from csa.storage.factory import Stores
 from csa.storage.local import LocalObjectStore
@@ -280,3 +281,90 @@ def test_smoke_fails_a_presigned_range_that_is_not_206(
     )
     assert leftovers == []
     assert "http" not in output and BUCKET not in output
+
+
+class AbortDeniedStore(S3ObjectStore):
+    """Today's application key, before the TrainingMultipart statement: abort is AccessDenied."""
+
+    def abort_upload(self, tenant: UUID, name: str, upload_id: str | None) -> None:
+        error = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": f"{FAKE_KEY_ID} {FAKE_SECRET}"}},
+            "AbortMultipartUpload",
+        )
+        raise self._error("abort", error) from error
+
+
+def test_cleanup_removes_the_object_even_when_an_abort_is_denied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = AbortDeniedStore(BUCKET, "training", client)
+        monkeypatch.setattr(
+            storage_smoke, "build_stores", lambda settings: Stores(kb=None, hr=None, training=store)
+        )
+        with moto_http() as http:
+            code = storage_smoke.run(s3_settings(), http=http)
+        leftovers = client.list_objects_v2(Bucket=BUCKET).get("Contents", [])
+        uploads = client.list_multipart_uploads(Bucket=BUCKET).get("Uploads", [])
+    output = capsys.readouterr().out
+
+    assert code == 1
+    # The completed ~10 MiB object and the small object are gone; only the upload this key may
+    # not abort is left, for the bucket's lifecycle rule.
+    assert leftovers == []
+    assert len(uploads) == 1
+    assert (
+        "FAIL training: multipart: abort an upload (object storage abort failed: AccessDenied)"
+    ) in output
+    assert re.search(
+        r"^FAIL training: multipart: cleanup leaves nothing behind \(left behind: an open upload "
+        r"\(object storage abort failed: AccessDenied\)\)$",
+        output,
+        flags=re.MULTILINE,
+    )
+    # The checks after the failed abort still ran.
+    assert "PASS training: presigned range answers 206" in output
+    for secret in (FAKE_KEY_ID, FAKE_SECRET, BUCKET, "http", "Signature", "X-Amz", ".bin"):
+        assert secret not in output, secret
+
+
+class DeleteDeniedStore(AbortDeniedStore):
+    """Neither abort nor delete is allowed: the cleanup names both, and still tries both."""
+
+    deletes = 0
+
+    def delete(self, tenant: UUID, name: str) -> None:
+        type(self).deletes += 1
+        error = ClientError({"Error": {"Code": "AccessDenied"}}, "DeleteObject")
+        raise self._error("delete", error) from error
+
+
+def test_cleanup_tries_every_removal_and_names_what_is_left(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with mock_aws():
+        client = boto3.client(
+            "s3",
+            region_name=REGION,
+            aws_access_key_id=FAKE_KEY_ID,
+            aws_secret_access_key=FAKE_SECRET,
+        )
+        client.create_bucket(Bucket=BUCKET)
+        store = DeleteDeniedStore(BUCKET, "training", client)
+        with moto_http() as http:
+            passed = storage_smoke._check_multipart("training", store, UUID(int=4), http)
+    output = capsys.readouterr().out
+    assert passed is False
+    assert DeleteDeniedStore.deletes == 1
+    line = next(line for line in output.splitlines() if "cleanup leaves nothing" in line)
+    assert line.startswith("FAIL training: ")
+    assert "an open upload (object storage abort failed: AccessDenied)" in line
+    assert "the object (object storage delete failed: AccessDenied)" in line
+    assert BUCKET not in output and ".bin" not in output

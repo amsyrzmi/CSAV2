@@ -25,7 +25,7 @@ import structlog
 from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.core import db
 from csa.core.liveness import TRAINING_WORKER_ALIVE_PATH, liveness_loop
-from csa.core.settings import Settings, get_settings
+from csa.core.settings import KEY_PLACEHOLDERS, Settings, get_settings
 from csa.core.shutdown import run_until_signalled
 from csa.decide.groq import GroqClient
 from csa.speech import SpeechTranscriber
@@ -45,10 +45,6 @@ POLL_SECONDS = 5.0
 POOL_SIZE = 2
 """Connections in each pool: the job loop and the sweep each hold at most one at a time."""
 
-PLACEHOLDER_KEYS = frozenset({"disabled", "staging-disabled-no-model-access"})
-"""Values a deployment writes while a key is not made yet (production mounts the staging
-disabled-model-key file as the training S3 key until the owner makes the real one)."""
-
 
 class WorkerStages:
     """The worker's stages: transcribing and the summary, each in its own module."""
@@ -66,9 +62,10 @@ class WorkerStages:
 
 async def prepare_training_store(settings: Settings) -> ObjectStore:
     """Build and check the training store only; refuse to start without one that takes pieces."""
+    # Production mounts the disabled placeholder as the S3 key until the owner makes the real one.
     key = settings.S3_ACCESS_KEY_ID
     if settings.STORAGE_BACKEND == "s3" and (
-        key is None or key.get_secret_value().strip() in PLACEHOLDER_KEYS
+        key is None or key.get_secret_value().strip() in KEY_PLACEHOLDERS
     ):
         raise RuntimeError("TRAINING_VIDEO_ENABLED needs the training worker's own S3 key")
     store = build_stores(settings).training

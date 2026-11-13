@@ -54,6 +54,15 @@ class _TrainingStore(ObjectStore, MultipartStore, Protocol):
     """The training store: whole files and piece-by-piece uploads."""
 
 
+def _reason(exc: Exception) -> str:
+    """A failure's printable reason.
+
+    StorageError text is code-only by design and AssertionError text is authored in this script;
+    any other error is named by class alone.
+    """
+    return str(exc) if isinstance(exc, StorageError | AssertionError) else type(exc).__name__
+
+
 class _Checks:
     """Prints one PASS or FAIL line per check and remembers whether all passed."""
 
@@ -65,11 +74,7 @@ class _Checks:
         try:
             detail = action()
         except Exception as exc:
-            # StorageError text is code-only by design and AssertionError text is authored in
-            # this script; any other error is named by class alone.
-            authored = isinstance(exc, StorageError | AssertionError)
-            reason = str(exc) if authored else type(exc).__name__
-            print(f"FAIL {self.label}: {title} ({reason})", flush=True)
+            print(f"FAIL {self.label}: {title} ({_reason(exc)})", flush=True)
             self.passed = False
         else:
             print(f"PASS {self.label}: {title}" + (f" ({detail})" if detail else ""), flush=True)
@@ -178,11 +183,29 @@ def _check_multipart(label: str, store: _TrainingStore, tenant: UUID, http: http
             raise AssertionError("range returned different bytes")
 
     def cleanup() -> None:
-        for target, upload_id in list(open_uploads.items()):
-            store.abort_upload(tenant, target, upload_id)
-        store.delete(tenant, name)
-        if store.list_names(tenant):
-            raise AssertionError("objects remain under the smoke tenant")
+        # Every removal is tried even when an earlier one fails, so a denied abort never leaves
+        # the 10 MiB object behind; what could not be removed is named (by kind, never by name).
+        left: list[str] = []
+        try:
+            for target, upload_id in list(open_uploads.items()):
+                try:
+                    store.abort_upload(tenant, target, upload_id)
+                except Exception as exc:
+                    left.append(f"an open upload ({_reason(exc)})")
+                else:
+                    del open_uploads[target]
+        finally:
+            try:
+                store.delete(tenant, name)
+            except Exception as exc:
+                left.append(f"the object ({_reason(exc)})")
+        try:
+            if store.list_names(tenant):
+                left.append("objects under the smoke tenant")
+        except Exception as exc:
+            left.append(f"an unchecked listing ({_reason(exc)})")
+        if left:
+            raise AssertionError(f"left behind: {'; '.join(left)}")
 
     check("multipart: start, three pieces, complete", round_trip)
     check("multipart: read back", read_back)

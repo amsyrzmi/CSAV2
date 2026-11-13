@@ -28,6 +28,12 @@ _CREDENTIALS_KEY_PREFIX = "base64:"
 _CREDENTIALS_KEY_BYTES = 32
 
 
+KEY_PLACEHOLDERS = frozenset({"disabled", "staging-disabled-no-model-access"})
+"""Values a secret file holds until the owner writes the real key: the literal "disabled" and the
+staging disabled-model-key file (``scripts.staging_secrets.DISABLED_MODEL_KEY``; that host-side
+tool stays stdlib-only, and a test keeps the two in step)."""
+
+
 class Settings(BaseSettings):
     """Runtime configuration for every CSA process.
 
@@ -442,8 +448,7 @@ class Settings(BaseSettings):
         # key and never as an invalid one: blank, "disabled", or the staging disabled-model-key
         # file (staging maps its placeholder to TYPESAFE_API_KEY until a real key file is wired).
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
-        placeholders = {"", "disabled", "staging-disabled-no-model-access"}
-        return None if isinstance(raw, str) and raw.strip() in placeholders else value
+        return None if isinstance(raw, str) and raw.strip() in {"", *KEY_PLACEHOLDERS} else value
 
     @field_validator("WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN", mode="before")
     @classmethod

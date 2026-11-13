@@ -136,10 +136,10 @@ holds the application key or the knowledge-base worker key. Its calls and their 
 | `HeadObject` | the video's size, when ffmpeg cannot read it | `s3:GetObject` on `training/*` |
 | presigned `GetObject` (15 minutes) | ffmpeg and ffprobe read the video through the link | `s3:GetObject` on `training/*` |
 | `DeleteObject` | a refused video, and stored names no row keeps | `s3:DeleteObject` on `training/*` |
+
 It never writes: no `s3:PutObject`. `s3:ListBucketMultipartUploads` is granted on the bucket with no
-prefix condition, so that one action sees the names of every open multipart upload in
-`s3:ListBucketMultipartUploads`, so that one action sees the names of every open multipart upload in
-the bucket (names only: it cannot read, finish or abort one outside `training/`). Replace `<bucket>`:
+prefix condition, so that one action sees the names of every open multipart upload in the bucket
+(names only: it cannot read, finish or abort one outside `training/`). Replace `<bucket>`:
 
 ```json
 {
@@ -297,8 +297,12 @@ checks the startup check, put and read, listing, streaming, delete, and reading 
 removes them. The training store also gets a multipart upload of three pieces (about 10 MiB),
 completed and read back whole, a second upload aborted after one piece, and a GET of the first 16
 bytes through a presigned playback link, which must answer 206 as it does for a browser's video
-element. The multipart lines fail on an application key without `s3:AbortMultipartUpload`. It
-prints one `PASS` or `FAIL` line per check and never prints keys, links, object names or contents.
+element. The multipart lines expect the application key's `TrainingMultipart` statement (above):
+without it the abort line fails with `AccessDenied` and so does the cleanup line, which still
+removes the completed object and names what it could not remove (the denied upload, left for the
+lifecycle rule). `s3:ListMultipartUploadParts` is used only when S3 refuses a completion, so the
+smoke cannot show it is missing. It prints one `PASS` or `FAIL` line per check and never prints
+keys, links, object names or contents.
 Exit code 0 means every check passed, 1 means a check failed, 2 means the settings are unusable.
 Run it in the gateway only: the training worker's key cannot write.
 
