@@ -208,7 +208,7 @@ async def _remind(
     text = reminder_text(
         invoice,
         company.methods,
-        step=step,
+        today=now.astimezone(company.zone).date(),
         brand=company.brand,
         locale=locale_of(contact["locale"]),
         tz=company.zone,

@@ -400,6 +400,32 @@ async def test_after_downtime_only_the_newest_owed_step_is_sent(
         assert message["body"] == body(ref, "was due on 16 November 2026 and is still unpaid.")
 
 
+async def test_a_step_zero_reminder_held_to_the_next_local_day_says_it_was_due(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        # Due 22:30 local on 20 November: step 0 falls in quiet hours and waits for the morning.
+        inv = await invoice(conn, client, person, due_at=datetime(2026, 11, 20, 14, 30, tzinfo=UTC))
+        ref = await reference_of(conn, inv)
+
+        assert await run(app_dsn, client, datetime(2026, 11, 20, 15, 0, tzinfo=UTC)) == ZERO | {
+            "quiet": 1
+        }
+        morning = datetime(2026, 11, 21, 1, 0, tzinfo=UTC)  # 09:00 local on 21 November
+        assert await run(app_dsn, client, morning) == ZERO | {
+            "invoices": 1,
+            "sent": 1,
+            "skipped": 1,
+        }
+        (message,) = await outbound(conn, client)
+        assert message["key"] == f"invoice:{inv}:reminder:0"
+        assert message["body"] == body(ref, "was due on 20 November 2026 and is still unpaid.")
+        assert "today" not in message["body"]
+
+
 async def test_a_step_before_the_due_date_names_the_date(
     pg_container: object, app_dsn: str
 ) -> None:
@@ -442,8 +468,14 @@ async def test_one_reminder_per_contact_per_local_day(pg_container: object, app_
             "invoices": 1,
             "sent": 1,
         }
-        keys = [m["key"] for m in await outbound(conn, client)]
-        assert keys == [f"invoice:{first}:reminder:0", f"invoice:{second}:reminder:0"]
+        sent = await outbound(conn, client)
+        assert [m["key"] for m in sent] == [
+            f"invoice:{first}:reminder:0",
+            f"invoice:{second}:reminder:0",
+        ]
+        # The first said "today"; the one the cap held back a day says it was due yesterday.
+        assert "is due today." in sent[0]["body"]
+        assert "was due on 20 November 2026 and is still unpaid." in sent[1]["body"]
         assert await reminded_at(conn, second) == NOW + timedelta(days=1)
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -165,46 +165,64 @@ MS_METHODS = (
 )
 
 
+# DUE is 01:30 on 20 December in Kuala Lumpur: the invoice's local due date is 2026-12-20.
+BEFORE = date(2026, 12, 13)
+ON_THE_DAY = date(2026, 12, 20)
+A_DAY_LATE = date(2026, 12, 21)
+A_WEEK_LATE = date(2026, 12, 27)
+EN_FIRST = "Kedai Contoh: invoice K7QX-4MP for MYR 1,059.90"
+MS_FIRST = "Kedai Contoh: invois K7QX-4MP untuk MYR 1,059.90"
+
+
 @pytest.mark.parametrize(
-    ("step", "first"),
+    ("today", "first"),
     [
-        (-7, "Kedai Contoh: invoice K7QX-4MP for MYR 1,059.90 is due on 20 December 2026."),
-        (0, "Kedai Contoh: invoice K7QX-4MP for MYR 1,059.90 is due today."),
-        (
-            3,
-            "Kedai Contoh: invoice K7QX-4MP for MYR 1,059.90 was due on 20 December 2026 "
-            "and is still unpaid.",
-        ),
+        (BEFORE, f"{EN_FIRST} is due on 20 December 2026."),
+        (ON_THE_DAY, f"{EN_FIRST} is due today."),
+        # A step-0 reminder built a day late (quiet hours, the daily cap) is no longer "today".
+        (A_DAY_LATE, f"{EN_FIRST} was due on 20 December 2026 and is still unpaid."),
+        (A_WEEK_LATE, f"{EN_FIRST} was due on 20 December 2026 and is still unpaid."),
     ],
 )
-def test_reminder_text_in_english(step: int, first: str) -> None:
-    text = reminder_text(INVOICE, [TRANSFER, QR], step=step, brand=BRAND, locale="en", tz=TZ)
+def test_reminder_text_in_english(today: date, first: str) -> None:
+    text = reminder_text(INVOICE, [TRANSFER, QR], today=today, brand=BRAND, locale="en", tz=TZ)
     assert text == f"{first}\n{EN_METHODS}"
 
 
 @pytest.mark.parametrize(
-    ("step", "first"),
+    ("today", "first"),
     [
+        (BEFORE, f"{MS_FIRST} kena bayar sebelum 20 Disember 2026."),
+        (ON_THE_DAY, f"{MS_FIRST} kena bayar hari ini."),
         (
-            -7,
-            "Kedai Contoh: invois K7QX-4MP untuk MYR 1,059.90 kena bayar sebelum 20 Disember 2026.",
+            A_DAY_LATE,
+            f"{MS_FIRST}, tarikh akhir 20 Disember 2026 dah lepas dan masih belum dibayar.",
         ),
-        (0, "Kedai Contoh: invois K7QX-4MP untuk MYR 1,059.90 kena bayar hari ini."),
         (
-            7,
-            "Kedai Contoh: invois K7QX-4MP untuk MYR 1,059.90, tarikh akhir 20 Disember 2026 "
-            "dah lepas dan masih belum dibayar.",
+            A_WEEK_LATE,
+            f"{MS_FIRST}, tarikh akhir 20 Disember 2026 dah lepas dan masih belum dibayar.",
         ),
     ],
 )
-def test_reminder_text_in_malay(step: int, first: str) -> None:
-    text = reminder_text(INVOICE, [TRANSFER, QR], step=step, brand=BRAND, locale="ms", tz=TZ)
+def test_reminder_text_in_malay(today: date, first: str) -> None:
+    text = reminder_text(INVOICE, [TRANSFER, QR], today=today, brand=BRAND, locale="ms", tz=TZ)
     assert text == f"{first}\n{MS_METHODS}"
+
+
+def test_the_due_date_is_compared_in_the_company_zone_not_utc() -> None:
+    # 17:30 UTC on 19 December is already 20 December in Kuala Lumpur, so on the 20th it is today.
+    assert DUE.date() == date(2026, 12, 19)
+    text = reminder_text(INVOICE, [], today=ON_THE_DAY, brand=BRAND, locale="en", tz=TZ)
+    assert text.startswith(f"{EN_FIRST} is due today.")
+    in_utc = reminder_text(INVOICE, [], today=ON_THE_DAY, brand=BRAND, locale="en", tz="UTC")
+    assert in_utc.startswith(f"{EN_FIRST} was due on 19 December 2026 and is still unpaid.")
 
 
 def test_reminder_text_carries_the_account_once_and_the_reference_where_named() -> None:
     for locale in ("en", "ms"):
-        text = reminder_text(INVOICE, [TRANSFER, QR], step=0, brand=BRAND, locale=locale, tz=TZ)
+        text = reminder_text(
+            INVOICE, [TRANSFER, QR], today=ON_THE_DAY, brand=BRAND, locale=locale, tz=TZ
+        )
         assert text.count(ACCOUNT) == 1
         # In the first line and in the reference line, unmasked both times.
         assert text.count(REF) == 2
@@ -212,7 +230,7 @@ def test_reminder_text_carries_the_account_once_and_the_reference_where_named() 
 
 
 def test_reminder_text_without_methods_still_names_the_reference_and_the_paid_line() -> None:
-    text = reminder_text(INVOICE, [], step=-7, brand=BRAND, locale="en", tz=TZ)
+    text = reminder_text(INVOICE, [], today=BEFORE, brand=BRAND, locale="en", tz=TZ)
     assert text == (
         "Kedai Contoh: invoice K7QX-4MP for MYR 1,059.90 is due on 20 December 2026.\n"
         "Please put K7QX-4MP as the payment reference so we can match your payment.\n"
@@ -222,6 +240,6 @@ def test_reminder_text_without_methods_still_names_the_reference_and_the_paid_li
 
 def test_no_customer_text_or_staff_field_reaches_the_copy() -> None:
     claimed = replace(INVOICE, claim_note="I paid on Tuesday via Maybank, see 0123456789")
-    text = reminder_text(claimed, [TRANSFER], step=0, brand=BRAND, locale="en", tz=TZ)
+    text = reminder_text(claimed, [TRANSFER], today=ON_THE_DAY, brand=BRAND, locale="en", tz=TZ)
     assert "Tuesday" not in text and "0123456789" not in text
     assert "Tuesday" not in invoice_line(claimed, "en", TZ)

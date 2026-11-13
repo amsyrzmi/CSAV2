@@ -14,7 +14,7 @@ is due on a day.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -116,42 +116,50 @@ def reference_line(refs: Sequence[str], locale: Locale) -> str:
 
 
 def _first_line(
-    inv: InvoiceRecord, *, step: int, brand: str, locale: Locale, tz: str | ZoneInfo
+    inv: InvoiceRecord, *, today: date, brand: str, locale: Locale, tz: str | ZoneInfo
 ) -> str:
+    """The first line, chosen by the real local due date against `today`, not by the step: a
+    step-0 reminder held back a day by quiet hours or the daily cap says "was due on"."""
     amount = money(inv.amount, inv.currency)
     ref = _ref(inv)
-    date = local_date(inv.due_at, locale, tz) if inv.due_at is not None else ""
+    zone = _zone(tz)
+    # An invoice without a due date (none is reminded) reads as due today.
+    due = inv.due_at.astimezone(zone).date() if inv.due_at is not None else today
+    when = local_date(inv.due_at, locale, zone) if inv.due_at is not None else ""
     if locale == "ms":
         head = f"{brand}: invois {ref} untuk {amount}"
-        if step == 0:
+        if due == today:
             return f"{head} kena bayar hari ini."
-        if step > 0:
-            return f"{head}, tarikh akhir {date} dah lepas dan masih belum dibayar."
-        return f"{head} kena bayar sebelum {date}."
+        if due < today:
+            return f"{head}, tarikh akhir {when} dah lepas dan masih belum dibayar."
+        return f"{head} kena bayar sebelum {when}."
     head = f"{brand}: invoice {ref} for {amount}"
-    if step == 0:
+    if due == today:
         return f"{head} is due today."
-    if step > 0:
-        return f"{head} was due on {date} and is still unpaid."
-    return f"{head} is due on {date}."
+    if due < today:
+        return f"{head} was due on {when} and is still unpaid."
+    return f"{head} is due on {when}."
 
 
 def reminder_text(
     inv: InvoiceRecord,
     methods: Sequence[MethodOut],
     *,
-    step: int,
+    today: date,
     brand: str,
     locale: Locale,
     tz: str | ZoneInfo,
 ) -> str:
-    """The reminder for one step (days from the due date): what is owed and when, how to pay,
-    the reference to use, and what to do if it is already paid. One line each.
+    """The reminder: what is owed and when, how to pay, the reference to use, and what to do if
+    it is already paid. One line each. `today` is the local date, in the company's time zone, at
+    the moment the text is built (the mail job passes its own at send time): the first line says
+    "due today", "due on {date}" or "was due on {date} and is still unpaid" by comparing it with
+    the invoice's local due date. Pure: nothing is read from the clock.
 
     `methods` are listed as given; the caller passes the company's active QR and transfer methods
     in their order. With none, the reminder still names the reference.
     """
-    lines = [_first_line(inv, step=step, brand=brand, locale=locale, tz=tz)]
+    lines = [_first_line(inv, today=today, brand=brand, locale=locale, tz=tz)]
     lines += [method_line(m, locale) for m in methods]
     lines.append(reference_line([_ref(inv)], locale))
     if locale == "ms":
