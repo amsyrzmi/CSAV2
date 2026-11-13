@@ -895,8 +895,9 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
     <section aria-labelledby={titleId} data-testid="payment-methods" className={card}>
       <h2 id={titleId} className={`${sectionTitle} mb-1`}>Payment methods</h2>
       <p className={`${helpText} mb-4`}>
-        How customers are told to pay. Each method shows the line customers read. A method can be turned off but
-        not deleted.</p>
+        How customers are told to pay. Each method shows the line customers read. Customers are shown only the
+        first four active bank transfer and DuitNow methods in this list. A method can be turned off but not
+        deleted.</p>
       {notice && <div className="mb-4"><Notice testId="methods-notice">{notice}</Notice></div>}
       {methods.length === 0 && editing !== "new" && (
         <p className="mb-4 text-sm text-ink-600" data-testid="methods-empty">No payment methods yet.</p>
@@ -1002,12 +1003,13 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
       setBusy(false);
     }
   }
-  // Bank details have no maxLength: a pasted number that is too long is refused whole, never cut short.
-  const input = (name: Exclude<MethodField, "instructions">, extra: { maxLength?: number; autoComplete?: string }) => (
+  // No field here has a maxLength: a pasted label, name or number that is too long is refused whole by
+  // checkMethod, never cut short and saved as something else that customers would be shown.
+  const input = (name: Exclude<MethodField, "instructions">, extra: { autoComplete?: string }) => (
     <div>
       <label className="block text-sm" htmlFor={`${formId}-${name}`}>{FIELD_LABELS[name]}</label>
       <input id={`${formId}-${name}`} className={field} data-testid={`method-${name.replaceAll("_", "-")}`}
-        value={draft[name]} maxLength={extra.maxLength} autoComplete={extra.autoComplete ?? "off"}
+        value={draft[name]} autoComplete={extra.autoComplete ?? "off"}
         ref={name === "label" ? labelRef : undefined}
         aria-invalid={errors[name] ? true : undefined}
         aria-describedby={errors[name] ? `${formId}-${name}-error` : undefined}
@@ -1026,15 +1028,15 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
           </select>
         </label>
       ) : <p className="text-sm text-ink-600">{methodLabel(base.kind)}</p>}
-      {input("label", { maxLength: 60 })}
+      {input("label", {})}
       {draft.kind === "transfer" && <>
-        {input("bank_name", { maxLength: 60 })}
-        {input("account_name", { maxLength: 80 })}
+        {input("bank_name", {})}
+        {input("account_name", {})}
         {input("account_number", {})}
       </>}
       {draft.kind === "qr" && <>
         {input("duitnow_id", {})}
-        {input("account_name", { maxLength: 80 })}
+        {input("account_name", {})}
       </>}
       <div>
         <label className="block text-sm" htmlFor={`${formId}-instructions`}>Extra instructions (optional)</label>
