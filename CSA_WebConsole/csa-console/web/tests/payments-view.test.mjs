@@ -156,3 +156,174 @@ test("Load more belongs to the list it was read for: a late page for an old filt
   assert.equal(view.appendPage(first, paid, page2), first);
   assert.equal(view.appendPage(null, open, page2), null);
 });
+
+// ---------------------------------------------------------------- Settings and methods (Task 13)
+
+// The synthetic methods of tests/test_payment_copy.py (TRANSFER and QR), as the API returns them.
+const TRANSFER = {
+  id: "aaaaaaaa-0000-4000-8000-000000000011", kind: "transfer", label: "Bank",
+  details: { bank_name: "Bank Contoh", account_number: "512000000012", account_name: "Kedai Contoh" },
+  instructions: "", is_active: true, sort_order: 0, version: 1,
+};
+const QR = {
+  id: "aaaaaaaa-0000-4000-8000-000000000012", kind: "qr", label: "DuitNow",
+  details: { duitnow_id: "DN-5120000099", account_name: "Kedai Contoh Sdn Bhd" },
+  instructions: "Any bank app can pay a DuitNow ID.", is_active: true, sort_order: 1, version: 1,
+};
+
+test("the method preview is the customer's line, word for word as the server's method_line (English)", () => {
+  // Expected strings copied from tests/test_payment_copy.py test_method_lines_in_both_languages.
+  assert.equal(view.methodPreview(TRANSFER), "Bank transfer: Bank Contoh, account 512000000012, name Kedai Contoh.");
+  assert.equal(view.methodPreview(QR),
+    "DuitNow: DN-5120000099, name Kedai Contoh Sdn Bhd. Any bank app can pay a DuitNow ID.");
+  // Instructions follow after one space, trimmed; blank instructions add nothing.
+  assert.equal(view.methodPreview({ ...TRANSFER, instructions: "  Put the reference.  " }),
+    "Bank transfer: Bank Contoh, account 512000000012, name Kedai Contoh. Put the reference.");
+  assert.equal(view.methodPreview({ ...QR, instructions: "   " }), "DuitNow: DN-5120000099, name Kedai Contoh Sdn Bhd.");
+  // Cash (made elsewhere; never offered here) is listed by its label.
+  assert.equal(view.methodPreview({ ...TRANSFER, kind: "cash", label: "At the shop", details: {} }), "Cash: At the shop.");
+  // A draft previews the same way, from its trimmed fields.
+  const draft = { ...view.methodDraft(TRANSFER), bank_name: "  Bank Contoh ", instructions: " Any bank. " };
+  assert.equal(view.draftPreview(draft),
+    "Bank transfer: Bank Contoh, account 512000000012, name Kedai Contoh. Any bank.");
+});
+
+test("reminder days read as one plain sentence", () => {
+  assert.equal(view.reminderDaysLabel([-7, 0, 3, 7]), "7 days before, on the due day, 3 and 7 days after");
+  assert.equal(view.reminderDaysLabel([7, -7, 3, 0]), "7 days before, on the due day, 3 and 7 days after");
+  assert.equal(view.reminderDaysLabel([-1]), "1 day before");
+  assert.equal(view.reminderDaysLabel([1]), "1 day after");
+  assert.equal(view.reminderDaysLabel([0]), "on the due day");
+  assert.equal(view.reminderDaysLabel([-14, -3, 1, 2, 30]), "14 and 3 days before, 1, 2 and 30 days after");
+  assert.equal(view.reminderDaysLabel([]), "no reminders");
+  assert.equal(view.reminderDayLabel(-7), "7 days before");
+  assert.equal(view.reminderDayLabel(0), "On the due day");
+  assert.equal(view.reminderDayLabel(1), "1 day after");
+});
+
+test("the switch sentence follows the lead days", () => {
+  assert.equal(view.leadSentence(7),
+    "When this is on, invoices are made 7 days before each renewal and customers are reminded automatically.");
+  assert.equal(view.leadSentence(1),
+    "When this is on, invoices are made 1 day before each renewal and customers are reminded automatically.");
+  assert.equal(view.shownLeadDays(" 5 ", 7), 5);
+  for (const typed of ["", "0", "31", "x"]) assert.equal(view.shownLeadDays(typed, 7), 7, typed);
+  assert.equal(view.pauseLine(14), "Pause a subscription when an invoice is overdue for 14 days");
+  assert.equal(view.pauseLine(1), "Pause a subscription when an invoice is overdue for 1 day");
+  assert.equal(view.pauseLine(null), "Subscriptions are not paused when an invoice is overdue.");
+});
+
+test("reminder chips: up to 6 distinct whole days from -30 to 60, kept in order", () => {
+  assert.deepEqual(view.addReminderDay([-7, 0, 3, 7], "14"), { days: [-7, 0, 3, 7, 14] });
+  assert.deepEqual(view.addReminderDay([0, 3], " -3 "), { days: [-3, 0, 3] });
+  assert.deepEqual(view.addReminderDay([], "+5"), { days: [5] });
+  for (const bad of ["", "abc", "1.5", "-31", "61", "1e1"]) {
+    assert.deepEqual(view.addReminderDay([0], bad), { error: "Choose a whole number from -30 to 60." }, bad);
+  }
+  assert.deepEqual(view.addReminderDay([-7, 0, 3], "3"), { error: "That day is already on the list." });
+  assert.deepEqual(view.addReminderDay([1, 2, 3, 4, 5, 6], "7"), { error: "Up to 6 reminder days." });
+  assert.deepEqual(view.addReminderDay([-30], "60"), { days: [-30, 60] });
+});
+
+test("the settings form makes the PUT body or says what to fix", () => {
+  const saved = { enabled: false, lead_days: 7, reminder_days: [-7, 0, 3, 7], suspend_after_days: null, version: 0 };
+  const draft = view.settingsDraft(saved);
+  assert.deepEqual(draft, { enabled: false, lead_days: "7", reminder_days: [-7, 0, 3, 7], suspend_after_days: "" });
+  // Blank pause is off (null); the version read is sent back.
+  assert.deepEqual(view.settingsBody({ ...draft, enabled: true }, 0), {
+    body: { enabled: true, lead_days: 7, reminder_days: [-7, 0, 3, 7], suspend_after_days: null, version: 0 },
+  });
+  assert.deepEqual(view.settingsBody({ ...draft, lead_days: " 30 ", suspend_after_days: "14", reminder_days: [3, -1] }, 4), {
+    body: { enabled: false, lead_days: 30, reminder_days: [-1, 3], suspend_after_days: 14, version: 4 },
+  });
+  assert.deepEqual(view.settingsDraft({ ...saved, suspend_after_days: 21 }).suspend_after_days, "21");
+  for (const bad of ["0", "31", "", "2.5", "x"]) {
+    assert.deepEqual(view.settingsBody({ ...draft, lead_days: bad }, 0),
+      { errors: { lead_days: "Choose a whole number from 1 to 30." } }, bad);
+  }
+  for (const bad of ["0", "91", "-1", "x"]) {
+    assert.deepEqual(view.settingsBody({ ...draft, suspend_after_days: bad }, 0),
+      { errors: { suspend_after_days: "Leave it blank, or choose a whole number from 1 to 90." } }, bad);
+  }
+});
+
+test("only Bank transfer and DuitNow can be added; Cash waits for Payments 2", () => {
+  assert.deepEqual(view.NEW_METHOD_KINDS, [
+    { value: "transfer", label: "Bank transfer" },
+    { value: "qr", label: "DuitNow" },
+  ]);
+  assert.equal(view.hasPayableMethod([TRANSFER]), true);
+  assert.equal(view.hasPayableMethod([{ ...TRANSFER, is_active: false }, { ...QR, is_active: false }]), false);
+  assert.equal(view.hasPayableMethod([{ ...TRANSFER, kind: "cash", details: {} }]), false);
+  assert.equal(view.hasPayableMethod([]), false);
+});
+
+test("a new method's body has only the kind's details, trimmed; bad fields are named", () => {
+  const transfer = {
+    ...view.emptyMethodDraft("transfer"),
+    label: "  Main account ", bank_name: " Bank Contoh ", account_name: " Kedai Contoh ",
+    account_number: " 512000000012 ", duitnow_id: "left over", instructions: "  Put the reference.  ",
+  };
+  assert.deepEqual(view.checkMethod(transfer), {});
+  assert.deepEqual(view.newMethodBody(transfer), {
+    kind: "transfer", label: "Main account",
+    details: { bank_name: "Bank Contoh", account_name: "Kedai Contoh", account_number: "512000000012" },
+    instructions: "Put the reference.", is_active: true,
+  });
+  const qr = { ...view.emptyMethodDraft("qr"), label: "DuitNow", duitnow_id: "DN-5120000099", account_name: "Kedai Contoh" };
+  assert.deepEqual(view.newMethodBody(qr), {
+    kind: "qr", label: "DuitNow", details: { duitnow_id: "DN-5120000099", account_name: "Kedai Contoh" },
+    instructions: "", is_active: true,
+  });
+  assert.deepEqual(view.checkMethod(view.emptyMethodDraft("transfer")), {
+    label: "Write a label of up to 60 characters.",
+    bank_name: "Write the bank's name, up to 60 characters.",
+    account_name: "Write the account name, up to 80 characters.",
+    account_number: "Use digits only, 6 to 20 of them.",
+  });
+  assert.equal(view.newMethodBody(view.emptyMethodDraft("transfer")), null);
+  assert.deepEqual(view.checkMethod(view.emptyMethodDraft("qr")), {
+    label: "Write a label of up to 60 characters.",
+    duitnow_id: "Use 4 to 40 letters, digits or dashes.",
+    account_name: "Write the account name, up to 80 characters.",
+  });
+  const tooLong = { ...transfer, label: "x".repeat(61), bank_name: "b".repeat(61), account_name: "n".repeat(81),
+    account_number: "5120 0000 0012", instructions: "i".repeat(501) };
+  assert.deepEqual(Object.keys(view.checkMethod(tooLong)).sort(),
+    ["account_name", "account_number", "bank_name", "instructions", "label"]);
+  assert.equal(view.checkMethod(tooLong).instructions, "Keep the instructions to 500 characters.");
+  for (const id of ["DN1", "DN 512", "x".repeat(41), "DN_512"]) {
+    assert.ok(view.checkMethod({ ...qr, duitnow_id: id }).duitnow_id, id);
+  }
+  assert.deepEqual(view.checkMethod({ ...transfer, account_number: "123456" }), {});
+  assert.ok(view.checkMethod({ ...transfer, account_number: "12345" }).account_number);
+  assert.ok(view.checkMethod({ ...transfer, account_number: "1".repeat(21) }).account_number);
+});
+
+test("an edit sends only what changed, with the version it was read at", () => {
+  const draft = view.methodDraft(TRANSFER);
+  assert.deepEqual(draft, {
+    kind: "transfer", label: "Bank", bank_name: "Bank Contoh", account_name: "Kedai Contoh",
+    account_number: "512000000012", duitnow_id: "", instructions: "", is_active: true,
+  });
+  assert.equal(view.methodChanges(draft, TRANSFER), null);
+  assert.deepEqual(view.methodChanges({ ...draft, is_active: false }, TRANSFER), { is_active: false, version: 1 });
+  assert.deepEqual(view.methodChanges({ ...draft, label: " Main ", instructions: "Thanks." }, { ...TRANSFER, version: 4 }),
+    { label: "Main", instructions: "Thanks.", version: 4 });
+  // Details are replaced whole.
+  assert.deepEqual(view.methodChanges({ ...draft, account_number: "512000000099" }, TRANSFER), {
+    details: { bank_name: "Bank Contoh", account_name: "Kedai Contoh", account_number: "512000000099" }, version: 1,
+  });
+  assert.deepEqual(view.methodChanges({ ...view.methodDraft(QR), duitnow_id: "DN-5120000098" }, QR), {
+    details: { duitnow_id: "DN-5120000098", account_name: "Kedai Contoh Sdn Bhd" }, version: 1,
+  });
+  // A cash method (made elsewhere) keeps no details to change.
+  const cash = { ...TRANSFER, kind: "cash", label: "At the shop", details: {} };
+  assert.deepEqual(view.checkMethod(view.methodDraft(cash)), {});
+  assert.deepEqual(view.methodChanges({ ...view.methodDraft(cash), label: "Shop" }, cash), { label: "Shop", version: 1 });
+});
+
+test("the page view comes from ?view=", () => {
+  assert.equal(view.paymentsView("settings"), "settings");
+  for (const other of [null, undefined, "", "invoices", "SETTINGS", "x"]) assert.equal(view.paymentsView(other), "invoices");
+});

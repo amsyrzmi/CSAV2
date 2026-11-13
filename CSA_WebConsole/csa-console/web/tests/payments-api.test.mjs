@@ -193,3 +193,77 @@ test("invoice statuses have their plain labels", () => {
     draft: "Draft",
   });
 });
+
+// ---------------------------------------------------------------- Settings and methods (Task 13)
+
+const METHOD = "aaaaaaaa-0000-4000-8000-000000000011";
+
+test("settings and methods use their routes; writes carry the CSRF token and the version", async () => {
+  const settings = { enabled: true, lead_days: 5, reminder_days: [-3, 0, 7], suspend_after_days: null, version: 2 };
+  const transfer = {
+    kind: "transfer", label: "Main account",
+    details: { bank_name: "Bank Contoh", account_name: "Kedai Contoh", account_number: "512000000012" },
+    instructions: "", is_active: true,
+  };
+  const [, requests] = await capture(async () => {
+    await pay.getSettings(null);
+    await pay.putSettings(null, settings);
+    await pay.listMethods(null);
+    await pay.createMethod(null, transfer);
+    await pay.updateMethod(null, METHOD, { is_active: false, version: 3 });
+    await pay.getSettings("t1");
+    await pay.putSettings("t1", settings);
+    await pay.listMethods("t1");
+    await pay.createMethod("t1", transfer);
+    await pay.updateMethod("t1", "odd/id", { label: "Other", version: 1 });
+  });
+  assert.deepEqual(shape(requests), [
+    ["GET", "/console/v1/payments/settings"],
+    ["PUT", "/console/v1/payments/settings"],
+    ["GET", "/console/v1/payments/methods"],
+    ["POST", "/console/v1/payments/methods"],
+    ["PATCH", `/console/v1/payments/methods/${METHOD}`],
+    ["GET", "/console/v1/payments/settings?client_id=t1"],
+    ["PUT", "/console/v1/payments/settings?client_id=t1"],
+    ["GET", "/console/v1/payments/methods?client_id=t1"],
+    ["POST", "/console/v1/payments/methods?client_id=t1"],
+    ["PATCH", "/console/v1/payments/methods/odd%2Fid?client_id=t1"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[1][1].body), settings);
+  assert.deepEqual(JSON.parse(requests[3][1].body), transfer);
+  assert.deepEqual(JSON.parse(requests[4][1].body), { is_active: false, version: 3 });
+  for (const [, init] of requests) {
+    if ((init.method ?? "GET") === "GET") assert.equal(init.headers.has("X-CSRF-Token"), false);
+    else assert.equal(init.headers.get("X-CSRF-Token"), "synthetic-csrf");
+  }
+});
+
+test("settings refusals read as the agreed sentences", () => {
+  const verbatim = {
+    no_active_method: "Add an active bank account or DuitNow ID before switching payments on.",
+    last_active_method: "Keep one active method while payments are on.",
+    version_conflict: "Someone else changed this. Check and save again.",
+  };
+  for (const [code, sentence] of Object.entries(verbatim)) {
+    assert.equal(pay.PAYMENT_ERRORS[code], sentence);
+    // The server's real answers: 409 {"detail": "<code>"} (csa/payments/settings.py).
+    assert.equal(pay.setupMessage(new ApiError(409, code, code)), sentence);
+  }
+  // The api.ts sentence for version_conflict is not the one this page uses.
+  assert.equal(pay.paymentMessage(new ApiError(409, "version_conflict", "version_conflict")),
+    "Someone else changed this. Check and save again.");
+  assert.equal(pay.isVersionConflict(new ApiError(409, "version_conflict", "version_conflict")), true);
+  assert.equal(pay.isVersionConflict(new ApiError(409, "no_active_method", "no_active_method")), false);
+  assert.equal(pay.isVersionConflict(new Error("version_conflict")), false);
+  // Bad details are 422 {"detail": "invalid_details"}; a gone method is 404 method_not_found.
+  for (const code of ["invalid_details", "method_not_found"]) {
+    const said = pay.setupMessage(new ApiError(code === "invalid_details" ? 422 : 404, code, code));
+    assert.notEqual(said, code);
+    assert.doesNotMatch(said, /_/);
+  }
+  // A FastAPI field list (the client checks failed to catch something) is not the generic sentence.
+  assert.equal(pay.setupMessage(new ApiError(422, "Request failed (422)", "Request failed (422)")),
+    "Some of these values aren't allowed. Check them and save again.");
+  assert.equal(pay.setupMessage(new ApiError(503, "synthetic outage", "synthetic outage")),
+    "Something went wrong on our side. Try again.");
+});

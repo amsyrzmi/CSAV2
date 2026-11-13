@@ -1,4 +1,4 @@
-import { api, ApiError, explainedMessage, post } from "./api";
+import { api, ApiError, explainedMessage, patch, post } from "./api";
 
 /**
  * Mirrors of csa/payments/contracts.py (docs/CONSOLE_API.md "Payments"). Money (`amount`) is a
@@ -109,6 +109,67 @@ export interface InvoiceQuery {
   limit?: number;
 }
 
+/** `PaymentSettingsOut`: what the company's payments do. `version` is 0 until the first save. */
+export interface PaymentSettings {
+  enabled: boolean;
+  /** An invoice is made this many days before its period starts (1 to 30). */
+  lead_days: number;
+  /** Days from the due date, negative before it: at most 6 distinct, from -30 to 60. */
+  reminder_days: number[];
+  /** Days overdue before the subscription pauses (1 to 90); null never pauses. */
+  suspend_after_days: number | null;
+  version: number;
+}
+
+/** `PaymentSettingsIn`: the whole settings, sent back with the `version` they were read at. */
+export type PaymentSettingsIn = PaymentSettings;
+
+/** `transfer` details. Shown to staff and to customers on their invoice; never logged. */
+export interface TransferDetails {
+  bank_name: string;
+  account_name: string;
+  account_number: string;
+}
+
+/** `qr` (DuitNow) details. */
+export interface QrDetails {
+  duitnow_id: string;
+  account_name: string;
+}
+
+/** `MethodOut`: one way a customer can pay. A method is never deleted, only turned off. */
+export interface PaymentMethod {
+  id: string;
+  kind: MethodKind;
+  label: string;
+  /** `TransferDetails`, `QrDetails`, or `{}` for cash. */
+  details: Record<string, string>;
+  instructions: string;
+  is_active: boolean;
+  sort_order: number;
+  version: number;
+}
+
+/** `MethodIn`. */
+export interface PaymentMethodIn {
+  kind: MethodKind;
+  label: string;
+  details: TransferDetails | QrDetails | Record<string, never>;
+  instructions?: string;
+  is_active?: boolean;
+  sort_order?: number;
+}
+
+/** `MethodPatch`: only the fields that change; `details` replaces the whole object. */
+export interface PaymentMethodPatch {
+  label?: string;
+  details?: TransferDetails | QrDetails;
+  instructions?: string;
+  is_active?: boolean;
+  sort_order?: number;
+  version: number;
+}
+
 const BASE = "/console/v1/payments";
 
 /**
@@ -153,6 +214,35 @@ export function voidInvoice(tenantId: string | null, invoiceId: string, body: Vo
 
 export function listAttention(tenantId: string | null): Promise<PaymentAttentionPage> {
   return api(paymentsPath(tenantId, "/attention"));
+}
+
+/** Staff read the settings; a company that never saved reads as switched off, version 0. */
+export function getSettings(tenantId: string | null): Promise<PaymentSettings> {
+  return api(paymentsPath(tenantId, "/settings"));
+}
+
+/** Admins only. 409 `version_conflict` (an older read) or `no_active_method` (switching on bare). */
+export function putSettings(tenantId: string | null, body: PaymentSettingsIn): Promise<PaymentSettings> {
+  return api(paymentsPath(tenantId, "/settings"), { method: "PUT", body: JSON.stringify(body) });
+}
+
+/** Every method, turned-off ones included, in the server's order. */
+export function listMethods(tenantId: string | null): Promise<PaymentMethod[]> {
+  return api(paymentsPath(tenantId, "/methods"));
+}
+
+/** Admins only. 422 `invalid_details` when the details do not fit the kind. */
+export function createMethod(tenantId: string | null, body: PaymentMethodIn): Promise<PaymentMethod> {
+  return post(paymentsPath(tenantId, "/methods"), body);
+}
+
+/** Admins only. 409 `version_conflict` or `last_active_method`; 422 `invalid_details`. */
+export function updateMethod(
+  tenantId: string | null,
+  methodId: string,
+  body: PaymentMethodPatch,
+): Promise<PaymentMethod> {
+  return patch(paymentsPath(tenantId, `/methods${id(methodId)}`), body);
 }
 
 /** One opened "Mark paid" dialog: every submit from it sends the same request key. */
@@ -203,6 +293,14 @@ export const PAYMENT_ERRORS: Record<string, string> = {
   request_key_reused: "This payment was already recorded on another invoice. Close the form and open it again.",
   invalid_note: "The note is too long. Keep it to 300 characters.",
   invalid_reason: "Write a reason of up to 300 characters.",
+  // Settings and methods (csa/payments/settings.py), all 409 except the two noted.
+  no_active_method: "Add an active bank account or DuitNow ID before switching payments on.",
+  last_active_method: "Keep one active method while payments are on.",
+  version_conflict: "Someone else changed this. Check and save again.",
+  // 422.
+  invalid_details: "These payment details aren't valid. Check them and save again.",
+  // 404.
+  method_not_found: "That payment method no longer exists. Refresh the page.",
   // A platform admin on a company they cannot reach (csa/payments/api.py require_payments).
   [TENANT_REFUSED]: "You can't open Payments for this company.",
 };
@@ -245,4 +343,20 @@ const STALE = new Set(["invoice_already_paid", "invoice_not_payable", "invoice_p
  */
 export function staleMessage(cause: unknown): string | null {
   return cause instanceof ApiError && STALE.has(cause.code) ? paymentMessage(cause) : null;
+}
+
+/** Someone saved first: the form reads the latest again before the next save. */
+export function isVersionConflict(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === "version_conflict";
+}
+
+/**
+ * The sentence for a failed settings or method save. Like `paymentMessage`, except FastAPI's 422
+ * field list (a value the form's own checks let through) asks for a check instead of a retry.
+ */
+export function setupMessage(cause: unknown): string {
+  if (cause instanceof ApiError && cause.status === 422 && !Object.hasOwn(PAYMENT_ERRORS, cause.code)) {
+    return "Some of these values aren't allowed. Check them and save again.";
+  }
+  return paymentMessage(cause);
 }

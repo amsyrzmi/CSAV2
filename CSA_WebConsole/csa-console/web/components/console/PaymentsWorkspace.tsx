@@ -1,48 +1,82 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
+import { useSearchParams } from "next/navigation";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { api } from "@/lib/api";
 import type { Client, Me } from "@/lib/identity-contracts";
 import { consoleHref } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import {
+  createMethod,
   getInvoice,
+  getSettings,
   isNoAccess,
   isRefusal,
+  isVersionConflict,
   listAttention,
   listInvoices,
+  listMethods,
   openMarkPaid,
   paymentMessage,
+  putSettings,
+  setupMessage,
   staleMessage,
   STATUS_LABELS,
+  updateMethod,
   voidInvoice,
   type InvoiceDetail,
   type InvoiceFilter,
   type MethodKind,
   type PaymentAttentionItem,
+  type PaymentMethod,
+  type PaymentSettings,
 } from "@/lib/payments-api";
 import {
+  addReminderDay,
   appendPage,
   attentionCount,
   attentionGroups,
   canMarkPaid,
   canVoid,
+  checkMethod,
   customerLabel,
+  draftPreview,
+  emptyMethodDraft,
   filterChips,
   firstPage,
   formatAmount,
+  hasPayableMethod,
   invoiceName,
+  leadSentence,
   listKey,
   markPaidQuestion,
   METHOD_OPTIONS,
+  methodChanges,
+  methodDraft,
   methodLabel,
+  methodPreview,
   moreCursor,
+  NEW_METHOD_KINDS,
+  newMethodBody,
+  pauseLine,
+  paymentsView,
   receivedAt,
+  reminderDayLabel,
+  reminderDaysLabel,
   reminderLine,
+  settingsBody,
+  settingsDraft,
+  shownLeadDays,
   todayInput,
   voidBody,
   type InvoiceList,
+  type MethodDraft,
+  type MethodErrors,
+  type MethodField,
+  type PaymentsView,
+  type SettingsDraft,
+  type SettingsErrors,
 } from "@/lib/payments-view";
 import { formatDateTime, formatDay } from "@/lib/subscriptions-api";
 import { StatusChips } from "./kit";
@@ -125,19 +159,19 @@ function Board({ tenantId, admin, initialInvoiceId }: {
     openerRef.current = opener;
     setOpenId(invoiceId);
   };
+  // The view lives in the URL (?view=settings), so a link or a reload opens the same one.
+  const view = paymentsView(useSearchParams().get("view"));
   if (forbidden) return <Notice testId="payments-no-access">{NO_ACCESS}</Notice>;
   if (refusal) return <Notice error testId="payments-refused">{refusal}</Notice>;
-  const settingsHref = consoleHref(tenantId !== null, "payments/settings", { client_id: tenantId });
   return (
     <>
-      {admin && (
-        <div className="mb-5 flex justify-end">
-          {/* The settings page is its own route (how customers pay, reminders). */}
-          <a href={settingsHref} className={secondary} data-testid="payments-settings-link">Settings</a>
-        </div>
+      <ViewSwitch tenantId={tenantId} view={view} />
+      {view === "settings" ? <SettingsView tenantId={tenantId} admin={admin} onRefused={refused} /> : (
+        <>
+          <Attention tenantId={tenantId} revision={revision} onOpen={open} onRefused={refused} />
+          <Invoices tenantId={tenantId} revision={revision} onOpen={open} onRefused={refused} />
+        </>
       )}
-      <Attention tenantId={tenantId} revision={revision} onOpen={open} onRefused={refused} />
-      <Invoices tenantId={tenantId} revision={revision} onOpen={open} onRefused={refused} />
       {openId && <InvoiceDrawer key={openId} tenantId={tenantId} id={openId} returnFocusTo={openerRef}
         onClose={() => setOpenId(null)} onChanged={() => setRevision((value) => value + 1)} />}
     </>
@@ -145,6 +179,38 @@ function Board({ tenantId, admin, initialInvoiceId }: {
 }
 
 type Opener = (invoiceId: string, opener: HTMLElement | null) => void;
+
+const VIEWS: { key: PaymentsView; label: string; testId: string }[] = [
+  { key: "invoices", label: "Invoices", testId: "payments-invoices-link" },
+  { key: "settings", label: "Settings", testId: "payments-settings-link" },
+];
+
+/**
+ * Invoices or Settings. Each is a real link (it opens in a new tab too); a plain click swaps the
+ * view in place through the history API, which Next.js keeps in step with useSearchParams.
+ */
+function ViewSwitch({ tenantId, view }: { tenantId: string | null; view: PaymentsView }) {
+  return (
+    <nav aria-label="Payments views" className="mb-5 flex flex-wrap gap-2" data-testid="payments-views">
+      {VIEWS.map(({ key, label, testId }) => {
+        const href = consoleHref(tenantId !== null, "payments", {
+          client_id: tenantId, view: key === "settings" ? "settings" : null,
+        });
+        return (
+          <a key={key} href={href} data-testid={testId} aria-current={view === key ? "page" : undefined}
+            className={view === key ? action : secondary}
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              if (view !== key) window.history.pushState(null, "", href);
+            }}>
+            {label}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
 
 // ---------------------------------------------------------------- Needs attention
 
@@ -581,6 +647,388 @@ function VoidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
         <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
       {error && <Notice error testId="void-error">{error}</Notice>}
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------- Settings and methods
+
+const CONFLICT = "Someone else changed this. Check and save again.";
+const errorText = "mt-1 text-xs text-[var(--fs-danger)]";
+
+/** Settings and payment methods. Staff read them; only admins see controls that change them. */
+function SettingsView({ tenantId, admin, onRefused }: {
+  tenantId: string | null; admin: boolean; onRefused: (cause: unknown) => void;
+}) {
+  const [settings, setSettings] = useState<PaymentSettings | null>(null);
+  const [methods, setMethods] = useState<PaymentMethod[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    Promise.all([getSettings(tenantId), listMethods(tenantId)])
+      .then(([read, list]) => { if (live) { setSettings(read); setMethods(list); setError(""); } })
+      .catch((cause) => { if (live) { setError(paymentMessage(cause)); onRefused(cause); } });
+    return () => { live = false; };
+  }, [tenantId, onRefused]);
+  // After a version conflict the forms read the latest again before the next save.
+  const rereadSettings = useCallback(async () => {
+    const read = await getSettings(tenantId);
+    setSettings(read);
+    return read;
+  }, [tenantId]);
+  const rereadMethods = useCallback(async () => {
+    const list = await listMethods(tenantId);
+    setMethods(list);
+    return list;
+  }, [tenantId]);
+  if (error) return <Notice error>{error}</Notice>;
+  if (!settings || !methods) return <Notice>Loading the payment settings…</Notice>;
+  const payable = hasPayableMethod(methods);
+  return (
+    <>
+      {admin
+        ? <SettingsForm tenantId={tenantId} settings={settings} payable={payable} onSaved={setSettings}
+          onConflict={rereadSettings} />
+        : <SettingsSummary settings={settings} />}
+      <Methods tenantId={tenantId} admin={admin} methods={methods} onChanged={() => rereadMethods()}
+        onConflict={rereadMethods} />
+    </>
+  );
+}
+
+function SettingsSummary({ settings }: { settings: PaymentSettings }) {
+  const titleId = useId();
+  const days = reminderDaysLabel(settings.reminder_days);
+  return (
+    <section aria-labelledby={titleId} data-testid="payments-settings" className={card}>
+      <h2 id={titleId} className={`${sectionTitle} mb-4`}>Invoices and reminders</h2>
+      <dl className="grid gap-2 text-sm sm:grid-cols-[14rem_1fr]">
+        <Detail label="Send invoices and reminders" value={settings.enabled ? "On" : "Off"}
+          testId="settings-enabled-value" />
+        <Detail label="Reminders" value={`${days.charAt(0).toUpperCase()}${days.slice(1)}`}
+          testId="settings-reminders-value" />
+        <Detail label="Overdue invoices" value={pauseLine(settings.suspend_after_days)} testId="settings-pause-value" />
+      </dl>
+      <p className={`${helpText} mt-3`} data-testid="payments-lead-sentence">{leadSentence(settings.lead_days)}</p>
+      <p className={`${helpText} mt-1`}>Only admins can change these settings.</p>
+    </section>
+  );
+}
+
+function SettingsForm({ tenantId, settings, payable, onSaved, onConflict }: {
+  tenantId: string | null; settings: PaymentSettings; payable: boolean;
+  onSaved: (settings: PaymentSettings) => void; onConflict: () => Promise<PaymentSettings>;
+}) {
+  const [draft, setDraft] = useState<SettingsDraft>(() => settingsDraft(settings));
+  const [errors, setErrors] = useState<SettingsErrors>({});
+  const [dayText, setDayText] = useState("");
+  const [dayError, setDayError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const titleId = useId();
+  const switchHelp = useId();
+  const leadHelp = useId();
+  const daysHelp = useId();
+  const pauseHelp = useId();
+  const change = (next: Partial<SettingsDraft>) => { setDraft((current) => ({ ...current, ...next })); setNotice(""); };
+  function addDay() {
+    const result = addReminderDay(draft.reminder_days, dayText);
+    if ("error" in result) { setDayError(result.error); return; }
+    change({ reminder_days: result.days });
+    setDayText("");
+    setDayError("");
+  }
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    const result = settingsBody(draft, settings.version);
+    if ("errors" in result) { setErrors(result.errors); return; }
+    setErrors({});
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const saved = await putSettings(tenantId, result.body);
+      onSaved(saved);
+      setDraft(settingsDraft(saved));
+      setNotice(saved.enabled ? "Saved. Invoices and reminders are on." : "Saved.");
+    } catch (cause) {
+      if (isVersionConflict(cause)) {
+        // Someone saved first: show what they saved, so the next save carries the new version.
+        try {
+          setDraft(settingsDraft(await onConflict()));
+          setError(CONFLICT);
+        } catch (reread) {
+          setError(paymentMessage(reread));
+        }
+      } else {
+        setError(setupMessage(cause));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section aria-labelledby={titleId} data-testid="payments-settings" className={card}>
+      <h2 id={titleId} className={`${sectionTitle} mb-4`}>Invoices and reminders</h2>
+      <form className="space-y-5" onSubmit={(event) => void save(event)} noValidate>
+        <div>
+          <label className="flex items-center gap-3 text-sm font-medium">
+            <input type="checkbox" role="switch" className="size-5 accent-brand-600" data-testid="payments-enabled"
+              checked={draft.enabled} aria-describedby={switchHelp}
+              onChange={(event) => change({ enabled: event.target.checked })} />
+            Send invoices and reminders
+          </label>
+          <div id={switchHelp}>
+            <p className={helpText} data-testid="payments-lead-sentence">
+              {leadSentence(shownLeadDays(draft.lead_days, settings.lead_days))}</p>
+            {!payable && <p className={helpText} data-testid="payments-enable-hint">
+              Payments need an active bank transfer or DuitNow method first: add one under Payment methods.</p>}
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium" htmlFor={`${leadHelp}-input`}>
+            Days before each renewal to make the invoice</label>
+          <input id={`${leadHelp}-input`} className={`${field} w-24`} type="number" min={1} max={30} step={1}
+            inputMode="numeric" data-testid="settings-lead-days" value={draft.lead_days}
+            aria-invalid={errors.lead_days ? true : undefined} aria-describedby={leadHelp}
+            onChange={(event) => change({ lead_days: event.target.value })} />
+          <p id={leadHelp} className={errors.lead_days ? errorText : helpText}>
+            {errors.lead_days ?? "From 1 to 30 days."}</p>
+        </div>
+        <fieldset>
+          <legend className="text-sm font-medium">Reminder days</legend>
+          <p className={helpText} data-testid="settings-reminders-sentence">
+            Reminders go out {reminderDaysLabel(draft.reminder_days)}.</p>
+          <ul className="mt-2 flex flex-wrap gap-2" data-testid="settings-reminder-chips">
+            {draft.reminder_days.map((day) => (
+              <li key={day} data-testid="settings-reminder-chip"
+                className="flex items-center gap-1 rounded-full border border-ink-300 py-1 pl-3 pr-1 text-sm">
+                {reminderDayLabel(day)}
+                <button type="button" className="rounded-full px-2 text-ink-600 hover:bg-ink-100"
+                  aria-label={`Remove ${reminderDayLabel(day).toLowerCase()}`}
+                  onClick={() => change({ reminder_days: draft.reminder_days.filter((value) => value !== day) })}>
+                  ×</button>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <label className="block text-sm">Add a day
+              <input className={`${field} w-24`} type="number" min={-30} max={60} step={1}
+                data-testid="settings-reminder-input" value={dayText} aria-describedby={daysHelp}
+                aria-invalid={dayError ? true : undefined}
+                onChange={(event) => { setDayText(event.target.value); setDayError(""); }}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addDay(); } }} />
+            </label>
+            <button type="button" className={secondary} data-testid="settings-reminder-add" onClick={addDay}>Add</button>
+          </div>
+          <p id={daysHelp} className={dayError ? errorText : helpText} data-testid="settings-reminder-help">
+            {dayError || "Days from the due date: -3 is 3 days before, 0 is the due day. Up to 6, from -30 to 60."}</p>
+        </fieldset>
+        <div>
+          <label className="flex flex-wrap items-center gap-2 text-sm font-medium">
+            Pause a subscription when an invoice is overdue for
+            <input className={`${field} w-20`} type="number" min={1} max={90} step={1} inputMode="numeric"
+              data-testid="settings-pause-days" value={draft.suspend_after_days}
+              aria-invalid={errors.suspend_after_days ? true : undefined} aria-describedby={pauseHelp}
+              onChange={(event) => change({ suspend_after_days: event.target.value })} />
+            days
+          </label>
+          <p id={pauseHelp} className={errors.suspend_after_days ? errorText : helpText}>
+            {errors.suspend_after_days ?? "Leave it blank to never pause. From 1 to 90 days."}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className={action} disabled={busy} data-testid="settings-save">{busy ? "Saving…" : "Save settings"}</button>
+        </div>
+        {error && <Notice error testId="settings-error">{error}</Notice>}
+        {notice && <Notice testId="settings-notice">{notice}</Notice>}
+      </form>
+    </section>
+  );
+}
+
+function Methods({ tenantId, admin, methods, onChanged, onConflict }: {
+  tenantId: string | null; admin: boolean; methods: PaymentMethod[];
+  onChanged: () => Promise<unknown>; onConflict: () => Promise<PaymentMethod[]>;
+}) {
+  // "new", a method id being edited, or null.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const titleId = useId();
+  const done = (text: string) => {
+    setEditing(null);
+    setNotice(text);
+    void onChanged().catch(() => undefined);
+  };
+  return (
+    <section aria-labelledby={titleId} data-testid="payment-methods" className={card}>
+      <h2 id={titleId} className={`${sectionTitle} mb-1`}>Payment methods</h2>
+      <p className={`${helpText} mb-4`}>
+        How customers are told to pay. Each method shows the line customers read. A method can be turned off but
+        not deleted.</p>
+      {notice && <div className="mb-4"><Notice testId="methods-notice">{notice}</Notice></div>}
+      {methods.length === 0 && editing !== "new" && (
+        <p className="mb-4 text-sm text-ink-600" data-testid="methods-empty">No payment methods yet.</p>
+      )}
+      <ul className="space-y-3">
+        {methods.map((method) => (
+          <li key={method.id} data-testid="payment-method" className="rounded-md border border-ink-200 p-3 text-sm">
+            {editing === method.id ? (
+              <MethodForm tenantId={tenantId} method={method} onCancel={() => setEditing(null)}
+                onDone={() => done("Saved.")} onConflict={async () => (await onConflict()).find(
+                  (row) => row.id === method.id) ?? null} />
+            ) : (
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    <span data-testid="method-label">{method.label}</span>
+                    <span className="text-ink-600"> · {methodLabel(method.kind)}</span>
+                    {!method.is_active && <span data-testid="method-off"
+                      className="ml-2 rounded-full bg-ink-100 px-2 text-xs text-ink-700">Off</span>}
+                  </p>
+                  <p className="mt-1 break-words text-ink-700">
+                    <span className="text-ink-500">Customers see: </span>
+                    <span data-testid="method-preview">{methodPreview(method)}</span>
+                  </p>
+                </div>
+                {admin && (
+                  <button type="button" className={secondary} data-testid="method-edit"
+                    aria-label={`Edit ${method.label}`}
+                    onClick={() => { setEditing(method.id); setNotice(""); }}>Edit</button>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {admin && (editing === "new" ? (
+        <div className="mt-4">
+          <MethodForm tenantId={tenantId} method={null} onCancel={() => setEditing(null)}
+            onDone={() => done("Added.")} onConflict={async () => null} />
+        </div>
+      ) : (
+        <button type="button" className={`${secondary} mt-4`} data-testid="method-add"
+          onClick={() => { setEditing("new"); setNotice(""); }}>Add a method</button>
+      ))}
+    </section>
+  );
+}
+
+const FIELD_LABELS: Record<Exclude<MethodField, "instructions">, string> = {
+  label: "Label (customers see it in the list)",
+  bank_name: "Bank",
+  account_name: "Account name",
+  account_number: "Account number",
+  duitnow_id: "DuitNow ID",
+};
+
+function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
+  tenantId: string | null; method: PaymentMethod | null; onCancel: () => void;
+  onDone: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod | null>;
+}) {
+  // The method as last read: a version conflict replaces it with the latest.
+  const [base, setBase] = useState(method);
+  const [draft, setDraft] = useState<MethodDraft>(() => (method ? methodDraft(method) : emptyMethodDraft("transfer")));
+  const [shown, setShown] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const kindRef = useRef<HTMLSelectElement>(null);
+  const labelRef = useRef<HTMLInputElement>(null);
+  const formId = useId();
+  // A new method starts at its kind; an edit at its label.
+  useEffect(() => { (kindRef.current ?? labelRef.current)?.focus(); }, []);
+  const errors: MethodErrors = shown ? checkMethod(draft) : {};
+  const changes = base ? methodChanges(draft, base) : null;
+  const change = (next: Partial<MethodDraft>) => setDraft((current) => ({ ...current, ...next }));
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setShown(true);
+    if (Object.keys(checkMethod(draft)).length) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (base) {
+        if (!changes) { onCancel(); return; }
+        onDone(await updateMethod(tenantId, base.id, changes));
+      } else {
+        const body = newMethodBody(draft);
+        if (body) onDone(await createMethod(tenantId, body));
+      }
+    } catch (cause) {
+      if (base && isVersionConflict(cause)) {
+        try {
+          const latest = await onConflict();
+          if (latest) { setBase(latest); setDraft(methodDraft(latest)); }
+          setError(CONFLICT);
+        } catch (reread) {
+          setError(paymentMessage(reread));
+        }
+      } else {
+        setError(setupMessage(cause));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  const input = (name: Exclude<MethodField, "instructions">, extra: { maxLength: number; autoComplete?: string }) => (
+    <div>
+      <label className="block text-sm" htmlFor={`${formId}-${name}`}>{FIELD_LABELS[name]}</label>
+      <input id={`${formId}-${name}`} className={field} data-testid={`method-${name.replaceAll("_", "-")}`}
+        value={draft[name]} maxLength={extra.maxLength} autoComplete={extra.autoComplete ?? "off"}
+        ref={name === "label" ? labelRef : undefined}
+        aria-invalid={errors[name] ? true : undefined}
+        aria-describedby={errors[name] ? `${formId}-${name}-error` : undefined}
+        onChange={(event) => change({ [name]: event.target.value })} />
+      {errors[name] && <p id={`${formId}-${name}-error`} className={errorText}>{errors[name]}</p>}
+    </div>
+  );
+  return (
+    <form className="space-y-3" data-testid="method-form" onSubmit={(event) => void save(event)} noValidate>
+      <h3 className="font-semibold">{base ? `Edit ${base.label}` : "Add a payment method"}</h3>
+      {!base ? (
+        <label className="block text-sm">Kind
+          <select ref={kindRef} className={field} data-testid="method-kind" value={draft.kind}
+            onChange={(event) => change({ kind: event.target.value as MethodKind })}>
+            {NEW_METHOD_KINDS.map((kind) => <option key={kind.value} value={kind.value}>{kind.label}</option>)}
+          </select>
+        </label>
+      ) : <p className="text-sm text-ink-600">{methodLabel(base.kind)}</p>}
+      {input("label", { maxLength: 60 })}
+      {draft.kind === "transfer" && <>
+        {input("bank_name", { maxLength: 60 })}
+        {input("account_name", { maxLength: 80 })}
+        {input("account_number", { maxLength: 20 })}
+      </>}
+      {draft.kind === "qr" && <>
+        {input("duitnow_id", { maxLength: 40 })}
+        {input("account_name", { maxLength: 80 })}
+      </>}
+      <div>
+        <label className="block text-sm" htmlFor={`${formId}-instructions`}>Extra instructions (optional)</label>
+        <textarea id={`${formId}-instructions`} className={textarea} maxLength={500} data-testid="method-instructions"
+          value={draft.instructions} aria-invalid={errors.instructions ? true : undefined}
+          aria-describedby={`${formId}-instructions-help`}
+          onChange={(event) => change({ instructions: event.target.value })} />
+        <p id={`${formId}-instructions-help`} className={errors.instructions ? errorText : helpText}>
+          {errors.instructions ?? "Shown after the details, up to 500 characters."}</p>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" className="size-4 accent-brand-600" data-testid="method-active" checked={draft.is_active}
+          onChange={(event) => change({ is_active: event.target.checked })} />
+        Active: offer this method to customers
+      </label>
+      <p className="rounded-md bg-ink-50 p-2 text-sm break-words">
+        <span className="text-ink-500">Customers see: </span>
+        <span data-testid="method-form-preview">{draftPreview(draft)}</span>
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button className={action} disabled={busy || (base !== null && changes === null)} data-testid="method-save">
+          {busy ? "Saving…" : base ? "Save" : "Add method"}</button>
+        <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+      {error && <Notice error testId="method-error">{error}</Notice>}
     </form>
   );
 }

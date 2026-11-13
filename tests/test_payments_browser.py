@@ -1,4 +1,5 @@
-"""Real browser acceptance for the Payments page (invoices, mark paid, void, needs attention).
+"""Real browser acceptance for the Payments page (invoices, mark paid, void, needs attention,
+settings and payment methods).
 
 The real Next.js shell runs unmodified from a disposable staged copy, as in
 `test_subscriptions_browser.py`: its layouts fetch `/auth/me` and `/services/active`
@@ -93,6 +94,44 @@ def reminder(step: int, channel: str, status: str, sent_at: str | None = None) -
     }
 
 
+def method(
+    method_id: str, kind: str, label: str, details: dict[str, str], **changes: Any
+) -> dict[str, Any]:
+    return {
+        "id": method_id,
+        "kind": kind,
+        "label": label,
+        "details": details,
+        "instructions": "",
+        "is_active": True,
+        "sort_order": 0,
+        "version": 1,
+        **changes,
+    }
+
+
+# The synthetic methods of tests/test_payment_copy.py: a made-up bank and account.
+BANK = method(
+    "aaaaaaaa-0000-4000-8000-000000000011",
+    "transfer",
+    "Bank",
+    {"bank_name": "Bank Contoh", "account_number": "512000000012", "account_name": "Kedai Contoh"},
+)
+DUITNOW = method(
+    "aaaaaaaa-0000-4000-8000-000000000012",
+    "qr",
+    "DuitNow",
+    {"duitnow_id": "DN-5120000099", "account_name": "Kedai Contoh Sdn Bhd"},
+    instructions="Any bank app can pay a DuitNow ID.",
+    sort_order=1,
+)
+BANK_LINE = "Bank transfer: Bank Contoh, account 512000000012, name Kedai Contoh."
+DUITNOW_LINE = (
+    "DuitNow: DN-5120000099, name Kedai Contoh Sdn Bhd. Any bank app can pay a DuitNow ID."
+)
+CONFLICT = "Someone else changed this. Check and save again."
+ROLE_REFUSED = "payments access requires an administrator or staff role"
+
 OPEN = {"issued", "overdue", "proof_submitted", "cash_pending"}
 FILTERS = {
     "open": OPEN,
@@ -148,6 +187,14 @@ class World:
             "note": None,
             "created_at": "2026-11-05T01:00:00Z",
         }
+        self.settings: dict[str, Any] = {
+            "enabled": False,
+            "lead_days": 7,
+            "reminder_days": [-7, 0, 3, 7],
+            "suspend_after_days": None,
+            "version": 0,
+        }
+        self.methods: list[dict[str, Any]] = []
         self.page_size = 50
         self.forbidden = False
         # While set, a "Load more" read waits for it before it answers.
@@ -178,6 +225,60 @@ class World:
                 if row["status"] in OPEN and any(r["status"] == wanted for r in rows):
                     items.append({"kind": kind, "invoice": row, "since": rows[-1]["created_at"]})
         return items
+
+    def payable(self, methods: list[dict[str, Any]]) -> bool:
+        return any(m["is_active"] and m["kind"] in {"qr", "transfer"} for m in methods)
+
+    def setup(self, method: str, path: str, body: Any, admin: bool) -> tuple[int, Any] | None:
+        """Settings and methods as csa/payments/settings.py answers them."""
+        if path == "payments/settings" and method == "GET":
+            return 200, self.settings
+        if path == "payments/methods" and method == "GET":
+            return 200, self.methods
+        writes = {("PUT", "payments/settings"), ("POST", "payments/methods")}
+        if (method, path) not in writes and not (
+            method == "PATCH" and path.startswith("payments/methods/")
+        ):
+            return None
+        if not admin:
+            return 403, {"detail": ROLE_REFUSED}
+        if path == "payments/settings":
+            if body["version"] != self.settings["version"]:
+                return 409, {"detail": "version_conflict"}
+            if body["enabled"] and not self.payable(self.methods):
+                return 409, {"detail": "no_active_method"}
+            self.settings = {
+                **body,
+                "reminder_days": sorted(body["reminder_days"]),
+                "version": body["version"] + 1,
+            }
+            return 200, self.settings
+        if method == "POST":
+            if body["kind"] == "transfer" and not body["details"]["account_number"].isdigit():
+                return 422, {"detail": "invalid_details"}
+            created = {
+                "id": f"aaaaaaaa-0000-4000-8000-0000000001{len(self.methods):02d}",
+                "instructions": "",
+                "is_active": True,
+                "sort_order": 0,
+                **body,
+                "version": 1,
+            }
+            self.methods.append(created)
+            return 201, created
+        found = [m for m in self.methods if m["id"] == path.split("/")[2]]
+        if not found:
+            return 404, {"detail": "method_not_found"}
+        current = found[0]
+        if body["version"] != current["version"]:
+            return 409, {"detail": "version_conflict"}
+        others = [m for m in self.methods if m is not current]
+        turning_off = body.get("is_active") is False and current["is_active"]
+        if turning_off and self.settings["enabled"] and not self.payable(others):
+            return 409, {"detail": "last_active_method"}
+        current.update({k: v for k, v in body.items() if k != "version"})
+        current["version"] += 1
+        return 200, current
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
@@ -230,7 +331,11 @@ class World:
             self.unexpected.append(f"{method} {path} with params {params}")
             return 400, {"detail": "tenant mismatch"}
         if self.forbidden or self.upstream.me["role"] == "read_only":
-            return 403, {"detail": "payments access requires an administrator or staff role"}
+            return 403, {"detail": ROLE_REFUSED}
+        admin = platform or self.upstream.me["role"] == "tenant_admin"
+        answered = self.setup(method, path, body, admin)
+        if answered is not None:
+            return answered
         if path == "payments/attention" and method == "GET":
             return 200, {"items": self.attention()}
         if path == "payments/invoices" and method == "GET":
@@ -659,13 +764,18 @@ async def test_roles_staff_admins_read_only_and_a_refused_read(site: Site) -> No
             await expect(nav.get_by_role("link", name="Payments", exact=True)).to_have_attribute(
                 "href", "/portal/payments"
             )
-            # Staff record payments, but settings are for admins.
-            await expect(page.get_by_test_id("payments-settings-link")).to_have_count(0)
+            # Staff see the Settings view too (read-only there); it is a view of this page.
+            await expect(page.get_by_test_id("payments-settings-link")).to_have_attribute(
+                "href", "/portal/payments?view=settings"
+            )
+            await expect(page.get_by_test_id("payments-invoices-link")).to_have_attribute(
+                "aria-current", "page"
+            )
 
         world = World(site.upstream)
         async with payments_page(browser, site, world, role="tenant_admin") as page:
             await expect(page.get_by_test_id("payments-settings-link")).to_have_attribute(
-                "href", "/portal/payments/settings"
+                "href", "/portal/payments?view=settings"
             )
 
         # Read-only members get no link, and the page itself says no without asking the server.
@@ -703,20 +813,282 @@ async def test_platform_admins_name_the_tenant_and_a_link_opens_the_invoice(site
                 timeout=WAIT
             )
             await expect(page.get_by_test_id("payments-settings-link")).to_have_attribute(
-                "href", f"/payments/settings?client_id={TENANT}"
+                "href", f"/payments?client_id={TENANT}&view=settings"
             )
             assert all(c["params"].get("client_id") == TENANT for c in payment_calls(world))
 
     await with_browser(body)
 
 
+async def no_sideways_scroll(page: Page) -> None:
+    measured = await page.evaluate(
+        "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth })"
+    )
+    assert measured["scroll"] <= measured["inner"], measured
+
+
 async def test_payments_fits_a_phone(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World(site.upstream)
         async with payments_page(browser, site, world, width=320) as page:
-            measured = await page.evaluate(
-                "() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth })"
+            await no_sideways_scroll(page)
+
+        # The settings view, with a method's long line and the add form open.
+        world = World(site.upstream)
+        world.methods = [BANK, DUITNOW]
+        async with settings_page(browser, site, world, role="tenant_admin", width=320) as page:
+            await expect(page.get_by_test_id("method-preview")).to_have_count(2)
+            await page.get_by_test_id("method-add").click()
+            await expect(page.get_by_test_id("method-form")).to_be_visible()
+            await no_sideways_scroll(page)
+
+    await with_browser(body)
+
+
+@asynccontextmanager
+async def settings_page(
+    browser: Any, site: Site, world: World, *, role: str, width: int = 1280
+) -> AsyncIterator[Page]:
+    async with payments_page(
+        browser,
+        site,
+        world,
+        role=role,
+        path="/portal/payments?view=settings",
+        wait_for_rows=False,
+        width=width,
+    ) as page:
+        await expect(page.get_by_test_id("payments-settings")).to_be_visible(timeout=WAIT)
+        yield page
+
+
+def writes(world: World, path: str) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == path and c["method"] in {"POST", "PUT", "PATCH"}]
+
+
+def lead(days: int) -> str:
+    return (
+        f"When this is on, invoices are made {days} days before each renewal and customers are"
+        " reminded automatically."
+    )
+
+
+async def test_admin_adds_a_transfer_method_and_switches_payments_on(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with payments_page(browser, site, world, role="tenant_admin") as page:
+            # The Settings link swaps the view in place, and the address says so.
+            link = page.get_by_test_id("payments-settings-link")
+            await link.click()
+            await expect(page).to_have_url(f"{site.base}/portal/payments?view=settings")
+            await expect(page.get_by_test_id("payments-settings")).to_be_visible()
+            await expect(link).to_have_attribute("aria-current", "page")
+            await expect(page.get_by_test_id("payments-invoices")).to_have_count(0)
+            await expect(page.get_by_test_id("payments-lead-sentence")).to_have_text(lead(7))
+            await expect(page.get_by_test_id("settings-reminders-sentence")).to_have_text(
+                "Reminders go out 7 days before, on the due day, 3 and 7 days after."
             )
-            assert measured["scroll"] <= measured["inner"], measured
+            await expect(page.get_by_test_id("settings-pause-days")).to_have_value("")
+            await expect(page.get_by_test_id("methods-empty")).to_be_visible()
+            await expect(page.get_by_test_id("payments-enable-hint")).to_be_visible()
+
+            # Switching on with no method: the server refuses and the page says why.
+            switch = page.get_by_role("switch", name="Send invoices and reminders")
+            await switch.check()
+            await page.get_by_test_id("settings-save").click()
+            await expect(page.get_by_test_id("settings-error")).to_have_text(
+                "Add an active bank account or DuitNow ID before switching payments on."
+            )
+            assert world.settings["enabled"] is False
+
+            # Add a bank transfer method. Only bank transfer and DuitNow are offered.
+            await page.get_by_test_id("method-add").click()
+            form = page.get_by_test_id("method-form")
+            kind = form.get_by_test_id("method-kind")
+            await expect(kind).to_be_focused()
+            await expect(kind.locator("option")).to_have_text(["Bank transfer", "DuitNow"])
+            await form.get_by_test_id("method-label").fill("Main account")
+            await form.get_by_test_id("method-bank-name").fill("Bank Contoh")
+            await form.get_by_test_id("method-account-name").fill("Kedai Contoh")
+            number = form.get_by_test_id("method-account-number")
+            await number.fill("5120 0000 0012")
+            await form.get_by_test_id("method-save").click()
+            await expect(form).to_contain_text("Use digits only, 6 to 20 of them.")
+            await expect(number).to_have_attribute("aria-invalid", "true")
+            assert writes(world, "payments/methods") == []
+            await number.fill("512000000012")
+            await form.get_by_test_id("method-instructions").fill("Put the invoice reference.")
+            await expect(form.get_by_test_id("method-form-preview")).to_have_text(
+                f"{BANK_LINE} Put the invoice reference."
+            )
+            await form.get_by_test_id("method-save").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Added.")
+            rows = page.get_by_test_id("payment-method")
+            await expect(rows).to_have_count(1)
+            await expect(rows.get_by_test_id("method-preview")).to_have_text(
+                f"{BANK_LINE} Put the invoice reference."
+            )
+            posts = writes(world, "payments/methods")
+            assert [c["body"] for c in posts] == [
+                {
+                    "kind": "transfer",
+                    "label": "Main account",
+                    "details": {
+                        "bank_name": "Bank Contoh",
+                        "account_name": "Kedai Contoh",
+                        "account_number": "512000000012",
+                    },
+                    "instructions": "Put the invoice reference.",
+                    "is_active": True,
+                }
+            ], posts
+            await expect(page.get_by_test_id("payments-enable-hint")).to_have_count(0)
+
+            # Lead days, reminder chips and the pause, then switch on.
+            await page.get_by_test_id("settings-lead-days").fill("5")
+            await expect(page.get_by_test_id("payments-lead-sentence")).to_have_text(lead(5))
+            await page.get_by_role("button", name="Remove 7 days after").click()
+            day = page.get_by_test_id("settings-reminder-input")
+            await day.fill("3")
+            await page.get_by_test_id("settings-reminder-add").click()
+            await expect(page.get_by_test_id("settings-reminder-help")).to_have_text(
+                "That day is already on the list."
+            )
+            await day.fill("14")
+            await page.get_by_test_id("settings-reminder-add").click()
+            await expect(page.get_by_test_id("settings-reminders-sentence")).to_have_text(
+                "Reminders go out 7 days before, on the due day, 3 and 14 days after."
+            )
+            await page.get_by_test_id("settings-pause-days").fill("21")
+            await expect(switch).to_be_checked()
+            await page.get_by_test_id("settings-save").click()
+            await expect(page.get_by_test_id("settings-notice")).to_have_text(
+                "Saved. Invoices and reminders are on."
+            )
+            puts = writes(world, "payments/settings")
+            assert [c["body"] for c in puts] == [
+                {
+                    "enabled": True,
+                    "lead_days": 7,
+                    "reminder_days": [-7, 0, 3, 7],
+                    "suspend_after_days": None,
+                    "version": 0,
+                },
+                {
+                    "enabled": True,
+                    "lead_days": 5,
+                    "reminder_days": [-7, 0, 3, 14],
+                    "suspend_after_days": 21,
+                    "version": 0,
+                },
+            ], puts
+            assert all(c["csrf"] == "synthetic-csrf" for c in puts + posts)
+
+            # A reload keeps the view; the Invoices link goes back.
+            await page.reload()
+            await expect(page.get_by_test_id("payments-settings")).to_be_visible(timeout=WAIT)
+            await expect(switch).to_be_checked()
+            await expect(page.get_by_test_id("settings-lead-days")).to_have_value("5")
+            await page.get_by_test_id("payments-invoices-link").click()
+            await expect(page.get_by_test_id("invoice-row").first).to_be_visible()
+            await expect(page).to_have_url(f"{site.base}/portal/payments")
+
+    await with_browser(body)
+
+
+async def test_staff_see_the_settings_without_edit_controls(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.settings = {
+            "enabled": True,
+            "lead_days": 7,
+            "reminder_days": [-7, 0, 3, 7],
+            "suspend_after_days": 14,
+            "version": 3,
+        }
+        world.methods = [BANK, {**DUITNOW, "is_active": False}]
+        async with settings_page(browser, site, world, role="tenant_staff") as page:
+            await expect(page.get_by_test_id("payments-settings-link")).to_have_attribute(
+                "aria-current", "page"
+            )
+            await expect(page.get_by_test_id("settings-enabled-value")).to_have_text("On")
+            await expect(page.get_by_test_id("settings-reminders-value")).to_have_text(
+                "7 days before, on the due day, 3 and 7 days after"
+            )
+            await expect(page.get_by_test_id("settings-pause-value")).to_have_text(
+                "Pause a subscription when an invoice is overdue for 14 days"
+            )
+            await expect(page.get_by_test_id("payments-lead-sentence")).to_have_text(lead(7))
+            # Every method is listed, turned-off ones too, each with the customer's line.
+            await expect(page.get_by_test_id("method-preview")).to_have_text(
+                [BANK_LINE, DUITNOW_LINE]
+            )
+            await expect(page.get_by_test_id("method-off")).to_have_count(1)
+            # No control that changes anything.
+            for test_id in ("payments-enabled", "settings-save", "method-add", "method-edit"):
+                await expect(page.get_by_test_id(test_id)).to_have_count(0)
+            for section in ("payments-settings", "payment-methods"):
+                controls = page.get_by_test_id(section).locator("input, select, textarea, button")
+                await expect(controls).to_have_count(0)
+            paths = {c["path"] for c in payment_calls(world)}
+            assert paths == {"payments/settings", "payments/methods"}, paths
+            assert all(c["method"] == "GET" for c in payment_calls(world))
+
+    await with_browser(body)
+
+
+async def test_the_last_active_method_and_someone_else_saving_first(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.settings = {**world.settings, "enabled": True, "version": 1}
+        world.methods = [dict(BANK)]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            row = page.get_by_test_id("payment-method")
+            # Turning off the only method while payments are on is refused.
+            await row.get_by_test_id("method-edit").click()
+            form = row.get_by_test_id("method-form")
+            await expect(form.get_by_test_id("method-label")).to_be_focused()
+            await expect(form.get_by_test_id("method-save")).to_be_disabled()
+            await form.get_by_test_id("method-active").uncheck()
+            await form.get_by_test_id("method-save").click()
+            await expect(form.get_by_test_id("method-error")).to_have_text(
+                "Keep one active method while payments are on."
+            )
+            assert world.methods[0]["is_active"] is True
+            assert [c["body"] for c in writes(world, f"payments/methods/{BANK['id']}")] == [
+                {"is_active": False, "version": 1}
+            ]
+            await form.get_by_role("button", name="Cancel").click()
+
+            # Someone else renames the method while this form is open: the form shows theirs.
+            await row.get_by_test_id("method-edit").click()
+            world.methods[0].update(label="Renamed elsewhere", version=2)
+            label = form.get_by_test_id("method-label")
+            await label.fill("Main")
+            await form.get_by_test_id("method-save").click()
+            await expect(form.get_by_test_id("method-error")).to_have_text(CONFLICT)
+            await expect(label).to_have_value("Renamed elsewhere")
+            await label.fill("Main")
+            await form.get_by_test_id("method-save").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Saved.")
+            await expect(row.get_by_test_id("method-label")).to_have_text("Main")
+            patches = [c["body"] for c in writes(world, f"payments/methods/{BANK['id']}")]
+            assert patches[1:] == [
+                {"label": "Main", "version": 1},
+                {"label": "Main", "version": 2},
+            ], patches
+
+            # Someone else saves the settings first: reload, say so, and the next save works.
+            world.settings = {**world.settings, "lead_days": 10, "version": 2}
+            await page.get_by_test_id("settings-lead-days").fill("5")
+            await page.get_by_test_id("settings-save").click()
+            await expect(page.get_by_test_id("settings-error")).to_have_text(CONFLICT)
+            await expect(page.get_by_test_id("settings-lead-days")).to_have_value("10")
+            await expect(page.get_by_test_id("payments-lead-sentence")).to_have_text(lead(10))
+            await page.get_by_test_id("settings-save").click()
+            await expect(page.get_by_test_id("settings-notice")).to_be_visible()
+            puts = [c["body"] for c in writes(world, "payments/settings")]
+            assert [(b["lead_days"], b["version"]) for b in puts] == [(5, 1), (10, 2)], puts
+            assert world.settings["version"] == 3
 
     await with_browser(body)
