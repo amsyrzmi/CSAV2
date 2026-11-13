@@ -112,8 +112,8 @@ hand without digests keeps the old path (see Break-glass).
 
 The smoke test runs on the instance after the check files, and a failure of it, or of `/readyz`,
 stops the rollout. In order, it checks: the migrations recorded in the database equal the
-checkout's; every replica of gateway, worker, delivery and frontend is healthy on the planned
-image; the console origin and the hooks origin from `host.env` each answer below 500 when
+checkout's; every replica of gateway, worker, delivery, frontend and training worker is healthy on
+the planned image; the console origin and the hooks origin from `host.env` each answer below 500 when
 requested from the instance (up to 3 attempts, 5 s apart); the frontend answers over HTTP from
 the gateway container. It prints one `smoke <name>: ok` line per passing check and stops at the
 first failure with `Stopped at smoke: <reason>`.
@@ -161,8 +161,9 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   Systems Manager itself stops a command that runs longer than 120 minutes (the documents'
   `timeoutSeconds`, longer than the runner waits), so a command still running at 124 may yet
   finish or be stopped. Each job is limited to 130 minutes, longer than both. The waits are sized
-  for the worst case of a deploy that fails and rolls back, which runs two passes of the four
-  recreates; a deploy that rolls back needs the longer budget.
+  for the worst case of a deploy that fails and rolls back, which runs two passes of the five
+  recreates (gateway, worker, delivery, frontend, training worker; each up to 300 s up plus 300 s
+  health, 100 minutes in all); a deploy that rolls back needs the longer budget.
 - **64**: the runner refused an argument or setting; nothing was sent.
 - **1**: anything else, including a command that failed on the instance. The line
   `ssm_run: command <id> finished with status <status> (exit code <N>)` gives the instance's exit
@@ -980,16 +981,23 @@ If the headroom is not there, the choices are a larger host, one worker
 
 ### Rolling back past this change
 
-A scripted `deploy-production` to a commit from before this change runs `main`'s runner, which
-recreates `training-worker` too, against that commit's compose file, which has no such service. It
-stops at `recreate training-worker` after gateway, worker, delivery and frontend are already back
-on the older images, and the old training worker container keeps running, idle, on the newer image.
-Production is otherwise rolled back; remove that container by hand:
-`docker rm -f csa-prod-training-worker-1`.
+This change adds migrations 0600 and 0601, so its first deploy has migrations pending and never
+rolls back by itself (the training worker also had no previous container to go back to). Going
+back to a commit from before it is a downgrade across a migration: that commit's `plan` stops with
+`production has migrations this checkout lacks: 0600, 0601`, and its images would fail `/readyz`
+against 0601 anyway. Fix forward. If the owner decides to go back regardless, roll the two
+migrations back first (`docs/RUNBOOK.md`, "Roll back migrations 0600 and 0601"), then deploy the
+older commit: with `deploy-production` when it includes the digest change, otherwise as in
+"Rolling back to a revision older than the digest change" (break-glass).
 
-On staging a rollback runs the older checkout's own runner, which does not know the training
-worker: it finishes, and leaves the container running idle on the newer image. Remove it the same
-way: `docker rm -f csa-staging-training-worker-1`.
+Either way the rollout that runs is the older commit's own (the entry script checks out the target
+commit and runs its `scripts.staging_rollout`; break-glass uses its compose file), which does not
+know the training worker. It finishes without touching `csa-prod-training-worker-1`, which stays on
+the newer image (running idle, or stopped if it was stopped for the migration rollback). Remove it
+by hand: `docker rm -f csa-prod-training-worker-1`.
+
+Staging is the same: the older checkout's own runner finishes and leaves the container; remove it
+with `docker rm -f csa-staging-training-worker-1`.
 
 ### Owner steps before video is switched on
 

@@ -1527,10 +1527,10 @@ def _previous_refs(plan: Plan, target: Target) -> dict[str, str] | None:
 
     Only an image-only plan (nothing pending, so no migration ran) in which every replica of
     every app service was running when the plan read it, each on a registry digest of this
-    target's owner, every replica of gateway, worker and delivery on one ref and every frontend
-    replica on one ref, and neither ref the one just deployed (a re-run of a failed deploy has
-    no previous version left). A stopped container may be stopped for a reason (an earlier
-    migrate or check-file stop), so it is never brought back.
+    target's owner, every replica of gateway, worker, delivery and training-worker on one ref
+    and every frontend replica on one ref, and neither ref the one just deployed (a re-run of a
+    failed deploy has no previous version left). A stopped container may be stopped for a reason
+    (an earlier migrate or check-file stop), so it is never brought back.
     """
     if plan.pending:
         return None

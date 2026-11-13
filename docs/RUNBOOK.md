@@ -892,12 +892,14 @@ The image the stack runs is 378 MB bigger than before video (901 MB against 523 
 image stays on the host for a rollback. A staging reset empties the volume with the database
 (`scripts.staging_reset`).
 
-**Remove the idle training worker after a downgrade past this change.** A rollback to an image from
-before this change leaves the training worker container running, idle, on the newer image: staging's
-older runner does not know the service, and production's runner from `main` stops at `recreate
-training-worker` after the other services are back on the older images. Remove it by hand:
-`docker rm -f csa-staging-training-worker-1` on staging, `docker rm -f csa-prod-training-worker-1` on
-production. The migrations roll back as described above ("Roll back migrations 0600 and 0601").
+**Remove the idle training worker after a downgrade past this change.** Roll the migrations back
+first, as described above ("Roll back migrations 0600 and 0601"): until then the older commit's
+`plan` refuses (`has migrations this checkout lacks: 0600, 0601`). The downgrade then runs the older
+commit's own rollout (staging's live checkout, production's entry script, or break-glass), which
+does not know the training worker: it finishes and leaves the training worker container on the newer
+image. Remove it by hand: `docker rm -f csa-staging-training-worker-1` on staging,
+`docker rm -f csa-prod-training-worker-1` on production (`deploy/PRODUCTION.md`, "Rolling back past
+this change").
 
 ## Gotchas
 
