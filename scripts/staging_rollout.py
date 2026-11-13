@@ -471,6 +471,18 @@ def published_images(
     return images
 
 
+def images_from_digests(digests: Mapping[str, str], target: Target) -> dict[str, str]:
+    """Image refs for digests a caller resolved: no registry or GitHub lookup on this host."""
+    if set(digests) != set(APPS):
+        raise RolloutError("plan", f"image digests must name exactly {' and '.join(APPS)}")
+    images: dict[str, str] = {}
+    for app in APPS:
+        if not DIGEST_RE.fullmatch(digests[app]):
+            raise RolloutError("plan", f"the csa-{app} digest is malformed")
+        images[app] = f"{target.image_owner}/csa-{app}@{digests[app]}"
+    return images
+
+
 def publish_state(runner: Runner, sha: str) -> str:
     """Where the newest publish run for this SHA stands."""
     runs = _gh_json(
@@ -745,6 +757,8 @@ class Plan:
     host_values: dict[str, str] = field(default_factory=dict, repr=False)  # values never printed
     warnings: list[str] = field(default_factory=list)
     staged_on: str = ""  # when staging first ran this commit; gated targets only
+    # The digests the caller resolved; None when this host looked the images up itself.
+    image_digests: dict[str, str] | None = None
 
 
 def plan_steps(
@@ -797,6 +811,7 @@ def build_plan(
     expected_sha: str | None = None,
     target: Target = STAGING,
     expected_host_digest: str | None = None,
+    image_digests: Mapping[str, str] | None = None,
 ) -> Plan:
     if expected_sha is not None and not SHA_RE.fullmatch(expected_sha):
         raise RolloutError("confirm", "--sha must be the full 40-character SHA that plan printed")
@@ -805,13 +820,20 @@ def build_plan(
         raise RolloutError(
             "confirm", f"HEAD changed since plan ({expected_sha[:7]} → {sha[:7]}); run plan again"
         )
-    # Before any image lookup: a gated target takes only commits staging has run.
-    staged_on = require_staged(runner, target, sha)
-    images = published_images(runner, sha, target=target)
-    if images is None:
-        raise RolloutError(
-            "plan", f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})"
-        )
+    if image_digests is not None:
+        # The caller resolved and gated these: this host makes no GitHub call at all.
+        staged_on = ""
+        images = images_from_digests(image_digests, target)
+    else:
+        # Before any image lookup: a gated target takes only commits staging has run.
+        staged_on = require_staged(runner, target, sha)
+        found = published_images(runner, sha, target=target)
+        if found is None:
+            raise RolloutError(
+                "plan",
+                f"images for {sha[:7]} are not published yet ({publish_state(runner, sha)})",
+            )
+        images = found
     flags = load_flags(repo / target.flags_file, target=target)
     host_values = load_host_values(target)
     # Before any docker command: replica counts and tuning must be what plan printed.
@@ -853,6 +875,7 @@ def build_plan(
         host_values,
         warnings,
         staged_on,
+        dict(image_digests) if image_digests is not None else None,
     )
 
 
@@ -862,7 +885,7 @@ def _pending_line(pending: Sequence[str]) -> str:
 
 def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
     lines = [f"Target SHA: {plan.sha}"]
-    if target.staged_gate:
+    if target.staged_gate and plan.staged_on:
         lines.append(f"Staged on: {plan.staged_on}")
     lines.append("Images to deploy:")
     lines += [f"  {app}: {plan.images[app]}" for app in APPS]
@@ -894,6 +917,11 @@ def format_plan(plan: Plan, *, target: Target = STAGING) -> str:
         command += f" --migrations {','.join(plan.pending)}"
     if target.host_file is not None:
         command += f" --host-digest {host_settings_digest(plan.host_values)}"
+    if plan.image_digests is not None:
+        command += (
+            f" --python-digest {plan.image_digests['python']}"
+            f" --frontend-digest {plan.image_digests['frontend']}"
+        )
     lines.append(command)
     return "\n".join(lines)
 
@@ -1404,6 +1432,7 @@ def apply(
     out: Callable[[str], None] = print,
     target: Target = STAGING,
     host_digest: str | None = None,
+    image_digests: Mapping[str, str] | None = None,
     now: Callable[[], datetime] = _utc_now,
     backup_log: Path = BACKUP_LOG,
     backup_installed: Path = BACKUP_INSTALLED,
@@ -1421,6 +1450,7 @@ def apply(
             expected_sha=sha,
             target=target,
             expected_host_digest=host_digest,
+            image_digests=image_digests,
         )
         env = plan.env
         progress.pending = plan.pending
@@ -1547,13 +1577,33 @@ def _host_digest(value: str) -> str:
     return value
 
 
+def _image_digest(value: str) -> str:
+    if not DIGEST_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("must be sha256: and 64 lowercase hex characters")
+    return value
+
+
+def _add_digest_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--python-digest",
+        type=_image_digest,
+        help="the csa-python image digest, resolved by the caller",
+    )
+    command.add_argument(
+        "--frontend-digest",
+        type=_image_digest,
+        help="the csa-frontend image digest, resolved by the caller",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scripts.staging_rollout", description=__doc__)
     parser.add_argument(
         "--target", choices=TARGET_NAMES, default="staging", help="where to roll out"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("plan", help="show what a rollout of HEAD would do (read-only)")
+    plan = commands.add_parser("plan", help="show what a rollout of HEAD would do (read-only)")
+    _add_digest_options(plan)
     apply = commands.add_parser("apply", help="roll HEAD out to the target")
     apply.add_argument("--sha", required=True, help="the full target SHA, as plan printed")
     apply.add_argument("--migrations", help="comma-separated pending versions, as plan printed")
@@ -1562,6 +1612,7 @@ def _parser() -> argparse.ArgumentParser:
         type=_host_digest,
         help="the host settings digest, as plan printed (targets with a host file)",
     )
+    _add_digest_options(apply)
     record = commands.add_parser(
         "record-staged", help="record a staging rollout for production (retry after a failed write)"
     )
@@ -1573,6 +1624,12 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     target = get_target(args.target)
+    image_digests = None
+    if args.command != "record-staged":
+        if (args.python_digest is None) != (args.frontend_digest is None):
+            parser.error("--python-digest and --frontend-digest are given together or not at all")
+        if args.python_digest is not None:
+            image_digests = {"python": args.python_digest, "frontend": args.frontend_digest}
     if args.command == "apply":
         if target.host_file is not None and args.host_digest is None:
             parser.error(f"apply --target {target.name} requires --host-digest, as plan printed")
@@ -1597,6 +1654,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
                 checks_dir=CHECKS_DIR,
                 target=target,
                 host_digest=args.host_digest,
+                image_digests=image_digests,
             )
             if code == 0 and target.name == GATE_ENVIRONMENT:
                 # Not inside apply: a failed record must not turn a good rollout into a stop.
@@ -1610,6 +1668,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             secret_dir=secret_dir,
             checks_dir=CHECKS_DIR,
             target=target,
+            image_digests=image_digests,
         )
     except RolloutError as error:
         _report_stop(error, print)
