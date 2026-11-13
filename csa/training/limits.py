@@ -144,3 +144,28 @@ PLAYBACK_MEDIA_TYPE: dict[VideoContainer, VideoMediaType] = {
     "webm": "video/webm",
 }
 """Media type a stored container plays as (a ``.mov`` plays as ``video/mp4``)."""
+
+# ffmpeg and ffprobe run in the training worker on untrusted video, each as a child under these
+# limits (csa/training/media.py). Values from docs/TRAINING_VIDEO_CAPACITY.md: 4 x the worst
+# measured CPU, 2 x the worst measured address space (rounded up to 64 MiB), 4 x the worst wall.
+
+FFMPEG_CHILD_CPU_SECONDS = 309
+"""CPU seconds one ffmpeg or ffprobe child may use (RLIMIT_CPU; the kernel kills it past it)."""
+
+FFMPEG_CHILD_MEMORY_BYTES = 469762048
+"""Address space one ffmpeg or ffprobe child may map (RLIMIT_AS, 448 MiB)."""
+
+FFMPEG_CHILD_WALL_SECONDS = 300
+"""Wall-clock seconds one child may take; its whole process group is killed past it."""
+
+PROBE_MAX_OUTPUT_BYTES = 262144
+"""Most bytes of stdout read from one child; more refuses the file."""
+
+SILENCE_MAX_DB = -50.0
+"""A first audio stream whose peak is at most this (dBFS) is silent: no speech to transcribe."""
+
+PLAYABLE_VIDEO: frozenset[str] = frozenset({"h264", "vp8", "vp9", "av1", "hevc"})
+"""Video codecs (ffprobe names) the library accepts; HEVC plays only in some browsers."""
+
+PLAYABLE_AUDIO: frozenset[str] = frozenset({"aac", "mp3", "opus", "vorbis"})
+"""Audio codecs (ffprobe names) the library accepts."""
