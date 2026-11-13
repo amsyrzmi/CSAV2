@@ -603,3 +603,221 @@ def test_more_than_one_argument_is_refused(harness: Harness) -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert harness.calls() == []
+
+
+# ---------------------------------------------------------------------------------------------
+# public_smoke.sh: the last step of a production deploy asks the console origin for `/`.
+
+SMOKE_SCRIPT = ROOT / "deploy" / "production" / "public_smoke.sh"
+ORIGIN = "https://console.example.test"
+
+# curl is called as `curl ... -K - ... ` with the url on stdin (a curl config), so the origin
+# never shows in `ps`. The stub logs argv and the config to separate files, and answers with the
+# fixture status code; a fail-curl file makes it exit like a transport failure.
+SMOKE_CURL_STUB = r"""#!/bin/bash
+IFS=$'\t'
+printf 'curl\t%s\n' "$*" >> "$STUB_LOG"
+IFS=' '
+stdin="$(cat)"
+printf '%s\n' "${stdin//$'\n'/ }" >> "$STUB_STDIN_LOG"
+[[ -e "$STUB_DIR/fail-curl" ]] && exit 28
+printf '%s' "$(cat "$STUB_DIR/smoke-code" 2> /dev/null || echo 200)"
+"""
+
+
+class SmokeHarness:
+    """A stub curl on PATH and a runner for public_smoke.sh."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Write the stub curl and a passing default answer under tmp_path."""
+        self.dir = tmp_path / "smoke-stub"
+        self.dir.mkdir()
+        self.bin = tmp_path / "smoke-bin"
+        self.bin.mkdir()
+        self.log = tmp_path / "smoke-calls.log"
+        self.stdin_log = tmp_path / "smoke-stdin.log"
+        path = self.bin / "curl"
+        path.write_text(SMOKE_CURL_STUB)
+        path.chmod(0o755)
+        self.code("200")
+
+    def code(self, status: str) -> None:
+        """Set the HTTP status the stub curl prints."""
+        (self.dir / "smoke-code").write_text(status)
+
+    def flag(self, name: str) -> None:
+        """Create an empty marker file (the stub fails when one exists)."""
+        (self.dir / name).write_text("")
+
+    def calls(self) -> list[str]:
+        """The curl argv lines logged so far."""
+        if not self.log.exists():
+            return []
+        return [line.removeprefix("curl\t") for line in self.log.read_text().splitlines()]
+
+    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run the script with the stub curl first on PATH."""
+        env = {
+            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "STUB_DIR": str(self.dir),
+            "STUB_LOG": str(self.log),
+            "STUB_STDIN_LOG": str(self.stdin_log),
+        }
+        return subprocess.run(
+            ["bash", str(SMOKE_SCRIPT), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+
+
+@pytest.fixture
+def smoke(tmp_path: Path) -> SmokeHarness:
+    return SmokeHarness(tmp_path)
+
+
+def _assert_never_prints(result: subprocess.CompletedProcess[str], secret: str) -> None:
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert "console.example" not in result.stdout + result.stderr
+
+
+def test_the_smoke_script_is_executable_and_parses() -> None:
+    assert SMOKE_SCRIPT.stat().st_mode & stat.S_IXUSR
+    tracked = subprocess.run(
+        ["git", "ls-files", "-s", str(SMOKE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=True,
+    ).stdout
+    assert tracked == "" or tracked.startswith("100755")
+    subprocess.run(["bash", "-n", str(SMOKE_SCRIPT)], check=True)
+
+
+@pytest.mark.parametrize("status", ["200", "204", "301", "302", "303", "307", "308", "399"])
+def test_public_smoke_passes_on_200_and_on_a_login_redirect(
+    smoke: SmokeHarness, status: str
+) -> None:
+    smoke.code(status)
+    result = smoke.run(ORIGIN)
+    assert result.returncode == 0, result.stderr
+    _assert_never_prints(result, ORIGIN)
+    (call,) = smoke.calls()
+    argv = call.split()
+    # Bounded and retried; only the status is read; a redirect is not followed.
+    assert argv[argv.index("--max-time") + 1] == "15"
+    assert argv[argv.index("--retry") + 1] == "3"
+    assert argv[argv.index("--retry-delay") + 1] == "5"
+    assert argv[argv.index("-o") + 1] == "/dev/null"
+    assert argv[argv.index("-w") + 1] == "%{http_code}"
+    assert "-L" not in argv
+    assert "--location" not in argv
+    # The origin and the path reach curl as its config on stdin, not on a command line.
+    assert ORIGIN not in smoke.log.read_text()
+    assert smoke.stdin_log.read_text().strip() == f'url = "{ORIGIN}/"'
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["400", "401", "403", "404", "429", "500", "502", "503", "199", "100", "400\n200", "000"],
+)
+def test_public_smoke_fails_on_4xx_5xx_and_on_a_curl_failure(
+    smoke: SmokeHarness, status: str
+) -> None:
+    smoke.code(status)
+    result = smoke.run(ORIGIN)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    _assert_never_prints(result, ORIGIN)
+    assert result.stderr.count("\n") == 1, result.stderr
+    assert len(smoke.calls()) == 1
+
+
+@pytest.mark.parametrize("status", ["", "ok", "20", "2000", "2xx", " 200", "200 ", "２００"])
+def test_public_smoke_fails_on_a_status_that_is_not_three_digits(
+    smoke: SmokeHarness, status: str
+) -> None:
+    smoke.code(status)
+    result = smoke.run(ORIGIN)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    _assert_never_prints(result, ORIGIN)
+
+
+def test_public_smoke_names_the_status_without_the_origin(smoke: SmokeHarness) -> None:
+    smoke.code("503")
+    result = smoke.run(ORIGIN)
+    assert result.stderr == "the console did not answer with 2xx or 3xx (status 503)\n"
+
+
+def test_public_smoke_fails_when_curl_fails(smoke: SmokeHarness) -> None:
+    smoke.flag("fail-curl")
+    result = smoke.run(ORIGIN)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    _assert_never_prints(result, ORIGIN)
+    assert result.stderr.count("\n") == 1, result.stderr
+    assert len(smoke.calls()) == 1
+
+
+BAD_ORIGINS = [
+    pytest.param("", id="empty"),
+    pytest.param("console.example.test", id="no-scheme"),
+    pytest.param("http://console.example.test", id="http"),
+    pytest.param("HTTPS://console.example.test", id="uppercase-scheme"),
+    pytest.param(ORIGIN + "/", id="trailing-slash"),
+    pytest.param(ORIGIN + "/login", id="path"),
+    pytest.param(ORIGIN + ":8443", id="port"),
+    pytest.param(ORIGIN + "?x=1", id="query"),
+    pytest.param("https://user@console.example.test", id="userinfo"),
+    pytest.param("https://console.example.test extra", id="trailing-text"),
+    pytest.param("https://console.example.test\n", id="trailing-newline"),
+    pytest.param("https://console.example.test\nhttps://other.example.test", id="two-lines"),
+    pytest.param("https://", id="no-host"),
+    pytest.param('https://console.example.test"\nheader = "x', id="config-injection"),
+    pytest.param("https://cönsole.example.test", id="non-ascii"),
+    pytest.param("https://console.example.test٣", id="arabic-indic-digit"),
+]
+
+
+@pytest.mark.parametrize("bad", BAD_ORIGINS)
+def test_public_smoke_refuses_a_malformed_origin_without_calling_curl(
+    smoke: SmokeHarness, bad: str
+) -> None:
+    result = smoke.run(bad)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.count("\n") == 1, result.stderr
+    assert "console" not in result.stderr
+    assert "example" not in result.stderr
+    assert smoke.calls() == []
+
+
+def test_public_smoke_needs_exactly_one_origin_argument(smoke: SmokeHarness) -> None:
+    for args in ((), (ORIGIN, ORIGIN)):
+        result = smoke.run(*args)
+        assert result.returncode != 0
+        assert result.stdout == ""
+        _assert_never_prints(result, ORIGIN)
+    assert smoke.calls() == []
+
+
+def test_public_smoke_never_prints_the_origin(smoke: SmokeHarness) -> None:
+    secret = "https://very-secret-host.example.test"
+    for status in ("200", "302", "404", "503", "garbage"):
+        smoke.code(status)
+        result = smoke.run(secret)
+        assert "secret" not in result.stdout + result.stderr
+        assert "example" not in result.stdout + result.stderr
+    smoke.flag("fail-curl")
+    result = smoke.run(secret)
+    assert result.returncode != 0
+    assert "secret" not in result.stdout + result.stderr
+    for bad in (secret + "/path", "http://very-secret-host.example.test"):
+        result = smoke.run(bad)
+        assert result.returncode != 0
+        assert "secret" not in result.stdout + result.stderr
