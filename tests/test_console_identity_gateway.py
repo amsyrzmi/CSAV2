@@ -83,6 +83,10 @@ def application(
         ASSISTANT_JEV_FLOOR_CHOICE=0.7,
         GROQ_MODEL="synthetic-model",
         GROQ_CHAT_URL="https://api.groq.com/openai/v1/chat/completions",
+        # The gateway startup reads these for the Langfuse mirror: no keys, no sink.
+        LANGFUSE_PUBLIC_KEY=None,
+        LANGFUSE_SECRET_KEY=None,
+        LANGFUSE_BASE_URL=None,
         **{"STORAGE_BACKEND": "local", **(storage or {})},
         INVITE_MAIL_ENABLED=False,
         INVITE_MAIL_FROM="FourStacks <no-reply@fourstacks.my>",
