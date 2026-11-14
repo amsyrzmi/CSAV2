@@ -1,6 +1,8 @@
 #!/bin/bash
 # Decide which commit production deploys and check it before anything reaches the instance:
-#   resolve_commit.sh [<input-sha>]      environment: GH_TOKEN, REPOSITORY (owner/name)
+#   resolve_commit.sh [<input-sha>]      environment: GH_TOKEN, REPOSITORY (owner/name),
+#                                        IMAGE_NAMESPACE (ghcr.io/<lowercase owner>),
+#                                        optional REGISTRY_USER and REGISTRY_TOKEN
 # With no input the commit is the tip of main (and that tip alone: if it is not staged, nothing
 # older is picked). On full success it prints, for $GITHUB_OUTPUT,
 #   sha=, python_digest=, frontend_digest=, staged_on=, explicit=true|false
@@ -9,8 +11,11 @@
 # has a success status on a staging Deployment (this is the staged gate, since a host given image
 # digests skips its own), 5 both images are tagged with the sha in the registry and their digests
 # are readable. Every gh or curl failure and every malformed answer fails closed. GH_TOKEN is
-# read only by gh and is never printed; the registry gets an anonymous token, and that bearer
-# token reaches curl on stdin, never on a command line.
+# read only by gh and is never printed. The registry token request carries the login
+# REGISTRY_USER:REGISTRY_TOKEN when both are set (the workflow's own token, with packages: read)
+# and is retried once anonymously if the registry refuses it; with no login it is anonymous. The
+# login and the bearer token reach curl on stdin (a curl config), never on a command line, and
+# are read with xtrace off, so `bash -x` does not echo them either.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -37,10 +42,34 @@ gh_get() {
 
 [[ "$#" -le 1 ]] || die "usage: resolve_commit.sh [<sha>]"
 input="${1:-}"
-[[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN must be set"
+# ${GH_TOKEN:+set}, not the value: xtrace shows the expanded test, and in the workflow GH_TOKEN is
+# the same token as REGISTRY_TOKEN.
+[[ -n "${GH_TOKEN:+set}" ]] || die "GH_TOKEN must be set"
 [[ -n "${REPOSITORY:-}" ]] && valid '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "$REPOSITORY" \
     || die "REPOSITORY must be set to owner/name"
-owner="${REPOSITORY%%/*}"
+# The registry prefix of the app images comes from the repository variable, never from the
+# repository owner: a lowercase ghcr.io namespace, no scheme and no trailing slash.
+[[ -n "${IMAGE_NAMESPACE:-}" ]] && valid '^ghcr\.io/[a-z0-9][a-z0-9-]*$' "$IMAGE_NAMESPACE" \
+    || die "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>"
+
+# login_state: "none" unless REGISTRY_USER and REGISTRY_TOKEN are both set (one alone is not a
+# login), "plain" when both hold only characters that cannot end the quoted curl config line or
+# start another directive, "bad" otherwise. It runs in a subshell with xtrace off, so tracing the
+# script never shows either value.
+login_state() {
+    { set +x; } 2> /dev/null
+    if [[ -z "${REGISTRY_USER:-}" || -z "${REGISTRY_TOKEN:-}" ]]; then
+        echo none
+    elif valid '^[][A-Za-z0-9_.-]+$' "$REGISTRY_USER" \
+        && valid '^[A-Za-z0-9_.~+/=-]+$' "$REGISTRY_TOKEN"; then
+        echo plain
+    else
+        echo bad
+    fi
+}
+registry_login="$(login_state)"
+[[ "$registry_login" != "bad" ]] \
+    || die "REGISTRY_USER and REGISTRY_TOKEN must hold only plain token characters"
 
 # 1. The commit: the input, or the tip of main.
 if [[ -n "$input" ]]; then
@@ -114,15 +143,30 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
 
-# registry_digest <app>: prints the manifest digest of csa-<app>:<sha>.
+# registry_token <repo>: prints the token endpoint's answer for a pull of <repo>. With a login the
+# request carries it as Basic credentials in a curl config on stdin; if that request fails (the
+# token has no access to the package, say) it is retried once without credentials.
+registry_token() {
+    local url="https://ghcr.io/token?service=ghcr.io&scope=repository:$1:pull" answer
+    if [[ "$registry_login" == "plain" ]] \
+        && answer="$(printf 'user = "%s:%s"\n' "$REGISTRY_USER" "$REGISTRY_TOKEN" \
+            | curl -sf --max-time 30 -K - "$url" 2> /dev/null)"; then
+        printf '%s' "$answer"
+        return 0
+    fi
+    # An anonymous pull token (the images are public): no credentials go to the token endpoint.
+    curl -sf --max-time 30 "$url" < /dev/null 2> /dev/null
+}
+
+# registry_digest <app>: prints the manifest digest of csa-<app>:<sha>. Called only in a command
+# substitution: it turns xtrace off for its own subshell, since it handles the login and the
+# bearer token.
 registry_digest() {
+    { set +x; } 2> /dev/null
     local app="$1" token_body token code line name digest found=0
-    local repo="$owner/csa-$app"
+    local repo="${IMAGE_NAMESPACE#ghcr.io/}/csa-$app"
     local headers="$work/headers-$app"
-    # An anonymous pull token (the images are public): no credentials go to the registry's token endpoint.
-    token_body="$(curl -sf --max-time 30 \
-        "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" < /dev/null 2> /dev/null)" \
-        || die "could not get a registry token for csa-$app"
+    token_body="$(registry_token "$repo")" || die "could not get a registry token for csa-$app"
     token="$(jq -r '.token | strings' <<< "$token_body" 2> /dev/null)" || die "unexpected registry token answer for csa-$app"
     valid '^[A-Za-z0-9._~+/=-]+$' "$token" || die "unexpected registry token answer for csa-$app"
     code="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \

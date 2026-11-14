@@ -29,7 +29,7 @@ env:
   CSA_APP_PASSWORD: ci_app_pw
   CSA_RO_PASSWORD: ci_ro_pw
   # The combined DB image, pinned by digest (same as compose.dev.yml).
-  CSA_DB_IMAGE: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
+  CSA_DB_IMAGE: ${{ vars.IMAGE_NAMESPACE }}/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
 
 jobs:
   gate:
@@ -41,7 +41,7 @@ jobs:
 
     services:
       postgres:
-        image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
+        image: ${{ vars.IMAGE_NAMESPACE }}/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -106,6 +106,7 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
       - name: Policy branch coverage (90 percent minimum)
         run: make coverage
@@ -127,7 +128,7 @@ jobs:
 
     services:
       postgres:
-        image: ghcr.io/amsyrzmi/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
+        image: ${{ vars.IMAGE_NAMESPACE }}/csa-pg16-postgis-vector@sha256:4e610cbe04be850136f42fffcc1ef546ceff5b13d8f25322738d0d74a9a1fefe
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}

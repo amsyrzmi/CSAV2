@@ -43,6 +43,7 @@ jobs:
       contents: read
       deployments: read
       id-token: write
+      packages: read
     outputs:
       sha: ${{ steps.parse.outputs.sha }}
       migrations: ${{ steps.parse.outputs.migrations }}
@@ -61,13 +62,17 @@ jobs:
           persist-credentials: false
 
       # The script prints sha, the two image digests, staged_on and explicit on success, and one
-      # message on stderr (kept in the log) with a non-zero exit on any failed check.
+      # message on stderr (kept in the log) with a non-zero exit on any failed check. It asks the
+      # registry for a pull token with the workflow token (packages: read), anonymously if refused.
       - name: Resolve and check the commit
         id: target
         env:
           INPUT_SHA: ${{ inputs.sha }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           deploy/production/resolve_commit.sh "$INPUT_SHA" >> "$GITHUB_OUTPUT"

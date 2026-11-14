@@ -21,8 +21,14 @@ SCRIPT = ROOT / "deploy" / "production" / "resolve_commit.sh"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 REPOSITORY = "example-owner/example-repo"
+IMAGE_NAMESPACE = "ghcr.io/example-owner"
 GH_TOKEN = "ghs_FAKEGITHUBTOKEN123"
 REGISTRY_TOKEN = "regtoken-FAKE-456"
+# The optional registry login (in the workflow: github.actor and github.token).
+LOGIN_USER = "example-actor"
+LOGIN_TOKEN = "ghs_FAKEWORKFLOWLOGIN789"
+LOGIN = {"REGISTRY_USER": LOGIN_USER, "REGISTRY_TOKEN": LOGIN_TOKEN}
+CREDENTIALS_MESSAGE = "REGISTRY_USER and REGISTRY_TOKEN must hold only plain token characters"
 TIP = "0123456789abcdef0123456789abcdef01234567"
 OLDER = "89abcdef0123456789abcdef0123456789abcdef"
 SHA7 = TIP[:7]
@@ -61,7 +67,11 @@ cat "$STUB_DIR/$key.json"
 """
 
 # curl is called as `curl ... -K - ... <url>` with the credentials on stdin. The stub logs argv
-# and stdin to separate files so a test can prove the token never reached a command line.
+# and stdin to separate files so a test can prove the token never reached a command line. For a
+# token request it logs only what the config was, never its text: "" (no config), "credentials"
+# (`-K -` and exactly the line `user = "<REGISTRY_USER>:<REGISTRY_TOKEN>"`, compared with the
+# environment the stub inherits) or "unexpected-config". A fail-curl-token-<app> file fails every
+# token request for that app; fail-curl-credentialed-token-<app> fails only a credentialed one.
 CURL_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'curl\t%s\n' "$*" >> "$STUB_LOG"
@@ -69,24 +79,37 @@ IFS=' '
 stdin="$(cat)"
 headers=""
 url=""
+config_on_stdin=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -D) headers="$2"; shift ;;
         -o|-w|-H) shift ;;
+        -K) [[ "${2:-}" == "-" ]] && config_on_stdin=1; shift ;;
         -*) ;;
         *) url="$1" ;;
     esac
     shift
 done
-printf '%s\t%s\n' "$url" "${stdin//$'\n'/ }" >> "$STUB_STDIN_LOG"
 case "$url" in
     https://ghcr.io/token\?*)
         app="${url##*/csa-}"
         app="${app%:pull}"
+        config=""
+        if [[ -n "$stdin" ]]; then
+            config="unexpected-config"
+            if [[ "$config_on_stdin" == 1 && -n "${REGISTRY_USER:-}" && -n "${REGISTRY_TOKEN:-}" \
+                && "$stdin" == "user = \"$REGISTRY_USER:$REGISTRY_TOKEN\"" ]]; then
+                config="credentials"
+            fi
+        fi
+        printf '%s\t%s\n' "$url" "$config" >> "$STUB_STDIN_LOG"
         [[ -e "$STUB_DIR/fail-curl-token-$app" ]] && exit 22
+        refuse="$STUB_DIR/fail-curl-credentialed-token-$app"
+        [[ "$config" == credentials && -e "$refuse" ]] && exit 22
         cat "$STUB_DIR/token-$app.json"
         ;;
     https://ghcr.io/v2/*/manifests/*)
+        printf '%s\t%s\n' "$url" "${stdin//$'\n'/ }" >> "$STUB_STDIN_LOG"
         app="${url#*/csa-}"
         app="${app%%/*}"
         [[ -e "$STUB_DIR/fail-curl-head-$app" ]] && exit 6
@@ -179,8 +202,24 @@ class Harness:
             calls.append([tool, " ".join(argv)])
         return calls
 
+    def token_requests(self) -> list[tuple[str, str]]:
+        """The token requests so far, in order, as (app, config kind) pairs."""
+        if not self.stdin_log.exists():
+            return []
+        requests = []
+        for line in self.stdin_log.read_text().splitlines():
+            url, config = line.split("\t")
+            if "/token?" in url:
+                requests.append((url.split("/csa-")[1].removesuffix(":pull"), config))
+        return requests
+
     def run(
-        self, *args: str, env_extra: dict[str, str] | None = None, token: str | None = GH_TOKEN
+        self,
+        *args: str,
+        env_extra: dict[str, str] | None = None,
+        token: str | None = GH_TOKEN,
+        namespace: str | None = IMAGE_NAMESPACE,
+        xtrace: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         """Run the script with the stubs first on PATH."""
         env = {
@@ -193,8 +232,10 @@ class Harness:
         }
         if token is not None:
             env["GH_TOKEN"] = token
+        if namespace is not None:
+            env["IMAGE_NAMESPACE"] = namespace
         return subprocess.run(
-            ["bash", str(SCRIPT), *args],
+            ["bash", *(["-x"] if xtrace else []), str(SCRIPT), *args],
             env=env,
             capture_output=True,
             text=True,
@@ -217,6 +258,7 @@ def _assert_refused(result: subprocess.CompletedProcess[str], message: str | Non
         assert result.stderr == message + "\n"
     assert GH_TOKEN not in result.stderr
     assert REGISTRY_TOKEN not in result.stderr
+    assert LOGIN_TOKEN not in result.stderr
 
 
 def test_the_script_is_executable_and_parses() -> None:
@@ -268,7 +310,7 @@ def test_an_empty_input_means_the_tip(harness: Harness) -> None:
     assert result.stdout.endswith("explicit=false\n")
 
 
-def test_registry_calls_use_the_owner_the_accept_types_and_keep_the_token_off_argv(
+def test_registry_calls_use_the_namespace_owner_the_accept_types_and_keep_the_token_off_argv(
     harness: Harness,
 ) -> None:
     result = harness.run()
@@ -598,11 +640,210 @@ def test_a_malformed_repository_is_refused_before_any_call(
     assert harness.calls() == []
 
 
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        None,
+        "",
+        "ghcr.io/Example-Owner",
+        "ghcr.io/example-owner/",
+        "https://ghcr.io/example-owner",
+        "docker.io/example-owner",
+        "ghcr.io/",
+        "ghcr.io/-x",
+        "ghcr.io/example-owner\n",
+        "ghcr.io/a/b",
+    ],
+)
+def test_a_missing_or_malformed_namespace_is_refused_before_any_call(
+    harness: Harness, namespace: str | None
+) -> None:
+    result = harness.run(namespace=namespace)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>\n"
+    assert harness.calls() == []
+
+
+def test_the_registry_name_comes_from_the_namespace_not_the_repository(harness: Harness) -> None:
+    result = harness.run(namespace="ghcr.io/other-org")
+    assert result.returncode == 0, result.stderr
+    curls = " ".join(call[1] for call in harness.calls() if call[0] == "curl")
+    assert "repository:other-org/csa-python:pull" in curls
+    assert "/v2/other-org/csa-frontend/manifests/" in curls
+    assert "example-owner/csa-" not in curls
+
+
 def test_more_than_one_argument_is_refused(harness: Harness) -> None:
     result = harness.run(TIP, TIP)
     assert result.returncode != 0
     assert result.stdout == ""
     assert harness.calls() == []
+
+
+# --- the optional registry login --------------------------------------------------------------
+
+
+def _assert_login_kept_secret(harness: Harness, result: subprocess.CompletedProcess[str]) -> None:
+    """Neither login value is on any command line, in any output or in the stub's stdin log."""
+    for value in (LOGIN_USER, LOGIN_TOKEN):
+        assert value not in harness.log.read_text()
+        assert value not in result.stdout
+        assert value not in result.stderr
+        if harness.stdin_log.exists():
+            assert value not in harness.stdin_log.read_text()
+
+
+def test_credentials_reach_curl_on_stdin_never_argv(harness: Harness) -> None:
+    result = harness.run(env_extra=LOGIN)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f"sha={TIP}\npython_digest={PY_DIGEST}\nfrontend_digest={FE_DIGEST}\n"
+        f"staged_on={STAGED_ON}\nexplicit=false\n"
+    )
+    assert result.stderr == ""
+    assert harness.token_requests() == [("python", "credentials"), ("frontend", "credentials")]
+    token_calls = [c[1].split() for c in harness.calls() if c[0] == "curl" and "/token?" in c[1]]
+    assert len(token_calls) == 2
+    for argv in token_calls:
+        assert argv[argv.index("-K") + 1] == "-"
+        assert "-u" not in argv
+        assert "--user" not in argv
+        assert "--max-time" in argv
+    _assert_login_kept_secret(harness, result)
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        pytest.param({}, id="neither"),
+        pytest.param({"REGISTRY_USER": LOGIN_USER}, id="only-user"),
+        pytest.param({"REGISTRY_TOKEN": LOGIN_TOKEN}, id="only-token"),
+        pytest.param({"REGISTRY_USER": "", "REGISTRY_TOKEN": LOGIN_TOKEN}, id="empty-user"),
+        pytest.param({"REGISTRY_USER": LOGIN_USER, "REGISTRY_TOKEN": ""}, id="empty-token"),
+    ],
+)
+def test_without_credentials_the_token_request_is_anonymous(
+    harness: Harness, login: dict[str, str]
+) -> None:
+    # Only both values together are a login; one alone is "not configured", today's behaviour.
+    result = harness.run(env_extra=login)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert harness.token_requests() == [("python", ""), ("frontend", "")]
+    for command in [c[1].split() for c in harness.calls() if c[0] == "curl"]:
+        if any("/token?" in part for part in command):
+            assert "-K" not in command
+            assert "-u" not in command
+            assert "--user" not in command
+    _assert_login_kept_secret(harness, result)
+
+
+def test_a_refused_credentialed_token_request_is_retried_anonymously(harness: Harness) -> None:
+    harness.flag("fail-curl-credentialed-token-python")
+    harness.flag("fail-curl-credentialed-token-frontend")
+    result = harness.run(env_extra=LOGIN)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert f"python_digest={PY_DIGEST}\n" in result.stdout
+    assert f"frontend_digest={FE_DIGEST}\n" in result.stdout
+    assert harness.token_requests() == [
+        ("python", "credentials"),
+        ("python", ""),
+        ("frontend", "credentials"),
+        ("frontend", ""),
+    ]
+    _assert_login_kept_secret(harness, result)
+
+
+def test_a_refused_credentialed_request_for_one_app_does_not_change_the_other(
+    harness: Harness,
+) -> None:
+    harness.flag("fail-curl-credentialed-token-python")
+    result = harness.run(env_extra=LOGIN)
+    assert result.returncode == 0, result.stderr
+    assert harness.token_requests() == [
+        ("python", "credentials"),
+        ("python", ""),
+        ("frontend", "credentials"),
+    ]
+
+
+@pytest.mark.parametrize("app", ["python", "frontend"])
+def test_both_token_requests_failing_dies_with_the_existing_message(
+    harness: Harness, app: str
+) -> None:
+    harness.flag(f"fail-curl-token-{app}")
+    result = harness.run(env_extra=LOGIN)
+    _assert_refused(result, f"could not get a registry token for csa-{app}")
+    # Exactly one retry, and no manifest request for the app without a token.
+    assert [kind for name, kind in harness.token_requests() if name == app] == ["credentials", ""]
+    assert not any(
+        "/manifests/" in call[1] and f"/csa-{app}/" in call[1] for call in harness.calls()
+    )
+    _assert_login_kept_secret(harness, result)
+
+
+NEVER_PRINTED = {
+    "success": {},
+    "credentialed-refused": {"fail-curl-credentialed-token-python": ""},
+    "both-refused": {"fail-curl-token-frontend": ""},
+    "image-missing": {"code-python": "404"},
+    "digest-malformed": {"head-frontend.txt": _headers("sha256:abc")},
+    "not-staged": {"deployments.json": "[]"},
+}
+
+
+@pytest.mark.parametrize("xtrace", [False, True], ids=["plain", "bash-x"])
+@pytest.mark.parametrize("name", NEVER_PRINTED)
+def test_credentials_are_never_printed(harness: Harness, name: str, xtrace: bool) -> None:
+    for file, content in NEVER_PRINTED[name].items():
+        harness.set(file, content)
+    result = harness.run(env_extra=LOGIN, xtrace=xtrace)
+    assert result.returncode == (0 if name in ("success", "credentialed-refused") else 1)
+    if xtrace:
+        assert "+ " in result.stderr  # the trace is on, and still shows no secret
+    _assert_login_kept_secret(harness, result)
+    # The registry's bearer token is a credential too: never traced.
+    assert REGISTRY_TOKEN not in result.stdout + result.stderr
+    assert GH_TOKEN not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        pytest.param({"REGISTRY_USER": 'example"actor'}, id="user-quote"),
+        pytest.param({"REGISTRY_USER": "example\\actor"}, id="user-backslash"),
+        pytest.param({"REGISTRY_USER": "example:actor"}, id="user-colon"),
+        pytest.param({"REGISTRY_USER": "example actor"}, id="user-space"),
+        pytest.param({"REGISTRY_USER": "example-actor\n"}, id="user-trailing-newline"),
+        pytest.param(
+            {"REGISTRY_TOKEN": 'ghs_FAKE"\nurl = "http://example.test'}, id="token-inject"
+        ),
+        pytest.param({"REGISTRY_TOKEN": "ghs_FAKE\\"}, id="token-backslash"),
+        pytest.param({"REGISTRY_TOKEN": "ghs_FAKE:extra"}, id="token-colon"),
+        pytest.param({"REGISTRY_TOKEN": "ghs_FAKE token"}, id="token-space"),
+        pytest.param({"REGISTRY_TOKEN": "ghs_FAKE\u0663"}, id="token-arabic-indic-digit"),
+    ],
+)
+def test_a_login_that_could_break_the_curl_config_is_refused_before_any_call(
+    harness: Harness, login: dict[str, str]
+) -> None:
+    env = {**LOGIN, **login, "LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+    result = harness.run(env_extra=env)
+    _assert_refused(result, CREDENTIALS_MESSAGE)
+    assert harness.calls() == []
+    for value in (env["REGISTRY_USER"], env["REGISTRY_TOKEN"]):
+        assert value not in result.stderr
+
+
+@pytest.mark.parametrize("user", ["github-actions[bot]", "Example-Actor", "a.b_c"])
+def test_a_plain_login_with_bot_or_mixed_case_actor_names_is_used(
+    harness: Harness, user: str
+) -> None:
+    result = harness.run(env_extra={"REGISTRY_USER": user, "REGISTRY_TOKEN": LOGIN_TOKEN})
+    assert result.returncode == 0, result.stderr
+    assert harness.token_requests() == [("python", "credentials"), ("frontend", "credentials")]
 
 
 # ---------------------------------------------------------------------------------------------

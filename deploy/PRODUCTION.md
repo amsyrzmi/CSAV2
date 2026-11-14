@@ -43,11 +43,20 @@ commit in `/home/ubuntu/CSAV2` and runs
 
 The workflow, not the instance, talks to GitHub. The `plan` job first runs
 `deploy/production/resolve_commit.sh`, which picks the commit, checks it (refusals below) and reads
-both image digests from the registry's manifest API with an anonymous pull token (the images are
-public, so no token and no `packages: read` permission are involved). The two digests go to the
+both image digests from the registry's manifest API. Its pull token is requested with the
+workflow's own token (the `plan` job has `packages: read`); if the registry refuses that, the
+script asks once more anonymously (the images are public). The two digests go to the
 instance with the plan and the apply. The instance still pulls by digest with an empty Docker
 config and checks each pulled image's digest and revision label against the commit. A host run by
 hand without digests keeps the old path (see Break-glass).
+
+The registry prefix of the images is the repository variable `IMAGE_NAMESPACE` (Settings, Secrets
+and variables, Actions, Variables), for example `ghcr.io/example-owner`: lowercase, no scheme, no
+trailing slash. The repository owner sets it. `publish-staging-images` and `resolve_commit.sh`
+read it and refuse with `IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>` before any
+registry call when it is unset or malformed. CI reads it too, but has no such check: with the
+variable unset, the `gate` and `tests` jobs fail at container initialisation with a Docker
+image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha256:...`).
 
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
@@ -527,7 +536,7 @@ h. Run a plan on the instance as Systems Manager would, for the newest staged co
    never as root directly: a root run leaves the lock file root-owned, and every later run then
    fails at the lock with `Permission denied`.
 
-### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, four secrets, one variable
+### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, four secrets, two variables
 
 - Environment **`production-plan`**: no required reviewer. Deployment branches and tags:
   "Selected branches and tags", one rule for the branch `main`. Environment secrets:
@@ -540,6 +549,8 @@ h. Run a plan on the instance as Systems Manager would, for the newest staged co
   `PROD_CONSOLE_ORIGIN` (the production console origin: `https://` plus the hostname, no path,
   port or trailing slash; the public smoke test asks it for `/`).
 - Repository variable **`PROD_DEPLOY_REGION`**: `<region>`.
+- Repository variable **`IMAGE_NAMESPACE`**: `ghcr.io/amsyrzmi`, the lowercase registry prefix of the
+  images (see Deploying from GitHub); the owner changes it if the repository moves.
 
 The `main`-only restriction on both environments is mandatory: the roles' trust policies name the
 environment, and the environment's branch rule is what keeps another branch from getting that
@@ -548,8 +559,8 @@ secrets so the public workflow logs mask them, and the real values never go into
 
 Create the two environments, their reviewers and branch rules first, in the web settings
 (Settings, Environments); `gh secret set --env` for an environment that does not exist yet fails
-with HTTP 404. Then set the secrets and the variable, in the web settings or from a terminal, each
-secret typed at `gh`'s hidden prompt:
+with HTTP 404. Then set the secrets and the two variables (`PROD_DEPLOY_REGION` and
+`IMAGE_NAMESPACE`), in the web settings or from a terminal, each secret typed at `gh`'s hidden prompt:
 
 ```bash
 gh secret set PROD_PLAN_ROLE_ARN --repo amsyrzmi/CSAV2 --env production-plan
@@ -558,6 +569,7 @@ gh secret set PROD_APPLY_ROLE_ARN --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_INSTANCE_ID --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production
 gh variable set PROD_DEPLOY_REGION --repo amsyrzmi/CSAV2 --body <region>
+gh variable set IMAGE_NAMESPACE --repo amsyrzmi/CSAV2 --body ghcr.io/amsyrzmi
 ```
 
 ### 7. GitHub: verify with a plan

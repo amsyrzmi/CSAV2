@@ -1377,9 +1377,16 @@ def test_deploy_files_hold_no_account_instance_region_or_address(path: Path) -> 
 
 # --- the deploy-production workflow -------------------------------------------------------------
 
-# The plan job also reads the Actions runs of the ci workflow (the resolver's CI check).
+# The plan job also reads the Actions runs of the ci workflow (the resolver's CI check) and asks
+# the registry for a pull token with the workflow token (packages: read).
 JOB_PERMISSIONS = {
-    "plan": ["actions: read", "contents: read", "deployments: read", "id-token: write"],
+    "plan": [
+        "actions: read",
+        "contents: read",
+        "deployments: read",
+        "id-token: write",
+        "packages: read",
+    ],
     "apply": ["contents: read", "deployments: read", "id-token: write"],
 }
 PIN = re.compile(r"^\s*(?:- )?uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
@@ -1647,6 +1654,9 @@ def test_the_workflow_resolves_with_the_script_after_checking_out_main(harness: 
         "INPUT_SHA: ${{ inputs.sha }}",
         "GH_TOKEN: ${{ github.token }}",
         "REPOSITORY: ${{ github.repository }}",
+        "IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}",
+        "REGISTRY_USER: ${{ github.actor }}",
+        "REGISTRY_TOKEN: ${{ github.token }}",
     ]
     (block,) = _run_blocks(resolve)
     assert block == (
@@ -2020,15 +2030,20 @@ def test_the_public_smoke_step_runs_last_and_the_secret_is_required_up_front(
     assert b"PROD_CONSOLE_ORIGIN" in result.stderr
 
 
-def test_permissions_are_unchanged_except_actions_read_on_plan() -> None:
+def test_permissions_are_unchanged_except_actions_and_packages_read_on_plan() -> None:
     text = _workflow()
     assert _children(text, "permissions:") == ["contents: read"]
     jobs = _jobs()
     plan = _children("  job:\n" + jobs["plan"], "    permissions:")
     apply = _children("  job:\n" + jobs["apply"], "    permissions:")
     assert apply == ["contents: read", "deployments: read", "id-token: write"]
-    assert plan == ["actions: read", *apply]
-    assert "packages:" not in text
+    assert plan == ["actions: read", *apply, "packages: read"]
+    # Only the plan job reads packages, and only its resolve step gets the registry login.
+    assert len(re.findall(r"^\s+packages:", text, re.MULTILINE)) == 1
+    assert "packages:" not in jobs["apply"]
+    assert text.count("REGISTRY_USER") == 1
+    assert text.count("REGISTRY_TOKEN") == 1
+    assert "REGISTRY_" not in jobs["apply"]
 
 
 # --- backup.sh: the instance's backup, kept in the repository ------------------------------------
@@ -2332,6 +2347,7 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_INSTANCE_ID",
         "PROD_DEPLOY_REGION",
         "PROD_CONSOLE_ORIGIN",
+        "IMAGE_NAMESPACE",
     }
     assert environments == {"production", "production-plan"}
     for name in names | environments:
