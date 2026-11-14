@@ -63,3 +63,11 @@ def test_publish_requires_a_lowercase_namespace() -> None:
 def test_production_plan_passes_the_variable_to_the_resolve_script() -> None:
     text = DEPLOY_PRODUCTION.read_text()
     assert "IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}" in text
+
+
+def test_gitleaks_step_passes_the_optional_licence() -> None:
+    steps = re.split(r"^      - ", CI.read_text(), flags=re.MULTILINE)[1:]
+    gitleaks = [step for step in steps if "uses: gitleaks/gitleaks-action" in step]
+    assert len(gitleaks) == 1
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in gitleaks[0]
+    assert "GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}" in gitleaks[0]
