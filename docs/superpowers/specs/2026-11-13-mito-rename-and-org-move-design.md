@@ -1,6 +1,6 @@
 # Mito rename, organisation move and CI shards: design
 
-Status: CANCELLED by the owner on 2026-11-13, before any of it was built. The owner chose to start payments
+Status: REVIVED by the owner on 2026-11-14 (payments P1, the training video and credit monitoring are merged; only #125 was open). Project 1 (shards) is built first, projects 2 to 4 each get a design round that re-measures the inventory (the CD pipeline, production services and training worker added names, digests and deploy trust). It was first CANCELLED on 2026-11-13, before any of it was built. The owner chose to start payments
 (P1, P2) and then the training library instead, because this work would take about 3 to 5 working days before
 payments could start. The document is kept as reference: the facts in section 3 (public images, the AWS deploy
 trust naming the repository, CI cost, the shard imbalance) and the approaches stay true if the work is revived.
@@ -16,7 +16,7 @@ The product is called Mito (production runs at `mito.fourstacks.my`), but the re
 `amsyrzmi/CSAV2`, and "csa" is in the package, the environment variables, the images, the containers and the
 database roles. The owner wants, before payments are built:
 
-- the repository moved into the `fourstacks` organisation (Team plan), made private, and named `mito`;
+- the repository moved into the `FourstacksPLT` organisation (Team plan), made private, and named `mito`;
 - every "csa" name changed to "mito";
 - CI split into better balanced, more parallel shards, because a private repository bills Actions minutes.
 
@@ -66,7 +66,7 @@ big-bang change that cannot be backed out in pieces.
 
 1. **CI shard rebalance** (small; designed in section 6). First, so CI is cheaper before the repo goes private.
 2. **Organisation move, private repository, repository rename, private images.** Transfer `amsyrzmi/CSAV2` to
-   `fourstacks`, rename it `mito`, make it private; move or republish the images privately under the org and
+   `FourstacksPLT`, rename it `mito`, make it private; move or republish the images privately under the org and
    give the staging server and production a read-only pull login; update the AWS trust subject, the pinned
    digests, environments, secrets, remotes and docs. No application code changes. To be designed: exact
    transfer sequence, how the images move (package transfer or republish; digests must not change), the
@@ -110,7 +110,7 @@ Non-goals for project 1: making individual tests faster, changing the Postgres i
 
 ## 7. Decisions made by the owner
 
-- Organisation `fourstacks` (Team plan), repository `mito`, private.
+- Organisation `FourstacksPLT` (Team plan; confirmed by the owner 2026-11-14, who owns it), repository `mito`, private.
 - Approach A, in the order above, before payments.
 - Training library with video (after payments P1 and P2), HR refinement after the Overview assistant: see the
   programme document.
