@@ -49,6 +49,12 @@ instance with the plan and the apply. The instance still pulls by digest with an
 config and checks each pulled image's digest and revision label against the commit. A host run by
 hand without digests keeps the old path (see Break-glass).
 
+The registry prefix of the images is the repository variable `IMAGE_NAMESPACE` (Settings, Secrets
+and variables, Actions, Variables), for example `ghcr.io/example-owner`: lowercase, no scheme, no
+trailing slash. The repository owner sets it. CI, `publish-staging-images` and
+`resolve_commit.sh` all read it, and refuse with `IMAGE_NAMESPACE must be set to ghcr.io/<lowercase
+owner>` before any registry call when it is unset or malformed.
+
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
    `staging-rollout` flow, which writes the staged record.
@@ -527,7 +533,7 @@ h. Run a plan on the instance as Systems Manager would, for the newest staged co
    never as root directly: a root run leaves the lock file root-owned, and every later run then
    fails at the lock with `Permission denied`.
 
-### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, four secrets, one variable
+### 6. GitHub (repository Settings, as `amsyrzmi`): two environments, four secrets, two variables
 
 - Environment **`production-plan`**: no required reviewer. Deployment branches and tags:
   "Selected branches and tags", one rule for the branch `main`. Environment secrets:
@@ -540,6 +546,8 @@ h. Run a plan on the instance as Systems Manager would, for the newest staged co
   `PROD_CONSOLE_ORIGIN` (the production console origin: `https://` plus the hostname, no path,
   port or trailing slash; the public smoke test asks it for `/`).
 - Repository variable **`PROD_DEPLOY_REGION`**: `<region>`.
+- Repository variable **`IMAGE_NAMESPACE`**: `ghcr.io/amsyrzmi`, the lowercase registry prefix of the
+  images (see Deploying from GitHub); the owner changes it if the repository moves.
 
 The `main`-only restriction on both environments is mandatory: the roles' trust policies name the
 environment, and the environment's branch rule is what keeps another branch from getting that
@@ -558,6 +566,7 @@ gh secret set PROD_APPLY_ROLE_ARN --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_INSTANCE_ID --repo amsyrzmi/CSAV2 --env production
 gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production
 gh variable set PROD_DEPLOY_REGION --repo amsyrzmi/CSAV2 --body <region>
+gh variable set IMAGE_NAMESPACE --repo amsyrzmi/CSAV2 --body ghcr.io/amsyrzmi
 ```
 
 ### 7. GitHub: verify with a plan

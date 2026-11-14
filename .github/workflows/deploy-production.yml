@@ -68,6 +68,7 @@ jobs:
           INPUT_SHA: ${{ inputs.sha }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}
         run: |
           set -euo pipefail
           deploy/production/resolve_commit.sh "$INPUT_SHA" >> "$GITHUB_OUTPUT"

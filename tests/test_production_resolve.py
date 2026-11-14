@@ -21,6 +21,7 @@ SCRIPT = ROOT / "deploy" / "production" / "resolve_commit.sh"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 REPOSITORY = "example-owner/example-repo"
+IMAGE_NAMESPACE = "ghcr.io/example-owner"
 GH_TOKEN = "ghs_FAKEGITHUBTOKEN123"
 REGISTRY_TOKEN = "regtoken-FAKE-456"
 TIP = "0123456789abcdef0123456789abcdef01234567"
@@ -180,7 +181,11 @@ class Harness:
         return calls
 
     def run(
-        self, *args: str, env_extra: dict[str, str] | None = None, token: str | None = GH_TOKEN
+        self,
+        *args: str,
+        env_extra: dict[str, str] | None = None,
+        token: str | None = GH_TOKEN,
+        namespace: str | None = IMAGE_NAMESPACE,
     ) -> subprocess.CompletedProcess[str]:
         """Run the script with the stubs first on PATH."""
         env = {
@@ -193,6 +198,8 @@ class Harness:
         }
         if token is not None:
             env["GH_TOKEN"] = token
+        if namespace is not None:
+            env["IMAGE_NAMESPACE"] = namespace
         return subprocess.run(
             ["bash", str(SCRIPT), *args],
             env=env,
@@ -268,7 +275,7 @@ def test_an_empty_input_means_the_tip(harness: Harness) -> None:
     assert result.stdout.endswith("explicit=false\n")
 
 
-def test_registry_calls_use_the_owner_the_accept_types_and_keep_the_token_off_argv(
+def test_registry_calls_use_the_namespace_owner_the_accept_types_and_keep_the_token_off_argv(
     harness: Harness,
 ) -> None:
     result = harness.run()
@@ -596,6 +603,36 @@ def test_a_malformed_repository_is_refused_before_any_call(
     assert result.returncode != 0
     assert result.stdout == ""
     assert harness.calls() == []
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        None,
+        "",
+        "ghcr.io/Example-Owner",
+        "ghcr.io/example-owner/",
+        "https://ghcr.io/example-owner",
+        "docker.io/example-owner",
+    ],
+)
+def test_a_missing_or_malformed_namespace_is_refused_before_any_call(
+    harness: Harness, namespace: str | None
+) -> None:
+    result = harness.run(namespace=namespace)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>\n"
+    assert harness.calls() == []
+
+
+def test_the_registry_name_comes_from_the_namespace_not_the_repository(harness: Harness) -> None:
+    result = harness.run(namespace="ghcr.io/other-org")
+    assert result.returncode == 0, result.stderr
+    curls = " ".join(call[1] for call in harness.calls() if call[0] == "curl")
+    assert "repository:other-org/csa-python:pull" in curls
+    assert "/v2/other-org/csa-frontend/manifests/" in curls
+    assert "example-owner/csa-" not in curls
 
 
 def test_more_than_one_argument_is_refused(harness: Harness) -> None:

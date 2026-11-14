@@ -1,6 +1,7 @@
 #!/bin/bash
 # Decide which commit production deploys and check it before anything reaches the instance:
-#   resolve_commit.sh [<input-sha>]      environment: GH_TOKEN, REPOSITORY (owner/name)
+#   resolve_commit.sh [<input-sha>]      environment: GH_TOKEN, REPOSITORY (owner/name),
+#                                        IMAGE_NAMESPACE (ghcr.io/<lowercase owner>)
 # With no input the commit is the tip of main (and that tip alone: if it is not staged, nothing
 # older is picked). On full success it prints, for $GITHUB_OUTPUT,
 #   sha=, python_digest=, frontend_digest=, staged_on=, explicit=true|false
@@ -40,7 +41,10 @@ input="${1:-}"
 [[ -n "${GH_TOKEN:-}" ]] || die "GH_TOKEN must be set"
 [[ -n "${REPOSITORY:-}" ]] && valid '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' "$REPOSITORY" \
     || die "REPOSITORY must be set to owner/name"
-owner="${REPOSITORY%%/*}"
+# The registry prefix of the app images comes from the repository variable, never from the
+# repository owner: a lowercase ghcr.io namespace, no scheme and no trailing slash.
+[[ -n "${IMAGE_NAMESPACE:-}" ]] && valid '^ghcr\.io/[a-z0-9][a-z0-9-]*$' "$IMAGE_NAMESPACE" \
+    || die "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>"
 
 # 1. The commit: the input, or the tip of main.
 if [[ -n "$input" ]]; then
@@ -117,7 +121,7 @@ ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manif
 # registry_digest <app>: prints the manifest digest of csa-<app>:<sha>.
 registry_digest() {
     local app="$1" token_body token code line name digest found=0
-    local repo="$owner/csa-$app"
+    local repo="${IMAGE_NAMESPACE#ghcr.io/}/csa-$app"
     local headers="$work/headers-$app"
     # An anonymous pull token (the images are public): no credentials go to the registry's token endpoint.
     token_body="$(curl -sf --max-time 30 \

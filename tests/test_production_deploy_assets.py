@@ -1647,6 +1647,7 @@ def test_the_workflow_resolves_with_the_script_after_checking_out_main(harness: 
         "INPUT_SHA: ${{ inputs.sha }}",
         "GH_TOKEN: ${{ github.token }}",
         "REPOSITORY: ${{ github.repository }}",
+        "IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}",
     ]
     (block,) = _run_blocks(resolve)
     assert block == (
@@ -2332,6 +2333,7 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
         "PROD_INSTANCE_ID",
         "PROD_DEPLOY_REGION",
         "PROD_CONSOLE_ORIGIN",
+        "IMAGE_NAMESPACE",
     }
     assert environments == {"production", "production-plan"}
     for name in names | environments:

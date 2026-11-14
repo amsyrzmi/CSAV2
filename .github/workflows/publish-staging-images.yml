@@ -40,8 +40,16 @@ jobs:
     env:
       CI_RUN_ID: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
       GH_TOKEN: ${{ github.token }}
-      REGISTRY_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+      REGISTRY_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}
     steps:
+      - name: Require a lowercase image namespace
+        run: |
+          set -euo pipefail
+          if ! [[ "$REGISTRY_NAMESPACE" =~ ^ghcr\.io/[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>" >&2
+            exit 1
+          fi
+
       - name: Verify the source CI run identity
         id: run
         run: |
