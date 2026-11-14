@@ -57,8 +57,12 @@ def shard_modules(weights: dict[str, int], count: int) -> dict[str, int]:
     return placed
 
 
-def load_durations(path: Path = DURATIONS_FILE) -> dict[str, float]:
-    """Recorded seconds per test file; a missing file is ``{}``, a malformed one is an error."""
+def load_durations(path: Path | None = None) -> dict[str, float]:
+    """Recorded seconds per test file; a missing file is ``{}``, a malformed one is an error.
+
+    Without a ``path`` the committed ``DURATIONS_FILE`` is read (looked up at call time).
+    """
+    path = DURATIONS_FILE if path is None else path
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -111,11 +115,10 @@ def file_weights(counts: Mapping[str, int], durations: Mapping[str, float]) -> d
 def _module_key(path: Path) -> str:
     """The repo-relative posix path of a test file (pytest hands out absolute ones)."""
     if path.is_absolute():
-        for root in (ROOT, ROOT.resolve()):
-            try:
-                return path.relative_to(root).as_posix()
-            except ValueError:
-                continue
+        try:
+            return path.relative_to(ROOT).as_posix()
+        except ValueError:
+            pass
     return path.as_posix()
 
 
@@ -125,13 +128,15 @@ def select(
     """Split collected items into (this shard's, everyone else's)."""
     index, count = parse_shard(spec)
     recorded = load_durations() if durations is None else durations
+    keys = [_module_key(item.path) for item in items]
     counts: dict[str, int] = {}
-    for item in items:
-        module = _module_key(item.path)
+    for item, module in zip(items, keys, strict=True):
         counts[module] = counts.get(module, 0) + (
             SLOW_WEIGHT if item.get_closest_marker("slow") else 1
         )
     placed = shard_modules(file_weights(counts, recorded), count)
-    kept = [item for item in items if placed[_module_key(item.path)] == index]
-    dropped = [item for item in items if placed[_module_key(item.path)] != index]
+    kept: list[Any] = []
+    dropped: list[Any] = []
+    for item, module in zip(items, keys, strict=True):
+        (kept if placed[module] == index else dropped).append(item)
     return kept, dropped

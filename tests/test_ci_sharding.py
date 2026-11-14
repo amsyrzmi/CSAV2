@@ -195,15 +195,31 @@ def test_a_missing_durations_file_is_empty_and_a_valid_one_loads(tmp_path: Path)
     assert load_durations(path) == {"tests/test_a.py": 1.5, "tests/test_b.py": 0.0}
 
 
-def test_select_refuses_a_malformed_committed_durations_file(
+def test_select_reads_the_committed_durations_file_and_passes_a_malformed_one_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broken = tmp_path / "shard_durations.json"
     broken.write_text("{", encoding="utf-8")
     monkeypatch.setattr(shard_module, "DURATIONS_FILE", broken)
-    monkeypatch.setattr(shard_module, "load_durations", lambda path=broken: load_durations(path))
-    with pytest.raises(ValueError, match="shard_durations.json"):
+    with pytest.raises(ValueError, match=r"shard_durations\.json"):
         select(_example_items(), "1/2")
+    with pytest.raises(ValueError, match=r"shard_durations\.json"):
+        load_durations()
+
+
+def test_select_computes_each_items_key_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = _example_items()
+    calls: list[Path] = []
+    real = shard_module._module_key
+
+    def counting(path: Path) -> str:
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(shard_module, "_module_key", counting)
+    kept, dropped = select(items, "1/3", {})
+    assert len(calls) == len(items)
+    assert len(kept) + len(dropped) == len(items)
 
 
 def test_every_test_is_kept_by_exactly_one_shard_with_partial_durations() -> None:
@@ -235,17 +251,25 @@ def test_an_absolute_pytest_path_matches_a_repo_relative_duration_key() -> None:
 def test_the_real_test_files_each_land_on_exactly_one_shard_with_empty_durations(
     total: int,
 ) -> None:
-    """The real tests/ directory (test counts read from the source), split with no durations."""
+    """The real tests/ directory (counts read from the source), split with no durations.
+
+    Items carry absolute paths as pytest gives them; each shard must equal the old count method.
+    """
     items: list[Item] = []
+    counts: dict[str, int] = {}
     for path in sorted(Path(__file__).parent.glob("test_*.py")):
         count = max(1, len(re.findall(r"^\s*(?:async )?def test_", path.read_text("utf-8"), re.M)))
-        items.extend(Item(f"tests/{path.name}") for _ in range(count))
-    files = {item.path.as_posix() for item in items}
-    assert len(files) > 100
-    owners: dict[str, list[int]] = {file: [] for file in files}
+        absolute = shard_module.ROOT / "tests" / path.name
+        items.extend(Item(str(absolute)) for _ in range(count))
+        counts[absolute.as_posix()] = count
+    assert len(counts) > 100
+    placed = shard_modules(counts, total)
+    owners: dict[str, list[int]] = {file: [] for file in counts}
     for number in range(1, total + 1):
         kept, dropped = select(items, f"{number}/{total}", {})
         assert len(kept) + len(dropped) == len(items)
-        for file in {item.path.as_posix() for item in kept}:
+        files = {item.path.as_posix() for item in kept}
+        assert files == {file for file, shard in placed.items() if shard == number}
+        for file in files:
             owners[file].append(number)
     assert all(len(numbers) == 1 for numbers in owners.values())

@@ -176,3 +176,33 @@ def test_the_cli_report_reads_the_durations_file(
     printed = capsys.readouterr().out
     assert printed.count("floor:") == 2
     assert main(["report", "--counts", "2", "--durations", str(tmp_path / "gone.json")]) == 2
+
+
+def test_report_weighs_zero_second_files_as_ci_does() -> None:
+    from tests.shard import shard_modules
+
+    durations = {f"tests/test_{name}.py": 0.0 for name in "abcde"}
+    expected = shard_modules(dict.fromkeys(durations, 1), 2)
+    text = report(durations, 2)
+    sizes = sorted(len([m for m, n in expected.items() if n == shard]) for shard in (1, 2))
+    assert sizes == [2, 3]
+    assert [f"({size} files)" in text for size in sizes] == [True, True]
+
+
+def test_the_cli_report_exits_2_on_a_bad_durations_value(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for content in ('{"tests/test_a.py": -1}', '{"tests/test_a.py": null}', "[1, 2]"):
+        bad = tmp_path / "bad.json"
+        bad.write_text(content, encoding="utf-8")
+        assert main(["report", "--counts", "2", "--durations", str(bad)]) == 2
+        assert "bad.json" in capsys.readouterr().err
+
+
+def test_the_cli_merge_exits_2_when_the_output_directory_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    one = junit(tmp_path, '<testcase classname="tests.test_a" name="x" time="1.0"/>')
+    out = tmp_path / "no_such_dir" / "out.json"
+    assert main(["merge", str(one), "--out", str(out)]) == 2
+    assert "out.json" in capsys.readouterr().err

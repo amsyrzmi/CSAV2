@@ -96,9 +96,9 @@ def write_durations(durations: dict[str, float], path: Path) -> None:
 
 def report(durations: dict[str, float], count: int) -> str:
     """A plain-text view of splitting these files over ``count`` shards with the real algorithm."""
-    from tests.shard import shard_modules
+    from tests.shard import file_weights, shard_modules
 
-    millis = {module: round(seconds * 1000) for module, seconds in durations.items()}
+    millis = file_weights(dict.fromkeys(durations, 1), durations)
     placed = shard_modules(millis, count)
     total = sum(millis.values()) / 1000
     lines = [f"shards: {count}  total: {total:.1f}  ideal: {total / count:.1f}"]
@@ -138,13 +138,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "merge":
-            write_durations(merge(*(read_junit(path) for path in args.junit)), args.out)
+            merged = merge(*(read_junit(path) for path in args.junit))
+            try:
+                write_durations(merged, args.out)
+            except OSError as error:
+                raise JunitError(f"cannot write durations file {args.out}: {error}") from error
             return 0
+        from tests.shard import load_durations
+
+        if not args.durations.is_file():
+            raise JunitError(f"cannot read durations file {args.durations}: no such file")
         try:
-            loaded = json.loads(args.durations.read_text(encoding="utf-8"))
-            durations = {str(key): float(value) for key, value in loaded.items()}
-        except (OSError, ValueError, AttributeError) as error:
-            raise JunitError(f"cannot read durations file {args.durations}: {error}") from error
+            durations = load_durations(args.durations)
+        except ValueError as error:
+            raise JunitError(str(error)) from error
         print("\n\n".join(report(durations, count) for count in args.counts))
         return 0
     except JunitError as error:
