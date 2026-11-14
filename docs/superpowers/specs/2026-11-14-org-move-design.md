@@ -1,7 +1,8 @@
 # Project 2: move the repository to the `FourstacksPLT` organisation (design)
 
-Status: DRAFT for owner approval, 2026-11-14. The owner approved the staging of this move in chat the same day
-(transfer and rename first, "go private" as a separate gated stage). Nothing in this document has been done.
+Status: APPROVED by the owner (Amsyar) in chat on 2026-11-14: the two stages of section 4 (transfer and rename first,
+"go private" as a separate gated stage), with the instruction to lower the private-repository cost as much as
+possible, including deleting very old images where needed (section 6.1). Nothing in this document has been done yet.
 Parent: `2026-11-13-mito-rename-and-org-move-design.md` (the four projects; this is project 2). Projects 3 (code and
 runtime rename) and 4 (database roles) get their own designs and do not depend on the repository being private.
 
@@ -149,9 +150,39 @@ staging rollout, production plan and apply, instance fetch; check Billing after 
 public again. Last, much later: delete the old user packages once no rollback reference or retention need
 remains.
 
+## 6.1 Lowering the cost (owner instruction, 2026-11-14)
+
+The owner asked for the lowest possible cost and allowed deleting very old images. Read first: the CI workflow
+already runs only the changed test files on pull requests (shard 0); the 20,000 or so main-run minutes a month
+come from the full suite that every push to `main` runs on four shards (about 160 job-minutes per run, 127 runs
+in 30 days). A repository that stays public costs nothing, so no lever below beats "do not go private"; the gate
+in section 6 is still where that is decided.
+
+| # | Lever | Saves | Risk and decision |
+|---|---|---|---|
+| L1 | Pull requests still build the images but stop uploading the roughly 300 MB review bundle (upload only on push to `main`, where the publish workflow needs it) | nearly all artifact storage (the 10.4 GB) | none for the pipeline; a reviewer can no longer download a PR-built image. Built as P5 |
+| L2 | Keep the main-run bundle 3 days instead of 7 | a little storage | none. Built as P5 |
+| L3 | Cancel a main run that a newer merge supersedes (concurrency group) | the minutes of every run that a later push overtakes; measure from run history before choosing | an overtaken commit never gets images or a staged record, which is fine because rollouts target the latest main; owner calls it after the measurement. Not in P5 until decided |
+| L4 | Cut test minutes using the per-file timings from the shard work (project 1, part B): find files whose database or fixture setup dominates | the largest sustainable saving, since minutes are the sum of test time | needs the timings first; its own small project after project 1 |
+| L5 | Dedicated self-hosted runner (private repositories only; never on the shared staging host, which is memory-bound) | all hosted minutes | needs a machine and its price; GitHub's own self-hosted-runner pricing changed recently, UNVERIFIED. Priced only if the Billing answer still looks too high after L1 to L4 |
+| L6 | Package storage: copy only the needed versions to the organisation, prune automatically, delete very old versions of the old user packages | private-package storage, if Billing counts it (UNVERIFIED; public packages cost nothing) | see the retention rule below |
+
+Image retention rule (applies to the copy in Stage A step 6, to a pruning step added to the publish workflow, and to
+any deletion):
+- Keep: the digests production and staging run now, the previous one of each (the rollback targets), and the newest
+  20 SHA-tagged versions of `csa-python` and `csa-frontend`. The new organisation namespace receives only these.
+- Never delete the database image (`csa-pg16-postgis-vector`): it was built and pushed by hand, and a fresh build
+  today fails (the PostGIS release it pulls does not run on the pinned PostgreSQL), so it cannot be rebuilt.
+- Delete only after Stage A step 9 and only the SHA-tagged versions outside the keep set, in the old user packages.
+  The current token has no `delete:packages` scope, so the owner runs the deletion from a list the assistant
+  writes (versions, digests, why each is outside the keep set); the assistant deletes nothing itself.
+- Pruning in the publish workflow (keep the newest 20) is part of P5, so storage stops growing.
+
 ## 7. Calls made by the assistant (the owner can overrule)
 
 - Registry namespace is lowercase `ghcr.io/fourstacksplt`, set by a variable rather than computed.
+- P5 (L1, L2, and the publish-workflow pruning of L6) is a fifth prep pull request, built after P1 to P4; L3, L4, L5
+  wait for the measurements named in the table.
 - The new design file is separate from the parent design so it can merge independently of the open shard pull
   request, which carries the parent's update.
 - Prep pull requests are built one at a time through the normal pull request flow, in the order P1, P2, P3, P4
@@ -169,5 +200,5 @@ the personal account.
 
 ## 9. After approval
 
-A plan for P1 to P4 (and the post-transfer pull request), built subagent-driven. No transfer step starts until the
+A plan for P1 to P5 (and the post-transfer pull request), built subagent-driven. No transfer step starts until the
 owner runs step 1 and agrees the window in step 3.
