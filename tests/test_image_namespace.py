@@ -7,8 +7,14 @@ changes one variable and no file.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -43,21 +49,70 @@ def test_publish_takes_its_namespace_from_the_variable() -> None:
     assert "REGISTRY_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}" in PUBLISH.read_text()
 
 
-def test_publish_requires_a_lowercase_namespace() -> None:
-    text = PUBLISH.read_text()
-    steps = re.split(r"^      - ", text, flags=re.MULTILINE)[1:]
-    first_skopeo = next(i for i, step in enumerate(steps) if "skopeo" in step)
-    checks = [
-        i
-        for i, step in enumerate(steps)
-        if "name: Require a lowercase image namespace" in step
-        and NAMESPACE_PATTERN in step
-        and NAMESPACE_MESSAGE in step
-        and "$REGISTRY_NAMESPACE" in step
-        and "exit 1" in step
-    ]
-    assert len(checks) == 1
-    assert checks[0] == 0 or checks[0] < first_skopeo
+def _steps(path: Path) -> list[dict[str, Any]]:
+    workflow = yaml.safe_load(path.read_text())
+    return [step for job in workflow["jobs"].values() for step in job["steps"]]
+
+
+def _namespace_step() -> dict[str, Any]:
+    found = [s for s in _steps(PUBLISH) if s.get("name") == "Require a lowercase image namespace"]
+    assert len(found) == 1
+    return found[0]
+
+
+def test_the_namespace_check_runs_before_the_first_registry_call() -> None:
+    steps = _steps(PUBLISH)
+    first_skopeo = next(i for i, step in enumerate(steps) if "skopeo" in str(step.get("run", "")))
+    names = [step.get("name") for step in steps]
+    assert names.count("Require a lowercase image namespace") == 1
+    check = names.index("Require a lowercase image namespace")
+    assert check < first_skopeo
+
+
+# The step receives the value from the job env as REGISTRY_NAMESPACE (see the workflow's `env:`).
+BAD_NAMESPACES = [
+    "",
+    "ghcr.io/Example-Owner",
+    "ghcr.io/example-owner/",
+    "https://ghcr.io/example-owner",
+    "docker.io/example-owner",
+    "ghcr.io/",
+    "ghcr.io/-x",
+    "ghcr.io/example-owner\n",
+    "ghcr.io/a/b",
+    "ghcr.io/ex\u0663",
+    "ghcr.io/ex\u00e9",
+]
+
+
+def _run_namespace_step(namespace: str, locale: str) -> subprocess.CompletedProcess[str]:
+    script = _namespace_step()["run"]
+    env = {
+        "PATH": os.environ["PATH"],
+        "LC_ALL": locale,
+        "LANG": locale,
+        "REGISTRY_NAMESPACE": namespace,
+    }
+    return subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+
+
+@pytest.mark.parametrize("locale", ["C", "en_US.utf8"])
+@pytest.mark.parametrize("namespace", BAD_NAMESPACES)
+def test_the_publish_step_refuses_a_bad_namespace(namespace: str, locale: str) -> None:
+    result = _run_namespace_step(namespace, locale)
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == NAMESPACE_MESSAGE + "\n"
+
+
+@pytest.mark.parametrize("locale", ["C", "en_US.utf8"])
+@pytest.mark.parametrize("namespace", ["ghcr.io/example-owner", "ghcr.io/a-1"])
+def test_the_publish_step_accepts_a_good_namespace(namespace: str, locale: str) -> None:
+    result = _run_namespace_step(namespace, locale)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
 
 
 def test_production_plan_passes_the_variable_to_the_resolve_script() -> None:
@@ -66,8 +121,11 @@ def test_production_plan_passes_the_variable_to_the_resolve_script() -> None:
 
 
 def test_gitleaks_step_passes_the_optional_licence() -> None:
-    steps = re.split(r"^      - ", CI.read_text(), flags=re.MULTILINE)[1:]
-    gitleaks = [step for step in steps if "uses: gitleaks/gitleaks-action" in step]
+    gitleaks = [
+        s for s in _steps(CI) if str(s.get("uses", "")).startswith("gitleaks/gitleaks-action")
+    ]
     assert len(gitleaks) == 1
-    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in gitleaks[0]
-    assert "GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}" in gitleaks[0]
+    assert gitleaks[0]["env"] == {
+        "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+        "GITLEAKS_LICENSE": "${{ secrets.GITLEAKS_LICENSE }}",
+    }

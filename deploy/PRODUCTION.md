@@ -52,9 +52,11 @@ hand without digests keeps the old path (see Break-glass).
 
 The registry prefix of the images is the repository variable `IMAGE_NAMESPACE` (Settings, Secrets
 and variables, Actions, Variables), for example `ghcr.io/example-owner`: lowercase, no scheme, no
-trailing slash. The repository owner sets it. CI, `publish-staging-images` and
-`resolve_commit.sh` all read it, and refuse with `IMAGE_NAMESPACE must be set to ghcr.io/<lowercase
-owner>` before any registry call when it is unset or malformed.
+trailing slash. The repository owner sets it. `publish-staging-images` and `resolve_commit.sh`
+read it and refuse with `IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>` before any
+registry call when it is unset or malformed. CI reads it too, but has no such check: with the
+variable unset, the `gate` and `tests` jobs fail at container initialisation with a Docker
+image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha256:...`).
 
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
@@ -557,8 +559,8 @@ secrets so the public workflow logs mask them, and the real values never go into
 
 Create the two environments, their reviewers and branch rules first, in the web settings
 (Settings, Environments); `gh secret set --env` for an environment that does not exist yet fails
-with HTTP 404. Then set the secrets and the variable, in the web settings or from a terminal, each
-secret typed at `gh`'s hidden prompt:
+with HTTP 404. Then set the secrets and the two variables (`PROD_DEPLOY_REGION` and
+`IMAGE_NAMESPACE`), in the web settings or from a terminal, each secret typed at `gh`'s hidden prompt:
 
 ```bash
 gh secret set PROD_PLAN_ROLE_ARN --repo amsyrzmi/CSAV2 --env production-plan

@@ -45,6 +45,7 @@ jobs:
       - name: Require a lowercase image namespace
         run: |
           set -euo pipefail
+          export LC_ALL=C
           if ! [[ "$REGISTRY_NAMESPACE" =~ ^ghcr\.io/[a-z0-9][a-z0-9-]*$ ]]; then
             echo "IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>" >&2
             exit 1

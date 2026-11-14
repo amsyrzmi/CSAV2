@@ -649,6 +649,10 @@ def test_a_malformed_repository_is_refused_before_any_call(
         "ghcr.io/example-owner/",
         "https://ghcr.io/example-owner",
         "docker.io/example-owner",
+        "ghcr.io/",
+        "ghcr.io/-x",
+        "ghcr.io/example-owner\n",
+        "ghcr.io/a/b",
     ],
 )
 def test_a_missing_or_malformed_namespace_is_refused_before_any_call(
