@@ -207,8 +207,10 @@ def test_load_flags_refuses_bad_files(tmp_path: Path, bad: str) -> None:
 
 def test_checked_in_flags_file_loads() -> None:
     flags = sr.load_flags(sr.REPO_ROOT / "deploy" / "staging-rollout.env")
-    assert set(flags) == sr.FLAG_KEYS
-    assert flags == ALL_FLAGS
+    # The optional training-video switch may or may not be set in the checked-in file.
+    required = {k: v for k, v in flags.items() if k not in sr.STAGING.optional_keys}
+    assert set(required) == sr.FLAG_KEYS
+    assert required == ALL_FLAGS
 
 
 def test_build_env_has_only_expected_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
