@@ -43,8 +43,9 @@ commit in `/home/ubuntu/CSAV2` and runs
 
 The workflow, not the instance, talks to GitHub. The `plan` job first runs
 `deploy/production/resolve_commit.sh`, which picks the commit, checks it (refusals below) and reads
-both image digests from the registry's manifest API with an anonymous pull token (the images are
-public, so no token and no `packages: read` permission are involved). The two digests go to the
+both image digests from the registry's manifest API. Its pull token is requested with the
+workflow's own token (the `plan` job has `packages: read`); if the registry refuses that, the
+script asks once more anonymously (the images are public). The two digests go to the
 instance with the plan and the apply. The instance still pulls by digest with an empty Docker
 config and checks each pulled image's digest and revision label against the commit. A host run by
 hand without digests keeps the old path (see Break-glass).
