@@ -137,7 +137,9 @@ def test_staging_still_requires_its_eight_keys() -> None:
     assert STAGING.required_keys == SIX_SWITCHES | ORIGINS
     assert len(STAGING.required_keys) == 8
     assert STAGING.host_file is None
-    assert sr.load_flags(sr.REPO_ROOT / STAGING.flags_file).keys() == STAGING.required_keys
+    flags = sr.load_flags(sr.REPO_ROOT / STAGING.flags_file)
+    # The optional training-video switch may or may not be set in the checked-in file.
+    assert flags.keys() - STAGING.optional_keys == STAGING.required_keys
 
 
 def test_production_database_names_match_the_running_instance() -> None:
@@ -416,7 +418,7 @@ def test_production_flags_refuse_a_bad_training_value(
 
 
 def test_staging_flags_refuse_the_production_key_switch(tmp_path: Path) -> None:
-    text = (sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8")
+    text = without_video_lines((sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8"))
     path = tmp_path / "staging-rollout.env"
     path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=false\n", encoding="utf-8")
     assert sr.load_flags(path, STAGING)["CSA_STAGING_TRAINING_VIDEO"] == "false"

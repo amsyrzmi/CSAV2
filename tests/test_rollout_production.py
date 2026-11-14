@@ -1205,7 +1205,13 @@ def test_production_flags_refuse_video_without_the_training_key(
 def test_staging_takes_video_on_without_any_key(tmp_path: Path) -> None:
     # Staging keeps videos on its own volume: no S3 key is involved.
     path = tmp_path / "staging-rollout.env"
-    text = (sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8")
+    text = "".join(
+        line
+        for line in (sr.REPO_ROOT / STAGING.flags_file)
+        .read_text(encoding="utf-8")
+        .splitlines(keepends=True)
+        if not line.startswith("CSA_STAGING_TRAINING_VIDEO=")
+    )
     path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=true\n", encoding="utf-8")
     assert sr.load_flags(path, STAGING)["CSA_STAGING_TRAINING_VIDEO"] == "true"
 
