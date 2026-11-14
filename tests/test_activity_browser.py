@@ -547,7 +547,7 @@ async def test_assistant_select_sends_agent(site: Site) -> None:
         select = page.get_by_test_id("activity-agent")
         labels = await select.locator("option").all_text_contents()
         assert labels[0] == "All assistants"
-        assert len(labels) == 10 and len(set(labels)) == 10
+        assert len(labels) == 11 and len(set(labels)) == 11
         assert "Support cases & hand-over assistant: escalation" in labels
         assert "Order management assistant: approvals" in labels
         assert "Business knowledge agent" in labels

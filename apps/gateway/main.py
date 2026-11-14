@@ -71,7 +71,7 @@ from scripts.migrate import discover_migrations
 
 # Highest auto-applied .sql version shipped in the image (design §9.4). The
 # *.py re-encrypt skeleton (0130) is never applied, so it is not counted here.
-EXPECTED_SCHEMA_VERSION = "0591"
+EXPECTED_SCHEMA_VERSION = "0601"
 
 # Short per-statement timeout for the readiness DB probe (milliseconds).
 _READYZ_STATEMENT_TIMEOUT_MS = 2000
@@ -185,6 +185,8 @@ def create_app() -> FastAPI:
             # One ledger meter for the gateway: every Groq client below books its token usage to
             # it, and mirrors each call to Langfuse when the sink is configured.
             meter = LedgerMeter(pool, mirror=langfuse_sink)
+            # Video in the training library: while off, the upload routes answer 503.
+            app.state.training_video_enabled = settings.TRAINING_VIDEO_ENABLED
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on

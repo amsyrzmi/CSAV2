@@ -10,14 +10,16 @@ import { usePublishContext } from "@/lib/page-context";
 import { fileUrl, type TrainingItem, type TrainingViewMode } from "@/lib/training-api";
 import { downloadName, itemFacts, type UploadAttempt } from "@/lib/training-form";
 import { itemHref, refusalCopy } from "@/lib/training-view";
+import { secondsFromQuery } from "@/lib/training-video";
 import ItemDialog, { RemoveDialog } from "./training/ItemDialog";
 import ItemList from "./training/ItemList";
 import { PdfViewer } from "./training/PdfViewer";
 import { muted, refusalText, useTrainingList, type ListRead } from "./training/shared";
 import SummaryPanel from "./training/SummaryPanel";
+import VideoSection from "./training/VideoSection";
 import { field, Heading, Notice, secondary } from "./ui";
 
-const ITEM_GONE = "This PDF is no longer in the library.";
+const ITEM_GONE = "This item is no longer in the library.";
 const pageTitle = "page-title font-(family-name:--fs-font-heading) text-(length:--fs-text-page) font-semibold [overflow-wrap:anywhere]";
 const backLink =
   "inline-flex min-h-10 items-center gap-1.5 rounded-[var(--fs-radius-control)] text-sm font-medium text-[color:var(--fs-primary)] underline-offset-2 hover:underline pointer-coarse:min-h-11 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
@@ -33,13 +35,18 @@ interface Scope {
 type Open = { kind: "add" } | { kind: "edit"; item: TrainingItem } | { kind: "remove"; item: TrainingItem } | null;
 
 /**
- * The Training library: the list of the company's PDFs (no `itemId`), or one PDF with its viewer
- * and summary. Everyone in the company reads; managers (`can_manage` on the list: admins and the
+ * The Training library: the list of the company's PDFs and videos (no `itemId`), or one PDF with its
+ * viewer and summary, or one video with its player, transcript and summary. Everyone in the company reads; managers (`can_manage` on the list: admins and the
  * HR owner) also add, edit and remove. A platform admin's company lives in the URL
  * (`?client_id=`) and nowhere else, as on the other tabs.
  */
 export function TrainingWorkspace({ me, itemId }: { me: Me; itemId?: string }) {
-  usePublishContext({ tab: "training_library", section: itemId ? "item" : "library" });
+  // On an item's page the assistant is told which item is open (a video's questions need it).
+  usePublishContext({
+    tab: "training_library",
+    section: itemId ? "item" : "library",
+    record: itemId ? { kind: "training_item", id: itemId } : null,
+  });
   const search = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
@@ -68,7 +75,7 @@ export function TrainingWorkspace({ me, itemId }: { me: Me; itemId?: string }) {
     if (!tenant)
       return (
         <>
-          <Heading title="Training library" description="Choose a company to open its training PDFs." />
+          <Heading title="Training library" description="Choose a company to open its training PDFs and videos." />
           <Notice>
             Choose a company first.{" "}
             <Link className="underline" href={itemHref(null, platform, null)}>Go to the library</Link>
@@ -82,7 +89,7 @@ export function TrainingWorkspace({ me, itemId }: { me: Me; itemId?: string }) {
     <>
       <Heading
         title="Training library"
-        description="Your company's training PDFs, to read as slides or as a document."
+        description="Your company's training PDFs and videos. Read a PDF as slides or as a document, or watch a video with its transcript."
       />
       {error && <div className="mb-5"><Notice error>{error}</Notice></div>}
       {platform && (
@@ -155,7 +162,9 @@ function LibraryPage({ scope }: { scope: Scope }) {
               onSaved={(saved, added) => {
                 setOpen(null);
                 setMessage(added
-                  ? `Added ${saved.title}. Everyone in your company can open it now.`
+                  ? saved.kind === "video"
+                    ? `Added ${saved.title}. It is being processed, and everyone in your company can watch it once it is ready.`
+                    : `Added ${saved.title}. Everyone in your company can open it now.`
                   : `Saved the details of ${saved.title}.`);
                 list.reload();
               }}
@@ -182,6 +191,10 @@ function LibraryPage({ scope }: { scope: Scope }) {
 function ItemPage({ scope, itemId }: { scope: Scope; itemId: string }) {
   const list = useTrainingList(scope.tenantId);
   const router = useRouter();
+  const search = useSearchParams();
+  // The assistant's "Watch from" links open a video at a second: `?t=`. The link may be for the
+  // video that is already open, so the player follows this as it changes.
+  const startAt = secondsFromQuery(search.toString());
   const [mode, setMode] = useState<TrainingViewMode | null>(null);
   const [open, setOpen] = useState<Open>(null);
   const [message, setMessage] = useState("");
@@ -225,7 +238,7 @@ function ItemPage({ scope, itemId }: { scope: Scope; itemId: string }) {
       {message && <Notice testId="training-message">{message}</Notice>}
       {list.error !== null && <Notice error testId="training-list-error">{refusalCopy(list.error)}</Notice>}
       <div className="flex flex-wrap gap-2">
-        <DownloadButton tenantId={scope.tenantId} item={item} />
+        {item.kind !== "video" && <DownloadButton tenantId={scope.tenantId} item={item} />}
         {manage && (
           <>
             <button type="button" className={secondary} data-testid="training-edit"
@@ -234,13 +247,21 @@ function ItemPage({ scope, itemId }: { scope: Scope; itemId: string }) {
             </button>
             <button type="button" className={secondary} data-testid="training-remove"
               onClick={() => { setMessage(""); setOpen({ kind: "remove", item }); }}>
-              Remove PDF
+              Remove {item.kind === "video" ? "video" : "PDF"}
             </button>
           </>
         )}
       </div>
-      <PdfViewer tenantId={scope.tenantId} itemId={item.id} title={item.title} mode={mode ?? item.view_mode} onMode={setMode} />
-      <SummaryPanel key={item.id} tenantId={scope.tenantId} item={item} canManage={manage} />
+      {item.kind === "video" ? (
+        <VideoSection key={item.id} tenantId={scope.tenantId} item={item} manage={manage} startAt={startAt}
+          onChanged={list.reload} />
+      ) : (
+        <>
+          <PdfViewer tenantId={scope.tenantId} itemId={item.id} title={item.title}
+            mode={mode ?? item.view_mode ?? "document"} onMode={setMode} />
+          <SummaryPanel key={item.id} tenantId={scope.tenantId} item={item} canManage={manage} />
+        </>
+      )}
       {open?.kind === "edit" && (
         <ItemDialog
           tenantId={scope.tenantId}

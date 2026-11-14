@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useId, useState } from "react";
 import type { TrainingItem, TrainingList } from "@/lib/training-api";
 import { itemFacts } from "@/lib/training-form";
-import { categoriesOf, filterItems } from "@/lib/training-view";
+import { categoriesOf, filterItems, videoStateText } from "@/lib/training-view";
 import { action, field, secondary } from "../ui";
 import { muted } from "./shared";
 
@@ -12,9 +12,10 @@ const ring =
   "rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 
 /**
- * The company's PDFs, newest first (the server's order), with a category filter and a search by
- * title. Managers get "Add a PDF" and, on each row, "Edit details" and "Remove PDF"; readers get
- * neither. An empty library says what will appear; a filter with no match says how to undo it.
+ * The company's PDFs and videos, newest first (the server's order), with a category filter and a
+ * search by title. Managers get "Add a PDF or video" and, on each row, "Edit details" and "Remove",
+ * and see where a video is in processing; readers get none of that. An empty library says what
+ * will appear; a filter with no match says how to undo it.
  */
 export default function ItemList({
   list,
@@ -41,9 +42,9 @@ export default function ItemList({
   if (!list.items.length) {
     return (
       <div data-testid="training-empty" className="card flex flex-col items-start gap-3 rounded-[14px] p-5">
-        <p className="text-sm">PDFs your company adds will appear here.</p>
+        <p className="text-sm">PDFs and videos your company adds will appear here.</p>
         {manage && (
-          <button type="button" className={action} data-testid="training-add" onClick={onAdd}>Add a PDF</button>
+          <button type="button" className={action} data-testid="training-add" onClick={onAdd}>Add a PDF or video</button>
         )}
       </div>
     );
@@ -78,17 +79,17 @@ export default function ItemList({
           </select>
         </div>
         {manage && (
-          <button type="button" className={action} data-testid="training-add" onClick={onAdd}>Add a PDF</button>
+          <button type="button" className={action} data-testid="training-add" onClick={onAdd}>Add a PDF or video</button>
         )}
       </div>
       <p className={muted} aria-live="polite" data-testid="training-count">
         {shown.length === list.items.length
-          ? `${list.items.length} ${list.items.length === 1 ? "PDF" : "PDFs"}`
-          : `Showing ${shown.length} of ${list.items.length} PDFs`}
+          ? `${list.items.length} ${list.items.length === 1 ? "item" : "items"}`
+          : `Showing ${shown.length} of ${list.items.length} items`}
       </p>
       {shown.length === 0 ? (
         <div data-testid="training-no-match" className="card flex flex-col items-start gap-3 rounded-[14px] p-5">
-          <p className="text-sm">No PDFs match. Clear the search or choose another category.</p>
+          <p className="text-sm">Nothing matches. Clear the search or choose another category.</p>
           <button
             type="button"
             className={secondary}
@@ -98,7 +99,7 @@ export default function ItemList({
               setCategory("");
             }}
           >
-            Show all PDFs
+            Show everything
           </button>
         </div>
       ) : (
@@ -123,17 +124,24 @@ export default function ItemList({
                 <ul className={`mt-2 flex flex-wrap gap-x-3 gap-y-1 ${muted}`}>
                   {itemFacts(item).map((fact, index) => <li key={index}>{fact}</li>)}
                 </ul>
+                {manage && item.kind === "video" && videoStateText(item) && (
+                  <p className={`mt-2 font-medium ${item.status === "failed" ? "text-[color:var(--fs-danger)]" : ""} text-sm [overflow-wrap:anywhere]`}
+                    data-testid={`training-state-${item.id}`}>
+                    {videoStateText(item)}
+                  </p>
+                )}
               </div>
               {manage && (
                 <div className="flex shrink-0 flex-wrap gap-2">
-                  {/* The name starts with the visible words and says which PDF, as every row has both. */}
+                  {/* The name starts with the visible words and says which item, as every row has both. */}
                   <button type="button" className={secondary} data-testid="training-edit"
                     aria-label={`Edit details: ${item.title}`} onClick={() => onEdit(item)}>
                     Edit details
                   </button>
                   <button type="button" className={secondary} data-testid="training-remove"
-                    aria-label={`Remove PDF: ${item.title}`} onClick={() => onRemove(item)}>
-                    Remove PDF
+                    aria-label={`Remove ${item.kind === "video" ? "video" : "PDF"}: ${item.title}`}
+                    onClick={() => onRemove(item)}>
+                    Remove {item.kind === "video" ? "video" : "PDF"}
                   </button>
                 </div>
               )}

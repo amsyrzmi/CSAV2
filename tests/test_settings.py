@@ -161,6 +161,12 @@ def test_training_root_blank_is_unset() -> None:
     assert _settings(TRAINING_UPLOAD_ROOT="   ").TRAINING_UPLOAD_ROOT is None
 
 
+def test_training_video_is_off_unless_switched_on() -> None:
+    assert _settings().TRAINING_VIDEO_ENABLED is False
+    assert _settings(TRAINING_VIDEO_ENABLED="true").TRAINING_VIDEO_ENABLED is True
+    assert _settings(TRAINING_VIDEO_ENABLED="false").TRAINING_VIDEO_ENABLED is False
+
+
 def test_training_root_apart_from_kb_and_hr_roots_is_accepted() -> None:
     s = _settings(
         KB_UPLOAD_ROOT="/srv/kb-uploads",

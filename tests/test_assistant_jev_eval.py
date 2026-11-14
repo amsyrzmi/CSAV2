@@ -127,6 +127,9 @@ SMOKE_LEFT_OUT = {
     # Finding or opening one person: "people records" in the question names adding, changing,
     # removing, reporting lines and leaving; a lookup is not clearly one of them.
     "directory-en-1", "directory-ms-1", "hr_open-en-1", "hr_open-ms-1",
+    # A question about one training video: answered from its transcript by training_ask; not a
+    # people-records routing or email question.
+    "training_ask-en-1", "training_ask-ms-1",
 }  # fmt: skip
 
 

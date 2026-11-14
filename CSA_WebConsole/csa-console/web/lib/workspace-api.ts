@@ -36,7 +36,9 @@ export interface RecordRef {
     | "order"
     | "employee"
     /** A TikTok Shop listing of ours (its local id), open on Products & stock. */
-    | "product";
+    | "product"
+    /** One item of the Training library (a video or a PDF), open on its page. */
+    | "training_item";
   id: string;
   version?: number | null;
 }
@@ -174,7 +176,8 @@ export type WorkspaceActionResult =
       question: string;
       options: ClarificationOption[];
     }
-  | ProductStockResult;
+  | ProductStockResult
+  | TrainingAnswerResult;
 
 /** One variant's count; `stock` is null when TikTok gave none. */
 export interface StockVariant {
@@ -198,6 +201,24 @@ export interface ProductStockResult {
   on_sale: boolean;
   as_of: string;
   note: string;
+}
+
+/** One place in a video an answer came from; the server checked the time. */
+export interface TrainingSource {
+  item_id: string;
+  title: string;
+  start_seconds: number;
+}
+
+/**
+ * An answer from one training video's transcript (csa/workspace/contracts.py
+ * TrainingAnswerResult). `markdown` is the answer as text; `sources` are empty when the video
+ * does not cover the question.
+ */
+export interface TrainingAnswerResult {
+  action: "training_ask";
+  markdown: string;
+  sources: TrainingSource[];
 }
 
 export type WorkspaceResult =

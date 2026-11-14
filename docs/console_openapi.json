@@ -9339,6 +9339,7 @@
       },
       "ItemOut": {
         "additionalProperties": false,
+        "description": "One library item. A PDF has a view mode and a page count; a video has a duration instead.\n\n``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.\n``status`` is ``ready`` for every PDF.",
         "properties": {
           "byte_size": {
             "title": "Byte Size",
@@ -9357,6 +9358,28 @@
             "title": "Description",
             "type": "string"
           },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure"
+          },
           "has_summary": {
             "title": "Has Summary",
             "type": "boolean"
@@ -9366,9 +9389,58 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "enum": [
+              "pdf",
+              "video"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "const": "hevc",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
           "page_count": {
-            "title": "Page Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "processing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Processing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "uploading",
+              "uploaded",
+              "transcribing",
+              "summarising",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
           },
           "title": {
             "title": "Title",
@@ -9386,16 +9458,24 @@
             "title": "Uploaded By Name"
           },
           "view_mode": {
-            "enum": [
-              "slides",
-              "document"
+            "anyOf": [
+              {
+                "enum": [
+                  "slides",
+                  "document"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "View Mode",
-            "type": "string"
+            "title": "View Mode"
           }
         },
         "required": [
           "id",
+          "kind",
           "title",
           "description",
           "category",
@@ -9404,7 +9484,12 @@
           "byte_size",
           "created_at",
           "uploaded_by_name",
-          "has_summary"
+          "has_summary",
+          "status",
+          "duration_ms",
+          "failure",
+          "processing",
+          "notice"
         ],
         "title": "ItemOut",
         "type": "object"
@@ -13485,6 +13570,26 @@
         "title": "PersonalValues",
         "type": "object"
       },
+      "PieceOut": {
+        "additionalProperties": false,
+        "description": "A stored piece and how many pieces of the upload are stored now.",
+        "properties": {
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "received": {
+            "title": "Received",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number",
+          "received"
+        ],
+        "title": "PieceOut",
+        "type": "object"
+      },
       "PlanIn": {
         "additionalProperties": false,
         "properties": {
@@ -13745,6 +13850,36 @@
         "title": "PlanPatch",
         "type": "object"
       },
+      "PlaybackOut": {
+        "additionalProperties": false,
+        "description": "Where to play a video from, for a short while: ``url`` is a same-origin gateway route (local\nstorage, which answers Range requests) or a presigned storage URL. Ask again when it expires.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "media_type": {
+            "enum": [
+              "video/mp4",
+              "video/webm"
+            ],
+            "title": "Media Type",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at",
+          "media_type"
+        ],
+        "title": "PlaybackOut",
+        "type": "object"
+      },
       "PrivateAccessSave": {
         "additionalProperties": false,
         "properties": {
@@ -13779,6 +13914,47 @@
           "enabled"
         ],
         "title": "PrivateAccessSave",
+        "type": "object"
+      },
+      "Processing": {
+        "additionalProperties": false,
+        "description": "A video's progress, for managers; ``waiting`` says the daily processing limit is used.",
+        "properties": {
+          "chunks_done": {
+            "title": "Chunks Done",
+            "type": "integer"
+          },
+          "chunks_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Total"
+          },
+          "stage": {
+            "enum": [
+              "transcribing",
+              "summarising"
+            ],
+            "title": "Stage",
+            "type": "string"
+          },
+          "waiting": {
+            "title": "Waiting",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stage",
+          "chunks_done",
+          "chunks_total",
+          "waiting"
+        ],
+        "title": "Processing",
         "type": "object"
       },
       "ProductPage": {
@@ -14150,7 +14326,7 @@
       },
       "RecordRef": {
         "additionalProperties": false,
-        "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
+        "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID) and a\n``training_item`` one item of the Training library (a video or a PDF, by its UUID).",
         "properties": {
           "id": {
             "maxLength": 100,
@@ -14166,7 +14342,8 @@
               "draft",
               "order",
               "employee",
-              "product"
+              "product",
+              "training_item"
             ],
             "title": "Kind",
             "type": "string"
@@ -16941,6 +17118,37 @@
         "title": "TrainingAction",
         "type": "string"
       },
+      "TrainingAnswerResult": {
+        "additionalProperties": false,
+        "description": "An answer from one training video's transcript (``training_ask``).\n\n``markdown`` is the answer and, when the video covers the question, \"From *title*, at 03:15\nand 12:40\"; ``sources`` are those times, each one the start of a line that was sent to the\nmodel. A video that does not cover the question has no sources.",
+        "properties": {
+          "action": {
+            "const": "training_ask",
+            "title": "Action",
+            "type": "string"
+          },
+          "markdown": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Markdown",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/TrainingSource"
+            },
+            "maxItems": 5,
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "markdown"
+        ],
+        "title": "TrainingAnswerResult",
+        "type": "object"
+      },
       "TrainingCommandInput": {
         "additionalProperties": false,
         "description": "Untrusted intent; request/employee/actor/grants come from verified state.",
@@ -17135,6 +17343,35 @@
         "title": "TrainingReceipt",
         "type": "object"
       },
+      "TrainingSource": {
+        "additionalProperties": false,
+        "description": "One place in a training video the answer came from: a time the server checked.",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "start_seconds": {
+            "minimum": 0.0,
+            "title": "Start Seconds",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "title",
+          "start_seconds"
+        ],
+        "title": "TrainingSource",
+        "type": "object"
+      },
       "TrainingStatus": {
         "enum": [
           "draft",
@@ -17169,6 +17406,78 @@
           "command"
         ],
         "title": "TrainingTransition",
+        "type": "object"
+      },
+      "TranscriptLine": {
+        "additionalProperties": false,
+        "description": "One spoken line with its start and end in milliseconds from the video's start.",
+        "properties": {
+          "end_ms": {
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "start_ms": {
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "text"
+        ],
+        "title": "TranscriptLine",
+        "type": "object"
+      },
+      "TranscriptOut": {
+        "additionalProperties": false,
+        "description": "A video's transcript in time order. ``language`` and ``speech`` are ``None`` until\ntranscribing has decided them (managers can read the lines made so far).",
+        "properties": {
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptLine"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "speech": {
+            "anyOf": [
+              {
+                "enum": [
+                  "speech",
+                  "no_speech",
+                  "no_audio"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speech"
+          }
+        },
+        "required": [
+          "language",
+          "speech",
+          "segments"
+        ],
+        "title": "TranscriptOut",
         "type": "object"
       },
       "TurnOut": {
@@ -17494,6 +17803,68 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VideoStart": {
+        "additionalProperties": false,
+        "description": "Starting a video upload: the file's name (data only), its size and its media type.",
+        "properties": {
+          "byte_size": {
+            "minimum": 1.0,
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "file_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "File Name",
+            "type": "string"
+          },
+          "media_type": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_name",
+          "byte_size",
+          "media_type"
+        ],
+        "title": "VideoStart",
+        "type": "object"
+      },
+      "VideoUploadOut": {
+        "additionalProperties": false,
+        "description": "An upload's plan: send pieces ``1..piece_count`` of ``piece_size`` bytes (the last one the\nremainder); ``received`` lists the numbers already stored, for resuming.",
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/ItemOut"
+          },
+          "piece_count": {
+            "title": "Piece Count",
+            "type": "integer"
+          },
+          "piece_size": {
+            "title": "Piece Size",
+            "type": "integer"
+          },
+          "received": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Received",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item",
+          "piece_size",
+          "piece_count",
+          "received"
+        ],
+        "title": "VideoUploadOut",
         "type": "object"
       },
       "VoiceConfig": {
@@ -18286,6 +18657,9 @@
               },
               {
                 "$ref": "#/components/schemas/ProductStockResult"
+              },
+              {
+                "$ref": "#/components/schemas/TrainingAnswerResult"
               }
             ],
             "title": "Result"
@@ -36623,6 +36997,154 @@
         "summary": "Open File"
       }
     },
+    "/console/v1/training/items/{item_id}/playback": {
+      "get": {
+        "operationId": "get_playback_console_v1_training_items__item_id__playback_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Playback"
+      }
+    },
+    "/console/v1/training/items/{item_id}/retry": {
+      "post": {
+        "operationId": "retry_video_console_v1_training_items__item_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Video"
+      }
+    },
     "/console/v1/training/items/{item_id}/summary": {
       "get": {
         "operationId": "get_summary_console_v1_training_items__item_id__summary_get",
@@ -36785,6 +37307,533 @@
           }
         },
         "summary": "Make Summary"
+      }
+    },
+    "/console/v1/training/items/{item_id}/transcript": {
+      "get": {
+        "operationId": "get_transcript_console_v1_training_items__item_id__transcript_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Transcript"
+      }
+    },
+    "/console/v1/training/items/{item_id}/video": {
+      "get": {
+        "operationId": "get_video_console_v1_training_items__item_id__video_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Range"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "206": {
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The requested range"
+          },
+          "416": {
+            "description": "The range is outside the file, or several were asked for"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Video"
+      }
+    },
+    "/console/v1/training/videos": {
+      "post": {
+        "operationId": "start_video_console_v1_training_videos_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VideoStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoUploadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Video"
+      }
+    },
+    "/console/v1/training/videos/{item_id}/complete": {
+      "post": {
+        "operationId": "complete_video_console_v1_training_videos__item_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Video"
+      }
+    },
+    "/console/v1/training/videos/{item_id}/pieces/{number}": {
+      "put": {
+        "operationId": "put_piece_console_v1_training_videos__item_id__pieces__number__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "title": "Number",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Piece-SHA256",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "X-Piece-Sha256",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PieceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Piece"
+      }
+    },
+    "/console/v1/training/videos/{item_id}/upload": {
+      "get": {
+        "operationId": "upload_status_console_v1_training_videos__item_id__upload_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoUploadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Status"
       }
     },
     "/console/v1/workspace/conversations": {
@@ -37208,7 +38257,7 @@
                   },
                   "RecordRef": {
                     "additionalProperties": false,
-                    "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID).",
+                    "description": "An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID) and a\n``training_item`` one item of the Training library (a video or a PDF, by its UUID).",
                     "properties": {
                       "id": {
                         "maxLength": 100,
@@ -37224,7 +38273,8 @@
                           "draft",
                           "order",
                           "employee",
-                          "product"
+                          "product",
+                          "training_item"
                         ],
                         "title": "Kind",
                         "type": "string"

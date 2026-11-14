@@ -192,8 +192,32 @@ jobs:
           NEXT_TELEMETRY_DISABLED: "1"
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      # The training worker's ffmpeg and ffprobe: the static build chosen and measured in
+      # docs/TRAINING_VIDEO_CAPACITY.md, pinned by digest. The image has no shell, so the two
+      # binaries are copied out of a created (never started) container onto PATH.
+      - name: Install the pinned ffmpeg and ffprobe
+        env:
+          FFMPEG_IMAGE: mwader/static-ffmpeg@sha256:11a44711684c0b9f754c047dcd64235b8b52deab251bd0e0a86f22faa160749c
+        run: |
+          bin="$RUNNER_TEMP/ffmpeg-bin"
+          mkdir -p "$bin"
+          container="$(docker create "$FFMPEG_IMAGE")"
+          docker cp "$container:/ffmpeg" "$bin/ffmpeg"
+          docker cp "$container:/ffprobe" "$bin/ffprobe"
+          docker rm "$container"
+          # The linux/amd64 binaries' digests, as extracted in docs/TRAINING_VIDEO_CAPACITY.md.
+          sha256sum -c - <<EOF
+          810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f3a15b0bf2c5c  $bin/ffmpeg
+          4818b8964b5d7b699370628a4154c97e88205678ee506ca72e9330600e917667  $bin/ffprobe
+          EOF
+          "$bin/ffmpeg" -hide_banner -version
+          "$bin/ffprobe" -hide_banner -version
+          echo "$bin" >> "$GITHUB_PATH"
+
       - name: Pytest
         env:
+          # The video tests fail, rather than skip, if the ffmpeg installed above is missing.
+          CSA_REQUIRE_FFMPEG: "1"
           # A freshly generated throwaway AES-256-GCM key for crypto tests.
           CI_DATABASE_URL: postgres://csa_app:ci_app_pw@localhost:5432/csa
           SHARD: ${{ matrix.shard }}

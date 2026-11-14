@@ -31,7 +31,15 @@ from pathlib import Path
 from typing import Protocol
 
 from scripts.migrate import MigrationError, discover_migrations
-from scripts.rollout_targets import BACKUP_SCRIPT, STAGING, Target, get_target
+from scripts.rollout_targets import (
+    BACKUP_SCRIPT,
+    STAGING,
+    TRAINING_KEY_SWITCH,
+    TRAINING_KEY_VALUES,
+    TRAINING_VIDEO_SWITCH,
+    Target,
+    get_target,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOCKET = "unix:///var/run/docker.sock"
@@ -43,6 +51,7 @@ SERVICE_APP = {
     "worker": "python",
     "delivery": "python",
     "frontend": "frontend",
+    "training-worker": "python",
 }
 STOP_SERVICES = STAGING.stop_services
 FLAGS_FILE = STAGING.flags_file
@@ -106,7 +115,7 @@ READY_TRIES = 5
 READY_PAUSE = 3
 HEALTH_POLL = 5
 HEALTH_WAIT = 300
-STOPPED_NAMES = "gateway, frontend, worker and delivery"
+STOPPED_NAMES = "gateway, frontend, worker, delivery and training-worker"
 ALL_STOPPED = f"{STOPPED_NAMES} are stopped"
 LIVE_CHECKOUT = STAGING.live_checkout
 REVISION_LABEL = "org.opencontainers.image.revision"
@@ -231,7 +240,7 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
         if key in flags:
             raise RolloutError("flags", f"{path.name} line {number}: duplicate key {key}")
         value = value.strip()
-        allowed = OPTIONAL_FLAG_VALUES.get(key)
+        allowed = OPTIONAL_FLAG_VALUES.get(key) or target.optional_values.get(key)
         if allowed is not None and value not in allowed:
             # The value is not echoed: the file is not secret, but a bad line may still be a typo
             # of something that is.
@@ -253,6 +262,18 @@ def load_flags(path: Path, target: Target = STAGING) -> dict[str, str]:
                     "flags",
                     f"{path.name}: {key}={flags[key]} needs {JEV_KEY_ON[0]}={JEV_KEY_ON[1]}",
                 )
+    # Where the training worker holds an S3 key (production), video on with the placeholder key
+    # would recreate the gateway with video on while the training worker refuses to start.
+    real_key = TRAINING_KEY_VALUES[-1]
+    if (
+        TRAINING_KEY_SWITCH in target.optional_keys
+        and flags.get(TRAINING_VIDEO_SWITCH) == "true"
+        and flags.get(TRAINING_KEY_SWITCH) != real_key
+    ):
+        raise RolloutError(
+            "flags",
+            f"{path.name}: {TRAINING_VIDEO_SWITCH}=true needs {TRAINING_KEY_SWITCH}={real_key}",
+        )
     return flags
 
 
@@ -1178,7 +1199,7 @@ def _migrate(
         env,
         "stop",
         "compose stop",
-        "some of gateway, frontend, worker and delivery may still be running; check compose ps",
+        f"some of {STOPPED_NAMES} may still be running; check compose ps",
     )
     out(f"Applying migrations {', '.join(pending)}…")
     approval, approved = target.migration_approval
@@ -1506,10 +1527,10 @@ def _previous_refs(plan: Plan, target: Target) -> dict[str, str] | None:
 
     Only an image-only plan (nothing pending, so no migration ran) in which every replica of
     every app service was running when the plan read it, each on a registry digest of this
-    target's owner, every replica of gateway, worker and delivery on one ref and every frontend
-    replica on one ref, and neither ref the one just deployed (a re-run of a failed deploy has
-    no previous version left). A stopped container may be stopped for a reason (an earlier
-    migrate or check-file stop), so it is never brought back.
+    target's owner, every replica of gateway, worker, delivery and training-worker on one ref
+    and every frontend replica on one ref, and neither ref the one just deployed (a re-run of a
+    failed deploy has no previous version left). A stopped container may be stopped for a reason
+    (an earlier migrate or check-file stop), so it is never brought back.
     """
     if plan.pending:
         return None

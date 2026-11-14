@@ -2,8 +2,11 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ApiError } from "@/lib/api";
-import { listItems, type TrainingList } from "@/lib/training-api";
+import { listItems, type TrainingKind, type TrainingList } from "@/lib/training-api";
 import { refusalCopy } from "@/lib/training-view";
+
+/** How often a manager's list is read again while a video is still being made. */
+const POLL_MS = 5000;
 
 export const muted = "text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]";
 export const dangerText = "text-sm text-[color:var(--fs-danger)]";
@@ -14,8 +17,8 @@ export function codeOf(cause: unknown): string {
 }
 
 /** The sentence staff see for a failure. The code stays on the error for support. */
-export function refusalText(cause: unknown): string {
-  return refusalCopy(codeOf(cause));
+export function refusalText(cause: unknown, kind: TrainingKind = "pdf"): string {
+  return refusalCopy(codeOf(cause), kind);
 }
 
 export interface ListRead {
@@ -49,6 +52,14 @@ export function useTrainingList(tenantId: string | null): ListRead {
       live = false;
     };
   }, [tenantId, round]);
+  // Managers watch a video go through its states: read again every 5 s until each is ready or failed.
+  const unfinished =
+    !!data?.can_manage && data.items.some((row) => row.kind === "video" && row.status !== "ready" && row.status !== "failed");
+  useEffect(() => {
+    if (!unfinished) return;
+    const timer = window.setInterval(() => setRound((value) => value + 1), POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [unfinished]);
   return { data, error, reload: () => setRound((value) => value + 1) };
 }
 

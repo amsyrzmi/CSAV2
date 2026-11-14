@@ -34,6 +34,7 @@ FEATURES = (
     "team",
     "attention",
     "training",
+    "training_ask",
     "dont_send",
     "hr_add",
     "hr_update",
@@ -201,6 +202,8 @@ class ScriptedModel:
         if action == "plan":
             steps = [{"action": step, **case.expect.step_fields} for step in case.expect.steps]
             return {"action": "plan", "steps": steps}
+        if action == "training_ask":
+            return {"action": "training_ask", "question": SCRIPTED_TEXT}
         if action == "training_submit":
             return {
                 "action": "training_submit",

@@ -153,6 +153,11 @@ def check_file_name(file_name: str) -> None:
         raise PdfRefused("training_not_pdf")
 
 
+def check_name(file_name: str) -> None:
+    """The name rule alone (``training_name_invalid``), for uploads that are not PDFs."""
+    _check_name(file_name)
+
+
 def _check_name(file_name: str) -> None:
     """One display-only segment: no separators, controls or bidi tricks, at most 255 characters."""
     if (

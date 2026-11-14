@@ -228,7 +228,7 @@ export function explainedMessage(code: string): string | undefined {
  */
 const serverSentence = new Set(["stale", "refused", "needs_acknowledging"]);
 
-async function decode<T>(response: Response): Promise<T> {
+export async function decode<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let message =
       response.status >= 500

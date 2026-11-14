@@ -19,8 +19,8 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
 1. Pull: `git pull --ff-only origin main`. If it is not a fast-forward, stop and tell the owner.
 2. Plan (read-only): `.venv/bin/python -m scripts.staging_rollout plan`. Summarise it in a few
    lines: the target SHA, whether the images changed, the pending migrations or "none", the
-   downtime (a migration stops gateway, frontend, worker and delivery: console unavailable, bot
-   replies delayed, not lost), the check files, and any missing secret files (exit 2).
+   downtime (a migration stops gateway, frontend, worker, delivery and the training worker: console
+   unavailable, bot replies delayed, not lost), the check files, and any missing secret files (exit 2).
    - `images for <sha7> are not published yet (<state>)`: the publish run starts by itself after a
      green main CI run; the owner approves the `staging-images` environment on it. Tell the owner
      and stop; do not poll.

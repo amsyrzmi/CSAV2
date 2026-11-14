@@ -116,7 +116,10 @@ def test_production_target_values() -> None:
     assert PRODUCTION.flags_file == "deploy/production-rollout.env"
     assert PRODUCTION.required_keys == SIX_SWITCHES
     assert len(PRODUCTION.required_keys) == 6
-    assert PRODUCTION.optional_keys == PROD_TUNING_KEYS
+    assert PRODUCTION.optional_keys == PROD_TUNING_KEYS | {
+        "CSA_STAGING_TRAINING_VIDEO",
+        "CSA_PROD_S3_TRAINING_KEY",
+    }
     assert PRODUCTION.host_file == Path("/srv/csa-prod/host.env")
     assert PRODUCTION.host_required_keys == {
         "CSA_PROD_S3_BUCKET",
@@ -153,6 +156,7 @@ def test_every_compose_prod_variable_is_accounted_for() -> None:
     assert names, "no CSA_PROD_ variable found"
     accounted = (
         PROD_TUNING_KEYS
+        | PRODUCTION.optional_keys
         | PRODUCTION.host_required_keys
         | {"CSA_PROD_DB_IMAGE"}
         | {"CSA_PROD_GROQ_CHAT_URL"}  # excluded on purpose: fixed in the compose file
@@ -337,3 +341,73 @@ def test_staging_apply_takes_no_host_digest(capsys: pytest.CaptureFixture[str]) 
         sr.main(["apply", "--sha", SHA, "--host-digest", "0" * 12], runner=runner)
     assert caught.value.code == 2
     assert runner.calls == []
+
+
+# --- the training worker -----------------------------------------------------------------------
+
+
+def test_both_targets_recreate_and_stop_the_training_worker() -> None:
+    for target in (STAGING, PRODUCTION):
+        assert "training-worker" in target.app_services, target.name
+        assert "training-worker" in target.stop_services, target.name
+        assert set(target.app_services) == set(target.stop_services), target.name
+        # One process: never scaled by a replica variable.
+        assert "training-worker" not in target.replicas, target.name
+    assert sr.SERVICE_APP["training-worker"] == "python"
+    assert set(sr.SERVICE_APP) == set(STAGING.app_services)
+    assert "training-worker" in sr.STOPPED_NAMES
+
+
+def test_the_training_switches_are_optional_and_their_values_are_checked(tmp_path: Path) -> None:
+    assert "CSA_PROD_MEM_TRAINING_WORKER" in PROD_TUNING_KEYS
+    assert STAGING.optional_keys == {"CSA_STAGING_TRAINING_VIDEO"}
+    # The key switch is production's alone: staging has no S3.
+    assert "CSA_PROD_S3_TRAINING_KEY" not in STAGING.optional_keys
+    assert "CSA_PROD_S3_TRAINING_KEY" not in PRODUCTION.host_override_keys
+    path = production_flags_with(
+        tmp_path, "CSA_STAGING_TRAINING_VIDEO=true", "CSA_PROD_S3_TRAINING_KEY=prod_s3_training"
+    )
+    flags = sr.load_flags(path, PRODUCTION)
+    assert flags["CSA_STAGING_TRAINING_VIDEO"] == "true"
+    env = sr.build_env(
+        flags,
+        {"python": "p@sha256:aa", "frontend": "f@sha256:bb"},
+        docker_config=tmp_path / "dc",
+        target=PRODUCTION,
+    )
+    assert env["CSA_STAGING_TRAINING_VIDEO"] == "true"
+    assert env["CSA_PROD_S3_TRAINING_KEY"] == "prod_s3_training"
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        (
+            "CSA_STAGING_TRAINING_VIDEO=yes",
+            "CSA_STAGING_TRAINING_VIDEO must be one of false, true",
+        ),
+        # Any other declared secret would hand the training worker another key.
+        (
+            "CSA_PROD_S3_TRAINING_KEY=prod_s3_app",
+            "CSA_PROD_S3_TRAINING_KEY must be one of prod_s3_training_disabled, prod_s3_training",
+        ),
+    ],
+)
+def test_production_flags_refuse_a_bad_training_value(
+    tmp_path: Path, line: str, message: str
+) -> None:
+    path = production_flags_with(tmp_path, line)
+    with pytest.raises(sr.RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.message.endswith(message)
+    assert line.split("=", 1)[1] not in caught.value.message
+
+
+def test_staging_flags_refuse_the_production_key_switch(tmp_path: Path) -> None:
+    text = (sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8")
+    path = tmp_path / "staging-rollout.env"
+    path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=false\n", encoding="utf-8")
+    assert sr.load_flags(path, STAGING)["CSA_STAGING_TRAINING_VIDEO"] == "false"
+    path.write_text(text + "CSA_PROD_S3_TRAINING_KEY=prod_s3_training\n", encoding="utf-8")
+    with pytest.raises(sr.RolloutError, match="unknown key CSA_PROD_S3_TRAINING_KEY"):
+        sr.load_flags(path, STAGING)

@@ -87,6 +87,13 @@ def make_item(item_id: str, title: str, **extra: Any) -> dict[str, Any]:
         "created_at": "2026-11-06T09:00:00Z",
         "uploaded_by_name": "Synthetic User",
         "has_summary": False,
+        # The video fields (docs/CONSOLE_API.md): a PDF is always ready and has none of them.
+        "kind": "pdf",
+        "status": "ready",
+        "duration_ms": None,
+        "failure": None,
+        "processing": None,
+        "notice": None,
     }
     item.update(extra)
     return item

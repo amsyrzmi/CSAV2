@@ -76,10 +76,18 @@ TabKey = Literal[
 
 
 class RecordRef(_Contract):
-    """An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID)."""
+    """An open record; a ``product`` is one TikTok Shop listing of ours (its local UUID) and a
+    ``training_item`` one item of the Training library (a video or a PDF, by its UUID)."""
 
     kind: Literal[
-        "conversation", "approval", "training_request", "draft", "order", "employee", "product"
+        "conversation",
+        "approval",
+        "training_request",
+        "draft",
+        "order",
+        "employee",
+        "product",
+        "training_item",
     ]
     id: str = Field(min_length=1, max_length=100)
     version: int | None = None
@@ -259,6 +267,20 @@ class ProductStockReadProposal(_Contract):
     action: Literal["product_stock_read"]
     query: str | None = Field(default=None, min_length=1, max_length=100)
     listing_id: UUID | None = None
+
+
+class TrainingAskProposal(_Contract):
+    """A question about what one training video says, answered from its transcript. Read-only.
+
+    ``item_id`` is the open ``training_item`` record or an option the user picked; ``item`` is
+    the video's title words the user wrote. With neither, the open video is asked. The server
+    finds the video in the caller's company and checks every cited time (csa/training/ask.py).
+    """
+
+    action: Literal["training_ask"]
+    question: str = Field(min_length=1, max_length=500)
+    item: str | None = Field(default=None, min_length=1, max_length=120)
+    item_id: UUID | None = None
 
 
 # People actions (csa/workspace/hr_people.py resolves every name against People as the caller).
@@ -460,6 +482,7 @@ WorkspaceProposal = Annotated[
         GuidanceProposal,
         OrderReadProposal,
         ProductStockReadProposal,
+        TrainingAskProposal,
     ],
     Field(discriminator="action"),
 ]
@@ -775,6 +798,27 @@ class ProductStockResult(_Contract):
     note: str = Field(min_length=1, max_length=200)
 
 
+class TrainingSource(_Contract):
+    """One place in a training video the answer came from: a time the server checked."""
+
+    item_id: UUID
+    title: str = Field(min_length=1, max_length=200)
+    start_seconds: int = Field(ge=0)
+
+
+class TrainingAnswerResult(_Contract):
+    """An answer from one training video's transcript (``training_ask``).
+
+    ``markdown`` is the answer and, when the video covers the question, "From *title*, at 03:15
+    and 12:40"; ``sources`` are those times, each one the start of a line that was sent to the
+    model. A video that does not cover the question has no sources.
+    """
+
+    action: Literal["training_ask"]
+    markdown: str = Field(min_length=1, max_length=2000)
+    sources: list[TrainingSource] = Field(default_factory=list, max_length=5)
+
+
 class WorkspaceUnavailableResult(_Contract):
     status: Literal["unavailable"] = "unavailable"
     code: Literal["identity_unavailable", "policy_unavailable", "business_unavailable"]
@@ -825,6 +869,7 @@ WorkspaceActionResult = (
     | DirectoryResult
     | ClarificationResult
     | ProductStockResult
+    | TrainingAnswerResult
 )
 
 

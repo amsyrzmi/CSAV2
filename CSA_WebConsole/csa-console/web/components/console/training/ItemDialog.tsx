@@ -1,8 +1,19 @@
 "use client";
 
-import { useId, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { ApiError } from "@/lib/api";
-import { patchItem, removeItem, uploadItem, type TrainingItem, type TrainingViewMode } from "@/lib/training-api";
+import {
+  completeVideo,
+  patchItem,
+  pieceCsrf,
+  putPiece,
+  removeItem,
+  startVideo,
+  uploadItem,
+  uploadStatus,
+  type TrainingItem,
+  type TrainingViewMode,
+} from "@/lib/training-api";
 import {
   afterUploadFailure,
   attemptFor,
@@ -13,24 +24,47 @@ import {
   PATCH_FAILED,
   titleFromFileName,
   uploadMayHaveLanded,
+  VIDEO_PATCH_FAILED,
   type FormProblems,
   type ItemForm,
   type UploadAttempt,
 } from "@/lib/training-form";
-import { uploadProblem } from "@/lib/training-view";
+import { fileKind, SOUND_NOTICE, uploadProblem, videoLengthProblem } from "@/lib/training-view";
+import {
+  readVideoSeconds,
+  resumeVideo,
+  sha256Hex,
+  uploadEnvironmentProblem,
+  uploadVideo,
+  UploadStopped,
+  type UploadDeps,
+  type UploadProgress,
+} from "@/lib/training-video";
 import Dialog from "../fs/Dialog";
 import { action, field, Notice, secondary } from "../ui";
 import { codeOf, described, FormRow, muted, refusalText } from "./shared";
 
 type Phase = "idle" | "uploading" | "saving";
 
+const STOPPED_TEXT = "Upload stopped. Check your connection and select Continue.";
+/** Codes that mean the upload is gone: the next try starts over with a new key. */
+const GONE = new Set(["training_upload_closed", "training_not_found"]);
+
+/** The sentence for a page that cannot hash pieces (not https), else null. Checked before any key is made. */
+const secureProblem = () => uploadEnvironmentProblem({ isSecureContext: window.isSecureContext, subtle: window.crypto?.subtle });
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
 /**
- * Add a PDF (`item` null) or edit one's details. Adding is two steps: the file alone, then the
- * details as a PATCH. One idempotency key belongs to the picked file and is kept for a retry of
- * it, so a retry after a lost answer returns the first item; picking another file starts a new
- * key. The page owns the key (`attempt`), so closing the dialog and adding the same file again
- * still retries. When the second step fails the PDF is already in the library under its file
- * name: the dialog says so and its button then saves only the details.
+ * Add a PDF or a video (`item` null) or edit one's details. Adding is two steps: the file alone,
+ * then the details as a PATCH. A PDF goes in one request; a video goes in pieces (three at once,
+ * each with its SHA-256) that resume after a lost connection: "Continue" sends only the pieces the
+ * server lacks. One idempotency key belongs to the picked file and is kept for a retry of it, so a
+ * retry after a lost answer returns the first item; picking another file starts a new key. The
+ * page owns the key (`attempt`), so closing the dialog and adding the same file again still
+ * retries. When the second step fails the file is already in the library under its file name: the
+ * dialog says so and its button then saves only the details. Leaving the page during a video
+ * upload asks first.
  */
 export default function ItemDialog({
   tenantId,
@@ -46,9 +80,9 @@ export default function ItemDialog({
   /** The company's categories, offered as the person types. */
   categories: string[];
   onClose: () => void;
-  /** The details are saved; `added` when this dialog added the PDF. */
+  /** The details are saved; `added` when this dialog added the file. */
   onSaved: (saved: TrainingItem, added: boolean) => void;
-  /** The library changed (a PDF was added) and the list should be read again. */
+  /** The library changed (a file was added) and the list should be read again. */
   onChanged: () => void;
   /** The page's upload attempt, kept while the dialog is closed; the dialog's own when absent. */
   attempt?: RefObject<UploadAttempt | null>;
@@ -56,18 +90,37 @@ export default function ItemDialog({
   const ids = useId();
   const id = (name: string) => `${ids}-${name}`;
   const [file, setFile] = useState<File | null>(null);
+  // The video's length as the browser reads it; null when unknown (the server then measures it).
+  const [seconds, setSeconds] = useState<number | null>(null);
   const [form, setForm] = useState<ItemForm>(item ? formFromItem(item) : EMPTY_FORM);
   const [problems, setProblems] = useState<FormProblems>({});
   const [problem, setProblem] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [uploaded, setUploaded] = useState<TrainingItem | null>(null);
+  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const [stopped, setStopped] = useState<UploadStopped | null>(null);
   const ownAttempt = useRef<UploadAttempt | null>(null);
   const attempt = pageAttempt ?? ownAttempt;
   const running = useRef(false);
+  const picked = useRef(0);
   const busy = phase !== "idle";
   const adding = item === null;
-  // What a PATCH applies to: the item being edited, or the PDF this dialog has added.
+  // What a PATCH applies to: the item being edited, or the file this dialog has added.
   const target = item ?? uploaded;
+  const kind = item ? item.kind : file ? fileKind(file.name) : null;
+  const video = kind === "video";
+  // An upload that has started and not finished is lost if the page goes away.
+  const leaving = phase === "uploading" || stopped !== null;
+
+  useEffect(() => {
+    if (!leaving) return;
+    const ask = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", ask);
+    return () => window.removeEventListener("beforeunload", ask);
+  }, [leaving]);
 
   const change = <K extends keyof ItemForm>(key: K, value: ItemForm[K]) => setForm((before) => ({ ...before, [key]: value }));
 
@@ -79,15 +132,46 @@ export default function ItemDialog({
         : before,
     );
     setFile(next);
-    setProblem(next ? (uploadProblem(next) ?? "") : "");
+    setSeconds(null);
+    setStopped(null);
+    setProgress(null);
+    // A video can only be sent from a secure page: say so as soon as one is chosen.
+    setProblem(
+      next ? (uploadProblem(next) ?? (fileKind(next.name) === "video" ? (secureProblem() ?? "") : "")) : "",
+    );
+    const mine = ++picked.current;
+    if (next && !uploadProblem(next) && fileKind(next.name) === "video")
+      void readVideoSeconds(next).then((length) => {
+        if (picked.current !== mine) return;
+        setSeconds(length);
+        const tooLong = videoLengthProblem(length);
+        if (tooLong) setProblem(tooLong);
+      });
   }
 
-  async function submit() {
+  /** The video, in pieces; `resume` carries on a stopped upload instead of starting one. */
+  function sendVideo(source: File, key: string, resume: UploadStopped | null): Promise<TrainingItem> {
+    // One CSRF token for all of this upload's pieces, not one fetch per piece.
+    const csrf = pieceCsrf();
+    const deps: UploadDeps = {
+      start: () => startVideo(tenantId, source, key),
+      put: (itemId, number, piece, sha) => putPiece(tenantId, itemId, number, piece, sha, csrf),
+      status: (itemId) => uploadStatus(tenantId, itemId),
+      complete: (itemId) => completeVideo(tenantId, itemId),
+      sha256: sha256Hex,
+      sleep,
+    };
+    return resume ? resumeVideo(source, resume.plan, deps, setProgress) : uploadVideo(source, deps, setProgress);
+  }
+
+  async function submit(continuing = false) {
     if (running.current) return;
     const found = formProblems(form);
     setProblems(found);
     if (!target) {
-      const fileProblem = file ? uploadProblem(file) : "Choose a PDF file.";
+      const fileProblem = file
+        ? (uploadProblem(file) ?? (video ? (secureProblem() ?? videoLengthProblem(seconds)) : null))
+        : "Choose a PDF or video file.";
       if (fileProblem) {
         setProblem(fileProblem);
         return;
@@ -106,15 +190,27 @@ export default function ItemDialog({
         attempt.current = current;
         setPhase("uploading");
         try {
-          saved = await uploadItem(tenantId, file, current.key);
+          saved = video
+            ? await sendVideo(file, current.key, continuing ? stopped : null)
+            : await uploadItem(tenantId, file, current.key);
         } catch (cause) {
-          attempt.current = afterUploadFailure(current, codeOf(cause));
-          setProblem(refusalText(cause));
-          // The answer may be lost after the PDF was stored: show it in the list.
-          if (uploadMayHaveLanded(codeOf(cause), cause instanceof ApiError ? cause.status : null)) onChanged();
+          if (cause instanceof UploadStopped) {
+            // Pieces are missing, or the last step got no answer: the person can carry on.
+            setStopped(cause);
+            setProblem(STOPPED_TEXT);
+            onChanged();
+            return;
+          }
+          const code = codeOf(cause);
+          attempt.current = GONE.has(code) ? null : afterUploadFailure(current, code);
+          if (GONE.has(code)) setStopped(null);
+          setProblem(refusalText(cause, kind ?? "pdf"));
+          // The answer may be lost after the file was stored: show it in the list.
+          if (uploadMayHaveLanded(code, cause instanceof ApiError ? cause.status : null)) onChanged();
           return;
         }
         attempt.current = null;
+        setStopped(null);
         setUploaded(saved);
         // "Show as" shows the server's default for this PDF, unless the person already chose.
         const mode = saved.view_mode;
@@ -131,7 +227,7 @@ export default function ItemDialog({
       try {
         onSaved(await patchItem(tenantId, saved.id, body), adding);
       } catch (cause) {
-        setProblem(adding ? PATCH_FAILED : refusalText(cause));
+        setProblem(adding ? (saved.kind === "video" ? VIDEO_PATCH_FAILED : PATCH_FAILED) : refusalText(cause));
       }
     } finally {
       running.current = false;
@@ -144,7 +240,9 @@ export default function ItemDialog({
     { value: "slides", label: "Slides" },
     { value: "document", label: "Document" },
   ];
-  const title = item ? "Edit details" : uploaded ? "Add the details" : "Add a PDF";
+  const title = item ? "Edit details" : uploaded ? "Add the details" : "Add a PDF or video";
+  const saveLabel = target ? "Save details" : video ? "Add video" : kind === "pdf" ? "Add PDF" : "Add file";
+  const noun = target ? target.kind : kind;
 
   return (
     <Dialog open onClose={() => !busy && onClose()} title={title} testId="training-dialog">
@@ -154,24 +252,37 @@ export default function ItemDialog({
         aria-busy={busy}
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          void submit(stopped !== null);
         }}
       >
         {problem && <Notice error testId="training-dialog-error">{problem}</Notice>}
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           {adding && !uploaded && (
-            <FormRow id={id("file")} label="PDF file" hint="One PDF, up to 25 MB and 300 pages.">
+            <FormRow
+              id={id("file")}
+              label="PDF or video file"
+              hint="One PDF, up to 25 MB and 300 pages, or one video (MP4, M4V, MOV or WebM), up to 500 MB and 60 minutes."
+            >
               <input
                 {...described(id("file"), true)}
                 type="file"
-                accept="application/pdf,.pdf"
+                accept="application/pdf,.pdf,video/mp4,video/webm,video/quicktime,.mp4,.m4v,.mov,.webm"
                 data-testid="training-file"
                 className={`${muted} block w-full min-w-0 file:mr-3 file:min-h-10 file:rounded-[var(--fs-radius-control)] file:border file:border-[color:var(--fs-border-control)] file:bg-[var(--fs-surface)] file:px-3 file:text-[color:var(--fs-text)]`}
                 onChange={(event) => pick(event.target.files?.[0] ?? null)}
               />
             </FormRow>
           )}
-          {uploaded && <p className={muted} data-testid="training-uploaded">The PDF is in the library. Its details are not saved yet.</p>}
+          {adding && !uploaded && video && (
+            <p className={muted} data-testid="training-sound-notice">{SOUND_NOTICE}</p>
+          )}
+          {uploaded && (
+            <p className={muted} data-testid="training-uploaded">
+              {uploaded.kind === "video"
+                ? "The video is in the library and is being processed. Its details are not saved yet."
+                : "The PDF is in the library. Its details are not saved yet."}
+            </p>
+          )}
           <FormRow id={id("title")} label="Title" problem={problems.title}>
             <input
               {...described(id("title"), false, problems.title)}
@@ -210,35 +321,56 @@ export default function ItemDialog({
               {categories.map((name) => <option key={name} value={name} />)}
             </datalist>
           </FormRow>
-          <FormRow
-            id={id("mode")}
-            label="Show as"
-            hint="Slides show one page at a time. Document shows every page in one scroll. Each reader can switch."
-          >
-            <select
-              {...described(id("mode"), true)}
-              className={field}
-              data-testid="training-view-mode"
-              value={form.view_mode ?? ""}
-              onChange={(event) => change("view_mode", (event.target.value || null) as TrainingViewMode | null)}
+          {noun !== "video" && (
+            <FormRow
+              id={id("mode")}
+              label="Show as"
+              hint="Slides show one page at a time. Document shows every page in one scroll. Each reader can switch."
             >
-              {modes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
-            </select>
-          </FormRow>
+              <select
+                {...described(id("mode"), true)}
+                className={field}
+                data-testid="training-view-mode"
+                value={form.view_mode ?? ""}
+                onChange={(event) => change("view_mode", (event.target.value || null) as TrainingViewMode | null)}
+              >
+                {modes.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+              </select>
+            </FormRow>
+          )}
         </fieldset>
         <div role="status" aria-live="polite" data-testid="training-progress" className="empty:hidden">
           {phase === "uploading" && (
             <span className="flex flex-wrap items-center gap-2 text-sm">
-              <progress aria-label="Uploading the PDF" className="h-2 w-32 accent-[var(--fs-primary)]" />
-              Uploading…
+              {progress ? (
+                <>
+                  <progress aria-label="Uploading the video" className="h-2 w-32 accent-[var(--fs-primary)]"
+                    value={progress.done} max={progress.total} />
+                  <span data-testid="training-upload-progress">
+                    Sent {progress.done} of {progress.total} {progress.total === 1 ? "part" : "parts"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <progress aria-label={video ? "Starting the upload" : "Uploading the PDF"} className="h-2 w-32 accent-[var(--fs-primary)]" />
+                  {video ? "Starting the upload…" : "Uploading…"}
+                </>
+              )}
             </span>
           )}
           {phase === "saving" && <span className="text-sm">Saving the details…</span>}
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="submit" className={action} disabled={busy} data-testid="training-dialog-save">
-            {target ? "Save details" : "Add PDF"}
-          </button>
+          {stopped && !target ? (
+            <button type="button" className={action} disabled={busy} data-testid="training-upload-continue"
+              onClick={() => void submit(true)}>
+              Continue
+            </button>
+          ) : (
+            <button type="submit" className={action} disabled={busy} data-testid="training-dialog-save">
+              {saveLabel}
+            </button>
+          )}
           <button type="button" className={secondary} disabled={busy} onClick={onClose}>
             {uploaded ? "Close" : "Cancel"}
           </button>
@@ -249,7 +381,7 @@ export default function ItemDialog({
 }
 
 /**
- * Asks before a PDF is removed for everyone. An item that is already gone counts as removed:
+ * Asks before an item is removed for everyone. An item that is already gone counts as removed:
  * `onRemoved(false)` says so, so the page can tell the person and refresh.
  */
 export function RemoveDialog({
@@ -267,6 +399,7 @@ export function RemoveDialog({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const running = useRef(false);
+  const noun = item.kind === "video" ? "video" : "PDF";
 
   async function remove() {
     if (running.current) return;
@@ -286,15 +419,19 @@ export function RemoveDialog({
   }
 
   return (
-    <Dialog open onClose={() => !busy && onClose()} title="Remove this PDF?" testId="training-remove-dialog">
+    <Dialog open onClose={() => !busy && onClose()} title={`Remove this ${noun}?`} testId="training-remove-dialog">
       <div className="space-y-4" aria-busy={busy}>
         {problem && <Notice error testId="training-remove-error">{problem}</Notice>}
         <p className="font-medium [overflow-wrap:anywhere]">{item.title}</p>
-        <p className="text-sm">This removes the PDF for everyone in your company.</p>
+        <p className="text-sm">
+          {item.kind === "video"
+            ? "This removes the video, its transcript and its summary for everyone in your company."
+            : "This removes the PDF for everyone in your company."}
+        </p>
         <div className="flex flex-wrap gap-2">
           <button type="button" className={action} disabled={busy} data-testid="training-remove-confirm"
             onClick={() => void remove()}>
-            Remove PDF
+            Remove {noun}
           </button>
           <button type="button" className={secondary} disabled={busy} onClick={onClose}>Cancel</button>
         </div>

@@ -21,6 +21,7 @@ from pathlib import Path
 # Default liveness paths on the container tmpfs (design §9.1).
 WORKER_ALIVE_PATH = Path("/tmp/worker.alive")  # noqa: S108 - tmpfs mount in compose
 DELIVERY_ALIVE_PATH = Path("/tmp/delivery.alive")  # noqa: S108 - tmpfs mount in compose
+TRAINING_WORKER_ALIVE_PATH = Path("/tmp/training-worker.alive")  # noqa: S108 - tmpfs mount
 
 # A single interval drives both busy iterations and idle sleep granularity.
 DEFAULT_LOOP_INTERVAL = 5.0
