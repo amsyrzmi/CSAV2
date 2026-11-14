@@ -1180,7 +1180,13 @@ def test_production_flags_refuse_video_without_the_training_key(
     tmp_path: Path, key_line: str
 ) -> None:
     path = tmp_path / "production-rollout.env"
-    text = (sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8")
+    text = "".join(
+        line
+        for line in (sr.REPO_ROOT / PRODUCTION.flags_file)
+        .read_text(encoding="utf-8")
+        .splitlines(keepends=True)
+        if not line.startswith(("CSA_STAGING_TRAINING_VIDEO=", "CSA_PROD_S3_TRAINING_KEY="))
+    )
     path.write_text(text + "CSA_STAGING_TRAINING_VIDEO=true\n" + key_line, encoding="utf-8")
     with pytest.raises(RolloutError) as caught:
         sr.load_flags(path, PRODUCTION)
