@@ -39,7 +39,9 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from scripts import registry_auth
 from scripts.migrate import MigrationError, discover_migrations
+from scripts.rollout_targets import STAGING
 from scripts.staging_rollout import (
     APP_SERVICES,
     FLAGS_FILE,
@@ -1173,6 +1175,8 @@ def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> in
     docker_config = Path(tempfile.mkdtemp(prefix="csa-reset-docker-"))
     try:
         docker_config.chmod(0o700)
+        # Absent file: nothing is written and the pulls stay anonymous, as before.
+        registry_auth.install(docker_config, STAGING.registry_auth)
         if args.command == "wipe":
             return wipe(
                 runner,

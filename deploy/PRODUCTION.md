@@ -58,6 +58,15 @@ registry call when it is unset or malformed. CI reads it too, but has no such ch
 variable unset, the `gate` and `tests` jobs fail at container initialisation with a Docker
 image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha256:...`).
 
+**Optional registry login on the instance.** The rollout pulls through a temporary, private
+Docker config. If `/srv/csa-prod/registry/config.json` exists, the rollout copies it into that
+config (mode 0600, removed with it when the run ends) before any pull, so the pulls use its
+login; without the file the pulls stay anonymous, as today. It is a Docker auth file (a JSON
+object with an `auths` object) holding a read-only registry login (`read:packages` only), owned
+by `ubuntu` with mode 0600. A file that is empty, unreadable or not such an object stops the
+run with `Stopped at plan: registry auth file <path> is not usable`; the content is never
+printed. Never commit it. It is needed only once the images are private.
+
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
    `staging-rollout` flow, which writes the staged record.
@@ -521,7 +530,8 @@ g. GitHub read access for `gh`, **for break-glass only**. A deploy started from 
    ```
 
    The last line must print a `sha256:` digest. No `docker login` is needed: the rollout pulls
-   the public images by digest with an empty Docker config, so it would not use one.
+   the public images by digest with its own temporary Docker config, so it would not use one
+   (for private images it reads the optional registry login file, see Deploying from GitHub).
 
 h. Run a plan on the instance as Systems Manager would, for the newest staged commit. It gives
    no digests, so it takes the break-glass path and needs the token from step g:

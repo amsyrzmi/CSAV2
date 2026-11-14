@@ -20,7 +20,7 @@ class Target:
     compose_files: tuple[str, ...]  # repo-relative, in --file order
     profiles: tuple[str, ...]
     image_owner: str  # registry path, e.g. "ghcr.io/<owner>"
-    package_owner: str  # for gh api /users/<owner>/packages/...
+    package_scope: str  # for gh api /<scope>/packages/...: "users/<owner>" or "orgs/<org>"
     repo: str  # "<owner>/<repo>", for the deployments API
     app_services: tuple[str, ...]  # recreate order
     stop_services: tuple[str, ...]
@@ -40,6 +40,9 @@ class Target:
     downgrade_warning: bool
     pre_change: tuple[str, ...] | None  # argv run before anything changes
     live_checkout: str  # path printed in rollback text
+    # Optional Docker auth file with a read-only registry login, copied into the temporary
+    # Docker config before any pull; absent means anonymous pulls (scripts/registry_auth.py).
+    registry_auth: Path
 
 
 STAGING = Target(
@@ -53,7 +56,7 @@ STAGING = Target(
     ),
     profiles=("staging-approved", "pipeline-approved"),
     image_owner="ghcr.io/amsyrzmi",
-    package_owner="amsyrzmi",
+    package_scope="users/amsyrzmi",
     repo="amsyrzmi/CSAV2",
     app_services=("gateway", "worker", "delivery", "frontend", "training-worker"),
     stop_services=("gateway", "frontend", "worker", "delivery", "training-worker"),
@@ -86,6 +89,7 @@ STAGING = Target(
     downgrade_warning=False,
     pre_change=None,
     live_checkout="/home/amsyrzmi/CSAV2",
+    registry_auth=Path("/srv/csa-staging/registry/config.json"),
 )
 
 # Sizing and Postgres tuning for the production host. The repo file may set them; the host
@@ -144,6 +148,7 @@ PRODUCTION = replace(
     downgrade_warning=True,
     pre_change=(BACKUP_SCRIPT,),
     live_checkout="/home/ubuntu/CSAV2",
+    registry_auth=Path("/srv/csa-prod/registry/config.json"),
 )
 
 _TARGETS: dict[str, Target] = {STAGING.name: STAGING, PRODUCTION.name: PRODUCTION}

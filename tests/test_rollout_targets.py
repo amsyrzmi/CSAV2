@@ -105,6 +105,14 @@ ORIGINS = frozenset({"CSA_STAGING_CONSOLE_ORIGIN", "CSA_STAGING_HOOKS_ORIGIN"})
 SIX_SWITCHES = STAGING.required_keys - ORIGINS
 
 
+def test_package_scope_and_registry_login_paths() -> None:
+    assert STAGING.package_scope == "users/amsyrzmi"
+    assert PRODUCTION.package_scope == STAGING.package_scope
+    assert STAGING.registry_auth == Path("/srv/csa-staging/registry/config.json")
+    assert PRODUCTION.registry_auth == Path("/srv/csa-prod/registry/config.json")
+    assert PRODUCTION.registry_auth != STAGING.registry_auth
+
+
 def test_production_target_values() -> None:
     assert get_target("production") is PRODUCTION
     assert PRODUCTION.name == "production"

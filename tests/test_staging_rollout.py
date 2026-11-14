@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import io
 import json
 import os
@@ -298,7 +299,18 @@ def test_published_images_match_the_full_sha() -> None:
     assert runner.argvs[0] == [
         "gh",
         "api",
-        "/users/amsyrzmi/packages/container/csa-python/versions?per_page=100",
+        f"/{sr.STAGING.package_scope}/packages/container/csa-python/versions?per_page=100",
+    ]
+
+
+def test_published_images_list_the_packages_of_the_target_scope() -> None:
+    # An organisation scope changes only the listing path, not the image refs' owner.
+    org = dataclasses.replace(sr.STAGING, package_scope="orgs/example-owner")
+    runner = FakeRunner([(has("versions"), ok(versions_json(DIGEST_A, tags=[SHA])))])
+    assert sr.published_images(runner, SHA, target=org) is not None
+    assert [argv[2] for argv in runner.argvs] == [
+        "/orgs/example-owner/packages/container/csa-python/versions?per_page=100",
+        "/orgs/example-owner/packages/container/csa-frontend/versions?per_page=100",
     ]
 
 
@@ -573,6 +585,87 @@ def test_docker_config_dir_is_empty_private_and_removed(rollout_env: Path) -> No
     assert all(mode == 0o700 and entries == [] for mode, entries in seen)
     assert len(set(dirs)) == 1
     assert not dirs[0].exists()
+
+
+# A synthetic docker login; "c3ludGhldGlj" is base64 of "synthetic". Never printed by a check.
+REGISTRY_LOGIN = b'{"auths": {"ghcr.io": {"auth": "c3ludGhldGlj"}}}\n'
+
+
+def point_registry_login(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Make every target ``main`` resolves read its registry login from ``path``."""
+    real = sr.get_target
+    monkeypatch.setattr(
+        sr, "get_target", lambda name: dataclasses.replace(real(name), registry_auth=path)
+    )
+
+
+def test_docker_config_dir_holds_the_registry_login_when_one_is_configured(
+    rollout_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    login = tmp_path / "registry" / "config.json"
+    login.parent.mkdir()
+    login.write_bytes(REGISTRY_LOGIN)
+    point_registry_login(monkeypatch, login)
+    paths = make_secret_files(rollout_env, "staging_owner_dsn")
+    seen: list[tuple[int, list[str], int, bool]] = []
+    dirs: list[Path] = []
+    base = staging_runner(secret_files=paths)
+
+    class Spy(FakeRunner):
+        def run(
+            self,
+            argv: Sequence[str],
+            *,
+            env: Mapping[str, str] | None = None,
+            input: str | None = None,  # noqa: A002
+        ) -> Completed:
+            if env is not None:
+                directory = Path(env["DOCKER_CONFIG"])
+                copied = directory / "config.json"
+                dirs.append(directory)
+                seen.append(
+                    (
+                        stat.S_IMODE(directory.stat().st_mode),
+                        os.listdir(directory),
+                        stat.S_IMODE(copied.stat().st_mode),
+                        copied.read_bytes() == REGISTRY_LOGIN,
+                    )
+                )
+            return base.run(argv, env=env, input=input)
+
+    assert sr.main(["plan"], runner=Spy([])) == 0
+    assert seen
+    assert all(entry == (0o700, ["config.json"], 0o600, True) for entry in seen)
+    assert len(set(dirs)) == 1
+    assert not dirs[0].exists()
+    assert login.read_bytes() == REGISTRY_LOGIN
+
+
+def test_an_unusable_registry_login_stops_before_any_command_and_names_only_the_path(
+    rollout_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    login = tmp_path / "registry" / "config.json"
+    login.parent.mkdir()
+    login.write_text('{"credsStore": "c3ludGhldGlj"}')
+    point_registry_login(monkeypatch, login)
+    made: list[str] = []
+    real_mkdtemp = sr.tempfile.mkdtemp
+
+    def mkdtemp(**kwargs: str) -> str:
+        made.append(real_mkdtemp(**kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(sr.tempfile, "mkdtemp", mkdtemp)
+    runner = FakeRunner([])
+    assert sr.main(["plan"], runner=runner) == 1
+    out = capsys.readouterr().out
+    assert out == f"Stopped at plan: registry auth file {login} is not usable\n"
+    assert "c3ludGhldGlj" not in out
+    assert runner.calls == []
+    assert len(made) == 1 and not Path(made[0]).exists()
 
 
 # --- apply -------------------------------------------------------------------------------

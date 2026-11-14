@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import io
 import json
+import os
 import shlex
 import stat
 from collections.abc import Callable, Mapping, Sequence
@@ -555,6 +557,93 @@ def test_cli_takes_no_target_arguments(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as caught:
         rs.main(argv, runner)
     assert caught.value.code == 2
+    assert runner.every_argv == []
+
+
+# A synthetic docker login; "c3ludGhldGlj" is base64 of "synthetic". Never printed by a check.
+REGISTRY_LOGIN = b'{"auths": {"ghcr.io": {"auth": "c3ludGhldGlj"}}}\n'
+
+
+def spy_docker_config(
+    runner: ResetFake, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[Path], list[tuple[int, list[str], int | None, bool]]]:
+    """Record, at every call that gets an env, the docker config directory as it is then."""
+    dirs: list[Path] = []
+    seen: list[tuple[int, list[str], int | None, bool]] = []
+    real_run = runner.run
+
+    def run(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        input: str | None = None,  # noqa: A002
+    ) -> Completed:
+        if env is not None:
+            directory = Path(env["DOCKER_CONFIG"])
+            copied = directory / "config.json"
+            dirs.append(directory)
+            seen.append(
+                (
+                    stat.S_IMODE(directory.stat().st_mode),
+                    os.listdir(directory),
+                    stat.S_IMODE(copied.stat().st_mode) if copied.exists() else None,
+                    copied.exists() and copied.read_bytes() == REGISTRY_LOGIN,
+                )
+            )
+        return real_run(argv, env=env, input=input)
+
+    monkeypatch.setattr(runner, "run", run)
+    return dirs, seen
+
+
+def test_reset_docker_config_dir_is_empty_private_and_removed(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = reset_runner()
+    dirs, seen = spy_docker_config(runner, monkeypatch)
+    assert rs.main(["plan"], runner) == 0
+    capsys.readouterr()
+    assert seen
+    assert all(entry == (0o700, [], None, False) for entry in seen)
+    assert len(set(dirs)) == 1
+    assert not dirs[0].exists()
+
+
+def test_reset_docker_config_dir_holds_the_registry_login_when_one_is_configured(
+    reset_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    login = tmp_path / "registry" / "config.json"
+    login.parent.mkdir()
+    login.write_bytes(REGISTRY_LOGIN)
+    monkeypatch.setattr(rs, "STAGING", dataclasses.replace(rs.STAGING, registry_auth=login))
+    runner = reset_runner()
+    dirs, seen = spy_docker_config(runner, monkeypatch)
+    assert rs.main(["plan"], runner) == 0
+    capsys.readouterr()
+    assert seen
+    assert all(entry == (0o700, ["config.json"], 0o600, True) for entry in seen)
+    assert len(set(dirs)) == 1
+    assert not dirs[0].exists()
+
+
+def test_reset_stops_on_an_unusable_registry_login_and_names_only_the_path(
+    reset_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    login = tmp_path / "registry" / "config.json"
+    login.parent.mkdir()
+    login.write_text("c3ludGhldGlj")
+    monkeypatch.setattr(rs, "STAGING", dataclasses.replace(rs.STAGING, registry_auth=login))
+    runner = reset_runner()
+    assert rs.main(["plan"], runner) == 1
+    out = capsys.readouterr().out
+    assert out == f"Stopped at plan: registry auth file {login} is not usable\n"
+    assert "c3ludGhldGlj" not in out
     assert runner.every_argv == []
 
 

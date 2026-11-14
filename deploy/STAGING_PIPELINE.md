@@ -137,6 +137,16 @@ with `N passed, M failed`; it never prints a prompt, model text or address. Exit
 1 is a failure and 2 is a setup error such as no model key. It is owner-triggered and never runs in
 CI.
 
+**Optional registry login.** `staging_rollout` and `staging_reset` pull through a temporary,
+private Docker config. If `/srv/csa-staging/registry/config.json` exists, they copy it into that
+config (mode 0600, removed with it when the run ends) before any pull, so the pulls use its
+login; without the file the pulls stay anonymous, as today. It is a Docker auth file (a JSON
+object with an `auths` object) holding a read-only registry login (`read:packages` only),
+readable only by the user who runs the rollout (mode 0600). A file that is empty, unreadable or
+not such an object stops the run with `Stopped at plan: registry auth file <path> is not
+usable`; the content is never printed. Never commit it. It is needed only once the images are
+private.
+
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose
 reads them.

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from psycopg import AsyncConnection
+from scripts import registry_auth
+from scripts.rollout_targets import PRODUCTION, STAGING
 
 from tests import shard
 
@@ -227,3 +229,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     kept, dropped = shard.select(items, spec)
     config.hook.pytest_deselected(items=dropped)
     items[:] = kept
+
+
+# The rollout scripts read an optional registry login from a fixed host path. This host may be
+# the staging server, so a test must never see the real file, whatever target it builds: both
+# host paths read as a file that does not exist. A test that wants a login names its own file.
+_HOST_REGISTRY_LOGINS = frozenset({STAGING.registry_auth, PRODUCTION.registry_auth})
+
+
+@pytest.fixture(autouse=True)
+def _no_host_registry_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    absent = tmp_path_factory.getbasetemp() / "no-registry-login" / "config.json"
+    real: Callable[[Path, Path], bool] = registry_auth.install
+
+    def install(docker_config: Path, source: Path) -> bool:
+        return real(docker_config, absent if source in _HOST_REGISTRY_LOGINS else source)
+
+    monkeypatch.setattr(registry_auth, "install", install)
