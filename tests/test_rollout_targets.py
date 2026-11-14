@@ -177,7 +177,7 @@ def test_groq_url_is_in_no_allow_list() -> None:
 def test_production_env_file_loads() -> None:
     path = sr.REPO_ROOT / PRODUCTION.flags_file
     flags = sr.load_flags(path, PRODUCTION)
-    assert flags.keys() == SIX_SWITCHES
+    assert flags.keys() == SIX_SWITCHES | {"CSA_STAGING_TRAINING_VIDEO", "CSA_PROD_S3_TRAINING_KEY"}
     assert flags == {
         "CSA_STAGING_WORKSPACE_ASSISTANT": "true",
         "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_model_key",
@@ -185,6 +185,8 @@ def test_production_env_file_loads() -> None:
         "CSA_STAGING_EMAIL_ASSISTANT": "true",
         "CSA_STAGING_BOOKINGS_GOOGLE_CALENDAR": "true",
         "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "true",
+        "CSA_STAGING_TRAINING_VIDEO": "true",
+        "CSA_PROD_S3_TRAINING_KEY": "prod_s3_training",
     }
     text = path.read_text(encoding="utf-8")
     assert not any(marker in text for marker in ("http", "://", ".fourstacks"))
@@ -193,9 +195,19 @@ def test_production_env_file_loads() -> None:
 # --- the optional Jev switches, for every target -----------------------------------------------
 
 
+VIDEO_KEYS = ("CSA_STAGING_TRAINING_VIDEO=", "CSA_PROD_S3_TRAINING_KEY=")
+
+
+def without_video_lines(text: str) -> str:
+    """The switch file minus its training-video lines, so a test can add its own."""
+    return "".join(
+        line for line in text.splitlines(keepends=True) if not line.startswith(VIDEO_KEYS)
+    )
+
+
 def production_flags_with(tmp_path: Path, *lines: str) -> Path:
-    """The real production switch file plus ``lines``."""
-    text = (sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8")
+    """The real production switch file, without its video lines, plus ``lines``."""
+    text = without_video_lines((sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8"))
     path = tmp_path / "production-rollout.env"
     path.write_text(text + "".join(f"{line}\n" for line in lines), encoding="utf-8")
     return path
