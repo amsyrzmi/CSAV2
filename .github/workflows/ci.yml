@@ -235,8 +235,18 @@ jobs:
             # shellcheck disable=SC2086
             uv run pytest $changed
           else
-            CSA_TEST_SHARD="$SHARD/$SHARD_TOTAL" uv run pytest
+            CSA_TEST_SHARD="$SHARD/$SHARD_TOTAL" uv run pytest --junitxml="junit-shard-$SHARD.xml"
           fi
+
+      # The per-file seconds behind the shard split (tests/shard_durations.json); refresh
+      # procedure in AGENTS.md "Dev commands". Sharded runs only; shard 0 (changed files) has none.
+      - name: Upload test timings
+        if: ${{ always() && matrix.shard != 0 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings-shard-${{ matrix.shard }}
+          path: junit-shard-${{ matrix.shard }}.xml
+          retention-days: 30
 
   frontend:
     runs-on: ubuntu-latest

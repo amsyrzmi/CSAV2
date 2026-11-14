@@ -68,6 +68,13 @@ rules they set that are still enforced are under "Migration and contract rules".
 - `make stop-gateway`: stop any running dev gateway process on port 18080.
 - `make restart-gateway`: stop any running dev gateway and start a fresh one.
 - `make down`: stop the isolated dev Postgres (separate from any production database).
+- CI test shards: the full suite on `main` is split into shards by whole test file, weighted
+  by the seconds in `tests/shard_durations.json` (a file with no entry weighs its test count,
+  scaled to match). To refresh it, download the `test-timings-shard-*` artifacts of a
+  successful `main` run (`gh run download <run-id> -p 'test-timings-shard-*'`), then run
+  `uv run python -m scripts.shard_durations merge <each junit-shard-N.xml> --out tests/shard_durations.json`
+  and `uv run python -m scripts.shard_durations report --counts 4,6,8` to choose the shard
+  count, and commit the file in a reviewed pull request. A malformed file fails the run.
 
 ## Definition of done
 
