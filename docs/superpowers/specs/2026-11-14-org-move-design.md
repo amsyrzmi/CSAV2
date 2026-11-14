@@ -176,12 +176,14 @@ any deletion):
 - Delete only after Stage A step 9 and only the SHA-tagged versions outside the keep set, in the old user packages.
   The current token has no `delete:packages` scope, so the owner runs the deletion from a list the assistant
   writes (versions, digests, why each is outside the keep set); the assistant deletes nothing itself.
-- Pruning in the publish workflow (keep the newest 20) is part of P5, so storage stops growing.
+- Ruling (plan 2026-11-14): no automatic pruning in the publish workflow. Whether the workflow token may delete package
+  versions is unverified, and an automatic delete could remove a rollback target. Instead a read-only keep-list script
+  (P5) prints what is safe to delete (newest 20 plus every staged SHA); the owner runs the deletion.
 
 ## 7. Calls made by the assistant (the owner can overrule)
 
 - Registry namespace is lowercase `ghcr.io/fourstacksplt`, set by a variable rather than computed.
-- P5 (L1, L2, and the publish-workflow pruning of L6) is a fifth prep pull request, built after P1 to P4; L3, L4, L5
+- P5 (L1, L2, and the read-only keep list of L6) is the third prep pull request (P1, P2 and P4 are PR 1, P3 is PR 2; plan `2026-11-14-org-move-prep.md`); L3, L4, L5
   wait for the measurements named in the table.
 - The new design file is separate from the parent design so it can merge independently of the open shard pull
   request, which carries the parent's update.
