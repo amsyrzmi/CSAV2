@@ -1,7 +1,11 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api, post, patch } from "@/lib/api";
+import { fetchOverview, type AdminOverviewOut } from "@/lib/billing-admin-api";
+import { currentPlanOf, planStatus } from "@/lib/billing-admin-view";
 import type { Agent, Capability, Client } from "@/lib/identity-contracts";
+import { PlanEditor } from "./billing/PlanEditor";
 import { action, field, Heading, Notice, Panel } from "./ui";
 
 export function ClientManagement() {
@@ -14,6 +18,25 @@ export function ClientManagement() {
   const [timezone, setTimezone] = useState("Asia/Kuala_Lumpur");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // The open cycle's overview: the only place each tenant's current plan is read from. Until it
+  // loads (or if it fails, or does not list the tenant) the plan editor treats the plan as unknown.
+  const [overview, setOverview] = useState<AdminOverviewOut | null>(null);
+  const [overviewRead, setOverviewRead] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchOverview(null, controller.signal)
+      .then((found) => {
+        if (controller.signal.aborted) return;
+        setOverview(found);
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        // Unknown, not guessed: the editor says so and asks for an explicit choice.
+        setOverview(null);
+      });
+    return () => controller.abort();
+  }, [overviewRead]);
+  const rereadPlans = () => setOverviewRead((value) => value + 1);
   useEffect(() => {
     let live = true;
     api<Client[]>("/console/v1/admin/clients")
@@ -27,6 +50,7 @@ export function ClientManagement() {
       live = false;
     };
   }, []);
+  const plan = selected ? currentPlanOf(overview, selected) : null;
   async function select(id: string) {
     selection.current = id;
     setSelected(id);
@@ -56,6 +80,7 @@ export function ClientManagement() {
       setClients((previous) => [...(previous ?? []), row]);
       setName("");
       setSlug("");
+      rereadPlans();
       await select(row.id);
     } catch (cause) {
       setError((cause as Error).message);
@@ -218,6 +243,23 @@ export function ClientManagement() {
                   })}
                 </ul>
               )}
+            </Panel>
+          )}
+          {selected && (
+            <Panel title="Billing plan">
+              <p className="mb-5 text-sm text-ink-600">
+                The stage and bundle this tenant is billed on. Its usage and bill
+                are on the <Link href="/billing" className="underline underline-offset-2">Billing</Link> page.
+                {plan && <span className="mt-1 block" data-testid="tenant-plan-now">Now: {planStatus(plan)}</span>}
+              </p>
+              <PlanEditor
+                // A new key when the plan becomes known (or unknown), so the form starts from it.
+                key={`${selected}:${plan ? "known" : "unknown"}`}
+                clientId={selected}
+                name={clients?.find((client) => client.id === selected)?.name ?? "This tenant"}
+                current={plan}
+                onSaved={rereadPlans}
+              />
             </Panel>
           )}
         </div>

@@ -44,6 +44,8 @@ from csa.marketplace.processor import (
     marketplace_sync_loop,
 )
 from csa.marketplace.reads import LiveReadAccess, live_read_access
+from csa.metering.context import MeterContext, meter_context
+from csa.metering.meter import LedgerMeter
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.storage.base import ObjectStore
@@ -260,12 +262,22 @@ class IngressWorker:
         if envelope.callback is None:
             async with tx(self._app_pool, str(item.client_id)) as conn:
                 await self._persist_inbound(conn, item, envelope)
-        await process_turn(
-            envelope,
-            runtime.deps,
-            checkpointer=runtime.checkpointer,
-            graph=runtime.graph,
+        # Every model call of the turn is booked to the event's own trace: a redelivered or
+        # resumed event reuses it, so the turn counts once however often it runs. The graph's
+        # nodes inherit this binding (LangGraph starts them as tasks, which copy the context).
+        turn = MeterContext(
+            client_id=item.client_id,
+            trace_id=envelope.trace_id,
+            job="customer_turn",
+            conversation_id=envelope.conversation.id,
         )
+        with meter_context(turn):
+            await process_turn(
+                envelope,
+                runtime.deps,
+                checkpointer=runtime.checkpointer,
+                graph=runtime.graph,
+            )
         async with tx(self._app_pool, str(item.client_id)) as conn:
             completed = await db.q.fetch_one(
                 "worker/complete_ingress.sql",
@@ -614,9 +626,11 @@ async def run_until_stopped(
     llm_http: httpx.AsyncClient,
     deps: PostgresTurnDependencies | None,
     pools: Sequence[_Closable],
+    langfuse: LangfuseSink | None = None,
 ) -> None:
     """Run `work` until it ends or the process is told to stop, then shut down in order: the
-    background tasks, the HTTP client, the booking mail still on its way, and last the pools.
+    background tasks, the HTTP client, the booking mail still on its way, the pools, and last
+    the Langfuse spans still queued.
 
     Once shutdown has begun, a second SIGTERM or SIGINT is logged and ignored, so it can't cut the
     drain or the pool close short.
@@ -627,7 +641,11 @@ async def run_until_stopped(
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         await llm_http.aclose()
-        await drain_then_close(deps, *pools)
+        try:
+            await drain_then_close(deps, *pools)
+        finally:
+            if langfuse is not None:
+                await langfuse.aclose()
 
     await run_until_signalled(work, shut_down)
 
@@ -713,6 +731,19 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     await app_pool.open(wait=True)
     await checkpoint_pool.open(wait=True)
     llm_http = httpx.AsyncClient()
+    # Langfuse (OTLP), only with both keys: graph node events and one generation per model call.
+    langfuse_sink = (
+        LangfuseSink(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+        )
+        if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
+        else None
+    )
+    # One ledger meter for the worker: every provider client below books its token usage to it,
+    # and each call is mirrored to Langfuse as a generation when the sink is configured.
+    meter = LedgerMeter(app_pool, mirror=langfuse_sink)
     # One mailer for the worker, built once: booking mail after a turn, and the reminder job.
     mailer = Mailer.from_settings(settings)
     coordinator: CoordinatorRuntime | None = None
@@ -723,6 +754,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 settings.GOOGLE_AI_API_KEY.get_secret_value(),
                 settings.GOOGLE_AI_MODEL,
                 llm_http,
+                meter=meter,
             )
             if settings.GOOGLE_AI_API_KEY is not None
             else None
@@ -733,18 +765,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 settings.GROQ_MODEL,
                 llm_http,
                 str(settings.GROQ_CHAT_URL),
+                meter=meter,
             ),
             compose_fallback=compose_fallback,
-        )
-        langfuse_sink = (
-            LangfuseSink(
-                public_key=settings.LANGFUSE_PUBLIC_KEY,
-                secret_key=settings.LANGFUSE_SECRET_KEY,
-                base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
-                http_client=llm_http,
-            )
-            if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
-            else None
         )
         turn_deps = build_turn_dependencies(settings, app_pool, llm, llm_http, mailer=mailer)
         coordinator = build_runtime(
@@ -813,6 +836,7 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         llm_http=llm_http,
         deps=turn_deps,
         pools=(checkpoint_pool, app_pool, owner_pool),
+        langfuse=langfuse_sink,
     )
 
 

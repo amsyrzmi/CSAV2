@@ -26,6 +26,7 @@ from csa.email.service import EmailService
 from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
+from csa.metering.meter import NullMeter
 from csa.workspace import registry as registry_module
 from csa.workspace.contracts import CardField, Language, ProposalKind
 from csa.workspace.executors import _CARD_TEXT, build_proposal_registry
@@ -1053,7 +1054,8 @@ def _hr_assistant(w: SessionWorld, action: dict[str, Any]) -> httpx.AsyncClient:
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(provider))
     w.app.state.hr_assistant = HrAssistant(
-        w.app.state.hr_service, GroqClient("synthetic-key", "synthetic-model", http)
+        w.app.state.hr_service,
+        GroqClient("synthetic-key", "synthetic-model", http, meter=NullMeter()),
     )
     return http
 

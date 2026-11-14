@@ -11,6 +11,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from csa.decide.completion import CompletionError
+from csa.metering.meter import Usage, UsageMeter
 
 logger = structlog.get_logger(__name__)
 
@@ -25,10 +26,13 @@ _UNSUPPORTED_SCHEMA = "gemini_unsupported_schema"
 class GeminiClient:
     """Call the Gemini generateContent API with validated JSON output."""
 
-    def __init__(self, api_key: str, model: str, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, api_key: str, model: str, http_client: httpx.AsyncClient, *, meter: UsageMeter
+    ) -> None:
         self._api_key = api_key
         self.model = model
         self._http = http_client
+        self._meter = meter
 
     async def json_completion(
         self,
@@ -39,6 +43,8 @@ class GeminiClient:
         timeout: float,
         max_tokens: int = 1500,
     ) -> T:
+        # Fail before any spend: a call with no company bound to it never reaches the provider.
+        self._meter.require_context()
         generation_config: dict[str, Any] = {
             "temperature": 0,
             "maxOutputTokens": max_tokens,
@@ -74,6 +80,11 @@ class GeminiClient:
                 if attempt + 1 < ATTEMPTS and deadline - time.monotonic() > _MIN_ATTEMPT_S:
                     continue
                 raise CompletionError("gemini_transport_error") from exc
+            # Every response that reports usage was billed, including one that is retried or
+            # whose reply fails validation below.
+            usage = _usage(response, self.model, schema.__name__)
+            if usage is not None:
+                await self._meter.record(usage)
             if (
                 response.status_code in _RETRYABLE
                 and attempt + 1 < ATTEMPTS
@@ -97,6 +108,41 @@ class GeminiClient:
             latency_ms=round((time.monotonic() - started) * 1000),
         )
         return parsed
+
+
+def _count(value: object) -> int | None:
+    """A non-negative integer token count, or None (a bool is not a count)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _usage(response: httpx.Response, model: str, schema_name: str) -> Usage | None:
+    """The token usage a response reports, or None when it carries none.
+
+    Output tokens are the candidates plus the thinking tokens, both billed as output. Gemini
+    leaves a count out when it is zero (thinking can use the whole output budget), so only the
+    prompt count is required. A block that is present but unusable is logged by shape only, and
+    never raises: reading usage must not break the call it measures.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    block = body.get("usageMetadata") if isinstance(body, dict) else None
+    if block is None:
+        return None
+    prompt = candidates = thoughts = None
+    if isinstance(block, dict):
+        prompt = _count(block.get("promptTokenCount"))
+        candidates = _count(block.get("candidatesTokenCount", 0))
+        thoughts = _count(block.get("thoughtsTokenCount", 0))
+    if prompt is None or candidates is None or thoughts is None:
+        logger.warning(
+            "usage_block_unusable", provider="gemini", model=model, status=response.status_code
+        )
+        return None
+    return Usage("gemini", model, prompt, candidates + thoughts, schema_name)
 
 
 def _response_schema(schema: dict[str, Any]) -> dict[str, Any]:

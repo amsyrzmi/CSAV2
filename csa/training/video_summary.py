@@ -37,6 +37,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any
+from uuid import uuid4
 
 import structlog
 from psycopg.types.json import Jsonb
@@ -44,6 +45,7 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
 from csa.core import db
 from csa.decide.completion import CompletionError, JsonCompletionClient
+from csa.metering.context import MeterContext, meter_context
 from csa.training.limits import SUMMARY_MAX_CHARS, SUMMARY_PART_CHARS
 from csa.training.summary import (
     KEY_POINT_MAX_CHARS,
@@ -365,9 +367,13 @@ class SummaryStage:
                 raise JobLost
 
         try:
-            draft = await summarise_transcript(
-                self._model, rows, _saved(claim.parts), save, context=context
-            )
+            # One video summary (its map calls and the reduce) is one execution of the company.
+            with meter_context(
+                MeterContext(client_id=claim.client_id, trace_id=uuid4(), job="training_summary")
+            ):
+                draft = await summarise_transcript(
+                    self._model, rows, _saved(claim.parts), save, context=context
+                )
         except (TimeoutError, CompletionError, ValidationError) as failure:
             code = failure.code if isinstance(failure, CompletionError) else None
             logger.warning(

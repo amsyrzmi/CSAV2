@@ -24,10 +24,12 @@ import httpx
 import structlog
 from csa.agents.kb.embedder import DefaultKbEmbedder
 from csa.core import db
+from csa.core.langfuse import LangfuseSink
 from csa.core.liveness import TRAINING_WORKER_ALIVE_PATH, liveness_loop
 from csa.core.settings import KEY_PLACEHOLDERS, Settings, get_settings
 from csa.core.shutdown import run_until_signalled
 from csa.decide.groq import GroqClient
+from csa.metering.meter import LedgerMeter
 from csa.speech import SpeechTranscriber
 from csa.storage.base import ObjectStore
 from csa.storage.factory import Stores, build_stores, verify_stores
@@ -140,6 +142,18 @@ async def main() -> None:
     await owner_pool.open(wait=True)
     await app_pool.open(wait=True)
     http = httpx.AsyncClient()
+    # Langfuse (OTLP), only with both keys: the worker's summary calls are mirrored like the rest.
+    langfuse_sink = (
+        LangfuseSink(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+        )
+        if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY
+        else None
+    )
+    # Every summary call books its token usage to the company's ledger (job training_summary).
+    meter = LedgerMeter(app_pool, mirror=langfuse_sink)
     speech_key = settings.voice_transcription_key()
     if not isinstance(store, MultipartStore):  # prepare_training_store refused it already
         raise RuntimeError("the training store cannot take video uploads")
@@ -159,6 +173,7 @@ async def main() -> None:
                 settings.GROQ_MODEL,
                 http,
                 str(settings.GROQ_CHAT_URL),
+                meter=meter,
             )
         ),
     )
@@ -175,6 +190,8 @@ async def main() -> None:
         await http.aclose()
         await app_pool.close()
         await owner_pool.close()
+        if langfuse_sink is not None:
+            await langfuse_sink.aclose()
 
     logger.info("training_worker_started", outcome="running")
     await run_until_signalled(

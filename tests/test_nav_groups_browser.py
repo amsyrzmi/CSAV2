@@ -141,6 +141,7 @@ TENANT_LABELS = (
     "Payments",
     "Connections",
     "Team",
+    "Credit",
     "Password",
 )
 THEMES = ("cobalt", "night", "bureau")

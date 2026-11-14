@@ -840,6 +840,176 @@
         "title": "ActivateIn",
         "type": "object"
       },
+      "AdminCompanyOut": {
+        "additionalProperties": false,
+        "description": "One company's cycle, for the platform admin only.\n\n``status`` is the service's (``ok``, ``pending_prices``, ``not_set_up``); ``stage`` and\n``bundle`` are the plan that bills the cycle, ``None`` when nothing is billed (not set up, or\nafter a termination). ``executions`` counts the billed window's executions, priced or not.\n``raw_cost_rm`` is the provider cost of the priced executions (RM0.0001, half up);\n``ai_margin_rm`` is ``ai_charge - raw_cost_rm`` computed exactly and rounded to RM0.01;\n``cost_per_execution_rm`` is the raw cost over the priced executions, ``None`` when none is\npriced, beside the workbook's assumed cost per message.\n\n``terminated_on`` is the earliest termination date in the plan history (``None`` if none);\n``usage_after_termination`` and ``usage_without_plan`` count the cycle's executions from that\ndate, and before the plan starts (the whole cycle when not set up); neither is billed.\n``warnings``: ``pilot_ended`` is evaluated for today (the Kuala Lumpur date), not for the\nselected cycle, since it asks for an action now; the others describe the selected cycle\n(``usage_before_plan``: executions before the join date in a set-up cycle, not billed).",
+        "properties": {
+          "ai_charge": {
+            "title": "Ai Charge",
+            "type": "string"
+          },
+          "ai_margin_rm": {
+            "title": "Ai Margin Rm",
+            "type": "string"
+          },
+          "billed_total": {
+            "title": "Billed Total",
+            "type": "string"
+          },
+          "bundle": {
+            "anyOf": [
+              {
+                "enum": [
+                  "individual",
+                  "curated",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_per_execution_rm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Execution Rm"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platform_fee": {
+            "title": "Platform Fee",
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "raw_cost_rm": {
+            "title": "Raw Cost Rm",
+            "type": "string"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pilot",
+                  "collaborator",
+                  "terminated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "pending_prices",
+              "not_set_up"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "terminated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminated On"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          },
+          "unpriced_executions": {
+            "title": "Unpriced Executions",
+            "type": "integer"
+          },
+          "usage_after_termination": {
+            "title": "Usage After Termination",
+            "type": "integer"
+          },
+          "usage_without_plan": {
+            "title": "Usage Without Plan",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "enum": [
+                "pilot_ended",
+                "usage_after_termination",
+                "not_set_up_with_usage",
+                "usage_before_plan",
+                "pending_prices"
+              ],
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "workbook_cost_per_message_rm": {
+            "title": "Workbook Cost Per Message Rm",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "name",
+          "status",
+          "stage",
+          "bundle",
+          "executions",
+          "prompt_tokens",
+          "completion_tokens",
+          "raw_cost_rm",
+          "ai_charge",
+          "platform_fee",
+          "billed_total",
+          "ai_margin_rm",
+          "cost_per_execution_rm",
+          "workbook_cost_per_message_rm",
+          "unpriced_calls",
+          "unpriced_executions",
+          "usage_without_plan",
+          "usage_after_termination",
+          "terminated_on",
+          "warnings"
+        ],
+        "title": "AdminCompanyOut",
+        "type": "object"
+      },
       "AdminEmployee": {
         "additionalProperties": false,
         "properties": {
@@ -973,6 +1143,41 @@
           "employment_category"
         ],
         "title": "AdminEmployee",
+        "type": "object"
+      },
+      "AdminOverviewOut": {
+        "additionalProperties": false,
+        "description": "Every company for one cycle, ordered by name (``final`` is false for the open cycle).",
+        "properties": {
+          "companies": {
+            "items": {
+              "$ref": "#/components/schemas/AdminCompanyOut"
+            },
+            "title": "Companies",
+            "type": "array"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cycle_start",
+          "cycle_end",
+          "final",
+          "companies"
+        ],
+        "title": "AdminOverviewOut",
         "type": "object"
       },
       "AdminUserOut": {
@@ -1154,6 +1359,36 @@
           "enabled"
         ],
         "title": "AgentSwitch",
+        "type": "object"
+      },
+      "AgentUsageOut": {
+        "additionalProperties": false,
+        "description": "One AI agent's executions in the cycle (priced or not) and their allocated price.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "title",
+          "executions",
+          "price"
+        ],
+        "title": "AgentUsageOut",
         "type": "object"
       },
       "AnswerResult": {
@@ -1552,6 +1787,262 @@
           "remaining"
         ],
         "title": "BalanceRecord",
+        "type": "object"
+      },
+      "BillingFxIn": {
+        "additionalProperties": false,
+        "description": "A USD to MYR rate from ``effective_from`` (timezone required).",
+        "properties": {
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "usd_to_myr": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 1000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Usd To Myr"
+          }
+        },
+        "required": [
+          "usd_to_myr",
+          "effective_from"
+        ],
+        "title": "BillingFxIn",
+        "type": "object"
+      },
+      "BillingFxOut": {
+        "additionalProperties": false,
+        "description": "The stored FX row.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "usd_to_myr": {
+            "title": "Usd To Myr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usd_to_myr",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingFxOut",
+        "type": "object"
+      },
+      "BillingPlanIn": {
+        "additionalProperties": false,
+        "description": "A new plan row. ``bundle`` may be left out only for a termination, which then keeps the\nbundle of the company's latest non-terminated row.",
+        "properties": {
+          "bundle": {
+            "anyOf": [
+              {
+                "enum": [
+                  "individual",
+                  "curated",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pilot",
+              "collaborator",
+              "terminated"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "effective_from",
+          "reason"
+        ],
+        "title": "BillingPlanIn",
+        "type": "object"
+      },
+      "BillingPlanOut": {
+        "additionalProperties": false,
+        "description": "The stored plan row.",
+        "properties": {
+          "bundle": {
+            "enum": [
+              "individual",
+              "curated",
+              "complete"
+            ],
+            "title": "Bundle",
+            "type": "string"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "stage": {
+            "enum": [
+              "pilot",
+              "collaborator",
+              "terminated"
+            ],
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "stage",
+          "bundle",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingPlanOut",
+        "type": "object"
+      },
+      "BillingPriceIn": {
+        "additionalProperties": false,
+        "description": "A model price in USD per million tokens, from ``effective_from`` (timezone required).\n\n``provider`` must be one the ledger records (``LEDGER_PROVIDERS``: ``groq``, ``gemini``), else\nthe route answers 422 ``unknown_provider``; ``model`` is matched exactly, case included.",
+        "properties": {
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 100000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Input Usd Per Mtok"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Model",
+            "type": "string"
+          },
+          "output_usd_per_mtok": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 100000.0,
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Output Usd Per Mtok"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^\\S(?:.*\\S)?$",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "effective_from"
+        ],
+        "title": "BillingPriceIn",
+        "type": "object"
+      },
+      "BillingPriceOut": {
+        "additionalProperties": false,
+        "description": "The stored price row.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "input_usd_per_mtok": {
+            "title": "Input Usd Per Mtok",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_usd_per_mtok": {
+            "title": "Output Usd Per Mtok",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "input_usd_per_mtok",
+          "output_usd_per_mtok",
+          "effective_from",
+          "created_at"
+        ],
+        "title": "BillingPriceOut",
         "type": "object"
       },
       "BookingActionIn": {
@@ -5350,6 +5841,66 @@
           "warnings"
         ],
         "title": "CustomerRepliesOut",
+        "type": "object"
+      },
+      "CyclePickOut": {
+        "additionalProperties": false,
+        "description": "A cycle for the picker: its bill total (``None`` when not set up) and whether it is final.",
+        "properties": {
+          "end": {
+            "format": "date",
+            "title": "End",
+            "type": "string"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          },
+          "start": {
+            "format": "date",
+            "title": "Start",
+            "type": "string"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "total",
+          "final"
+        ],
+        "title": "CyclePickOut",
+        "type": "object"
+      },
+      "DailyUsageOut": {
+        "additionalProperties": false,
+        "description": "The allocated price of the executions that started on ``day`` (Kuala Lumpur date).",
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "price"
+        ],
+        "title": "DailyUsageOut",
         "type": "object"
       },
       "DecideIn": {
@@ -9506,6 +10057,93 @@
           "resolved"
         ],
         "title": "KbGapOut",
+        "type": "object"
+      },
+      "LangfuseCheckOut": {
+        "additionalProperties": false,
+        "description": "One company's ledger tokens for a cycle against Langfuse's, for the platform admin only.\n\nBoth sides cover ``[cycle_start 00:00 KL, checked_until)``: the whole cycle once it has\nclosed, else up to a few minutes ago (usage that recent may not have reached Langfuse yet).\nThe ledger side is every recorded call in that window, billed or not (usage before a plan or\nafter a termination included), since every call is mirrored. ``result``: ``match`` when input\nand output each agree within 1% or 100 tokens, whichever is larger; ``drift`` otherwise (with\nthe warning ``langfuse_drift``); ``unavailable`` when Langfuse is not configured, not reachable\nor answered an error (its figures are then ``None``). The ledger is the authority: no billed\nfigure depends on this.",
+        "properties": {
+          "checked_until": {
+            "format": "date-time",
+            "title": "Checked Until",
+            "type": "string"
+          },
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "langfuse_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Langfuse Input Tokens"
+          },
+          "langfuse_output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Langfuse Output Tokens"
+          },
+          "ledger_input_tokens": {
+            "title": "Ledger Input Tokens",
+            "type": "integer"
+          },
+          "ledger_output_tokens": {
+            "title": "Ledger Output Tokens",
+            "type": "integer"
+          },
+          "result": {
+            "enum": [
+              "match",
+              "drift",
+              "unavailable"
+            ],
+            "title": "Result",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "const": "langfuse_drift",
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "client_id",
+          "cycle_start",
+          "cycle_end",
+          "checked_until",
+          "result",
+          "ledger_input_tokens",
+          "ledger_output_tokens",
+          "langfuse_input_tokens",
+          "langfuse_output_tokens",
+          "warnings"
+        ],
+        "title": "LangfuseCheckOut",
         "type": "object"
       },
       "LastChange": {
@@ -16966,6 +17604,118 @@
         "title": "UploadOut",
         "type": "object"
       },
+      "UsageOut": {
+        "additionalProperties": false,
+        "description": "One cycle's usage and bill for the Credit tab.\n\n``billed_from`` and ``billed_to`` (exclusive) are the billed window, ``None`` when billing is\nnot set up or the company was terminated before the cycle. ``executions`` counts every\nexecution in the window, priced or not. ``final`` is false for the open cycle (the bill so\nfar). ``status`` ``pending_prices`` means some usage is still being priced and is left out of\n``ai_usage_price``; ``not_set_up`` has every figure zero. ``terminated_on`` is the date the\ncompany's plan ended when that is before ``cycle_end`` (this cycle holds the final period, or\nthe plan ended before it), else ``None``: a date only, no reason.",
+        "properties": {
+          "ai_usage_price": {
+            "title": "Ai Usage Price",
+            "type": "string"
+          },
+          "billed_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed From"
+          },
+          "billed_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billed To"
+          },
+          "by_agent": {
+            "items": {
+              "$ref": "#/components/schemas/AgentUsageOut"
+            },
+            "title": "By Agent",
+            "type": "array"
+          },
+          "cycle_end": {
+            "format": "date",
+            "title": "Cycle End",
+            "type": "string"
+          },
+          "cycle_start": {
+            "format": "date",
+            "title": "Cycle Start",
+            "type": "string"
+          },
+          "daily": {
+            "items": {
+              "$ref": "#/components/schemas/DailyUsageOut"
+            },
+            "title": "Daily",
+            "type": "array"
+          },
+          "executions": {
+            "title": "Executions",
+            "type": "integer"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          },
+          "platform_fee": {
+            "title": "Platform Fee",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "pending_prices",
+              "not_set_up"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "terminated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminated On"
+          },
+          "total": {
+            "title": "Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cycle_start",
+          "cycle_end",
+          "billed_from",
+          "billed_to",
+          "executions",
+          "ai_usage_price",
+          "platform_fee",
+          "total",
+          "final",
+          "status",
+          "by_agent",
+          "daily",
+          "terminated_on"
+        ],
+        "title": "UsageOut",
+        "type": "object"
+      },
       "UserOut": {
         "additionalProperties": false,
         "properties": {
@@ -18950,6 +19700,390 @@
         "tags": [
           "console identity"
         ]
+      }
+    },
+    "/console/v1/billing/admin/clients/{client_id}/langfuse-check": {
+      "get": {
+        "description": "One company's ledger tokens for a cycle against Langfuse's. Platform admin only.\n\nAsked for on demand (one Langfuse request per call; Langfuse Cloud rate-limits its\nMetrics API), never by the overview. ``cycle`` follows the overview's rules (default the\ncurrent cycle; 422 off a 5th, 404 in the future); an unknown company is 404. A Langfuse\nthat is unset, unreachable or failing is ``unavailable``, never an error status: the\ncheck only reports and changes no figure.",
+        "operationId": "langfuse_check_console_v1_billing_admin_clients__client_id__langfuse_check_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseCheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Langfuse Check"
+      }
+    },
+    "/console/v1/billing/admin/clients/{client_id}/plan": {
+      "post": {
+        "description": "Insert a plan row (audited). A broken plan rule is 422 with its code as ``detail``.\n\nA termination without ``bundle`` keeps the bundle of the plan in force on its date (the\nlatest non-terminated row dated on or before it), or of the latest non-terminated row when\nnone is (the rules then refuse a termination before the join date).",
+        "operationId": "add_plan_console_v1_billing_admin_clients__client_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingPlanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPlanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Plan"
+      }
+    },
+    "/console/v1/billing/admin/fx": {
+      "post": {
+        "description": "Add a USD to MYR row (audited). Platform admin only. Shadow rule: ``effective_from`` may be before the earliest existing row (it then fills a gap of unpriced calls), or today or tomorrow (Kuala Lumpur days); anything else is 422 ``shadow_rule``. A row dated today is accepted at any time of day, so it also re-prices calls already made earlier today. A row with the same key and ``effective_from`` is 409.",
+        "operationId": "add_fx_console_v1_billing_admin_fx_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingFxIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingFxOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Fx"
+      }
+    },
+    "/console/v1/billing/admin/overview": {
+      "get": {
+        "description": "Every company's cycle: raw cost, tokens, bill and AI margin. Platform admin only.\n\n``cycle`` is the cycle's start date (a 5th; default the current cycle): 422 off a 5th,\n404 in the future.",
+        "operationId": "overview_console_v1_billing_admin_overview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOverviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Overview"
+      }
+    },
+    "/console/v1/billing/admin/prices": {
+      "post": {
+        "description": "Add a model price row (audited). Platform admin only. Shadow rule: ``effective_from`` may be before the earliest existing row (it then fills a gap of unpriced calls), or today or tomorrow (Kuala Lumpur days); anything else is 422 ``shadow_rule``. A row dated today is accepted at any time of day, so it also re-prices calls already made earlier today. A row with the same key and ``effective_from`` is 409.",
+        "operationId": "add_price_console_v1_billing_admin_prices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingPriceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPriceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Price"
+      }
+    },
+    "/console/v1/billing/usage": {
+      "get": {
+        "operationId": "usage_console_v1_billing_usage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cycle",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage"
+      }
+    },
+    "/console/v1/billing/usage/cycles": {
+      "get": {
+        "operationId": "cycles_console_v1_billing_usage_cycles_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CyclePickOut"
+                  },
+                  "title": "Response Cycles Console V1 Billing Usage Cycles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cycles"
       }
     },
     "/console/v1/bookings/availability": {

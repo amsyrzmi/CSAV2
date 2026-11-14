@@ -8,6 +8,7 @@ import psycopg
 import pytest
 from csa.decide.groq import GroqClient
 from csa.hr.assistant import HrAssistant
+from csa.metering.meter import NullMeter
 from psycopg.conninfo import make_conninfo
 from scripts.run_hr_maintenance import run_once
 
@@ -51,7 +52,8 @@ async def test_staff_chat_uses_only_typed_actions_and_replays_without_another_mo
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         world.app.state.hr_assistant = HrAssistant(
-            world.service, GroqClient("synthetic-provider-key", "synthetic-model", client)
+            world.service,
+            GroqClient("synthetic-provider-key", "synthetic-model", client, meter=NullMeter()),
         )
         key = uuid4()
         responses = await asyncio.gather(
@@ -111,7 +113,7 @@ async def test_model_cannot_turn_chat_into_human_approval_or_authority_provision
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         world.app.state.hr_assistant = HrAssistant(
-            world.service, GroqClient("synthetic", "synthetic", client)
+            world.service, GroqClient("synthetic", "synthetic", client, meter=NullMeter())
         )
         denied = await world.call(
             "manager", "POST", "/console/v1/hr/assistant", {"message": "Approve that training"}

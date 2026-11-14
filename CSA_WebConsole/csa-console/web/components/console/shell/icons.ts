@@ -13,9 +13,11 @@ import {
   LayoutDashboard,
   Mail,
   Plug,
+  Receipt,
   Users,
   UserRoundCog,
   UsersRound,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { NAV_ICONS } from "@/lib/shell-state";
@@ -36,9 +38,11 @@ const BY_NAME: Record<string, LucideIcon> = {
   LayoutDashboard,
   Mail,
   Plug,
+  Receipt,
   Users,
   UserRoundCog,
   UsersRound,
+  Wallet,
 };
 
 export function navIcon(key: NavKey): LucideIcon {

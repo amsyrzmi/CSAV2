@@ -256,6 +256,7 @@ async def _main(provider: str, out: Path, concurrency: int) -> None:
     from csa.core.settings import get_settings
     from csa.decide.groq import GroqClient
     from csa.decide.jev import JevClient, JevProvider
+    from csa.metering.meter import NullMeter
     from csa.turn.deps import CAPABILITIES, build_llm_provider
 
     settings = get_settings()
@@ -264,7 +265,12 @@ async def _main(provider: str, out: Path, concurrency: int) -> None:
     async with httpx.AsyncClient() as http:
         if provider in {"llm", "both"}:
             llm = build_llm_provider(
-                GroqClient(settings.GROQ_API_KEY.get_secret_value(), settings.GROQ_MODEL, http)
+                GroqClient(
+                    settings.GROQ_API_KEY.get_secret_value(),
+                    settings.GROQ_MODEL,
+                    http,
+                    meter=NullMeter(),
+                )
             )
             runners.append(("llm", llm, lambda: llm.version))
         if provider in {"jev", "both"}:

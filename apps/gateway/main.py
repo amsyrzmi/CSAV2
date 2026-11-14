@@ -40,6 +40,7 @@ from csa.console.router import build_router
 from csa.console.tiktok_connect import build_tiktok_connect
 from csa.console.voice_sessions import build_voice_media_router
 from csa.core.db import GATEWAY_WORKER_MAX_SIZE, build_pool
+from csa.core.langfuse import LangfuseSink
 from csa.core.logging import configure_logging, logging_health, shutdown_logging
 from csa.core.settings import Settings, get_settings
 from csa.core.tracing import configure_tracing, instrument_fastapi
@@ -53,6 +54,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.marketplace.reads import live_read_access
+from csa.metering.meter import LedgerMeter
 from csa.payments.api import build_payments_router
 from csa.storage.factory import build_stores, verify_stores
 from csa.subscriptions.api import build_subscriptions_router
@@ -166,11 +168,23 @@ def create_app() -> FastAPI:
         training_http: httpx.AsyncClient | None = None
         calendar_http: httpx.AsyncClient | None = None
         jev_http: httpx.AsyncClient | None = None
+        langfuse_sink: LangfuseSink | None = None
         try:
             # A bad bucket or root stops startup; there is no fallback to local disk.
             await verify_stores(stores)
             await pool.open(wait=True)
             app.state.pool = pool
+            # Langfuse (OTLP), only with both keys: one generation per model call, sliced by
+            # client, agent and job.
+            if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY:
+                langfuse_sink = LangfuseSink(
+                    public_key=settings.LANGFUSE_PUBLIC_KEY,
+                    secret_key=settings.LANGFUSE_SECRET_KEY,
+                    base_url=settings.LANGFUSE_BASE_URL or "https://cloud.langfuse.com",
+                )
+            # One ledger meter for the gateway: every Groq client below books its token usage to
+            # it, and mirrors each call to Langfuse when the sink is configured.
+            meter = LedgerMeter(pool, mirror=langfuse_sink)
             # Video in the training library: while off, the upload routes answer 503.
             app.state.training_video_enabled = settings.TRAINING_VIDEO_ENABLED
             # Read-only knowledge base search for batch drafts; None leaves that source off.
@@ -243,6 +257,7 @@ def create_app() -> FastAPI:
                     settings.GROQ_MODEL,
                     training_http,
                     str(settings.GROQ_CHAT_URL),
+                    meter=meter,
                 )
                 if settings.HR_ASSISTANT_ENABLED:
                     hr_http = httpx.AsyncClient()
@@ -253,6 +268,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             hr_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         ),
                     )
                 if settings.EMAIL_ASSISTANT_ENABLED:
@@ -272,6 +288,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             email_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         ),
                         session_idle_seconds=settings.CONSOLE_SESSION_IDLE_SECONDS,
                         # None unless the inbound injection area runs Jev (needs a key).
@@ -284,6 +301,7 @@ def create_app() -> FastAPI:
                                 settings.ASSISTANT_DRAFT_MODEL,
                                 email_http,  # closed with the email client at shutdown
                                 str(settings.GROQ_CHAT_URL),
+                                meter=meter,
                             )
                             if settings.ASSISTANT_DRAFT_MODEL
                             else None
@@ -299,6 +317,7 @@ def create_app() -> FastAPI:
                             settings.GROQ_MODEL,
                             workspace_http,
                             str(settings.GROQ_CHAT_URL),
+                            meter=meter,
                         )
                     )
             elif (
@@ -330,7 +349,13 @@ def create_app() -> FastAPI:
                     try:
                         await pool.close()
                     finally:
-                        shutdown_logging()
+                        try:
+                            # Bounded (a few seconds) even while Langfuse is down; after the
+                            # pools, and before logging stops so its warnings are written.
+                            if langfuse_sink is not None:
+                                await langfuse_sink.aclose()
+                        finally:
+                            shutdown_logging()
 
     app = FastAPI(
         title="csa-gateway",

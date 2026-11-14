@@ -60,6 +60,7 @@ from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.decide.gemini import GeminiClient
 from csa.decide.groq import GroqClient
 from csa.decide.llm import ClientBrand, LLMProvider
+from csa.metering.meter import NullMeter
 from csa.turn.deps import CAPABILITIES, build_llm_provider
 from csa.turn.texts import (
     clip_message,
@@ -339,12 +340,17 @@ def _provider(http: httpx.AsyncClient) -> LLMProvider | None:
     if not key:
         return None
     fallback: JsonCompletionClient | None = (
-        GeminiClient(settings.GOOGLE_AI_API_KEY.get_secret_value(), settings.GOOGLE_AI_MODEL, http)
+        GeminiClient(
+            settings.GOOGLE_AI_API_KEY.get_secret_value(),
+            settings.GOOGLE_AI_MODEL,
+            http,
+            meter=NullMeter(),
+        )
         if settings.GOOGLE_AI_API_KEY is not None
         else None
     )
     return build_llm_provider(
-        GroqClient(key, settings.GROQ_MODEL, http, str(settings.GROQ_CHAT_URL)),
+        GroqClient(key, settings.GROQ_MODEL, http, str(settings.GROQ_CHAT_URL), meter=NullMeter()),
         compose_fallback=fallback,
     )
 

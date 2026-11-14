@@ -45,9 +45,9 @@ test("NAV_ICONS covers every key navigationFor can output, each with its own ico
     const me = { role, user, memberships: [], active_client_id: "t", csrf_token: "" };
     for (const link of navigationFor(me, packages)) keys.add(link.key);
   }
-  // 17 entries: 13 since the Sandbox assistant folded into Overview, plus Bookings, the Training library,
-  // Connections and Payments.
-  assert.equal(keys.size, 17, `expected every entry to appear, saw ${[...keys]}`);
+  // 19 entries: 13 since the Sandbox assistant folded into Overview, plus Bookings, the Training
+  // library, Connections, Payments, Credit and Billing.
+  assert.equal(keys.size, 19, `expected every entry to appear, saw ${[...keys]}`);
   for (const key of keys) assert.ok(NAV_ICONS[key], `no icon for ${key}`);
   assert.deepEqual(Object.keys(NAV_ICONS).sort(), [...keys].sort(), "an icon for a key that is never shown");
   const names = Object.values(NAV_ICONS);

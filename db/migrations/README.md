@@ -39,6 +39,16 @@ Reserved ranges (client growth program, 2026-10-27):
   and cancels and dismisses the existing jobs whose files were all removed.
 - `0560`–`0569`: customer bot answers. 0560 adds `escalations.note` (staff context note, at most 500
   characters) and the `escalations_conversation_created` index.
+- `0570`–`0579`: credit monitoring. 0570 adds `ai_usage_events`, the ledger of model calls
+  (tenant isolated, `csa_app` insert and select, `csa_ro` select, never updated or purged). 0571 adds
+  the global, append-only billing tables `ai_model_prices`, `billing_fx_rates`, `billing_stage_fees`
+  and `billing_markup_tiers` (effective-dated; a trigger refuses UPDATE and DELETE even for the
+  owner, `csa_app` has select and insert only) and seeds the fees, markup tiers, the two default
+  models' prices and the USD to MYR rate. 0572 adds `client_billing_plans`, each company's
+  append-only plan history (stage and bundle from a Kuala Lumpur date; tenant isolated, `csa_app`
+  select and insert only, `csa_ro` select, a trigger refuses UPDATE and DELETE even for the
+  owner; inserted by platform admins through `csa.billing.plans.insert_plan`, which enforces the
+  plan rules and audits each row in `console_audit`).
 - `0580`–`0589`: customer onboarding (sign-up from the chat, one customer across channels). 0580 adds
   `signup_requests`, `subscription_settings` (pending expiry days), `plans.signup_mode` and
   `plans.is_signup_open`, `subscriptions.activated_at`, and the `pending` status in

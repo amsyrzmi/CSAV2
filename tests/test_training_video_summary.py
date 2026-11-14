@@ -15,6 +15,7 @@ from uuid import UUID
 import pytest
 from csa.core import db
 from csa.decide.completion import CompletionError
+from csa.metering.context import MeterContext, MeteringContextMissing, current_context
 from csa.storage.local import LocalObjectStore
 from csa.training import limits
 from csa.training.summary import SummaryDraft
@@ -61,6 +62,7 @@ class StubModel:
         self.fail_from: int | None = None
         self.error: Exception = CompletionError("groq_invalid_output")
         self.on_call: Any = None
+        self.contexts: list[MeterContext | None] = []
 
     async def json_completion(
         self,
@@ -71,6 +73,10 @@ class StubModel:
         timeout: float,
         max_tokens: int = 1500,
     ) -> Any:
+        try:
+            self.contexts.append(current_context())
+        except MeteringContextMissing:  # the pure-function tests bind nothing
+            self.contexts.append(None)
         self.calls.append(
             {
                 "schema": schema,
@@ -418,6 +424,20 @@ async def test_provider_errors_and_timeouts_are_transient(world: World) -> None:
     assert await world.worker.run_once() == 1
     job = await world.job(item)
     assert (job["status"], job["attempts"], job["error_code"]) == ("queued", 2, SUMMARY)
+
+
+async def test_a_video_summary_is_one_metered_execution_of_the_company(world: World) -> None:
+    await world.only_active()
+    await world.video(long_rows())
+
+    assert await world.worker.run_once() == 1
+
+    assert len(world.model.calls) > 1  # map calls and the reduce
+    bound = world.model.contexts
+    assert all(each is not None for each in bound)
+    assert {each.job for each in bound if each} == {"training_summary"}
+    assert {str(each.client_id) for each in bound if each} == {str(world.tenant)}
+    assert len({each.trace_id for each in bound if each}) == 1  # one execution, not one per call
 
 
 async def test_summary_is_stored_once_with_truncated_false_and_item_ready(world: World) -> None:
