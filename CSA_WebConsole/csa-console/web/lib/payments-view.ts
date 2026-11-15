@@ -161,7 +161,8 @@ export function rejectBody(reason: string): RejectClaimIn | null {
 /** What Reject claim does, shown in its form: the staff member's last chance to stop. */
 export const REJECT_CLAIM_CONSEQUENCE =
   "The invoice goes back to unpaid. Reminders and the unpaid pause run again, and if it is long overdue " +
-  "the plan can pause at the next check. This does not message the customer: reply from the Inbox.";
+  "the plan can pause at the next check. If the plan is still waiting to start and is past the sign-up expiry, " +
+  "it is cancelled at the next check and this invoice is voided. This does not message the customer: reply from the Inbox.";
 
 const OPEN: InvoiceStatus[] = ["issued", "overdue", "proof_submitted", "cash_pending"];
 

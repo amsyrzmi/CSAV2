@@ -286,7 +286,7 @@ test("rejecting a claim: its refusals read in plain words and the drawer keeps t
     assert.doesNotMatch(said, /_/, code);
   }
   assert.equal(pay.paymentMessage(new ApiError(409, "claim_not_open", "claim_not_open")),
-    "This invoice has no customer claim waiting. Someone may have rejected it or marked it paid already.");
+    "This invoice has no customer claim waiting. Someone may have rejected it already.");
   // Someone else changed the invoice first: the drawer reads it again and keeps the sentence.
   assert.equal(pay.staleMessage(new ApiError(409, "claim_not_open", "claim_not_open")),
     pay.PAYMENT_ERRORS.claim_not_open);

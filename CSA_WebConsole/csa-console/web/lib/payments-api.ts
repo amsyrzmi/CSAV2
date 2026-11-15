@@ -300,7 +300,7 @@ export const PAYMENT_ERRORS: Record<string, string> = {
   received_in_future: "The payment date can't be in the future.",
   invoice_not_found: "That invoice no longer exists. Refresh the page.",
   invoice_void: "This invoice is already void.",
-  claim_not_open: "This invoice has no customer claim waiting. Someone may have rejected it or marked it paid already.",
+  claim_not_open: "This invoice has no customer claim waiting. Someone may have rejected it already.",
   request_key_reused: "This payment was already recorded on another invoice. Close the form and open it again.",
   invalid_note: "The note is too long. Keep it to 300 characters.",
   invalid_reason: "Write a reason of up to 300 characters.",
