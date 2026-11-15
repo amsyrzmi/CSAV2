@@ -22,6 +22,7 @@ import {
   getSettings,
   getSubscription,
   listPlans,
+  planPicturePath,
   listRequests,
   listSignups,
   money,
@@ -66,6 +67,7 @@ import {
 import { useMediaQuery } from "./inbox/hooks";
 import { DetailsRow, StatusChips } from "./kit";
 import { ProposalCard } from "./ProposalCard";
+import PictureField from "./PictureField";
 import { action, field, Heading, Notice, Panel, secondary } from "./ui";
 
 type Tab = "customers" | "plans" | "requests" | "signups";
@@ -244,7 +246,8 @@ function Board({ tenantId, writer }: { tenantId: string | null; writer: boolean 
       {tab === "customers" && <Customers tenantId={tenantId} writer={writer} plans={plans} planName={planName}
         onOpenPlans={() => setTab("plans")} onDataChanged={refreshSummary} />}
       {tab === "plans" && <Plans tenantId={tenantId} writer={writer} plans={plans}
-        onChanged={() => setPlansRevision((value) => value + 1)} />}
+        onChanged={() => setPlansRevision((value) => value + 1)}
+        onPicture={(code, picture) => setPlans((rows) => rows.map((row) => (row.code === code ? { ...row, picture } : row)))} />}
       {tab === "requests" && <Requests tenantId={tenantId} writer={writer} planName={planName}
         onDataChanged={refreshSummary} />}
       {tab === "signups" && <Signups tenantId={tenantId} writer={writer} planName={planName}
@@ -907,8 +910,10 @@ const EMPTY_PLAN: PlanDraft = {
 
 const featureList = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
-function Plans({ tenantId, writer, plans, onChanged }: {
+function Plans({ tenantId, writer, plans, onChanged, onPicture }: {
   tenantId: string | null; writer: boolean; plans: PlanOut[]; onChanged: () => void;
+  /** A plan's picture after an upload or removal: the board writes it into its plans. */
+  onPicture: (code: string, picture: PlanOut["picture"]) => void;
 }) {
   const codeHelp = useId();
   const [adding, setAdding] = useState(false);
@@ -1007,6 +1012,11 @@ function Plans({ tenantId, writer, plans, onChanged }: {
                           onChange={(event) => setEdit({ ...edit, name: event.target.value })} />
                       </label>
                       <PlanFields draft={edit} onChange={setEdit} prefix="plan-edit" />
+                      <div className="md:col-span-2">
+                        <PictureField tenantId={tenantId} testId={`plan-picture-${plan.code}`} label="Plan picture"
+                          subject={plan.name} path={planPicturePath(tenantId, plan.code)}
+                          picture={plan.picture ?? null} onChanged={(picture) => onPicture(plan.code, picture)} />
+                      </div>
                       <div className="flex flex-wrap gap-2 md:col-span-2">
                         <button className={action} disabled={busy} data-testid="plan-edit-save">Save changes</button>
                         <button type="button" className={secondary} disabled={busy}
@@ -1018,7 +1028,10 @@ function Plans({ tenantId, writer, plans, onChanged }: {
               ) : (
                 <tr key={plan.code} data-testid={`plan-row-${plan.code}`}>
                   <td className={cell}><p className="font-medium">{plan.name}</p>
-                    <p className="text-xs text-ink-500">Code: {plan.code}</p></td>
+                    <p className="text-xs text-ink-500">Code: {plan.code}</p>
+                    {plan.picture && <div className="mt-2"><PictureField tenantId={tenantId}
+                      testId={`plan-picture-view-${plan.code}`} picture={plan.picture} label="Plan picture"
+                      subject={plan.name} readOnly /></div>}</td>
                   <td className={cell}>{money(plan.price, plan.currency)} {INTERVALS[plan.billing_interval]}</td>
                   <td className={cell}>{plan.features.length ? plan.features.join(", ") : "—"}</td>
                   <td className={cell}>{plan.is_active ? "Available" : "Archived"}</td>

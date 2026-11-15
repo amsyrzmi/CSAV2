@@ -12,6 +12,8 @@ from csa.console.contracts import ConsoleActor, Role
 from csa.console.services import package_gate
 from csa.contacts.api import build_links_router
 from csa.core.tenancy import tx
+from csa.media.contracts import PictureOut
+from csa.media.upload import PICTURE_UPLOAD_BODY, drop_picture, upload_picture
 from csa.subscriptions import service, signup
 from csa.subscriptions.contracts import (
     ActionIn,
@@ -124,6 +126,42 @@ def build_subscriptions_router() -> APIRouter:
         actor = writer(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await service.update_plan(conn, client_id, actor, code, payload)
+
+    @router.put(
+        "/plans/{code}/picture", response_model=PictureOut, openapi_extra=PICTURE_UPLOAD_BODY
+    )
+    async def put_plan_picture(
+        request: Request, code: str, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> PictureOut:
+        """Upload or replace a plan's picture (multipart `file`, JPEG or PNG, 2 MiB).
+
+        The plan writers; archived plans too; 404 `plan_not_found`.
+        """
+        actor = writer(request, client_id)  # before the body is read
+        return await upload_picture(
+            request,
+            client_id,
+            actor,
+            "plan",
+            code,
+            lambda conn: service.require_plan(conn, client_id, code),
+        )
+
+    @router.delete("/plans/{code}/picture", status_code=204)
+    async def delete_plan_picture(
+        request: Request, code: str, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> Response:
+        """Remove a plan's picture; 204 also when it had none."""
+        actor = writer(request, client_id)
+        await drop_picture(
+            request,
+            client_id,
+            actor,
+            "plan",
+            code,
+            lambda conn: service.require_plan(conn, client_id, code),
+        )
+        return Response(status_code=204)
 
     @router.get("/signups", response_model=SignupPage)
     async def signups(

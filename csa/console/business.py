@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from psycopg import AsyncConnection
 from pydantic import AwareDatetime, Field, field_validator
 
@@ -25,6 +25,8 @@ from csa.console.tiktok_connect import build_tiktok_callback_router, build_tikto
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.marketplace.jobs import list_connected_stores
+from csa.media.contracts import PictureOut
+from csa.media.upload import PICTURE_UPLOAD_BODY, drop_picture, upload_picture
 
 OrderChannel = Literal["telegram", "web", "tiktok_shop", "shopee", "manual"]
 # Mirrors the orders_status_chk and orders_payment_chk constraints in db/schema_baseline.sql.
@@ -165,6 +167,7 @@ class BusinessProduct(Contract):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    picture: PictureOut | None = None  # the product's uploaded picture
 
 
 # "connected" when the tenant has a TikTok store that can sync now, else "not_connected".
@@ -309,6 +312,13 @@ def business_actor(request: Request) -> ConsoleActor:
     if actor.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF}:
         raise HTTPException(403, "business records require an administrator or staff role")
     return actor
+
+
+async def require_product(conn: AsyncConnection[Any], client_id: UUID, product_id: UUID) -> None:
+    """404 `product not found` unless the product is this company's."""
+    row = await db.q.fetch_one("business/get_product.sql", (client_id, product_id), conn=conn)
+    if row is None:
+        raise HTTPException(404, "product not found")
 
 
 def build_business_router() -> APIRouter:
@@ -579,6 +589,43 @@ def build_business_router() -> APIRouter:
         if row is None:
             raise HTTPException(404, "product not found")
         return BusinessProduct.model_validate(row)
+
+    # The router's business_actor gate (platform admin, tenant admin, tenant staff) and the
+    # console's write check (read_only refused, CSRF) run before either handler reads a body.
+    @router.put(
+        "/products/{product_id}/picture",
+        response_model=PictureOut,
+        openapi_extra=PICTURE_UPLOAD_BODY,
+    )
+    async def put_product_picture(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)], product_id: UUID
+    ) -> PictureOut:
+        """Upload or replace a product's picture (multipart `file`, JPEG or PNG, 2 MiB)."""
+        actor: ConsoleActor = request.state.console_actor
+        return await upload_picture(
+            request,
+            client_id,
+            actor,
+            "product",
+            str(product_id),
+            lambda conn: require_product(conn, client_id, product_id),
+        )
+
+    @router.delete("/products/{product_id}/picture", status_code=204)
+    async def delete_product_picture(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)], product_id: UUID
+    ) -> Response:
+        """Remove a product's picture; 204 also when it had none."""
+        actor: ConsoleActor = request.state.console_actor
+        await drop_picture(
+            request,
+            client_id,
+            actor,
+            "product",
+            str(product_id),
+            lambda conn: require_product(conn, client_id, product_id),
+        )
+        return Response(status_code=204)
 
     # Connect and disconnect sit behind the package gate and business_actor, plus their own
     # Admin check. The callback's tenant comes from the state, not client_id, so it cannot use

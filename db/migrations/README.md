@@ -73,6 +73,11 @@ Reserved ranges (client growth program, 2026-10-27):
   `training_video_uploads`, `training_video_pieces`, `training_video_jobs`,
   `training_transcript_segments`, `training_transcript_windows` (vector(384)) and
   `training_video_usage` (no item foreign key, so deleting a video keeps its seconds counted).
+- `0610`–`0619`: pictures. 0610 adds `media_assets` (one picture per `(client_id, kind, subject_key)`,
+  kind `payment_qr`, `plan`, `product` or `training_thumbnail`; the metadata, `sha256` is the version)
+  and `media_asset_data` (the bytes, keyed through `(client_id, asset_id)` so they cannot pair with
+  another company's asset), both tenant isolated with grants to `csa_app`; `csa_ro` can read
+  `media_assets` only.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

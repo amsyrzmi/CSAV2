@@ -23,9 +23,10 @@ from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import pytest
-from playwright.async_api import Page, expect
+from playwright.async_api import Page, Request, expect
 
 from tests import test_services_redesign_browser as services
+from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, open_event, with_browser
 
@@ -163,6 +164,7 @@ def make_products(available: tuple[int, ...] = (7, 7)) -> list[dict[str, Any]]:
             "is_active": n == 1,
             "created_at": "2026-10-01T00:00:00Z",
             "updated_at": "2026-10-02T00:00:00Z",
+            "picture": None,
         }
         for n in range(1, len(available) + 1)
     ]
@@ -251,6 +253,12 @@ class Stub:
     connect_calls: list[dict[str, Any]] = field(default_factory=list)
     disconnect_calls: list[str] = field(default_factory=list)
     unexpected: list[str] = field(default_factory=list)
+    # Product pictures: the pictures set so far (by product id), the writes the page made (method,
+    # path, CSRF token, upload body), and a client_id check for the read route.
+    pictures: dict[str, dict[str, str]] = field(default_factory=dict)
+    picture_calls: list[dict[str, Any]] = field(default_factory=list)
+    media_reads: list[dict[str, list[str]]] = field(default_factory=list)
+    picture_puts: int = 0
 
     def filtered(self, query: dict[str, list[str]], *, with_status: bool) -> list[dict[str, Any]]:
         rows = self.orders
@@ -316,12 +324,47 @@ class Stub:
             self.other_calls.append("products")
             self.product_queries.append(query)
             items = make_products(self.availability)
+            for item in items:
+                item["picture"] = self.pictures.get(item["id"])
             data = {
                 "source": "local_catalogue",
                 "marketplace_sync": self.marketplace_sync,
                 "items": items,
                 "next_cursor": items[-1]["id"] if self.products_more else None,
             }
+        elif re.fullmatch(r"business/products/[0-9a-f-]+/picture", path):
+            product_id = path.split("/")[2]
+            upload = request.post_data_buffer if request.method == "PUT" else None
+            self.picture_calls.append(
+                {
+                    "method": request.method,
+                    "path": path,
+                    "csrf": request.headers.get("x-csrf-token"),
+                    "client_id": query.get("client_id"),
+                    "upload": upload,
+                }
+            )
+            name = re.search(rb'filename="([^"]*)"', upload or b"")
+            if request.method == "DELETE":
+                self.pictures.pop(product_id, None)
+                await request_route.fulfill(status=204)
+                return
+            if name and name.group(1).startswith(b"toosmall"):
+                status, data = 422, {"detail": "picture_dimensions"}
+            else:
+                self.picture_puts += 1
+                data = {"id": "eeeeeeee-0000-4000-8000-" + product_id[-12:]}
+                data["version"] = f"v{self.picture_puts}"
+                self.pictures[product_id] = data
+        elif path.startswith("media/") and request.method == "GET":
+            self.media_reads.append(query)
+            if not any(p["id"] == path.split("/")[1] for p in self.pictures.values()):
+                status, data = 404, {"detail": "picture_not_found"}
+            else:
+                await request_route.fulfill(
+                    status=200, body=synthetic_png(), content_type="image/png"
+                )
+                return
         elif re.fullmatch(r"business/orders/[0-9a-f-]+", path) and request.method == "GET":
             order_id = path.rsplit("/", 1)[1]
             self.detail_calls.append(order_id)
@@ -2184,5 +2227,174 @@ async def test_the_default_window_moves_on_when_the_tab_returns_on_a_new_day(sit
                 "the counts window did not move to the new day",
             )
             assert stub.counts_queries[-1]["to"] == [instant(tomorrow + timedelta(days=1))]
+
+    await with_browser(body)
+
+
+PRODUCT = "00000000-0000-4000-8000-000000000001"
+
+
+async def test_product_card_takes_a_picture(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible(timeout=WAIT)
+            field = card.get_by_test_id(f"business-product-{PRODUCT}-picture")
+            await expect(field).to_contain_text("JPEG or PNG, up to 2 MB, 64 to 4096 pixels a side")
+            await expect(
+                field.get_by_test_id(f"business-product-{PRODUCT}-picture-choose")
+            ).to_have_text("Choose picture")
+            chosen = field.get_by_test_id(f"business-product-{PRODUCT}-picture-input")
+            error = field.get_by_test_id(f"business-product-{PRODUCT}-picture-error")
+
+            # A GIF is refused in the browser; the server's refusal reads as its sentence.
+            await chosen.set_input_files(picture_file("mug.gif", "image/gif", b"GIF89a synthetic"))
+            await expect(error).to_contain_text("Use a JPEG or PNG picture.")
+            assert not stub.picture_calls
+            await chosen.set_input_files(
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
+            )
+            await expect(error).to_contain_text("64 to 4096 pixels on each side")
+
+            # A good file: the preview appears; one PUT with the CSRF token and the file alone.
+            await chosen.set_input_files(picture_file("mug.png", "image/png", synthetic_png()))
+            preview = field.get_by_test_id(f"business-product-{PRODUCT}-picture-preview")
+            await expect(preview).to_be_visible()
+            await expect(error).to_have_count(0)
+            await expect(
+                field.get_by_test_id(f"business-product-{PRODUCT}-picture-choose")
+            ).to_have_text("Replace")
+            puts = [c for c in stub.picture_calls if c["method"] == "PUT"]
+            assert [c["path"] for c in puts] == [f"business/products/{PRODUCT}/picture"] * 2
+            assert puts[-1]["csrf"] == "synthetic-csrf"
+            assert puts[-1]["client_id"] is None
+            assert puts[-1]["upload"].count(b'name="file"') == 1
+            assert synthetic_png() in puts[-1]["upload"]
+            asset = "eeeeeeee-0000-4000-8000-" + PRODUCT[-12:]
+            await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v1")
+            await expect(preview).to_have_js_property("complete", True)
+            assert await preview.evaluate("img => img.naturalWidth") == 64
+
+            # Remove clears it.
+            await field.get_by_test_id(f"business-product-{PRODUCT}-picture-remove").click()
+            await expect(preview).to_have_count(0)
+            deletes = [c for c in stub.picture_calls if c["method"] == "DELETE"]
+            assert [(c["path"], c["csrf"]) for c in deletes] == [
+                (f"business/products/{PRODUCT}/picture", "synthetic-csrf")
+            ]
+            assert PRODUCT not in stub.pictures
+
+    await with_browser(body)
+
+
+async def test_product_picture_reads_and_writes_name_the_tenant_for_a_platform_admin(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser,
+            site,
+            stub,
+            path=f"/business/products?client_id={TENANT}",
+            wait_for_rows=False,
+            role="platform_admin",
+        ) as page:
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible(timeout=WAIT)
+            field = card.get_by_test_id(f"business-product-{PRODUCT}-picture")
+            await field.get_by_test_id(f"business-product-{PRODUCT}-picture-input").set_input_files(
+                picture_file("mug.png", "image/png", synthetic_png())
+            )
+            preview = field.get_by_test_id(f"business-product-{PRODUCT}-picture-preview")
+            asset = "eeeeeeee-0000-4000-8000-" + PRODUCT[-12:]
+            await expect(preview).to_have_attribute(
+                "src", f"/console/v1/media/{asset}?client_id={TENANT}&v=v1"
+            )
+            await expect(preview).to_have_js_property("complete", True)
+            assert [c["client_id"] for c in stub.picture_calls] == [[TENANT]]
+            assert stub.media_reads and all(
+                q.get("client_id") == [TENANT] for q in stub.media_reads
+            )
+
+    await with_browser(body)
+
+
+async def test_a_product_picture_survives_the_card_being_remounted(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible(timeout=WAIT)
+            prefix = f"business-product-{PRODUCT}-picture"
+            await card.get_by_test_id(f"{prefix}-input").set_input_files(
+                picture_file("mug.png", "image/png", synthetic_png())
+            )
+            preview = card.get_by_test_id(f"{prefix}-preview")
+            await expect(preview).to_be_visible()
+            # Focus is back on the Replace button once the upload is done.
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_be_focused()
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_accessible_name(
+                "Replace picture for Blue mug 1"
+            )
+            await expect(card.get_by_test_id(f"{prefix}-remove")).to_have_accessible_name(
+                "Remove picture for Blue mug 1"
+            )
+            reads = len(stub.product_queries)
+
+            # Flip the source and back: the cards mount again from the list the page holds.
+            await page.get_by_test_id("business-source-switch-tiktok").click()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await page.get_by_test_id("business-source-switch-catalogue").click()
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_be_visible()
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Replace")
+            assert len(stub.product_queries) == reads  # shown from the page's list, not a new read
+
+            # Someone else removes it; a refresh brings the server's answer and that wins.
+            stub.pictures.pop(PRODUCT)
+            await page.get_by_role("button", name="Refresh newest products").click()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Choose picture")
+
+    await with_browser(body)
+
+
+async def test_a_removed_product_picture_stays_removed_after_a_remount(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        asset = "eeeeeeee-0000-4000-8000-" + PRODUCT[-12:]
+        stub.pictures[PRODUCT] = {"id": asset, "version": "v9"}
+        media: list[str] = []
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+
+            def note_media(request: Request) -> None:
+                if "/console/v1/media/" in request.url:
+                    media.append(request.url)
+
+            page.on("request", note_media)
+            prefix = f"business-product-{PRODUCT}-picture"
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_be_visible(timeout=WAIT)
+            await card.get_by_test_id(f"{prefix}-remove").click()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_be_focused()
+            seen = len(media)
+            await page.get_by_test_id("business-source-switch-tiktok").click()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await page.get_by_test_id("business-source-switch-catalogue").click()
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Choose picture")
+            assert len(media) == seen, media[seen:]  # no request for the removed asset
+            assert PRODUCT not in stub.pictures
 
     await with_browser(body)

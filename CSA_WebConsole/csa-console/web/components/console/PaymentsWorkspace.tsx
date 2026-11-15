@@ -18,6 +18,7 @@ import {
   listAttention,
   listInvoices,
   listMethods,
+  methodPicturePath,
   openMarkPaid,
   paymentMessage,
   putSettings,
@@ -91,6 +92,7 @@ import {
 } from "@/lib/payments-view";
 import { formatDateTime, formatDay } from "@/lib/subscriptions-api";
 import { StatusChips } from "./kit";
+import PictureField from "./PictureField";
 import { action, field, Heading, Notice, secondary } from "./ui";
 
 const cell = "border-b border-ink-100 px-3 py-2 align-top";
@@ -966,7 +968,7 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
           <li key={method.id} data-testid="payment-method" className="rounded-md border border-ink-200 p-3 text-sm">
             {editing === method.id ? (
               <MethodForm tenantId={tenantId} method={method} onCancel={() => setEditing(null)}
-                onDone={(saved) => done(saved, "Saved.")} onConflict={async () => (await onConflict()).find(
+                onDone={(saved) => done(saved, "Saved.")} onPicture={onSaved} onConflict={async () => (await onConflict()).find(
                   (row) => row.id === method.id) ?? null} />
             ) : (
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -981,6 +983,12 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
                     <span className="text-ink-500">Customers see: </span>
                     <span data-testid="method-preview">{methodPreview(method)}</span>
                   </p>
+                  {method.kind === "qr" && method.picture && (
+                    <div className="mt-2">
+                      <PictureField tenantId={tenantId} testId="method-picture-view"
+                        picture={method.picture} label="QR picture" subject={method.label} readOnly />
+                    </div>
+                  )}
                 </div>
                 {admin && (
                   <button type="button" className={secondary} data-testid="method-edit"
@@ -1013,9 +1021,11 @@ const FIELD_LABELS: Record<Exclude<MethodField, "instructions">, string> = {
   duitnow_id: "DuitNow ID",
 };
 
-function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
+function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict }: {
   tenantId: string | null; method: PaymentMethod | null; onCancel: () => void;
-  onDone: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod | null>;
+  onDone: (method: PaymentMethod) => void;
+  /** Told the method with its new picture, which is saved on its own (not by Save); the form stays open. */
+  onPicture?: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod | null>;
 }) {
   // The method as last read: a version conflict replaces it with the latest.
   const [base, setBase] = useState(method);
@@ -1107,6 +1117,16 @@ function MethodForm({ tenantId, method, onCancel, onDone, onConflict }: {
         <p id={`${formId}-instructions-help`} className={errors.instructions ? errorText : helpText}>
           {errors.instructions ?? "Shown after the details, up to 500 characters."}</p>
       </div>
+      {base && base.kind === "qr" && (
+        <PictureField tenantId={tenantId} testId="method-picture" label="QR picture"
+          subject={base.label} path={methodPicturePath(tenantId, base.id)}
+          picture={base.picture ?? null} hint="Upload the QR at 800 pixels or more so it still scans"
+          onChanged={(picture) => {
+            const next = { ...base, picture };
+            setBase(next);
+            onPicture?.(next);
+          }} />
+      )}
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" className="size-4 accent-brand-600" data-testid="method-active" checked={draft.is_active}
           onChange={(event) => change({ is_active: event.target.checked })} />

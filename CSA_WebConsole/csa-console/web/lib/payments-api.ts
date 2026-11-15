@@ -1,4 +1,5 @@
 import { api, ApiError, explainedMessage, patch, post } from "./api";
+import type { Picture } from "./pictures";
 
 /**
  * Mirrors of csa/payments/contracts.py (docs/CONSOLE_API.md "Payments"). Money (`amount`) is a
@@ -153,6 +154,8 @@ export interface PaymentMethod {
   is_active: boolean;
   sort_order: number;
   version: number;
+  /** The QR image customers are sent; always null for a transfer or cash method. */
+  picture: Picture | null;
 }
 
 /** `MethodIn`. */
@@ -193,6 +196,11 @@ export function paymentsPath(
 }
 
 const id = (value: string) => `/${encodeURIComponent(value)}`;
+
+/** The route that sets, replaces or removes a QR method's picture (admins only). */
+export function methodPicturePath(tenantId: string | null, methodId: string): string {
+  return paymentsPath(tenantId, `/methods${id(methodId)}/picture`);
+}
 
 /** Newest issued first. `status` defaults to `open` on the server when it is left out. */
 export function listInvoices(

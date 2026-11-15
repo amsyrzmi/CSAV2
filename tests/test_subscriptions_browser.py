@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ import pytest
 from playwright.async_api import Page, async_playwright, expect
 
 from tests import test_services_redesign_browser as services
+from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import (
     TENANT,
     TENANT_PROFILE,
@@ -60,6 +62,7 @@ PLANS = [
         "is_active": True,
         "signup_mode": "staff",
         "is_signup_open": True,
+        "picture": None,
     },
     {
         "code": "pro",
@@ -72,6 +75,7 @@ PLANS = [
         "is_active": True,
         "signup_mode": "staff",
         "is_signup_open": True,
+        "picture": None,
     },
 ]
 
@@ -235,6 +239,10 @@ class World:
             request_row(REQUEST_ORPHAN, None, aisyah),
         ]
         self.plans = copy.deepcopy(PLANS)
+        # Picture assets the stub serves (the read route), and the last upload body it saw.
+        self.assets: set[str] = set()
+        self.upload: bytes | None = None
+        self.puts = 0
         self.settings: dict[str, Any] = {
             "timezone": "Asia/Kuala_Lumpur",
             "pending_expiry_days": 14,
@@ -281,18 +289,56 @@ class World:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         params = {key: values[0] for key, values in parse_qs(query).items()}
-        body = request.post_data_json if request.method in {"POST", "PATCH", "PUT"} else None
-        self.calls.append(
-            {
-                "method": request.method,
-                "path": path,
-                "params": params,
-                "csrf": request.headers.get("x-csrf-token"),
-                "body": body,
-            }
+        upload = path.endswith("/picture") and request.method == "PUT"
+        body = (
+            request.post_data_json
+            if request.method in {"POST", "PATCH", "PUT"} and not upload
+            else None
         )
+        self.upload = request.post_data_buffer if upload else None
+        call = {
+            "method": request.method,
+            "path": path,
+            "params": params,
+            "csrf": request.headers.get("x-csrf-token"),
+            "body": body,
+        }
+        if upload:
+            # Only a picture upload has a multipart body; other calls keep their exact shape.
+            call["upload"] = self.upload
+        self.calls.append(call)
+        if path.startswith("media/") and request.method == "GET":
+            if path.split("/")[1] not in self.assets:
+                await request_route.fulfill(status=404, json={"detail": "picture_not_found"})
+            else:
+                await request_route.fulfill(
+                    status=200, body=synthetic_png(), content_type="image/png"
+                )
+            return
         status, data = self.answer(request.method, path, params, body)
-        await request_route.fulfill(status=status, json=data)
+        if status == 204:
+            await request_route.fulfill(status=204)
+        else:
+            await request_route.fulfill(status=status, json=data)
+
+    def picture(self, method: str, code: str, writer: bool) -> tuple[int, Any]:
+        """The plan picture routes of csa/subscriptions/api.py: writers only, archived plans too."""
+        if not writer:
+            return 403, {"detail": "write permission required"}
+        found = [p for p in self.plans if p["code"] == code]
+        if not found:
+            return 404, {"detail": "plan_not_found"}
+        if method == "DELETE":
+            found[0]["picture"] = None
+            return 204, None
+        name = re.search(rb'filename="([^"]*)"', self.upload or b"")
+        if name and name.group(1).startswith(b"toosmall"):
+            return 422, {"detail": "picture_dimensions"}
+        self.puts += 1
+        asset = "dddddddd-0000-4000-8000-" + code.ljust(12, "0")
+        self.assets.add(asset)
+        found[0]["picture"] = {"id": asset, "version": f"v{self.puts}"}
+        return 200, found[0]["picture"]
 
     def answer(self, method: str, path: str, params: dict[str, str], body: Any) -> tuple[int, Any]:
         platform = self.upstream.me["role"] == "platform_admin"
@@ -389,6 +435,9 @@ class World:
             return 200, review
         if path == "subscriptions/plans" and method == "GET":
             return 200, self.plans
+        parts = path.split("/")
+        if parts[:2] == ["subscriptions", "plans"] and parts[3:] == ["picture"]:
+            return self.picture(method, parts[2], writer)
         if path.startswith("subscriptions/plans/") and method == "PATCH" and writer:
             plan = next(p for p in self.plans if p["code"] == path.rsplit("/", 1)[1])
             plan.update({k: v for k, v in body.items() if v is not None})
@@ -2139,5 +2188,94 @@ async def test_a_stale_expiry_version_is_read_again_so_the_next_save_works(site:
                 {"pending_expiry_days": 7, "version": 0},
                 {"pending_expiry_days": 5, "version": 3},
             ], puts
+
+    await with_browser(body)
+
+
+async def test_plan_row_takes_a_picture(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with subs_page(browser, site, world) as page:
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            await expect(page.get_by_test_id("plan-row-pro")).to_be_visible(timeout=WAIT)
+            # An archived plan still takes a picture.
+            await page.get_by_test_id("plan-archive-pro").click()
+            await expect(page.get_by_test_id("plan-row-pro")).to_contain_text("Archived")
+            await page.get_by_test_id("plan-edit-pro").click()
+            field = page.get_by_test_id("plan-picture-pro")
+            await expect(field).to_contain_text("JPEG or PNG, up to 2 MB, 64 to 4096 pixels a side")
+            await expect(field.get_by_test_id("plan-picture-pro-choose")).to_have_text(
+                "Choose picture"
+            )
+            chosen = field.get_by_test_id("plan-picture-pro-input")
+
+            # A GIF is refused in the browser; the server's refusal reads as its sentence.
+            await chosen.set_input_files(picture_file("plan.gif", "image/gif", b"GIF89a synthetic"))
+            await expect(field.get_by_test_id("plan-picture-pro-error")).to_contain_text(
+                "Use a JPEG or PNG picture."
+            )
+            assert not [c for c in world.calls if c["path"].endswith("/picture")]
+            await chosen.set_input_files(
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
+            )
+            await expect(field.get_by_test_id("plan-picture-pro-error")).to_contain_text(
+                "64 to 4096 pixels on each side"
+            )
+
+            # A good file: preview, sent alone with the CSRF token, no plan PATCH.
+            await chosen.set_input_files(picture_file("plan.png", "image/png", synthetic_png()))
+            preview = field.get_by_test_id("plan-picture-pro-preview")
+            await expect(preview).to_be_visible()
+            await expect(field.get_by_test_id("plan-picture-pro-error")).to_have_count(0)
+            await expect(field.get_by_test_id("plan-picture-pro-choose")).to_have_text("Replace")
+            puts = [
+                c for c in world.calls if c["method"] == "PUT" and c["path"].endswith("/picture")
+            ]
+            assert [c["path"] for c in puts] == ["subscriptions/plans/pro/picture"] * 2
+            assert puts[-1]["csrf"] == "synthetic-csrf"
+            assert puts[-1]["upload"].count(b'name="file"') == 1
+            assert synthetic_png() in puts[-1]["upload"]
+            assert not [c for c in world.calls if c["method"] == "PATCH" and "picture" in c["path"]]
+            asset = world.plans[1]["picture"]["id"]
+            await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v1")
+            await expect(preview).to_have_js_property("complete", True)
+
+            # Leaving the edit row keeps the picture on the table row; Remove clears it.
+            await page.get_by_role("button", name="Cancel", exact=True).click()
+            await expect(
+                page.get_by_test_id("plan-row-pro").get_by_test_id("plan-picture-view-pro-preview")
+            ).to_be_visible()
+            await page.get_by_test_id("plan-edit-pro").click()
+            await field.get_by_test_id("plan-picture-pro-remove").click()
+            await expect(preview).to_have_count(0)
+            await expect(field.get_by_test_id("plan-picture-pro-choose")).to_have_text(
+                "Choose picture"
+            )
+            deletes = [c for c in world.calls if c["method"] == "DELETE"]
+            assert [(c["path"], c["csrf"]) for c in deletes] == [
+                ("subscriptions/plans/pro/picture", "synthetic-csrf")
+            ]
+            assert world.plans[1]["picture"] is None
+
+    await with_browser(body)
+
+
+async def test_read_only_members_see_the_plan_picture_but_cannot_change_it(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        asset = "dddddddd-0000-4000-8000-basic0000000"
+        world.assets.add(asset)
+        world.plans[0]["picture"] = {"id": asset, "version": "v3"}
+        async with subs_page(browser, site, world, role="read_only") as page:
+            await page.get_by_test_id("subscriptions-tab-plans").click()
+            preview = page.get_by_test_id("plan-picture-view-basic-preview")
+            await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v3")
+            await expect(preview).to_be_visible()
+            await expect(preview).to_have_js_property("complete", True)
+            await expect(page.get_by_test_id("plan-picture-view-pro-preview")).to_have_count(0)
+            await expect(page.get_by_test_id("plans-table").locator("input, button")).to_have_count(
+                0
+            )
+            assert all(c["method"] == "GET" for c in world.calls)
 
     await with_browser(body)

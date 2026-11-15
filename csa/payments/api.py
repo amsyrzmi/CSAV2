@@ -5,7 +5,9 @@ paid, void, reject claim) are for platform admins, tenant admins and tenant staf
 methods are changed by platform and tenant admins only. `read_only` members get 403 on every
 route, reads included. Refusals are `{"detail": "<code>"}`. The services audit every write
 themselves (`payments.invoice.paid`, `payments.invoice.voided`, `payments.invoice.claim_rejected`,
-`payments.settings.updated`, `payments.method.created`, `payments.method.updated`).
+`payments.settings.updated`, `payments.method.created`, `payments.method.updated`). A QR
+method's picture is uploaded and removed by admins (`media.picture.set`,
+`media.picture.removed`).
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ from csa.console.contracts import ConsoleActor, Role
 from csa.console.identity import IdentityService
 from csa.console.services import package_gate
 from csa.core.tenancy import tx
+from csa.media.contracts import PictureOut
+from csa.media.upload import PICTURE_UPLOAD_BODY, drop_picture, upload_picture
 from csa.payments import console, invoices, settings
 from csa.payments.contracts import (
     InvoiceDetail,
@@ -149,6 +153,44 @@ def build_payments_router() -> APIRouter:
         actor = admin(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await settings.update_method(conn, client_id, actor, method_id, payload)
+
+    @router.put(
+        "/methods/{method_id}/picture",
+        response_model=PictureOut,
+        openapi_extra=PICTURE_UPLOAD_BODY,
+    )
+    async def put_method_picture(
+        request: Request, method_id: UUID, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> PictureOut:
+        """Upload or replace a QR method's picture (multipart `file`, JPEG or PNG, 2 MiB).
+
+        Admins only, QR methods only (422 `picture_kind_not_qr`); 404 `method_not_found`.
+        """
+        actor = admin(request, client_id)  # before the body is read
+        return await upload_picture(
+            request,
+            client_id,
+            actor,
+            "payment_qr",
+            str(method_id),
+            lambda conn: settings.require_qr_method(conn, client_id, method_id),
+        )
+
+    @router.delete("/methods/{method_id}/picture", status_code=204)
+    async def delete_method_picture(
+        request: Request, method_id: UUID, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> Response:
+        """Remove a QR method's picture; 204 also when it had none."""
+        actor = admin(request, client_id)
+        await drop_picture(
+            request,
+            client_id,
+            actor,
+            "payment_qr",
+            str(method_id),
+            lambda conn: settings.require_qr_method(conn, client_id, method_id),
+        )
+        return Response(status_code=204)
 
     @router.get("/invoices", response_model=InvoicePage)
     async def list_invoices(

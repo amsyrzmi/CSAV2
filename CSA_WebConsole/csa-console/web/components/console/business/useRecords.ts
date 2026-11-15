@@ -57,6 +57,10 @@ export function useRecords<T extends { id: string }>(path: string) {
     items, next, error, loading,
     /** What the last read said about TikTok Shop being connected; null before it or when the read has no such field. */
     marketplaceSync: sync,
+    /** Writes a change into one loaded row (for example its picture), so a remount shows it; the next read replaces it. */
+    patch: (id: string, changes: Partial<T>) => {
+      setItems((current) => current && current.map((row) => (row.id === id ? { ...row, ...changes } : row)));
+    },
     /** True while an "Older" page is loading (not the first page or a refresh). */
     loadingMore: loading && cursor !== null,
     older: () => {

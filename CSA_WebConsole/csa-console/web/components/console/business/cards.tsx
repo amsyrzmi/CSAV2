@@ -24,6 +24,9 @@ import {
   whenText,
   type Tone,
 } from "@/lib/business-view";
+import { productPicturePath } from "@/lib/business";
+import type { Picture } from "@/lib/pictures";
+import PictureField from "../PictureField";
 import StatusLabel from "../fs/StatusLabel";
 import { DetailsRow, TechnicalDetails, useTechOpen } from "../kit";
 import OrderDetailPanel from "./OrderDetail";
@@ -33,6 +36,8 @@ export type Product = {
   id: string; sku: string; name: string; price: string; currency: string;
   stock_qty: number; reserved_qty: number; available_qty: number;
   is_active: boolean; updated_at: string;
+  /** Absent from an older server's answer; treated as no picture. */
+  picture?: Picture | null;
 };
 export type StoreSummaryInput = {
   platform: string; shop_id: string | null; updated_at: string; connection: { status: string };
@@ -203,7 +208,13 @@ export function OrderCard({
   );
 }
 
-export function ProductCard({ product }: { product: Product }) {
+export function ProductCard({ product, tenantId, onPicture }: {
+  product: Product;
+  /** Null for a tenant member; the chosen company for a platform admin. */
+  tenantId: string | null;
+  /** The product's picture after an upload or removal: the page writes it into its list. */
+  onPicture: (id: string, picture: Picture | null) => void;
+}) {
   const summary = productSummary(product);
   return (
     <RecordCard
@@ -217,6 +228,10 @@ export function ProductCard({ product }: { product: Product }) {
         text: product.is_active ? "Active" : "Inactive",
       }]}
       groups={productDetailGroups(product)}
+      extra={<div className="mt-2"><PictureField tenantId={tenantId} testId={`business-product-${product.id}-picture`}
+        path={productPicturePath(tenantId, product.id)} picture={product.picture ?? null}
+        label="Product picture" subject={product.name}
+        onChanged={(picture) => onPicture(product.id, picture)} /></div>}
     >
       <p className="break-words font-semibold">{product.sku} · {product.name}</p>
       <p>{product.currency} {product.price} · Local status: {product.is_active ? "Active" : "Inactive"}</p>

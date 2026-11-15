@@ -10,6 +10,9 @@ server-side from a loopback stub, and Playwright answers every browser-side
 from __future__ import annotations
 
 import asyncio
+import re
+import struct
+import zlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -18,7 +21,7 @@ from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import pytest
-from playwright.async_api import Page, async_playwright, expect
+from playwright.async_api import FilePayload, Page, async_playwright, expect
 
 from tests import test_services_redesign_browser as services
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, Upstream, make_me
@@ -106,8 +109,30 @@ def method(
         "is_active": True,
         "sort_order": 0,
         "version": 1,
+        "picture": None,
         **changes,
     }
+
+
+def synthetic_png(side: int = 64) -> bytes:
+    """A tiny valid PNG built at run time (nothing is committed): a flat grey square."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    row = b"\x00" + b"\x88" * side
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(row * side))
+        + chunk(b"IEND", b"")
+    )
+
+
+def picture_file(name: str, content_type: str, data: bytes) -> FilePayload:
+    """A file for `set_input_files`, typed as Playwright's payload."""
+    return FilePayload(name=name, mimeType=content_type, buffer=data)
 
 
 # The synthetic methods of tests/test_payment_copy.py: a made-up bank and account.
@@ -195,6 +220,10 @@ class World:
             "version": 0,
         }
         self.methods: list[dict[str, Any]] = []
+        # Picture assets the stub serves (the read route), and the last upload body it saw.
+        self.assets: set[str] = set()
+        self.upload: bytes | None = None
+        self.puts = 0
         self.page_size = 50
         self.forbidden = False
         # While set, a "Load more" read waits for it before it answers.
@@ -235,6 +264,9 @@ class World:
             return 200, self.settings
         if path == "payments/methods" and method == "GET":
             return 200, self.methods
+        parts = path.split("/")
+        if parts[:2] == ["payments", "methods"] and parts[3:] == ["picture"]:
+            return self.picture(method, parts[2], admin)
         writes = {("PUT", "payments/settings"), ("POST", "payments/methods")}
         if (method, path) not in writes and not (
             method == "PATCH" and path.startswith("payments/methods/")
@@ -261,6 +293,7 @@ class World:
                 "instructions": "",
                 "is_active": True,
                 "sort_order": 0,
+                "picture": None,
                 **body,
                 "version": 1,
             }
@@ -280,11 +313,39 @@ class World:
         current["version"] += 1
         return 200, current
 
+    def picture(self, method: str, method_id: str, admin: bool) -> tuple[int, Any]:
+        """The QR picture routes of csa/payments/api.py: admins only, QR methods only."""
+        if not admin:
+            return 403, {"detail": ROLE_REFUSED}
+        found = [m for m in self.methods if m["id"] == method_id]
+        if not found:
+            return 404, {"detail": "method_not_found"}
+        if found[0]["kind"] != "qr":
+            return 422, {"detail": "picture_kind_not_qr"}
+        if method == "DELETE":
+            found[0]["picture"] = None
+            return 204, None
+        name = re.search(rb'filename="([^"]*)"', self.upload or b"")
+        if name and name.group(1).startswith(b"toosmall"):
+            return 422, {"detail": "picture_dimensions"}
+        self.puts += 1
+        version = f"v{self.puts}"
+        asset = "cccccccc-0000-4000-8000-" + method_id[-12:]
+        self.assets.add(asset)
+        found[0]["picture"] = {"id": asset, "version": version}
+        return 200, found[0]["picture"]
+
     async def route(self, request_route: Any) -> None:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         params = {key: values[0] for key, values in parse_qs(query).items()}
-        body = request.post_data_json if request.method in {"POST", "PATCH", "PUT"} else None
+        upload = path.endswith("/picture") and request.method == "PUT"
+        body = (
+            request.post_data_json
+            if request.method in {"POST", "PATCH", "PUT"} and not upload
+            else None
+        )
+        self.upload = request.post_data_buffer if upload else None
         self.calls.append(
             {
                 "method": request.method,
@@ -292,13 +353,26 @@ class World:
                 "params": params,
                 "csrf": request.headers.get("x-csrf-token"),
                 "body": body,
+                "upload": self.upload,
+                "content_type": request.headers.get("content-type"),
             }
         )
+        if path.startswith("media/") and request.method == "GET":
+            if path.split("/")[1] not in self.assets:
+                await request_route.fulfill(status=404, json={"detail": "picture_not_found"})
+            else:
+                await request_route.fulfill(
+                    status=200, body=synthetic_png(), content_type="image/png"
+                )
+            return
         hold = self.hold_more if path == "payments/invoices" and "before" in params else None
         if hold is not None:
             await hold.wait()
         status, data = self.answer(request.method, path, params, body)
-        await request_route.fulfill(status=status, json=data)
+        if status == 204:
+            await request_route.fulfill(status=204)
+        else:
+            await request_route.fulfill(status=status, json=data)
         if hold is not None:
             self.held_answered.set()
 
@@ -1297,5 +1371,153 @@ async def test_the_last_active_method_and_someone_else_saving_first(site: Site) 
             puts = [c["body"] for c in writes(world, "payments/settings")]
             assert [(b["lead_days"], b["version"]) for b in puts] == [(5, 1), (10, 2)], puts
             assert world.settings["version"] == 3
+
+    await with_browser(body)
+
+
+GIF_FILE = picture_file("duitnow.gif", "image/gif", b"GIF89a synthetic")
+PICTURE_HINT = (
+    "JPEG or PNG, up to 2 MB, 64 to 4096 pixels a side. Upload the QR at 800 pixels or more"
+)
+
+
+async def test_admin_sets_and_removes_the_qr_picture(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.settings = {**world.settings, "enabled": True, "version": 1}
+        world.methods = [dict(BANK), dict(DUITNOW)]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            rows = page.get_by_test_id("payment-method")
+            # A bank transfer takes no picture.
+            await rows.nth(0).get_by_test_id("method-edit").click()
+            await expect(rows.nth(0).get_by_test_id("method-form")).to_be_visible()
+            await expect(page.get_by_test_id("method-picture")).to_have_count(0)
+            await rows.nth(0).get_by_role("button", name="Cancel").click()
+
+            await rows.nth(1).get_by_test_id("method-edit").click()
+            field = rows.nth(1).get_by_test_id("method-picture")
+            await expect(field).to_be_visible()
+            await expect(field).to_contain_text(PICTURE_HINT)
+            await expect(field).to_contain_text("so it still scans")
+            await expect(field.get_by_test_id("method-picture-preview")).to_have_count(0)
+            await expect(field.get_by_test_id("method-picture-choose")).to_have_text(
+                "Choose picture"
+            )
+            await expect(field.get_by_test_id("method-picture-remove")).to_have_count(0)
+            picture_field = field.get_by_test_id("method-picture-input")
+
+            # A GIF is refused in the browser: nothing is sent.
+            await picture_field.set_input_files(GIF_FILE)
+            await expect(field.get_by_test_id("method-picture-error")).to_have_text(
+                "Use a JPEG or PNG picture. Other kinds of file, including GIF and SVG, "
+                "are not accepted."
+            )
+            assert not [c for c in world.calls if c["path"].endswith("/picture")]
+
+            # The server's refusal reads as its sentence, never as the raw code.
+            await picture_field.set_input_files(
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
+            )
+            await expect(field.get_by_test_id("method-picture-error")).to_have_text(
+                "The picture must be 64 to 4096 pixels on each side, and its long side at most "
+                "10 times its short side."
+            )
+            await expect(field.get_by_test_id("method-picture-preview")).to_have_count(0)
+
+            # A good file: the preview appears, and it was sent alone with the CSRF token.
+            await picture_field.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            preview = field.get_by_test_id("method-picture-preview")
+            await expect(preview).to_be_visible()
+            await expect(field.get_by_test_id("method-picture-error")).to_have_count(0)
+            await expect(field.get_by_test_id("method-picture-choose")).to_have_text("Replace")
+            puts = [
+                c for c in world.calls if c["method"] == "PUT" and c["path"].endswith("/picture")
+            ]
+            assert [c["path"] for c in puts] == [f"payments/methods/{DUITNOW['id']}/picture"] * 2
+            sent = puts[-1]
+            assert sent["csrf"] == "synthetic-csrf"
+            assert sent["content_type"].startswith("multipart/form-data; boundary=")
+            assert sent["upload"].count(b'name="file"') == 1
+            assert b'filename="duitnow.png"' in sent["upload"]
+            assert synthetic_png() in sent["upload"]
+            src = await preview.get_attribute("src")
+            asset = world.methods[1]["picture"]["id"]
+            assert src == f"/console/v1/media/{asset}?v=v1", src
+            await expect(preview).to_have_js_property("complete", True)
+            assert await preview.evaluate("img => img.naturalWidth") == 64
+
+            # Replace keeps the control and changes the address (the cache buster).
+            await picture_field.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png(80))
+            )
+            await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v2")
+
+            # Leaving the form keeps the picture on the list row; Remove clears it.
+            await rows.nth(1).get_by_role("button", name="Cancel").click()
+            await expect(rows.nth(1).get_by_test_id("method-picture-view-preview")).to_be_visible()
+            await rows.nth(1).get_by_test_id("method-edit").click()
+            await field.get_by_test_id("method-picture-remove").click()
+            await expect(preview).to_have_count(0)
+            await expect(field.get_by_test_id("method-picture-choose")).to_have_text(
+                "Choose picture"
+            )
+            deletes = [c for c in world.calls if c["method"] == "DELETE"]
+            assert [(c["path"], c["csrf"]) for c in deletes] == [
+                (f"payments/methods/{DUITNOW['id']}/picture", "synthetic-csrf")
+            ]
+            assert world.methods[1]["picture"] is None
+            await rows.nth(1).get_by_role("button", name="Cancel").click()
+            await expect(page.get_by_test_id("method-picture-view-preview")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_staff_see_the_qr_picture_but_cannot_change_it(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.assets.add("cccccccc-0000-4000-8000-000000000012")
+        world.methods = [
+            BANK,
+            {**DUITNOW, "picture": {"id": "cccccccc-0000-4000-8000-000000000012", "version": "v7"}},
+        ]
+        async with settings_page(browser, site, world, role="tenant_staff") as page:
+            preview = page.get_by_test_id("method-picture-view-preview")
+            await expect(preview).to_have_attribute(
+                "src", "/console/v1/media/cccccccc-0000-4000-8000-000000000012?v=v7"
+            )
+            await expect(preview).to_be_visible()
+            await expect(preview).to_have_js_property("complete", True)
+            controls = page.get_by_test_id("payment-methods").locator(
+                "input, select, textarea, button"
+            )
+            await expect(controls).to_have_count(0)
+            assert all(c["method"] == "GET" for c in world.calls)
+
+    await with_browser(body)
+
+
+async def test_platform_admin_names_the_tenant_on_the_picture_routes(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.methods = [dict(BANK), dict(DUITNOW)]
+        path = f"/payments?client_id={TENANT}&view=settings"
+        async with settings_page(browser, site, world, role="platform_admin", path=path) as page:
+            row = page.get_by_test_id("payment-method").nth(1)
+            await row.get_by_test_id("method-edit").click()
+            field = row.get_by_test_id("method-picture")
+            await field.get_by_test_id("method-picture-input").set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await expect(field.get_by_test_id("method-picture-preview")).to_be_visible()
+            asset = world.methods[1]["picture"]["id"]
+            await expect(field.get_by_test_id("method-picture-preview")).to_have_attribute(
+                "src", f"/console/v1/media/{asset}?client_id={TENANT}&v=v1"
+            )
+            writes_ = [c for c in world.calls if c["path"].endswith("/picture")]
+            assert [c["params"] for c in writes_] == [{"client_id": TENANT}]
+            reads = [c for c in world.calls if c["path"].startswith("media/")]
+            assert reads and all(c["params"].get("client_id") == TENANT for c in reads)
 
     await with_browser(body)

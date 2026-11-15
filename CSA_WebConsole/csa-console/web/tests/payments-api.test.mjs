@@ -314,3 +314,13 @@ test("the reject form does not say a reason is required; Void keeps its own sent
   assert.equal(pay.rejectMessage(other), pay.paymentMessage(other));
   assert.equal(pay.rejectMessage(new TypeError("fetch failed")), "The request failed. Try again.");
 });
+
+test("the QR picture route is the method's own and names the company only for a platform admin", () => {
+  const method = "aaaaaaaa-0000-4000-8000-000000000012";
+  const tenant = "77777777-7777-4777-8777-777777777777";
+  assert.equal(pay.methodPicturePath(null, method), `/console/v1/payments/methods/${method}/picture`);
+  assert.equal(
+    pay.methodPicturePath(tenant, method),
+    `/console/v1/payments/methods/${method}/picture?client_id=${tenant}`,
+  );
+});
