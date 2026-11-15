@@ -1,0 +1,227 @@
+{
+  "id": "cs_pay_with_signup_ms",
+  "matrix": "Payments: a Malay sign-up that also asks how to pay, read back then filed, all in Malay",
+  "description": "A casual Malay message asks to sign up for Plan Kecil (name and phone given) and how to pay: the reply is the Malay read-back and data note, then the Malay payment copy, and nothing is filed. 'ya betul, nak bayar macam mana?' right after the read-back files one request (the write) and gets the Malay 'received' line, then the payment copy again. Neither turn calls compose or review, and no English sentence of the facts goes out. The channel language is 'und', as Telegram and WhatsApp report it, so the words decide.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "nak daftar plan Kecil. nama saya Siti Binti Ahmad, nombor 0123456789. nak bayar macam mana?",
+      "redacted": "nak daftar plan Kecil. nama saya Siti Binti Ahmad, nombor [PHONE_0]. nak bayar macam mana?",
+      "language": "und",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "ms",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.95,
+            "payment_agent": 0.9
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Kecil",
+                "full_name": "Siti Binti Ahmad",
+                "phone": "[PHONE_0]"
+              }
+            },
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "instructions"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent",
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Pendaftaran Plan Kecil: nama Siti Binti Ahmad, telefon +60123456789. Betul ke? Balas ya untuk daftar. Tak ada apa-apa yang didaftarkan selagi awak belum balas ya.",
+          "Kami simpan nama dan nombor telefon awak dalam rekod pelanggan, supaya staf kami boleh sediakan pelan awak.",
+          "Invois KDMW-7AS: MYR 35.00 untuk Plan Sederhana, kena bayar sebelum ",
+          "Pindahan bank: Bank Sintetik, akaun 512000000021, nama Kedai Contoh Sdn Bhd.",
+          "Letak KDMW-7AS sebagai rujukan bayaran ya, senang kami padankan.",
+          "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk akaun."
+        ],
+        "reply_excludes": [
+          " anda ",
+          "Anda ",
+          " sila ",
+          "Sila ",
+          "pihak kami",
+          "Pihak kami",
+          "Sign-up for",
+          "Is that right?",
+          "Reply yes",
+          "Nothing is filed",
+          "We keep your",
+          "the team",
+          "Invoice KDMW-7AS",
+          "Bank transfer:",
+          "account 512000000021",
+          "Please put KDMW-7AS",
+          "After paying"
+        ],
+        "signup_requests": 0,
+        "request_phone": false,
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    },
+    {
+      "say": "ya betul, nak bayar macam mana?",
+      "language": "und",
+      "cassette": {
+        "Classification": {
+          "intent": "subscription",
+          "language": "ms",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "subscription_agent": 0.9,
+            "payment_agent": 0.9
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "subscription_agent",
+              "input": {
+                "action": "request_signup",
+                "plan_code": "Plan Kecil",
+                "full_name": "Siti Binti Ahmad",
+                "phone": "[PHONE_0]",
+                "confirmed": true
+              }
+            },
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "instructions"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent",
+          "subscription_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Pendaftaran awak untuk Plan Kecil dah diterima. Staf kami akan semak dulu; lepas diluluskan, awak akan dapat invois dengan cara nak bayar, dan pelan bermula bila bayaran dah disahkan. Belum ada apa-apa yang aktif lagi.",
+          "Invois KDMW-7AS: MYR 35.00 untuk Plan Sederhana, kena bayar sebelum ",
+          "Pindahan bank: Bank Sintetik, akaun 512000000021, nama Kedai Contoh Sdn Bhd.",
+          "Letak KDMW-7AS sebagai rujukan bayaran ya, senang kami padankan.",
+          "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk akaun."
+        ],
+        "reply_excludes": [
+          " anda ",
+          "Anda ",
+          " sila ",
+          "Sila ",
+          "pihak kami",
+          "Pihak kami",
+          "Your sign-up for",
+          "was received",
+          "The team will review",
+          "Nothing is active yet",
+          "approved",
+          "is now active",
+          "Invoice KDMW-7AS",
+          "Bank transfer:",
+          "account 512000000021",
+          "Please put KDMW-7AS",
+          "After paying"
+        ],
+        "signup_requests": 1,
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}

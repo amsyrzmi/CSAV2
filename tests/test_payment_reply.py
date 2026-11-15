@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from csa.core.pii import redact
 from csa.decide.llm import PlannedTask, PlanOut, StepOut
 from csa.graph.coordinator import run_turn
 from csa.graph.policy.gate import Policy
+from csa.payments.copy import local_date
 from csa.turn import deps
 from csa.turn.deps import PostgresTurnDependencies, build_llm_provider, payment_facts
 from psycopg.types.json import Jsonb
@@ -75,14 +77,24 @@ def _deps(model: Model, *, semantic_verify: bool = False) -> PostgresTurnDepende
     return made
 
 
-def _result(task_id: str, agent: str, facts: list[tuple[str, str]], *, ok: bool = True) -> Any:
+def _result(
+    task_id: str,
+    agent: str,
+    facts: list[tuple[str, str]],
+    *,
+    ok: bool = True,
+    ms: dict[str, str] | None = None,
+) -> Any:
     return AgentResult(
         ok=ok,
         status="ok" if ok else "error",
         task_id=task_id,
         agent=agent,
         data=AgentResultData(
-            facts=[Fact(id=fact_id, text=text, source=agent) for fact_id, text in facts]
+            facts=[
+                Fact(id=fact_id, text=text, source=agent, text_ms=(ms or {}).get(fact_id))
+                for fact_id, text in facts
+            ]
         ),
         error=None
         if ok
@@ -275,6 +287,163 @@ async def test_a_facts_reply_never_cuts_a_fact_in_half() -> None:
     assert short.text == f"{FACTS[1][1]}\n{FACTS[1][1]}" and len(short.fact_ids) == 2
 
 
+def _malay(state: TurnState, language: str = "ms") -> TurnState:
+    message = state.envelope.message.model_copy(update={"language": language})
+    return state.model_copy(
+        update={"envelope": state.envelope.model_copy(update={"message": message})}
+    )
+
+
+def _two_facts() -> list[tuple[str, Fact]]:
+    return [
+        (
+            "t0:a",
+            Fact(
+                id="a",
+                text="Booked: haircut.",
+                text_ms="Dah siap tempah: gunting rambut.",
+                source="s",
+            ),
+        ),
+        ("t0:b", Fact(id="b", text="Booked: shave.", source="s")),
+    ]
+
+
+async def test_facts_draft_uses_the_malay_text_on_a_malay_turn() -> None:
+    draft = deps._facts_draft(_two_facts(), "ms")
+    assert draft.text == "Dah siap tempah: gunting rambut.\nBooked: shave."
+    assert draft.language == "ms" and draft.composer == "template"
+    assert draft.fact_ids == ["t0:a", "t0:b"]
+
+
+async def test_facts_draft_falls_back_to_english_without_a_malay_text() -> None:
+    plain = [("t0:b", Fact(id="b", text="Booked: shave.", source="s"))]
+    assert deps._facts_draft(plain, "ms").text == "Booked: shave."
+
+
+async def test_english_turns_ignore_text_ms() -> None:
+    for language in ("en", "zh"):
+        assert deps._facts_draft(_two_facts(), language).text == "Booked: haircut.\nBooked: shave."
+
+
+async def test_a_malay_text_counts_toward_the_draft_limit() -> None:
+    long_ms = ("w0", Fact(id="w0", text="short", text_ms="x" * 7950, source="s"))
+    account = ("p:m", Fact(id="m", text=FACTS[1][1], source="p"))
+    draft = deps._facts_draft([long_ms, account], "ms")
+    assert draft.text == "x" * 7950 and draft.fact_ids == ["w0"]
+    assert deps._facts_draft([long_ms, account], "en").fact_ids == ["w0", "p:m"]
+
+
+async def test_text_ms_is_optional_and_never_empty() -> None:
+    assert Fact(id="a", text="t", source="s").text_ms is None
+    with pytest.raises(ValueError):
+        Fact(id="a", text="t", text_ms="", source="s")
+
+
+async def test_the_composer_input_does_not_carry_text_ms() -> None:
+    # The model is shown the facts' English text only: the same prompts whether or not a Malay
+    # text is set (so recorded goldens do not move).
+    calls: list[list[str]] = []
+    for ms in (None, "Dah siap tempah: gunting rambut."):
+        model = Model({"reply": "Booked.", "used_fact_ids": ["t0-kb_agent:booked_1"]})
+        state = _state(
+            [
+                _result(
+                    "t0-kb_agent",
+                    "kb_agent",
+                    [("booked_1", "Booked: haircut.")],
+                    ms={"booked_1": ms} if ms else None,
+                )
+            ]
+        )
+        await _deps(model)._compose(state)
+        calls.append(model.calls)
+    assert calls[0] == calls[1] and len(calls[0]) == 1
+    assert "Dah siap" not in calls[1][0] and "text_ms" not in calls[1][0]
+
+
+async def test_a_malay_payment_turn_that_wrote_tells_the_malay_write_text_first() -> None:
+    model = Model({"reply": "x", "used_fact_ids": []})
+    made = _deps(model)
+    ms_booked = "Dah siap tempah: gunting rambut, Selasa 15:00."
+    state = _malay(
+        _state(
+            [
+                _result("t0-booking_agent", "booking_agent", [BOOKED], ms={BOOKED[0]: ms_booked}),
+                _result("t1-payment_agent", "payment_agent", FACTS),
+            ],
+            actions={"t0-booking_agent": "book", "t1-payment_agent": "instructions"},
+        )
+    )
+
+    draft = await made.compose(state)
+
+    assert draft == Draft(
+        text="\n".join([ms_booked, *(text for _, text in FACTS)]),
+        language="ms",
+        fact_ids=[f"t0-booking_agent:{BOOKED[0]}", *(f"t1-payment_agent:{i}" for i, _ in FACTS)],
+        composer="template",
+    )
+    assert model.calls == []
+    # The same turn in English keeps the English write text.
+    english = await made.compose(state.model_copy(update={"envelope": _state([]).envelope}))
+    assert english.text.splitlines()[0] == BOOKED[1] and english.language == "en"
+
+
+async def test_a_first_malay_text_over_the_limit_is_cut_not_dropped() -> None:
+    first = ("w0", Fact(id="w0", text="short", text_ms="m" * 9000, source="s"))
+    draft = deps._facts_draft([first], "ms")
+    assert draft.text == "m" * deps.DRAFT_MAX and draft.fact_ids == ["w0"]
+    assert deps._facts_draft([first], "en").text == "short"
+
+
+def _telegram(state: TurnState, body: str) -> TurnState:
+    """The turn as Telegram and WhatsApp deliver it: language `und`, the words decide."""
+    message = state.envelope.message.model_copy(
+        update={"language": "und", "body_raw": body, "body_redacted": body}
+    )
+    return state.model_copy(
+        update={"envelope": state.envelope.model_copy(update={"message": message})}
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "language", "first_line"),
+    [
+        ("Saya nak tempah esok boleh tak", "ms", "Dah siap tempah: gunting rambut."),
+        ("Please book me a haircut", "en", BOOKED[1]),
+    ],
+)
+async def test_the_booking_fallback_picks_the_text_by_the_resolved_language(
+    body: str, language: str, first_line: str
+) -> None:
+    # Composing fails (here: raises), so the booking facts go out as they stand; the channel says
+    # `und`, so the turn's words decide the language of the text and of the draft.
+    made = _deps(Model(None))
+
+    async def broken(_state: TurnState) -> Draft:
+        raise RuntimeError("composer down")
+
+    made._compose = broken  # type: ignore[method-assign]
+    state = _telegram(
+        _state(
+            [
+                _result(
+                    "t0-booking_agent",
+                    "booking_agent",
+                    [BOOKED],
+                    ms={BOOKED[0]: "Dah siap tempah: gunting rambut."},
+                )
+            ],
+            actions={"t0-booking_agent": "book"},
+        ),
+        body,
+    )
+    draft = await made.compose(state)
+    assert draft.composer == "template" and draft.text == first_line
+    assert draft.language == language
+
+
 async def test_grounding_refuses_an_invented_account_number() -> None:
     state = _state(
         [_result("t1-kb_agent", "kb_agent", [("kb_1", "We take bank transfers.")])],
@@ -443,6 +612,456 @@ async def test_a_malay_message_gets_the_malay_facts(shop: Shop) -> None:
         "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
         "akaun."
     )
+
+
+class TicketAndPaymentModel(PaymentModel):
+    """Plans a ticket and the payment answer in one turn ("my card was refused, open a ticket;
+    how do I pay?"), and refuses to write or review a reply."""
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            ticket = {"action": "create", "subject": "Kad ditolak", "category": "billing"}
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="ticket_agent", input=ticket),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class TicketAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "ticket_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        ("Kad saya kena tolak, tolong buka tiket. Nak bayar macam mana?", "ms"),
+        ("My card was refused, please open a ticket. How do I pay?", "en"),
+    ],
+)
+async def test_a_ticket_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, ticket agent, payment agent and facts-only reply: on a Malay turn
+    # (the channel says "und", the words decide) the ticket line is the agent's Malay text and the
+    # payment lines are the Malay copy, so no English sentence reaches the customer.
+    from tests.test_booking_agent import conversation
+
+    contact, ref = await _company(shop)
+    chat = await conversation(shop, contact)
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = TicketAndPaymentModel({})
+    made = TicketAndPaymentTurn(
+        PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model))
+    )
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["ticket_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    rows = await shop.w.q(
+        "SELECT t.id, t.sla_due_at, c.timezone FROM tickets t JOIN clients c ON c.id = t.client_id"
+        " WHERE t.client_id = %s",
+        shop.tenant,
+    )
+    assert len(rows) == 1
+    n, due, zone = rows[0]["id"], rows[0]["sla_due_at"], rows[0]["timezone"]
+    english = (
+        f"Ticket #{n} created (billing, normal priority), target response by "
+        f"{due.astimezone(ZoneInfo(zone)):%d %b %Y}."
+    )
+    ticket = next(fact for fact in state.facts if fact.source == "ticket_agent")
+    assert ticket.text == english  # what the composer and grounding see, either way
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[0] == english
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[2]
+        assert not any("Tiket" in line or "Pindahan" in line for line in lines)
+        return
+    assert lines == [
+        f"Tiket #{n} dah dibuat (bil, keutamaan biasa), sasaran balasan paling lewat "
+        f"{local_date(due, 'ms', zone)}.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', zone)}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Ticket", "created", "priority", "Invoice", "Bank transfer", "Please", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami"):
+        assert word not in body
+
+
+class OrderAndPaymentModel(PaymentModel):
+    """Plans an order draft and the payment answer in one turn ("I want two of these; how do I
+    pay?"), and refuses to write or review a reply."""
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            order = {"action": "create_draft", "items": [{"sku": "SYN-1", "qty": 2}]}
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="order_agent", input=order),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class OrderAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "order_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        ("Saya nak order dua botol sabun. Nak bayar macam mana?", "ms"),
+        ("I want to order two bottles of soap. How do I pay?", "en"),
+    ],
+)
+async def test_an_order_draft_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, order agent (Telegram), payment agent and facts-only reply: on a
+    # Malay turn (the channel says "und", the words decide) the draft line is the agent's Malay
+    # text and the payment lines are the Malay copy, so no English sentence reaches the customer.
+    from tests.test_booking_agent import conversation
+
+    contact, ref = await _company(shop)
+    await activate_only(shop.w, shop.tenant, "orders_products")
+    chat = await conversation(shop, contact)
+    await shop.w.q(
+        "INSERT INTO products (client_id, sku, name, price, stock_qty) VALUES (%s,%s,%s,%s,%s)",
+        shop.tenant,
+        "SYN-1",
+        "Sabun Sintetik",
+        "12.50",
+        10,
+    )
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = OrderAndPaymentModel({})
+    made = OrderAndPaymentTurn(PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model)))
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["order_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    rows = await shop.w.q("SELECT id FROM orders WHERE client_id = %s", shop.tenant)
+    assert len(rows) == 1
+    n = rows[0]["id"]
+    english = (
+        f"Draft order {n}: 2 x Sabun Sintetik, total MYR 25.00. "
+        "It is not placed until you confirm it."
+    )
+    order = next(fact for fact in state.facts if fact.source == "order_agent")
+    assert order.text == english  # what the composer and grounding see, either way
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[0] == english
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[2]
+        assert not any("Draf pesanan" in line or "Pindahan" in line for line in lines)
+        return
+    zone = (await shop.w.q("SELECT timezone FROM clients WHERE id = %s", shop.tenant))[0]
+    assert lines == [
+        f"Draf pesanan {n}: 2 x Sabun Sintetik, jumlah MYR 25.00. "
+        "Pesanan ni belum dibuat lagi selagi awak tak sahkan.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', zone['timezone'])}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Draft", "placed", "confirm", "total", "Invoice", "Bank transfer", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami"):
+        assert word not in body
+
+
+class BookingAndPaymentModel(PaymentModel):
+    """Plans a booking and the payment answer in one turn ("book me a haircut on Tuesday at ten;
+    how do I pay?"), and refuses to write or review a reply."""
+
+    def __init__(self, booking: dict[str, Any]) -> None:
+        super().__init__({})
+        self.booking = booking
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="booking_agent", input=self.booking),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class BookingAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "booking_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        ("Saya nak tempah gunting rambut hari Selasa pukul 10. Nak bayar macam mana?", "ms"),
+        ("Book me a haircut on Tuesday at 10. How do I pay?", "en"),
+    ],
+)
+async def test_a_booking_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, booking agent (Telegram), payment agent and facts-only reply: on a
+    # Malay turn (the channel says "und", the words decide) the booking line is the agent's Malay
+    # text, with the Malay day and month names and the same numbers, and the payment lines are the
+    # Malay copy, so no English sentence reaches the customer. (The golden runner cannot seed
+    # bookings, so this whole turn is the booking's mixed-turn cover.)
+    from csa.bookings.bot import format_slot, format_slot_ms
+
+    from tests.test_booking_agent import conversation
+    from tests.test_bookings_api import soon_tuesday
+    from tests.test_bookings_bot import a_type
+
+    contact, ref = await _company(shop)
+    kind = await a_type(shop)
+    chat = await conversation(shop, contact)
+    slot = f"{soon_tuesday()}T10:00"
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = BookingAndPaymentModel({"action": "book", "type_id": kind["id"], "starts_at": slot})
+    made = BookingAndPaymentTurn(
+        PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model))
+    )
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["booking_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    assert [r["status"] for r in await shop.rows()] == ["confirmed"]
+    at = datetime.fromisoformat(slot).replace(tzinfo=UTC)  # the shop's zone is UTC
+    when = format_slot(at, ZoneInfo("UTC"))
+    english = f"Booking confirmed: Haircut on {when}, with Person 0, by phone."
+    booking = next(fact for fact in state.facts if fact.source == "booking_agent")
+    assert booking.text == english  # what the composer and grounding see, either way
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[0] == english
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[2]
+        assert not any("Tempahan" in line or "Pindahan" in line for line in lines)
+        return
+    malay_slot = format_slot_ms(at, ZoneInfo("UTC"))
+    assert malay_slot.startswith("Selasa ") and malay_slot.endswith(
+        f"10:00 pagi ({slot.replace('T', ' ')})"
+    )
+    assert lines == [
+        f"Tempahan dah disahkan: Haircut pada {malay_slot}, dengan Person 0, melalui telefon.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', 'UTC')}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Booking", "confirmed", "Tuesday", "with", "by phone", "Invoice", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami"):
+        assert word not in body
+
+
+class SignupAndPaymentModel(PaymentModel):
+    """Plans a sign-up and the payment answer in one turn ("sign me up for Plan Besar, I'm ...,
+    my number is ...; how do I pay?"), and refuses to write or review a reply."""
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            signup = {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Siti Binti Ahmad",
+                "phone": "[PHONE_0]",
+            }
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="subscription_agent", input=signup),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class SignupAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "subscription_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        (
+            "Nak daftar Plan Besar. Nama saya Siti Binti Ahmad, nombor 0123456789. Nak bayar "
+            "macam mana?",
+            "ms",
+        ),
+        (
+            "Sign me up for Plan Besar. I'm Siti Binti Ahmad, my number is 0123456789. How do I "
+            "pay?",
+            "en",
+        ),
+    ],
+)
+async def test_a_sign_up_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, subscription agent (Telegram), payment agent and facts-only reply: on
+    # a Malay turn (the channel says "und", the words decide) the read-back and the data note are
+    # the agent's Malay texts and the payment lines are the Malay copy, so no English sentence
+    # reaches the customer. Telegram never asks for an email, so neither note has the email clause.
+    from tests.test_booking_agent import conversation
+
+    contact, ref = await _company(shop)
+    await shop.w.q(
+        "INSERT INTO plans (client_id, code, name, price) VALUES (%s, 'besar', 'Plan Besar', 50)",
+        shop.tenant,
+    )
+    chat = await conversation(shop, contact)
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = SignupAndPaymentModel({})
+    made = SignupAndPaymentTurn(
+        PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model))
+    )
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["subscription_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    readback = (
+        "Sign-up for Plan Besar: name Siti Binti Ahmad, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
+    )
+    note = (
+        "We keep your name and phone number on your contact record so the team can set up your "
+        "plan."
+    )
+    signup = [fact for fact in state.facts if fact.source == "subscription_agent"]
+    assert [fact.text for fact in signup] == [readback, note]  # what the composer sees, either way
+    assert await shop.w.q("SELECT 1 FROM signup_requests WHERE client_id = %s", shop.tenant) == []
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[:2] == [readback, note]
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[3]
+        assert not any("Pendaftaran" in line or "Pindahan" in line for line in lines)
+        return
+    zone = (await shop.w.q("SELECT timezone FROM clients WHERE id = %s", shop.tenant))[0]
+    assert lines == [
+        "Pendaftaran Plan Besar: nama Siti Binti Ahmad, telefon +60123456789. Betul ke? Balas ya "
+        "untuk daftar. Tak ada apa-apa yang didaftarkan selagi awak belum balas ya.",
+        "Kami simpan nama dan nombor telefon awak dalam rekod pelanggan, supaya staf kami boleh "
+        "sediakan pelan awak.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', zone['timezone'])}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Sign-up", "Reply", "Nothing", "We keep", "the team", "Invoice", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami", "Kalau awak bagi e-mel"):
+        assert word not in body
 
 
 async def test_the_planner_is_told_of_the_payment_agent_and_its_input() -> None:

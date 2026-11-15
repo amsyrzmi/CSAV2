@@ -35,7 +35,7 @@ from csa.agents.orders.agent import OrderAgent
 from csa.agents.payments.agent import PaymentAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
-from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN
+from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN, EMAIL_NOT_SEEN_MS
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent, reply
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
@@ -224,6 +224,12 @@ def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
 DRAFT_MAX = 8000  # Draft.text's limit
 
 
+def _fact_text(fact: Fact, language: str) -> str:
+    """The fact's words for this reply language (resolved: "ms", "en", ...): its Malay text on a
+    Malay turn where it has one, else its English text."""
+    return fact.text_ms if language == "ms" and fact.text_ms else fact.text
+
+
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
     a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
@@ -232,16 +238,21 @@ def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     Whole facts only, up to `DRAFT_MAX` characters: a later fact that would not fit is left out,
     never cut, so an account number or a reference is never sent half. Only a first fact over
     `DRAFT_MAX` characters is cut (it must give some reply); a payment answer is far shorter:
-    `csa.payments.copy.CUSTOMER_METHODS`."""
-    kept: list[tuple[str, Fact]] = []
+    `csa.payments.copy.CUSTOMER_METHODS`.
+
+    On a Malay turn a fact that has a `text_ms` goes out in it (a write fact in Malay before the
+    payment facts, already worded in the turn's language); one without goes out in English. The
+    limit counts the words actually sent."""
+    kept: list[tuple[str, str]] = []
     size = 0
     for fact_id, fact in written:
-        extra = len(fact.text) + (1 if kept else 0)
+        words = _fact_text(fact, language)
+        extra = len(words) + (1 if kept else 0)
         if size + extra > DRAFT_MAX:
             break
-        kept.append((fact_id, fact))
+        kept.append((fact_id, words))
         size += extra
-    text = "\n".join(fact.text for _, fact in kept) or written[0][1].text[:DRAFT_MAX]
+    text = "\n".join(words for _, words in kept) or _fact_text(written[0][1], language)[:DRAFT_MAX]
     return Draft(
         text=text,
         language=language if len(language) >= 2 else "en",
@@ -672,7 +683,8 @@ class PostgresTurnDependencies:
             # The planner saw only redacted text, so it can name an address but not write one.
             real = with_real_email(task, envelope.message.body_raw)
             if real is None:
-                return reply(ctx, [EMAIL_NOT_SEEN]).model_copy(update={"task_id": task.task_id})
+                asked = reply(ctx, [EMAIL_NOT_SEEN], malay=[EMAIL_NOT_SEEN_MS])
+                return asked.model_copy(update={"task_id": task.task_id})
             task = real
         task = with_real_phone(task, envelope.message.body_raw, envelope.message.body_redacted)
         return await self._runner.execute(_resolve_order_number(task, envelope), ctx)
@@ -710,7 +722,7 @@ class PostgresTurnDependencies:
                 error_type=type(exc).__name__,
                 trace_id=str(state.envelope.trace_id),
             )
-            return _facts_draft(written, state.envelope.message.language)
+            return _facts_draft(written, _turn_language(state.envelope))
 
     async def _compose(self, state: TurnState) -> Draft:
         if state.envelope.channel == Channel.WEB and (

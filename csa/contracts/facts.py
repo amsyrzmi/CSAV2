@@ -15,6 +15,9 @@ from csa.contracts.envelope import ContractModel
 class Fact(ContractModel):
     id: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    # The same fact in Malay, for a turn where facts go out word for word (`_facts_draft`). Never
+    # shown to a model: the composer reads `text` only.
+    text_ms: str | None = Field(default=None, min_length=1)
     source: str = Field(min_length=1)
     kind: Literal["verbatim", "derived"] = "verbatim"
     as_of: datetime | None = None

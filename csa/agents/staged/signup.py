@@ -9,7 +9,8 @@ wrote (checked as a booking's is), a skip, or nothing on the next turn, and a ba
 for again once. Telegram and the web sandbox never ask. With everything collected the sign-up is
 read back and nothing is filed; it is filed only when the planner read this message as a yes
 (`confirmed`) and the chat's latest assistant message was that very read-back of these same
-details.
+details. Every fact of a sign-up turn (the plans offered included) can go out word for word, so
+each carries its Malay text too (`csa.agents.staged.subscription_facts`).
 
 The planner sees a Malaysian number only as a placeholder, which resolves only in the message that
 holds it, so what each turn collected is kept in a short-lived draft for the next: a
@@ -95,7 +96,8 @@ class _Reply:
 
     def facts(self, extra: Sequence[Fact] = ()) -> list[Fact]:
         numbered = [
-            signup_fact(kind, n, **fields) for n, (kind, fields) in enumerate(self.kinds, start=1)
+            signup_fact(kind, n, ms=True, **fields)
+            for n, (kind, fields) in enumerate(self.kinds, start=1)
         ]
         return [*numbered, *extra]
 
@@ -123,7 +125,7 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
         draft = draft.model_copy(update={"plan_code": None, "full_name": name})
         which = _Reply().add("which")
         return await _ask(
-            conn, ctx, contact_id, draft, which, plan_facts(offered), asks_email=asks_email
+            conn, ctx, contact_id, draft, which, plan_facts(offered, ms=True), asks_email=asks_email
         )
     code, plan_name = str(plan["code"]), str(plan["name"])
     ended = _ended(plan, await _held(conn, ctx.client_id, contact_id, code))
@@ -296,7 +298,7 @@ async def _file(
         offered = await db.q.fetch_all(
             "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn
         )
-        return SignupTurn(_Reply().add("which").facts(plan_facts(offered)))
+        return SignupTurn(_Reply().add("which").facts(plan_facts(offered, ms=True)))
     await _close(conn, ctx, contact_id, "used")
     if filed.outcome == "filed":
         request = filed.request

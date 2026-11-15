@@ -1,4 +1,9 @@
-"""Ticket agent: create, get, list, add_note, cancel (confirmed), reopen (LG05)."""
+"""Ticket agent: create, get, list, add_note, cancel (confirmed), reopen (LG05).
+
+A write's facts carry a Malay text (`Fact.text_ms`) beside the English: a ticket written in
+the same turn as a payment answer goes out word for word, in the turn's language. Reads (get,
+list) are never sent that way and stay English only; the composer reads `text` alone.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from csa.contracts.facts import (
 from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.payments.copy import local_date
 
 CATEGORIES = ("returns", "shipping", "product", "billing", "technical", "other")
 DEFAULT_SLA_HOURS = {"urgent": 1, "high": 4, "normal": 24, "low": 72}
@@ -45,6 +51,16 @@ _ALIASES = {
     "add_info": "add_note",
 }
 _TICKET_ID = re.compile(r"^(?:#|TKT-)?(\d{1,18})$", re.IGNORECASE)
+# The words a Malay fact uses for a ticket's category and priority.
+_CATEGORY_MS = {
+    "returns": "pemulangan",
+    "shipping": "penghantaran",
+    "product": "produk",
+    "billing": "bil",
+    "technical": "teknikal",
+    "other": "lain-lain",
+}
+_PRIORITY_MS = {"urgent": "segera", "high": "tinggi", "normal": "biasa", "low": "rendah"}
 
 
 class TicketInput(BaseModel):
@@ -157,8 +173,8 @@ class TicketAgent:
             meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
         )
 
-    def _fact(self, fact_id: str, text: str) -> Fact:
-        return Fact(id=fact_id, text=text, source=self.name)
+    def _fact(self, fact_id: str, text: str, ms: str | None = None) -> Fact:
+        return Fact(id=fact_id, text=text, text_ms=ms, source=self.name)
 
     async def _event(
         self,
@@ -196,7 +212,9 @@ class TicketAgent:
                     ctx,
                     [
                         self._fact(
-                            f"ticket_{duplicate['id']}", f"Ticket #{duplicate['id']} is open."
+                            f"ticket_{duplicate['id']}",
+                            f"Ticket #{duplicate['id']} is open.",
+                            f"Tiket #{duplicate['id']} masih terbuka.",
                         )
                     ],
                     duplicate=True,
@@ -223,13 +241,17 @@ class TicketAgent:
                 None,
                 {"category": inp.category, "priority": priority, "description": inp.description},
             )
+        due = row["sla_due_at"]
+        due_ms = local_date(due, "ms", ctx.timezone) if due is not None else "tak diketahui"
         return self._result(
             ctx,
             [
                 self._fact(
                     f"ticket_{row['id']}",
                     f"Ticket #{row['id']} created ({inp.category}, {priority} priority), "
-                    f"target response by {day(row['sla_due_at'], ctx.timezone)}.",
+                    f"target response by {day(due, ctx.timezone)}.",
+                    f"Tiket #{row['id']} dah dibuat ({_CATEGORY_MS[inp.category]}, keutamaan "
+                    f"{_PRIORITY_MS[priority]}), sasaran balasan paling lewat {due_ms}.",
                 )
             ],
             duplicate=False,
@@ -274,7 +296,10 @@ class TicketAgent:
                     ctx, "ticket_closed", "conflict", "ticket is closed", "That ticket is closed."
                 )
             await self._event(conn, ctx, row["id"], "note", None, {"note": inp.note})
-        return self._result(ctx, [self._fact(f"ticket_{row['id']}", "Your note was added.")])
+        return self._result(
+            ctx,
+            [self._fact(f"ticket_{row['id']}", "Your note was added.", "Nota awak dah ditambah.")],
+        )
 
     async def _cancel(self, ctx: AgentContext, inp: TicketInput) -> AgentResult:
         ticket_id = 0
@@ -292,7 +317,9 @@ class TicketAgent:
                     ctx,
                     [
                         self._fact(
-                            f"ticket_{row['id']}", f"Ticket #{row['id']} is already cancelled."
+                            f"ticket_{row['id']}",
+                            f"Ticket #{row['id']} is already cancelled.",
+                            f"Tiket #{row['id']} dah pun dibatalkan.",
                         )
                     ],
                     duplicate=True,
@@ -318,6 +345,9 @@ class TicketAgent:
                         f"ticket_{ticket_id}",
                         f'Cancel ticket #{ticket_id}? Tap "Yes, cancel it" to confirm. '
                         "Nothing has been cancelled yet.",
+                        # The button keeps its English label, so it is named as shown.
+                        f'Nak batalkan tiket #{ticket_id}? Tekan "Yes, cancel it" untuk sahkan. '
+                        "Belum ada apa-apa yang dibatalkan lagi.",
                     )
                 ],
                 Ui(options=[UiOption(label="Yes, cancel it", action_id=yes)]),
@@ -344,7 +374,14 @@ class TicketAgent:
                 conn, ctx, inp.ticket_id or 0, "cancelled", {"status": row["status"]}, None
             )
         return self._result(
-            ctx, [self._fact(f"ticket_{inp.ticket_id}", f"Ticket #{inp.ticket_id} was cancelled.")]
+            ctx,
+            [
+                self._fact(
+                    f"ticket_{inp.ticket_id}",
+                    f"Ticket #{inp.ticket_id} was cancelled.",
+                    f"Tiket #{inp.ticket_id} dah dibatalkan.",
+                )
+            ],
         )
 
     async def _reopen(self, ctx: AgentContext, inp: TicketInput) -> AgentResult:
@@ -359,7 +396,13 @@ class TicketAgent:
             if row["status"] not in {"cancelled", "closed", "resolved"}:
                 return self._result(
                     ctx,
-                    [self._fact(f"ticket_{row['id']}", f"Ticket #{row['id']} is already open.")],
+                    [
+                        self._fact(
+                            f"ticket_{row['id']}",
+                            f"Ticket #{row['id']} is already open.",
+                            f"Tiket #{row['id']} memang masih terbuka.",
+                        )
+                    ],
                     duplicate=True,
                 )
             if row["closed_at"] is None or ctx.now() - row["closed_at"] > REOPEN_WINDOW:
@@ -375,5 +418,12 @@ class TicketAgent:
             )
             await self._event(conn, ctx, row["id"], "reopened", {"status": row["status"]}, None)
         return self._result(
-            ctx, [self._fact(f"ticket_{row['id']}", f"Ticket #{row['id']} reopened.")]
+            ctx,
+            [
+                self._fact(
+                    f"ticket_{row['id']}",
+                    f"Ticket #{row['id']} reopened.",
+                    f"Tiket #{row['id']} dah dibuka semula.",
+                )
+            ],
         )
