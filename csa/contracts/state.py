@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from csa.contracts.envelope import Channel, ContractModel, Envelope
-from csa.contracts.facts import AgentError, AgentResult, Fact, PictureRef, Ui
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    Fact,
+    PictureRef,
+    Ui,
+    dump_without_missing_picture,
+)
 from csa.contracts.plan import Intent, Plan, Task
 
 RECENT_MESSAGES = 6
@@ -145,6 +152,10 @@ class OutboundMessage(ContractModel):
             raise ValueError("an outbound message has a picture if and only if its kind is image")
         return self
 
+    @model_serializer(mode="wrap")
+    def _omit_missing_picture(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return dump_without_missing_picture(handler, self)
+
 
 class TurnState(ContractModel):
     envelope: Envelope
@@ -189,3 +200,7 @@ class TurnState(ContractModel):
     pending_tasks: list[Task] = Field(default_factory=list, max_length=3)
     collected: int = Field(default=0, ge=0)
     loop_stop: str | None = Field(default=None, max_length=64)
+
+    @model_serializer(mode="wrap")
+    def _omit_missing_picture(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return dump_without_missing_picture(handler, self)

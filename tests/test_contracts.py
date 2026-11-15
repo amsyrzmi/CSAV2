@@ -579,7 +579,7 @@ def test_outbound_image_needs_a_picture_and_text_has_none() -> None:
 
 def test_saved_turn_state_without_picture_still_loads() -> None:
     saved = json.loads(TurnState(envelope=envelope_example()).model_dump_json())
-    saved.pop("picture")  # a state as written before this field existed
+    # No picture key is written when there is none, so this is a state as written before the field.
     saved["outbound"] = [
         {
             "trace_id": str(TRACE_ID),
@@ -666,3 +666,81 @@ def test_flat_agent_result_carries_a_picture() -> None:
                 "meta": meta,
             }
         )
+
+
+def _agent_result(picture: PictureRef | None = None) -> AgentResult:
+    return AgentResult(
+        ok=True,
+        status="ok",
+        task_id="t1",
+        agent="kb",
+        data=AgentResultData(picture=picture),
+        meta=ResultMeta(trace_id=TRACE_ID, latency_ms=1),
+    )
+
+
+def _plain_outbound() -> OutboundMessage:
+    return OutboundMessage.model_validate(_outbound())
+
+
+def test_a_missing_picture_is_not_dumped() -> None:
+    """An older process reading saved state rejects an unknown key, so a None picture must
+    not be written: not by model_dump, not by model_dump_json, at any depth."""
+    state = TurnState(
+        envelope=envelope_example(),
+        outbound=[_plain_outbound()],
+        results=[_agent_result()],
+    )
+    assert "picture" not in _plain_outbound().model_dump()
+    assert "picture" not in json.loads(_plain_outbound().model_dump_json())
+    assert "picture" not in _agent_result().data.model_dump()
+    assert "picture" not in json.loads(_agent_result().model_dump_json())["data"]
+    dumped = state.model_dump()
+    assert "picture" not in dumped
+    assert "picture" not in dumped["outbound"][0]
+    assert "picture" not in dumped["results"][0]["data"]
+    dumped_json = json.loads(state.model_dump_json())
+    assert "picture" not in dumped_json
+    assert "picture" not in dumped_json["outbound"][0]
+    assert "picture" not in dumped_json["results"][0]["data"]
+    # Set explicitly to None it is still not written.
+    assert "picture" not in TurnState(envelope=envelope_example(), picture=None).model_dump()
+
+
+def test_a_present_picture_is_dumped() -> None:
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    assert image.model_dump()["picture"]["kind"] == "payment_qr"
+    assert json.loads(image.model_dump_json())["picture"]["subject_key"] == "method-1"
+    assert _agent_result(_picture_ref()).data.model_dump()["picture"]["caption"].startswith("Duit")
+    state = TurnState(envelope=envelope_example(), picture=_picture_ref())
+    assert state.model_dump()["picture"]["kind"] == "payment_qr"
+
+
+def test_checkpoint_serializer_omits_a_missing_picture_and_round_trips_a_present_one() -> None:
+    """The LangGraph saver's own serializer, as the checkpointer uses it."""
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    serde = JsonPlusSerializer()
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    withs = (
+        image,
+        _agent_result(_picture_ref()),
+        TurnState(envelope=envelope_example(), picture=_picture_ref(), outbound=[image]),
+    )
+    withouts = (
+        _plain_outbound(),
+        _agent_result(),
+        TurnState(
+            envelope=envelope_example(),
+            outbound=[_plain_outbound()],
+            results=[_agent_result()],
+        ),
+    )
+    for without in withouts:
+        _, raw = serde.dumps_typed(without)
+        assert b"picture" not in raw
+        assert serde.loads_typed(serde.dumps_typed(without)) == without
+    for present in withs:
+        _, raw = serde.dumps_typed(present)
+        assert b"picture" in raw
+        assert serde.loads_typed(serde.dumps_typed(present)) == present
