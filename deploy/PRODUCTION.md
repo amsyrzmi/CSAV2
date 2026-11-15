@@ -872,6 +872,18 @@ it (they have no `apps.training_worker`), so stop it rather than recreating it:
 Then check readiness as above. Do not delete the local tags until a scripted deploy has succeeded.
 If migrations were applied, do not roll back; fix forward.
 
+## Pruning old images
+
+`python -m scripts.image_keep_list --scope users/<owner>` (add `--keep-newest N` or `--keep-sha <sha>`
+as needed) prints, for `csa-python` and `csa-frontend`, every registry version as `KEEP(newest)`,
+`KEEP(staged)` or `DELETE`. It only reads: it deletes nothing, and it needs the `gh` login that
+already runs the rollout scripts. It keeps the newest 20 SHA-tagged versions and every version
+tagged with a SHA that one of the newest 15 staging deployments reached with a success status. The
+database image (`csa-pg16-postgis-vector`) is never listed, because it cannot be rebuilt. The owner
+runs the deletion, from the `DELETE` rows, with a token that has `delete:packages`; run the script
+again afterwards to check the result, and keep a rollback target by passing its SHA with
+`--keep-sha`.
+
 ## Keys and who holds what
 
 | Service | S3 key | Allowed |
