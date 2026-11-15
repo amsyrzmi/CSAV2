@@ -1,6 +1,6 @@
 # Pictures: one picture each for payment QR, subscription plans, business products and training videos (design)
 
-Status: DRAFT for the owner's approval (written 2026-11-15, after the builder check; nothing is built).
+Status: DRAFT for the owner's approval (written 2026-11-15; revised after the builder check, section 15; nothing is built).
 Owner decisions so far (chat, 2026-11-15): the QR picture is sent with payment answers **and with payment
 reminders** once uploaded; the same picture feature also covers each subscription plan and each business product;
 **one picture per item**; build in two slices, **Telegram first, WhatsApp and the reminder email second** ("I'll follow
@@ -25,8 +25,9 @@ Goals
 - One shared picture store and one send path used by all four kinds (`payment_qr`, `plan`, `product`,
   `training_thumbnail`), so the second kind costs a rule and a console control, not a new pipeline.
 - Slice 1: staff upload and preview on all three uploadable kinds; the bot sends the picture on **Telegram** (QR with
-  payment answers and chat reminders, a plan or product picture on a single-subject answer); the staff console
-  sandbox chat and the Inbox show it; the training library shows generated thumbnails.
+  payment answers and chat reminders, a plan or product picture on a single-subject answer); the Inbox shows what was
+  sent; the training library shows generated thumbnails. (The staff sandbox chat is **not** part of slice 1: it runs only
+  knowledge-base queries and product reads, so it could never show the QR or a plan picture; staff verify on Telegram.)
 - A picture that cannot be sent never costs the customer the text reply.
 - No new cloud permissions: nothing in this design adds an S3 prefix, IAM grant or secret.
 
@@ -53,7 +54,9 @@ Outbound today is text only, on every channel: `OutboundMessage` (`csa/contracts
 message with key `{trace_id}:0` (`csa/graph/coordinator.py:398-419`); `_insert_outbound` (`csa/turn/deps.py:1242-1306`)
 writes `attachments = []`, `has_attachment = false`, writes `ui` only for confirmation/options/request-phone, and inserts
 the delivery row itself (`db/sql/worker/insert_delivery.sql`). `messages.attachments jsonb` and `has_attachment`
-exist and are unused for outbound (`db/schema_baseline.sql:952-965`).
+exist and are unused for outbound (`db/schema_baseline.sql:952-965`). **There is no `messages.kind` column**
+(`OutboundMessage.kind` is never stored; `get_message.sql`, `inbox/list_messages.sql` and `console/chat_turns.sql`
+select neither `kind` nor `attachments`), so an image message is recognised by its `attachments` (section 7).
 
 Delivery (`apps/delivery/main.py`): web rows are marked delivered without moving bytes (`_deliver_web`); Telegram goes
 through `TelegramAdapter.send_message` (`csa/channels/telegram.py:302-360`, JSON `sendMessage`); every Telegram error
@@ -65,16 +68,19 @@ one transaction have no guaranteed order**. The same ordering feeds the Inbox li
 The delivery process already holds a tenant-scoped `csa_app` pool and has **no object store**; its HTTP client has a
 10 s write timeout. There is no `sendPhoto`, multipart or WhatsApp media code, and no bytea use anywhere in the repo.
 
-`Ui` (`csa/contracts/facts.py:56-60`) is `extra="forbid"` and delivery re-validates stored `messages.ui` with it
+Turn state is saved to Postgres between steps (`apps/worker/main.py:278`) and every contract model rejects unknown
+fields (`csa/contracts/envelope.py:13-16`), so an older worker resuming a turn saved by a newer one could not read a
+new field either. `Ui` (`csa/contracts/facts.py:56-60`) is `extra="forbid"` and delivery re-validates stored `messages.ui` with it
 (`apps/delivery/main.py:522-549`): a new key on `Ui` would make an older delivery process reject newer rows.
 `AgentResultData` (`csa/contracts/facts.py:98-101`) carries `ui` today; `collect` merges it
 (`csa/graph/coordinator.py:267-285`). Facts carry no plan code or SKU (ids are constants such as `subscription_plan_N`,
-`product_{sku}`). The approval path re-inserts the text with empty attachments and copies `ui` only for
+`product_{sku}`), and the product detail read `orders/get_product.sql` does not select the product `id` (it must). The approval path re-inserts the text with empty attachments and copies `ui` only for
 confirmation/options (`csa/approval/service.py:316-353`). The LLM history query reads `redacted_body` for both
 directions (`db/sql/turn/recent_messages.sql`).
 
 "Web chat" is the **staff console sandbox** only (`db/sql/console/chat_turns.sql`, `csa/console/chat.py:57-59`,
-`ChatMessages.tsx:53-66`), which renders `{id, body}` as text. There is no public customer web chat
+`ChatMessages.tsx:53-66`), which renders `{id, body}` as text and runs only knowledge-base queries and product reads
+(`csa/agents/runner.py:115-131`). There is no public customer web chat
 (`docs/CSA_SERVICE_SCOPE_BRIEF_FOR_CLAUDE.md:95`, an untracked file: treat as unreviewed). The Inbox renders
 `message.body` in a `<p>` (`web/components/console/inbox/MessageItem.tsx`), so an unknown message kind shows its
 caption and does not break.
@@ -87,10 +93,12 @@ products"), so a picture uploaded for a product cannot be overwritten by a sync.
 `web/components/console/SubscriptionsWorkspace.tsx:910-1085`. Payment methods: `payment_methods`
 (`0590_payments_core.sql:192-205`), console in `csa/payments/api.py` and `PaymentsWorkspace.tsx:881-1060`.
 
-Write roles today: plans, writes = platform_admin, tenant_admin, tenant_staff (`subscriptions/api.py:54-58`); payment
-methods, writes = platform_admin, tenant_admin only (`payments/api.py:46-47,99-101,122-149`); products have no
-writers; reads are any human tenant member. Whether `package_gate("orders_products","marketplaces")` means any-of or
-all-of is **not verified**.
+Roles today. **Plans:** reads any same-tenant human, writes platform_admin, tenant_admin, tenant_staff
+(`subscriptions/api.py:49-58`), package `subscriptions`. **Payment methods:** reads and writes need a staff role
+(`STAFF_ROLES`, `payments/api.py:46,94-97`) plus the `subscriptions` package, writes are admin only
+(`payments/api.py:99-101,122-149`); methods cannot be deleted (only deactivated) and a method's kind cannot change
+(`payments/contracts.py:94-98`). **Products:** no writers; reads need `business_actor`, which refuses read_only
+(`csa/console/business.py:305-319`), plus a package gate that is **any-of** (`csa/console/services.py:427-441`).
 
 Upload template: `csa/console/multipart.py` (`upload_form`, `BoundedParser`, 10 MiB cap) and `csa/hr/documents.py`
 (`sniff` requires the extension to agree with the magic bytes, `_checked_name`, SHA-256 and size). Frontend: `web/lib/api.ts`
@@ -148,9 +156,11 @@ Both tables: RLS `tenant_isolation`, `REVOKE ALL ... FROM PUBLIC, csa_ro, csa_id
 DELETE TO csa_app`. `csa_ro` gets `SELECT` on `media_assets` only (reporting needs no bytes).
 Per-tenant limit: at most 300 pictures (a counted check in the upload transaction, 409 `picture_limit`).
 No foreign key to the subject (the table is polymorphic), so **every owner's delete path deletes its picture in the same
-transaction**: payment method delete, plan (archived plans keep theirs; there is no delete today), product (no delete
-today), training item delete (`db/sql/training/delete.sql`). One test per path proves no orphan is left; a sweep for
-orphans is not built (YAGNI), and a missing subject at send time skips the picture (section 8).
+transaction**. Today only the training item delete (`db/sql/training/delete.sql`) deletes anything: payment methods are
+only deactivated, plans are archived and products have no delete, and all three keep their picture (inactive and archived
+subjects are never offered by the bot). When PR 4 adds a product delete it must call `delete_for`. A test proves the
+training path leaves no orphan; a sweep for orphans is not built (YAGNI), and a missing subject at send time skips the
+picture (section 8).
 
 ## 6. Console: upload, read, permissions
 
@@ -166,10 +176,14 @@ Routes (writes mirror the owner's own write rules; each is audited `media.pictur
   tenant_staff).
 - `PUT|DELETE /console/v1/business/products/{id}/picture`: platform_admin, tenant_admin, tenant_staff (a new rule,
   the same people who can see products today; PR 4 may tighten it).
-- **One read route** `GET /console/v1/media/{asset_id}`: any human tenant session (read_only included; a platform admin
-  passes `client_id`), returns the bytes with `Content-Type`, `ETag` = `sha256`, `Cache-Control: private, no-cache`
-  (revalidate), `nosniff`. It refuses `training_thumbnail` assets (404): those are served only by the training route
-  (section 9) so the "readers see only ready items" rule holds.
+- **One read route** `GET /console/v1/media/{asset_id}` that applies **the owning thing's own read rule**, chosen by the
+  asset's kind from one small policy table in `csa/media`: `payment_qr` = staff role + `subscriptions` package; `plan` =
+  any same-tenant human + `subscriptions` package; `product` = `business_actor` + the any-of package gate (so read_only
+  cannot read product pictures, as it cannot read products); a platform admin passes `client_id`. Anything else is 404
+  (never 403, so existence is not revealed). It returns the bytes with `Content-Type`, `ETag` = `sha256`, `Cache-Control:
+  private, no-cache` (revalidate), `nosniff`. It refuses `training_thumbnail` assets (404): those are served only by the
+  training route (section 9) so the "readers see only ready items" rule holds. Tests cover each kind for each role and for
+  a package that is off.
 Existing out-contracts gain `picture: {id, version} | null` (`PlanOut`, the payment method out, `BusinessProduct`) and the
 training `ItemOut` gains `thumbnail: {version} | null`; the contract snapshot and `docs/console_openapi.json` are
 regenerated. Web: one `PictureField` component (preview through the read route, "Choose picture", "Replace", "Remove",
@@ -179,27 +193,34 @@ row and the product card.
 ## 7. Where the bot sends a picture (rules; at most one picture message per reply)
 
 The agent sets `AgentResultData.picture = PictureRef(kind, subject_key)` only when **one** thing is the subject:
-- **Payment QR:** the payment agent's "how to pay" answer (the instructions answer, and the status answer when it lists how
-  to pay): the first active `qr` method, by sort order, that has a picture. Chat reminders (section 10).
+- **Payment QR:** only where the payment agent **lists the payment methods**: the "how to pay" answer for a customer with
+  an open invoice that is not already claimed paid (`csa/agents/payments/agent.py:133-170`, the `_instructions` path): the
+  first active `qr` method, by sort order, that has a picture. A customer with nothing due, or an invoice already paid,
+  gets the same text answers as today and no picture; the status answer never lists methods and sends none. Chat
+  reminders (section 10).
 - **Plan:** sign-up `readback` (the plan being signed up for), and a `status`/`mine` answer that names exactly one
   subscription. Never `plans` (list), the "which plan" question, pause/cancel/change answers.
-- **Product:** the single-product detail answer (`_detail`, by SKU). Never search, availability or the order draft.
+- **Product:** the single-product detail answer (`_detail`, by SKU; its read gains the product `id`). Never search,
+  availability or the order draft.
 - **Training thumbnail:** never sent to customers.
 Priority when several agents in one turn ask: the order of the coordinator's results; the first picture wins and the rest
 are dropped (so "pay" plus a plan question sends the QR). `coordinator.emit` turns the chosen `PictureRef` into one
-extra `OutboundMessage` of **`kind="image"`** with the asset id in `attachments` and a caption from code
+extra `OutboundMessage` of **`kind="image"`** (an internal marker). It is stored with `has_attachment = true` and
+`attachments = [{"type": "image", "asset_id": ...}]` (no new column); every place that must tell an image message apart
+reads `attachments`, and a caption from code
 (`DuitNow QR: {label}`, the plan or product name; Malay `QR DuitNow: {label}`; no amounts, so no grounding change).
 It is created only for a channel that supports it (**Telegram in slice 1**; WhatsApp and web-API rows get no image
 message, the text reply is unchanged). A held-for-approval reply that is later approved sends **text only** (the
-approval path does not copy attachments; stated, cost small). The LLM history query **excludes `kind='image'`** rows.
+approval path does not copy attachments; stated, cost small). The LLM history query **excludes messages with
+`has_attachment`** (outbound pictures; no inbound row has this set today for outbound).
 
 ## 8. Sending, order and failure (the part that must not hurt the text reply)
 
 - **Order:** `_insert_outbound` writes the image message and its delivery row first and the text second, both with
   `created_at = clock_timestamp()` (strictly increasing inside the transaction) instead of the `now()` default, so
   `claim.sql` and the Inbox order them image, then text. Tests assert the order for two rows written in one transaction.
-- **Delivery:** `get_message.sql` also selects `kind` and `attachments`; for `kind="image"` the delivery worker reads the
-  bytes from `media_asset_data` by asset id (tenant-scoped pool), and `TelegramAdapter.send_photo(chat_id, data,
+- **Delivery:** `get_message.sql` also selects `attachments`; for a message whose first attachment is an image the delivery
+  worker reads the bytes from `media_asset_data` by asset id (tenant-scoped pool), and `TelegramAdapter.send_photo(chat_id, data,
   media_type, caption)` posts multipart `sendPhoto`. Because the asset is read at send time, a replaced picture sends
   the new one and a removed picture is detected.
 - **Failure policy for image rows only (never for text):** at most **two attempts**; a missing asset or subject, an
@@ -207,10 +228,14 @@ approval path does not copy attachments; stated, cost small). The LLM history qu
   reason** (`picture_unavailable`, `picture_rejected`, `picture_failed`) that appears in the delivery dead letters and
   the existing staff notice, and the text row proceeds. A rate-limit `retry_after` is honoured within the two attempts.
   (Builder detail: reuse the existing delivery status vocabulary; add a terminal "skipped" only if none exists.)
-- **Rolling deploy:** the contract change is optional-default, and **PR 2 ships delivery support before any emitter** (the
-  emitting change is a later PR), so no older delivery process meets an `image` row.
-- **Staff views:** the sandbox chat returns an image message as `{id, body, picture}` and renders it inline through the
-  read route; the Inbox renders an `image` message as a small thumbnail with its caption.
+- **Rolling deploy (two deploys):** the new contract fields are optional-default and the saved turn state is read by both
+  old and new workers, so **PR 2a ships everything that must be able to read the new shapes** (the optional
+  `AgentResultData.picture` and `OutboundMessage.kind="image"`, delivery support, the Inbox display) and **PR 2b ships the
+  emitters** (the coordinator rule and the payment agent's QR rule). After PR 2a is on production, no older process can
+  meet a new shape. (An older delivery that did meet an image row would send its caption as plain text: annoying, not
+  harmful.)
+- **Staff views:** the Inbox renders a message with an image attachment as a small thumbnail through the read route, with
+  its caption. The sandbox chat is unchanged (text only).
 - **QR scannability risk (stated, not solved here):** Telegram recompresses photos; a small or highly compressed QR may
   stop scanning. Mitigation: the 800 px hint; acceptance test = the owner scans the QR received on a phone from
   staging. If it fails, the fallback is to send the QR with `sendDocument` (uncompressed; shown as a file).
@@ -223,9 +248,10 @@ file is what plays").
    (empty environment, rlimits, forced demuxer, protocol whitelist): `-ss <t> -map 0:v:0 -an -sn -dn -frames:v 1`, scaled
    to 320 px wide, JPEG to stdout (stays under `PROBE_MAX_OUTPUT_BYTES` 256 KiB; if the build's JPEG encoder is missing,
    the build task picks PNG or WebP and says so). `t = min(1 s, 10% of the duration)`.
-2. **When:** in `video_transcribe._run` straight after a successful probe and **before** the no-audio/silence early
-   returns (so those videos get one), skipped when `video_codec is None`. The once-only marker is the existence of the
-   asset row (a retried attempt checks it first).
+2. **When:** in `video_transcribe._run` as its own step **outside** the `duration_ms is None` probe block
+   (`video_transcribe.py:262-268`, which a retry skips) and **before** the no-audio/silence early returns (so those videos
+   get one). `check_playable` already refuses a file with no video stream (`csa/training/media.py:245`), so no
+   audio-only check is needed. The once-only marker is the existence of the asset row, checked first on every attempt.
 3. **Isolation:** the whole step catches everything (`MediaRefused`, `MediaUnavailable`, `ValueError`, storage and
    database errors) except `JobLost` and `ForeignKeyViolation`, logs a code only (no path, no stderr), calls
    `job.heartbeat()` first, and writes in its own `job.tx()`. A thumbnail failure never fails, retries or deletes the item.
@@ -254,15 +280,17 @@ slice 1 (no WhatsApp media), and the **reminder email** gets no picture in slice
 support; `OutgoingMail`, `csa/console/mailer.py:41-46`). The existing rules are unchanged (WhatsApp only within the last
 23 hours, quiet hours, replies-off).
 
-## 11. Pull requests (four, each independently shippable; one migration, in PR 1)
+## 11. Pull requests (five including the 2a/2b split, each independently shippable; one migration, in PR 1)
 
 1. **Picture store and console upload:** migration 0610, `csa/media`, the read route, the three upload routes, the
    `PictureField` on the QR method form, plan row and product card, contracts/OpenAPI, delete paths, tests. Staff can
    upload and preview; nothing is sent yet.
-2. **Outbound image path and the QR:** `OutboundMessage.kind="image"`, `AgentResultData.picture`, ordering, delivery
-   (`send_photo`, failure policy), Inbox and sandbox display, the payment agent's QR rule, reminders on Telegram.
-   Acceptance: the owner receives the QR on Telegram from staging and scans it. Delivery support ships before emitters.
-3. **Plan and product pictures in single-subject answers.**
+2. **Outbound image path and the QR, in two deploys.** **2a** (readers first): `OutboundMessage.kind="image"` and
+   `AgentResultData.picture` as optional fields, `attachments` read in `get_message.sql`, the Inbox list and the history
+   query, ordering, delivery (`send_photo`, failure policy), Inbox display. **2b** (emitters): the coordinator rule, the
+   payment agent's QR rule, reminders on Telegram. Acceptance after 2b: the owner receives the QR on Telegram from staging
+   and scans it.
+3. **Plan and product pictures in single-subject answers** (adds the product `id` to the detail read).
 4. **Training thumbnail** (after its measurement run).
 Slice 2 (WhatsApp, reminder email) is a separate short design addendum after PR 2 is proven on Telegram.
 
@@ -286,7 +314,11 @@ Reminder email: an inline image (`add_related`) in `payment_reminder_mail`.
 - A reply that lists plans or products sends no picture; "pay" plus a plan question sends one picture (the QR).
 - A held-for-approval reply approved later sends text only (stated behaviour).
 - A thumbnail failure never fails a transcription job; audio-only never reaches it; a video with no audio still gets one.
-- Deleting a training item, a payment method or (later) a product deletes its picture in the same transaction.
+- Deleting a training item deletes its picture in the same transaction (a product delete does the same when PR 4 adds it).
+- `GET /console/v1/media/{id}` follows the owning thing's read rule: read_only cannot read a product or QR picture; a
+  package that is off hides it; an unknown or foreign id is 404.
+- A customer with nothing due, or an invoice already paid, gets no QR; a status answer sends none.
+- An image message is excluded from the model's history and shows as a thumbnail in the Inbox.
 
 ## 14. Calls I made (owner can override; each says what it costs if wrong)
 
@@ -298,4 +330,24 @@ Reminder email: an inline image (`add_related`) in `payment_reminder_mail`.
 - **Approved-held replies send text only.** Cost: a held reply loses its picture (rare).
 - **The image message is excluded from model history.** Cost: the model does not know a QR was sent.
 - **No thumbnail backfill, no replace-upload for training.** Cost: placeholders on old videos until a later action.
-- **Provider numbers unverified; verified before PR 2 is built.** Cost: a number in this document may change.
+- **Provider numbers unverified; verified before PR 2a is built.** Cost: a number in this document may change.
+- **No picture in the staff sandbox chat in slice 1.** It cannot run the payment or subscription agents, so only product
+  pictures could ever show; staff verify on Telegram and in the Inbox. Cost: a web branch in `emit`, `chat_turns.sql` and
+  `_deliver_web` if wanted later.
+- **The picture follows the owning thing's read rule** (so read_only cannot read product or QR pictures). Cost: more
+  tests than one blanket rule.
+- **The QR goes only where the methods are listed** (an open, unclaimed invoice), never to "nothing due".
+- **PR 2 is two deploys** (2a readers, 2b emitters). Cost: one more small PR.
+- **No `messages.kind` column:** an image is recognised by `attachments`. Cost: none now; a `kind` column later if more
+  attachment types arrive.
+
+## 15. Builder check (2026-11-15) and what changed
+
+A fresh reviewer planned the build from this document and checked section 3 against the code. It found and this revision
+fixed: there is **no `messages.kind` column** (images are recognised by `attachments`, section 7); **payment methods cannot
+be deleted** (section 5); the "any tenant member can read" claim was wrong for two kinds (the read route now follows each
+kind's own rule, section 6); `package_gate` is **any-of** (section 3); the product detail read lacks the product `id`
+(section 3, PR 3); the rolling-deploy argument had to cover the worker's saved turn state too (PR 2 is split into 2a and
+2b, sections 8 and 11); the training thumbnail step was placed inside a block a retry skips (section 9.2, `check_playable`
+already refuses a file with no video stream). Its four questions were answered by calls recorded in section 14: no sandbox
+pictures in slice 1, per-kind read rules, the QR only where methods are listed, PR 2 in two deploys.
