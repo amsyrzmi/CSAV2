@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from typing import Any, LiteralString
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -14,12 +16,14 @@ from csa.agents.order_approval.agent import OrderApprovalAgent
 from csa.agents.orders.agent import OrderAgent
 from csa.agents.recorder import PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
+from csa.agents.tickets import agent as tickets
 from csa.agents.tickets.agent import TicketAgent
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Callback
 from csa.contracts.plan import Task
 from csa.contracts.state import Context
 from csa.core import db
+from csa.payments.copy import local_date
 from csa.turn.deps import PostgresTurnDependencies
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -472,6 +476,97 @@ async def test_ticket_lifecycle_with_confirmed_cancel(world: World) -> None:
         world.ctx("t7", contact=world.other_contact_id),
     )
     assert other.error is not None and other.error.code == "ticket_not_found"
+
+
+_FORMAL_MALAY = re.compile(r"\b(?:anda|sila)\b|pihak kami", re.IGNORECASE)
+
+
+def _in_malay(fact: Any) -> str:
+    """The fact's Malay text: set, holding none of the fact's English sentences and none of the
+    formal words the customer copy avoids."""
+    assert fact.text_ms, fact.id
+    for sentence in re.split(r"(?<=[.?!])\s+", fact.text):
+        assert sentence.strip() not in fact.text_ms, (fact.id, sentence)
+    assert _FORMAL_MALAY.search(fact.text_ms) is None, fact.text_ms
+    return str(fact.text_ms)
+
+
+async def test_ticket_write_facts_carry_a_malay_text(world: World) -> None:
+    # Every fact a ticket write gives keeps today's English text and carries a Malay one, for a
+    # Malay turn where the facts go out word for word (a ticket written beside a payment answer).
+    created = await _ticket(
+        world, "create", "m1", subject="Kad ditolak", category="billing", priority="urgent"
+    )
+    fact = created.data.facts[0]
+    n = int(fact.id.split("_")[1])
+    due = world.q("SELECT sla_due_at FROM tickets WHERE id=%s", n)[0][0]
+    zone = ZoneInfo("Asia/Kuala_Lumpur")
+    assert fact.text == (
+        f"Ticket #{n} created (billing, high priority), "
+        f"target response by {due.astimezone(zone):%d %b %Y}."
+    )
+    assert _in_malay(fact) == (
+        f"Tiket #{n} dah dibuat (bil, keutamaan tinggi), sasaran balasan paling lewat "
+        f"{local_date(due, 'ms', zone)}."
+    )
+
+    dup = (await _ticket(world, "create", "m2", subject="kad ditolak", category="billing")).data
+    assert dup.facts[0].text == f"Ticket #{n} is open."
+    assert _in_malay(dup.facts[0]) == f"Tiket #{n} masih terbuka."
+
+    note = (await _ticket(world, "add_note", "m3", ticket_id=n, note="dua kali")).data.facts[0]
+    assert note.text == "Your note was added."
+    assert _in_malay(note) == "Nota awak dah ditambah."
+
+    ask = await _ticket(world, "cancel", "m4", ticket_id=n)
+    assert ask.data.facts[0].text == (
+        f'Cancel ticket #{n}? Tap "Yes, cancel it" to confirm. Nothing has been cancelled yet.'
+    )
+    # The button keeps its label, so the Malay text names it as the customer sees it.
+    assert _in_malay(ask.data.facts[0]) == (
+        f'Nak batalkan tiket #{n}? Tekan "Yes, cancel it" untuk sahkan. '
+        "Belum ada apa-apa yang dibatalkan lagi."
+    )
+    assert [o.label for o in ask.data.ui.options] == ["Yes, cancel it"]
+    yes = ask.data.ui.options[0].action_id
+    assert await world.store.consume(yes, client_id=world.client_id, contact_id=world.contact_id)
+    done = await world.runner.execute(
+        Task(
+            task_id="t",
+            agent="ticket_agent",
+            input={
+                "action": "cancel",
+                "ticket_id": n,
+                "callback_id": str(CallbackCodec.decode(yes)),
+            },
+        ),
+        world.ctx("m5", callback=yes),
+    )
+    assert done.data.facts[0].text == f"Ticket #{n} was cancelled."
+    assert _in_malay(done.data.facts[0]) == f"Tiket #{n} dah dibatalkan."
+
+    again = (await _ticket(world, "cancel", "m6", ticket_id=n)).data.facts[0]
+    assert again.text == f"Ticket #{n} is already cancelled."
+    assert _in_malay(again) == f"Tiket #{n} dah pun dibatalkan."
+
+    reopened = (await _ticket(world, "reopen", "m7", ticket_id=n)).data.facts[0]
+    assert reopened.text == f"Ticket #{n} reopened."
+    assert _in_malay(reopened) == f"Tiket #{n} dah dibuka semula."
+
+    still = (await _ticket(world, "reopen", "m8", ticket_id=n)).data.facts[0]
+    assert still.text == f"Ticket #{n} is already open."
+    assert _in_malay(still) == f"Tiket #{n} memang masih terbuka."
+
+    # Reads never go out word for word (a payment reply leaves them out): English only.
+    looked = (await _ticket(world, "get", "m9", ticket_id=n)).data.facts[0]
+    assert looked.text_ms is None and looked.text.startswith(f"Ticket #{n}: Kad ditolak")
+
+
+async def test_every_ticket_category_and_priority_has_a_malay_word() -> None:
+    assert set(tickets._CATEGORY_MS) == set(tickets.CATEGORIES)
+    assert set(tickets._PRIORITY_MS) == set(tickets.DEFAULT_SLA_HOURS)
+    words = {*tickets._CATEGORY_MS.values(), *tickets._PRIORITY_MS.values()}
+    assert "" not in words and not words & {*tickets.CATEGORIES, *tickets.DEFAULT_SLA_HOURS}
 
 
 async def _approve(world: World, action: str, order_id: str, target: uuid.UUID, key: str) -> Any:

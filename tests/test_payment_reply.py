@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from csa.core.pii import redact
 from csa.decide.llm import PlannedTask, PlanOut, StepOut
 from csa.graph.coordinator import run_turn
 from csa.graph.policy.gate import Policy
+from csa.payments.copy import local_date
 from csa.turn import deps
 from csa.turn.deps import PostgresTurnDependencies, build_llm_provider, payment_facts
 from psycopg.types.json import Jsonb
@@ -610,6 +612,111 @@ async def test_a_malay_message_gets_the_malay_facts(shop: Shop) -> None:
         "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
         "akaun."
     )
+
+
+class TicketAndPaymentModel(PaymentModel):
+    """Plans a ticket and the payment answer in one turn ("my card was refused, open a ticket;
+    how do I pay?"), and refuses to write or review a reply."""
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            ticket = {"action": "create", "subject": "Kad ditolak", "category": "billing"}
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="ticket_agent", input=ticket),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class TicketAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "ticket_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        ("Kad saya kena tolak, tolong buka tiket. Nak bayar macam mana?", "ms"),
+        ("My card was refused, please open a ticket. How do I pay?", "en"),
+    ],
+)
+async def test_a_ticket_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, ticket agent, payment agent and facts-only reply: on a Malay turn
+    # (the channel says "und", the words decide) the ticket line is the agent's Malay text and the
+    # payment lines are the Malay copy, so no English sentence reaches the customer.
+    from tests.test_booking_agent import conversation
+
+    contact, ref = await _company(shop)
+    chat = await conversation(shop, contact)
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = TicketAndPaymentModel({})
+    made = TicketAndPaymentTurn(
+        PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model))
+    )
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["ticket_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    rows = await shop.w.q(
+        "SELECT t.id, t.sla_due_at, c.timezone FROM tickets t JOIN clients c ON c.id = t.client_id"
+        " WHERE t.client_id = %s",
+        shop.tenant,
+    )
+    assert len(rows) == 1
+    n, due, zone = rows[0]["id"], rows[0]["sla_due_at"], rows[0]["timezone"]
+    english = (
+        f"Ticket #{n} created (billing, normal priority), target response by "
+        f"{due.astimezone(ZoneInfo(zone)):%d %b %Y}."
+    )
+    ticket = next(fact for fact in state.facts if fact.source == "ticket_agent")
+    assert ticket.text == english  # what the composer and grounding see, either way
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[0] == english
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[2]
+        assert not any("Tiket" in line or "Pindahan" in line for line in lines)
+        return
+    assert lines == [
+        f"Tiket #{n} dah dibuat (bil, keutamaan biasa), sasaran balasan paling lewat "
+        f"{local_date(due, 'ms', zone)}.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', zone)}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Ticket", "created", "priority", "Invoice", "Bank transfer", "Please", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami"):
+        assert word not in body
 
 
 async def test_the_planner_is_told_of_the_payment_agent_and_its_input() -> None:
