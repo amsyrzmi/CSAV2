@@ -78,7 +78,7 @@ Staging mounts a volume for the local root on the gateway and the training worke
 `/var/lib/csa/training-uploads`); the customer-facing worker and delivery never mount it.
 `scripts/staging_reset.py` lists that volume, so a reset empties it with the database. A migration
 stops every app service when applied, the training worker included, as the rollout tools say;
-`0600` and `0601` are the latest.
+`0600` and `0601` are the training migrations (`0610` adds the picture store).
 
 ## Turning the package on for a company
 

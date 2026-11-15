@@ -689,6 +689,13 @@ and `ADD CONSTRAINT training_items_kind_check CHECK (kind IN ('pdf'));`, and las
 public.schema_migrations WHERE version = '0600';`, or the runner thinks it is still applied. Then start
 the older images.
 
+**Roll back migration 0610.** Needed when going back to an image older than the pictures release: its
+readiness check wants the highest applied version to equal its own. Stop the services, then, as the
+database owner: `DROP TABLE public.media_asset_data, public.media_assets;` (every uploaded picture is
+lost, and the QR, plan, product and training thumbnail pictures must be uploaded again), and last
+`DELETE FROM public.schema_migrations WHERE version = '0610';`, or the runner thinks it is still
+applied. Then start the older images.
+
 ## Payments
 
 Payments 1 (migrations 0590 and 0591). A company with the Subscriptions package makes invoices for its
