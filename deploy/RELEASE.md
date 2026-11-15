@@ -838,7 +838,7 @@ The next slice is **staging preparation only**, not execution:
 
 | Prerequisite | Evidence or decision required before execution |
 | --- | --- |
-| Exact release inputs | Main CI passed; next verify archive checksums/source/platform/origin and approve Python/frontend registry manifest digests. CI only creates three-day review archives; registry publication requires separate approval. |
+| Exact release inputs | Main CI passed; next verify archive checksums/source/platform/origin and approve Python/frontend registry manifest digests. CI only creates seven-day review archives; registry publication requires separate approval. |
 | Secret delivery | Choose and validate the deployment mechanism for the proposal's `external: true` secrets. Docker Compose 2.40.3 is installed, but successful secret provisioning has not been demonstrated; the file is not an executable recipe for ordinary local Compose as-is. Do not assume Swarm-style external secrets are available. |
 | Separate credentials | Generate new staging-only owner/app/read-only/identity passwords and encryption key through a private provisioning procedure, with a disabled synthetic model key. Do not copy `.env.local` or rotate existing dev/production credentials as a staging shortcut. |
 | Database and storage | Approve a new `csa_staging` database/volume, baseline plus ordered migrations, identity bootstrap, and UID/GID 1000 upload-volume initialization. No existing dev or production database is a staging target. |
