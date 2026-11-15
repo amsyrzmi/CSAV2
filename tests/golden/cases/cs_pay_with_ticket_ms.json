@@ -1,7 +1,7 @@
 {
   "id": "cs_pay_with_ticket_ms",
   "matrix": "Payments: a Malay message that opens a ticket and asks how to pay gets one all-Malay reply",
-  "description": "One casual Malay message ('kad saya kena tolak... tolong buka tiket, nak bayar macam mana?') opens a billing ticket and asks how to pay. The reply is the facts as they stand, with no compose or review call: the ticket agent's Malay line first, then the Malay payment copy, and no English sentence of either fact.",
+  "description": "One casual Malay message ('kad saya kena tolak... tolong buka tiket, nak bayar macam mana?') opens a billing ticket and asks how to pay. The reply is the facts as they stand, with no compose or review call: the ticket agent's Malay line first, then the Malay payment copy, and no English sentence of either fact. The channel language is 'und', as Telegram and WhatsApp report it, so the words decide.",
   "seed": {
     "plans": [
       {
@@ -49,7 +49,7 @@
   "turns": [
     {
       "say": "kad saya kena tolak masa bayar, tolong buka tiket. nak bayar macam mana eh?",
-      "language": "ms",
+      "language": "und",
       "cassette": {
         "Classification": {
           "intent": "billing_invoice",

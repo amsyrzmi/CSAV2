@@ -1,7 +1,7 @@
 {
   "id": "cs_pay_with_signup_ms",
   "matrix": "Payments: a Malay sign-up that also asks how to pay, read back then filed, all in Malay",
-  "description": "A casual Malay message asks to sign up for Plan Kecil (name and phone given) and how to pay: the reply is the Malay read-back and data note, then the Malay payment copy, and nothing is filed. 'betul, nak bayar kat mana?' right after the read-back files one request (the write) and gets the Malay 'received' line, then the payment copy again. Neither turn calls compose or review, and no English sentence of the facts goes out.",
+  "description": "A casual Malay message asks to sign up for Plan Kecil (name and phone given) and how to pay: the reply is the Malay read-back and data note, then the Malay payment copy, and nothing is filed. 'ya betul, nak bayar macam mana?' right after the read-back files one request (the write) and gets the Malay 'received' line, then the payment copy again. Neither turn calls compose or review, and no English sentence of the facts goes out. The channel language is 'und', as Telegram and WhatsApp report it, so the words decide.",
   "seed": {
     "plans": [
       {
@@ -50,7 +50,7 @@
     {
       "say": "nak daftar plan Kecil. nama saya Siti Binti Ahmad, nombor 0123456789. nak bayar macam mana?",
       "redacted": "nak daftar plan Kecil. nama saya Siti Binti Ahmad, nombor [PHONE_0]. nak bayar macam mana?",
-      "language": "ms",
+      "language": "und",
       "cassette": {
         "Classification": {
           "intent": "subscription",
@@ -137,8 +137,8 @@
       }
     },
     {
-      "say": "betul. nak bayar kat mana?",
-      "language": "ms",
+      "say": "ya betul, nak bayar macam mana?",
+      "language": "und",
       "cassette": {
         "Classification": {
           "intent": "subscription",
