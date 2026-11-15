@@ -874,15 +874,26 @@ If migrations were applied, do not roll back; fix forward.
 
 ## Pruning old images
 
-`python -m scripts.image_keep_list --scope users/<owner>` (add `--keep-newest N` or `--keep-sha <sha>`
-as needed) prints, for `csa-python` and `csa-frontend`, every registry version as `KEEP(newest)`,
-`KEEP(staged)` or `DELETE`. It only reads: it deletes nothing, and it needs the `gh` login that
-already runs the rollout scripts. It keeps the newest 20 SHA-tagged versions and every version
-tagged with a SHA that one of the newest 15 staging deployments reached with a success status. The
-database image (`csa-pg16-postgis-vector`) is never listed, because it cannot be rebuilt. The owner
-runs the deletion, from the `DELETE` rows, with a token that has `delete:packages`; run the script
-again afterwards to check the result, and keep a rollback target by passing its SHA with
-`--keep-sha`.
+Step 0, before running anything: the script cannot see what production runs, so read it and pass it.
+Find the commit SHA production runs now and the one it ran before (for example from the last two
+`deploy-production` plan or apply run summaries, or from the image references on the instance), and
+pass both, each as `--production-sha <40-character SHA>`. The option is required. The staged
+records only exist since about 2026-11-13, so images older than that have no record and are
+protected only if you pass them.
+
+Then run `python -m scripts.image_keep_list --scope users/<owner> --production-sha <current>
+--production-sha <previous>` (add `--keep-newest N`, at least 1, or `--keep-sha <sha>` for extras).
+It prints, for `csa-python` and `csa-frontend`, every registry version as `KEEP(newest)`,
+`KEEP(production)`, `KEEP(staged)`, `KEEP(extra)`, `DELETE` or `REVIEW`. It only reads: it deletes
+nothing, and it needs the `gh` login that already runs the rollout scripts. It keeps the newest 20
+SHA-tagged versions, every version tagged with a production SHA, and every version tagged with a
+SHA that one of the newest 15 staging deployments reached with a success status; it warns above the
+tables when it finds no staged deployment. Only a SHA-tagged version outside that set is `DELETE`. A
+version with no SHA tag (untagged, or only `latest` and the like) is `REVIEW`: it can be a child
+manifest of an image index, so it is never proposed for deletion and the owner decides from its
+digest and tags. The database image (`csa-pg16-postgis-vector`) is never listed, because it cannot
+be rebuilt. The owner runs the deletion, from the `DELETE` rows, with a token that has
+`delete:packages`; run the script again afterwards to check the result.
 
 ## Keys and who holds what
 

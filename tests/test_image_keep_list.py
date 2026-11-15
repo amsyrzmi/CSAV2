@@ -95,10 +95,43 @@ def test_exactly_n_versions_gives_no_delete_candidates():
     assert plan.delete == ()
 
 
-def test_an_untagged_version_outside_the_newest_n_is_a_candidate():
+def review_ids(plan: ikl.PrunePlan) -> set[int]:
+    return {item.id for item in plan.review}
+
+
+def test_an_untagged_version_outside_the_newest_n_is_for_review_never_delete():
     versions = [*tagged(6), version(0)]  # untagged and the oldest
     plan = plan_prune(versions, frozenset(), keep_newest=5)
+    assert deleted_ids(plan) == {1001}
+    assert review_ids(plan) == {1000}
+
+
+@pytest.mark.parametrize("tags", [("latest",), ("abc1234",), ("bootstrap-2026",), (f"{10:040X}",)])
+def test_a_version_with_only_non_sha_tags_outside_the_newest_n_is_for_review(tags: tuple[str, ...]):
+    versions = [*tagged(6), version(0, *tags)]
+    plan = plan_prune(versions, frozenset(), keep_newest=5)
+    assert review_ids(plan) == {1000}
+    assert 1000 not in deleted_ids(plan)
+
+
+def test_a_sha_tag_beside_latest_outside_the_keep_set_is_delete():
+    versions = [*tagged(6), version(0, sha(0), "latest")]
+    plan = plan_prune(versions, frozenset(), keep_newest=5)
     assert deleted_ids(plan) == {1000, 1001}
+    assert plan.review == ()
+
+
+def test_a_staged_or_production_sha_beside_latest_is_kept():
+    versions = [*tagged(8), version(0, sha(0), "latest")]
+    plan = plan_prune(versions, frozenset({sha(0)}), keep_newest=5)
+    assert 1000 in kept_ids(plan)
+
+
+def test_a_non_sha_tagged_version_newer_than_the_cut_is_kept():
+    versions = [*tagged(6), version(7, "latest", day=28)]
+    plan = plan_prune(versions, frozenset(), keep_newest=5)
+    assert 1007 in kept_ids(plan)
+    assert plan.review == ()
 
 
 def test_an_untagged_version_newer_than_the_cut_is_kept():
@@ -107,6 +140,7 @@ def test_an_untagged_version_newer_than_the_cut_is_kept():
     plan = plan_prune(versions, frozenset(), keep_newest=5)
     assert 1007 in kept_ids(plan)
     assert 1007 not in deleted_ids(plan)
+    assert 1007 not in review_ids(plan)
     assert deleted_ids(plan) == {1001}
 
 
@@ -144,13 +178,40 @@ def test_every_version_lands_in_exactly_one_list():
     versions = [*tagged(12), version(30), version(31, sha(31), sha(32))]
     plan = plan_prune(versions, frozenset({sha(3)}), keep_newest=4)
     assert kept_ids(plan).isdisjoint(deleted_ids(plan))
-    assert kept_ids(plan) | deleted_ids(plan) == {v.id for v in versions}
+    assert kept_ids(plan).isdisjoint(review_ids(plan))
+    assert deleted_ids(plan).isdisjoint(review_ids(plan))
+    assert kept_ids(plan) | deleted_ids(plan) | review_ids(plan) == {v.id for v in versions}
 
 
 def test_no_versions_gives_an_empty_plan():
     plan = plan_prune([], frozenset())
     assert plan.keep == ()
     assert plan.delete == ()
+    assert plan.review == ()
+
+
+def test_production_and_extra_shas_are_kept_with_their_own_reasons():
+    plan = plan_prune(
+        tagged(30),
+        frozenset({sha(3)}),
+        keep_newest=5,
+        production_shas=frozenset({sha(1), sha(3)}),
+        extra_shas=frozenset({sha(2), sha(26)}),
+    )
+    reasons = {keep.version.id: keep.reason for keep in plan.keep}
+    assert reasons[1001] == "production"
+    assert reasons[1003] == "production"  # production wins over staged
+    assert reasons[1002] == "extra"
+    assert reasons[1026] == "newest"  # newest wins over extra
+    assert reasons[1030] == "newest"
+    assert 1004 in deleted_ids(plan)
+
+
+def test_a_production_sha_older_than_everything_else_is_never_a_candidate():
+    versions = tagged(60)
+    plan = plan_prune(versions, frozenset(), production_shas=frozenset({sha(1)}))
+    assert 1001 in kept_ids(plan)
+    assert 1001 not in deleted_ids(plan)
 
 
 # --- the command -------------------------------------------------------------------------------
@@ -165,10 +226,10 @@ def api_version(item: Version) -> dict[str, object]:
     }
 
 
-def paginated(versions: Sequence[Version], page: int = 100) -> str:
+def paginated(versions: Sequence[Version], page: int = 100, joiner: str = "\n") -> str:
     """What ``gh api --paginate`` prints: one JSON array per page, back to back."""
     chunks = [versions[i : i + page] for i in range(0, len(versions), page)]
-    return "\n".join(json.dumps([api_version(v) for v in chunk], indent=1) for chunk in chunks)
+    return joiner.join(json.dumps([api_version(v) for v in chunk], indent=1) for chunk in chunks)
 
 
 def deployment(number: int, commit: str) -> dict[str, object]:
@@ -210,11 +271,19 @@ def runner_for(
     )
 
 
-def run(runner: FakeRunner, *args: str) -> tuple[int, str, str]:
+PRODUCTION = ["--production-sha", sha(900), "--production-sha", sha(901)]
+
+
+def run(runner: FakeRunner, *args: str, production: bool = True) -> tuple[int, str, str]:
     lines: list[str] = []
     errors: list[str] = []
+    extra = PRODUCTION if production else []
     code = ikl.main(
-        ["--scope", SCOPE, *args], runner=runner, out=lines.append, err=errors.append, repo=REPO
+        ["--scope", SCOPE, *extra, *args],
+        runner=runner,
+        out=lines.append,
+        err=errors.append,
+        repo=REPO,
     )
     return code, "\n".join(lines), "\n".join(errors)
 
@@ -289,7 +358,7 @@ def test_keep_sha_extras_are_kept():
     assert code == 0
     for number in (4, 5):
         line = next(x for x in out.splitlines() if str(1000 + number) in x and "csa" not in x)
-        assert "KEEP(staged)" in line
+        assert "KEEP(extra)" in line
 
 
 def test_keep_newest_changes_the_cut():
@@ -299,12 +368,129 @@ def test_keep_newest_changes_the_cut():
     assert out.count("DELETE") == 2
 
 
-def test_a_malformed_keep_sha_is_refused_before_any_call():
+@pytest.mark.parametrize("option", ["--keep-sha", "--production-sha"])
+@pytest.mark.parametrize("value", ["not-a-sha", f"{10:040X}", sha(1)[:39], ""])
+def test_a_malformed_sha_is_refused_before_any_call(option: str, value: str):
     runner = runner_for(tagged(3), tagged(3))
     with pytest.raises(SystemExit) as stop:
-        run(runner, "--keep-sha", "not-a-sha")
+        run(runner, option, value)
     assert stop.value.code == 2
     assert runner.calls == []
+
+
+def test_production_sha_is_required(capsys: pytest.CaptureFixture[str]):
+    runner = runner_for(tagged(3), tagged(3))
+    with pytest.raises(SystemExit) as stop:
+        run(runner, production=False)
+    assert stop.value.code == 2
+    assert "--production-sha" in capsys.readouterr().err
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x", "1.5"])
+def test_keep_newest_below_one_is_refused_before_any_call(value: str):
+    runner = runner_for(tagged(3), tagged(3))
+    with pytest.raises(SystemExit) as stop:
+        run(runner, "--keep-newest", value)
+    assert stop.value.code == 2
+    assert runner.calls == []
+
+
+def test_production_shas_are_kept_with_their_reason_even_when_old():
+    runner = runner_for(tagged(30), tagged(1))
+    code, out, _ = run(
+        runner, "--production-sha", sha(1), "--production-sha", sha(2), production=False
+    )
+    assert code == 0
+    for number in (1, 2):
+        line = next(x for x in out.splitlines() if str(1000 + number) in x and "csa" not in x)
+        assert "KEEP(production)" in line
+    assert out.count("DELETE") == 8  # 10 outside the newest 20, minus the two production
+
+
+def test_review_rows_are_never_delete_and_show_digest_and_tags():
+    python = [*tagged(25), version(0, "latest"), version(-1)]
+    runner = runner_for(python, tagged(1))
+    code, out, _ = run(runner)
+    assert code == 0
+    review = [x for x in out.splitlines() if x.endswith("REVIEW")]
+    assert len(review) == 2
+    assert any("latest" in x and digest(0) in x for x in review)
+    assert out.count("DELETE") == 5
+
+
+def test_duplicate_version_ids_from_paging_are_counted_once():
+    python = [*tagged(25), version(6, sha(6))]  # a repeat of the 20th newest
+    runner = runner_for(python, tagged(1))
+    code, out, _ = run(runner)
+    assert code == 0
+    rows = [x for x in out.splitlines() if x.startswith("1006\t")]
+    assert len(rows) == 1
+    assert "KEEP(newest)" in rows[0]
+    assert "csa-python: 25 versions" in out
+
+
+def test_keep_wins_over_delete_in_the_table():
+    item = version(1, sha(1))
+    plan = ikl.PrunePlan(keep=(ikl.Keep(item, "newest"),), delete=(item,), review=())
+    lines = ikl.format_table("csa-python", [item], plan)
+    assert lines[-1].endswith("KEEP(newest)")
+
+
+def test_pages_joined_without_a_separator_are_read():
+    python = tagged(230)
+    runner = FakeRunner(
+        [
+            (has("csa-python/versions"), ok(paginated(python, joiner=""))),
+            (has("csa-frontend/versions"), ok(paginated(tagged(1)))),
+            (has("/deployments"), ok("[]")),
+        ]
+    )
+    assert "][" in paginated(python, joiner="")
+    code, out, _ = run(runner)
+    assert code == 0
+    assert out.count("DELETE") == 210
+
+
+def test_parse_pages_reads_arrays_back_to_back():
+    assert ikl.parse_pages("[1,2][3]\n[4]", "x") == [1, 2, 3, 4]
+    assert ikl.parse_pages("", "x") == []
+
+
+def test_a_staged_summary_is_printed_above_the_tables():
+    runner = runner_for(
+        tagged(30),
+        tagged(1),
+        deployments=[deployment(1, sha(2)), deployment(3, sha(3)), deployment(2, sha(4))],
+        statuses={1: ["success"], 2: ["failure"], 3: ["success"]},
+    )
+    code, out, _ = run(runner)
+    assert code == 0
+    lines = out.splitlines()
+    summary = next(i for i, x in enumerate(lines) if x.startswith("Staged:"))
+    table = next(i for i, x in enumerate(lines) if x.startswith("csa-python:"))
+    assert summary < table
+    assert "2 SHAs" in lines[summary]
+    assert "2026-02-01" in lines[summary]
+    assert "2026-02-03" in lines[summary]
+    assert "WARNING" not in out
+
+
+@pytest.mark.parametrize("answer", ["[]", None])
+def test_no_staged_deployment_warns_above_the_tables_and_still_exits_zero(answer: str | None):
+    runner = runner_for(
+        tagged(30),
+        tagged(1),
+        deployments=[deployment(1, sha(2))] if answer is None else [],
+        statuses={1: ["failure"]},
+    )
+    code, out, _ = run(runner)
+    assert code == 0
+    lines = out.splitlines()
+    warning = next(i for i, x in enumerate(lines) if x.startswith("WARNING: no staged deployment"))
+    assert "--production-sha/--keep-sha" in lines[warning]
+    assert "newest 20" in lines[warning]
+    assert warning < next(i for i, x in enumerate(lines) if x.startswith("csa-python:"))
 
 
 @pytest.mark.parametrize(
@@ -314,7 +500,11 @@ def test_a_malformed_scope_is_refused_before_any_call(scope: str):
     runner = runner_for(tagged(3), tagged(3))
     with pytest.raises(SystemExit) as stop:
         ikl.main(
-            ["--scope", scope], runner=runner, out=lambda _: None, err=lambda _: None, repo=REPO
+            ["--scope", scope, *PRODUCTION],
+            runner=runner,
+            out=lambda _: None,
+            err=lambda _: None,
+            repo=REPO,
         )
     assert stop.value.code == 2
     assert runner.calls == []
@@ -322,7 +512,7 @@ def test_a_malformed_scope_is_refused_before_any_call(scope: str):
 
 def test_the_default_scope_comes_from_the_staging_target():
     runner = runner_for(tagged(2), tagged(2))
-    code = ikl.main([], runner=runner, out=lambda _: None, err=lambda _: None, repo=REPO)
+    code = ikl.main(PRODUCTION, runner=runner, out=lambda _: None, err=lambda _: None, repo=REPO)
     assert code == 0
     assert any(
         f"/{ikl.STAGING.package_scope}/packages/container/csa-python" in " ".join(a)
