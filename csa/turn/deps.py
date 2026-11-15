@@ -224,6 +224,13 @@ def payment_facts(state: TurnState) -> list[tuple[str, Fact]]:
 DRAFT_MAX = 8000  # Draft.text's limit
 
 
+def _fact_text(fact: Fact, language: str) -> str:
+    """The fact's words for this reply language: its Malay text on a Malay turn where it has
+    one, else its English text."""
+    malay = language.strip().lower().replace("_", "-").split("-")[0] == "ms"
+    return fact.text_ms if malay and fact.text_ms else fact.text
+
+
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     """Agent facts, as they stand, as the reply (the agent writes them to be read by a customer):
     a booking write's, or a payment answer's after the turn's other writes. Marked `template`, so
@@ -232,16 +239,21 @@ def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
     Whole facts only, up to `DRAFT_MAX` characters: a later fact that would not fit is left out,
     never cut, so an account number or a reference is never sent half. Only a first fact over
     `DRAFT_MAX` characters is cut (it must give some reply); a payment answer is far shorter:
-    `csa.payments.copy.CUSTOMER_METHODS`."""
-    kept: list[tuple[str, Fact]] = []
+    `csa.payments.copy.CUSTOMER_METHODS`.
+
+    On a Malay turn a fact that has a `text_ms` goes out in it (a write fact in Malay before the
+    payment facts, already worded in the turn's language); one without goes out in English. The
+    limit counts the words actually sent."""
+    kept: list[tuple[str, str]] = []
     size = 0
     for fact_id, fact in written:
-        extra = len(fact.text) + (1 if kept else 0)
+        words = _fact_text(fact, language)
+        extra = len(words) + (1 if kept else 0)
         if size + extra > DRAFT_MAX:
             break
-        kept.append((fact_id, fact))
+        kept.append((fact_id, words))
         size += extra
-    text = "\n".join(fact.text for _, fact in kept) or written[0][1].text[:DRAFT_MAX]
+    text = "\n".join(words for _, words in kept) or _fact_text(written[0][1], language)[:DRAFT_MAX]
     return Draft(
         text=text,
         language=language if len(language) >= 2 else "en",

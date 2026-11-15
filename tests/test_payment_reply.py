@@ -75,14 +75,24 @@ def _deps(model: Model, *, semantic_verify: bool = False) -> PostgresTurnDepende
     return made
 
 
-def _result(task_id: str, agent: str, facts: list[tuple[str, str]], *, ok: bool = True) -> Any:
+def _result(
+    task_id: str,
+    agent: str,
+    facts: list[tuple[str, str]],
+    *,
+    ok: bool = True,
+    ms: dict[str, str] | None = None,
+) -> Any:
     return AgentResult(
         ok=ok,
         status="ok" if ok else "error",
         task_id=task_id,
         agent=agent,
         data=AgentResultData(
-            facts=[Fact(id=fact_id, text=text, source=agent) for fact_id, text in facts]
+            facts=[
+                Fact(id=fact_id, text=text, source=agent, text_ms=(ms or {}).get(fact_id))
+                for fact_id, text in facts
+            ]
         ),
         error=None
         if ok
@@ -273,6 +283,110 @@ async def test_a_facts_reply_never_cuts_a_fact_in_half() -> None:
     assert whole.text == FACTS[1][1] and whole.fact_ids == ["pay:payment_method_1"]
     short = deps._facts_draft([account, account], "en")
     assert short.text == f"{FACTS[1][1]}\n{FACTS[1][1]}" and len(short.fact_ids) == 2
+
+
+def _malay(state: TurnState, language: str = "ms") -> TurnState:
+    message = state.envelope.message.model_copy(update={"language": language})
+    return state.model_copy(
+        update={"envelope": state.envelope.model_copy(update={"message": message})}
+    )
+
+
+def _two_facts() -> list[tuple[str, Fact]]:
+    return [
+        (
+            "t0:a",
+            Fact(
+                id="a",
+                text="Booked: haircut.",
+                text_ms="Dah siap tempah: gunting rambut.",
+                source="s",
+            ),
+        ),
+        ("t0:b", Fact(id="b", text="Booked: shave.", source="s")),
+    ]
+
+
+async def test_facts_draft_uses_the_malay_text_on_a_malay_turn() -> None:
+    draft = deps._facts_draft(_two_facts(), "ms")
+    assert draft.text == "Dah siap tempah: gunting rambut.\nBooked: shave."
+    assert draft.language == "ms" and draft.composer == "template"
+    assert draft.fact_ids == ["t0:a", "t0:b"]
+    assert deps._facts_draft(_two_facts(), "ms-MY").text.startswith("Dah siap tempah")
+
+
+async def test_facts_draft_falls_back_to_english_without_a_malay_text() -> None:
+    plain = [("t0:b", Fact(id="b", text="Booked: shave.", source="s"))]
+    assert deps._facts_draft(plain, "ms").text == "Booked: shave."
+
+
+async def test_english_turns_ignore_text_ms() -> None:
+    for language in ("en", "und", "zh"):
+        assert deps._facts_draft(_two_facts(), language).text == "Booked: haircut.\nBooked: shave."
+
+
+async def test_a_malay_text_counts_toward_the_draft_limit() -> None:
+    long_ms = ("w0", Fact(id="w0", text="short", text_ms="x" * 7950, source="s"))
+    account = ("p:m", Fact(id="m", text=FACTS[1][1], source="p"))
+    draft = deps._facts_draft([long_ms, account], "ms")
+    assert draft.text == "x" * 7950 and draft.fact_ids == ["w0"]
+    assert deps._facts_draft([long_ms, account], "en").fact_ids == ["w0", "p:m"]
+
+
+async def test_text_ms_is_optional_and_never_empty() -> None:
+    assert Fact(id="a", text="t", source="s").text_ms is None
+    with pytest.raises(ValueError):
+        Fact(id="a", text="t", text_ms="", source="s")
+
+
+async def test_the_composer_input_does_not_carry_text_ms() -> None:
+    # The model is shown the facts' English text only: the same prompts whether or not a Malay
+    # text is set (so recorded goldens do not move).
+    calls: list[list[str]] = []
+    for ms in (None, "Dah siap tempah: gunting rambut."):
+        model = Model({"reply": "Booked.", "used_fact_ids": ["t0-kb_agent:booked_1"]})
+        state = _state(
+            [
+                _result(
+                    "t0-kb_agent",
+                    "kb_agent",
+                    [("booked_1", "Booked: haircut.")],
+                    ms={"booked_1": ms} if ms else None,
+                )
+            ]
+        )
+        await _deps(model)._compose(state)
+        calls.append(model.calls)
+    assert calls[0] == calls[1] and len(calls[0]) == 1
+    assert "Dah siap" not in calls[1][0] and "text_ms" not in calls[1][0]
+
+
+async def test_a_malay_payment_turn_that_wrote_tells_the_malay_write_text_first() -> None:
+    model = Model({"reply": "x", "used_fact_ids": []})
+    made = _deps(model)
+    ms_booked = "Dah siap tempah: gunting rambut, Selasa 15:00."
+    state = _malay(
+        _state(
+            [
+                _result("t0-booking_agent", "booking_agent", [BOOKED], ms={BOOKED[0]: ms_booked}),
+                _result("t1-payment_agent", "payment_agent", FACTS),
+            ],
+            actions={"t0-booking_agent": "book", "t1-payment_agent": "instructions"},
+        )
+    )
+
+    draft = await made.compose(state)
+
+    assert draft == Draft(
+        text="\n".join([ms_booked, *(text for _, text in FACTS)]),
+        language="ms",
+        fact_ids=[f"t0-booking_agent:{BOOKED[0]}", *(f"t1-payment_agent:{i}" for i, _ in FACTS)],
+        composer="template",
+    )
+    assert model.calls == []
+    # The same turn in English keeps the English write text.
+    english = await made.compose(state.model_copy(update={"envelope": _state([]).envelope}))
+    assert english.text.splitlines()[0] == BOOKED[1] and english.language == "en"
 
 
 async def test_grounding_refuses_an_invented_account_number() -> None:
