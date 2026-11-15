@@ -263,8 +263,8 @@ jobs:
     needs: [gate, tests, frontend]
     runs-on: ubuntu-latest
     # Build-only artifacts. The image build runs on pull requests to catch Dockerfile breakage; the
-    # bundle is uploaded only for a push to main, where the publish workflow needs it. No registry
-    # write or deployment.
+    # bundle is uploaded only for a push to main or a manual run, where the publish workflow needs
+    # it. No registry write or deployment.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

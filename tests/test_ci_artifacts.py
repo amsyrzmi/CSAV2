@@ -44,5 +44,3 @@ def test_the_main_run_still_uploads_the_bundle_the_publish_workflow_downloads() 
 
 def test_the_bundle_is_kept_three_days() -> None:
     assert _bundle_upload_step()["with"]["retention-days"] == 3
-    # The publish workflow runs right after the main run; three days is a comfortable margin.
-    assert _bundle_upload_step()["with"]["retention-days"] >= 3
