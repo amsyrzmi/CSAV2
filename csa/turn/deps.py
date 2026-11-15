@@ -225,10 +225,9 @@ DRAFT_MAX = 8000  # Draft.text's limit
 
 
 def _fact_text(fact: Fact, language: str) -> str:
-    """The fact's words for this reply language: its Malay text on a Malay turn where it has
-    one, else its English text."""
-    malay = language.strip().lower().replace("_", "-").split("-")[0] == "ms"
-    return fact.text_ms if malay and fact.text_ms else fact.text
+    """The fact's words for this reply language (resolved: "ms", "en", ...): its Malay text on a
+    Malay turn where it has one, else its English text."""
+    return fact.text_ms if language == "ms" and fact.text_ms else fact.text
 
 
 def _facts_draft(written: list[tuple[str, Fact]], language: str) -> Draft:
@@ -722,7 +721,7 @@ class PostgresTurnDependencies:
                 error_type=type(exc).__name__,
                 trace_id=str(state.envelope.trace_id),
             )
-            return _facts_draft(written, state.envelope.message.language)
+            return _facts_draft(written, _turn_language(state.envelope))
 
     async def _compose(self, state: TurnState) -> Draft:
         if state.envelope.channel == Channel.WEB and (

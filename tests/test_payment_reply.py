@@ -312,7 +312,6 @@ async def test_facts_draft_uses_the_malay_text_on_a_malay_turn() -> None:
     assert draft.text == "Dah siap tempah: gunting rambut.\nBooked: shave."
     assert draft.language == "ms" and draft.composer == "template"
     assert draft.fact_ids == ["t0:a", "t0:b"]
-    assert deps._facts_draft(_two_facts(), "ms-MY").text.startswith("Dah siap tempah")
 
 
 async def test_facts_draft_falls_back_to_english_without_a_malay_text() -> None:
@@ -321,7 +320,7 @@ async def test_facts_draft_falls_back_to_english_without_a_malay_text() -> None:
 
 
 async def test_english_turns_ignore_text_ms() -> None:
-    for language in ("en", "und", "zh"):
+    for language in ("en", "zh"):
         assert deps._facts_draft(_two_facts(), language).text == "Booked: haircut.\nBooked: shave."
 
 
@@ -387,6 +386,60 @@ async def test_a_malay_payment_turn_that_wrote_tells_the_malay_write_text_first(
     # The same turn in English keeps the English write text.
     english = await made.compose(state.model_copy(update={"envelope": _state([]).envelope}))
     assert english.text.splitlines()[0] == BOOKED[1] and english.language == "en"
+
+
+async def test_a_first_malay_text_over_the_limit_is_cut_not_dropped() -> None:
+    first = ("w0", Fact(id="w0", text="short", text_ms="m" * 9000, source="s"))
+    draft = deps._facts_draft([first], "ms")
+    assert draft.text == "m" * deps.DRAFT_MAX and draft.fact_ids == ["w0"]
+    assert deps._facts_draft([first], "en").text == "short"
+
+
+def _telegram(state: TurnState, body: str) -> TurnState:
+    """The turn as Telegram and WhatsApp deliver it: language `und`, the words decide."""
+    message = state.envelope.message.model_copy(
+        update={"language": "und", "body_raw": body, "body_redacted": body}
+    )
+    return state.model_copy(
+        update={"envelope": state.envelope.model_copy(update={"message": message})}
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "language", "first_line"),
+    [
+        ("Saya nak tempah esok boleh tak", "ms", "Dah siap tempah: gunting rambut."),
+        ("Please book me a haircut", "en", BOOKED[1]),
+    ],
+)
+async def test_the_booking_fallback_picks_the_text_by_the_resolved_language(
+    body: str, language: str, first_line: str
+) -> None:
+    # Composing fails (here: raises), so the booking facts go out as they stand; the channel says
+    # `und`, so the turn's words decide the language of the text and of the draft.
+    made = _deps(Model(None))
+
+    async def broken(_state: TurnState) -> Draft:
+        raise RuntimeError("composer down")
+
+    made._compose = broken  # type: ignore[method-assign]
+    state = _telegram(
+        _state(
+            [
+                _result(
+                    "t0-booking_agent",
+                    "booking_agent",
+                    [BOOKED],
+                    ms={BOOKED[0]: "Dah siap tempah: gunting rambut."},
+                )
+            ],
+            actions={"t0-booking_agent": "book"},
+        ),
+        body,
+    )
+    draft = await made.compose(state)
+    assert draft.composer == "template" and draft.text == first_line
+    assert draft.language == language
 
 
 async def test_grounding_refuses_an_invented_account_number() -> None:
