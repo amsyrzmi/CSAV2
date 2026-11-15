@@ -940,7 +940,7 @@ a pending subscription whose opening invoice is overdue is expired at the next r
 pause rule then apply again from the next run, with one reminder (the newest owed step), not a burst. Tell the
 customer from the Inbox; if they say they paid again, the bot notes a new claim.
 
-The SQL below stays as the operator fallback when the console is unavailable. Run it as the database owner in one
+The console is the normal way; this SQL is the fallback when the console is unavailable. Run it as the database owner in one
 transaction: look, put the invoice back to "Waiting for payment", and write an audit row. Each statement must
 report one row:
 

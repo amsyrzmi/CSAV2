@@ -22,6 +22,7 @@ import {
   paymentMessage,
   putSettings,
   setupMessage,
+  rejectMessage,
   rejectStaleMessage,
   staleMessage,
   STATUS_LABELS,
@@ -696,7 +697,7 @@ function RejectClaimForm({ tenantId, invoice, onCancel, onDone, onStale }: {
         onStale(stale);
         return;
       }
-      setError(paymentMessage(cause));
+      setError(rejectMessage(cause));
       setBusy(false);
     }
   }

@@ -343,6 +343,12 @@ export function rejectStaleMessage(cause: unknown): string | null {
   return staleMessage(cause);
 }
 
+/** `paymentMessage` for the Reject claim form, whose reason is optional: `invalid_reason` only means too long. */
+export function rejectMessage(cause: unknown): string {
+  if (cause instanceof ApiError && cause.code === "invalid_reason") return "A reason can be up to 300 characters.";
+  return paymentMessage(cause);
+}
+
 /** The 403 for this login's role: the page says Payments is for admins and staff. */
 export function isNoAccess(cause: unknown): boolean {
   return cause instanceof ApiError && cause.status === 403 && cause.code === ROLE_REFUSED;

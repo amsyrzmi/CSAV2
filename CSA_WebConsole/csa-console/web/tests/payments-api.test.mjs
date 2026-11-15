@@ -303,3 +303,14 @@ test("rejecting a claim: its refusals read in plain words and the drawer keeps t
     new TypeError("fetch failed"),
   ]) assert.equal(pay.rejectStaleMessage(cause), null, String(cause.message));
 });
+
+test("the reject form does not say a reason is required; Void keeps its own sentence", () => {
+  const invalid = new ApiError(422, "invalid_reason", "invalid_reason");
+  assert.equal(pay.rejectMessage(invalid), "A reason can be up to 300 characters.");
+  // Void's reason is required, so its wording is unchanged.
+  assert.equal(pay.paymentMessage(invalid), "Write a reason of up to 300 characters.");
+  // Every other refusal reads as it does everywhere else.
+  const other = new ApiError(409, "claim_not_open", "claim_not_open");
+  assert.equal(pay.rejectMessage(other), pay.paymentMessage(other));
+  assert.equal(pay.rejectMessage(new TypeError("fetch failed")), "The request failed. Try again.");
+});
