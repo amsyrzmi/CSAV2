@@ -134,24 +134,30 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
     if verified is None and inp.phone is not None:
         typed = normalise_my_phone(inp.phone)
         if typed is None:
-            return await _ask(conn, ctx, contact_id, draft, _Reply().add("phone_invalid"))
+            return await _ask(
+                conn, ctx, contact_id, draft, _Reply().add("phone_invalid"), asks_email=asks_email
+            )
         draft = draft.model_copy(update={"phone": typed})
     if name is None:
         missing = _Reply().add("missing", plan=plan_name, field="full name")
-        return await _ask(conn, ctx, contact_id, draft, missing)
+        return await _ask(conn, ctx, contact_id, draft, missing, asks_email=asks_email)
     if verified is None and typed is None:
         # The button once on Telegram; after that (a share that verified nothing, or a customer
         # who would rather type) the number is asked in words, one question per turn.
         share = ctx.channel == "telegram" and not draft.asked_share
         draft = draft.model_copy(update={"asked_share": draft.asked_share or share})
         missing = _Reply().add("missing", plan=plan_name, field="phone number")
-        return await _ask(conn, ctx, contact_id, draft, missing, request_phone=share)
+        return await _ask(
+            conn, ctx, contact_id, draft, missing, request_phone=share, asks_email=asks_email
+        )
     phone = verified or typed
     assert phone is not None
     if asks_email:
         draft, question = _email_step(draft, inp)
         if question is not None:
-            return await _ask(conn, ctx, contact_id, draft, _Reply().add(question))
+            return await _ask(
+                conn, ctx, contact_id, draft, _Reply().add(question), asks_email=asks_email
+            )
     email = draft.email if asks_email else None
     key = [code, name, _VERIFIED_KEY if verified else phone]
     if asks_email:
@@ -166,7 +172,7 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
     read = _Reply().add(
         "readback", plan=plan_name, name=name, phone=shown, email=email, with_email=asks_email
     )
-    return await _ask(conn, ctx, contact_id, draft, read)
+    return await _ask(conn, ctx, contact_id, draft, read, asks_email=asks_email)
 
 
 async def _asks_email(conn: Conn, ctx: AgentContext, own: dict[str, Any] | None) -> bool:
@@ -313,10 +319,14 @@ async def _ask(
     extra: Sequence[Fact] = (),
     *,
     request_phone: bool = False,
+    asks_email: bool = False,
 ) -> SignupTurn:
-    """Ask for the next thing (or read back), telling the data note in the first asking turn."""
+    """Ask for the next thing (or read back), telling the data note in the first asking turn.
+
+    `asks_email`: this sign-up asks for an email, so the note also says what an email is used for.
+    """
     if not draft.noted:
-        reply.add("data_note")
+        reply.add("data_note", with_email=asks_email)
         draft = draft.model_copy(update={"noted": True})
     await _save(conn, ctx, contact_id, draft)
     return SignupTurn(reply.facts(extra), request_phone=request_phone)

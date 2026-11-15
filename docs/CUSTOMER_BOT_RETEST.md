@@ -127,6 +127,13 @@ customer types stays on the sign-up request and is not written to the contact (o
 verified is). Read it in the Telegram and WhatsApp runs above and decide whether the wording should say "on
 your sign-up request" or leave the promise as it is.
 
+On WhatsApp, in a turn that asks for the email (payments on, the contact has no address), the data sentence
+is followed by "If you give us your email, we use it for payment reminders and booking messages." Check it
+in a WhatsApp sign-up (it appears once, in the first reply that asks for something), and that a Telegram
+sign-up and a WhatsApp sign-up with payments off or an address on file show the sentence without it. The
+clause has no Malay text of its own yet (Malay write facts, a later change): in a Malay chat the composer
+rewrites the English fact.
+
 ## Payments
 
 Run this after the rollout that carries migrations 0590 and 0591 (invoices with references, payment

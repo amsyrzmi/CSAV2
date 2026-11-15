@@ -1068,6 +1068,19 @@ def _kinds(result: AgentResult) -> list[str]:
     return [fact.id.rsplit("_", 1)[0] for fact in result.facts]
 
 
+EMAIL_CLAUSE = " If you give us your email, we use it for payment reminders and booking messages."
+DATA_NOTE = (
+    "We keep your name and phone number on your contact record so the team can set up your plan."
+)
+
+
+def _data_note(result: AgentResult) -> str:
+    """The text of the turn's one data note fact."""
+    notes = [f.text for f in result.facts if f.id.startswith("signup_data_note_")]
+    assert len(notes) == 1
+    return notes[0]
+
+
 async def signup_chat(
     world: World,
     *,
@@ -1799,6 +1812,7 @@ async def test_on_whatsapp_the_email_is_asked_once_after_the_name_and_filed(worl
     ctx = await whatsapp_signup(world)
     first = await signup_turn(world, ctx, **BESAR)
     assert _kinds(first) == ["signup_missing", "signup_data_note"]
+    assert _data_note(first) == DATA_NOTE + EMAIL_CLAUSE
     asked = await signup_turn(world, ctx, **BESAR, **ALI)
     assert [(f.id, f.text) for f in asked.facts] == [("signup_email_ask_1", EMAIL_ASK)]
     read = await signup_turn(world, ctx, **BESAR, **ALI, email="Ali.Abu@Example.com")
@@ -1833,6 +1847,7 @@ async def test_skip_or_a_second_turn_without_an_address_files_with_no_email(
     ctx = await whatsapp_signup(world)
     asked = await signup_turn(world, ctx, **BESAR, **ALI)
     assert _kinds(asked) == ["signup_email_ask", "signup_data_note"]
+    assert _data_note(asked) == DATA_NOTE + EMAIL_CLAUSE
     skipped = await signup_turn(world, ctx, **BESAR, **ALI, skip_email=True)
     assert _kinds(skipped) == ["signup_readback"]
     assert skipped.facts[0].text == (
@@ -1935,6 +1950,7 @@ async def test_the_turn_hands_a_sign_up_only_the_address_the_customer_wrote(worl
     read = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
     assert read.error is None and _kinds(read) == ["signup_readback", "signup_data_note"]
     assert ", email ali.abu@example.com." in read.facts[0].text
+    assert _data_note(read) == DATA_NOTE + EMAIL_CLAUSE
 
 
 @requires_docker
@@ -1946,6 +1962,7 @@ async def test_the_turn_drops_an_address_the_planner_invented(world: World) -> N
     # Nothing reached the agent, so it asks; the invented address is never read back.
     assert invented.error is None
     assert _kinds(invented) == ["signup_email_ask", "signup_data_note"]
+    assert _data_note(invented) == DATA_NOTE + EMAIL_CLAUSE
     assert "guess@example.com" not in " ".join(f.text for f in invented.facts)
 
 
@@ -1958,6 +1975,7 @@ async def test_an_over_long_address_is_invalid_and_the_turn_keeps_the_name(world
     bad = await spoke_turn(world, ctx, raw, **BESAR, **ALI, email="[EMAIL_0]")
     assert bad.error is None  # not invalid_input: the turn's name and phone are not lost
     assert _kinds(bad) == ["signup_email_invalid", "signup_data_note"]
+    assert _data_note(bad) == DATA_NOTE + EMAIL_CLAUSE
     assert bad.facts[0].text == EMAIL_INVALID
     # The draft kept the name and the phone: a skip reads them back.
     read = await spoke_turn(world, ctx, "skip", **BESAR, skip_email=True)
@@ -1977,6 +1995,7 @@ async def test_telegram_and_the_web_sandbox_never_ask(world: World, channel: str
     read = await signup_turn(world, ctx, **BESAR, **ALI, email="ali@example.com")
     assert _kinds(read) == ["signup_readback", "signup_data_note"]
     assert read.facts[0].text == READ_PLAIN
+    assert _data_note(read) == DATA_NOTE  # the email clause is WhatsApp only
     filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
     assert _kinds(filed) == ["signup_filed"]
     assert await request_emails(world) == [None]
@@ -1989,6 +2008,7 @@ async def test_with_payments_off_whatsapp_never_asks(world: World) -> None:
     read = await signup_turn(world, ctx, **BESAR, **ALI)
     assert _kinds(read) == ["signup_readback", "signup_data_note"]
     assert read.facts[0].text == READ_PLAIN
+    assert _data_note(read) == DATA_NOTE  # no email is asked, so no clause
 
 
 @pytest.mark.parametrize("column", ["email", "customer_given_email"])
@@ -2008,6 +2028,7 @@ async def test_a_contact_with_an_address_on_file_is_never_asked_and_keeps_it(
     read = await signup_turn(world, ctx, **BESAR, **ALI, email="second@example.com")
     assert _kinds(read) == ["signup_readback", "signup_data_note"]
     assert read.facts[0].text == READ_PLAIN
+    assert _data_note(read) == DATA_NOTE  # an address is on file, so none is asked
     await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
     assert await request_emails(world) == [None]
     expected = ("first@example.com", None) if column == "email" else (None, "first@example.com")
