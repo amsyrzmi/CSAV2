@@ -569,6 +569,79 @@ async def test_every_ticket_category_and_priority_has_a_malay_word() -> None:
     assert "" not in words and not words & {*tickets.CATEGORIES, *tickets.DEFAULT_SLA_HOURS}
 
 
+async def _again(world: World, action: str, order_id: str, callback: str) -> Any:
+    """The same button's task run a second time (a double tap), its action already used."""
+    return await world.runner.execute(
+        Task(
+            task_id=f"cb-{action}",
+            agent="order_agent",
+            input={
+                "action": action,
+                "order_id": order_id,
+                "callback_id": str(CallbackCodec.decode(callback)),
+            },
+        ),
+        world.ctx(f"again-{callback}", callback=callback),
+    )
+
+
+async def test_order_write_facts_carry_a_malay_text(world: World) -> None:
+    # Every fact an order write gives keeps today's English text and carries a Malay one, for a
+    # Malay turn where the facts go out word for word (an order drafted beside a payment answer).
+    draft = await world.draft("om1", [{"sku": "B2", "qty": 2}, {"sku": "A1", "qty": 1}])
+    conf = draft.data.ui.confirmation
+    n = conf.order_id
+    fact = draft.data.facts[0]
+    assert fact.text == (
+        f"Draft order {n}: 1 x Product A1, 2 x Product B2, total MYR 19.00. "
+        "It is not placed until you confirm it."
+    )
+    # The item names, quantities and the total stay exactly as the English writes them.
+    assert _in_malay(fact) == (
+        f"Draf pesanan {n}: 1 x Product A1, 2 x Product B2, jumlah MYR 19.00. "
+        "Pesanan ni belum dibuat lagi selagi awak tak sahkan."
+    )
+    # The buttons keep their English labels; the Malay text does not name them.
+    assert (conf.accept.label, conf.reject.label) == ("Confirm order", "Cancel")
+
+    confirmed = (await world.tap(conf.accept.action_id, "confirm", n)).data.facts[0]
+    assert confirmed.text == (
+        f"Order {n} confirmed, total MYR 19.00, payment on delivery. Awaiting fulfilment."
+    )
+    assert _in_malay(confirmed) == (
+        f"Pesanan {n} dah disahkan, jumlah MYR 19.00, bayar bila barang sampai. "
+        "Sekarang tunggu kami proses ya."
+    )
+    already = (await _again(world, "confirm", n, conf.accept.action_id)).data.facts[0]
+    assert already.text == f"Order {n} is already confirmed."
+    assert _in_malay(already) == f"Pesanan {n} dah pun disahkan."
+
+    other = (await world.draft("om2", [{"sku": "B2", "qty": 1}])).data.ui.confirmation
+    m = other.order_id
+    cancelled = (await world.tap(other.reject.action_id, "cancel", m)).data.facts[0]
+    assert cancelled.text == f"Order {m} has been cancelled."
+    assert _in_malay(cancelled) == f"Pesanan {m} dah dibatalkan."
+    again = (await _again(world, "cancel", m, other.reject.action_id)).data.facts[0]
+    assert again.text == f"Order {m} is already cancelled."
+    assert _in_malay(again) == f"Pesanan {m} dah pun dibatalkan."
+
+    # Reads never go out word for word (a payment reply leaves them out): English only.
+    status = await world.runner.execute(
+        Task(task_id="s", agent="order_agent", input={"action": "status", "order_id": n}),
+        world.ctx("om3"),
+    )
+    assert status.data.facts[0].text.startswith(f"Order {n}: pending_confirmation")
+    search = await world.runner.execute(
+        Task(
+            task_id="q",
+            agent="order_agent",
+            input={"action": "search_products", "query": "Product"},
+        ),
+        world.ctx("om4"),
+    )
+    assert [f.text_ms for f in (*status.data.facts, *search.data.facts)] == [None, None, None]
+
+
 async def _approve(world: World, action: str, order_id: str, target: uuid.UUID, key: str) -> Any:
     return await world.runner.execute(
         Task(

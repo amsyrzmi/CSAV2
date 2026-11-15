@@ -1,4 +1,10 @@
-"""Order agent: status, catalogue lookup, draft creation, confirm and cancel (LG05)."""
+"""Order agent: status, catalogue lookup, draft creation, confirm and cancel (LG05).
+
+A write's facts (the draft, confirm and cancel) carry a Malay text (`Fact.text_ms`) beside the
+English: an order written in the same turn as a payment answer goes out word for word, in the
+turn's language. Reads (status, products) are never sent that way and stay English only; the
+composer reads `text` alone.
+"""
 
 from __future__ import annotations
 
@@ -168,8 +174,8 @@ class OrderAgent:
             meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
         )
 
-    def _fact(self, fact_id: str, text: str) -> Fact:
-        return Fact(id=fact_id, text=text, source=self.name)
+    def _fact(self, fact_id: str, text: str, ms: str | None = None) -> Fact:
+        return Fact(id=fact_id, text=text, text_ms=ms, source=self.name)
 
     async def _status(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
@@ -371,6 +377,8 @@ class OrderAgent:
                 f"order_{order_id}",
                 f"Draft order {order_id}: {items_text(lines)}, total {money(total, currency)}. "
                 "It is not placed until you confirm it.",
+                f"Draf pesanan {order_id}: {items_text(lines)}, jumlah {money(total, currency)}. "
+                "Pesanan ni belum dibuat lagi selagi awak tak sahkan.",
             )
         ]
         if status != "draft":
@@ -470,7 +478,9 @@ class OrderAgent:
                     ctx,
                     [
                         self._fact(
-                            f"order_{order['id']}", f"Order {order['id']} is already confirmed."
+                            f"order_{order['id']}",
+                            f"Order {order['id']} is already confirmed.",
+                            f"Pesanan {order['id']} dah pun disahkan.",
                         )
                     ],
                     duplicate=True,
@@ -521,6 +531,9 @@ class OrderAgent:
                     f"Order {order['id']} confirmed, "
                     f"total {money(order['total'], order['currency'])}, "
                     "payment on delivery. Awaiting fulfilment.",
+                    f"Pesanan {order['id']} dah disahkan, "
+                    f"jumlah {money(order['total'], order['currency'])}, "
+                    "bayar bila barang sampai. Sekarang tunggu kami proses ya.",
                 )
             ],
         )
@@ -541,7 +554,9 @@ class OrderAgent:
                     ctx,
                     [
                         self._fact(
-                            f"order_{order['id']}", f"Order {order['id']} is already cancelled."
+                            f"order_{order['id']}",
+                            f"Order {order['id']} is already cancelled.",
+                            f"Pesanan {order['id']} dah pun dibatalkan.",
                         )
                     ],
                     duplicate=True,
@@ -587,7 +602,14 @@ class OrderAgent:
             )
             await self._event(conn, ctx, order["id"], "customer_cancelled", {})
         return self._ok(
-            ctx, [self._fact(f"order_{order['id']}", f"Order {order['id']} has been cancelled.")]
+            ctx,
+            [
+                self._fact(
+                    f"order_{order['id']}",
+                    f"Order {order['id']} has been cancelled.",
+                    f"Pesanan {order['id']} dah dibatalkan.",
+                )
+            ],
         )
 
 
