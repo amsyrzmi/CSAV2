@@ -7,7 +7,7 @@ different: it really books, through `csa.bookings.bot`.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
@@ -165,8 +165,15 @@ def reply(
     """An answer made of facts. `malay` is the same facts in Malay, one for one, for a write
     whose facts can go out word for word (`Fact.text_ms`); a read has none. `handoff` passes the
     customer to a person, with a staff reason. Malay that does not match one for one is left
-    out (the English goes out), never paired with the wrong fact."""
+    out (the English goes out, and the drop is logged), never paired with the wrong fact."""
     if malay is not None and len(malay) != len(texts):
+        logger.warning(
+            "booking_malay_mismatch",
+            category="unexpected",
+            facts=len(texts),
+            malay=len(malay),
+            trace_id=str(ctx.trace_id),
+        )
         malay = None
     return AgentResult(
         ok=True,
@@ -191,6 +198,22 @@ def reply(
     )
 
 
+def malay_or_none(ctx: AgentContext, build: Callable[[], list[str]]) -> list[str] | None:
+    """A write's facts in Malay, or None when building them fails (logged). The Malay is built
+    beside English facts that are already true (often of a booking that has committed), so a
+    Malay-only fault leaves the reply English only and never touches it."""
+    try:
+        return build()
+    except Exception as exc:
+        logger.warning(
+            "booking_malay_failed",
+            category="unexpected",
+            error_type=type(exc).__name__,
+            trace_id=str(ctx.trace_id),
+        )
+        return None
+
+
 @dataclass(frozen=True)
 class Acted:
     """What a call did inside its transaction. With an outcome, the facts are built after it
@@ -200,7 +223,8 @@ class Acted:
     scene: Scene
     outcome: BotOutcome | None = None
     lines: list[str] = field(default_factory=list)
-    lines_ms: list[str] = field(default_factory=list)  # a write's lines in Malay, one for one
+    # A write's lines in Malay, one for one; None when they could not be built.
+    lines_ms: list[str] | None = field(default_factory=list)
 
 
 def local(value: datetime, zone: ZoneInfo) -> datetime:
@@ -281,19 +305,18 @@ class BookingAgent:
         # the relay, and it cannot claim mail it has not seen arrive.
         outcome = acted.outcome
         # Only a write's facts can go out word for word, so only they carry a Malay text.
-        write = inp.action in WRITES
+        lines_ms = acted.lines_ms if inp.action in WRITES else None
         if outcome is None:
-            return reply(ctx, acted.lines, malay=acted.lines_ms if write else None)
+            return reply(ctx, acted.lines, malay=lines_ms)
         change = mail_for(outcome)
         if change is not None and outcome.booking is not None:
             self._mail_later(ctx, outcome.booking, change)
-        malay = [*facts_for(outcome, acted.scene, ms=True), *acted.lines_ms]
-        return reply(
-            ctx,
-            [*facts_for(outcome, acted.scene), *acted.lines],
-            malay=malay if write else None,
-            handoff=handoff_of(outcome),
-        )
+        english = [*facts_for(outcome, acted.scene), *acted.lines]
+        malay = None
+        if lines_ms is not None:
+            scene, extra = acted.scene, lines_ms
+            malay = malay_or_none(ctx, lambda: [*facts_for(outcome, scene, ms=True), *extra])
+        return reply(ctx, english, malay=malay, handoff=handoff_of(outcome))
 
     def _mail_later(self, ctx: AgentContext, booking: BookingRecord, change: notify.Change) -> None:
         task = asyncio.create_task(self._mail(ctx.pool, booking, change))
@@ -363,9 +386,14 @@ class BookingAgent:
         return Acted(
             scene,
             lines=[saved_line(before, after, name=name, email=email, reminders=reminders)],
-            lines_ms=[
-                saved_line(before, after, name=name, email=email, reminders=reminders_ms, ms=True)
-            ],
+            lines_ms=malay_or_none(
+                ctx,
+                lambda: [
+                    saved_line(
+                        before, after, name=name, email=email, reminders=reminders_ms, ms=True
+                    )
+                ],
+            ),
         )
 
     async def _reminders_sentence(
@@ -498,11 +526,11 @@ class BookingAgent:
         if outcome.booking is not None:
             scene = await self._scene_for(conn, ctx, scene, outcome.booking)
         lines: list[str] = []
-        lines_ms: list[str] = []
+        lines_ms: list[str] | None = []
         if outcome.code == "not_found":  # tell the model what can be booked, as availability does
             types = await bot.customer_types(conn, ctx.client_id)
             lines = [type_line(t, ids=False) for t in types]
-            lines_ms = [type_line(t, ids=False, ms=True) for t in types]
+            lines_ms = malay_or_none(ctx, lambda: [type_line(t, ids=False, ms=True) for t in types])
         return Acted(scene, outcome, lines, lines_ms)
 
     async def _change(

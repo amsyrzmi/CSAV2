@@ -1901,7 +1901,7 @@ async def test_a_refused_booking_carries_a_malay_text(shop: Shop) -> None:
     ((english, malay),) = pairs(await make_it(shop, await shop.customer(), kind, key="e2:t0"))
     assert english.startswith("That time was just taken. Other free times for Haircut: ")
     assert malay.startswith(
-        "Masa tu baru je ditempah orang lain. Masa kosong lain untuk Haircut: "
+        "Masa tu baru je penuh. Masa kosong lain untuk Haircut: "
         "Selasa 4 Mac 2031, 9:00 pagi (2031-03-04 09:00); "
     )
     offered = english.removesuffix(".").split(": ", 1)[1].split("; ")
@@ -1930,7 +1930,7 @@ async def test_the_limit_the_missing_and_the_switched_off_carry_a_malay_text(sho
         (
             "You have reached the number of upcoming bookings allowed, so no new booking was made. "
             "You can cancel one first.",
-            "Awak dah cukup had tempahan akan datang yang dibenarkan, jadi tempahan baru tak "
+            "Awak dah capai had tempahan akan datang yang dibenarkan, jadi tempahan baru tak "
             "dibuat. Awak boleh batalkan satu dulu.",
         )
     ]
@@ -2236,9 +2236,103 @@ def test_the_email_not_seen_answer_carries_a_malay_text() -> None:
     )
     (plain,) = reply(ctx, [facts.EMAIL_NOT_SEEN]).facts
     assert plain.text_ms is None
-    # Malay that does not pair one for one is left out, never put on the wrong fact.
-    odd = reply(ctx, [facts.NOT_FOUND, facts.EMAIL_NOT_SEEN], malay=[facts.NOT_FOUND_MS]).facts
-    assert [f.text_ms for f in odd] == [None, None]
+
+
+def test_malay_that_does_not_pair_is_left_out_and_logged() -> None:
+    from csa.agents.staged import booking_facts as facts
+    from csa.agents.staged.service import reply
+    from structlog.testing import capture_logs
+
+    ctx = context_without_db()
+    with capture_logs() as logs:
+        odd = reply(ctx, [facts.NOT_FOUND, facts.EMAIL_NOT_SEEN], malay=[facts.NOT_FOUND_MS])
+    # Never put on the wrong fact: the English goes out, and the drop is seen in the logs.
+    assert [f.text_ms for f in odd.facts] == [None, None]
+    assert [f.text for f in odd.facts] == [facts.NOT_FOUND, facts.EMAIL_NOT_SEEN]
+    (seen,) = [e for e in logs if e["event"] == "booking_malay_mismatch"]
+    assert seen["log_level"] == "warning" and (seen["facts"], seen["malay"]) == (2, 1)
+    assert seen["trace_id"] == str(ctx.trace_id)
+
+
+async def test_a_malay_failure_never_touches_the_english_reply(
+    shop: Shop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Malay is built after the booking has committed, on every write: a Malay-only fault
+    (here, a handoff with no Malay words) leaves the facts English only, and is logged."""
+    from csa.agents.staged import booking_facts as facts
+    from structlog.testing import capture_logs
+
+    kind = await a_type(shop, change_cutoff_minutes=120)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    monkeypatch.delitem(facts.HANDOFF_MS, "past_cutoff")
+    with capture_logs() as logs:
+        late = await ask(
+            shop,
+            contact,
+            "cancel",
+            now=TEN - timedelta(minutes=30),
+            booking_id=str(made.booking.id),
+        )
+    assert late.ok and late.requires_human
+    assert late.handoff_reason == "booking_change_past_cutoff"
+    assert [(f.text, f.text_ms) for f in late.facts] == [
+        (
+            "It is too close to the start time to change this booking by message. "
+            "A team member will help.",
+            None,
+        )
+    ]
+    (seen,) = [e for e in logs if e["event"] == "booking_malay_failed"]
+    assert seen["log_level"] == "warning" and seen["error_type"] == "KeyError"
+    # A booking made with the Malay broken still says what it did, in English.
+    monkeypatch.setattr(
+        "csa.agents.staged.service.facts_for",
+        _english_only(facts.facts_for),
+    )
+    booked_ = await make_it(shop, await shop.customer(), kind, "2031-03-04T14:00", key="e2:t0")
+    assert [(f.text, f.text_ms) for f in booked_.facts] == [
+        (
+            "Booking confirmed: Haircut on Tuesday 4 March 2031, 2:00 pm (2031-03-04 14:00), "
+            "with Person 0, by phone.",
+            None,
+        )
+    ]
+
+
+def _english_only(real: Any) -> Any:
+    def facts_for(outcome: Any, scene: Any, *, ms: bool = False) -> list[str]:
+        if ms:
+            raise RuntimeError("malay down")
+        return list(real(outcome, scene))
+
+    return facts_for
+
+
+def test_a_cancelled_original_reads_as_cancelled_in_both_languages() -> None:
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from csa.agents.staged import booking_facts as facts
+
+    type_id = uuid.uuid4()
+    original: Any = SimpleNamespace(
+        type_id=type_id,
+        starts_at=TEN,
+        people=[SimpleNamespace(display_name="Person 0")],
+        location_kind="phone",
+        address=None,
+        status="cancelled",
+        meeting_link=None,
+    )
+    scene = facts.Scene(ZoneInfo("UTC"), {type_id: "Haircut"})
+    assert facts.standing(original, scene) == (
+        f"The original booking (Haircut on {TEN_TEXT}, with Person 0, by phone) is cancelled."
+    )
+    assert facts.standing(original, scene, ms=True) == (
+        f"Tempahan asal (Haircut pada {TEN_MS}, dengan Person 0, melalui telefon) dah dibatalkan."
+    )
 
 
 def context_without_db() -> AgentContext:

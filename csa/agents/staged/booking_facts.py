@@ -26,7 +26,7 @@ from csa.bookings.contracts import BookingTypeOut
 from csa.bookings.service import BookingRecord
 
 TAKEN = "That time was just taken."
-TAKEN_MS = "Masa tu baru je ditempah orang lain."
+TAKEN_MS = "Masa tu baru je penuh."  # no cause, as in the English: any hold can take a time
 UNAVAILABLE = "Not available that day."
 UNAVAILABLE_MS = "Hari tu tak boleh ditempah."
 # The same words however the thing was missing: wrong id, someone else's, a private meeting.
@@ -63,7 +63,7 @@ LIMIT = (
     "You can cancel one first."
 )
 LIMIT_MS = (
-    "Awak dah cukup had tempahan akan datang yang dibenarkan, jadi tempahan baru tak dibuat. "
+    "Awak dah capai had tempahan akan datang yang dibenarkan, jadi tempahan baru tak dibuat. "
     "Awak boleh batalkan satu dulu."
 )
 
@@ -123,7 +123,7 @@ class Scene:
 
 
 STATES = {"confirmed": "confirmed", "pending": "not confirmed yet", "cancelled": "cancelled"}
-STATES_MS = {"confirmed": "disahkan", "pending": "belum disahkan", "cancelled": "dibatalkan"}
+STATES_MS = {"confirmed": "disahkan", "pending": "belum disahkan", "cancelled": "dah dibatalkan"}
 
 
 def state_of(booking: BookingRecord, *, ms: bool = False) -> str:
