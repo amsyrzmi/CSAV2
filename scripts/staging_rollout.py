@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from scripts import registry_auth
 from scripts.migrate import MigrationError, discover_migrations
 from scripts.rollout_targets import (
     BACKUP_SCRIPT,
@@ -491,7 +492,7 @@ def published_images(
             [
                 "gh",
                 "api",
-                f"/users/{target.package_owner}/packages/container/csa-{app}/versions?per_page=100",
+                f"/{target.package_scope}/packages/container/csa-{app}/versions?per_page=100",
             ],
         )
         if not isinstance(versions, list):
@@ -1965,6 +1966,8 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))
     try:
         docker_config.chmod(0o700)
+        # Absent file: nothing is written and the pulls stay anonymous, as before.
+        registry_auth.install(docker_config, target.registry_auth)
         if args.command == "apply":
             code = apply(
                 runner,

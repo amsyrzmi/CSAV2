@@ -58,6 +58,31 @@ registry call when it is unset or malformed. CI reads it too, but has no such ch
 variable unset, the `gate` and `tests` jobs fail at container initialisation with a Docker
 image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha256:...`).
 
+**Optional registry login on the instance.** The rollout pulls through a temporary, private
+Docker config. If `/srv/csa-prod/registry/config.json` exists, the rollout copies it into that
+config (mode 0600, removed with it when the run ends) before any pull, so the pulls use its
+login; without the file the pulls stay anonymous, as today. It holds a read-only registry login
+(`read:packages` only). The file must contain ONLY an `auths` object whose entries each have
+an inline `auth` value. Do not copy a `docker login` config: anything with `credsStore`, `credHelpers`, `proxies` or
+other keys, or an entry without an inline `auth`, makes the rollout stop with
+`Stopped at plan: registry auth file <path> is not usable`. The file must be mode 0600; a
+symlink, FIFO, directory or a file over 64 KiB is refused. The content is never printed. If the
+copy itself fails (for example a full disk) the run stops with `could not copy the registry auth
+file <path>`. Never commit it. Create it without echoing the token, as the deploy user (`ubuntu`), who owns
+the directory and the file:
+
+```
+sudo install -d -m 0700 -o ubuntu -g ubuntu /srv/csa-prod/registry
+(
+  umask 077
+  read -rsp "registry read token: " T; echo
+  rm -f /srv/csa-prod/registry/config.json
+  printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-prod/registry/config.json
+)
+```
+
+It is needed only once the images are private.
+
 1. **Before you start.** The commit must be on `main`, its images published (the normal
    `publish-staging-images` run), and it must have been rolled out to staging with the
    `staging-rollout` flow, which writes the staged record.
@@ -521,7 +546,8 @@ g. GitHub read access for `gh`, **for break-glass only**. A deploy started from 
    ```
 
    The last line must print a `sha256:` digest. No `docker login` is needed: the rollout pulls
-   the public images by digest with an empty Docker config, so it would not use one.
+   the public images by digest with its own temporary Docker config, so it would not use one
+   (for private images it reads the optional registry login file, see Deploying from GitHub).
 
 h. Run a plan on the instance as Systems Manager would, for the newest staged commit. It gives
    no digests, so it takes the break-glass path and needs the token from step g:
