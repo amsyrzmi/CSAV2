@@ -1797,7 +1797,8 @@ before the `ETag` comparison. A malformed id is 422; the machine token is 403.
 Upload and remove: `PUT|DELETE /console/v1/payments/methods/{id}/picture` (admins, `qr` methods
 only), `PUT|DELETE /console/v1/subscriptions/plans/{code}/picture` (plan writers),
 `PUT|DELETE /console/v1/business/products/{id}/picture` (platform admin, tenant admin, tenant
-staff); each section above has the details. `read_only` and a role the route does not allow get 403
+staff); each section above has the details. A QR picture may be set on an inactive method too, so an
+admin can prepare it before switching the method on. `read_only` and a role the route does not allow get 403
 before the body is read; every write needs the CSRF header. `PUT` takes `multipart/form-data` with
 exactly one file in the field `file` and answers 200 `{id, version}`; `DELETE` answers 204. Limits:
 
