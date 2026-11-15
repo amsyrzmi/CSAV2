@@ -82,6 +82,7 @@ def test_payments_contract_hides_reminder_addresses_and_sends_money_as_strings()
         "/console/v1/payments/settings",
         "/console/v1/payments/methods",
         "/console/v1/payments/methods/{method_id}",
+        "/console/v1/payments/methods/{method_id}/picture",
         "/console/v1/payments/invoices",
         "/console/v1/payments/invoices/{invoice_id}",
         "/console/v1/payments/invoices/{invoice_id}/mark-paid",
@@ -97,6 +98,10 @@ def test_payments_contract_hides_reminder_addresses_and_sends_money_as_strings()
         "sent_at",
     }
     assert set(schemas["ContactBrief"]["properties"]) == {"id", "full_name", "channels"}
+    assert set(schemas["PictureOut"]["properties"]) == {"id", "version"}
+    for name in ("MethodOut", "PlanOut", "BusinessProduct"):
+        assert "picture" in schemas[name]["properties"], name
+        assert "picture" not in schemas[name].get("required", []), name
     for name in ("InvoiceOut", "InvoiceDetail", "PaymentOut"):
         assert schemas[name]["properties"]["amount"]["type"] == "string", name
     # The email module's AttentionItem keeps its own name; payments' is named apart.

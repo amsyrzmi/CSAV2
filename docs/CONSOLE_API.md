@@ -1203,9 +1203,11 @@ has no trailing slash). Human sessions only (the machine token is refused) and b
 |---|---|---|
 | `GET /settings` | any tenant member | `{timezone, pending_expiry_days, version}`: the tenant's IANA zone (`clients.timezone`), so the tab shows dates on the tenant's calendar, and the days a pending subscription waits before it expires (default 14 until the company saves a value; `0` means never; `version` is 0 until the first save) |
 | `PUT /settings` | writers | Body `{pending_expiry_days (0-90), version}`; returns `SettingsOut`. The first save makes the row (send `version: 0`); a save from an older read is 409 `version_conflict`; out-of-range values are 422; audited `subscriptions.settings.updated` |
-| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active, signup_mode, is_signup_open}` |
+| `GET /plans?include_archived=false` | any tenant member | `PlanOut[]`: `{code, name, price, currency, billing_interval, features, sort_order, is_active, signup_mode, is_signup_open, picture}`; `picture` is `{id, version}` or `null` (see Pictures under Endpoints); `POST` and `PATCH` return it too |
 | `POST /plans` | writers | Body `{code, name, price, currency?, billing_interval?, features?, sort_order?, signup_mode?, is_signup_open?}`; 201. `code` is `[a-z0-9_-]{1,64}`, `price` is a non-negative amount with two decimals, `currency` (default `MYR`) is three upper-case letters (`^[A-Z]{3}$`, else 422), `billing_interval` is `month` or `year`, `signup_mode` is `staff` (default: staff decide a sign-up) or `auto` (a sign-up is approved at once), `is_signup_open` (default true) says whether customers can sign up for the plan in the chat. 409 `plan_exists`; audited `subscriptions.plan.created` |
 | `PATCH /plans/{code}` | writers | Any of `name`, `price`, `billing_interval`, `features`, `sort_order`, `is_active` (`false` archives), `signup_mode`, `is_signup_open`. 404 `plan_not_found`; 409 `plan_in_use` for a changed `billing_interval` while an active, paused or pending subscription is on the plan or has it as `pending_plan` (subscriptions keep their price but renew on the plan's interval; price and other edits stay allowed); audited `subscriptions.plan.updated` |
+| `PUT /plans/{code}/picture` | writers | Multipart, one file in the `file` field; 200 `PictureOut` `{id, version}`. Uploads or replaces the plan's picture (archived plans too; a replace keeps `id` and changes `version`). 404 `plan_not_found`; the picture refusals and limits are under Pictures (Endpoints); audited `media.picture.set` with target `plan:<code>` |
+| `DELETE /plans/{code}/picture` | writers | 204, also when the plan had no picture. 404 `plan_not_found`; audited `media.picture.removed` (only when a picture went) |
 | `GET` (the collection) | any tenant member | `{items, next_cursor}` of `SubscriptionOut`. Filters `q` (name, email or, when the term reads like a phone number, digits), `status`, `plan`; keyset `before` and `limit` (1-100, default 50) |
 | `GET /customers?q=&limit=20` | any tenant member | `CustomerRef[]` (`{id, full_name, phone, email}`): the tenant's contacts to put on a plan, by name or email (`%` and `_` are literal) or, when the term reads like a phone number with 3 or more digits, by phone digits; no `q` lists everyone by name. `limit` 1-50 |
 | `GET /{id}` | any tenant member | `{subscription, events, open_invoice}`, events being the timeline; `open_invoice` is the newest open invoice of the subscription (`InvoiceBrief` `{id, reference, status, amount, currency, due_at}`, status `issued`, `overdue`, `proof_submitted` or `cash_pending`) or `null`. 404 `subscription_not_found` |
@@ -1417,9 +1419,11 @@ inactive package is 403 `package_inactive`):
 |---|---|---|
 | `GET /settings` | staff | `PaymentSettingsOut` `{enabled, lead_days, reminder_days, suspend_after_days, version}`; a company that never saved reads `{false, 7, [-7, 0, 3, 7], null, 0}` |
 | `PUT /settings` | admins | Body `PaymentSettingsIn` (`lead_days` 1-30, `reminder_days` at most 6 distinct days from -30 to 60, stored sorted, `suspend_after_days` null or 1-90, `version`); returns `PaymentSettingsOut`. The first save sends `version: 0`; an older version is 409 `version_conflict`; `enabled: true` without an active `qr` or `transfer` method is 409 `no_active_method` (cash does not count); audited `payments.settings.updated` |
-| `GET /methods` | staff | `MethodOut[]` `{id, kind, label, details, instructions, is_active, sort_order, version}`, by sort order then label, inactive ones included |
+| `GET /methods` | staff | `MethodOut[]` `{id, kind, label, details, instructions, is_active, sort_order, version, picture}`, by sort order then label, inactive ones included; `picture` is a `qr` method's uploaded image `{id, version}` or `null` (see Pictures under Endpoints); `POST` and `PATCH` return it too |
 | `POST /methods` | admins | Body `MethodIn` `{kind (qr\|transfer\|cash), label (1-60), details, instructions?, is_active?, sort_order? (0-100)}`; 201 `MethodOut` (version 1). `details` must fit the kind: `transfer` `{bank_name, account_name, account_number (6-20 digits)}`, `qr` `{duitnow_id, account_name}`, `cash` `{}`; otherwise 422 `invalid_details`; audited `payments.method.created` |
 | `PATCH /methods/{id}` | admins | Body `MethodPatch` (any of `label`, `details` (replaces the whole object), `instructions`, `is_active`, `sort_order`, plus `version`); the kind never changes. 404 `method_not_found` (also another company's id); 409 `version_conflict`; 409 `last_active_method` (turning off the last active `qr`/`transfer` method while payments are on); 422 `invalid_details`; audited `payments.method.updated`. A method is never deleted |
+| `PUT /methods/{id}/picture` | admins | Multipart, one file in the `file` field; 200 `PictureOut` `{id, version}`. Uploads or replaces a `qr` method's QR picture (a replace keeps `id` and changes `version`). 404 `method_not_found` (also another company's id); 422 `picture_kind_not_qr` for a `transfer` or `cash` method; staff get 403 before the body is read; the picture refusals and limits are under Pictures (Endpoints); audited `media.picture.set` with target `payment_qr:<method id>` |
+| `DELETE /methods/{id}/picture` | admins | 204, also when the method had no picture. 404 `method_not_found`; 422 `picture_kind_not_qr`; audited `media.picture.removed` (only when a picture went) |
 | `GET /invoices?status=&q=&before=&limit=` | staff | `InvoicePage` `{items: InvoiceOut[], next_before}`, newest `issued_at` first (then id). See filters and cursor below |
 | `GET /invoices/{id}` | staff | `InvoiceDetail`: `InvoiceOut` plus `payment` (`PaymentOut` or `null`) and `reminders` (`ReminderOut[]`, oldest first). `id` is at most 64 characters (422 otherwise); 404 `invoice_not_found` for an unknown id or another company's |
 | `POST /invoices/{id}/mark-paid` | staff | Body `MarkPaidIn` `{request_key (uuid), method_kind (qr\|transfer\|cash), received_at? (with a time zone; now when left out), note? (at most 300)}`; returns the `InvoiceDetail` after the payment. One `payments` ledger row (amount and currency are the invoice's), the invoice `paid`; a pending subscription starts and an unpaid pause lifts as the ledger rules say; an open invoice of a cancelled subscription is a normal 200 that only records the payment (the subscription is untouched). The same `request_key` again returns the same detail and records nothing. 404 `invoice_not_found`; 409 `invoice_already_paid`, `invoice_not_payable` (void, draft or zero), `request_key_reused` (the key already paid another invoice); 422 `received_in_future` (more than 5 minutes ahead; a note over 300 characters is FastAPI's field-list 422, never `invalid_note`); audited `payments.invoice.paid` |
@@ -1474,7 +1478,7 @@ and anonymous principals are denied. No marketplace client is called. Store meta
 queries select only local identity, expiry, update and sync-progress columns, never token columns or `meta`;
 no credential content is read, decrypted or inspected.
 The only write routes are the TikTok Shop connect and disconnect routes below (Admin
-only); normal session/tenant controls remain authoritative.
+only) and a product's picture (admin or staff); normal session/tenant controls remain authoritative.
 
 | Method/path | Query | Response |
 |---|---|---|
@@ -1482,8 +1486,10 @@ only); normal session/tenant controls remain authoritative.
 | `GET /business/orders/counts` | optional `from`, `to`, `payment_status`, `channel`, `shop_id`, tenant query (a `status` parameter is ignored) | `{total,by_status:{<status>:int}}` with every order status present, zero included |
 | `GET /business/orders/{id}` | optional `channel` and `shop_id`, tenant query | Order summary (tracking/carrier, channel/store/order IDs, timestamps, `provider_status`, `synced_at`, `buyer_cleared`) plus `lines:[{sku,name,qty,unit_price}]`, `subtotal`, `shipping_fee`, `discount` and `ship_to:{recipient_name,phone,address_text,region}` **only for a synced TikTok order** (channel `tiktok_shop` with a provider order ID). For any other order those five fields are `null` and its stored ship-to is never returned. Once the buyer details were cleared (90 days after delivery or cancellation) `ship_to` is `null` and `buyer_cleared` is `true` |
 | `GET /business/listings` | optional `store_id`, `q` (1..100 characters, substring of product name, variant or SKU, wildcards literal), `before=<listing UUID>`, `limit=1..50` (20 default), tenant query | `{items,next_cursor}`; each item has `id`, `product_name`, `variant_name`, `seller_sku`, `price`, `currency`, `stock_qty`, `product_status`, `image_url` (only an `https://` URL, else `null`), `synced_at` and `same_sku_product` (name of the tenant's local product with an equal SKU, looked up at read time, `null` without a SKU). Sorted by name then ID; a foreign or missing cursor is 404. Admin or staff, same package gate as the other business routes |
-| `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"connected"\|"not_connected",items,next_cursor}` |
-| `GET /business/products/{id}` | tenant query | Local product summary, decimal price and local stock/reserved/available quantities |
+| `GET /business/products` | `before=<UUID>`, same bounds/tenant query | `{source:"local_catalogue",marketplace_sync:"connected"\|"not_connected",items,next_cursor}`; each item carries `picture` (`{id, version}` or `null`, see Pictures under Endpoints) |
+| `GET /business/products/{id}` | tenant query | Local product summary, decimal price, local stock/reserved/available quantities and `picture` |
+| `PUT /business/products/{id}/picture` | multipart, one file in the `file` field, tenant query; admin, staff or platform admin, same package gate | 200 `PictureOut` `{id, version}`: uploads or replaces the product's picture (a replace keeps `id` and changes `version`). 404 `product not found` (also another tenant's); the picture refusals and limits are under Pictures (Endpoints); audited `media.picture.set` with target `product:<product id>` |
+| `DELETE /business/products/{id}/picture` | tenant query; same roles | 204, also when the product had no picture; 404 `product not found`; audited `media.picture.removed` (only when a picture went) |
 | `GET /business/stores` | optional `platform=tiktok_shop\|shopee\|lazada`, `before=<record UUID>`, `limit=1..50` (20 default), tenant query | `{source:"local_credential_records",marketplace_sync:"connected"\|"not_connected",items,next_cursor}` |
 | `GET /business/stores/{record_id}` | optional `platform`, optional `shop_id` (requires platform), tenant query | Local store identity/expiry and stored lifecycle status; exact tenant/record/platform/store match when bound |
 | `POST /business/stores/tiktok/connect` | body `{store_id: UUID\|null}`, tenant query; Admin or platform admin, `marketplaces` package | `{authorization_url}` (no-store). No `store_id`: first connect on the tenant's pending store (reused, or created). With it: reconnect of that store. 503 `tiktok_unavailable` while TikTok is off; 404 `store_not_found` |
@@ -1769,6 +1775,45 @@ or secrets; they are codes, counts and names, so they are safe to render.
 Semantic rejection details stay in turn state for regeneration; only their count appears on the timeline.
 Classifier comparisons are persisted separately in `decision_log`; a console endpoint for those rows
 is not implemented yet.
+
+### Pictures
+
+One picture per thing: a `qr` payment method, a plan, a product (migration `0610`). Owners' answers
+carry `picture: {id, version} | null`; `version` is the picture's SHA-256 and changes when it is
+replaced (the `id` stays). The web shows it through the read route.
+
+`GET /console/v1/media/{asset_id}` (human sessions; tenant selection as usual, a platform admin
+passes `client_id`) returns the bytes with the stored `Content-Type` (`image/jpeg` or `image/png`),
+`ETag: "<version>"`, `Cache-Control: private, no-cache`, `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; sandbox`. `If-None-Match` with the current `ETag`
+(a list, a `W/` prefix and `*` are understood) is `304` with the same headers and no body. The
+read follows the owning thing's own read rule: a QR picture is for staff (platform admin, tenant
+admin, tenant staff) with the `subscriptions` package active; a plan picture for any member of the
+company with `subscriptions` active; a product picture for staff with `orders_products` or
+`marketplaces` active. Anything else (an unknown id, another company's, a role or package that may
+not read, a training thumbnail) is `404 {"detail": "picture_not_found"}`, never 403, and is decided
+before the `ETag` comparison. A malformed id is 422; the machine token is 403.
+
+Upload and remove: `PUT|DELETE /console/v1/payments/methods/{id}/picture` (admins, `qr` methods
+only), `PUT|DELETE /console/v1/subscriptions/plans/{code}/picture` (plan writers),
+`PUT|DELETE /console/v1/business/products/{id}/picture` (platform admin, tenant admin, tenant
+staff); each section above has the details. `read_only` and a role the route does not allow get 403
+before the body is read; every write needs the CSRF header. `PUT` takes `multipart/form-data` with
+exactly one file in the field `file` and answers 200 `{id, version}`; `DELETE` answers 204. Limits:
+
+- JPEG or PNG only, and the file name's extension must agree with the bytes; at most 2 MiB
+  (2097152 bytes).
+- Each side 64-4096 px, read from the image header, and the longer side at most 10 times the
+  shorter.
+- At most 300 uploaded pictures per company; replacing one never counts.
+
+Refusals are `{"detail": "<code>"}`: 422 `picture_empty`, `picture_type_unsupported`,
+`picture_unreadable` (a bad header, a truncated file or bytes after the end marker),
+`picture_dimensions`, `picture_name_invalid` (a file name with a path or control characters),
+`upload one file`; 413 for a body over 2 MiB (the upload parser's own message, such as
+`file exceeds 2 MB`); 415 for a body that is not `multipart/form-data`; 409 `picture_limit` for
+the company's 301st picture. Two files in one request are 422. Audit actions are `media.picture.set` and `media.picture.removed`, target
+`<kind>:<subject>` (`payment_qr:<method id>`, `plan:<code>`, `product:<product id>`).
 
 ## Bookings
 

@@ -21,6 +21,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 from csa.console.contracts import Contract
+from csa.media.contracts import PictureOut
 
 InvoiceStatus = Literal[
     "draft", "issued", "proof_submitted", "paid", "overdue", "void", "cash_pending"
@@ -114,6 +115,7 @@ class MethodOut(Contract):
     is_active: bool
     sort_order: int
     version: int
+    picture: PictureOut | None = None  # a QR method's uploaded image; always None otherwise
 
 
 class PaymentSettingsOut(Contract):

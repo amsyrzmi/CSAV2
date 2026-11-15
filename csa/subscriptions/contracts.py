@@ -10,6 +10,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from csa.console.contracts import Contract
+from csa.media.contracts import PictureOut
 from csa.payments.contracts import InvoiceStatus
 
 Status = Literal["pending", "active", "paused", "cancelled"]
@@ -28,6 +29,7 @@ class PlanOut(Contract):
     is_active: bool
     signup_mode: SignupMode  # staff decide a sign-up, or it is approved at once
     is_signup_open: bool  # false: customers cannot sign up for the plan in the chat
+    picture: PictureOut | None = None  # the plan's uploaded picture
 
 
 class SettingsOut(Contract):

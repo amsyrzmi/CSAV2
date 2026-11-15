@@ -135,6 +135,15 @@ async def create_plan(conn: Conn, client_id: UUID, actor: ConsoleActor, data: Pl
     return PlanOut.model_validate(row)
 
 
+async def require_plan(conn: Conn, client_id: UUID, code: str) -> None:
+    """404 `plan_not_found` unless this company has the plan (archived plans count); locks it."""
+    row = await db.q.fetch_one(
+        "subscriptions/plan_lock.sql", {"client_id": client_id, "code": code}, conn=conn
+    )
+    if row is None:
+        raise HTTPException(404, "plan_not_found")
+
+
 async def update_plan(
     conn: Conn, client_id: UUID, actor: ConsoleActor, code: str, data: PlanPatch
 ) -> PlanOut:

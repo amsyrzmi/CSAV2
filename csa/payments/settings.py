@@ -162,6 +162,17 @@ async def update_method(
     return MethodOut.model_validate(row)
 
 
+async def require_qr_method(conn: Conn, client_id: UUID, method_id: UUID) -> None:
+    """404 `method_not_found` unless the method is this company's; 422 unless it is a QR."""
+    row = await db.q.fetch_one(
+        "payments/method_get.sql", {"client_id": client_id, "method_id": method_id}, conn=conn
+    )
+    if row is None:
+        raise HTTPException(404, "method_not_found")
+    if row["kind"] != "qr":
+        raise HTTPException(422, "picture_kind_not_qr")
+
+
 async def ensure_another_payable_method(conn: Conn, client_id: UUID, method_id: UUID) -> None:
     """Refuse (409 `last_active_method`) when turning `method_id` off leaves payments on and bare.
 

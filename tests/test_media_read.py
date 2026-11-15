@@ -187,3 +187,37 @@ async def test_machine_token_is_refused(sessions: SessionWorld) -> None:
             headers={"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": w.tenants[0]},
         )
     assert refused.status_code == 403
+
+
+async def test_refusals_and_revalidation_never_read_the_bytes(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    tenant = w.tenants[0]
+    data = png(800, 800)
+    qr = await seed(w, tenant, "payment_qr", "m1", data)
+    plan = await seed(w, tenant, "plan", "gold", data)
+    reads: list[uuid.UUID] = []
+    original = service.get
+
+    async def counted(conn: Any, client_id: uuid.UUID, asset_id: uuid.UUID) -> Any:
+        reads.append(asset_id)
+        return await original(conn, client_id, asset_id)
+
+    monkeypatch.setattr(service, "get", counted)
+    reader, _ = await w.member(role="read_only")
+    staff, _ = await w.member(role="tenant_staff")
+    etag = f'"{check_image(data, None).sha256}"'
+
+    assert (await reader.get(f"{BASE}/{qr}")).status_code == 404  # role refused
+    assert (await staff.get(f"{BASE}/{uuid.uuid4()}")).status_code == 404  # unknown
+    same = await staff.get(f"{BASE}/{plan}", headers={"If-None-Match": etag})
+    assert same.status_code == 304
+    await set_package(w, tenant, "subscriptions", "suspended")
+    assert (await staff.get(f"{BASE}/{plan}")).status_code == 404  # package off
+    assert reads == []
+
+    await set_package(w, tenant, "subscriptions", "active")
+    shown = await staff.get(f"{BASE}/{plan}")
+    assert shown.status_code == 200 and shown.content == data
+    assert reads == [plan]

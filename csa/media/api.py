@@ -29,13 +29,27 @@ STAFF_ROLES = frozenset({Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STA
 
 _NOT_FOUND = "picture_not_found"
 _CACHE_CONTROL = "private, no-cache"
-_BINARY: dict[int | str, dict[str, Any]] = {
+_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
+        "description": "The picture's bytes.",
         "content": {
             "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             "image/png": {"schema": {"type": "string", "format": "binary"}},
-        }
-    }
+        },
+    },
+    304: {"description": "Not modified: `If-None-Match` names the current `ETag`."},
+    404: {
+        "description": "`picture_not_found`: unknown, another company's, or not readable.",
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {"detail": {"type": "string", "enum": [_NOT_FOUND]}},
+                }
+            }
+        },
+    },
 }
 
 
@@ -75,13 +89,26 @@ def _matches(if_none_match: str | None, etag: str) -> bool:
     return False
 
 
+def _etag(sha256: str) -> str:
+    return f'"{sha256}"'
+
+
+def _headers(sha256: str) -> dict[str, str]:
+    return {
+        "ETag": _etag(sha256),
+        "Cache-Control": _CACHE_CONTROL,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    }
+
+
 def build_media_router() -> APIRouter:
     """The picture read route (human sessions only; see the module docstring)."""
     router = APIRouter(
         prefix="/console/v1/media", tags=["Media"], dependencies=[Depends(human_session)]
     )
 
-    @router.get("/{asset_id}", response_class=Response, responses=_BINARY)
+    @router.get("/{asset_id}", response_class=Response, responses=_RESPONSES)
     async def read_picture(
         request: Request,
         asset_id: UUID,
@@ -94,11 +121,12 @@ def build_media_router() -> APIRouter:
         """
         pool = request.app.state.pool
         actor: ConsoleActor = request.state.console_actor
+        # The rule and the ETag comparison run on the metadata; the bytes are read only for a 200.
         async with tx(pool, str(client_id)) as conn:
-            stored = await service.get(conn, client_id, asset_id)
-        if stored is None or not can_read(actor, stored.kind):
+            meta = await service.get_meta(conn, client_id, asset_id)
+        if meta is None or not can_read(actor, meta.kind):
             raise HTTPException(404, _NOT_FOUND)
-        rule = READ_RULES[stored.kind]
+        rule = READ_RULES[meta.kind]
         assert rule is not None  # can_read is False for a kind without a rule
         try:
             await require_package(pool, client_id, rule.packages)
@@ -106,15 +134,16 @@ def build_media_router() -> APIRouter:
             if refused.status_code != 403:
                 raise
             raise HTTPException(404, _NOT_FOUND) from None
-        etag = f'"{stored.sha256}"'
-        headers = {
-            "ETag": etag,
-            "Cache-Control": _CACHE_CONTROL,
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'none'; sandbox",
-        }
-        if _matches(if_none_match, etag):
-            return Response(status_code=304, headers=headers)
-        return Response(content=stored.data, media_type=stored.media_type, headers=headers)
+        if _matches(if_none_match, _etag(meta.sha256)):
+            return Response(status_code=304, headers=_headers(meta.sha256))
+        async with tx(pool, str(client_id)) as conn:
+            stored = await service.get(conn, client_id, asset_id)
+        # Removed since the metadata read: 404. Replaced (same id, same subject, so the same rule):
+        # the headers follow the bytes actually sent.
+        if stored is None:
+            raise HTTPException(404, _NOT_FOUND)
+        return Response(
+            content=stored.data, media_type=stored.media_type, headers=_headers(stored.sha256)
+        )
 
     return router

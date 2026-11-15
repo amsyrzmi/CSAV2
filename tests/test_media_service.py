@@ -196,12 +196,14 @@ async def test_get_and_picture_for_never_see_another_company(
     for scope in (b, a):  # B's own scope, and A's scope asked for B (the query names the company)
         async with tx(pool, scope) as conn:
             assert await service.get(conn, uuid.UUID(b), made.id) is None
+            assert await service.get_meta(conn, uuid.UUID(b), made.id) is None
             assert await service.picture_for(conn, uuid.UUID(b), "plan", "gold") is None
             assert await service.delete(conn, uuid.UUID(b), made.id) is False
             assert await service.delete_for(conn, uuid.UUID(b), "plan", "gold") is False
     # A's scope naming A's company still sees it, and B's scope naming A sees nothing.
     async with tx(pool, b) as conn:
         assert await service.get(conn, uuid.UUID(a), made.id) is None
+        assert await service.get_meta(conn, uuid.UUID(a), made.id) is None
         assert await service.picture_for(conn, uuid.UUID(a), "plan", "gold") is None
         assert await service.delete(conn, uuid.UUID(a), made.id) is False
     async with tx(pool, a) as conn:
@@ -209,6 +211,26 @@ async def test_get_and_picture_for_never_see_another_company(
     # B can hold its own picture for the same subject.
     mine = await store(pool, b, jpeg(640, 480))
     assert mine is not None and mine.id != made.id
+
+
+async def test_get_meta_reads_the_metadata_without_the_bytes(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    client = _company(migrated_dsn)
+    data = jpeg(640, 480)
+    made = await store(pool, client, data, kind="product", subject="p1")
+    assert made is not None
+    async with tx(pool, client) as conn:
+        meta = await service.get_meta(conn, uuid.UUID(client), made.id)
+        assert await service.get_meta(conn, uuid.UUID(client), uuid.uuid4()) is None
+    assert meta == service.PictureMeta(
+        id=made.id,
+        kind="product",
+        subject_key="p1",
+        media_type="image/jpeg",
+        sha256=info_for(data).sha256,
+    )
+    assert not hasattr(meta, "data")
 
 
 async def test_put_refuses_info_that_does_not_describe_the_data(
@@ -252,6 +274,12 @@ async def test_the_company_lock_is_a_transaction_level_hashtextextended_lock(
         "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()"
         " AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(%s, 0)"
     )
+    # After commit, any session: the key is unique to this company, so 0 cannot pass vacuously
+    # by looking at a different backend than the one that held it.
+    anywhere = (
+        "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory'"
+        " AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(%s, 0)"
+    )
     async with tx(pool, client) as conn:
         data = png(800, 800)
         await service.put(
@@ -268,6 +296,6 @@ async def test_the_company_lock_is_a_transaction_level_hashtextextended_lock(
         row: Any = await cursor.fetchone()  # the pool's rows are dicts
     assert row is not None and row["n"] == 1
     async with pool.connection() as conn:  # a transaction-level lock is gone after commit
-        cursor = await conn.execute(held, (f"{client}:media",))  # type: ignore[arg-type]
+        cursor = await conn.execute(anywhere, (f"{client}:media",))  # type: ignore[arg-type]
         row: Any = await cursor.fetchone()  # the pool's rows are dicts
     assert row is not None and row["n"] == 0

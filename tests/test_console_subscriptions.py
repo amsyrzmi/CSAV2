@@ -109,6 +109,7 @@ async def test_plans_crud_roles_and_isolation(sessions: SessionWorld) -> None:
         "is_active": True,
         "signup_mode": "staff",
         "is_signup_open": True,
+        "picture": None,
     }
     duplicate = await w.mutate(admin, f"{BASE}/plans", body)
     assert duplicate.status_code == 409 and duplicate.json()["detail"] == "plan_exists"

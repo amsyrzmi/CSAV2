@@ -16,13 +16,37 @@ from uuid import UUID
 import structlog
 from psycopg import AsyncConnection
 
+from csa.console.contracts import ConsoleActor
+from csa.console.kb_uploads import audit
 from csa.core import db
 from csa.media.contracts import PictureKind, PictureOut
 from csa.media.images import MAX_PICTURES, ImageInfo, PictureRefused
 
 logger = structlog.get_logger(__name__)
 
-__all__ = ["StoredPicture", "delete", "delete_for", "get", "picture_for", "put"]
+__all__ = [
+    "PictureMeta",
+    "StoredPicture",
+    "delete",
+    "delete_for",
+    "get",
+    "get_meta",
+    "picture_for",
+    "put",
+    "remove_picture",
+    "set_picture",
+]
+
+
+@dataclass(frozen=True)
+class PictureMeta:
+    """A picture without its bytes: enough for the read rule and the `ETag` comparison."""
+
+    id: UUID
+    kind: PictureKind
+    subject_key: str
+    media_type: str
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -113,6 +137,22 @@ async def get(conn: AsyncConnection[Any], client_id: UUID, asset_id: UUID) -> St
     )
 
 
+async def get_meta(
+    conn: AsyncConnection[Any], client_id: UUID, asset_id: UUID
+) -> PictureMeta | None:
+    """The picture's metadata by id, in one company; the bytes are not read."""
+    row = await db.q.fetch_one("media/get_meta.sql", (client_id, asset_id), conn=conn)
+    if row is None:
+        return None
+    return PictureMeta(
+        id=row["id"],
+        kind=row["kind"],
+        subject_key=row["subject_key"],
+        media_type=row["media_type"],
+        sha256=row["sha256"],
+    )
+
+
 async def picture_for(
     conn: AsyncConnection[Any], client_id: UUID, kind: PictureKind, subject_key: str
 ) -> PictureOut | None:
@@ -130,3 +170,38 @@ async def delete_for(
 ) -> bool:
     row = await db.q.fetch_one("media/delete_for.sql", (client_id, kind, subject_key), conn=conn)
     return row is not None
+
+
+async def set_picture(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    actor: ConsoleActor,
+    kind: PictureKind,
+    subject_key: str,
+    data: bytes,
+    info: ImageInfo,
+) -> PictureOut:
+    """Keep an uploaded picture for the subject and audit `media.picture.set`.
+
+    The caller has already checked that the subject exists in this company and that `actor` may
+    change it. Raises `PictureRefused("picture_limit")` like `put`.
+    """
+    stored = await put(
+        conn, client_id, kind, subject_key, data, info, source="upload", actor_id=actor.user_id
+    )
+    if stored is None:  # an upload always overwrites; None is only for a generated picture
+        raise RuntimeError("an uploaded picture was not stored")
+    await audit(conn, actor, client_id, "media.picture.set", f"{kind}:{subject_key}")
+    return stored
+
+
+async def remove_picture(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    actor: ConsoleActor,
+    kind: PictureKind,
+    subject_key: str,
+) -> None:
+    """Remove the subject's picture; audit `media.picture.removed` only when one was there."""
+    if await delete_for(conn, client_id, kind, subject_key):
+        await audit(conn, actor, client_id, "media.picture.removed", f"{kind}:{subject_key}")
