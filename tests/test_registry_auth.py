@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -77,6 +79,23 @@ def test_the_copy_goes_away_with_the_docker_config_directory(tmp_path: Path) -> 
         b'{"auths": ["' + SECRETISH.encode() + b'"]}',
         b'{"auths": "' + SECRETISH.encode() + b'"}',
         b"\xff\xfe" + SECRETISH.encode(),
+        b'{"auths": {}}',
+        b'{"auths": {"ghcr.io": {}}, "credsStore": "' + SECRETISH.encode() + b'"}',
+        b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}}, "credHelpers": {}}',
+        b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}}, "credsHelper": "x"}',
+        b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}}, "proxies": {}}',
+        b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}}, "currentContext": "x"}',
+        b'{"auths": {"ghcr.io": {"auth": "'
+        + SECRETISH.encode()
+        + b'"}}, "cliPluginsExtraDirs": []}',
+        b'{"auths": {"ghcr.io": {}}}',
+        b'{"auths": {"ghcr.io": {"identitytoken": "' + SECRETISH.encode() + b'"}}}',
+        b'{"auths": {"ghcr.io": {"auth": ""}}}',
+        b'{"auths": {"ghcr.io": {"auth": ["' + SECRETISH.encode() + b'"]}}}',
+        b'{"auths": {"ghcr.io": "' + SECRETISH.encode() + b'"}}',
+        b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}, "other.io": {}}}',
+        b"[" * 100_000,
+        b'{"auths": ' * 50_000 + SECRETISH.encode(),
     ],
     ids=[
         "empty",
@@ -87,6 +106,21 @@ def test_the_copy_goes_away_with_the_docker_config_directory(tmp_path: Path) -> 
         "auths-list",
         "auths-string",
         "not-utf8",
+        "auths-empty",
+        "auths-and-credsStore",
+        "auths-and-credHelpers",
+        "auths-and-credsHelper",
+        "auths-and-proxies",
+        "auths-and-currentContext",
+        "auths-and-cliPluginsExtraDirs",
+        "entry-without-auth",
+        "entry-with-identitytoken-only",
+        "entry-auth-empty",
+        "entry-auth-not-string",
+        "entry-not-object",
+        "one-entry-without-auth",
+        "deeply-nested-list",
+        "deeply-nested-object",
     ],
 )
 def test_an_unusable_file_is_refused_by_path_only(tmp_path: Path, content: bytes) -> None:
@@ -133,4 +167,105 @@ def test_the_suite_never_reads_the_hosts_auth_files(tmp_path: Path) -> None:
     directory = docker_config(tmp_path)
     for source in (STAGING.registry_auth, PRODUCTION.registry_auth):
         assert registry_auth.install(directory, source) is False
+    assert os.listdir(directory) == []
+
+
+def assert_refused_by_path_only(directory: Path, source: Path) -> None:
+    with pytest.raises(RolloutError) as caught:
+        registry_auth.install(directory, source)
+    assert caught.value.step == "plan"
+    assert caught.value.message == f"registry auth file {source} is not usable"
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert os.listdir(directory) == []
+
+
+def test_a_login_with_two_inline_entries_is_copied(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    content = b'{"auths": {"ghcr.io": {"auth": "YQ=="}, "other.io": {"auth": "Yg=="}}}'
+    assert registry_auth.install(directory, login_file(tmp_path, content)) is True
+    assert (directory / "config.json").read_bytes() == content
+
+
+def test_a_symlink_to_a_valid_login_is_refused(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    target = tmp_path / "elsewhere.json"
+    target.write_bytes(LOGIN)
+    source = tmp_path / "registry" / "config.json"
+    source.parent.mkdir()
+    source.symlink_to(target)
+    assert_refused_by_path_only(directory, source)
+
+
+def test_a_dangling_symlink_is_refused_not_read_as_absent(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    source = tmp_path / "registry" / "config.json"
+    source.parent.mkdir()
+    source.symlink_to(tmp_path / "nowhere.json")
+    assert_refused_by_path_only(directory, source)
+
+
+def test_a_symlink_to_dev_zero_is_refused(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    source = tmp_path / "registry" / "config.json"
+    source.parent.mkdir()
+    source.symlink_to("/dev/zero")
+    assert_refused_by_path_only(directory, source)
+
+
+@pytest.fixture
+def alarm() -> Iterator[None]:
+    """Fail, not hang, when a regression blocks on a FIFO with no writer."""
+
+    def expired(signum: int, frame: object) -> None:
+        raise TimeoutError("install blocked on the FIFO")
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(5)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.usefixtures("alarm")
+def test_a_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    source = tmp_path / "registry" / "config.json"
+    source.parent.mkdir()
+    os.mkfifo(source, 0o600)
+    assert_refused_by_path_only(directory, source)
+
+
+def test_a_file_over_64_kib_is_refused(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    content = LOGIN.rstrip(b"\n") + b" " * (registry_auth.MAX_BYTES + 1 - len(LOGIN) + 1)
+    assert len(content) == registry_auth.MAX_BYTES + 1
+    assert_refused_by_path_only(directory, login_file(tmp_path, content))
+
+
+def test_a_file_of_exactly_64_kib_is_copied(tmp_path: Path) -> None:
+    assert registry_auth.MAX_BYTES == 64 * 1024
+    directory = docker_config(tmp_path)
+    content = LOGIN.rstrip(b"\n") + b" " * (registry_auth.MAX_BYTES - len(LOGIN) + 1)
+    assert len(content) == registry_auth.MAX_BYTES
+    assert registry_auth.install(directory, login_file(tmp_path, content)) is True
+    assert (directory / "config.json").read_bytes() == content
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes anywhere")
+def test_a_failed_copy_stops_by_path_only(tmp_path: Path) -> None:
+    directory = docker_config(tmp_path)
+    source = login_file(tmp_path, LOGIN)
+    directory.chmod(0o500)
+    try:
+        with pytest.raises(RolloutError) as caught:
+            registry_auth.install(directory, source)
+    finally:
+        directory.chmod(0o700)
+    assert caught.value.step == "plan"
+    assert caught.value.message == f"could not copy the registry auth file {source}"
+    shown = f"{caught.value} {caught.value.message!r}"
+    assert SECRETISH not in shown, "the refusal carries file content"
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
     assert os.listdir(directory) == []
