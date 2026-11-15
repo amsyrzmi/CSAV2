@@ -20,6 +20,7 @@ import type {
   ReminderChannel,
   ReminderOut,
   TransferDetails,
+  RejectClaimIn,
   VoidIn,
 } from "@/lib/payments-api";
 
@@ -150,6 +151,18 @@ export function voidBody(reason: string): VoidIn | null {
   return trimmed && trimmed.length <= 300 ? { reason: trimmed } : null;
 }
 
+/** The reject body: the trimmed optional reason, empty when none, or null past 300 characters. */
+export function rejectBody(reason: string): RejectClaimIn | null {
+  const trimmed = reason.trim();
+  if (trimmed.length > 300) return null;
+  return trimmed ? { reason: trimmed } : {};
+}
+
+/** What Reject claim does, shown in its form: the staff member's last chance to stop. */
+export const REJECT_CLAIM_CONSEQUENCE =
+  "The invoice goes back to unpaid. Reminders and the unpaid pause run again, and if it is long overdue " +
+  "the plan can pause at the next check. This does not message the customer: reply from the Inbox.";
+
 const OPEN: InvoiceStatus[] = ["issued", "overdue", "proof_submitted", "cash_pending"];
 
 /** Only an invoice the company still waits for can be marked paid. */
@@ -160,6 +173,20 @@ export function canMarkPaid(status: InvoiceStatus): boolean {
 /** Anything not paid and not already void can be voided. */
 export function canVoid(status: InvoiceStatus): boolean {
   return status !== "paid" && status !== "void";
+}
+
+/** Only a claim the customer is waiting on can be rejected. */
+export function canRejectClaim(status: InvoiceStatus): boolean {
+  return status === "proof_submitted";
+}
+
+/**
+ * The claim section's heading. A rejected invoice keeps its claim note and time but goes back to
+ * issued or overdue, so the status decides, and only with a claim time to show.
+ */
+export function claimSectionTitle(invoice: Pick<InvoiceOut, "status" | "claimed_at">): string {
+  const rejected = (invoice.status === "issued" || invoice.status === "overdue") && !!invoice.claimed_at;
+  return rejected ? "Claim rejected: what the customer said" : "What the customer said";
 }
 
 export function invoiceName(invoice: Pick<InvoiceOut, "reference">): string {

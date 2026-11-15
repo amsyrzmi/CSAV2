@@ -41,6 +41,8 @@ test("tenant members send no client_id; the list sends only the filters given", 
     });
     await pay.voidInvoice(null, "inv/odd id", { reason: "Sent twice" });
     await pay.listAttention(null);
+    await pay.rejectClaim(null, "inv/odd id", { reason: "Nothing in the bank" });
+    await pay.rejectClaim(null, INV, {});
   });
   assert.deepEqual(shape(requests), [
     ["GET", "/console/v1/payments/invoices"],
@@ -50,6 +52,8 @@ test("tenant members send no client_id; the list sends only the filters given", 
     ["POST", `/console/v1/payments/invoices/${INV}/mark-paid`],
     ["POST", "/console/v1/payments/invoices/inv%2Fodd%20id/void"],
     ["GET", "/console/v1/payments/attention"],
+    ["POST", "/console/v1/payments/invoices/inv%2Fodd%20id/reject-claim"],
+    ["POST", `/console/v1/payments/invoices/${INV}/reject-claim`],
   ]);
   // The mark-paid body never carries an amount: the server uses the invoice's.
   assert.deepEqual(JSON.parse(requests[4][1].body), {
@@ -57,6 +61,8 @@ test("tenant members send no client_id; the list sends only the filters given", 
     received_at: "2026-11-12T04:00:00.000Z", note: "Seen in the bank app",
   });
   assert.deepEqual(JSON.parse(requests[5][1].body), { reason: "Sent twice" });
+  assert.deepEqual(JSON.parse(requests[7][1].body), { reason: "Nothing in the bank" });
+  assert.deepEqual(JSON.parse(requests[8][1].body), {});
   for (const [, init] of requests) {
     assert.equal(init.credentials, "same-origin");
     if ((init.method ?? "GET") === "GET") assert.equal(init.headers.has("X-CSRF-Token"), false);
@@ -71,6 +77,7 @@ test("platform admins name the tenant first on every call", async () => {
     await pay.markPaid("t1", INV, { request_key: "11111111-1111-4111-8111-111111111111", method_kind: "cash" });
     await pay.voidInvoice("t1", INV, { reason: "x" });
     await pay.listAttention("t1");
+    await pay.rejectClaim("t1", INV, {});
   });
   assert.deepEqual(requests.map(([path]) => path), [
     "/console/v1/payments/invoices?client_id=t1&status=open",
@@ -78,6 +85,7 @@ test("platform admins name the tenant first on every call", async () => {
     `/console/v1/payments/invoices/${INV}/mark-paid?client_id=t1`,
     `/console/v1/payments/invoices/${INV}/void?client_id=t1`,
     "/console/v1/payments/attention?client_id=t1",
+    `/console/v1/payments/invoices/${INV}/reject-claim?client_id=t1`,
   ]);
 });
 
@@ -269,4 +277,29 @@ test("settings refusals read as the agreed sentences", () => {
     "Some of these values aren't allowed. Check them and save again.");
   assert.equal(pay.setupMessage(new ApiError(503, "synthetic outage", "synthetic outage")),
     "Something went wrong on our side. Try again.");
+});
+
+test("rejecting a claim: its refusals read in plain words and the drawer keeps them", () => {
+  for (const code of ["claim_not_open", "invoice_paid", "invoice_void", "invoice_not_found", "invalid_reason"]) {
+    const said = pay.paymentMessage(new ApiError(409, code, code));
+    assert.notEqual(said, code);
+    assert.doesNotMatch(said, /_/, code);
+  }
+  assert.equal(pay.paymentMessage(new ApiError(409, "claim_not_open", "claim_not_open")),
+    "This invoice has no customer claim waiting. Someone may have rejected it or marked it paid already.");
+  // Someone else changed the invoice first: the drawer reads it again and keeps the sentence.
+  assert.equal(pay.staleMessage(new ApiError(409, "claim_not_open", "claim_not_open")),
+    pay.PAYMENT_ERRORS.claim_not_open);
+  // For a claim, a paid invoice is not "voided": the sentence says what happened.
+  assert.equal(pay.rejectStaleMessage(new ApiError(409, "invoice_paid", "invoice_paid")),
+    "Someone already marked this invoice paid, so the claim can't be rejected.");
+  assert.equal(pay.rejectStaleMessage(new ApiError(409, "invoice_void", "invoice_void")),
+    "This invoice is already void.");
+  assert.equal(pay.rejectStaleMessage(new ApiError(409, "claim_not_open", "claim_not_open")),
+    pay.PAYMENT_ERRORS.claim_not_open);
+  for (const cause of [
+    new ApiError(404, "invoice_not_found", "invoice_not_found"),
+    new ApiError(422, "invalid_reason", "invalid_reason"),
+    new TypeError("fetch failed"),
+  ]) assert.equal(pay.rejectStaleMessage(cause), null, String(cause.message));
 });
