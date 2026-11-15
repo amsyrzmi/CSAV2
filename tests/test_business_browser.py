@@ -2325,3 +2325,77 @@ async def test_product_picture_reads_and_writes_name_the_tenant_for_a_platform_a
             )
 
     await with_browser(body)
+
+
+async def test_a_product_picture_survives_the_card_being_remounted(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible(timeout=WAIT)
+            prefix = f"business-product-{PRODUCT}-picture"
+            await card.get_by_test_id(f"{prefix}-input").set_input_files(
+                {"name": "mug.png", "mimeType": "image/png", "buffer": synthetic_png()}
+            )
+            preview = card.get_by_test_id(f"{prefix}-preview")
+            await expect(preview).to_be_visible()
+            # Focus is back on the Replace button once the upload is done.
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_be_focused()
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_accessible_name(
+                "Replace picture for Blue mug 1"
+            )
+            await expect(card.get_by_test_id(f"{prefix}-remove")).to_have_accessible_name(
+                "Remove picture for Blue mug 1"
+            )
+            reads = len(stub.product_queries)
+
+            # Flip the source and back: the cards mount again from the list the page holds.
+            await page.get_by_test_id("business-source-switch-tiktok").click()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await page.get_by_test_id("business-source-switch-catalogue").click()
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_be_visible()
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Replace")
+            assert len(stub.product_queries) == reads  # shown from the page's list, not a new read
+
+            # Someone else removes it; a refresh brings the server's answer and that wins.
+            stub.pictures.pop(PRODUCT)
+            await page.get_by_role("button", name="Refresh newest products").click()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Choose picture")
+
+    await with_browser(body)
+
+
+async def test_a_removed_product_picture_stays_removed_after_a_remount(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        stub = Stub()
+        asset = "eeeeeeee-0000-4000-8000-" + PRODUCT[-12:]
+        stub.pictures[PRODUCT] = {"id": asset, "version": "v9"}
+        media: list[str] = []
+        async with business_page(
+            browser, site, stub, path="/portal/business/products", wait_for_rows=False
+        ) as page:
+            page.on(
+                "request", lambda r: media.append(r.url) if "/console/v1/media/" in r.url else 0
+            )
+            prefix = f"business-product-{PRODUCT}-picture"
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_be_visible(timeout=WAIT)
+            await card.get_by_test_id(f"{prefix}-remove").click()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_be_focused()
+            seen = len(media)
+            await page.get_by_test_id("business-source-switch-tiktok").click()
+            await expect(page.get_by_test_id("business-products-list")).to_have_count(0)
+            await page.get_by_test_id("business-source-switch-catalogue").click()
+            card = page.get_by_test_id(f"business-product-{PRODUCT}")
+            await expect(card).to_be_visible()
+            await expect(card.get_by_test_id(f"{prefix}-preview")).to_have_count(0)
+            await expect(card.get_by_test_id(f"{prefix}-choose")).to_have_text("Choose picture")
+            assert len(media) == seen, media[seen:]  # no request for the removed asset
+            assert PRODUCT not in stub.pictures
+
+    await with_browser(body)

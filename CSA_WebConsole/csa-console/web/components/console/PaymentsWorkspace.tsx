@@ -986,7 +986,7 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
                   {method.kind === "qr" && method.picture && (
                     <div className="mt-2">
                       <PictureField tenantId={tenantId} testId="method-picture-view"
-                        picture={method.picture} label="QR picture" alt={`QR picture for ${method.label}`} readOnly />
+                        picture={method.picture} label="QR picture" subject={method.label} readOnly />
                     </div>
                   )}
                 </div>
@@ -1119,7 +1119,7 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
       </div>
       {base && base.kind === "qr" && (
         <PictureField tenantId={tenantId} testId="method-picture" label="QR picture"
-          alt={`QR picture for ${base.label}`} path={methodPicturePath(tenantId, base.id)}
+          subject={base.label} path={methodPicturePath(tenantId, base.id)}
           picture={base.picture ?? null} hint="Upload the QR at 800 pixels or more so it still scans"
           onChanged={(picture) => {
             const next = { ...base, picture };

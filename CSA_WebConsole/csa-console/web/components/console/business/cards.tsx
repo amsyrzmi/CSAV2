@@ -208,10 +208,12 @@ export function OrderCard({
   );
 }
 
-export function ProductCard({ product, tenantId }: {
+export function ProductCard({ product, tenantId, onPicture }: {
   product: Product;
   /** Null for a tenant member; the chosen company for a platform admin. */
   tenantId: string | null;
+  /** The product's picture after an upload or removal: the page writes it into its list. */
+  onPicture: (id: string, picture: Picture | null) => void;
 }) {
   const summary = productSummary(product);
   return (
@@ -228,7 +230,8 @@ export function ProductCard({ product, tenantId }: {
       groups={productDetailGroups(product)}
       extra={<div className="mt-2"><PictureField tenantId={tenantId} testId={`business-product-${product.id}-picture`}
         path={productPicturePath(tenantId, product.id)} picture={product.picture ?? null}
-        label="Product picture" alt={`Picture of ${product.name}`} /></div>}
+        label="Product picture" subject={product.name}
+        onChanged={(picture) => onPicture(product.id, picture)} /></div>}
     >
       <p className="break-words font-semibold">{product.sku} · {product.name}</p>
       <p>{product.currency} {product.price} · Local status: {product.is_active ? "Active" : "Inactive"}</p>

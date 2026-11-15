@@ -372,7 +372,8 @@ function ProductRecords({ query, tenantId, onListingOpen }: {
             {stock === "out" && products.items && products.items.length > 0 && shown?.length === 0 && <p>
               None of the products loaded so far are out of stock.</p>}
             <ul data-testid="business-products-list" className="space-y-3">
-              {shown?.map((product) => <ProductCard key={product.id} product={product} tenantId={tenantId} />)}
+              {shown?.map((product) => <ProductCard key={product.id} product={product} tenantId={tenantId}
+                onPicture={(id, picture) => products.patch(id, { picture })} />)}
             </ul>
           </>}
     </Panel>
