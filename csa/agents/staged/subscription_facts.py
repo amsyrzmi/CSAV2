@@ -171,6 +171,11 @@ def request_fact(
 SIGNUP_DATA_NOTE = (
     "We keep your name and phone number on your contact record so the team can set up your plan."
 )
+# Said after the data note only on a turn that asks for the email (WhatsApp): what the address is
+# used for. It promises no receipts (none exist). Telegram never asks, so never gets it.
+SIGNUP_EMAIL_NOTE = (
+    " If you give us your email, we use it for payment reminders and booking messages."
+)
 # The read-back says this instead of the digits of a phone the channel verified.
 VERIFIED_PHONE = "the number already on this chat"
 
@@ -210,7 +215,8 @@ def signup_fact(
     `payments`: the company's payments are on and the plan is priced, so an approved plan gets an
     invoice (`filed`). `ref`: the reference of the opening invoice an auto plan's approval issued
     (`filed_auto_invoice`). `with_email`: the email was asked (WhatsApp), so the read-back names
-    `email`, the customer's own address, or says there is none.
+    `email`, the customer's own address, or says there is none, and the data note adds what an
+    email is used for (`SIGNUP_EMAIL_NOTE`).
     """
     given = (f", email {email}" if email else ", no email") if with_email else ""
     filed_next = (
@@ -221,7 +227,7 @@ def signup_fact(
     )
     texts: dict[str, str] = {
         "missing": f"To sign up for {plan} I still need your {field}.",
-        "data_note": SIGNUP_DATA_NOTE,
+        "data_note": SIGNUP_DATA_NOTE + (SIGNUP_EMAIL_NOTE if with_email else ""),
         "readback": (
             f"Sign-up for {plan}: name {name}, phone {phone}{given}. Is that right? Reply yes "
             "to sign up. Nothing is filed until you do."

@@ -12,6 +12,7 @@ from csa.agents.staged.subscription_facts import (
     LIVE_STATUSES,
     REQUESTABLE_STATUSES,
     SIGNUP_DATA_NOTE,
+    SIGNUP_EMAIL_NOTE,
     SUBSCRIPTION_SOURCE,
     VERIFIED_PHONE,
     plan_facts,
@@ -277,6 +278,14 @@ def test_signup_facts_use_the_exact_copy() -> None:
         "your plan."
     )
     assert text("data_note") == SIGNUP_DATA_NOTE
+    # The email clause is appended only on a turn that asks for the email.
+    assert SIGNUP_EMAIL_NOTE == (
+        " If you give us your email, we use it for payment reminders and booking messages."
+    )
+    assert text("data_note", with_email=False) == SIGNUP_DATA_NOTE
+    assert text("data_note", with_email=True) == SIGNUP_DATA_NOTE + SIGNUP_EMAIL_NOTE
+    # The kind and id stay the same with the clause.
+    assert signup_fact("data_note", n=2, with_email=True).id == "signup_data_note_2"
     assert text("readback", plan="Plan Besar", name="Ali Bin Abu", phone="+60123456789") == (
         "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
         "yes to sign up. Nothing is filed until you do."

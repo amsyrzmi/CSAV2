@@ -357,3 +357,42 @@ test("a saved method replaces its row, or joins the end of the list", () => {
   assert.deepEqual(view.upsertMethod(list, added), [TRANSFER, other, added]);
   assert.deepEqual(view.upsertMethod([], added), [added]);
 });
+
+test("a claim can be rejected only while the customer says they paid", () => {
+  assert.equal(view.canRejectClaim("proof_submitted"), true);
+  for (const status of ["issued", "overdue", "paid", "void", "draft", "cash_pending"]) {
+    assert.equal(view.canRejectClaim(status), false, status);
+  }
+});
+
+test("the reject body is the trimmed optional reason, up to 300 characters", () => {
+  assert.deepEqual(view.rejectBody("  Nothing in the bank  "), { reason: "Nothing in the bank" });
+  assert.deepEqual(view.rejectBody("   "), {});
+  assert.deepEqual(view.rejectBody(""), {});
+  assert.deepEqual(view.rejectBody("x".repeat(300)), { reason: "x".repeat(300) });
+  assert.equal(view.rejectBody("x".repeat(301)), null);
+});
+
+test("the claim section says rejected only for a put-back invoice with a claim time", () => {
+  const said = "What the customer said";
+  const rejected = "Claim rejected: what the customer said";
+  const claimed = "2026-11-12T02:00:00Z";
+  assert.equal(view.claimSectionTitle({ status: "proof_submitted", claimed_at: claimed }), said);
+  // A rejected invoice keeps its claim; the status decides, and the claim time must be there.
+  for (const status of ["issued", "overdue"]) {
+    assert.equal(view.claimSectionTitle({ status, claimed_at: claimed }), rejected, status);
+    assert.equal(view.claimSectionTitle({ status, claimed_at: null }), said, status);
+  }
+  for (const status of ["paid", "void", "cash_pending"]) {
+    assert.equal(view.claimSectionTitle({ status, claimed_at: claimed }), said, status);
+  }
+});
+
+test("the reject confirm says what happens next and that the customer is not messaged", () => {
+  assert.match(view.REJECT_CLAIM_CONSEQUENCE, /goes back to unpaid/);
+  // A claim protects a pending sign-up from expiry; rejecting it ends that protection.
+  assert.match(view.REJECT_CLAIM_CONSEQUENCE,
+    /still waiting to start and is past the sign-up expiry, it is cancelled at the next check and this invoice is voided/);
+  assert.match(view.REJECT_CLAIM_CONSEQUENCE, /does not message the customer/);
+  assert.match(view.REJECT_CLAIM_CONSEQUENCE, /Inbox/);
+});

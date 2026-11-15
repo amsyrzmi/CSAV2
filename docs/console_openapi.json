@@ -14490,6 +14490,26 @@
         "title": "RecruitmentInput",
         "type": "object"
       },
+      "RejectClaimIn": {
+        "additionalProperties": false,
+        "description": "Why the claim is rejected, for the audit trail; blank or left out is no reason.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "RejectClaimIn",
+        "type": "object"
+      },
       "ReminderOut": {
         "additionalProperties": false,
         "description": "One reminder step. The address it went to is never shown.",
@@ -33127,6 +33147,94 @@
           }
         },
         "summary": "Mark Paid",
+        "tags": [
+          "Payments"
+        ]
+      }
+    },
+    "/console/v1/payments/invoices/{invoice_id}/reject-claim": {
+      "post": {
+        "description": "Send a customer's payment claim back to issued: 409 `claim_not_open` unless claimed.",
+        "operationId": "reject_claim_console_v1_payments_invoices__invoice_id__reject_claim_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectClaimIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Claim",
         "tags": [
           "Payments"
         ]
