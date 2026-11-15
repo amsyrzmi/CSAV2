@@ -649,7 +649,7 @@ def test_an_unusable_registry_login_stops_before_any_command_and_names_only_the_
 ) -> None:
     login = tmp_path / "registry" / "config.json"
     login.parent.mkdir()
-    login.write_text('{"credsStore": "c3ludGhldGlj"}')
+    login.write_text('{"auths": {"ghcr.io": {}}, "credsStore": "c3ludGhldGlj"}')
     point_registry_login(monkeypatch, login)
     made: list[str] = []
     real_mkdtemp = sr.tempfile.mkdtemp

@@ -140,12 +140,25 @@ CI.
 **Optional registry login.** `staging_rollout` and `staging_reset` pull through a temporary,
 private Docker config. If `/srv/csa-staging/registry/config.json` exists, they copy it into that
 config (mode 0600, removed with it when the run ends) before any pull, so the pulls use its
-login; without the file the pulls stay anonymous, as today. It is a Docker auth file (a JSON
-object with an `auths` object) holding a read-only registry login (`read:packages` only),
-readable only by the user who runs the rollout (mode 0600). A file that is empty, unreadable or
-not such an object stops the run with `Stopped at plan: registry auth file <path> is not
-usable`; the content is never printed. Never commit it. It is needed only once the images are
-private.
+login; without the file the pulls stay anonymous, as today. It holds a read-only registry login
+(`read:packages` only). The file must contain ONLY an `auths` object whose entries each have
+an inline `auth` value. Do not copy a `docker login` config: anything with `credsStore`, `credHelpers`, `proxies` or
+other keys, or an entry without an inline `auth`, makes the rollout stop with
+`Stopped at plan: registry auth file <path> is not usable`. The file must be mode 0600; a
+symlink, FIFO, directory or a file over 64 KiB is refused. The content is never printed. If the
+copy itself fails (for example a full disk) the run stops with `could not copy the registry auth
+file <path>`. Never commit it. Create it without echoing the token, as the user who runs the rollout, who
+owns the directory and the file:
+
+```
+install -d -m 0700 /srv/csa-staging/registry
+umask 077
+read -rsp "registry read token: " T; echo
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-staging/registry/config.json
+unset T
+```
+
+It is needed only once the images are private.
 
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose

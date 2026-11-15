@@ -637,7 +637,7 @@ def test_reset_stops_on_an_unusable_registry_login_and_names_only_the_path(
 ) -> None:
     login = tmp_path / "registry" / "config.json"
     login.parent.mkdir()
-    login.write_text("c3ludGhldGlj")
+    login.write_text('{"auths": {"ghcr.io": {}}, "credsStore": "c3ludGhldGlj"}')
     monkeypatch.setattr(rs, "STAGING", dataclasses.replace(rs.STAGING, registry_auth=login))
     runner = reset_runner()
     assert rs.main(["plan"], runner) == 1
