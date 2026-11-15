@@ -54,6 +54,7 @@ from csa.hr.api import build_hr_router
 from csa.hr.assistant import HrAssistant
 from csa.hr.service import HrService
 from csa.marketplace.reads import live_read_access
+from csa.media.api import build_media_router
 from csa.metering.meter import LedgerMeter
 from csa.payments.api import build_payments_router
 from csa.storage.factory import build_stores, verify_stores
@@ -539,6 +540,7 @@ def create_app() -> FastAPI:
     # lane B (console): subscriptions router registers here
     app.include_router(build_subscriptions_router())
     app.include_router(build_payments_router())
+    app.include_router(build_media_router())
     app.include_router(build_bookings_router())
     app.include_router(build_calendar_router())
     # --- end lane registrations ---

@@ -265,9 +265,9 @@ async def test_the_company_lock_is_a_transaction_level_hashtextextended_lock(
             actor_id=None,
         )
         cursor = await conn.execute(held, (f"{client}:media",))  # type: ignore[arg-type]
-        row = await cursor.fetchone()
+        row: Any = await cursor.fetchone()  # the pool's rows are dicts
     assert row is not None and row["n"] == 1
     async with pool.connection() as conn:  # a transaction-level lock is gone after commit
         cursor = await conn.execute(held, (f"{client}:media",))  # type: ignore[arg-type]
-        row = await cursor.fetchone()
+        row: Any = await cursor.fetchone()  # the pool's rows are dicts
     assert row is not None and row["n"] == 0

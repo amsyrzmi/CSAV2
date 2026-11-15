@@ -13,6 +13,7 @@ from csa.console.onboarding import build_onboarding_router
 from csa.console.router import build_router
 from csa.email.api import build_email_router
 from csa.hr.api import build_hr_router
+from csa.media.api import build_media_router
 from csa.payments.api import build_payments_router
 from csa.subscriptions.api import build_subscriptions_router
 from fastapi import FastAPI
@@ -30,6 +31,7 @@ def contract() -> dict:
     app.include_router(build_channels_router())
     app.include_router(build_subscriptions_router())
     app.include_router(build_payments_router())
+    app.include_router(build_media_router())
     app.include_router(build_bookings_router())
     app.include_router(build_calendar_router())
     return app.openapi()
