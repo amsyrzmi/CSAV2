@@ -33,6 +33,7 @@ from csa.bookings.availability import on_slot_grid
 from csa.bookings.contracts import BookingIn, BookingTime, BookingTypeOut
 from csa.core import db
 from csa.notify import notifier
+from csa.payments.copy import local_date
 
 Conn = service.Conn
 ReplyMode = Literal["shadow", "suggest", "auto"]
@@ -76,6 +77,7 @@ class Offer:
     starts_at: datetime
     ends_at: datetime
     label: str
+    label_ms: str = ""  # the same, in Malay (`format_slot_ms`), for a fact told on a Malay turn
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,35 @@ def format_slot(starts_at: datetime, zone: ZoneInfo) -> str:
     return f"{words} ({local:%Y-%m-%d %H:%M})"
 
 
+DAYS_MS = ("Isnin", "Selasa", "Rabu", "Khamis", "Jumaat", "Sabtu", "Ahad")  # Monday first
+
+
+def _part_of_day_ms(hour: int) -> str:
+    """What a Malaysian chat says after a 12-hour clock time: 3:00 petang, 8:00 malam."""
+    if hour == 0:
+        return "tengah malam"
+    if hour < 12:
+        return "pagi"
+    if hour < 14:
+        return "tengah hari"
+    if hour < 19:
+        return "petang"
+    return "malam"
+
+
+def format_slot_ms(starts_at: datetime, zone: ZoneInfo) -> str:
+    """`format_slot` in Malay: "Selasa 10 November 2026, 3:00 petang (2026-11-10 15:00)". The
+    month names are `csa.payments.copy`'s. The clock is the same 12-hour clock with the same
+    numbers, a colon and never a dot ("3.30" would read as a number no fact holds), and the
+    numeric form is the same, so a Malay fact holds exactly the numbers of its English one.
+    """
+    local = starts_at.astimezone(zone)
+    hour = local.hour % 12 or 12
+    clock = f"{hour}:{local.minute:02d} {_part_of_day_ms(local.hour)}"
+    words = f"{DAYS_MS[local.weekday()]} {local_date(local, 'ms', zone)}, {clock}"
+    return f"{words} ({local:%Y-%m-%d %H:%M})"
+
+
 async def offer(
     conn: Conn,
     client_id: UUID,
@@ -207,7 +238,13 @@ async def offer(
         else {}
     )
     return [
-        Offer(s.starts_at, s.ends_at, _label(s.starts_at, zone, s.people, names)) for s in slots
+        Offer(
+            s.starts_at,
+            s.ends_at,
+            _label(s.starts_at, zone, s.people, names),
+            _label(s.starts_at, zone, s.people, names, ms=True),
+        )
+        for s in slots
     ]
 
 
@@ -263,10 +300,17 @@ async def _spread_over_a_day(
     return []
 
 
-def _label(starts_at: datetime, zone: ZoneInfo, people: list[UUID], names: dict[UUID, str]) -> str:
-    label = format_slot(starts_at, zone)
+def _label(
+    starts_at: datetime,
+    zone: ZoneInfo,
+    people: list[UUID],
+    names: dict[UUID, str],
+    *,
+    ms: bool = False,
+) -> str:
+    label = (format_slot_ms if ms else format_slot)(starts_at, zone)
     if len(people) == 1 and people[0] in names:
-        return f"{label} with {names[people[0]]}"
+        return f"{label} {'dengan' if ms else 'with'} {names[people[0]]}"
     return label
 
 

@@ -23,9 +23,12 @@ from csa.agents.base import AgentContext, SideEffects
 from csa.agents.facts import day
 from csa.agents.staged.booking_facts import (
     NEEDS_NAME,
+    NEEDS_NAME_MS,
     NOT_FOUND,
     REMINDERS_LATER,
+    REMINDERS_LATER_MS,
     REMINDERS_NOW,
+    REMINDERS_NOW_MS,
     Scene,
     booking_line,
     facts_for,
@@ -152,8 +155,19 @@ WRITES = ("book", "reschedule", "cancel", "save_details")
 BOOKING = "booking_agent"
 
 
-def reply(ctx: AgentContext, texts: list[str], *, handoff: str | None = None) -> AgentResult:
-    """An answer made of facts. `handoff` passes the customer to a person, with a staff reason."""
+def reply(
+    ctx: AgentContext,
+    texts: list[str],
+    *,
+    malay: list[str] | None = None,
+    handoff: str | None = None,
+) -> AgentResult:
+    """An answer made of facts. `malay` is the same facts in Malay, one for one, for a write
+    whose facts can go out word for word (`Fact.text_ms`); a read has none. `handoff` passes the
+    customer to a person, with a staff reason. Malay that does not match one for one is left
+    out (the English goes out), never paired with the wrong fact."""
+    if malay is not None and len(malay) != len(texts):
+        malay = None
     return AgentResult(
         ok=True,
         status="ok",
@@ -161,7 +175,13 @@ def reply(ctx: AgentContext, texts: list[str], *, handoff: str | None = None) ->
         agent=BOOKING,
         data=AgentResultData(
             facts=[
-                Fact(id=f"booking-{n}", text=text, source=BOOKING, as_of=ctx.now())
+                Fact(
+                    id=f"booking-{n}",
+                    text=text,
+                    text_ms=malay[n] if malay is not None else None,
+                    source=BOOKING,
+                    as_of=ctx.now(),
+                )
                 for n, text in enumerate(texts)
             ]
         ),
@@ -180,6 +200,7 @@ class Acted:
     scene: Scene
     outcome: BotOutcome | None = None
     lines: list[str] = field(default_factory=list)
+    lines_ms: list[str] = field(default_factory=list)  # a write's lines in Malay, one for one
 
 
 def local(value: datetime, zone: ZoneInfo) -> datetime:
@@ -259,13 +280,19 @@ class BookingAgent:
         # The transaction has committed. Mail goes in the background: the reply never waits for
         # the relay, and it cannot claim mail it has not seen arrive.
         outcome = acted.outcome
+        # Only a write's facts can go out word for word, so only they carry a Malay text.
+        write = inp.action in WRITES
         if outcome is None:
-            return reply(ctx, acted.lines)
+            return reply(ctx, acted.lines, malay=acted.lines_ms if write else None)
         change = mail_for(outcome)
         if change is not None and outcome.booking is not None:
             self._mail_later(ctx, outcome.booking, change)
+        malay = [*facts_for(outcome, acted.scene, ms=True), *acted.lines_ms]
         return reply(
-            ctx, [*facts_for(outcome, acted.scene), *acted.lines], handoff=handoff_of(outcome)
+            ctx,
+            [*facts_for(outcome, acted.scene), *acted.lines],
+            malay=malay if write else None,
+            handoff=handoff_of(outcome),
         )
 
     def _mail_later(self, ctx: AgentContext, booking: BookingRecord, change: notify.Change) -> None:
@@ -331,27 +358,33 @@ class BookingAgent:
         email = _real(inp.customer_email)
         before = await self._details(conn, ctx, None, None)
         after = await self._details(conn, ctx, inp.customer_name, email)
-        line = saved_line(
-            before,
-            after,
-            name=inp.customer_name,
-            email=email,
-            reminders=await self._reminders_sentence(conn, ctx),
+        reminders, reminders_ms = await self._reminders_sentence(conn, ctx)
+        name = inp.customer_name
+        return Acted(
+            scene,
+            lines=[saved_line(before, after, name=name, email=email, reminders=reminders)],
+            lines_ms=[
+                saved_line(before, after, name=name, email=email, reminders=reminders_ms, ms=True)
+            ],
         )
-        return Acted(scene, lines=[line])
 
-    async def _reminders_sentence(self, conn: AsyncConnection[Any], ctx: AgentContext) -> str:
-        """What a saved address will be used for. Nothing while no mailer is connected, and "the
-        booking just made" only if the customer holds an upcoming booking.
+    async def _reminders_sentence(
+        self, conn: AsyncConnection[Any], ctx: AgentContext
+    ) -> tuple[str, str]:
+        """What a saved address will be used for, in English and in Malay. Nothing while no
+        mailer is connected, and "the booking just made" only if the customer holds an upcoming
+        booking.
         """
         if not self._sends_mail():
-            return ""
+            return "", ""
         held = await db.q.fetch_one(
             "bookings/customer_upcoming_count.sql",
             {"client_id": ctx.client_id, "contact_id": ctx.contact_id, "now": ctx.now()},
             conn=conn,
         )
-        return REMINDERS_NOW if held is not None and held["n"] > 0 else REMINDERS_LATER
+        if held is not None and held["n"] > 0:
+            return REMINDERS_NOW, REMINDERS_NOW_MS
+        return REMINDERS_LATER, REMINDERS_LATER_MS
 
     async def _availability(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene
@@ -446,7 +479,7 @@ class BookingAgent:
     ) -> Acted:
         assert inp.type_id is not None and inp.starts_at is not None
         if not (details.get("full_name") or "").strip():
-            return Acted(scene, lines=[NEEDS_NAME])
+            return Acted(scene, lines=[NEEDS_NAME], lines_ms=[NEEDS_NAME_MS])
         outcome = await bot.book(
             conn,
             ctx.client_id,
@@ -465,9 +498,12 @@ class BookingAgent:
         if outcome.booking is not None:
             scene = await self._scene_for(conn, ctx, scene, outcome.booking)
         lines: list[str] = []
+        lines_ms: list[str] = []
         if outcome.code == "not_found":  # tell the model what can be booked, as availability does
-            lines = [type_line(t, ids=False) for t in await bot.customer_types(conn, ctx.client_id)]
-        return Acted(scene, outcome, lines)
+            types = await bot.customer_types(conn, ctx.client_id)
+            lines = [type_line(t, ids=False) for t in types]
+            lines_ms = [type_line(t, ids=False, ms=True) for t in types]
+        return Acted(scene, outcome, lines, lines_ms)
 
     async def _change(
         self, conn: AsyncConnection[Any], ctx: AgentContext, inp: BookingInput, scene: Scene

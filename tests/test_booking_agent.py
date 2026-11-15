@@ -7,6 +7,7 @@ does (an `AgentContext` with the turn's key) and read the facts the reply is wri
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 import uuid
@@ -1830,6 +1831,462 @@ async def test_a_company_without_bookings_gets_the_context_it_always_had(shop: S
     assert loaded.model_dump(exclude={"booking", "capabilities"}) == Context(
         flags={"human_muted": False, "handoff_recent": False}
     ).model_dump(exclude={"booking", "capabilities"})
+
+
+# --- Malay text for the facts that go out word for word -------------------------------------------
+# A write's facts are sent as they stand when a Malay turn also answers payment (or the reply
+# cannot be composed), so each carries a Malay text beside its unchanged English one. Reads never
+# go out word for word and stay English only.
+
+TEN_MS = "Selasa 4 Mac 2031, 10:00 pagi (2031-03-04 10:00)"
+ELEVEN_MS = "Selasa 4 Mac 2031, 11:00 pagi (2031-03-04 11:00)"
+_FORMAL_MALAY = re.compile(r"\b(?:anda|sila)\b|pihak kami", re.IGNORECASE)
+
+
+def _in_malay(fact: Any) -> str:
+    """The fact's Malay text: set, holding none of the fact's English sentences and none of the
+    formal words the customer copy avoids."""
+    assert fact.text_ms, fact.text
+    for sentence in re.split(r"(?<=[.?!])\s+", fact.text):
+        assert sentence.strip() not in fact.text_ms, (sentence, fact.text_ms)
+    assert _FORMAL_MALAY.search(fact.text_ms) is None, fact.text_ms
+    return str(fact.text_ms)
+
+
+def pairs(result: AgentResult) -> list[tuple[str, str]]:
+    """Each fact's English text and its Malay text, checked as `_in_malay` checks it."""
+    assert result.ok, result.error
+    return [(f.text, _in_malay(f)) for f in result.facts]
+
+
+async def test_a_booking_made_or_held_carries_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    assert pairs(await make_it(shop, contact, kind)) == [
+        (
+            f"Booking confirmed: Haircut on {TEN_TEXT}, with Person 0, by phone.",
+            f"Tempahan dah disahkan: Haircut pada {TEN_MS}, dengan Person 0, melalui telefon.",
+        )
+    ]
+    online = await a_type(
+        shop, location_kind="online", meeting_link="https://meet.example.test/room-1"
+    )
+    assert pairs(await make_it(shop, contact, online, "2031-03-04T14:00", key="e2:t0")) == [
+        (
+            "Booking confirmed: Haircut on Tuesday 4 March 2031, 2:00 pm (2031-03-04 14:00), with "
+            "Person 0, online. Meeting link: https://meet.example.test/room-1",
+            "Tempahan dah disahkan: Haircut pada Selasa 4 Mac 2031, 2:00 petang (2031-03-04 14:00),"
+            " dengan Person 0, secara online. Link meeting: https://meet.example.test/room-1",
+        )
+    ]
+    place = await a_type(shop, location_kind="in_person", address="12 Jalan Contoh")
+    near = pairs(await make_it(shop, contact, place, "2031-03-04T15:00", key="e3:t0"))
+    assert near[0][0].endswith(", with Person 0, at 12 Jalan Contoh.")
+    assert near[0][1].endswith(", dengan Person 0, kat 12 Jalan Contoh.")
+    await shop.mode("suggest")
+    held = pairs(await make_it(shop, await shop.customer(), kind, "2031-03-04T11:00", key="e4:t0"))
+    assert held == [
+        (
+            f"Booking requested: Haircut on {ELEVEN_TEXT}, with Person 0, by phone. It is not "
+            "confirmed yet: the team has to confirm it.",
+            f"Permintaan tempahan dah diterima: Haircut pada {ELEVEN_MS}, dengan Person 0, "
+            "melalui telefon. Belum disahkan lagi: staf kami kena sahkan dulu.",
+        )
+    ]
+
+
+async def test_a_refused_booking_carries_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop, max_advance_days=60)
+    await make_it(shop, await shop.customer(), kind)
+    ((english, malay),) = pairs(await make_it(shop, await shop.customer(), kind, key="e2:t0"))
+    assert english.startswith("That time was just taken. Other free times for Haircut: ")
+    assert malay.startswith(
+        "Masa tu baru je ditempah orang lain. Masa kosong lain untuk Haircut: "
+        "Selasa 4 Mac 2031, 9:00 pagi (2031-03-04 09:00); "
+    )
+    offered = english.removesuffix(".").split(": ", 1)[1].split("; ")
+    told = malay.removesuffix(".").split(": ", 1)[1].split("; ")
+    assert len(told) == len(offered) >= 2
+    sunday = pairs(await make_it(shop, await shop.customer(), kind, "2031-03-09T10:00", key="e3"))
+    assert sunday[0][1].startswith("Hari tu tak boleh ditempah. Masa kosong lain untuk Haircut: ")
+    closed = await a_type(shop, max_advance_days=0)
+    far = await make_it(shop, await shop.customer(), closed, "2031-03-20T10:00", key="e4:t0")
+    assert pairs(far) == [
+        (
+            "Not available that day. No other free times were found soon.",
+            "Hari tu tak boleh ditempah. Tak jumpa masa kosong lain dalam masa terdekat.",
+        )
+    ]
+
+
+async def test_the_limit_the_missing_and_the_switched_off_carry_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop)
+    await shop.w.q(
+        "INSERT INTO booking_settings (client_id, customer_limit) VALUES (%s, 1)", shop.tenant
+    )
+    contact = await shop.customer()
+    await make_it(shop, contact, kind)
+    assert pairs(await make_it(shop, contact, kind, "2031-03-04T14:00", key="e2:t0")) == [
+        (
+            "You have reached the number of upcoming bookings allowed, so no new booking was made. "
+            "You can cancel one first.",
+            "Awak dah cukup had tempahan akan datang yang dibenarkan, jadi tempahan baru tak "
+            "dibuat. Awak boleh batalkan satu dulu.",
+        )
+    ]
+    missing = await ask(shop, contact, "cancel", key="e3:t0", booking_id=str(uuid.uuid4()))
+    assert pairs(missing) == [
+        (
+            "That could not be found. Nothing was changed.",
+            "Tak jumpa yang tu. Tak ada apa-apa yang diubah.",
+        )
+    ]
+    # No such service: what can be booked is told too, in the same words as the booking.
+    confirms = await a_type(shop, needs_confirmation=True)
+    someone = await shop.customer()
+    unknown = pairs(await make_it(shop, someone, {**kind, "id": str(uuid.uuid4())}, key="e4:t0"))
+    assert unknown[0] == (
+        "That could not be found. Nothing was changed.",
+        "Tak jumpa yang tu. Tak ada apa-apa yang diubah.",
+    )
+    assert ("Can be booked: Haircut, 30 minutes.", "Boleh ditempah: Haircut, 30 minit.") in unknown
+    assert confirms["needs_confirmation"] is True
+    assert (
+        "Can be booked: Haircut, 30 minutes. The team confirms these bookings first.",
+        "Boleh ditempah: Haircut, 30 minit. Staf kami sahkan tempahan jenis ni dulu.",
+    ) in unknown
+    await shop.mode("shadow")
+    assert pairs(await make_it(shop, contact, kind, key="e5:t0")) == [
+        (
+            "Booking by message is not available at the moment. Nothing was changed.",
+            "Buat masa ni tak boleh tempah melalui mesej. Tak ada apa-apa yang diubah.",
+        )
+    ]
+
+
+async def test_a_handoff_carries_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop, change_cutoff_minutes=120)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    late = await ask(
+        shop, contact, "cancel", now=TEN - timedelta(minutes=30), booking_id=str(made.booking.id)
+    )
+    assert late.requires_human and pairs(late) == [
+        (
+            "It is too close to the start time to change this booking by message. "
+            "A team member will help.",
+            "Dah terlalu dekat dengan masa mula untuk ubah tempahan ni melalui mesej. "
+            "Staf kami akan tolong awak.",
+        )
+    ]
+    buffered = await a_type(shop, needs_confirmation=True, buffer_minutes=15)
+    other = await shop.customer()
+    held = await shop.book(other, buffered["id"])
+    assert held.booking is not None
+    done = await shop.team.send(
+        shop.team.admin, f"/bookings/{held.booking.id}/confirm", {"version": held.booking.version}
+    )
+    assert done.status_code == 200
+    touching = await ask(
+        shop,
+        other,
+        "reschedule",
+        key="e2:t0",
+        booking_id=str(held.booking.id),
+        starts_at="2031-03-04T10:15",
+    )
+    assert touching.requires_human and pairs(touching) == [
+        (
+            "The new time overlaps the booking's current time, which cannot be changed by "
+            "message. A team member will help.",
+            "Masa baru tu bertindih dengan masa tempahan sekarang, jadi tak boleh diubah melalui "
+            "mesej. Staf kami akan tolong awak.",
+        )
+    ]
+
+
+async def test_a_move_a_cancel_and_its_question_carry_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    moved = await ask(
+        shop, contact, "reschedule", booking_id=str(made.booking.id), starts_at="2031-03-04T11:00"
+    )
+    assert pairs(moved) == [
+        (
+            f"Booking moved and confirmed: Haircut on {ELEVEN_TEXT}, with Person 0, by phone.",
+            f"Tempahan dah ditukar dan disahkan: Haircut pada {ELEVEN_MS}, dengan Person 0, "
+            "melalui telefon.",
+        )
+    ]
+    asked = await ask(shop, contact, "cancel", key="e2:asked", booking_id=str(made.booking.id))
+    assert pairs(asked) == [
+        (
+            question(ELEVEN_TEXT),
+            f"Nak batalkan Haircut awak pada {ELEVEN_MS}? Balas ya untuk batalkan. "
+            "Belum ada apa-apa yang dibatalkan lagi.",
+        )
+    ]
+    gone = await ask(
+        shop, contact, "cancel", key="e2:t0", booking_id=str(made.booking.id), confirmed=True
+    )
+    assert pairs(gone) == [
+        (
+            f"Booking cancelled: Haircut on {ELEVEN_TEXT}, with Person 0, by phone. "
+            "It is cancelled.",
+            f"Tempahan dah dibatalkan: Haircut pada {ELEVEN_MS}, dengan Person 0, melalui "
+            "telefon. Tempahan ni dah batal.",
+        )
+    ]
+
+
+async def test_a_request_to_move_and_its_withdrawal_carry_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    old, asked = await pending_change(shop, kind, contact)
+    assert old.booking is not None and asked.booking is not None
+    original_en = f"The original booking (Haircut on {TEN_TEXT}, with Person 0, by phone)"
+    original_ms = f"Tempahan asal (Haircut pada {TEN_MS}, dengan Person 0, melalui telefon)"
+    # Another customer's request to move, still waiting for the team.
+    other_kind, other = await a_type(shop), await shop.customer()
+    theirs = await shop.book(other, other_kind["id"])
+    assert theirs.booking is not None
+    await shop.mode("suggest")
+    waiting = await ask(
+        shop,
+        other,
+        "reschedule",
+        key="e0:t0",
+        booking_id=str(theirs.booking.id),
+        starts_at="2031-03-04T14:00",
+    )
+    await shop.mode("auto")
+    assert pairs(waiting) == [
+        (
+            "Request to move the booking to Tuesday 4 March 2031, 2:00 pm (2031-03-04 14:00) "
+            "received. The new time is not confirmed yet: the team has to confirm it. "
+            f"{original_en} is still confirmed.",
+            "Permintaan nak tukar tempahan ke Selasa 4 Mac 2031, 2:00 petang (2031-03-04 14:00) "
+            "dah diterima. Masa baru tu belum disahkan lagi: staf kami kena sahkan dulu. "
+            f"{original_ms} masih disahkan.",
+        )
+    ]
+    question_ = await ask(shop, contact, "cancel", key="e1:asked", booking_id=str(asked.booking.id))
+    assert pairs(question_) == [
+        (
+            f"Withdraw your request to move your Haircut to {ELEVEN_TEXT}? Reply yes to withdraw "
+            "it. Nothing has been changed yet.",
+            f"Nak tarik balik permintaan tukar Haircut awak ke {ELEVEN_MS}? Balas ya untuk tarik "
+            "balik. Belum ada apa-apa yang diubah lagi.",
+        )
+    ]
+    first = await ask(
+        shop, contact, "cancel", key="e1:t0", booking_id=str(asked.booking.id), confirmed=True
+    )
+    assert pairs(first) == [
+        (
+            "The request to move the booking is withdrawn. The booking stands as it was: "
+            f"Haircut on {TEN_TEXT}, with Person 0, by phone. It is still confirmed.",
+            "Permintaan nak tukar tempahan dah ditarik balik. Tempahan kekal macam asal: "
+            f"Haircut pada {TEN_MS}, dengan Person 0, melalui telefon. Tempahan ni masih "
+            "disahkan.",
+        )
+    ]
+    retry = await ask(
+        shop, contact, "cancel", key="e1:t0", booking_id=str(asked.booking.id), confirmed=True
+    )
+    assert pairs(retry) == [
+        (
+            f"The request to move the booking to {ELEVEN_TEXT} is withdrawn and will not go "
+            f"ahead. {original_en} is still confirmed.",
+            f"Permintaan nak tukar tempahan ke {ELEVEN_MS} dah ditarik balik dan takkan "
+            f"diteruskan. {original_ms} masih disahkan.",
+        )
+    ]
+
+
+async def test_the_asks_for_a_name_and_an_email_carry_a_malay_text(shop: Shop) -> None:
+    kind = await a_type(shop)
+    assert pairs(await make_it(shop, await nameless(shop), kind)) == [
+        (
+            "I need your name to make the booking and there is none on file. Please tell me your "
+            "name. Nothing has been booked yet.",
+            "Saya perlukan nama awak untuk buat tempahan, dan nama awak tak ada dalam rekod. "
+            "Bagitahu nama awak ya. Belum ada apa-apa yang ditempah lagi.",
+        )
+    ]
+    whatsapp = pairs(await make_it(shop, await shop.customer(), kind, channel="whatsapp"))
+    assert whatsapp[1] == (
+        "There is no email address on file for you, so no confirmation email will be sent. If "
+        "you would like to give one, tell me your email address. It is fine to say no.",
+        "Alamat e-mel awak tak ada dalam rekod, jadi e-mel pengesahan takkan dihantar. Kalau "
+        "awak nak bagi, bagitahu alamat e-mel awak. Tak nak pun tak apa.",
+    )
+    mailing = BookingAgent(Mailer(FakeTransport(), SENDER))
+    reminded = pairs(
+        await make_it(
+            shop,
+            await shop.customer(),
+            kind,
+            "2031-03-04T14:00",
+            key="e2:t0",
+            channel="whatsapp",
+            agent=mailing,
+        )
+    )
+    assert reminded[1] == (
+        "There is no email address on file for you, so no confirmation email will be sent. If "
+        "you would like to give one, tell me your email address. It would be used for "
+        "reminders. It is fine to say no.",
+        "Alamat e-mel awak tak ada dalam rekod, jadi e-mel pengesahan takkan dihantar. Kalau "
+        "awak nak bagi, bagitahu alamat e-mel awak. Kami akan guna e-mel tu untuk peringatan. "
+        "Tak nak pun tak apa.",
+    )
+    await mailing.drain()
+
+
+@pytest.mark.parametrize(
+    ("booking", "mailer", "english", "malay"),
+    [
+        (False, False, "", ""),
+        (
+            True,
+            True,
+            " It will be used for reminders, including for the booking just made.",
+            " Kami akan guna e-mel tu untuk peringatan, termasuk untuk tempahan yang baru dibuat "
+            "tadi.",
+        ),
+        (
+            False,
+            True,
+            " It will be used for reminders of future bookings.",
+            " Kami akan guna e-mel tu untuk peringatan tempahan akan datang.",
+        ),
+    ],
+)
+async def test_saved_details_carry_a_malay_text(
+    shop: Shop, booking: bool, mailer: bool, english: str, malay: str
+) -> None:
+    kind = await a_type(shop)
+    contact = await nameless(shop)
+    if booking:
+        await shop.w.q(
+            "UPDATE contacts SET full_name = 'Aina Binti Test' WHERE id = %s", str(contact)
+        )
+        await shop.book(contact, kind["id"])
+    agent = BookingAgent(Mailer(FakeTransport(), SENDER) if mailer else None)
+    name = None if booking else "Aina Binti Test"
+    saved = await ask(
+        shop,
+        contact,
+        "save_details",
+        agent=agent,
+        customer_name=name,
+        customer_email="a@example.test",
+    )
+    if booking:
+        assert pairs(saved) == [
+            ("The email address is saved." + english, "Alamat e-mel dah disimpan." + malay)
+        ]
+    else:
+        assert pairs(saved) == [
+            (
+                "The name is saved. The email address is saved." + english,
+                "Nama dah disimpan. Alamat e-mel dah disimpan." + malay,
+            )
+        ]
+    again = await ask(
+        shop,
+        contact,
+        "save_details",
+        key="e2:t0",
+        customer_name="Someone Else",
+        customer_email="b@example.test",
+    )
+    assert pairs(again) == [
+        (
+            "Nothing was changed: a name and an email address are already on file.",
+            "Tak ada apa-apa yang diubah: nama dan alamat e-mel dah ada dalam rekod.",
+        )
+    ]
+    one = await ask(shop, contact, "save_details", key="e3:t0", customer_name="Someone Else")
+    assert pairs(one) == [
+        (
+            "Nothing was changed: a name is already on file.",
+            "Tak ada apa-apa yang diubah: nama dah ada dalam rekod.",
+        )
+    ]
+
+
+def test_the_email_not_seen_answer_carries_a_malay_text() -> None:
+    from csa.agents.staged import booking_facts as facts
+    from csa.agents.staged.service import reply
+
+    ctx = context_without_db()
+    (fact,) = reply(ctx, [facts.EMAIL_NOT_SEEN], malay=[facts.EMAIL_NOT_SEEN_MS]).facts
+    assert fact.text == (
+        "I could not find an email address in your message, so nothing was saved. "
+        "Please type it again."
+    )
+    assert _in_malay(fact) == (
+        "Saya tak jumpa alamat e-mel dalam mesej awak, jadi tak ada apa-apa yang disimpan. "
+        "Taip sekali lagi ya."
+    )
+    (plain,) = reply(ctx, [facts.EMAIL_NOT_SEEN]).facts
+    assert plain.text_ms is None
+    # Malay that does not pair one for one is left out, never put on the wrong fact.
+    odd = reply(ctx, [facts.NOT_FOUND, facts.EMAIL_NOT_SEEN], malay=[facts.NOT_FOUND_MS]).facts
+    assert [f.text_ms for f in odd] == [None, None]
+
+
+def context_without_db() -> AgentContext:
+    return AgentContext(
+        client_id=uuid.uuid4(),
+        contact_id=uuid.uuid4(),
+        trace_id=uuid.uuid4(),
+        conversation_id=None,
+        idempotency_key=KEY,
+        channel="telegram",
+        pool=None,  # type: ignore[arg-type]
+        pending_actions=None,  # type: ignore[arg-type]
+        now=lambda: NOW,
+    )
+
+
+async def test_reads_stay_english_only(shop: Shop) -> None:
+    kind = await a_type(shop)
+    contact = await shop.customer()
+    made = await shop.book(contact, kind["id"])
+    assert made.booking is not None
+    reads: list[tuple[str, dict[str, Any]]] = [
+        ("availability", {}),
+        ("availability", {"type_id": kind["id"]}),
+        ("list", {}),
+        ("status", {"booking_id": str(made.booking.id)}),
+        ("status", {"booking_id": str(uuid.uuid4())}),
+    ]
+    for action, fields in reads:
+        result = await ask(shop, contact, action, **fields)
+        assert result.ok and result.facts, action
+        assert all(f.text_ms is None for f in result.facts), action
+    await shop.mode("shadow")
+    off = await ask(shop, contact, "list")
+    assert [f.text_ms for f in off.facts] == [None]
+
+
+def test_every_booking_state_and_place_has_a_malay_word() -> None:
+    from typing import get_args
+
+    from csa.agents.staged import booking_facts as facts
+    from csa.bookings.contracts import BookingStatus, LocationKind
+
+    assert set(facts.STATES_MS) == set(facts.STATES) <= set(get_args(BookingStatus))
+    assert set(facts.PLACES_MS) == set(facts.PLACES) == set(get_args(LocationKind))
+    assert set(facts.HANDOFF_MS) == set(facts.HANDOFF)
+    for english, malay in ((facts.STATES, facts.STATES_MS), (facts.PLACES, facts.PLACES_MS)):
+        assert not set(english.values()) & set(malay.values())
 
 
 # --- the agent's declared shape -----------------------------------------------------------------

@@ -35,7 +35,7 @@ from csa.agents.orders.agent import OrderAgent
 from csa.agents.payments.agent import PaymentAgent
 from csa.agents.recorder import PostgresBreakerStore, PostgresRunRecorder
 from csa.agents.runner import SpokeRunner
-from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN
+from csa.agents.staged.booking_facts import EMAIL_NOT_SEEN, EMAIL_NOT_SEEN_MS
 from csa.agents.staged.service import BookingAgent, SubscriptionAgent, reply
 from csa.agents.tickets.agent import TicketAgent
 from csa.approval.service import hold_reply
@@ -683,7 +683,8 @@ class PostgresTurnDependencies:
             # The planner saw only redacted text, so it can name an address but not write one.
             real = with_real_email(task, envelope.message.body_raw)
             if real is None:
-                return reply(ctx, [EMAIL_NOT_SEEN]).model_copy(update={"task_id": task.task_id})
+                asked = reply(ctx, [EMAIL_NOT_SEEN], malay=[EMAIL_NOT_SEEN_MS])
+                return asked.model_copy(update={"task_id": task.task_id})
             task = real
         task = with_real_phone(task, envelope.message.body_raw, envelope.message.body_redacted)
         return await self._runner.execute(_resolve_order_number(task, envelope), ctx)

@@ -7,11 +7,14 @@ import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from csa.bookings import bot
 from csa.bookings.api import build_bookings_router
 from csa.core.tenancy import tx
+from csa.decide.grounding import ungrounded
+from csa.payments.copy import local_date
 
 from tests.conftest import requires_docker
 from tests.test_bookings_api import TUESDAY, at, booked, meeting, person_on_leave
@@ -452,6 +455,9 @@ async def test_a_named_type_names_the_person_in_its_offers(shop: Shop) -> None:
         )
     assert offers and all(o.label.endswith("with Person 0") for o in offers)
     assert offers[0].label.startswith("Tuesday 4 March 2031, 9:00 am")
+    # The same offer in Malay, for a refusal that goes out word for word on a Malay turn.
+    assert all(o.label_ms.endswith("dengan Person 0") for o in offers)
+    assert offers[0].label_ms == "Selasa 4 Mac 2031, 9:00 pagi (2031-03-04 09:00) dengan Person 0"
 
 
 async def test_offers_start_from_the_day_and_never_the_past(shop: Shop) -> None:
@@ -1229,3 +1235,60 @@ async def test_two_messages_from_one_customer_do_not_deadlock(
     )
     assert not [r for r in results if isinstance(r, DeadlockDetected)], results
     assert all(isinstance(r, bot.BotOutcome) for r in results), results
+
+
+# --- a slot in words ----------------------------------------------------------------------------
+
+
+def test_a_slot_reads_as_a_local_time_in_english_and_in_malay() -> None:
+    at = datetime(2026, 11, 10, 7, 0, tzinfo=UTC)  # 15:00 in Kuala Lumpur
+    zone = ZoneInfo("Asia/Kuala_Lumpur")
+    assert bot.format_slot(at, zone) == "Tuesday 10 November 2026, 3:00 pm (2026-11-10 15:00)"
+    assert bot.format_slot_ms(at, zone) == "Selasa 10 November 2026, 3:00 petang (2026-11-10 15:00)"
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "words"),
+    [
+        (0, 15, "12:15 tengah malam"),
+        (1, 0, "1:00 pagi"),
+        (9, 30, "9:30 pagi"),
+        (11, 45, "11:45 pagi"),
+        (12, 0, "12:00 tengah hari"),
+        (13, 45, "1:45 tengah hari"),
+        (14, 0, "2:00 petang"),
+        (18, 30, "6:30 petang"),
+        (19, 0, "7:00 malam"),
+        (23, 45, "11:45 malam"),
+    ],
+)
+def test_a_malay_slot_names_the_part_of_the_day(hour: int, minute: int, words: str) -> None:
+    at = datetime(2031, 3, 4, hour, minute, tzinfo=UTC)
+    assert bot.format_slot_ms(at, ZoneInfo("UTC")) == (
+        f"Selasa 4 Mac 2031, {words} (2031-03-04 {hour:02d}:{minute:02d})"
+    )
+
+
+def test_a_malay_slot_has_the_malay_day_and_the_payments_month_names() -> None:
+    zone = ZoneInfo("UTC")
+    days = [bot.format_slot_ms(datetime(2031, 3, 3 + n, 10, tzinfo=UTC), zone) for n in range(7)]
+    assert [d.split(" ")[0] for d in days] == [
+        "Isnin", "Selasa", "Rabu", "Khamis", "Jumaat", "Sabtu", "Ahad",
+    ]  # fmt: skip
+    for month in range(1, 13):
+        at = datetime(2031, month, 10, 10, tzinfo=UTC)
+        # The month names are csa.payments.copy's, used as they are, not copied.
+        assert f" {local_date(at, 'ms', zone)}, " in bot.format_slot_ms(at, zone)
+    assert "Disember" in bot.format_slot_ms(datetime(2031, 12, 1, 10, tzinfo=UTC), zone)
+
+
+def test_a_malay_slot_holds_exactly_the_numbers_of_the_english_one() -> None:
+    """A Malay fact is checked against its English text (grounding reads `text`), so the Malay
+    slot must use only numbers the English one holds, and for the reply's sake all of them."""
+    zone = ZoneInfo("Asia/Kuala_Lumpur")
+    start = datetime(2031, 12, 31, 16, 0, tzinfo=UTC)  # midnight in Kuala Lumpur
+    for n in range(96):  # every quarter hour of a day
+        at = start + timedelta(minutes=15 * n)
+        english, malay = bot.format_slot(at, zone), bot.format_slot_ms(at, zone)
+        assert ungrounded(malay, [english]) == [], (english, malay)
+        assert ungrounded(english, [malay]) == [], (english, malay)
