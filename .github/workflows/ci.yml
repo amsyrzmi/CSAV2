@@ -116,11 +116,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # Pull requests run only the test files they change (shard 0); a push to main runs the whole
-    # suite split into four parallel shards by whole file (tests/shard.py).
+    # suite split into six parallel shards by whole file (tests/shard.py).
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0]' || '[1,2,3,4,5,6]') }}
     permissions:
       contents: read
       packages: read
