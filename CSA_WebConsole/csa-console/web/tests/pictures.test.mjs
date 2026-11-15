@@ -40,6 +40,22 @@ test("pictureUrl names the asset, adds client_id for a platform admin and v only
   );
 });
 
+test("pictureUrl pins its four shapes, also where URLSearchParams has no size property", () => {
+  const original = Object.getOwnPropertyDescriptor(URLSearchParams.prototype, "size");
+  // An older browser: `size` is undefined on every URLSearchParams.
+  Object.defineProperty(URLSearchParams.prototype, "size", { get: () => undefined, configurable: true });
+  try {
+    assert.equal(new URLSearchParams("a=1").size, undefined);
+    const base = `/console/v1/media/${ASSET}`;
+    assert.equal(pictures.pictureUrl(null, ASSET), base);
+    assert.equal(pictures.pictureUrl(TENANT, ASSET), `${base}?client_id=${TENANT}`);
+    assert.equal(pictures.pictureUrl(null, ASSET, "abc"), `${base}?v=abc`);
+    assert.equal(pictures.pictureUrl(TENANT, ASSET, "abc"), `${base}?client_id=${TENANT}&v=abc`);
+  } finally {
+    if (original) Object.defineProperty(URLSearchParams.prototype, "size", original);
+  }
+});
+
 test("pictureProblem refuses what the server refuses before anything is sent", () => {
   assert.equal(pictures.PICTURE_MAX_BYTES, 2097152);
   assert.equal(pictures.pictureProblem(bytes(2097152, "image/jpeg", "qr.jpg")), null);

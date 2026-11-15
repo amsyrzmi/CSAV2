@@ -6,7 +6,7 @@ Pictures, pull request 1: the picture store and the console upload (2026-11-15, 
 
 **Limits.** 2 MiB, each side 64 to 4096 pixels, the longer side at most 10 times the shorter, JPEG or PNG only, one file per request, at most 300 uploads per company (409 `picture_limit`). `read_only` cannot upload and every write needs the CSRF header.
 
-**Rollback.** `docs/RUNBOOK.md`, "Roll back migration 0610" (drop the two tables and delete the `0610` row from `schema_migrations`); nothing else reads the tables in this PR, so rolling back loses only the uploaded pictures.
+**Rollback.** `docs/RUNBOOK.md`, "Roll back migration 0610": deleting only the `0610` row from `schema_migrations` is enough for an older image to become ready and keeps the pictures (the older image never reads the tables; applying 0610 again is a no-op); dropping both tables as well is the full removal and loses every uploaded picture.
 
 **Checked.** `grep -rn "client_max_body_size\|max_request_body" deploy/` finds nothing that refuses a 2 MiB body, and Next's `proxyClientMaxBodySize` is 31 MiB, so the proxy does not cut an upload before the gateway's own 2 MiB rule.
 

@@ -29,7 +29,9 @@ export function pictureUrl(tenantId: string | null, assetId: string, version?: s
   const query = new URLSearchParams();
   if (tenantId) query.set("client_id", tenantId);
   if (version) query.set("v", version);
-  return `/console/v1/media/${encodeURIComponent(assetId)}${query.size ? `?${query}` : ""}`;
+  // `toString()` rather than `query.size`: `size` is missing in older browsers, which would drop the query.
+  const text = query.toString();
+  return `/console/v1/media/${encodeURIComponent(assetId)}${text ? `?${text}` : ""}`;
 }
 
 const SENTENCES: Record<string, string> = {
