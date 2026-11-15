@@ -209,3 +209,65 @@ async def test_get_and_picture_for_never_see_another_company(
     # B can hold its own picture for the same subject.
     mine = await store(pool, b, jpeg(640, 480))
     assert mine is not None and mine.id != made.id
+
+
+async def test_put_refuses_info_that_does_not_describe_the_data(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    client = _company(migrated_dsn)
+    data, other = png(800, 800), jpeg(640, 480)
+    right = check_image(data, None)
+    wrong_size = ImageInfo(
+        right.media_type, right.width, right.height, right.byte_size + 1, right.sha256
+    )
+    wrong_hash = check_image(other, None)
+    wrong_hash = ImageInfo(
+        right.media_type, right.width, right.height, right.byte_size, wrong_hash.sha256
+    )
+    for info in (wrong_size, wrong_hash):
+        async with tx(pool, client) as conn:
+            with pytest.raises(ValueError, match="info_does_not_match_data"):
+                await service.put(
+                    conn,
+                    uuid.UUID(client),
+                    "plan",
+                    "gold",
+                    data,
+                    info,
+                    source="upload",
+                    actor_id=None,
+                )
+    assert (
+        await owner_rows(migrated_dsn, "SELECT 1 FROM media_assets WHERE client_id = %s", client)
+        == []
+    )
+    assert await store(pool, client, data) is not None
+
+
+async def test_the_company_lock_is_a_transaction_level_hashtextextended_lock(
+    pool: AsyncConnectionPool, migrated_dsn: str
+) -> None:
+    client = _company(migrated_dsn)
+    held = (
+        "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()"
+        " AND ((classid::bigint << 32) | objid::bigint) = hashtextextended(%s, 0)"
+    )
+    async with tx(pool, client) as conn:
+        data = png(800, 800)
+        await service.put(
+            conn,
+            uuid.UUID(client),
+            "plan",
+            "gold",
+            data,
+            check_image(data, None),
+            source="upload",
+            actor_id=None,
+        )
+        cursor = await conn.execute(held, (f"{client}:media",))  # type: ignore[arg-type]
+        row = await cursor.fetchone()
+    assert row is not None and row["n"] == 1
+    async with pool.connection() as conn:  # a transaction-level lock is gone after commit
+        cursor = await conn.execute(held, (f"{client}:media",))  # type: ignore[arg-type]
+        row = await cursor.fetchone()
+    assert row is not None and row["n"] == 0

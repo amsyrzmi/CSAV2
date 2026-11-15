@@ -3,9 +3,11 @@
 A picture is kept only when its extension agrees with its content (as `csa.hr.documents.sniff`
 does for employee documents), it is at most 2 MiB, each side is 64-4096 px and the longer side is
 at most 10 times the shorter. The size comes from the PNG IHDR chunk or the first JPEG SOF segment.
-The file must also end at its end marker (PNG IEND, JPEG EOI): anything after it is refused, which
-is what stops a picture that is also an archive or a web page (a polyglot). Pixels are never
-decoded, so a hostile picture costs one pass over its bytes at most.
+The file must also end at its end marker (PNG IEND, JPEG EOI): bytes appended after it are
+refused, which stops a picture with an archive or a web page tacked on the end. Content hidden
+inside the image (a comment segment, a text chunk) is not detected here: the read route contains
+it with `nosniff`, a `Content-Security-Policy` of `default-src 'none'; sandbox` and a stored image
+type. Pixels are never decoded, so a hostile picture costs one pass over its bytes at most.
 """
 
 from __future__ import annotations

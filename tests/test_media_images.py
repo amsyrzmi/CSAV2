@@ -1,4 +1,8 @@
-"""The picture check: type, size and dimensions from the headers only; polyglots are refused."""
+"""The picture check: type, size and dimensions from the headers only.
+
+Bytes appended after the end marker (a picture with an archive or page tacked on) are refused.
+Content hidden inside the image is not detected here; the read route's headers contain it.
+"""
 
 from __future__ import annotations
 

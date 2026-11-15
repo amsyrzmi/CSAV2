@@ -8,6 +8,7 @@ together or not at all.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
@@ -49,8 +50,12 @@ async def put(
 
     A generated picture never overwrites: it returns None when the subject already has one. An
     upload that would be the company's 301st raises `PictureRefused("picture_limit")`; replacing
-    an upload is always allowed.
+    an upload is always allowed. `info` must describe `data` (its size and SHA-256 are what the
+    row and the `ETag` carry), else `ValueError("info_does_not_match_data")`: that is a caller bug,
+    not a picture the user can fix, so it is not a `PictureRefused`.
     """
+    if info.byte_size != len(data) or info.sha256 != hashlib.sha256(data).hexdigest():
+        raise ValueError("info_does_not_match_data")
     if source == "upload":
         # Under the company's media lock for the rest of the transaction, so the count below
         # cannot be passed by a second upload.
