@@ -72,11 +72,13 @@ file <path>`. Never commit it. Create it without echoing the token, as the deplo
 the directory and the file:
 
 ```
-install -d -m 0700 /srv/csa-prod/registry
-umask 077
-read -rsp "registry read token: " T; echo
-printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-prod/registry/config.json
-unset T
+sudo install -d -m 0700 -o ubuntu -g ubuntu /srv/csa-prod/registry
+(
+  umask 077
+  read -rsp "registry read token: " T; echo
+  rm -f /srv/csa-prod/registry/config.json
+  printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-prod/registry/config.json
+)
 ```
 
 It is needed only once the images are private.

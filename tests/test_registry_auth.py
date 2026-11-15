@@ -94,8 +94,9 @@ def test_the_copy_goes_away_with_the_docker_config_directory(tmp_path: Path) -> 
         b'{"auths": {"ghcr.io": {"auth": ["' + SECRETISH.encode() + b'"]}}}',
         b'{"auths": {"ghcr.io": "' + SECRETISH.encode() + b'"}}',
         b'{"auths": {"ghcr.io": {"auth": "' + SECRETISH.encode() + b'"}, "other.io": {}}}',
-        b"[" * 100_000,
-        b'{"auths": ' * 50_000 + SECRETISH.encode(),
+        # Under MAX_BYTES, so json.loads really runs and raises RecursionError.
+        b"[" * 60_000,
+        b'{"a":' * 12_000,
     ],
     ids=[
         "empty",
@@ -204,11 +205,13 @@ def test_a_dangling_symlink_is_refused_not_read_as_absent(tmp_path: Path) -> Non
     assert_refused_by_path_only(directory, source)
 
 
-def test_a_symlink_to_dev_zero_is_refused(tmp_path: Path) -> None:
+def test_a_symlink_to_a_large_file_is_refused(tmp_path: Path) -> None:
     directory = docker_config(tmp_path)
+    target = tmp_path / "large.bin"
+    target.write_bytes(b"\0" * (2 * registry_auth.MAX_BYTES))
     source = tmp_path / "registry" / "config.json"
     source.parent.mkdir()
-    source.symlink_to("/dev/zero")
+    source.symlink_to(target)
     assert_refused_by_path_only(directory, source)
 
 

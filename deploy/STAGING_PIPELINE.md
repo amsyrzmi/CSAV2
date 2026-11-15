@@ -151,11 +151,13 @@ file <path>`. Never commit it. Create it without echoing the token, as the user 
 owns the directory and the file:
 
 ```
-install -d -m 0700 /srv/csa-staging/registry
-umask 077
-read -rsp "registry read token: " T; echo
-printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-staging/registry/config.json
-unset T
+sudo install -d -m 0700 -o <rollout-user> -g <rollout-user> /srv/csa-staging/registry
+(
+  umask 077
+  read -rsp "registry read token: " T; echo
+  rm -f /srv/csa-staging/registry/config.json
+  printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf '%s:%s' <github-user> "$T" | base64 -w0)" > /srv/csa-staging/registry/config.json
+)
 ```
 
 It is needed only once the images are private.
