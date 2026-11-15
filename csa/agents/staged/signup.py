@@ -108,24 +108,29 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
     named = inp.plan_code or draft.plan_code
     name = inp.full_name or draft.full_name
     plan = await _plan(conn, ctx.client_id, named) if named else None
-    if plan is None:
-        offered = await db.q.fetch_all(
-            "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn
-        )
-        draft = draft.model_copy(update={"plan_code": None, "full_name": name})
-        return await _ask(conn, ctx, contact_id, draft, _Reply().add("which"), plan_facts(offered))
-    code, plan_name = str(plan["code"]), str(plan["name"])
-    ended = _ended(plan, await _held(conn, ctx.client_id, contact_id, code))
-    if ended is not None:
-        await _close(conn, ctx, contact_id, "used")
-        return SignupTurn(_Reply().add(ended, plan=plan_name).facts())
+    # Before the plan branch: a turn that names no plan tells the data note too, and says what an
+    # email is used for when this sign-up will ask for one.
     own = await db.q.fetch_one(
         "agents/contact_phone.sql",
         {"client_id": ctx.client_id, "contact_id": contact_id},
         conn=conn,
     )
-    verified = _verified_phone(own)
     asks_email = await _asks_email(conn, ctx, own)
+    if plan is None:
+        offered = await db.q.fetch_all(
+            "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn
+        )
+        draft = draft.model_copy(update={"plan_code": None, "full_name": name})
+        which = _Reply().add("which")
+        return await _ask(
+            conn, ctx, contact_id, draft, which, plan_facts(offered), asks_email=asks_email
+        )
+    code, plan_name = str(plan["code"]), str(plan["name"])
+    ended = _ended(plan, await _held(conn, ctx.client_id, contact_id, code))
+    if ended is not None:
+        await _close(conn, ctx, contact_id, "used")
+        return SignupTurn(_Reply().add(ended, plan=plan_name).facts())
+    verified = _verified_phone(own)
     typed = draft.phone
     draft = draft.model_copy(update={"plan_code": code, "full_name": name})
     if asks_email and not draft.email_asked and clean_address(inp.email) is not None:

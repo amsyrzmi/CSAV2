@@ -1987,6 +1987,56 @@ async def test_an_over_long_address_is_invalid_and_the_turn_keeps_the_name(world
     assert long_address not in await all_pending_text(world)
 
 
+@requires_docker
+async def test_the_plan_less_first_turn_on_whatsapp_carries_the_email_clause(
+    world: World,
+) -> None:
+    # The note is told once, in the first asking turn: a first message that names no plan asks
+    # "which" and must already say what the email is for, or the later email ask never would.
+    ctx = await whatsapp_signup(world)
+    first = await signup_turn(world, ctx)
+    assert _kinds(first)[0] == "signup_which"
+    assert _data_note(first) == DATA_NOTE + EMAIL_CLAUSE
+    later = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(later) == ["signup_email_ask"]  # told once: no second note
+
+
+@pytest.mark.parametrize("channel", ["telegram", "web"])
+@requires_docker
+async def test_the_plan_less_first_turn_off_whatsapp_has_only_the_base_note(
+    world: World, channel: str
+) -> None:
+    await payments_on(world)
+    ctx = await signup_chat(world, channel=channel, phone=TYPED, verified=True)
+    first = await signup_turn(world, ctx)
+    assert _kinds(first)[0] == "signup_which"
+    assert _data_note(first) == DATA_NOTE
+
+
+@requires_docker
+async def test_the_plan_less_first_turn_with_payments_off_has_only_the_base_note(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world, payments=False)
+    first = await signup_turn(world, ctx)
+    assert _kinds(first)[0] == "signup_which"
+    assert _data_note(first) == DATA_NOTE
+
+
+@requires_docker
+async def test_the_plan_less_first_turn_with_an_address_on_file_has_only_the_base_note(
+    world: World,
+) -> None:
+    ctx = await whatsapp_signup(world)
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE contacts SET email='first@example.com' WHERE id=%s", (world.ctx.contact_id,)
+        )
+    first = await signup_turn(world, ctx)
+    assert _kinds(first)[0] == "signup_which"
+    assert _data_note(first) == DATA_NOTE
+
+
 @pytest.mark.parametrize("channel", ["telegram", "web"])
 @requires_docker
 async def test_telegram_and_the_web_sandbox_never_ask(world: World, channel: str) -> None:
