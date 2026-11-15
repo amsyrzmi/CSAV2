@@ -24,7 +24,7 @@ const {
   '"@/lib/date-range"': JSON.stringify(await load("date-range.ts")),
   '"@/lib/tiktok-connect"': JSON.stringify(await load("tiktok-connect.ts")),
 }));
-const { orderDetailPath, listingsPath } = await import(await load("business.ts"));
+const { orderDetailPath, listingsPath, productPicturePath } = await import(await load("business.ts"));
 
 const NOW = new Date("2026-11-02T02:00:00Z");
 const synced = {
@@ -234,4 +234,14 @@ test("listing pictures are never rendered and provider text stays plain text", a
   for (const source of [card, detail]) {
     assert.doesNotMatch(source, /<img|<Image|dangerouslySetInnerHTML|image_url\b.*src/);
   }
+});
+
+test("the product picture route names the company only for a platform admin", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  const tenant = "77777777-7777-4777-8777-777777777777";
+  assert.equal(productPicturePath(null, id), `/console/v1/business/products/${id}/picture`);
+  assert.equal(
+    productPicturePath(tenant, id),
+    `/console/v1/business/products/${id}/picture?client_id=${tenant}`,
+  );
 });

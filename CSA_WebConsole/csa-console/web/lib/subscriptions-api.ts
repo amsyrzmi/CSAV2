@@ -1,5 +1,6 @@
 import { api, patch, post } from "./api";
 import type { InvoiceStatus } from "./payments-api";
+import type { Picture } from "./pictures";
 import type { ProposalOut } from "./workspace-api";
 
 /** Mirrors of csa/subscriptions/contracts.py. Decimals arrive as JSON strings. */
@@ -21,6 +22,7 @@ export interface PlanOut {
   signup_mode: SignupMode;
   /** False: customers cannot sign up for the plan in the chat. */
   is_signup_open: boolean;
+  picture: Picture | null;
 }
 
 export interface PlanIn {
@@ -269,6 +271,11 @@ export function subscriptionsPath(
 }
 
 const id = (value: string) => `/${encodeURIComponent(value)}`;
+
+/** The route that sets, replaces or removes a plan's picture (plan writers; archived plans too). */
+export function planPicturePath(tenantId: string | null, code: string): string {
+  return subscriptionsPath(tenantId, `/plans${id(code)}/picture`);
+}
 
 export interface SubscriptionSettings {
   /** The tenant's IANA time zone (clients.timezone). */

@@ -84,7 +84,9 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
         ? "Synthetic demo only — sample listings do not connect to a seller account."
         : section === "stores"
           ? "Your online stores and whether fourstacks is syncing them."
-          : "Your orders, deliveries, products and stock, including TikTok Shop. View only."}
+          : section === "products"
+            ? "Your products and stock, including TikTok Shop. View only, except each product's picture."
+            : "Your orders, deliveries, products and stock, including TikTok Shop. View only."}
     />
     <SectionNav label="Business management pages" testId="business-subnav" items={pages}
       current={section} query={tenantQuery || undefined} />
@@ -119,7 +121,8 @@ export function BusinessWorkspace({ me, section = "orders" }: { me: Me; section?
           </div>
         </>)}
     {section === "products" && (tenant
-      ? <ProductRecords key={tenant} query={tenantQuery} onListingOpen={listingOpened} />
+      ? <ProductRecords key={tenant} query={tenantQuery} tenantId={platform ? tenant : null}
+        onListingOpen={listingOpened} />
       : needsTenant)}
     {section === "stores" && (tenant ? <StoreConnections key={tenantQuery} me={me} query={tenantQuery} /> : needsTenant)}
   </TechDetailsProvider>;
@@ -325,8 +328,8 @@ function BusinessRecords({ query, productsHref, onOrderOpen }: {
 
 type ProductSource = "catalogue" | "tiktok";
 
-function ProductRecords({ query, onListingOpen }: {
-  query: string; onListingOpen: (id: string, open: boolean) => void;
+function ProductRecords({ query, tenantId, onListingOpen }: {
+  query: string; tenantId: string | null; onListingOpen: (id: string, open: boolean) => void;
 }) {
   const products = useRecords<Product>(productsPath(query));
   // The Out of stock tile on the Orders page links here with ?stock=out.
@@ -369,7 +372,7 @@ function ProductRecords({ query, onListingOpen }: {
             {stock === "out" && products.items && products.items.length > 0 && shown?.length === 0 && <p>
               None of the products loaded so far are out of stock.</p>}
             <ul data-testid="business-products-list" className="space-y-3">
-              {shown?.map((product) => <ProductCard key={product.id} product={product} />)}
+              {shown?.map((product) => <ProductCard key={product.id} product={product} tenantId={tenantId} />)}
             </ul>
           </>}
     </Panel>

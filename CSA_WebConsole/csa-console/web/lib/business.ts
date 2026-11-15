@@ -148,3 +148,9 @@ export function orderDetailPath(tenantQuery: string, id: string): string {
 export function listingsPath(tenantQuery: string): string {
   return `/console/v1/business/listings${tenantQuery ? `?${tenantQuery}` : ""}`;
 }
+
+/** The route that sets, replaces or removes a product's picture; a platform admin names the company. */
+export function productPicturePath(tenantId: string | null, productId: string): string {
+  return `/console/v1/business/products/${encodeURIComponent(productId)}/picture${
+    tenantId ? `?client_id=${encodeURIComponent(tenantId)}` : ""}`;
+}

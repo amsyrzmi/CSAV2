@@ -377,3 +377,12 @@ test("link refusals are explained in plain words and keep their code", async () 
   }
   assert.equal(seen.size, codes.length, "each code has its own sentence");
 });
+
+test("the plan picture route is the plan's own and names the company only for a platform admin", () => {
+  const tenant = "77777777-7777-4777-8777-777777777777";
+  assert.equal(subs.planPicturePath(null, "gold-2026"), "/console/v1/subscriptions/plans/gold-2026/picture");
+  assert.equal(
+    subs.planPicturePath(tenant, "gold-2026"),
+    `/console/v1/subscriptions/plans/gold-2026/picture?client_id=${tenant}`,
+  );
+});
