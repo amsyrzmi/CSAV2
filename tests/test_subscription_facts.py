@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from uuid import uuid4
 
+from csa.agents.staged import subscription_facts as subscription_facts_module
 from csa.agents.staged.subscription_facts import (
     LIVE_STATUSES,
+    NONE_TEXT_MS,
     REQUESTABLE_STATUSES,
     SIGNUP_DATA_NOTE,
+    SIGNUP_DATA_NOTE_MS,
     SIGNUP_EMAIL_NOTE,
+    SIGNUP_EMAIL_NOTE_MS,
     SUBSCRIPTION_SOURCE,
     VERIFIED_PHONE,
+    VERIFIED_PHONE_MS,
+    SignupField,
+    SignupKind,
     plan_facts,
     request_fact,
     signup_fact,
     subscription_facts,
 )
+from csa.contracts.facts import Fact
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONE = "Asia/Kuala_Lumpur"
@@ -384,3 +393,285 @@ def test_signup_fact_ids_are_constants_with_an_index() -> None:
     assert signup_fact("filed_auto_invoice", plan="A", ref="KDMW-7AS").id == (
         "signup_filed_auto_invoice_1"
     )
+
+
+# --- Malay (`text_ms`): a write's facts can go out word for word on a Malay turn ---------------
+
+FORBIDDEN_MS = (" anda ", "Anda ", "sila", "Sila", "pihak kami", "Pihak kami")
+
+
+def _sentences(text: str) -> list[str]:
+    """The English sentences of a fact (split after '.' or '?')."""
+    return [s for s in (p.strip() for p in re.split(r"(?<=[.?])\s+", text)) if s]
+
+
+def _assert_malay(fact: Fact) -> str:
+    """The fact's Malay: set, holding none of its English sentences or the forbidden words."""
+    assert fact.text_ms, fact.id
+    for sentence in _sentences(fact.text):
+        assert sentence not in fact.text_ms, (fact.id, sentence)
+    for word in FORBIDDEN_MS:
+        assert word not in fact.text_ms, (fact.id, word)
+    for word in (" the ", "Please", "Nothing", "Reply", "Your ", "You ", "Invoice", "sign-up"):
+        assert word not in fact.text_ms, (fact.id, word)
+    return fact.text_ms
+
+
+def test_request_facts_carry_the_malay_copy_and_keep_the_english() -> None:
+    cases: list[tuple[dict[str, Any], str]] = [
+        (
+            {"kind": "passed", "action": "request_pause", "name": "Basic"},
+            "Permintaan awak nak hentikan sementara Basic dah dihantar kat staf kami untuk "
+            "diputuskan. Belum ada apa-apa yang berubah lagi.",
+        ),
+        (
+            {"kind": "passed", "action": "request_cancel", "name": "Basic"},
+            "Permintaan awak nak batalkan Basic dah dihantar kat staf kami untuk diputuskan. "
+            "Belum ada apa-apa yang berubah lagi.",
+        ),
+        (
+            {"kind": "passed", "action": "request_change", "name": "Basic", "new_name": "Pro"},
+            "Permintaan awak nak tukar Basic ke Pro dah dihantar kat staf kami untuk "
+            "diputuskan. Belum ada apa-apa yang berubah lagi.",
+        ),
+        (
+            {"kind": "which", "names": ["Pro", "Basic"]},
+            "Chat ni ada lebih dari satu pelan: Pro, Basic. Yang mana satu awak maksudkan?",
+        ),
+        (
+            {"kind": "which", "names": ["Basic"]},
+            "Saya tak jumpa pelan dengan nama tu dalam chat ni. Pelan yang saya nampak ialah "
+            "Basic. Yang ni ke yang awak maksudkan?",
+        ),
+        ({"kind": "none"}, "Saya tak jumpa langganan yang berkait dengan chat ni."),
+        (
+            {"kind": "already_ending", "name": "Basic", "ends": RENEWS},
+            "Basic memang dah ditetapkan untuk tamat pada 1 Disember 2026 dan takkan diperbaharui.",
+        ),
+        (
+            {"kind": "already_ending", "name": "Basic"},
+            "Basic memang dah ditetapkan untuk tamat dan takkan diperbaharui.",
+        ),
+        ({"kind": "already_paused", "name": "Basic"}, "Basic memang dah dihentikan sementara."),
+        (
+            {"kind": "waiting", "name": "Basic"},
+            "Basic belum bermula lagi, jadi belum boleh dihentikan sementara, dibatalkan atau "
+            "ditukar. Staf kami boleh tolong kalau awak ada apa-apa soalan pasal pelan ni.",
+        ),
+    ]
+    for fields, malay in cases:
+        english = request_fact(**fields)
+        fact = request_fact(**fields, ms=True)
+        assert fact.text == english.text and fact.id == english.id, fields
+        assert english.text_ms is None, fields  # a read's fact never carries Malay
+        assert _assert_malay(fact) == malay, fields
+    assert NONE_TEXT_MS == "Saya tak jumpa langganan yang berkait dengan chat ni."
+
+
+def test_a_which_question_takes_the_malay_names_of_two_plans_that_share_a_name() -> None:
+    names = ["Pro (from 01 Dec 2026)", "Pro (from 02 Dec 2026)"]
+    malay = ["Pro (dari 1 Disember 2026)", "Pro (dari 2 Disember 2026)"]
+    fact = request_fact("which", names=names, names_ms=lambda: malay, ms=True)
+    assert fact.text == request_fact("which", names=names).text
+    assert _assert_malay(fact) == (
+        "Chat ni ada lebih dari satu pelan: Pro (dari 1 Disember 2026), Pro (dari 2 Disember "
+        "2026). Yang mana satu awak maksudkan?"
+    )
+    assert "from" not in fact.text_ms  # type: ignore[operator]
+
+
+def test_the_request_verbs_in_malay_cover_the_english_ones() -> None:
+    assert set(subscription_facts_module._VERBS_MS) == set(subscription_facts_module._VERBS)
+    # An action with no verb reads as a change, in both languages.
+    fact = request_fact("passed", action=None, name="Basic", ms=True)
+    assert fact.text.startswith("Your request to change Basic was passed")
+    assert fact.text_ms is not None and fact.text_ms.startswith("Permintaan awak nak tukar Basic")
+
+
+def test_signup_facts_carry_the_malay_copy_and_keep_the_english() -> None:
+    plan = {"plan": "Plan Besar"}
+    base: dict[str, Any] = {"plan": "Plan Besar", "name": "Ali Bin Abu", "phone": "+60123456789"}
+    readback_tail = (
+        "Betul ke? Balas ya untuk daftar. Tak ada apa-apa yang didaftarkan selagi awak belum "
+        "balas ya."
+    )
+    cases: list[tuple[str, dict[str, Any], str]] = [
+        (
+            "missing",
+            {**plan, "field": "full name"},
+            "Untuk daftar Plan Besar, saya masih perlukan nama penuh awak.",
+        ),
+        (
+            "missing",
+            {**plan, "field": "phone number"},
+            "Untuk daftar Plan Besar, saya masih perlukan nombor telefon awak.",
+        ),
+        ("data_note", {}, SIGNUP_DATA_NOTE_MS),
+        ("data_note", {"with_email": True}, SIGNUP_DATA_NOTE_MS + SIGNUP_EMAIL_NOTE_MS),
+        (
+            "readback",
+            base,
+            f"Pendaftaran Plan Besar: nama Ali Bin Abu, telefon +60123456789. {readback_tail}",
+        ),
+        (
+            "readback",
+            {**base, "phone": VERIFIED_PHONE},
+            "Pendaftaran Plan Besar: nama Ali Bin Abu, telefon nombor yang dah ada dalam chat "
+            f"ni. {readback_tail}",
+        ),
+        (
+            "readback",
+            {**base, "email": "ali.abu@example.com", "with_email": True},
+            "Pendaftaran Plan Besar: nama Ali Bin Abu, telefon +60123456789, e-mel "
+            f"ali.abu@example.com. {readback_tail}",
+        ),
+        (
+            "readback",
+            {**base, "email": None, "with_email": True},
+            "Pendaftaran Plan Besar: nama Ali Bin Abu, telefon +60123456789, tak ada e-mel. "
+            f"{readback_tail}",
+        ),
+        (
+            "readback",
+            {**base, "email": "ali.abu@example.com"},
+            f"Pendaftaran Plan Besar: nama Ali Bin Abu, telefon +60123456789. {readback_tail}",
+        ),
+        (
+            "phone_invalid",
+            {},
+            "Nombor telefon tu macam tak betul. Taip sekali lagi dengan kod kawasan atau kod "
+            "negara ya.",
+        ),
+        (
+            "email_ask",
+            {},
+            "Kalau awak nak peringatan bayaran melalui e-mel, bagitahu alamat e-mel awak, atau "
+            "cakap skip. Kami simpan dalam rekod pelanggan untuk hantar mesej pasal pelan dan "
+            "tempahan awak.",
+        ),
+        (
+            "email_invalid",
+            {},
+            "Alamat e-mel tu macam tak betul. Taip sekali lagi ya, atau cakap skip.",
+        ),
+        (
+            "filed",
+            plan,
+            "Pendaftaran awak untuk Plan Besar dah diterima. Staf kami akan semak dan bagitahu "
+            "awak apa langkah seterusnya. Belum ada apa-apa yang aktif lagi.",
+        ),
+        (
+            "filed",
+            {**plan, "payments": True},
+            "Pendaftaran awak untuk Plan Besar dah diterima. Staf kami akan semak dulu; lepas "
+            "diluluskan, awak akan dapat invois dengan cara nak bayar, dan pelan bermula bila "
+            "bayaran dah disahkan. Belum ada apa-apa yang aktif lagi.",
+        ),
+        (
+            "filed_auto",
+            plan,
+            "Pendaftaran awak untuk Plan Besar dah direkodkan dan tengah tunggu staf kami mulakan.",
+        ),
+        (
+            "filed_auto_invoice",
+            {**plan, "ref": "KDMW-7AS"},
+            "Pendaftaran awak untuk Plan Besar dah direkodkan. Invois KDMW-7AS dah sedia: tanya "
+            "saya cara nak bayar. Pelan bermula bila bayaran dah disahkan.",
+        ),
+        (
+            "exists",
+            plan,
+            "Awak dah ada pendaftaran untuk Plan Besar yang tengah tunggu staf kami.",
+        ),
+        ("has_plan", plan, "Awak dah ada Plan Besar."),
+        ("closed", plan, "Plan Besar tak buka pendaftaran baru buat masa ni."),
+        ("which", {}, "Untuk daftar, saya masih perlu tahu pelan mana yang awak nak."),
+        (
+            "try_later",
+            {},
+            "Pendaftaran tak dapat dihantar tadi, jadi tak ada apa-apa yang didaftarkan. Cuba "
+            "semula sekejap lagi ya.",
+        ),
+    ]
+    assert {kind for kind, _, _ in cases} == set(get_args(SignupKind))
+    for kind, fields, malay in cases:
+        english = signup_fact(kind, 2, **fields)  # type: ignore[arg-type]
+        fact = signup_fact(kind, 2, **fields, ms=True)  # type: ignore[arg-type]
+        assert fact.text == english.text and fact.id == english.id, (kind, fields)
+        assert english.text_ms is None, kind
+        assert _assert_malay(fact) == malay, (kind, fields)
+
+
+def test_the_malay_data_note_carries_the_email_clause_exactly_when_the_english_does() -> None:
+    assert SIGNUP_DATA_NOTE_MS == (
+        "Kami simpan nama dan nombor telefon awak dalam rekod pelanggan, supaya staf kami boleh "
+        "sediakan pelan awak."
+    )
+    # Same promise as the English: reminders and booking messages, no receipts.
+    assert SIGNUP_EMAIL_NOTE_MS == (
+        " Kalau awak bagi e-mel, kami guna untuk peringatan bayaran dan mesej tempahan."
+    )
+    for with_email in (False, True):
+        fact = signup_fact("data_note", with_email=with_email, ms=True)
+        assert fact.text_ms is not None
+        assert fact.text.endswith(SIGNUP_EMAIL_NOTE) is with_email
+        assert fact.text_ms.endswith(SIGNUP_EMAIL_NOTE_MS) is with_email
+        assert fact.text_ms.startswith(SIGNUP_DATA_NOTE_MS)
+
+
+def test_the_malay_sign_up_maps_cover_their_english_values() -> None:
+    from csa.subscriptions.contracts import Interval
+
+    assert set(subscription_facts_module._FIELDS_MS) == set(get_args(SignupField))
+    assert set(subscription_facts_module._PER_MS) == set(get_args(Interval))
+    assert VERIFIED_PHONE_MS == "nombor yang dah ada dalam chat ni"
+
+
+def test_plan_facts_carry_malay_only_where_they_can_go_out_word_for_word() -> None:
+    rows = [
+        {**_plan(["5 GB data", "Calls"])},
+        {
+            "code": "y",
+            "name": "Yearly",
+            "price": "99.5",
+            "currency": "MYR",
+            "billing_interval": "year",
+        },
+        {"code": "z", "name": "Zero", "price": 0, "currency": "MYR", "billing_interval": None},
+    ]
+    english = plan_facts(rows)
+    malay = plan_facts(rows, ms=True)
+    assert [f.text for f in malay] == [f.text for f in english]
+    assert [f.text_ms for f in english] == [None, None, None]
+    assert [_assert_malay(f) for f in malay[:2]] == [
+        "Basic: MYR 10.00 sebulan. Termasuk: 5 GB data; Calls.",
+        "Yearly: MYR 99.50 setahun.",
+    ]
+    # With no interval and no features there is no English word to put in Malay.
+    assert malay[2].text_ms == malay[2].text == "Zero: MYR 0.00."
+
+
+def test_a_malay_failure_leaves_the_english_fact_whole(monkeypatch: Any) -> None:
+    from structlog.testing import capture_logs
+
+    def broken(*_: Any, **__: Any) -> str:
+        raise KeyError("boom")
+
+    monkeypatch.setattr(subscription_facts_module, "local_date", broken)
+    monkeypatch.setattr(subscription_facts_module, "_signup_ms", broken)
+    with capture_logs() as logs:
+        ending = request_fact("already_ending", name="Basic", ends=RENEWS, ms=True)
+        filed = signup_fact("filed", plan="Plan Besar", ms=True)
+        names = request_fact("which", names=["Pro", "Basic"], names_ms=broken, ms=True)
+    assert ending.text == "Basic is already set to end on 01 Dec 2026 and will not renew."
+    assert filed.text.startswith("Your sign-up for Plan Besar was received.")
+    assert names.text == "This chat has more than one plan: Pro, Basic. Which one do you mean?"
+    assert (ending.text_ms, filed.text_ms, names.text_ms) == (None, None, None)
+    failed = [e for e in logs if e["event"] == "subscription_malay_failed"]
+    assert [e["fact"] for e in failed] == [
+        "subscription_already_ending",
+        "signup_filed_1",
+        "subscription_which",
+    ]
+    assert {e["error_type"] for e in failed} == {"KeyError"}
+    assert {e["log_level"] for e in failed} == {"warning"}

@@ -32,6 +32,7 @@ from csa.agents.staged.service import (
     StaffActor,
     StaffPreparationService,
     SubscriptionAgent,
+    _which_names,
     resolve_subscription,
 )
 from csa.contracts.callbacks import PendingActionStore
@@ -685,6 +686,12 @@ def test_the_resolution_table() -> None:
         ["Pro (from 09 May 2026)", "Pro (from 03 Mar 2026)", "Basic"],
     )
     assert resolve_subscription([newer, older], None, "pro")[0] == "which"  # type: ignore[index]
+    # The same names in Malay, for a request's Malay text: the Malay month names.
+    assert _which_names([newer, older, basic], "Asia/Kuala_Lumpur", ms=True) == [
+        "Pro (dari 9 Mei 2026)",
+        "Pro (dari 3 Mac 2026)",
+        "Basic",
+    ]
     assert resolve_subscription([pro, paused], None, "max") is paused
     # A named plan that is waiting to be started is not requestable.
     assert resolve_subscription([waiting], None, "lite") == ("waiting", ["Lite"])
@@ -1003,6 +1010,48 @@ async def test_the_request_fact_says_passed_and_nothing_changed(world: World) ->
 
 
 @requires_docker
+async def test_a_request_carries_its_malay_text_and_a_read_does_not(world: World) -> None:
+    agent = SubscriptionAgent()
+    passed = await agent.run(world.ctx, SubscriptionInput(action="request_cancel"))
+    assert passed.facts[0].text == (
+        "Your request to cancel basic was passed to our staff to decide. Nothing has changed yet."
+    )
+    assert passed.facts[0].text_ms == (
+        "Permintaan awak nak batalkan basic dah dihantar kat staf kami untuk diputuskan. Belum "
+        "ada apa-apa yang berubah lagi."
+    )
+    # Reads never go out word for word, so they carry no Malay.
+    for action in ("mine", "list", "status", "plans"):
+        read = await agent.run(world.ctx, SubscriptionInput(action=action))  # type: ignore[arg-type]
+        assert read.facts and all(f.text_ms is None for f in read.facts), action
+    nobody = replace(world.ctx, contact_id=world.other_contact)
+    none = await agent.run(nobody, SubscriptionInput(action="mine"))
+    assert [(f.id, f.text_ms) for f in none.facts] == [("subscription_none", None)]
+    # A request with nothing to act on is a write's answer: it carries Malay.
+    nothing = await agent.run(nobody, SubscriptionInput(action="request_pause"))
+    assert [(f.id, f.text_ms) for f in nothing.facts] == [
+        ("subscription_none", "Saya tak jumpa langganan yang berkait dengan chat ni.")
+    ]
+    # Two plans of one name are asked about with their start dates in Malay words.
+    await name_plan(world, "pro", "Pro")
+    await add_subscription(world, plan="pro", started_days=10)
+    await add_subscription(world, plan="pro", started_days=40)
+    asked = await agent.run(
+        replace(world.ctx, idempotency_key=f"which-{uuid4()}"),
+        SubscriptionInput(action="request_pause"),
+    )
+    assert [f.id for f in asked.facts] == ["subscription_which"]
+    assert asked.facts[0].text == (
+        "This chat has more than one plan: Pro (from 10 Feb 2028), Pro (from 11 Jan 2028), basic. "
+        "Which one do you mean?"
+    )
+    assert asked.facts[0].text_ms == (
+        "Chat ni ada lebih dari satu pelan: Pro (dari 10 Februari 2028), Pro (dari 11 Januari "
+        "2028), basic. Yang mana satu awak maksudkan?"
+    )
+
+
+@requires_docker
 async def test_plans_carry_features(world: World) -> None:
     await name_plan(world, "pro", "Pro", features='["5 GB data", "Free calls"]')
     result = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="plans"))
@@ -1074,11 +1123,22 @@ DATA_NOTE = (
 )
 
 
+EMAIL_CLAUSE_MS = " Kalau awak bagi e-mel, kami guna untuk peringatan bayaran dan mesej tempahan."
+DATA_NOTE_MS = (
+    "Kami simpan nama dan nombor telefon awak dalam rekod pelanggan, supaya staf kami boleh "
+    "sediakan pelan awak."
+)
+
+
 def _data_note(result: AgentResult) -> str:
-    """The text of the turn's one data note fact."""
-    notes = [f.text for f in result.facts if f.id.startswith("signup_data_note_")]
+    """The text of the turn's one data note fact. Its Malay is the Malay note, with the Malay
+    email clause exactly when the English carries the English one."""
+    notes = [f for f in result.facts if f.id.startswith("signup_data_note_")]
     assert len(notes) == 1
-    return notes[0]
+    english, malay = notes[0].text, notes[0].text_ms
+    clause = english.endswith(EMAIL_CLAUSE)
+    assert malay == DATA_NOTE_MS + (EMAIL_CLAUSE_MS if clause else "")
+    return english
 
 
 async def signup_chat(
@@ -1531,6 +1591,64 @@ async def test_a_filing_error_is_try_later_and_files_nothing(
     ]
     assert "plan_not_open" not in failed.facts[0].text
     assert await signups(world) == []
+
+
+@requires_docker
+async def test_every_sign_up_turn_carries_its_malay_text(world: World) -> None:
+    ctx = await signup_chat(world)
+    which = await signup_turn(world, ctx, plan_code="Plan Entah")
+    assert _kinds(which)[:2] == ["signup_which", "signup_data_note"]
+    plans = [f for f in which.facts if f.id.startswith("subscription_plan_")]
+    assert [f.text_ms for f in plans] == [
+        "Plan Besar: MYR 50.00 sebulan.",
+        "Plan Kecil: MYR 15.00 sebulan.",
+        "Synthetic: MYR 20.00 sebulan.",
+    ]
+    asked = await signup_turn(world, ctx, **BESAR)
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert [(f.id, f.text_ms) for f in [*asked.facts, *read.facts, *filed.facts]] == [
+        ("signup_missing_1", "Untuk daftar Plan Besar, saya masih perlukan nama penuh awak."),
+        (
+            "signup_readback_1",
+            f"Pendaftaran Plan Besar: nama Ali Bin Abu, telefon {TYPED_E164}. Betul ke? Balas ya "
+            "untuk daftar. Tak ada apa-apa yang didaftarkan selagi awak belum balas ya.",
+        ),
+        (
+            "signup_filed_1",
+            "Pendaftaran awak untuk Plan Besar dah diterima. Staf kami akan semak dan bagitahu "
+            "awak apa langkah seterusnya. Belum ada apa-apa yang aktif lagi.",
+        ),
+    ]
+    assert filed.facts[0].text == (
+        "Your sign-up for Plan Besar was received. The team will review it and tell you what "
+        "happens next. Nothing is active yet."
+    )
+    assert len(await signups(world)) == 1
+
+
+@requires_docker
+async def test_a_malay_fault_never_breaks_a_filed_sign_up(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.agents.staged import subscription_facts
+    from structlog.testing import capture_logs
+
+    def broken(*_args: object, **_kwargs: object) -> str:
+        raise KeyError("boom")
+
+    ctx = await signup_chat(world)
+    await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    monkeypatch.setattr(subscription_facts, "_signup_ms", broken)
+    with capture_logs() as logs:
+        filed = await signup_turn(world, ctx, **BESAR, **ALI, confirmed=True)
+    assert filed.ok
+    assert [(f.id, f.text_ms) for f in filed.facts] == [("signup_filed_1", None)]
+    assert filed.facts[0].text.startswith("Your sign-up for Plan Besar was received.")
+    assert len(await signups(world)) == 1
+    assert [e["fact"] for e in logs if e["event"] == "subscription_malay_failed"] == [
+        "signup_filed_1"
+    ]
 
 
 @requires_docker

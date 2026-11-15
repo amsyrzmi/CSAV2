@@ -940,6 +940,130 @@ async def test_a_booking_and_a_payment_answer_go_out_in_the_turn_language(
         assert word not in body
 
 
+class SignupAndPaymentModel(PaymentModel):
+    """Plans a sign-up and the payment answer in one turn ("sign me up for Plan Besar, I'm ...,
+    my number is ...; how do I pay?"), and refuses to write or review a reply."""
+
+    async def json_completion(self, schema: Any, *, system: str, user: str, **_: Any) -> Any:
+        if schema is PlanOut:
+            self.asked.append(schema.__name__)
+            signup = {
+                "action": "request_signup",
+                "plan_code": "Plan Besar",
+                "full_name": "Siti Binti Ahmad",
+                "phone": "[PHONE_0]",
+            }
+            return PlanOut(
+                tasks=[
+                    PlannedTask(agent="subscription_agent", input=signup),
+                    PlannedTask(agent="payment_agent", input={"action": "instructions"}),
+                ],
+                reply_strategy="auto_reply",
+            )
+        return await super().json_completion(schema, system=system, user=user)
+
+
+class SignupAndPaymentTurn(PaymentTurn):
+    known_agents = frozenset({"payment_agent", "subscription_agent", "escalation_agent"})
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("say", "language"),
+    [
+        (
+            "Nak daftar Plan Besar. Nama saya Siti Binti Ahmad, nombor 0123456789. Nak bayar "
+            "macam mana?",
+            "ms",
+        ),
+        (
+            "Sign me up for Plan Besar. I'm Siti Binti Ahmad, my number is 0123456789. How do I "
+            "pay?",
+            "en",
+        ),
+    ],
+)
+async def test_a_sign_up_and_a_payment_answer_go_out_in_the_turn_language(
+    shop: Shop, say: str, language: str
+) -> None:
+    # The real planner seam, subscription agent (Telegram), payment agent and facts-only reply: on
+    # a Malay turn (the channel says "und", the words decide) the read-back and the data note are
+    # the agent's Malay texts and the payment lines are the Malay copy, so no English sentence
+    # reaches the customer. Telegram never asks for an email, so neither note has the email clause.
+    from tests.test_booking_agent import conversation
+
+    contact, ref = await _company(shop)
+    await shop.w.q(
+        "INSERT INTO plans (client_id, code, name, price) VALUES (%s, 'besar', 'Plan Besar', 50)",
+        shop.tenant,
+    )
+    chat = await conversation(shop, contact)
+    plain = make_envelope(say)
+    envelope: Envelope = plain.model_copy(
+        update={
+            "client_id": shop.client,
+            "trace_id": uuid4(),
+            "idempotency_key": f"telegram:{uuid4()}",
+            "contact": Contact(
+                id=contact,
+                external_id="synthetic-customer",
+                channel=plain.channel,
+                display_name=None,
+            ),
+            "conversation": plain.conversation.model_copy(update={"id": chat}),
+            "message": plain.message.model_copy(
+                update={"body_raw": say, "body_redacted": redact(say), "language": "und"}
+            ),
+        }
+    )
+    model = SignupAndPaymentModel({})
+    made = SignupAndPaymentTurn(
+        PostgresTurnDependencies(shop.w.pool, llm=build_llm_provider(model))
+    )
+
+    state = await run_turn(envelope, made)  # type: ignore[arg-type]
+
+    assert made.executed_tasks == ["subscription_agent", "payment_agent"] and made.fallbacks == []
+    assert "ComposeOut" not in model.asked and "ReviewOut" not in model.asked
+    assert state.draft is not None and state.draft.composer == "template"
+    assert state.draft.language == language and len(made.emitted) == 1
+    readback = (
+        "Sign-up for Plan Besar: name Siti Binti Ahmad, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
+    )
+    note = (
+        "We keep your name and phone number on your contact record so the team can set up your "
+        "plan."
+    )
+    signup = [fact for fact in state.facts if fact.source == "subscription_agent"]
+    assert [fact.text for fact in signup] == [readback, note]  # what the composer sees, either way
+    assert await shop.w.q("SELECT 1 FROM signup_requests WHERE client_id = %s", shop.tenant) == []
+    lines = made.emitted[0].body.splitlines()
+    if language == "en":
+        assert lines[:2] == [readback, note]
+        assert f"Bank transfer: Bank Sintetik, account {ACCOUNT}" in lines[3]
+        assert not any("Pendaftaran" in line or "Pindahan" in line for line in lines)
+        return
+    zone = (await shop.w.q("SELECT timezone FROM clients WHERE id = %s", shop.tenant))[0]
+    assert lines == [
+        "Pendaftaran Plan Besar: nama Siti Binti Ahmad, telefon +60123456789. Betul ke? Balas ya "
+        "untuk daftar. Tak ada apa-apa yang didaftarkan selagi awak belum balas ya.",
+        "Kami simpan nama dan nombor telefon awak dalam rekod pelanggan, supaya staf kami boleh "
+        "sediakan pelan awak.",
+        f"Invois {ref}: MYR 1,059.90 untuk Basic, kena bayar sebelum "
+        f"{local_date(DUE, 'ms', zone['timezone'])}.",
+        f"Pindahan bank: Bank Sintetik, akaun {ACCOUNT}, nama Kedai Contoh Sdn Bhd.",
+        f"Letak {ref} sebagai rujukan bayaran ya, senang kami padankan.",
+        "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk "
+        "akaun.",
+    ]
+    body = made.emitted[0].body
+    for word in ("Sign-up", "Reply", "Nothing", "We keep", "the team", "Invoice", "After"):
+        assert word not in body
+    for word in (" anda ", "Anda ", "sila", "Sila", "pihak kami", "Kalau awak bagi e-mel"):
+        assert word not in body
+
+
 async def test_the_planner_is_told_of_the_payment_agent_and_its_input() -> None:
     assert deps.CAPABILITIES["payment_agent"] == (
         "How to pay the customer's own invoices (bank account, DuitNow and the invoice "

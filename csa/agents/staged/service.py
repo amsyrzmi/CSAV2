@@ -64,6 +64,7 @@ from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.pii import is_email_placeholder
 from csa.core.tenancy import tx
+from csa.payments.copy import local_date
 
 logger = structlog.get_logger(__name__)
 
@@ -577,13 +578,25 @@ def _plan_name(row: Mapping[str, Any]) -> str:
     return str(row.get("plan_name") or row["plan"])
 
 
-def _which_names(requestable: Sequence[Mapping[str, Any]], timezone: str) -> list[str]:
-    """The plan names to ask about; a name two rows share gets its start date, so they differ."""
+def _which_names(
+    requestable: Sequence[Mapping[str, Any]], timezone: str, *, ms: bool = False
+) -> list[str]:
+    """The plan names to ask about; a name two rows share gets its start date, so they differ.
+    `ms`: the same names for the Malay text, the date in Malay words."""
     names = [_plan_name(r) for r in requestable]
+    started = _started_ms if ms else _started
     return [
-        f"{name} (from {day(r['started_at'], timezone)})" if names.count(name) > 1 else name
+        f"{name} ({started(r['started_at'], timezone)})" if names.count(name) > 1 else name
         for name, r in zip(names, requestable, strict=True)
     ]
+
+
+def _started(value: datetime | None, timezone: str) -> str:
+    return f"from {day(value, timezone)}"
+
+
+def _started_ms(value: datetime | None, timezone: str) -> str:
+    return f"dari {local_date(value, 'ms', timezone)}" if value else "tarikh mula tak diketahui"
 
 
 def resolve_subscription(
@@ -718,23 +731,38 @@ class SubscriptionAgent:
         inp: SubscriptionInput,
         rows: Sequence[Mapping[str, Any]],
     ) -> AgentResult:
-        """Pass a pause, cancel or change to staff on the customer's own subscription."""
+        """Pass a pause, cancel or change to staff on the customer's own subscription.
+
+        Every answer here can go out word for word, so each fact carries its Malay text too.
+        """
         picked = resolve_subscription(rows, inp.subscription_id, inp.current_plan, ctx.timezone)
         if isinstance(picked, tuple):
             kind, names = picked
             if kind == "which":
-                return answer(ctx, [request_fact("which", names=names)])
+                # Both "which" answers of `resolve_subscription` name every requestable plan.
+                requestable = [r for r in rows if r["status"] in REQUESTABLE_STATUSES]
+                which = request_fact(
+                    "which",
+                    names=names,
+                    names_ms=lambda: _which_names(requestable, ctx.timezone, ms=True),
+                    ms=True,
+                )
+                return answer(ctx, [which])
             if kind == "waiting":
-                return answer(ctx, [request_fact("waiting", name=names[0])])
-            return answer(ctx, [request_fact("none")])
+                return answer(ctx, [request_fact("waiting", name=names[0], ms=True)])
+            return answer(ctx, [request_fact("none", ms=True)])
         name = _plan_name(picked)
         if inp.action == "request_cancel" and picked["cancel_at_period_end"]:
             ending = request_fact(
-                "already_ending", name=name, ends=picked["renews_at"], timezone=ctx.timezone
+                "already_ending",
+                name=name,
+                ends=picked["renews_at"],
+                timezone=ctx.timezone,
+                ms=True,
             )
             return answer(ctx, [ending])
         if inp.action == "request_pause" and picked["status"] == "paused":
-            return answer(ctx, [request_fact("already_paused", name=name)])
+            return answer(ctx, [request_fact("already_paused", name=name, ms=True)])
         plan_code: str | None = None
         new_name: str | None = None
         if inp.action == "request_change":
@@ -760,7 +788,7 @@ class SubscriptionAgent:
         )
         if not prepared.ok:
             return prepared
-        passed = request_fact("passed", action=inp.action, name=name, new_name=new_name)
+        passed = request_fact("passed", action=inp.action, name=name, new_name=new_name, ms=True)
         return prepared.model_copy(
             update={"data": AgentResultData(facts=[passed.model_copy(update={"as_of": ctx.now()})])}
         )
