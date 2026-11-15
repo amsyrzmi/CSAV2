@@ -55,7 +55,7 @@ Archive checksums, OCI manifest digests, local Docker image IDs and future
 registry manifest digests are distinct; retain the correct kind at each step.
 The pinned inputs and timestamp support repeatable builds; byte-for-byte
 reproducibility across builders has **not** been established by a double build.
-Artifacts expire in seven days and are review evidence, not durable releases.
+Artifacts expire in three days and are review evidence, not durable releases.
 
 Example build-only invocation (requires Buildx; **not deployment approval**):
 
@@ -101,7 +101,7 @@ first dispatch, the repository owner must create the GitHub environment
 `staging-images` with a required reviewer and deployment branches restricted to
 `main`. GitHub auto-creates an unprotected environment if a job references a
 missing one, so dispatching before this setup removes the approval gate. The
-source run must be within the seven-day artifact retention. Packages created
+source run must be within the three-day artifact retention. Packages created
 by the workflow are private by default; staging-host pull credentials are a
 later, separate gate.
 
@@ -838,7 +838,7 @@ The next slice is **staging preparation only**, not execution:
 
 | Prerequisite | Evidence or decision required before execution |
 | --- | --- |
-| Exact release inputs | Main CI passed; next verify archive checksums/source/platform/origin and approve Python/frontend registry manifest digests. CI only creates seven-day review archives; registry publication requires separate approval. |
+| Exact release inputs | Main CI passed; next verify archive checksums/source/platform/origin and approve Python/frontend registry manifest digests. CI only creates three-day review archives; registry publication requires separate approval. |
 | Secret delivery | Choose and validate the deployment mechanism for the proposal's `external: true` secrets. Docker Compose 2.40.3 is installed, but successful secret provisioning has not been demonstrated; the file is not an executable recipe for ordinary local Compose as-is. Do not assume Swarm-style external secrets are available. |
 | Separate credentials | Generate new staging-only owner/app/read-only/identity passwords and encryption key through a private provisioning procedure, with a disabled synthetic model key. Do not copy `.env.local` or rotate existing dev/production credentials as a staging shortcut. |
 | Database and storage | Approve a new `csa_staging` database/volume, baseline plus ordered migrations, identity bootstrap, and UID/GID 1000 upload-volume initialization. No existing dev or production database is a staging target. |

@@ -473,7 +473,7 @@ def test_a_staged_summary_is_printed_above_the_tables():
     assert "2 SHAs" in lines[summary]
     assert "2026-02-01" in lines[summary]
     assert "2026-02-03" in lines[summary]
-    assert "WARNING" not in out
+    assert "no staged deployment" not in out
 
 
 @pytest.mark.parametrize("answer", ["[]", None])
@@ -598,3 +598,50 @@ def test_the_staged_shas_are_read_before_anything_is_printed():
     code, out, _ = run(runner)
     assert code == 1
     assert out == ""
+
+
+def _warning_lines(out: str) -> list[str]:
+    return [x for x in out.splitlines() if x.startswith("WARNING: ") and "tags no version" in x]
+
+
+def test_a_production_sha_that_tags_nothing_warns_for_that_package_only_above_its_table():
+    python = tagged(30)  # shas 1..30
+    frontend = [version(n, sha(n + 100)) for n in range(1, 4)]  # shas 101..103
+    runner = runner_for(python, frontend)
+    code, out, _ = run(runner, "--production-sha", sha(5), production=False)
+    assert code == 0
+    assert _warning_lines(out) == [
+        f"WARNING: production SHA {sha(5)} tags no version of csa-frontend"
+    ]
+    lines = out.splitlines()
+    warning = lines.index(_warning_lines(out)[0])
+    assert warning < lines.index(next(x for x in lines if x.startswith("csa-frontend:")))
+    assert warning > lines.index(next(x for x in lines if x.startswith("csa-python:")))
+
+
+def test_a_production_sha_that_matches_a_version_does_not_warn():
+    runner = runner_for(tagged(30), tagged(3))
+    code, out, _ = run(runner, "--production-sha", sha(2), production=False)
+    assert code == 0
+    assert _warning_lines(out) == []
+
+
+def test_a_keep_sha_that_tags_nothing_warns_for_that_package_only_above_its_table():
+    frontend = [version(n, sha(n + 100)) for n in range(1, 4)]
+    runner = runner_for(tagged(30), frontend)
+    code, out, _ = run(runner, "--keep-sha", sha(5))
+    assert code == 0
+    ours = [x for x in _warning_lines(out) if "--keep-sha" in x]
+    assert ours == [f"WARNING: --keep-sha {sha(5)} tags no version of csa-frontend"]
+    lines = out.splitlines()
+    assert lines.index(ours[0]) < lines.index(
+        next(x for x in lines if x.startswith("csa-frontend:"))
+    )
+    assert lines.index(ours[0]) > lines.index(next(x for x in lines if x.startswith("csa-python:")))
+
+
+def test_a_keep_sha_that_matches_a_version_does_not_warn():
+    runner = runner_for(tagged(30), tagged(3))
+    code, out, _ = run(runner, "--keep-sha", sha(2), "--production-sha", sha(1), production=False)
+    assert code == 0
+    assert _warning_lines(out) == []

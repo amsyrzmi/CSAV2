@@ -876,8 +876,10 @@ If migrations were applied, do not roll back; fix forward.
 
 Step 0, before running anything: the script cannot see what production runs, so read it and pass it.
 Find the commit SHA production runs now and the one it ran before (for example from the last two
-`deploy-production` plan or apply run summaries, or from the image references on the instance), and
-pass both, each as `--production-sha <40-character SHA>`. The option is required. The staged
+`deploy-production` apply runs that succeeded, or from the image references on the instance; a failed
+or unapproved run does not count, because a plan that was never approved or an apply that failed
+names a SHA production never ran), and pass
+both, each as `--production-sha <40-character SHA>`. The option is required. The staged
 records only exist since about 2026-11-13, so images older than that have no record and are
 protected only if you pass them.
 
@@ -888,7 +890,8 @@ It prints, for `csa-python` and `csa-frontend`, every registry version as `KEEP(
 nothing, and it needs the `gh` login that already runs the rollout scripts. It keeps the newest 20
 SHA-tagged versions, every version tagged with a production SHA, and every version tagged with a
 SHA that one of the newest 15 staging deployments reached with a success status; it warns above the
-tables when it finds no staged deployment. Only a SHA-tagged version outside that set is `DELETE`. A
+tables when it finds no staged deployment, and above a package's table when a SHA you passed tags
+no version of it (a typo). Only a SHA-tagged version outside that set is `DELETE`. A
 version with no SHA tag (untagged, or only `latest` and the like) is `REVIEW`: it can be a child
 manifest of an image index, so it is never proposed for deletion and the owner decides from its
 digest and tags. The database image (`csa-pg16-postgis-vector`) is never listed, because it cannot

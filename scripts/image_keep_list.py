@@ -292,6 +292,10 @@ def main(
             production_shas=production,
             extra_shas=extra,
         )
+        present = {tag for item in versions for tag in item.tags}
+        for label, shas in (("production SHA", production), ("--keep-sha", extra)):
+            for missing in sorted(shas - present):
+                out(f"WARNING: {label} {missing} tags no version of {name}")
         for line in format_table(name, versions, plan):
             out(line)
         out("")
