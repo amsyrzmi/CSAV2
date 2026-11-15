@@ -1,0 +1,142 @@
+{
+  "id": "cs_pay_with_ticket_ms",
+  "matrix": "Payments: a Malay message that opens a ticket and asks how to pay gets one all-Malay reply",
+  "description": "One casual Malay message ('kad saya kena tolak... tolong buka tiket, nak bayar macam mana?') opens a billing ticket and asks how to pay. The reply is the facts as they stand, with no compose or review call: the ticket agent's Malay line first, then the Malay payment copy, and no English sentence of either fact.",
+  "seed": {
+    "plans": [
+      {
+        "code": "kecil",
+        "name": "Plan Kecil",
+        "price": "15.00",
+        "features": [
+          "5GB data"
+        ]
+      },
+      {
+        "code": "sederhana",
+        "name": "Plan Sederhana",
+        "price": "35.00",
+        "features": [
+          "20GB data"
+        ]
+      }
+    ],
+    "services": [
+      "subscription_agent",
+      "payment_agent"
+    ],
+    "payments_enabled": true,
+    "payment_methods": [
+      {
+        "kind": "transfer",
+        "label": "Bank transfer",
+        "details": {
+          "bank_name": "Bank Sintetik",
+          "account_number": "512000000021",
+          "account_name": "Kedai Contoh Sdn Bhd"
+        }
+      }
+    ],
+    "invoices": [
+      {
+        "reference": "KDMW-7AS",
+        "amount": "35.00",
+        "plan_name": "Plan Sederhana",
+        "due_in_days": 5
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "kad saya kena tolak masa bayar, tolong buka tiket. nak bayar macam mana eh?",
+      "language": "ms",
+      "cassette": {
+        "Classification": {
+          "intent": "billing_invoice",
+          "language": "ms",
+          "sentiment": "neutral",
+          "wants_human": false,
+          "injection": false,
+          "urgent": false,
+          "needs": {
+            "ticket_agent": 0.9,
+            "payment_agent": 0.95
+          }
+        },
+        "PlanOut": {
+          "tasks": [
+            {
+              "agent": "ticket_agent",
+              "input": {
+                "action": "create",
+                "subject": "Kad ditolak",
+                "category": "billing"
+              }
+            },
+            {
+              "agent": "payment_agent",
+              "input": {
+                "action": "instructions"
+              }
+            }
+          ],
+          "reply_strategy": "auto_reply"
+        },
+        "StepOut": {
+          "done": true
+        }
+      },
+      "expect": {
+        "route": "plan_args",
+        "agents": [
+          "payment_agent",
+          "ticket_agent"
+        ],
+        "gate": "send",
+        "outbound_count": 1,
+        "agent_errors": [],
+        "escalations": 0,
+        "prepared_requests": 0,
+        "llm_not_called": [
+          "ComposeOut",
+          "ReviewOut"
+        ],
+        "reply_contains": [
+          "Tiket #",
+          " dah dibuat (bil, keutamaan biasa), sasaran balasan paling lewat ",
+          "Invois KDMW-7AS: MYR 35.00 untuk Plan Sederhana, kena bayar sebelum ",
+          "Pindahan bank: Bank Sintetik, akaun 512000000021, nama Kedai Contoh Sdn Bhd.",
+          "Letak KDMW-7AS sebagai rujukan bayaran ya, senang kami padankan.",
+          "Lepas bayar, bagitahu bila dan dari bank mana, nanti kami sahkan bila duit dah masuk akaun."
+        ],
+        "reply_excludes": [
+          " anda ",
+          "Anda ",
+          " sila ",
+          "Sila ",
+          "pihak kami",
+          "Pihak kami",
+          "Ticket #",
+          "created",
+          "priority",
+          "target response",
+          "is open",
+          "Invoice KDMW-7AS",
+          "Bank transfer:",
+          "account 512000000021",
+          "Please put KDMW-7AS",
+          "After paying"
+        ],
+        "ticket_statuses": [
+          "open"
+        ],
+        "ticket_events": {
+          "created": 1
+        },
+        "invoice_statuses": [
+          "issued"
+        ]
+      }
+    }
+  ]
+}
