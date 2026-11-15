@@ -86,6 +86,7 @@ def test_payments_contract_hides_reminder_addresses_and_sends_money_as_strings()
         "/console/v1/payments/invoices/{invoice_id}",
         "/console/v1/payments/invoices/{invoice_id}/mark-paid",
         "/console/v1/payments/invoices/{invoice_id}/void",
+        "/console/v1/payments/invoices/{invoice_id}/reject-claim",
         "/console/v1/payments/attention",
     }
     assert set(schemas["ReminderOut"]["properties"]) == {

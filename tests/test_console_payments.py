@@ -273,6 +273,7 @@ async def test_read_only_and_the_package_gate_refuse_everything(sessions: Sessio
         (f"/methods/{method}", {"label": "x", "version": 1}, "PATCH"),
         (f"/invoices/{invoice_id}/mark-paid", mark, "POST"),
         (f"/invoices/{invoice_id}/void", {"reason": "Typo"}, "POST"),
+        (f"/invoices/{invoice_id}/reject-claim", {"reason": "Not seen"}, "POST"),
     ):
         response = await w.mutate(reader, f"{BASE}{path}", body, method=verb)
         assert response.status_code == 403, (path, response.text)
@@ -292,6 +293,7 @@ async def test_read_only_and_the_package_gate_refuse_everything(sessions: Sessio
         await bare.get(f"{BASE}/settings"),
         await bare.get(f"{BASE}/attention"),
         await w.mutate(bare, f"{BASE}/invoices/{invoice_id}/mark-paid", mark),
+        await w.mutate(bare, f"{BASE}/invoices/{invoice_id}/reject-claim", {}),
     ):
         assert response.status_code == 403 and response.json()["detail"] == "package_inactive"
 
@@ -313,6 +315,8 @@ async def test_another_company_never_reaches_an_invoice(sessions: SessionWorld) 
     assert paid.status_code == 404 and paid.json() == {"detail": "invoice_not_found"}
     voided = await w.mutate(other, f"{BASE}/invoices/{invoice_id}/void", {"reason": "x"})
     assert voided.status_code == 404 and voided.json() == {"detail": "invoice_not_found"}
+    rejected = await w.mutate(other, f"{BASE}/invoices/{invoice_id}/reject-claim", {})
+    assert rejected.status_code == 404 and rejected.json() == {"detail": "invoice_not_found"}
     listed = await other.get(f"{BASE}/invoices?status=all&q={reference}")
     assert listed.status_code == 200 and listed.json() == {"items": [], "next_before": None}
     assert (await other.get(f"{BASE}/attention")).json() == {"items": []}
@@ -581,6 +585,80 @@ async def test_void_refuses_paid_and_void_and_keeps_the_reason(sessions: Session
         "payments.invoice.voided",
         "payments.invoice.paid",
     ]
+
+
+async def test_reject_claim_returns_the_invoice_to_issued_for_staff_and_admin(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    admin, _ = await w.member(role="tenant_admin")
+    contact = await seed_contact(w, w.tenants[0])
+    first, _ = await seed_invoice(
+        w, w.tenants[0], contact=contact, status="proof_submitted", claimed_at=datetime.now(UTC)
+    )
+    second, _ = await seed_invoice(
+        w, w.tenants[0], contact=contact, status="proof_submitted", claimed_at=datetime.now(UTC)
+    )
+
+    rejected = await w.mutate(
+        staff, f"{BASE}/invoices/{first}/reject-claim", {"reason": " Not in the statement "}
+    )
+    assert rejected.status_code == 200, rejected.text
+    body = rejected.json()
+    assert body["status"] == "issued" and body["claim_note"] == "Sent from Synthetic Bank"
+    assert body["claimed_at"] is not None and body["payment"] is None
+
+    no_reason = await w.mutate(admin, f"{BASE}/invoices/{second}/reject-claim", {})
+    assert no_reason.status_code == 200, no_reason.text
+    assert no_reason.json()["status"] == "issued"
+
+    again = await w.mutate(staff, f"{BASE}/invoices/{first}/reject-claim", {})
+    assert again.status_code == 409 and again.json() == {"detail": "claim_not_open"}
+    assert await audit_actions(w, w.tenants[0]) == ["payments.invoice.claim_rejected"] * 2
+    details = await w.q(
+        "SELECT target_id, details FROM console_audit "
+        "WHERE action = 'payments.invoice.claim_rejected' ORDER BY created_at"
+    )
+    assert {d["target_id"]: d["details"] for d in details} == {
+        first: {"reason": "Not in the statement"},
+        second: {},
+    }
+
+
+async def test_reject_claim_refuses_other_statuses_and_a_long_reason(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff, _ = await w.member(role="tenant_staff")
+    issued, _ = await seed_invoice(w, w.tenants[0])
+    void_id, _ = await seed_invoice(w, w.tenants[0], status="void")
+    paid_id, _ = await seed_invoice(w, w.tenants[0])
+    claimed, _ = await seed_invoice(
+        w, w.tenants[0], status="proof_submitted", claimed_at=datetime.now(UTC)
+    )
+    marked = await w.mutate(
+        staff,
+        f"{BASE}/invoices/{paid_id}/mark-paid",
+        {"request_key": str(uuid.uuid4()), "method_kind": "cash"},
+    )
+    assert marked.status_code == 200, marked.text
+
+    for invoice_id, detail in (
+        (issued, "claim_not_open"),
+        (void_id, "invoice_void"),
+        (paid_id, "invoice_paid"),
+    ):
+        response = await w.mutate(staff, f"{BASE}/invoices/{invoice_id}/reject-claim", {})
+        assert response.status_code == 409 and response.json() == {"detail": detail}
+    long = await w.mutate(staff, f"{BASE}/invoices/{claimed}/reject-claim", {"reason": "x" * 301})
+    assert long.status_code == 422
+    extra = await w.mutate(staff, f"{BASE}/invoices/{claimed}/reject-claim", {"note": "x"})
+    assert extra.status_code == 422
+    assert (await w.q("SELECT status FROM invoices WHERE id=%s", claimed)) == [
+        {"status": "proof_submitted"}
+    ]
+    assert await audit_actions(w, w.tenants[0]) == ["payments.invoice.paid"]
 
 
 async def test_detail_lists_reminders_without_any_address(sessions: SessionWorld) -> None:

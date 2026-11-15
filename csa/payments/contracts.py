@@ -235,6 +235,17 @@ class VoidIn(Contract):
     reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
 
 
+class RejectClaimIn(Contract):
+    """Why the claim is rejected, for the audit trail; blank or left out is no reason."""
+
+    reason: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=300)] = None
+
+    @field_validator("reason")
+    @classmethod
+    def _blank_is_none(cls, value: str | None) -> str | None:
+        return value or None
+
+
 class PaymentAttentionItem(Contract):
     """Named apart from the email module's AttentionItem, which the console contract has."""
 
