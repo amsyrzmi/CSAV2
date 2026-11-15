@@ -1,11 +1,11 @@
-"""Console routes for payments: invoices, mark paid, void, attention, settings and methods.
+"""Console routes for payments: invoices, mark paid, void, reject claim, settings and methods.
 
 Human sessions only, behind the `subscriptions` package gate. Reading and the staff writes (mark
-paid, void) are for platform admins, tenant admins and tenant staff; settings and methods are
-changed by platform and tenant admins only. `read_only` members get 403 on every route, reads
-included. Refusals are `{"detail": "<code>"}`. The services audit every write themselves
-(`payments.invoice.paid`, `payments.invoice.voided`, `payments.settings.updated`,
-`payments.method.created`, `payments.method.updated`).
+paid, void, reject claim) are for platform admins, tenant admins and tenant staff; settings and
+methods are changed by platform and tenant admins only. `read_only` members get 403 on every
+route, reads included. Refusals are `{"detail": "<code>"}`. The services audit every write
+themselves (`payments.invoice.paid`, `payments.invoice.voided`, `payments.invoice.claim_rejected`,
+`payments.settings.updated`, `payments.method.created`, `payments.method.updated`).
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from csa.payments.contracts import (
     PaymentAttentionPage,
     PaymentSettingsIn,
     PaymentSettingsOut,
+    RejectClaimIn,
     VoidIn,
 )
 from csa.subscriptions.api import human_session
@@ -213,6 +214,24 @@ def build_payments_router() -> APIRouter:
         actor = staff(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             await invoices.void_invoice(
+                conn, client_id, invoice_id, actor_user_id=actor.user_id, reason=payload.reason
+            )
+            detail, creator = await console.invoice_detail(conn, client_id, invoice_id)
+        return await console.with_recorder_name(
+            detail, creator, client_id, identity_pool=_identity_pool(request)
+        )
+
+    @router.post("/invoices/{invoice_id}/reject-claim", response_model=InvoiceDetail)
+    async def reject_claim(
+        request: Request,
+        invoice_id: InvoiceId,
+        payload: RejectClaimIn,
+        client_id: Annotated[UUID, Depends(tenant)],
+    ) -> InvoiceDetail:
+        """Send a customer's payment claim back to issued: 409 `claim_not_open` unless claimed."""
+        actor = staff(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            await invoices.reject_claim(
                 conn, client_id, invoice_id, actor_user_id=actor.user_id, reason=payload.reason
             )
             detail, creator = await console.invoice_detail(conn, client_id, invoice_id)

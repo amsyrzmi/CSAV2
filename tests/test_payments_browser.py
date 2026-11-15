@@ -1,5 +1,5 @@
-"""Real browser acceptance for the Payments page (invoices, mark paid, void, needs attention,
-settings and payment methods).
+"""Real browser acceptance for the Payments page (invoices, mark paid, void, reject claim, needs
+attention, settings and payment methods).
 
 The real Next.js shell runs unmodified from a disposable staged copy, as in
 `test_subscriptions_browser.py`: its layouts fetch `/auth/me` and `/services/active`
@@ -393,6 +393,14 @@ class World:
                     status="void", void_reason=body["reason"], voided_at="2026-11-13T02:00:00Z"
                 )
                 return 200, self.detail(inv_id)
+            if parts[3:] == ["reject-claim"] and method == "POST":
+                if row["status"] in {"paid", "void"}:
+                    return 409, {"detail": f"invoice_{row['status']}"}
+                if row["status"] != "proof_submitted":
+                    return 409, {"detail": "claim_not_open"}
+                # As the server does: back to issued, the claim note and time kept.
+                row["status"] = "issued"
+                return 200, self.detail(inv_id)
         self.unexpected.append(f"{method} {path}?{params}")
         return 500, {"detail": "unexpected synthetic call"}
 
@@ -720,6 +728,136 @@ async def test_void_needs_a_reason_and_a_paid_invoice_cannot_be_voided(site: Sit
             await expect(drawer.get_by_test_id("invoice-stale")).to_have_attribute("role", "alert")
             await expect(drawer.get_by_test_id("void-form")).to_have_count(0)
             await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text("Paid")
+
+    await with_browser(body)
+
+
+async def test_reject_claim_puts_the_invoice_back_and_says_so(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with payments_page(browser, site, world) as page:
+            section = page.get_by_test_id("payments-attention")
+            claimed = section.get_by_test_id("attention-group-proof_submitted")
+            await claimed.get_by_test_id("attention-row").click()
+            drawer = page.get_by_test_id("invoice-drawer")
+            await expect(drawer.get_by_role("heading", name="Invoice K7QX-4MF")).to_be_visible()
+            claim = drawer.get_by_test_id("invoice-section-claim")
+            await expect(
+                claim.get_by_role("heading", name="What the customer said", exact=True)
+            ).to_be_visible()
+
+            await expect(drawer.get_by_test_id("invoice-reject")).to_have_text("Reject claim")
+            await drawer.get_by_test_id("invoice-reject").click()
+            form = drawer.get_by_test_id("reject-form")
+            reason = form.get_by_test_id("reject-reason")
+            await expect(reason).to_be_focused()
+            await expect(form).to_contain_text("Reject claim for invoice K7QX-4MF")
+            await expect(form).to_contain_text("The invoice goes back to unpaid.")
+            await expect(form).to_contain_text("does not message the customer")
+            await expect(form).to_contain_text("Inbox")
+            await expect(reason).to_have_attribute("maxlength", "300")
+            # The reason is optional, so the confirm is open from the start.
+            confirm = form.get_by_test_id("reject-confirm")
+            await expect(confirm).to_be_enabled()
+            await reason.fill("  Nothing in the bank on 12 Nov  ")
+            await confirm.click()
+
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text(
+                "Waiting for payment"
+            )
+            await expect(drawer.get_by_test_id("invoice-notice")).to_contain_text("Claim rejected")
+            await expect(form).to_have_count(0)
+            # The claim stays for the record, under the rejected heading, as text.
+            await expect(
+                claim.get_by_role(
+                    "heading", name="Claim rejected: what the customer said", exact=True
+                )
+            ).to_be_visible()
+            await expect(claim.get_by_test_id("invoice-claim-note")).to_have_text(
+                "Paid by DuitNow <b>this morning</b>"
+            )
+            await expect(drawer.get_by_test_id("invoice-reject")).to_have_count(0)
+            await expect(drawer.get_by_test_id("invoice-mark-paid")).to_be_visible()
+            rejects = [c for c in world.calls if c["path"].endswith("/reject-claim")]
+            assert [(c["path"], c["body"]) for c in rejects] == [
+                (
+                    f"payments/invoices/{CLAIMED}/reject-claim",
+                    {"reason": "Nothing in the bank on 12 Nov"},
+                )
+            ], rejects
+
+            # It left Customer says paid, in Needs attention.
+            await page.get_by_test_id("invoice-close").click()
+            await expect(claimed).to_have_count(0)
+            await expect(section.get_by_role("heading", level=3)).to_have_text(
+                ["Needs a nudge", "Reminder failed"]
+            )
+
+        # With no reason the body is empty. An invoice that never had a claim has no claim
+        # section and no Reject claim action.
+        world = World(site.upstream)
+        async with payments_page(browser, site, world) as page:
+            drawer = await open_invoice(page, "K7QX-4MF")
+            await drawer.get_by_test_id("invoice-reject").click()
+            await drawer.get_by_test_id("reject-confirm").click()
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text(
+                "Waiting for payment"
+            )
+            rejects = [c for c in world.calls if c["path"].endswith("/reject-claim")]
+            assert [c["body"] for c in rejects] == [{}], rejects
+            await page.get_by_test_id("invoice-close").click()
+            drawer = await open_invoice(page, "B2RT-9PW")
+            await expect(drawer.get_by_test_id("invoice-section-claim")).to_have_count(0)
+            await expect(drawer.get_by_test_id("invoice-reject")).to_have_count(0)
+            await expect(drawer.get_by_test_id("invoice-void")).to_be_visible()
+
+        # Someone else marks it paid while the form is open: the drawer says why and shows the
+        # invoice as it now stands.
+        world = World(site.upstream)
+        async with payments_page(browser, site, world, role="tenant_admin") as page:
+            drawer = await open_invoice(page, "K7QX-4MF")
+            await drawer.get_by_test_id("invoice-reject").click()
+            world.invoices[CLAIMED].update(status="paid", paid_at="2026-11-13T01:00:00Z")
+            await drawer.get_by_test_id("reject-confirm").click()
+            await expect(drawer.get_by_test_id("invoice-stale")).to_have_text(
+                "Someone already marked this invoice paid, so the claim can't be rejected."
+            )
+            await expect(drawer.get_by_test_id("reject-form")).to_have_count(0)
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text("Paid")
+            await expect(drawer.get_by_test_id("invoice-reject")).to_have_count(0)
+
+        # Someone else rejected it first: nothing is left to reject.
+        world = World(site.upstream)
+        async with payments_page(browser, site, world) as page:
+            drawer = await open_invoice(page, "K7QX-4MF")
+            await drawer.get_by_test_id("invoice-reject").click()
+            world.invoices[CLAIMED]["status"] = "issued"
+            await drawer.get_by_test_id("reject-confirm").click()
+            await expect(drawer.get_by_test_id("invoice-stale")).to_contain_text(
+                "no customer claim waiting"
+            )
+            await expect(drawer.get_by_test_id("invoice-detail-status")).to_have_text(
+                "Waiting for payment"
+            )
+            await expect(
+                drawer.get_by_role("heading", name="Claim rejected: what the customer said")
+            ).to_be_visible()
+
+        # Read-only members never reach the invoices, so they never see the action.
+        world = World(site.upstream)
+        async with payments_page(
+            browser, site, world, role="read_only", wait_for_rows=False
+        ) as page:
+            await expect(page.get_by_test_id("payments-no-access")).to_be_visible()
+            await expect(page.get_by_test_id("invoice-reject")).to_have_count(0)
+            assert payment_calls(world) == [], payment_calls(world)
+
+        # The platform admin's page (/payments) shows the same action on the same drawer.
+        world = World(site.upstream)
+        path = f"/payments?client_id={TENANT}&invoice={CLAIMED}"
+        async with payments_page(browser, site, world, role="platform_admin", path=path) as page:
+            drawer = page.get_by_test_id("invoice-drawer")
+            await expect(drawer.get_by_test_id("invoice-reject")).to_have_text("Reject claim")
 
     await with_browser(body)
 

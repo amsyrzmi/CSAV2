@@ -1002,6 +1002,177 @@ async def test_a_customer_claim_is_noted_once_and_only_on_their_own_invoice(a: L
         assert (await a.row("invoices", invoice_id))["status"] == status
 
 
+# --- reject a claim ------------------------------------------------------------------------------
+
+
+async def _claimed(a: Ledger, note: str = "Paid from Bank Contoh at 3pm") -> tuple[str, UUID]:
+    contact = await a.contact()
+    invoice_id = await a.invoice(contact=contact)
+    assert await a.run(invoices.record_claim, contact, invoice_id, note) == "noted"
+    return invoice_id, contact
+
+
+async def _claim_audits(a: Ledger, invoice_id: str) -> list[dict[str, Any]]:
+    return await a.q(
+        "SELECT actor_id, details FROM console_audit "
+        "WHERE action = 'payments.invoice.claim_rejected' AND target_id = %s",
+        invoice_id,
+    )
+
+
+async def test_reject_claim_returns_a_claimed_invoice_to_issued_and_keeps_the_claim(
+    a: Ledger,
+) -> None:
+    invoice_id, _ = await _claimed(a)
+    before = await a.row("invoices", invoice_id)
+
+    rejected = await a.run(
+        invoices.reject_claim,
+        invoice_id,
+        actor_user_id=a.staff_id,
+        reason="  Nothing in the bank statement  ",
+    )
+
+    assert rejected.status == "issued"
+    assert rejected.claim_note == "Paid from Bank Contoh at 3pm"
+    stored = await a.row("invoices", invoice_id)
+    assert stored["status"] == "issued"
+    assert stored["claim_note"] == before["claim_note"]
+    assert stored["claimed_at"] == before["claimed_at"]
+    audits = await _claim_audits(a, invoice_id)
+    assert len(audits) == 1
+    assert audits[0]["actor_id"] == a.staff_id
+    assert audits[0]["details"] == {"reason": "Nothing in the bank statement"}
+
+
+async def test_reject_claim_without_a_reason_audits_empty_details(a: Ledger) -> None:
+    for reason in (None, "   "):
+        invoice_id, _ = await _claimed(a)
+        rejected = await a.run(
+            invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason=reason
+        )
+        assert rejected.status == "issued"
+        assert [r["details"] for r in await _claim_audits(a, invoice_id)] == [{}]
+
+
+async def test_reject_claim_refuses_a_reason_over_the_limit(a: Ledger) -> None:
+    invoice_id, _ = await _claimed(a)
+    await refused(
+        a.run(invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason="x" * 301),
+        422,
+        "invalid_reason",
+    )
+    assert (await a.row("invoices", invoice_id))["status"] == "proof_submitted"
+    assert await _claim_audits(a, invoice_id) == []
+
+
+@pytest.mark.parametrize(
+    ("status", "detail"),
+    [
+        ("issued", "claim_not_open"),
+        ("overdue", "claim_not_open"),
+        ("draft", "claim_not_open"),
+        ("cash_pending", "claim_not_open"),
+        ("paid", "invoice_paid"),
+        ("void", "invoice_void"),
+    ],
+)
+async def test_reject_claim_refuses_every_status_but_proof_submitted(
+    a: Ledger, status: str, detail: str
+) -> None:
+    invoice_id = await a.invoice(
+        status=status,
+        contact=await a.contact(),
+        paid_at=datetime.now(UTC) if status == "paid" else None,
+    )
+    before = await a.row("invoices", invoice_id)
+
+    await refused(
+        a.run(invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason="No"),
+        409,
+        detail,
+    )
+
+    assert await a.row("invoices", invoice_id) == before
+    assert await _claim_audits(a, invoice_id) == []
+
+
+async def test_reject_claim_of_another_company_is_not_found(a: Ledger, b: Ledger) -> None:
+    invoice_id, _ = await _claimed(a)
+    await refused(
+        b.run(invoices.reject_claim, invoice_id, actor_user_id=b.staff_id, reason="No"),
+        404,
+        "invoice_not_found",
+    )
+    assert (await a.row("invoices", invoice_id))["status"] == "proof_submitted"
+    assert await _claim_audits(a, invoice_id) == []
+
+
+async def test_two_rejects_change_the_invoice_once(a: Ledger) -> None:
+    invoice_id, _ = await _claimed(a)
+    await a.run(invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason="First")
+    await refused(
+        a.run(invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason="Second"),
+        409,
+        "claim_not_open",
+    )
+    audits = await _claim_audits(a, invoice_id)
+    assert [r["details"] for r in audits] == [{"reason": "First"}]
+
+
+async def test_a_second_claim_after_a_reject_works(a: Ledger) -> None:
+    invoice_id, contact = await _claimed(a, "First try")
+    await a.run(invoices.reject_claim, invoice_id, actor_user_id=a.staff_id, reason="Not found")
+    assert (await a.row("invoices", invoice_id))["status"] == "issued"
+
+    assert await a.run(invoices.record_claim, contact, invoice_id, "Second try") == "noted"
+
+    stored = await a.row("invoices", invoice_id)
+    assert (stored["status"], stored["claim_note"]) == ("proof_submitted", "Second try")
+
+
+async def test_reject_claim_and_mark_paid_and_cancel_at_once_never_deadlock(a: Ledger) -> None:
+    for first in ("pay", "reject"):
+        await a.payments_on()
+        sub = await a.subscription(status="pending")
+        opening = await a.run(invoices.issue_opening_invoice, sub, now=datetime.now(UTC))
+        assert opening is not None
+        contact = (await a.row("subscriptions", sub))["contact_id"]
+        assert await a.run(invoices.record_claim, contact, opening.id, "Paid") == "noted"
+
+        async def reject(invoice_id: str = opening.id) -> InvoiceRecord:
+            async with tx(a.w.pool, str(a.tenant)) as conn:
+                done = await invoices.reject_claim(
+                    conn, a.tenant, invoice_id, actor_user_id=a.staff_id, reason="Not seen"
+                )
+                await asyncio.sleep(HOLD)
+                return done
+
+        async def cancel(subscription: UUID = sub) -> int:
+            async with tx(a.w.pool, str(a.tenant)) as conn:
+                done = await invoices.void_for_subscription(
+                    conn,
+                    a.tenant,
+                    subscription,
+                    reason="subscription_cancelled",
+                    from_period=datetime.now(UTC),
+                )
+                await asyncio.sleep(HOLD)
+                return done
+
+        racers = [a.pay(opening.id, hold=HOLD), reject(), cancel()]
+        if first == "reject":
+            racers.reverse()
+        results = await asyncio.gather(*racers, return_exceptions=True)
+        assert not any(isinstance(r, psycopg.errors.DeadlockDetected) for r in results), results
+        assert not any(
+            isinstance(r, Exception) and not isinstance(r, HTTPException) for r in results
+        )
+        final = await a.row("invoices", opening.id)
+        assert final["status"] in {"paid", "void", "issued"}
+        assert len(await a.payments(opening.id)) == (1 if final["status"] == "paid" else 0)
+
+
 # --- what a customer sees ------------------------------------------------------------------------
 
 

@@ -15,6 +15,7 @@ from typing import Any
 import psycopg
 import pytest
 from csa.core import db
+from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
 from csa.jobs.payment_reminders import (
     DAILY_CAP,
@@ -24,7 +25,7 @@ from csa.jobs.payment_reminders import (
     QUIET_START,
     run_payment_reminder_queue,
 )
-from csa.payments import notices
+from csa.payments import invoices, notices
 from csa.payments.reference import new_invoice_id, new_reference
 from psycopg.types.json import Jsonb
 from structlog.testing import capture_logs
@@ -260,6 +261,22 @@ async def outbound(conn: psycopg.AsyncConnection[Any], client: uuid.UUID) -> lis
     return [dict(zip(keys, row, strict=True)) for row in await cursor.fetchall()]
 
 
+async def reject_claim(
+    conn: psycopg.AsyncConnection[Any], app_dsn: str, client: uuid.UUID, invoice_id: str
+) -> None:
+    """Staff reject the customer's claim through the service, as a real console member."""
+    user = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic staff')",
+        (user, f"staff-{user}@example.test"),
+    )
+    async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+        async with tx(pool, str(client)) as tenant_conn:
+            await invoices.reject_claim(
+                tenant_conn, client, invoice_id, actor_user_id=user, reason="Not in the statement"
+            )
+
+
 async def run(
     app_dsn: str, client: uuid.UUID, now: datetime = NOW, **kwargs: Any
 ) -> dict[str, int]:
@@ -404,6 +421,36 @@ async def test_paid_void_and_claimed_invoices_and_those_without_a_contact_get_no
 
         assert await run(app_dsn, client) == ZERO
         assert await reminders(conn, client) == [] and await outbound(conn, client) == []
+
+
+async def test_a_rejected_overdue_claim_gets_one_reminder_and_the_older_steps_are_skipped(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client = await seed_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        inv = await invoice(
+            conn, client, person, status="proof_submitted", due_at=NOW - timedelta(days=4)
+        )
+        ref = await reference_of(conn, inv)
+        assert await run(app_dsn, client) == ZERO  # a claim is not reminded
+
+        await reject_claim(conn, app_dsn, client, inv)
+        status = await (
+            await conn.execute("SELECT status FROM invoices WHERE id=%s", (inv,))
+        ).fetchone()
+        assert status == ("issued",)
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "sent": 1, "skipped": 2}
+        assert shape(await reminders(conn, client)) == {
+            (inv, -7, "none", None, "skipped"),
+            (inv, 0, "none", None, "skipped"),
+            (inv, 3, "telegram", None, "sent"),
+        }
+        (message,) = await outbound(conn, client)
+        assert message["body"] == body(ref, "was due on 16 November 2026 and is still unpaid.")
+        assert await run(app_dsn, client) == ZERO
 
 
 async def test_after_downtime_only_the_newest_owed_step_is_sent(

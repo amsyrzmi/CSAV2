@@ -13,6 +13,7 @@ from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
 from csa.jobs.runner import build_default_registry
 from csa.jobs.subscriptions import run_subscriptions_due
+from csa.payments import invoices
 from csa.payments.reference import new_invoice_id, new_reference
 from psycopg import sql
 
@@ -918,6 +919,47 @@ async def test_a_pending_subscription_whose_customer_said_they_paid_is_not_expir
             assert await fetch_events(conn, sub) == []
             assert (await fetch_invoice(conn, invoice))["status"] == status
         assert await run(app_dsn, tenant) == ZERO
+
+
+async def reject_claim(
+    conn: psycopg.AsyncConnection[Any], app_dsn: str, client: uuid.UUID, invoice_id: str
+) -> None:
+    """Staff reject the customer's claim through the service, as a real console member."""
+    user = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic staff')",
+        (user, f"staff-{user}@example.test"),
+    )
+    async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+        async with tx(pool, str(client)) as tenant_conn:
+            await invoices.reject_claim(
+                tenant_conn, client, invoice_id, actor_user_id=user, reason="Not in the statement"
+            )
+
+
+async def test_a_pending_subscription_whose_claim_was_rejected_is_expired_again(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await psycopg.AsyncConnection.connect(
+        owner_dsn_for(pg_container), autocommit=True
+    ) as conn:
+        tenant, _ = await seed_tenants(conn)
+        rejected = await add_pending(conn, tenant, 20)
+        rejected_invoice = await add_invoice(conn, tenant, rejected, "proof_submitted")
+        standing = await add_pending(conn, tenant, 20)
+        standing_invoice = await add_invoice(conn, tenant, standing, "proof_submitted")
+        assert await run(app_dsn, tenant) == ZERO  # both claims protect their subscription
+
+        await reject_claim(conn, app_dsn, tenant, rejected_invoice)
+
+        assert await run(app_dsn, tenant) == ZERO | {"pending_expired": 1}
+        assert (await fetch_subscription(conn, rejected))["status"] == "cancelled"
+        assert (await fetch_invoice(conn, rejected_invoice))["status"] == "void"
+        assert (await fetch_invoice(conn, rejected_invoice))[
+            "void_reason"
+        ] == "subscription_expired"
+        assert (await fetch_subscription(conn, standing))["status"] == "pending"
+        assert (await fetch_invoice(conn, standing_invoice))["status"] == "proof_submitted"
 
 
 async def test_a_plan_change_due_at_the_renewal_applies_before_the_renewal(

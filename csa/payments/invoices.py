@@ -1,11 +1,11 @@
-"""The invoice ledger: issue, mark paid (which starts or resumes a subscription), void and claim.
+"""The invoice ledger: issue, mark paid (starts or resumes a subscription), void, claim, reject.
 
 Every function runs inside the caller's tenant transaction (`tx(pool, client_id)`) and names the
 company in every statement. Refusals are `HTTPException`s with a short code: 404
 `invoice_not_found` (also for another company's invoice); 409 `invoice_already_paid`,
-`invoice_not_payable`, `request_key_reused`, `invoice_paid` and `invoice_void`; 422
-`received_in_future`. `invalid_note` and `invalid_reason` (422) are a direct caller's guard only:
-the console routes validate the note and the reason in their bodies first (a field-list 422).
+`invoice_not_payable`, `request_key_reused`, `invoice_paid`, `invoice_void`, `claim_not_open`;
+422 `received_in_future`. `invalid_note` and `invalid_reason` (422) are a direct caller's guard
+only: the console routes validate the note and the reason in their bodies first (a field-list 422).
 
 The ledger is the truth. An invoice becomes `paid` only in the transaction that inserts its
 `payments` row (`invoice_mark_paid.sql` matches only when that row exists), and `payments` is
@@ -16,9 +16,10 @@ invoice keeps its amount whatever happens to the plan or the subscription's pric
 LOCK ORDER, used by every function here (and expected of the invoice job and the subscriptions
 executor): the subscription row first (`subscription_for_invoice.sql` or
 `subscriptions/subscription_lock.sql`, FOR UPDATE), then the invoice row (`invoice_lock.sql`, or an
-UPDATE of invoices). One order everywhere means mark paid, void, claim, `void_for_subscription` and
-the job cannot deadlock; under READ COMMITTED the second of two racing callers reads the state the
-first committed, so two staff pressing Mark paid at once record one payment.
+UPDATE of invoices). One order everywhere means mark paid, void, claim, reject claim,
+`void_for_subscription` and the job cannot deadlock; under READ COMMITTED the second of two racing
+callers reads the state the first committed, so two staff pressing Mark paid at once record one
+payment.
 """
 
 from __future__ import annotations
@@ -516,6 +517,53 @@ async def void_invoice(
     await db.q.execute(
         "console/audit.sql",
         (actor_user_id, client_id, "payments.invoice.voided", invoice_id, Jsonb({})),
+        conn=conn,
+    )
+    final = await db.q.fetch_one(
+        "payments/invoice_get.sql", {"client_id": client_id, "invoice_id": invoice_id}, conn=conn
+    )
+    if final is None:
+        raise RuntimeError(f"invoice {invoice_id} vanished inside its transaction")
+    return _record(final)
+
+
+async def reject_claim(
+    conn: Conn, client_id: UUID, invoice_id: str, *, actor_user_id: UUID, reason: str | None
+) -> InvoiceRecord:
+    """Staff reject a customer's payment claim: `proof_submitted` goes back to `issued`.
+
+    The claim note and time stay on the invoice (what the customer said); a second claim
+    overwrites them. 409 `invoice_paid`, `invoice_void` or `claim_not_open` (any other status,
+    including a claim already rejected). The reason is optional and goes to the audit row only.
+    Nothing is sent to the customer; staff tell them from the Inbox.
+    """
+    try:
+        cleaned = _clean_text(reason)
+    except ValueError as exc:
+        raise HTTPException(422, "invalid_reason") from exc
+    _, row = await _lock_invoice(conn, client_id, invoice_id)
+    if row["status"] == "paid":
+        raise HTTPException(409, "invoice_paid")
+    if row["status"] == "void":
+        raise HTTPException(409, "invoice_void")
+    if row["status"] != "proof_submitted":
+        raise HTTPException(409, "claim_not_open")
+    done = await db.q.fetch_one(
+        "payments/invoice_reject_claim.sql",
+        {"client_id": client_id, "invoice_id": invoice_id},
+        conn=conn,
+    )
+    if done is None:
+        raise RuntimeError(f"invoice {invoice_id} claim could not be rejected under its lock")
+    await db.q.execute(
+        "console/audit.sql",
+        (
+            actor_user_id,
+            client_id,
+            "payments.invoice.claim_rejected",
+            invoice_id,
+            Jsonb({"reason": cleaned} if cleaned else {}),
+        ),
         conn=conn,
     )
     final = await db.q.fetch_one(
