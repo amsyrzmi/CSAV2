@@ -64,7 +64,7 @@ Archive checksums, OCI manifest digests, local Docker image IDs and future
 registry manifest digests are distinct; retain the correct kind at each step.
 The pinned inputs and timestamp support repeatable builds; byte-for-byte
 reproducibility across builders has **not** been established by a double build.
-Artifacts expire in seven days and are review evidence, not durable releases.
+Artifacts expire in three days and are review evidence, not durable releases.
 
 Example build-only invocation (requires Buildx; **not deployment approval**):
 
@@ -110,7 +110,7 @@ first dispatch, the repository owner must create the GitHub environment
 `staging-images` with a required reviewer and deployment branches restricted to
 `main`. GitHub auto-creates an unprotected environment if a job references a
 missing one, so dispatching before this setup removes the approval gate. The
-source run must be within the seven-day artifact retention. Packages created
+source run must be within the three-day artifact retention. Packages created
 by the workflow are private by default; staging-host pull credentials are a
 later, separate gate.
 
