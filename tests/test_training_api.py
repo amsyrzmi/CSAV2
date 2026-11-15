@@ -10,6 +10,9 @@ from uuid import UUID, uuid4
 import httpx
 import psycopg
 import pytest
+from csa.core.tenancy import tx
+from csa.media import service as media
+from csa.media.images import check_image
 from csa.storage.base import ObjectStore, StorageError, StorageNotFound
 from csa.training import limits
 from csa.training.limits import MAX_FILE_BYTES
@@ -17,6 +20,7 @@ from csa.training.service import cleanup
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
+from tests.media_images import jpeg
 from tests.test_console_services import activate
 from tests.test_console_sessions import MACHINE_TOKEN, ORIGIN, SessionWorld
 from tests.test_training_pdf import PORTRAIT, WIDESCREEN, bad_files, make_pdf
@@ -551,6 +555,62 @@ async def test_remove_deletes_row_and_file_and_audits(
     assert again.status_code == 404 and detail(again) == "training_not_found"
     gone = await admin.get(f"{ITEMS}/{item['id']}/file")
     assert gone.status_code == 404 and detail(gone) == "training_not_found"
+
+
+async def thumbnail_rows(world: SessionWorld, tenant: str) -> tuple[int, int]:
+    [assets] = await world.q(
+        "SELECT count(*) AS n FROM media_assets WHERE client_id=%s AND kind='training_thumbnail'",
+        tenant,
+    )
+    [data] = await world.q("SELECT count(*) AS n FROM media_asset_data WHERE client_id=%s", tenant)
+    return assets["n"], data["n"]
+
+
+async def test_removing_a_training_item_removes_its_thumbnail(
+    sessions: SessionWorld, training_store: ObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csa.training import service as training_service
+
+    tenant = await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    item = (await upload(sessions, admin, make_pdf(1), "gone.pdf")).json()
+    other = (await upload(sessions, admin, make_pdf(2), "other.pdf")).json()
+    picture = jpeg(320, 180)
+    async with tx(sessions.pool, tenant) as conn:
+        for subject in (item["id"], other["id"]):
+            await media.put(
+                conn,
+                UUID(tenant),
+                "training_thumbnail",
+                subject,
+                picture,
+                check_image(picture, None),
+                source="generated",
+                actor_id=None,
+            )
+    assert await thumbnail_rows(sessions, tenant) == (2, 2)
+
+    # A failure after the picture is deleted rolls the whole removal back: same transaction.
+    real_audit = training_service.audit
+
+    async def failing(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("synthetic failure after delete_for")
+
+    monkeypatch.setattr(training_service, "audit", failing)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        await remove(sessions, admin, item["id"])
+    monkeypatch.setattr(training_service, "audit", real_audit)
+    assert len(await rows(sessions, tenant)) == 2
+    assert await thumbnail_rows(sessions, tenant) == (2, 2)
+
+    removed = await remove(sessions, admin, item["id"])
+    assert removed.status_code == 204, removed.text
+    [kept] = await sessions.q(
+        "SELECT subject_key FROM media_assets WHERE client_id=%s AND kind='training_thumbnail'",
+        tenant,
+    )
+    assert kept["subject_key"] == other["id"]
+    assert await thumbnail_rows(sessions, tenant) == (1, 1)
 
 
 async def test_open_download_survives_removal(
