@@ -199,6 +199,22 @@ async def run(
             return await run_payments_due(conn, client, FakeClock(now), **kwargs)
 
 
+async def reject_claim(
+    conn: psycopg.AsyncConnection[Any], app_dsn: str, client: uuid.UUID, invoice_id: str
+) -> None:
+    """Staff reject the customer's claim through the service, as a real console member."""
+    user = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO console_users(id,email,display_name) VALUES (%s,%s,'Synthetic staff')",
+        (user, f"staff-{user}@example.test"),
+    )
+    async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+        async with tx(pool, str(client)) as tenant_conn:
+            await invoices.reject_claim(
+                tenant_conn, client, invoice_id, actor_user_id=user, reason="Not in the statement"
+            )
+
+
 def owner(pg_container: object) -> Any:
     return psycopg.AsyncConnection.connect(owner_dsn_for(pg_container), autocommit=True)
 
@@ -494,6 +510,39 @@ async def test_issued_past_due_becomes_overdue_and_claims_stay(
         assert await invoice_status(conn, cash) == "cash_pending"
         assert await run(app_dsn, tenant) == ZERO
         assert (await fetch_subscription(conn, sub))["status"] == "active"  # suspend is off
+
+
+async def test_a_rejected_claim_past_due_is_marked_overdue_by_the_next_run(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        tenant = await seed_tenant(conn)
+        sub = await add_subscription(conn, tenant)
+        claimed = await add_invoice(
+            conn,
+            tenant,
+            sub,
+            "proof_submitted",
+            due_at=NOW - timedelta(days=5),
+            period_start=NOW - timedelta(days=30),
+        )
+        kept = await add_invoice(
+            conn,
+            tenant,
+            sub,
+            "proof_submitted",
+            due_at=NOW - timedelta(days=5),
+            period_start=NOW - timedelta(days=60),
+        )
+        assert await run(app_dsn, tenant) == ZERO  # a claim is never marked overdue
+
+        await reject_claim(conn, app_dsn, tenant, claimed)
+        assert await invoice_status(conn, claimed) == "issued"
+
+        assert await run(app_dsn, tenant) == ZERO | {"overdue": 1}
+        assert await invoice_status(conn, claimed) == "overdue"
+        assert await invoice_status(conn, kept) == "proof_submitted"
+        assert await run(app_dsn, tenant) == ZERO
 
 
 async def test_suspend_is_off_by_default(pg_container: object, app_dsn: str) -> None:

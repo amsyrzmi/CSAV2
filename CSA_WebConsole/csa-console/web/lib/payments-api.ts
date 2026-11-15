@@ -92,6 +92,11 @@ export interface VoidIn {
   reason: string;
 }
 
+/** The reason is optional; the server keeps it in the audit row for staff. */
+export interface RejectClaimIn {
+  reason?: string;
+}
+
 export interface PaymentAttentionItem {
   kind: AttentionKind;
   invoice: InvoiceOut;
@@ -212,6 +217,11 @@ export function voidInvoice(tenantId: string | null, invoiceId: string, body: Vo
   return post(paymentsPath(tenantId, `/invoices${id(invoiceId)}/void`), body);
 }
 
+/** Sends a customer's "I paid" back to unpaid. The customer is not messaged. */
+export function rejectClaim(tenantId: string | null, invoiceId: string, body: RejectClaimIn): Promise<InvoiceDetail> {
+  return post(paymentsPath(tenantId, `/invoices${id(invoiceId)}/reject-claim`), body);
+}
+
 export function listAttention(tenantId: string | null): Promise<PaymentAttentionPage> {
   return api(paymentsPath(tenantId, "/attention"));
 }
@@ -290,6 +300,7 @@ export const PAYMENT_ERRORS: Record<string, string> = {
   received_in_future: "The payment date can't be in the future.",
   invoice_not_found: "That invoice no longer exists. Refresh the page.",
   invoice_void: "This invoice is already void.",
+  claim_not_open: "This invoice has no customer claim waiting. Someone may have rejected it already.",
   request_key_reused: "This payment was already recorded on another invoice. Close the form and open it again.",
   invalid_note: "The note is too long. Keep it to 300 characters.",
   invalid_reason: "Write a reason of up to 300 characters.",
@@ -321,6 +332,23 @@ export function paymentMessage(cause: unknown): string {
   return cause.status >= 500 ? SERVER_FAILED : GENERIC;
 }
 
+/**
+ * `staleMessage` for the Reject claim form: a paid invoice is not "voided" here, so that one
+ * code reads as what happened. Null when the refusal is not a changed invoice.
+ */
+export function rejectStaleMessage(cause: unknown): string | null {
+  if (cause instanceof ApiError && cause.code === "invoice_paid") {
+    return "Someone already marked this invoice paid, so the claim can't be rejected.";
+  }
+  return staleMessage(cause);
+}
+
+/** `paymentMessage` for the Reject claim form, whose reason is optional: `invalid_reason` only means too long. */
+export function rejectMessage(cause: unknown): string {
+  if (cause instanceof ApiError && cause.code === "invalid_reason") return "A reason can be up to 300 characters.";
+  return paymentMessage(cause);
+}
+
 /** The 403 for this login's role: the page says Payments is for admins and staff. */
 export function isNoAccess(cause: unknown): boolean {
   return cause instanceof ApiError && cause.status === 403 && cause.code === ROLE_REFUSED;
@@ -335,7 +363,9 @@ export function isRefusal(cause: unknown): boolean {
 }
 
 /** Codes that mean the invoice changed under the form: someone else paid or voided it first. */
-const STALE = new Set(["invoice_already_paid", "invoice_not_payable", "invoice_paid", "invoice_void"]);
+const STALE = new Set([
+  "invoice_already_paid", "invoice_not_payable", "invoice_paid", "invoice_void", "claim_not_open",
+]);
 
 /**
  * The sentence for a refusal that means the invoice changed under the form, or null. The drawer

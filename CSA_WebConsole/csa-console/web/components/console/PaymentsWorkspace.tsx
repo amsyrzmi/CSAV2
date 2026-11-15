@@ -22,9 +22,12 @@ import {
   paymentMessage,
   putSettings,
   setupMessage,
+  rejectMessage,
+  rejectStaleMessage,
   staleMessage,
   STATUS_LABELS,
   updateMethod,
+  rejectClaim,
   voidInvoice,
   type InvoiceDetail,
   type InvoiceFilter,
@@ -39,7 +42,9 @@ import {
   attentionCount,
   attentionGroups,
   canMarkPaid,
+  canRejectClaim,
   canVoid,
+  claimSectionTitle,
   checkMethod,
   customerLabel,
   draftPreview,
@@ -73,6 +78,8 @@ import {
   switchSavedLine,
   todayInput,
   upsertMethod,
+  rejectBody,
+  REJECT_CLAIM_CONSEQUENCE,
   voidBody,
   type InvoiceList,
   type MethodDraft,
@@ -407,7 +414,7 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
   const [detail, setDetail] = useState<InvoiceDetail | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
-  const [form, setForm] = useState<"pay" | "void" | null>(null);
+  const [form, setForm] = useState<"pay" | "void" | "reject" | null>(null);
   const [notice, setNotice] = useState("");
   // Why the last action was refused when someone else changed the invoice first. The form that
   // got the refusal closes, so the drawer keeps the sentence on show over the fresh read.
@@ -434,7 +441,7 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
     setRevision((value) => value + 1);
     onChanged();
   };
-  const startForm = (kind: "pay" | "void") => { setForm(kind); setNotice(""); setStaleNotice(""); };
+  const startForm = (kind: "pay" | "void" | "reject") => { setForm(kind); setNotice(""); setStaleNotice(""); };
   const title = detail ? `Invoice ${invoiceName(detail)}` : "Invoice";
   return (
     <SlideOver open={shown} onClose={onClose} title={title} returnFocusTo={returnFocusTo} widthClass="max-w-lg"
@@ -461,7 +468,7 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
             </dl>
           </DrawerSection>
           {(detail.claimed_at || detail.claim_note) && (
-            <DrawerSection id="claim" title="What the customer said">
+            <DrawerSection id="claim" title={claimSectionTitle(detail)}>
               {/* Customer-typed: rendered as text, never as markup. */}
               {detail.claim_note
                 ? <p data-testid="invoice-claim-note" className="whitespace-pre-wrap break-words text-sm">{detail.claim_note}</p>
@@ -493,16 +500,20 @@ function InvoiceDrawer({ tenantId, id, returnFocusTo, onClose, onChanged }: {
               </dl>
             </DrawerSection>
           )}
-          {!form && (canMarkPaid(detail.status) || canVoid(detail.status)) && (
+          {!form && (canMarkPaid(detail.status) || canRejectClaim(detail.status) || canVoid(detail.status)) && (
             <div className="flex flex-wrap gap-2 border-t border-[color:var(--fs-border)] pt-4" data-testid="invoice-actions">
               {canMarkPaid(detail.status) && <button type="button" className={action} data-testid="invoice-mark-paid"
                 onClick={() => startForm("pay")}>Mark paid</button>}
+              {canRejectClaim(detail.status) && <button type="button" className={secondary} data-testid="invoice-reject"
+                onClick={() => startForm("reject")}>Reject claim</button>}
               {canVoid(detail.status) && <button type="button" className={secondary} data-testid="invoice-void"
                 onClick={() => startForm("void")}>Void</button>}
             </div>
           )}
           {form === "pay" && <MarkPaidForm tenantId={tenantId} invoice={detail} onCancel={() => setForm(null)}
             onStale={stale} onDone={(value) => settled(value, "Marked paid. The payment is recorded.")} />}
+          {form === "reject" && <RejectClaimForm tenantId={tenantId} invoice={detail} onCancel={() => setForm(null)}
+            onStale={stale} onDone={(value) => settled(value, "Claim rejected. The customer is not messaged: reply from the Inbox.")} />}
           {form === "void" && <VoidForm tenantId={tenantId} invoice={detail} onCancel={() => setForm(null)}
             onStale={stale} onDone={(value) => settled(value, "Voided. The customer is not sent your reason.")} />}
         </div>
@@ -657,6 +668,54 @@ function VoidForm({ tenantId, invoice, onCancel, onDone, onStale }: {
         <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
       {error && <Notice error testId="void-error">{error}</Notice>}
+    </form>
+  );
+}
+
+function RejectClaimForm({ tenantId, invoice, onCancel, onDone, onStale }: {
+  tenantId: string | null; invoice: InvoiceDetail; onCancel: () => void;
+  onDone: (value: InvoiceDetail) => void; onStale: (message: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+  const help = useId();
+  useEffect(() => { reasonRef.current?.focus(); }, []);
+  const body = rejectBody(reason);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!body || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      onDone(await rejectClaim(tenantId, invoice.id, body));
+    } catch (cause) {
+      // Someone else paid, voided or rejected it first: this form closes and the drawer says why.
+      const stale = rejectStaleMessage(cause);
+      if (stale) {
+        onStale(stale);
+        return;
+      }
+      setError(rejectMessage(cause));
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="space-y-3 rounded-md border border-ink-200 p-4" data-testid="reject-form"
+      onSubmit={(event) => void submit(event)}>
+      <h3 className="font-semibold">Reject claim for invoice {invoiceName(invoice)}</h3>
+      <label className="block text-sm">Reason (optional; only staff see this)
+        <textarea ref={reasonRef} className={textarea} maxLength={300} data-testid="reject-reason" value={reason}
+          aria-describedby={help} onChange={(event) => setReason(event.target.value)} />
+      </label>
+      <p id={help} className={helpText}>{REJECT_CLAIM_CONSEQUENCE}</p>
+      <div className="flex flex-wrap gap-2">
+        <button className={action} disabled={!body || busy} data-testid="reject-confirm">
+          {busy ? "Rejecting…" : "Reject claim"}</button>
+        <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+      {error && <Notice error testId="reject-error">{error}</Notice>}
     </form>
   );
 }

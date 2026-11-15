@@ -816,9 +816,8 @@ draft invoices:
 - "Customer says paid": the customer told the bot they paid (status "Customer says paid"). The bot says it is
   noted and not yet confirmed. Check the company's bank account, then Mark paid, or message the customer from
   the Inbox if nothing arrived. The note is the customer's own words and is not checked. While an invoice is
-  "Customer says paid" it gets no reminders, never turns overdue and never pauses the subscription, and there is
-  no console button to reject the claim yet (follow-up): if nothing arrived, use the operator step "Reject a
-  customer's claim" below.
+  "Customer says paid" it gets no reminders, never turns overdue and never pauses the subscription. If nothing
+  arrived, staff press Reject claim on the invoice (see "Reject a customer's claim" below).
 - "Needs a nudge": the newest reminder of an issued or overdue invoice found no channel (no Telegram chat, no
   WhatsApp chat open within 23 hours, no email), or the company's replies are off. Nobody was told. Message the
   customer from the Inbox, or phone them, then Mark paid when they pay. An invoice is listed once however many
@@ -903,7 +902,9 @@ transaction, and look at the rows before you change anything:
    ```
 3. Delete the payment row and put the invoice back. Use `overdue` if its due date has passed and `issued`
    otherwise (the job marks a late `issued` invoice overdue within 15 minutes anyway); use `proof_submitted`
-   instead if the customer's own claim should stand. Each statement must report one row:
+   instead if the customer's own claim should stand. An invoice put back to `issued` or `overdue` this way
+   that had a claim will show the heading "Claim rejected: what the customer said" in the console
+   although nobody rejected it (the claim note and time are kept). Each statement must report one row:
 
    ```sql
    DELETE FROM public.payments
@@ -931,11 +932,21 @@ or over payment is a Payments 2 statement exception. An invoice made with the wr
 and a void invoice for a period is not made again; there is no console way to make an invoice by hand in this
 release, so ask a developer.
 
-**Reject a customer's claim.** Until a "Reject claim" button is built (the first follow-up, an owner decision),
-a false "I paid" is put back by the database owner. Check the bank account first. Then, in one transaction,
-look, put the invoice back to "Waiting for payment" (the job marks it overdue within 15 minutes if its due date
-has passed; the claim note and time stay on the invoice for the record), and write an audit row. Each statement
-must report one row:
+**Reject a customer's claim.** A false "I paid" is put back from the console: staff open the invoice (status
+"Customer says paid") and use Reject claim, with an optional reason. `POST /console/v1/payments/invoices/<id>/reject-claim`
+puts the invoice back to "Waiting for payment" and writes the audit row `payments.invoice.claim_rejected` (with the
+reason when given) in one transaction. Check the bank account first. The claim note and time stay on the invoice
+for the record, and nothing is sent to the customer. The job marks the invoice overdue within 15 minutes if its
+due date has passed, and for a subscription with the unpaid pause switched on that can pause it in the same run;
+a pending subscription (approved, never started or paid) that is older than the company's pending expiry
+(Sign-ups setting, default 14 days, 0 never expires) is expired at the next `subscriptions_due` run (every
+5 minutes) and its opening invoice is voided: the claim had protected it, and rejecting the claim ends that.
+Reminders, overdue and the pause rule then apply again from the next run, with one reminder (the newest owed step), not a burst. Tell the
+customer from the Inbox; if they say they paid again, the bot notes a new claim.
+
+The console is the normal way; this SQL is the fallback when the console is unavailable. Run it as the database owner in one
+transaction: look, put the invoice back to "Waiting for payment", and write an audit row. Each statement must
+report one row:
 
 ```sql
 BEGIN;
@@ -949,9 +960,6 @@ VALUES ('<client id>', 'payments.invoice.claim_rejected', '<invoice id>',
 ```
 
 Check each statement reported one row, then `COMMIT;` or `ROLLBACK;`.
-
-Reminders, overdue and the pause rule then apply again from the next run. Tell the customer from the Inbox; if
-they say they paid again, the bot notes a new claim.
 
 **Before deploying 0590.** The migration stops (with the services already stopped for it) when an invoice has a
 status outside the seven, a negative amount or a currency that is not three upper-case letters. Run these on the
