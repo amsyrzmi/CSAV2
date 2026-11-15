@@ -25,7 +25,7 @@ import pytest
 from playwright.async_api import Page, async_playwright, expect
 
 from tests import test_services_redesign_browser as services
-from tests.test_payments_browser import synthetic_png
+from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import (
     TENANT,
     TENANT_PROFILE,
@@ -2192,9 +2192,6 @@ async def test_a_stale_expiry_version_is_read_again_so_the_next_save_works(site:
     await with_browser(body)
 
 
-PICTURE_FILE = {"name": "plan.png", "mimeType": "image/png"}
-
-
 async def test_plan_row_takes_a_picture(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = World(site.upstream)
@@ -2213,22 +2210,20 @@ async def test_plan_row_takes_a_picture(site: Site) -> None:
             chosen = field.get_by_test_id("plan-picture-pro-input")
 
             # A GIF is refused in the browser; the server's refusal reads as its sentence.
-            await chosen.set_input_files(
-                {"name": "plan.gif", "mimeType": "image/gif", "buffer": b"GIF89a synthetic"}
-            )
+            await chosen.set_input_files(picture_file("plan.gif", "image/gif", b"GIF89a synthetic"))
             await expect(field.get_by_test_id("plan-picture-pro-error")).to_contain_text(
                 "Use a JPEG or PNG picture."
             )
             assert not [c for c in world.calls if c["path"].endswith("/picture")]
             await chosen.set_input_files(
-                {"name": "toosmall.png", "mimeType": "image/png", "buffer": synthetic_png(8)}
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
             )
             await expect(field.get_by_test_id("plan-picture-pro-error")).to_contain_text(
                 "64 to 4096 pixels on each side"
             )
 
             # A good file: preview, sent alone with the CSRF token, no plan PATCH.
-            await chosen.set_input_files({**PICTURE_FILE, "buffer": synthetic_png()})
+            await chosen.set_input_files(picture_file("plan.png", "image/png", synthetic_png()))
             preview = field.get_by_test_id("plan-picture-pro-preview")
             await expect(preview).to_be_visible()
             await expect(field.get_by_test_id("plan-picture-pro-error")).to_have_count(0)

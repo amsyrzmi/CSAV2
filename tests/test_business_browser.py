@@ -23,10 +23,10 @@ from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import pytest
-from playwright.async_api import Page, expect
+from playwright.async_api import Page, Request, expect
 
 from tests import test_services_redesign_browser as services
-from tests.test_payments_browser import synthetic_png
+from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, open_event, with_browser
 
@@ -2251,20 +2251,16 @@ async def test_product_card_takes_a_picture(site: Site) -> None:
             error = field.get_by_test_id(f"business-product-{PRODUCT}-picture-error")
 
             # A GIF is refused in the browser; the server's refusal reads as its sentence.
-            await chosen.set_input_files(
-                {"name": "mug.gif", "mimeType": "image/gif", "buffer": b"GIF89a synthetic"}
-            )
+            await chosen.set_input_files(picture_file("mug.gif", "image/gif", b"GIF89a synthetic"))
             await expect(error).to_contain_text("Use a JPEG or PNG picture.")
             assert not stub.picture_calls
             await chosen.set_input_files(
-                {"name": "toosmall.png", "mimeType": "image/png", "buffer": synthetic_png(8)}
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
             )
             await expect(error).to_contain_text("64 to 4096 pixels on each side")
 
             # A good file: the preview appears; one PUT with the CSRF token and the file alone.
-            await chosen.set_input_files(
-                {"name": "mug.png", "mimeType": "image/png", "buffer": synthetic_png()}
-            )
+            await chosen.set_input_files(picture_file("mug.png", "image/png", synthetic_png()))
             preview = field.get_by_test_id(f"business-product-{PRODUCT}-picture-preview")
             await expect(preview).to_be_visible()
             await expect(error).to_have_count(0)
@@ -2311,7 +2307,7 @@ async def test_product_picture_reads_and_writes_name_the_tenant_for_a_platform_a
             await expect(card).to_be_visible(timeout=WAIT)
             field = card.get_by_test_id(f"business-product-{PRODUCT}-picture")
             await field.get_by_test_id(f"business-product-{PRODUCT}-picture-input").set_input_files(
-                {"name": "mug.png", "mimeType": "image/png", "buffer": synthetic_png()}
+                picture_file("mug.png", "image/png", synthetic_png())
             )
             preview = field.get_by_test_id(f"business-product-{PRODUCT}-picture-preview")
             asset = "eeeeeeee-0000-4000-8000-" + PRODUCT[-12:]
@@ -2337,7 +2333,7 @@ async def test_a_product_picture_survives_the_card_being_remounted(site: Site) -
             await expect(card).to_be_visible(timeout=WAIT)
             prefix = f"business-product-{PRODUCT}-picture"
             await card.get_by_test_id(f"{prefix}-input").set_input_files(
-                {"name": "mug.png", "mimeType": "image/png", "buffer": synthetic_png()}
+                picture_file("mug.png", "image/png", synthetic_png())
             )
             preview = card.get_by_test_id(f"{prefix}-preview")
             await expect(preview).to_be_visible()
@@ -2378,9 +2374,12 @@ async def test_a_removed_product_picture_stays_removed_after_a_remount(site: Sit
         async with business_page(
             browser, site, stub, path="/portal/business/products", wait_for_rows=False
         ) as page:
-            page.on(
-                "request", lambda r: media.append(r.url) if "/console/v1/media/" in r.url else 0
-            )
+
+            def note_media(request: Request) -> None:
+                if "/console/v1/media/" in request.url:
+                    media.append(request.url)
+
+            page.on("request", note_media)
             prefix = f"business-product-{PRODUCT}-picture"
             card = page.get_by_test_id(f"business-product-{PRODUCT}")
             await expect(card.get_by_test_id(f"{prefix}-preview")).to_be_visible(timeout=WAIT)

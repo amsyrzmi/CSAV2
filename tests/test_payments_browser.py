@@ -21,7 +21,7 @@ from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 import pytest
-from playwright.async_api import Page, async_playwright, expect
+from playwright.async_api import FilePayload, Page, async_playwright, expect
 
 from tests import test_services_redesign_browser as services
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, Upstream, make_me
@@ -128,6 +128,11 @@ def synthetic_png(side: int = 64) -> bytes:
         + chunk(b"IDAT", zlib.compress(row * side))
         + chunk(b"IEND", b"")
     )
+
+
+def picture_file(name: str, content_type: str, data: bytes) -> FilePayload:
+    """A file for `set_input_files`, typed as Playwright's payload."""
+    return FilePayload(name=name, mimeType=content_type, buffer=data)
 
 
 # The synthetic methods of tests/test_payment_copy.py: a made-up bank and account.
@@ -1370,9 +1375,7 @@ async def test_the_last_active_method_and_someone_else_saving_first(site: Site) 
     await with_browser(body)
 
 
-QR_FILE = {"name": "duitnow.png", "mimeType": "image/png"}
-GIF_FILE = {"name": "duitnow.gif", "mimeType": "image/gif", "buffer": b"GIF89a synthetic"}
-SMALL_FILE = {"name": "toosmall.png", "mimeType": "image/png"}
+GIF_FILE = picture_file("duitnow.gif", "image/gif", b"GIF89a synthetic")
 PICTURE_HINT = (
     "JPEG or PNG, up to 2 MB, 64 to 4096 pixels a side. Upload the QR at 800 pixels or more"
 )
@@ -1412,7 +1415,9 @@ async def test_admin_sets_and_removes_the_qr_picture(site: Site) -> None:
             assert not [c for c in world.calls if c["path"].endswith("/picture")]
 
             # The server's refusal reads as its sentence, never as the raw code.
-            await picture_field.set_input_files({**SMALL_FILE, "buffer": synthetic_png(8)})
+            await picture_field.set_input_files(
+                picture_file("toosmall.png", "image/png", synthetic_png(8))
+            )
             await expect(field.get_by_test_id("method-picture-error")).to_have_text(
                 "The picture must be 64 to 4096 pixels on each side, and its long side at most "
                 "10 times its short side."
@@ -1420,7 +1425,9 @@ async def test_admin_sets_and_removes_the_qr_picture(site: Site) -> None:
             await expect(field.get_by_test_id("method-picture-preview")).to_have_count(0)
 
             # A good file: the preview appears, and it was sent alone with the CSRF token.
-            await picture_field.set_input_files({**QR_FILE, "buffer": synthetic_png()})
+            await picture_field.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
             preview = field.get_by_test_id("method-picture-preview")
             await expect(preview).to_be_visible()
             await expect(field.get_by_test_id("method-picture-error")).to_have_count(0)
@@ -1442,7 +1449,9 @@ async def test_admin_sets_and_removes_the_qr_picture(site: Site) -> None:
             assert await preview.evaluate("img => img.naturalWidth") == 64
 
             # Replace keeps the control and changes the address (the cache buster).
-            await picture_field.set_input_files({**QR_FILE, "buffer": synthetic_png(80)})
+            await picture_field.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png(80))
+            )
             await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v2")
 
             # Leaving the form keeps the picture on the list row; Remove clears it.
@@ -1499,7 +1508,7 @@ async def test_platform_admin_names_the_tenant_on_the_picture_routes(site: Site)
             await row.get_by_test_id("method-edit").click()
             field = row.get_by_test_id("method-picture")
             await field.get_by_test_id("method-picture-input").set_input_files(
-                {**QR_FILE, "buffer": synthetic_png()}
+                picture_file("duitnow.png", "image/png", synthetic_png())
             )
             await expect(field.get_by_test_id("method-picture-preview")).to_be_visible()
             asset = world.methods[1]["picture"]["id"]
