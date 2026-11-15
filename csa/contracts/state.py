@@ -6,10 +6,10 @@ import operator
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from csa.contracts.envelope import Channel, ContractModel, Envelope
-from csa.contracts.facts import AgentError, AgentResult, Fact, Ui
+from csa.contracts.facts import AgentError, AgentResult, Fact, PictureRef, Ui
 from csa.contracts.plan import Intent, Plan, Task
 
 RECENT_MESSAGES = 6
@@ -131,10 +131,19 @@ class OutboundMessage(ContractModel):
     trace_id: UUID
     contact_id: UUID
     channel: Channel
-    kind: Literal["text", "template", "notification"] = "text"
+    kind: Literal["text", "template", "notification", "image"] = "text"
     body: str = Field(min_length=1, max_length=8000)
     idempotency_key: str = Field(min_length=1, max_length=512)
     ui: Ui = Field(default_factory=Ui)
+    # An image message (``body`` is its caption) names the stored picture; no other kind has one.
+    # Optional with a default: outbound messages saved before this field existed still load.
+    picture: PictureRef | None = None
+
+    @model_validator(mode="after")
+    def image_kind_matches_picture(self) -> OutboundMessage:
+        if (self.kind == "image") != (self.picture is not None):
+            raise ValueError("an outbound message has a picture if and only if its kind is image")
+        return self
 
 
 class TurnState(ContractModel):
@@ -146,6 +155,8 @@ class TurnState(ContractModel):
     results: Annotated[list[AgentResult], operator.add] = Field(default_factory=list)
     facts: list[Fact] = Field(default_factory=list)
     ui: Ui = Field(default_factory=Ui)
+    # The one picture chosen between collect and emit; optional so saved state still loads.
+    picture: PictureRef | None = None
     failures: list[AgentError] = Field(default_factory=list)
     handoff: Handoff | None = None
     draft: Draft | None = None

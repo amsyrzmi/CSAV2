@@ -85,10 +85,26 @@ class ResultMeta(ContractModel):
     was_duplicate: bool | None = None
 
 
+SentPictureKind = Literal["payment_qr", "plan", "product"]
+
+
+class PictureRef(ContractModel):
+    """The one picture a reply may carry: which stored picture, and the caption code wrote for it.
+
+    ``training_thumbnail`` is deliberately not a kind here: it is never sent to a customer.
+    """
+
+    kind: SentPictureKind
+    subject_key: str = Field(min_length=1, max_length=128)
+    caption: str = Field(min_length=1, max_length=1024)
+
+
 class AgentResultData(ContractModel):
     facts: list[Fact] = Field(default_factory=list, max_length=100)
     ui: Ui = Field(default_factory=Ui)
     suggested_actions: list[str] = Field(default_factory=list, max_length=20)
+    # Optional with a default: results saved before this field existed still load.
+    picture: PictureRef | None = None
 
 
 class AgentResult(ContractModel):
@@ -110,7 +126,7 @@ class AgentResult(ContractModel):
             return value
         payload = dict(value)
         nested = payload.get("data")
-        flat_fields = ("facts", "ui", "suggested_actions")
+        flat_fields = ("facts", "ui", "suggested_actions", "picture")
         if nested is not None:
             if any(name in payload for name in flat_fields):
                 raise ValueError("AgentResult cannot mix nested and flat data fields")
@@ -133,3 +149,8 @@ class AgentResult(ContractModel):
     def suggested_actions(self) -> list[str]:
         """Expose suggested actions directly to graph code."""
         return self.data.suggested_actions
+
+    @property
+    def picture(self) -> PictureRef | None:
+        """Expose the optional picture directly to graph code."""
+        return self.data.picture

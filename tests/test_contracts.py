@@ -19,9 +19,16 @@ from csa.contracts.envelope import (
     Message,
     Meta,
 )
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    AgentResultData,
+    Fact,
+    PictureRef,
+    ResultMeta,
+)
 from csa.contracts.plan import Intent, Plan
-from csa.contracts.state import Context, TurnState
+from csa.contracts.state import Context, OutboundMessage, TurnState
 from pydantic import ValidationError
 
 TRACE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -516,3 +523,146 @@ def test_agent_result_schema_matches_snapshot() -> None:
     expected = json.loads(snapshot_path.read_text(encoding="utf-8"))
 
     assert AgentResult.model_json_schema() == expected
+
+
+def _picture_ref() -> PictureRef:
+    return PictureRef(kind="payment_qr", subject_key="method-1", caption="DuitNow QR: Main account")
+
+
+def test_picture_ref_bounds() -> None:
+    assert _picture_ref().kind == "payment_qr"
+    for kind in ("plan", "product"):
+        assert PictureRef(kind=kind, subject_key="k", caption="c").kind == kind
+    base = {"kind": "payment_qr", "subject_key": "method-1", "caption": "DuitNow QR: Main"}
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "kind": "training_thumbnail"})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "caption": ""})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "caption": "x" * 1025})
+    assert PictureRef.model_validate({**base, "caption": "x" * 1024}).caption == "x" * 1024
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "subject_key": ""})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "subject_key": "k" * 129})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "extra": "no"})
+
+
+def _outbound(**overrides: object) -> dict[str, object]:
+    return {
+        "trace_id": TRACE_ID,
+        "contact_id": CLIENT_ID,
+        "channel": Channel.TELEGRAM,
+        "body": "DuitNow QR: Main account",
+        "idempotency_key": "turn:1:image",
+        **overrides,
+    }
+
+
+def test_outbound_image_needs_a_picture_and_text_has_none() -> None:
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    assert image.picture == _picture_ref()
+    assert OutboundMessage.model_validate_json(image.model_dump_json()) == image
+
+    with pytest.raises(ValidationError):
+        OutboundMessage.model_validate(_outbound(kind="image"))
+    for kind in ("text", "template", "notification"):
+        with pytest.raises(ValidationError):
+            OutboundMessage.model_validate(_outbound(kind=kind, picture=_picture_ref()))
+        assert OutboundMessage.model_validate(_outbound(kind=kind)).picture is None
+    # The default kind is text, so a picture without a kind is refused too.
+    with pytest.raises(ValidationError):
+        OutboundMessage.model_validate(_outbound(picture=_picture_ref()))
+    assert OutboundMessage.model_validate(_outbound()).kind == "text"
+
+
+def test_saved_turn_state_without_picture_still_loads() -> None:
+    saved = json.loads(TurnState(envelope=envelope_example()).model_dump_json())
+    saved.pop("picture")  # a state as written before this field existed
+    saved["outbound"] = [
+        {
+            "trace_id": str(TRACE_ID),
+            "contact_id": str(CLIENT_ID),
+            "channel": "telegram",
+            "kind": "text",
+            "body": "hello",
+            "idempotency_key": "turn:1",
+            "ui": {},
+        }
+    ]
+    saved["results"] = [
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "kb",
+            "data": {"facts": [], "ui": {}, "suggested_actions": []},
+            "meta": {"trace_id": str(TRACE_ID), "latency_ms": 1},
+        }
+    ]
+    assert "picture" not in saved
+    state = TurnState.model_validate_json(json.dumps(saved))
+    assert state.picture is None
+    assert state.outbound[0].picture is None
+    assert state.results[0].picture is None
+    assert state.results[0].data.picture is None
+
+
+def test_turn_state_with_picture_round_trips() -> None:
+    state = TurnState(
+        envelope=envelope_example(),
+        picture=_picture_ref(),
+        outbound=[
+            OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref())),
+            OutboundMessage.model_validate(_outbound(body="Pay here", idempotency_key="turn:1")),
+        ],
+    )
+    decoded = TurnState.model_validate_json(state.model_dump_json())
+    assert decoded == state
+    assert decoded.picture == _picture_ref()
+    assert decoded.outbound[0].kind == "image"
+    assert decoded.outbound[1].picture is None
+
+
+def test_flat_agent_result_carries_a_picture() -> None:
+    meta = {"trace_id": str(TRACE_ID), "latency_ms": 5}
+    picture = {"kind": "plan", "subject_key": "basic", "caption": "Basic plan"}
+    flat = AgentResult.model_validate(
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "subscriptions",
+            "facts": [],
+            "picture": picture,
+            "meta": meta,
+        }
+    )
+    assert flat.picture == PictureRef.model_validate(picture)
+    assert flat.data.picture == flat.picture
+
+    nested = AgentResult.model_validate(
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "subscriptions",
+            "data": {"picture": picture},
+            "meta": meta,
+        }
+    )
+    assert nested.picture == flat.picture
+    assert AgentResult.model_validate_json(nested.model_dump_json()) == nested
+    with pytest.raises(ValidationError):
+        AgentResult.model_validate(
+            {
+                "ok": True,
+                "status": "ok",
+                "task_id": "t1",
+                "agent": "x",
+                "data": {},
+                "picture": picture,
+                "meta": meta,
+            }
+        )
