@@ -18,6 +18,18 @@ on:
   # accepts only a push-to-main run).
   workflow_dispatch:
 
+# A run that a newer run supersedes is cancelled, to save billed minutes:
+#   - pull_request: one group per pull request, so a newer push to the PR cancels the older run;
+#   - push to main: one shared group, so a merge cancels the previous main run if it is still going.
+#     The cancelled commit has no successful ci run, so it gets no images and is never published,
+#     staged or deployed; the next merge's images contain its changes;
+#   - workflow_dispatch: a group unique per run (run_id, always a number, so it cannot equal
+#     `pr-<n>` or `main`) and never cancelled, so a manual run neither cancels nor is cancelled.
+# `&&` binds tighter than `||`; `github.event.pull_request.number` is empty on a push.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && 'main' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
 permissions:
   contents: read
   packages: read

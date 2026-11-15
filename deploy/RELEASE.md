@@ -18,6 +18,15 @@ is one job that runs only the test files the pull request adds or changes, and n
 changes none; the full suite runs once after the merge. To reproduce one shard locally:
 `CSA_TEST_SHARD=2/4 uv run pytest`. To rebalance, change the weights in `tests/shard.py`.
 
+A `ci` run that a newer run supersedes is cancelled: a newer push to a pull request cancels that
+pull request's older run, and a merge to `main` cancels the previous `main` run if it is still
+going. A cancelled run is not a success, so `publish-staging-images` does not start for it and
+`deploy/production/resolve_commit.sh` finds no successful `ci` run for that commit. If two merges
+land close together, only the later `main` commit is built and published. The earlier commit
+cannot be rolled out (a manual `ci` run is never publishable), and the next merge's images
+contain its changes. Manual `workflow_dispatch` runs are never cancelled and never cancel
+another run.
+
 ## Inputs and artifacts
 
 Never build from the repository root or copied web checkout. Their Docker ignore
