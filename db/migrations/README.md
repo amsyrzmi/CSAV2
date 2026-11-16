@@ -84,7 +84,11 @@ Reserved ranges (client growth program, 2026-10-27):
 - `0630`-`0649`: HR processes. 0630 adds the process tables (`hr_process_templates`,
   `hr_process_template_rules`, `hr_process_template_steps`, `hr_processes`, `hr_process_tasks`,
   `hr_process_events`; tenant isolated, no grant to any application role, read and written only through
-  definer functions from 0631; the event log is immutable) and `hr_employees.probation_end`.
+  definer functions from 0631; the event log is immutable) and `hr_employees.probation_end`. 0631 adds
+  the template write path `hr_template_apply` (create, update, deactivate; HR owner or `people.manage`,
+  receipt in `hr_operations`, one `console_audit` row per change, tie conflicts and late leaver steps
+  returned as warnings), the reads `hr_template_rows` and `hr_template_get`, and the internal
+  `hr_process_match` (most specific active template of the kind, then the oldest).
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
