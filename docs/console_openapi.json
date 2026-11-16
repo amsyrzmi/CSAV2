@@ -8124,6 +8124,16 @@
             "title": "Id",
             "type": "string"
           },
+          "picture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxPicture"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "provider_error": {
             "anyOf": [
               {
@@ -8205,6 +8215,22 @@
           "next_cursor"
         ],
         "title": "InboxMessagePage",
+        "type": "object"
+      },
+      "InboxPicture": {
+        "additionalProperties": false,
+        "description": "The stored picture an outbound image reply showed; read through the media route.",
+        "properties": {
+          "asset_id": {
+            "format": "uuid",
+            "title": "Asset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id"
+        ],
+        "title": "InboxPicture",
         "type": "object"
       },
       "InboxResult": {

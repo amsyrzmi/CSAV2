@@ -1020,3 +1020,54 @@ async def test_unnamed_whatsapp_sender_shows_masked_number(sessions: SessionWorl
     single = (await w.admin.get(path(w, f"/conversations/{conversation}"))).json()
     assert single["contact"]["display_name"] is None
     assert single["contact"]["phone"] == "+60125550148"
+
+
+async def test_inbox_lists_the_image_before_the_text_with_its_picture(
+    sessions: SessionWorld,
+) -> None:
+    # Imported here: test_outbound_pictures imports `seed` from this module.
+    from psycopg.types.json import Jsonb
+
+    from tests.test_outbound_pictures import CAPTION, TEXT, a_picture, emit, image, text
+
+    w = sessions
+    env, conversation = await seed(w)
+    asset = await a_picture(w, env.client_id)
+    await emit(w, env, image(env), text(env))
+    # An inbound photo (stored with `kind`), and an inbound row that copies the outbound shape:
+    # neither is ever exposed as a picture.
+    async with tx(w.pool, str(env.client_id)) as conn:
+        for suffix, attachments in (
+            ("photo", [{"kind": "image", "mime_type": "image/jpeg", "file_id": "synthetic-file"}]),
+            ("forged", [{"type": "image", "asset_id": str(asset)}]),
+        ):
+            await db.q.fetch_one(
+                "worker/insert_message.sql",
+                (
+                    env.client_id,
+                    UUID(conversation),
+                    "inbound",
+                    "customer",
+                    f"Inbound {suffix}",
+                    f"Inbound {suffix}",
+                    Jsonb(attachments),
+                    True,
+                    f"{env.trace_id}:in:{suffix}",
+                    env.trace_id,
+                ),
+                conn=conn,
+            )
+    response = await w.admin.get(path(w, f"/conversations/{conversation}/messages"))
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    bodies = [item["body"] for item in items]
+    # Newest first: the two inbound rows, then the reply text, then its picture before it.
+    assert bodies[2:] == [TEXT, CAPTION, "Synthetic question"]
+    by_body = {item["body"]: item for item in items}
+    assert by_body[CAPTION]["picture"] == {"asset_id": str(asset)}
+    assert by_body[CAPTION]["direction"] == "outbound"
+    assert by_body[TEXT]["picture"] is None
+    assert by_body["Synthetic question"]["picture"] is None
+    assert by_body["Inbound photo"]["picture"] is None
+    assert by_body["Inbound forged"]["picture"] is None
+    assert "attachments" not in by_body[CAPTION]

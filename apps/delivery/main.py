@@ -24,6 +24,7 @@ from csa.core.liveness import DELIVERY_ALIVE_PATH, liveness_loop
 from csa.core.settings import get_settings
 from csa.core.shutdown import run_until_signalled
 from csa.core.tenancy import tx
+from csa.media.attachments import image_asset_id
 from csa.notify.notifier import notify
 from csa.notify.sender import StaffNotificationSender
 from csa.staff.ownership import automation_allowed, lock_conversation
@@ -34,6 +35,14 @@ from pydantic import BaseModel, ConfigDict
 logger = structlog.get_logger(__name__)
 
 MAX_DELIVERY_ATTEMPTS = 5
+# After the takeover check an image row gets two attempts, then is skipped with one of these codes
+# (never dead): the text reply behind it must not wait on a picture. Failures before that check
+# (route, token, missing message, transient database errors) follow the text policy and can end
+# dead. A rate limit asking for a longer wait than MAX_PICTURE_RETRY_AFTER_SECONDS skips the image
+# at once instead of holding the text behind it.
+MAX_PICTURE_ATTEMPTS = 2
+MAX_PICTURE_RETRY_AFTER_SECONDS = 60
+PICTURE_CODES = ("picture_unavailable", "picture_rejected", "picture_failed")
 DELIVERY_REAPER_INTERVAL_SECONDS = 60
 DELIVERY_STALE_SECONDS = 180
 REAPER_BATCH_SIZE = 100
@@ -74,6 +83,15 @@ class DeliveryFailure(Exception):
         self.retry_after_seconds = retry_after_seconds
 
 
+class PictureSkipped(Exception):
+    """An image row that ends now as ``skipped`` with a picture code (never retried)."""
+
+    def __init__(self, error_code: str, *, status_code: int | None = None) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+        self.status_code = status_code
+
+
 class DeliveryWorker:
     """Drain Telegram and private web outbox rows with durable retry/lease handling."""
 
@@ -110,6 +128,9 @@ class DeliveryWorker:
             return False
         delivery = ClaimedDelivery.model_validate(row)
         started_at = time.monotonic()
+        # Set once the row is known to be an image message (after the takeover check): from then
+        # on every failure follows the picture policy (two attempts, then skipped).
+        picture_row = False
         try:
             if await self._deliver_web(delivery, started_at):
                 return True
@@ -145,7 +166,34 @@ class DeliveryWorker:
                     )
                     return True
                 provider_message_id: str | None = None
-                if channel == "whatsapp":
+                asset_id = image_asset_id(details.get("attachments"))
+                if asset_id is not None:
+                    picture_row = True
+                    if channel != "telegram":
+                        raise PictureSkipped("picture_unavailable")
+                    picture = await db.q.fetch_one(
+                        "media/send_read.sql", (delivery.client_id, asset_id), conn=conn
+                    )
+                    if picture is None:
+                        raise PictureSkipped("picture_unavailable")
+                    await self._throttle(chat_id)
+                    try:
+                        receipt = await TelegramAdapter.send_photo(
+                            bot_token,
+                            chat_id=chat_id,
+                            data=bytes(picture["data"]),
+                            media_type=str(picture["media_type"]),
+                            caption=str(details["body"]),
+                            http_client=self._http_client,
+                        )
+                    except TelegramDeliveryError as exc:
+                        if exc.status_code in {400, 413}:
+                            raise PictureSkipped(
+                                "picture_rejected", status_code=exc.status_code
+                            ) from None
+                        raise
+                    status_code = receipt.status_code
+                elif channel == "whatsapp":
                     if not inside_service_window(datetime.now(UTC), details["last_inbound_at"]):
                         raise DeliveryFailure("outside_service_window", terminal=True)
                     await self._throttle(chat_id)
@@ -192,6 +240,16 @@ class DeliveryWorker:
                     ),
                     conn=conn,
                 )
+        except PictureSkipped as exc:
+            await self._record_failure(
+                delivery,
+                error_code=exc.error_code,
+                status_code=exc.status_code,
+                retry_after_seconds=None,
+                duration_ms=self._duration_ms(started_at),
+                skip=True,
+            )
+            return True
         except WhatsAppDeliveryError as exc:
             await self._record_failure(
                 delivery,
@@ -203,12 +261,15 @@ class DeliveryWorker:
             )
             return True
         except TelegramDeliveryError as exc:
+            # Only the code is recorded: the exception's cause can carry the Bot API URL, which
+            # holds the token, so neither it nor a traceback is ever logged.
             await self._record_failure(
                 delivery,
                 error_code=exc.error_code,
                 status_code=exc.status_code,
                 retry_after_seconds=exc.retry_after_seconds,
                 duration_ms=self._duration_ms(started_at),
+                picture=picture_row,
             )
             return True
         except DeliveryFailure as exc:
@@ -219,6 +280,7 @@ class DeliveryWorker:
                 retry_after_seconds=exc.retry_after_seconds,
                 duration_ms=self._duration_ms(started_at),
                 terminal=exc.terminal,
+                picture=picture_row,
             )
             return True
         except Exception as exc:
@@ -229,6 +291,7 @@ class DeliveryWorker:
                 status_code=None,
                 retry_after_seconds=None,
                 duration_ms=self._duration_ms(started_at),
+                picture=picture_row,
             )
             logger.error(
                 "telegram_delivery_failed",
@@ -342,8 +405,27 @@ class DeliveryWorker:
         retry_after_seconds: int | None,
         duration_ms: int,
         terminal: bool = False,
+        skip: bool = False,
+        picture: bool = False,
     ) -> None:
-        dead = terminal or delivery.attempts >= MAX_DELIVERY_ATTEMPTS
+        """Record a failed attempt: retry it, dead-letter it, or (``skip``) end it as skipped.
+
+        A skipped row writes status ``skipped`` and then the same dead-letter row and ``dlq``
+        notice as a dead row. ``picture`` applies the image-row policy to a retryable failure:
+        another attempt while fewer than ``MAX_PICTURE_ATTEMPTS`` were made and any rate-limit wait
+        is at most ``MAX_PICTURE_RETRY_AFTER_SECONDS``, else skipped as ``picture_failed``. Such a
+        row is never dead; an image row that fails before the takeover check is not ``picture``
+        and follows the text policy, so it can end dead.
+        """
+        if picture and not skip:
+            long_wait = (
+                retry_after_seconds is not None
+                and retry_after_seconds > MAX_PICTURE_RETRY_AFTER_SECONDS
+            )
+            if terminal or long_wait or delivery.attempts >= MAX_PICTURE_ATTEMPTS:
+                skip, error_code = True, "picture_failed"
+        dead = not skip and (terminal or delivery.attempts >= MAX_DELIVERY_ATTEMPTS)
+        ended = dead or skip
         retry_seconds = (
             min(3600, max(1, retry_after_seconds))
             if retry_after_seconds is not None
@@ -354,7 +436,7 @@ class DeliveryWorker:
             updated = await db.q.fetch_one(
                 "delivery/mark_failed.sql",
                 (
-                    "dead" if dead else "pending",
+                    "skipped" if skip else "dead" if dead else "pending",
                     status_code,
                     error_code,
                     next_attempt_at,
@@ -376,7 +458,7 @@ class DeliveryWorker:
                 ),
                 conn=conn,
             )
-            if dead:
+            if ended:
                 envelope = await db.q.fetch_one(
                     "delivery/get_dlq_envelope.sql",
                     (delivery.id, delivery.client_id),
@@ -416,10 +498,15 @@ class DeliveryWorker:
             status_code=status_code,
             attempt=delivery.attempts,
             dead=dead,
+            skipped=skip,
         )
 
     async def reap(self) -> int:
-        """Requeue expired delivery leases and dead-letter exhausted sends."""
+        """Requeue expired delivery leases and dead-letter exhausted sends.
+
+        An image row whose lease expired after ``MAX_PICTURE_ATTEMPTS`` is skipped as
+        ``picture_failed`` (with the same dead-letter row and notice), never requeued or dead.
+        """
         reaped = 0
         async with self._owner_pool.connection() as conn:
             async with conn.transaction():
@@ -429,13 +516,32 @@ class DeliveryWorker:
                     conn=conn,
                 )
                 for delivery in candidates:
-                    dead = delivery["attempts"] >= MAX_DELIVERY_ATTEMPTS
-                    if dead:
-                        updated = await db.q.fetch_one(
-                            "delivery/dead_stale.sql",
-                            (delivery["id"], delivery["client_id"]),
-                            conn=conn,
-                        )
+                    skip = (
+                        bool(delivery["has_attachment"])
+                        and delivery["attempts"] >= MAX_PICTURE_ATTEMPTS
+                    )
+                    dead = not skip and delivery["attempts"] >= MAX_DELIVERY_ATTEMPTS
+                    reason = "picture_failed" if skip else "delivery_lease_expired"
+                    if skip or dead:
+                        if skip:
+                            updated = await db.q.fetch_one(
+                                "delivery/mark_failed.sql",
+                                (
+                                    "skipped",
+                                    delivery["last_status_code"],
+                                    reason,
+                                    datetime.now(UTC),
+                                    delivery["id"],
+                                    delivery["client_id"],
+                                ),
+                                conn=conn,
+                            )
+                        else:
+                            updated = await db.q.fetch_one(
+                                "delivery/dead_stale.sql",
+                                (delivery["id"], delivery["client_id"]),
+                                conn=conn,
+                            )
                         if updated is None:
                             continue
                         envelope = await db.q.fetch_one(
@@ -452,12 +558,7 @@ class DeliveryWorker:
                                 delivery["trace_id"],
                                 "delivery",
                                 Jsonb(envelope["envelope"]),
-                                Jsonb(
-                                    {
-                                        "error_code": "delivery_lease_expired",
-                                        "retryable": False,
-                                    }
-                                ),
+                                Jsonb({"error_code": reason, "retryable": False}),
                             ),
                             conn=conn,
                         )
@@ -468,7 +569,7 @@ class DeliveryWorker:
                             priority="high",
                             payload={
                                 "stage": "delivery",
-                                "reason": "delivery_lease_expired",
+                                "reason": reason,
                                 "trace_id": str(delivery["trace_id"])
                                 if delivery["trace_id"]
                                 else "",

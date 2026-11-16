@@ -26,6 +26,7 @@ import httpx
 import pytest
 from playwright.async_api import Page, async_playwright, expect
 
+from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
     WAIT,
@@ -88,7 +89,12 @@ def conversation(
 
 
 def message(
-    identifier: str, direction: str, author: str, body: str, minutes: int
+    identifier: str,
+    direction: str,
+    author: str,
+    body: str,
+    minutes: int,
+    picture: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": identifier,
@@ -101,6 +107,7 @@ def message(
         "delivery_error": None,
         "provider_status": None,
         "provider_error": None,
+        "picture": None if picture is None else {"asset_id": picture},
     }
 
 
@@ -167,6 +174,9 @@ class Inbox:
     filter_search: bool = False
     # The assistant's handoff note per conversation; only the single-conversation read has it.
     notes: dict[str, dict[str, str]] = field(default_factory=dict)
+    # What the picture route answers (200 = a synthetic PNG, else that status) and was asked.
+    picture_status: int = 200
+    picture_requests: list[str] = field(default_factory=list)
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -240,6 +250,14 @@ class Inbox:
             data = self.detail(path.split("/")[2])
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
+        elif path.startswith("media/"):
+            self.picture_requests.append(path)
+            if self.picture_status == 200:
+                await request_route.fulfill(
+                    status=200, content_type="image/png", body=synthetic_png(160)
+                )
+                return
+            status, data = self.picture_status, {"detail": "picture_not_found"}
         elif path == "inbox/approvals":
             wanted = parse_qs(query).get("conversation_id", [])
             items = [item for item in self.approvals if item["conversation_id"] in wanted]
@@ -1230,3 +1248,55 @@ async def test_the_thread_shows_the_assistants_note(shell: Shell) -> None:
         assert await page.evaluate("window.__noted === undefined")
         # The list rows never show it.
         await expect(row(page, NAMED)).not_to_contain_text("Note from the assistant")
+
+
+PICTURE_ASSET = "b0000000-0000-4000-8000-0000000000a1"
+CAPTION = "DuitNow QR: Kedai Contoh"
+
+
+def picture_thread(identifier: str) -> list[dict[str, Any]]:
+    """Newest first: the text reply, the picture reply sent just before it, the customer's ask."""
+    stem = identifier[:-3]
+    return [
+        message(f"{stem}m03", "outbound", "ai", "Scan the QR to pay.", 18),
+        message(f"{stem}m02", "outbound", "ai", CAPTION, 19, picture=PICTURE_ASSET),
+        message(f"{stem}m01", "inbound", "customer", "How do I pay?", 21),
+    ]
+
+
+async def test_an_image_reply_shows_its_thumbnail_and_caption(shell: Shell) -> None:
+    state = Inbox(messages={NAMED: picture_thread(NAMED)})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED, "Scan the QR to pay.")
+        thread = page.get_by_test_id("inbox-thread")
+        # Exactly one thumbnail: the text reply and the customer's message have none.
+        picture = thread.get_by_test_id("inbox-message-picture")
+        await expect(picture).to_have_count(1)
+        await expect(picture).to_be_visible(timeout=WAIT)
+        await expect(picture).to_have_attribute("alt", CAPTION)
+        await expect(picture).to_have_attribute("loading", "lazy")
+        await expect(picture).to_have_attribute("src", f"/console/v1/media/{PICTURE_ASSET}")
+        # The caption stays under it, and the image really decoded at its fixed size.
+        await expect(thread.get_by_text(CAPTION, exact=True)).to_be_visible()
+        await page.wait_for_function(
+            "() => { const image = document.querySelector('[data-testid=inbox-message-picture]');"
+            " return image !== null && image.complete && image.naturalWidth === 160; }",
+            timeout=WAIT,
+        )
+        box = await picture.bounding_box()
+        assert box is not None and round(box["width"]) == 160 and round(box["height"]) == 160
+        above = await thread.get_by_text(CAPTION, exact=True).bounding_box()
+        assert above is not None and box["y"] + box["height"] <= above["y"] + 1
+        assert state.picture_requests == [f"media/{PICTURE_ASSET}"]
+
+
+async def test_an_image_reply_the_viewer_may_not_read_hides_its_thumbnail(shell: Shell) -> None:
+    state = Inbox(messages={NAMED: picture_thread(NAMED)}, picture_status=404)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, NAMED, "Scan the QR to pay.")
+        thread = page.get_by_test_id("inbox-thread")
+        await expect(thread.get_by_text(CAPTION, exact=True)).to_be_visible(timeout=WAIT)
+        await eventually(lambda: len(state.picture_requests) > 0)
+        await expect(thread.get_by_test_id("inbox-message-picture")).to_have_count(0)

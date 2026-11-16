@@ -85,6 +85,17 @@
           "maxItems": 20,
           "title": "Suggested Actions",
           "type": "array"
+        },
+        "picture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PictureRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "AgentResultData",
@@ -157,6 +168,40 @@
         "source"
       ],
       "title": "Fact",
+      "type": "object"
+    },
+    "PictureRef": {
+      "additionalProperties": false,
+      "description": "The one picture a reply may carry: which stored picture, and the caption code wrote for it.\n\n``training_thumbnail`` is deliberately not a kind here: it is never sent to a customer.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "payment_qr",
+            "plan",
+            "product"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "subject_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Subject Key",
+          "type": "string"
+        },
+        "caption": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Caption",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject_key",
+        "caption"
+      ],
+      "title": "PictureRef",
       "type": "object"
     },
     "ResultMeta": {

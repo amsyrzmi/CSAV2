@@ -19,9 +19,16 @@ from csa.contracts.envelope import (
     Message,
     Meta,
 )
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    AgentResultData,
+    Fact,
+    PictureRef,
+    ResultMeta,
+)
 from csa.contracts.plan import Intent, Plan
-from csa.contracts.state import Context, TurnState
+from csa.contracts.state import Context, OutboundMessage, TurnState
 from pydantic import ValidationError
 
 TRACE_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -516,3 +523,224 @@ def test_agent_result_schema_matches_snapshot() -> None:
     expected = json.loads(snapshot_path.read_text(encoding="utf-8"))
 
     assert AgentResult.model_json_schema() == expected
+
+
+def _picture_ref() -> PictureRef:
+    return PictureRef(kind="payment_qr", subject_key="method-1", caption="DuitNow QR: Main account")
+
+
+def test_picture_ref_bounds() -> None:
+    assert _picture_ref().kind == "payment_qr"
+    for kind in ("plan", "product"):
+        assert PictureRef(kind=kind, subject_key="k", caption="c").kind == kind
+    base = {"kind": "payment_qr", "subject_key": "method-1", "caption": "DuitNow QR: Main"}
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "kind": "training_thumbnail"})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "caption": ""})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "caption": "x" * 1025})
+    assert PictureRef.model_validate({**base, "caption": "x" * 1024}).caption == "x" * 1024
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "subject_key": ""})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "subject_key": "k" * 129})
+    with pytest.raises(ValidationError):
+        PictureRef.model_validate({**base, "extra": "no"})
+
+
+def _outbound(**overrides: object) -> dict[str, object]:
+    return {
+        "trace_id": TRACE_ID,
+        "contact_id": CLIENT_ID,
+        "channel": Channel.TELEGRAM,
+        "body": "DuitNow QR: Main account",
+        "idempotency_key": "turn:1:image",
+        **overrides,
+    }
+
+
+def test_outbound_image_needs_a_picture_and_text_has_none() -> None:
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    assert image.picture == _picture_ref()
+    assert OutboundMessage.model_validate_json(image.model_dump_json()) == image
+
+    with pytest.raises(ValidationError):
+        OutboundMessage.model_validate(_outbound(kind="image"))
+    for kind in ("text", "template", "notification"):
+        with pytest.raises(ValidationError):
+            OutboundMessage.model_validate(_outbound(kind=kind, picture=_picture_ref()))
+        assert OutboundMessage.model_validate(_outbound(kind=kind)).picture is None
+    # The default kind is text, so a picture without a kind is refused too.
+    with pytest.raises(ValidationError):
+        OutboundMessage.model_validate(_outbound(picture=_picture_ref()))
+    assert OutboundMessage.model_validate(_outbound()).kind == "text"
+
+
+def test_saved_turn_state_without_picture_still_loads() -> None:
+    saved = json.loads(TurnState(envelope=envelope_example()).model_dump_json())
+    # No picture key is written when there is none, so this is a state as written before the field.
+    saved["outbound"] = [
+        {
+            "trace_id": str(TRACE_ID),
+            "contact_id": str(CLIENT_ID),
+            "channel": "telegram",
+            "kind": "text",
+            "body": "hello",
+            "idempotency_key": "turn:1",
+            "ui": {},
+        }
+    ]
+    saved["results"] = [
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "kb",
+            "data": {"facts": [], "ui": {}, "suggested_actions": []},
+            "meta": {"trace_id": str(TRACE_ID), "latency_ms": 1},
+        }
+    ]
+    assert "picture" not in saved
+    state = TurnState.model_validate_json(json.dumps(saved))
+    assert state.picture is None
+    assert state.outbound[0].picture is None
+    assert state.results[0].picture is None
+    assert state.results[0].data.picture is None
+
+
+def test_turn_state_with_picture_round_trips() -> None:
+    state = TurnState(
+        envelope=envelope_example(),
+        picture=_picture_ref(),
+        outbound=[
+            OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref())),
+            OutboundMessage.model_validate(_outbound(body="Pay here", idempotency_key="turn:1")),
+        ],
+    )
+    decoded = TurnState.model_validate_json(state.model_dump_json())
+    assert decoded == state
+    assert decoded.picture == _picture_ref()
+    assert decoded.outbound[0].kind == "image"
+    assert decoded.outbound[1].picture is None
+
+
+def test_flat_agent_result_carries_a_picture() -> None:
+    meta = {"trace_id": str(TRACE_ID), "latency_ms": 5}
+    picture = {"kind": "plan", "subject_key": "basic", "caption": "Basic plan"}
+    flat = AgentResult.model_validate(
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "subscriptions",
+            "facts": [],
+            "picture": picture,
+            "meta": meta,
+        }
+    )
+    assert flat.picture == PictureRef.model_validate(picture)
+    assert flat.data.picture == flat.picture
+
+    nested = AgentResult.model_validate(
+        {
+            "ok": True,
+            "status": "ok",
+            "task_id": "t1",
+            "agent": "subscriptions",
+            "data": {"picture": picture},
+            "meta": meta,
+        }
+    )
+    assert nested.picture == flat.picture
+    assert AgentResult.model_validate_json(nested.model_dump_json()) == nested
+    with pytest.raises(ValidationError):
+        AgentResult.model_validate(
+            {
+                "ok": True,
+                "status": "ok",
+                "task_id": "t1",
+                "agent": "x",
+                "data": {},
+                "picture": picture,
+                "meta": meta,
+            }
+        )
+
+
+def _agent_result(picture: PictureRef | None = None) -> AgentResult:
+    return AgentResult(
+        ok=True,
+        status="ok",
+        task_id="t1",
+        agent="kb",
+        data=AgentResultData(picture=picture),
+        meta=ResultMeta(trace_id=TRACE_ID, latency_ms=1),
+    )
+
+
+def _plain_outbound() -> OutboundMessage:
+    return OutboundMessage.model_validate(_outbound())
+
+
+def test_a_missing_picture_is_not_dumped() -> None:
+    """An older process reading saved state rejects an unknown key, so a None picture must
+    not be written: not by model_dump, not by model_dump_json, at any depth."""
+    state = TurnState(
+        envelope=envelope_example(),
+        outbound=[_plain_outbound()],
+        results=[_agent_result()],
+    )
+    assert "picture" not in _plain_outbound().model_dump()
+    assert "picture" not in json.loads(_plain_outbound().model_dump_json())
+    assert "picture" not in _agent_result().data.model_dump()
+    assert "picture" not in json.loads(_agent_result().model_dump_json())["data"]
+    dumped = state.model_dump()
+    assert "picture" not in dumped
+    assert "picture" not in dumped["outbound"][0]
+    assert "picture" not in dumped["results"][0]["data"]
+    dumped_json = json.loads(state.model_dump_json())
+    assert "picture" not in dumped_json
+    assert "picture" not in dumped_json["outbound"][0]
+    assert "picture" not in dumped_json["results"][0]["data"]
+    # Set explicitly to None it is still not written.
+    assert "picture" not in TurnState(envelope=envelope_example(), picture=None).model_dump()
+
+
+def test_a_present_picture_is_dumped() -> None:
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    assert image.model_dump()["picture"]["kind"] == "payment_qr"
+    assert json.loads(image.model_dump_json())["picture"]["subject_key"] == "method-1"
+    assert _agent_result(_picture_ref()).data.model_dump()["picture"]["caption"].startswith("Duit")
+    state = TurnState(envelope=envelope_example(), picture=_picture_ref())
+    assert state.model_dump()["picture"]["kind"] == "payment_qr"
+
+
+def test_checkpoint_serializer_omits_a_missing_picture_and_round_trips_a_present_one() -> None:
+    """The LangGraph saver's own serializer, as the checkpointer uses it."""
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    serde = JsonPlusSerializer()
+    image = OutboundMessage.model_validate(_outbound(kind="image", picture=_picture_ref()))
+    withs = (
+        image,
+        _agent_result(_picture_ref()),
+        TurnState(envelope=envelope_example(), picture=_picture_ref(), outbound=[image]),
+    )
+    withouts = (
+        _plain_outbound(),
+        _agent_result(),
+        TurnState(
+            envelope=envelope_example(),
+            outbound=[_plain_outbound()],
+            results=[_agent_result()],
+        ),
+    )
+    for without in withouts:
+        _, raw = serde.dumps_typed(without)
+        assert b"picture" not in raw
+        assert serde.loads_typed(serde.dumps_typed(without)) == without
+    for present in withs:
+        _, raw = serde.dumps_typed(present)
+        assert b"picture" in raw
+        assert serde.loads_typed(serde.dumps_typed(present)) == present
