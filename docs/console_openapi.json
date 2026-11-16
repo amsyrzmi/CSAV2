@@ -9375,7 +9375,7 @@
       },
       "ItemOut": {
         "additionalProperties": false,
-        "description": "One library item. A PDF has a view mode and a page count; a video has a duration instead.\n\n``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.\n``status`` is ``ready`` for every PDF. ``thumbnail`` is a video's generated preview as its\nversion only (never the bytes; read it from ``/training/items/{id}/thumbnail``); ``None`` for\na PDF, a video uploaded before thumbnails, one still being processed, or one whose frame\ncould not be taken.",
+        "description": "One library item. A PDF has a view mode and a page count; a video has a duration instead.\n\n``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.\n``status`` is ``ready`` for every PDF. ``thumbnail`` is a video's generated preview as its\nversion only (never the bytes; read it from ``/training/items/{id}/thumbnail``); ``None`` for\na PDF, a video uploaded before thumbnails, one whose frame could not be taken, and one whose\nframe has not been taken yet. The frame is taken early in transcribing, so a manager may see a\nversion while the video is still being processed; readers only ever get ``ready`` items.",
         "properties": {
           "byte_size": {
             "title": "Byte Size",

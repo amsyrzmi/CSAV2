@@ -80,8 +80,9 @@ class ItemOut(_Model):
     ``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.
     ``status`` is ``ready`` for every PDF. ``thumbnail`` is a video's generated preview as its
     version only (never the bytes; read it from ``/training/items/{id}/thumbnail``); ``None`` for
-    a PDF, a video uploaded before thumbnails, one still being processed, or one whose frame
-    could not be taken.
+    a PDF, a video uploaded before thumbnails, one whose frame could not be taken, and one whose
+    frame has not been taken yet. The frame is taken early in transcribing, so a manager may see a
+    version while the video is still being processed; readers only ever get ``ready`` items.
     """
 
     id: UUID

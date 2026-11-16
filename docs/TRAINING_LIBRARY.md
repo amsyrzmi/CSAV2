@@ -409,8 +409,10 @@ This reverses the earlier non-goal "no thumbnails generated from frames" (the vi
   row; the video's player uses it as its poster. Details in
   [CONSOLE_API.md](./CONSOLE_API.md#the-thumbnail-route).
 - **A placeholder instead** for a PDF; for a video uploaded before thumbnails shipped (existing
-  `ready` videos are not given one: there is no backfill); for a video still being processed; for a
-  video whose video track ends before the frame's time (for example a still image with narration);
+  `ready` videos are not given one: there is no backfill); for a video whose frame has not been taken
+  yet (it is taken early in transcribing, so a manager may see the preview while the video is still
+  being processed; readers only see `ready` videos); for a video whose video track ends before the
+  frame's time (for example a still image with narration);
   for one whose frame failed; and whenever the picture does not load.
 - **Staff only.** The thumbnail is never sent to customers: delivery's picture read
   (`db/sql/media/send_read.sql`) gives no row for a training thumbnail.

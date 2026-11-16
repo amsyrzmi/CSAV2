@@ -50,7 +50,6 @@ from csa.decide.completion import CompletionError, JsonCompletionClient
 from csa.media import service as pictures
 from csa.media.contracts import ThumbnailOut
 from csa.media.http import etag, etag_matches, picture_headers
-from csa.media.service import delete_for
 from csa.metering.context import MeterContext, meter_context
 from csa.storage.base import ObjectStore, StorageError, durable_put
 from csa.storage.multipart import MultipartStore
@@ -401,7 +400,7 @@ class TrainingLibrary:
             if row is None:
                 raise HTTPException(404, NOT_FOUND)
             # The item's thumbnail goes in the same transaction: both stay or both go.
-            await delete_for(conn, client_id, "training_thumbnail", str(item_id))
+            await pictures.delete_for(conn, client_id, "training_thumbnail", str(item_id))
             await audit(conn, actor, client_id, "training.item_removed", str(item_id))
         # "removed" (no upload was open), "upload_aborted", or "abort_failed" (the row is gone;
         # the sweep lists the store's open uploads and aborts this one).

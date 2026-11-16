@@ -50,8 +50,9 @@ export interface TrainingItem {
   notice: "hevc" | null;
   /**
    * A video's generated preview, as its version (the picture's content hash) only; null for a PDF,
-   * a video uploaded before previews, one still being processed or one with no frame to take.
-   * Show it through `thumbnailUrl`.
+   * a video uploaded before previews, one with no frame to take, and one whose frame has not been
+   * taken yet. The frame is taken early in transcribing, so a manager may see one while the video
+   * is still being processed; readers only ever get `ready` items. Show it through `thumbnailUrl`.
    */
   thumbnail: TrainingThumbnail | null;
 }

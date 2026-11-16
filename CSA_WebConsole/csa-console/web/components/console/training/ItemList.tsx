@@ -20,7 +20,8 @@ const thumbBox = "h-[63px] w-[112px] shrink-0 overflow-hidden rounded-[var(--fs-
 
 /**
  * The row's first child: a video's generated preview, else a placeholder (a PDF, a video uploaded
- * before previews, one still being processed, or a preview that would not load). Decorative: the
+ * before previews, one whose frame is not taken yet or could not be, or a preview that would not
+ * load). Decorative: the
  * title sits next to it, so the image has empty alt text and the placeholder is hidden from
  * assistive technology.
  */

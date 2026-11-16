@@ -715,10 +715,14 @@ async def test_thumbnail_headers_and_304(
     assert same.status_code == 304 and same.content == b""
     assert same.headers["etag"] == etag
     assert same.headers["cache-control"] == "private, no-cache"
+    assert reads == [], "a strong 304 read the picture's bytes"
     weak = await reader.get(thumbnail(ready), headers={"If-None-Match": f'"other", W/{etag}'})
     assert weak.status_code == 304
+    assert reads == [], "a weak 304 read the picture's bytes"
     # A reader's cached copy of a video that is not ready is never revalidated into a 304.
     busy_etag = (await admin.get(thumbnail(busy))).headers["etag"]
+    # The admin's 200 above is the one read so far; the refusals below add none.
+    assert len(reads) == 1
     reads.clear()
     assert_not_found(await reader.get(thumbnail(busy), headers={"If-None-Match": busy_etag}))
     assert_not_found(await reader.get(thumbnail(str(uuid4())), headers={"If-None-Match": etag}))
@@ -803,3 +807,38 @@ async def test_list_carries_the_thumbnail_version_never_bytes(sessions: SessionW
             found = await db.q.fetch_all(name, params, conn=conn)
             mine = [row for row in found if str(row["id"]) == ready]
             assert [row["thumbnail_version"] for row in mine] == [ready_version], name
+
+
+async def test_only_a_training_thumbnail_is_an_items_thumbnail(sessions: SessionWorld) -> None:
+    """The join is on the kind too: a picture of another kind under the item's id is never it."""
+    tenant = await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    reader, _ = await sessions.member(role="read_only")
+    ready = await video_row(sessions, tenant, status="ready")
+    for kind in ("product", "plan", "payment_qr"):
+        picture = png(200, 200)
+        async with tx(sessions.pool, tenant) as conn:
+            await media.put(
+                conn,
+                UUID(tenant),
+                kind,
+                ready,
+                picture,
+                check_image(picture, None),
+                source="upload",
+                actor_id=None,
+            )
+    for member in (admin, reader):
+        listed = {row["id"]: row for row in (await member.get(ITEMS)).json()["items"]}
+        assert listed[ready]["thumbnail"] is None
+        assert_not_found(await member.get(thumbnail(ready)))
+        assert_not_found(await member.get(thumbnail(ready), headers={"If-None-Match": "*"}))
+    edited = await patch(sessions, admin, ready, {"title": "Still no thumbnail"})
+    assert edited.status_code == 200 and edited.json()["thumbnail"] is None
+    # Once a real thumbnail exists it is the one served, not the other kinds' pictures.
+    version = await put_thumbnail(sessions, tenant, ready)
+    shown = await reader.get(thumbnail(ready))
+    assert shown.status_code == 200 and shown.content == jpeg(320, 180)
+    assert shown.headers["etag"] == f'"{version}"'
+    listed = {row["id"]: row for row in (await reader.get(ITEMS)).json()["items"]}
+    assert listed[ready]["thumbnail"] == {"version": version}

@@ -1809,7 +1809,8 @@ company with `subscriptions` active; a product picture for staff with `orders_pr
 not read, a training thumbnail) is `404 {"detail": "picture_not_found"}`, never 403, and is decided
 before the `ETag` comparison. A training video's thumbnail is served only by the training route
 (`GET /console/v1/training/items/{id}/thumbnail`, [The thumbnail route](#the-thumbnail-route)), so
-the library's "readers see only ready items" rule holds for it too. A malformed id is 422; the machine token is 403.
+the library's "readers see only ready items" rule holds for it too. A malformed id is 422; the
+machine token is 403.
 
 Upload and remove: `PUT|DELETE /console/v1/payments/methods/{id}/picture` (admins, `qr` methods
 only), `PUT|DELETE /console/v1/subscriptions/plans/{code}/picture` (plan writers),
@@ -2069,8 +2070,9 @@ always 404 `training_not_found`, never 403. The file store is the `training` sto
 
 Who may call:
 
-- **Read** (list, file, playback, video, thumbnail, transcript, read a summary, ask for a summary): any member
-  of the company, every role including `read_only`, and a platform admin who chose the company.
+- **Read** (list, file, playback, video, thumbnail, transcript, read a summary, ask for a
+  summary): any member of the company, every role including `read_only`, and a platform admin who
+  chose the company.
 - **Manage** (add, edit, remove, regenerate a summary, every video upload route, retry): a platform
   admin who chose the company, a tenant admin, and the company's HR owner when that person is a
   `tenant_staff` member. The HR owner is asked again on every request, so a move takes effect on the
@@ -2086,7 +2088,7 @@ Who may call:
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice, thumbnail}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. `thumbnail` is `{version}` (`ThumbnailOut`) when the video has a generated preview, else `null` (always `null` for a PDF, for a video uploaded before previews, for one still being processed and for one whose frame could not be taken); `version` is the picture's SHA-256, never its bytes, and every answer that carries an `ItemOut` carries it. The list never carries summary text |
+| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice, thumbnail}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. `thumbnail` is `{version}` (`ThumbnailOut`) when the video has a generated preview, else `null`: always for a PDF, for a video uploaded before previews and for one whose frame could not be taken, and for a video whose frame has not been taken yet (the frame is taken early in transcribing, so a manager may see a version while the video is still being processed; readers only ever get `ready` items); `version` is the picture's SHA-256, never its bytes, and every answer that carries an `ItemOut` carries it. The list never carries summary text |
 | `POST /training/items` | manage | 201 `ItemOut`. `multipart/form-data` with one part named `file` and no other field, plus the `Idempotency-Key` header (a UUID). Title is the file name without `.pdf` (cut to 120 characters), `view_mode` is `slides` when the first page is landscape (its `/Rotate` counted), else `document`. Step one of the two-step upload, below |
 | `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below. On a video `title`, `description` and `category` work in every state; `view_mode` is 422 `training_not_pdf` and nothing in that request is applied |
 | `DELETE /training/items/{id}` | manage | 204. Removes the row (a video's pieces, job, transcript and search windows go with it, in any state), then the file or the unfinished upload and the store's multipart upload. The video's processing-usage row stays, so deleting does not give its seconds back |
@@ -2342,10 +2344,10 @@ removed in the meantime).
 ### The thumbnail route
 
 `GET /training/items/{id}/thumbnail` reads the item and its thumbnail's metadata (never the bytes)
-under the tenant context and decides from that alone: the item's visibility first (readers: `ready`
-only; managers: any state), then `If-None-Match`; the bytes are read only for a 200. So a refusal and
-a `304` never read the picture, and a reader's cached copy of a video that is no longer visible is
-never revalidated into a `304`. Headers, as on the generic picture route:
+under the tenant context and decides from that alone: the item's visibility first (readers:
+`ready` only; managers: any state), then `If-None-Match`; the bytes are read only for a 200. So a
+refusal and a `304` never read the picture, and a reader's cached copy of a video that is no longer
+visible is never revalidated into a `304`. Headers, as on the generic picture route:
 
 - `Content-Type`: the stored type (`image/jpeg` for a generated thumbnail)
 - `ETag: "<version>"`: the picture's SHA-256, the same `version` the list carries; it changes when
