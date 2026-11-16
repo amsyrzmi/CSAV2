@@ -229,6 +229,10 @@ class World:
         # While set, a "Load more" read waits for it before it answers.
         self.hold_more: asyncio.Event | None = None
         self.held_answered = asyncio.Event()
+        # While set, a method DELETE waits for it before it answers.
+        self.hold_delete: asyncio.Event | None = None
+        # Refusals the next method DELETEs answer with, in order, before the real rules apply.
+        self.delete_errors: list[tuple[int, str]] = []
         self.mark_paid_errors: list[tuple[int, str]] = []
         self.keys: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
@@ -267,6 +271,8 @@ class World:
         parts = path.split("/")
         if parts[:2] == ["payments", "methods"] and parts[3:] == ["picture"]:
             return self.picture(method, parts[2], admin)
+        if method == "DELETE" and len(parts) == 3 and parts[:2] == ["payments", "methods"]:
+            return self.delete_method(parts[2], admin)
         writes = {("PUT", "payments/settings"), ("POST", "payments/methods")}
         if (method, path) not in writes and not (
             method == "PATCH" and path.startswith("payments/methods/")
@@ -313,6 +319,26 @@ class World:
         current["version"] += 1
         return 200, current
 
+    def delete_method(self, method_id: str, admin: bool) -> tuple[int, Any]:
+        """`DELETE /methods/{id}` as csa/payments/settings.py `delete_method` answers it."""
+        if not admin:
+            return 403, {"detail": ROLE_REFUSED}
+        if self.delete_errors:
+            status, code = self.delete_errors.pop(0)
+            return status, {"detail": code}
+        found = [m for m in self.methods if m["id"] == method_id]
+        if not found:
+            return 404, {"detail": "method_not_found"}
+        current = found[0]
+        others = [m for m in self.methods if m is not current]
+        payable = current["is_active"] and current["kind"] in {"qr", "transfer"}
+        if payable and self.settings["enabled"] and not self.payable(others):
+            return 409, {"detail": "last_active_method"}
+        self.methods = others
+        if current["picture"]:
+            self.assets.discard(current["picture"]["id"])
+        return 204, None
+
     def picture(self, method: str, method_id: str, admin: bool) -> tuple[int, Any]:
         """The QR picture routes of csa/payments/api.py: admins only, QR methods only."""
         if not admin:
@@ -328,6 +354,8 @@ class World:
         name = re.search(rb'filename="([^"]*)"', self.upload or b"")
         if name and name.group(1).startswith(b"toosmall"):
             return 422, {"detail": "picture_dimensions"}
+        if name and name.group(1).startswith(b"limit"):
+            return 409, {"detail": "picture_limit"}
         self.puts += 1
         version = f"v{self.puts}"
         asset = "cccccccc-0000-4000-8000-" + method_id[-12:]
@@ -366,6 +394,8 @@ class World:
                 )
             return
         hold = self.hold_more if path == "payments/invoices" and "before" in params else None
+        if request.method == "DELETE" and re.fullmatch(r"payments/methods/[^/]+", path):
+            hold = self.hold_delete
         if hold is not None:
             await hold.wait()
         status, data = self.answer(request.method, path, params, body)
@@ -1519,5 +1549,311 @@ async def test_platform_admin_names_the_tenant_on_the_picture_routes(site: Site)
             assert [c["params"] for c in writes_] == [{"client_id": TENANT}]
             reads = [c for c in world.calls if c["path"].startswith("media/")]
             assert reads and all(c["params"].get("client_id") == TENANT for c in reads)
+
+    await with_browser(body)
+
+
+def deletes(world: World, path: str) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == path and c["method"] == "DELETE"]
+
+
+def picture_puts(world: World) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["method"] == "PUT" and c["path"].endswith("/picture")]
+
+
+BIG_FILE = picture_file("big.png", "image/png", b"\x89PNG" + b"\x00" * 2097150)
+CASH = method("aaaaaaaa-0000-4000-8000-000000000013", "cash", "Cash at the shop", {}, sort_order=2)
+
+
+async def fill_qr(form: Any, label: str) -> None:
+    await form.get_by_test_id("method-label").fill(label)
+    await form.get_by_test_id("method-duitnow-id").fill("DN-5120000099")
+    await form.get_by_test_id("method-account-name").fill("Kedai Contoh Sdn Bhd")
+
+
+async def test_admin_adds_a_qr_method_with_its_picture(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            await page.get_by_test_id("method-add").click()
+            form = page.get_by_test_id("method-form")
+            chooser = form.get_by_test_id("method-new-picture")
+            # A bank transfer takes no picture: no chooser.
+            await expect(form.get_by_test_id("method-kind")).to_have_value("transfer")
+            await expect(chooser).to_have_count(0)
+            await form.get_by_test_id("method-kind").select_option("qr")
+            await expect(chooser).to_be_visible()
+            await expect(chooser).to_contain_text("QR picture (optional)")
+            await expect(chooser).to_contain_text(PICTURE_HINT)
+            await expect(chooser).to_contain_text("so it still scans")
+            name = chooser.get_by_test_id("method-new-picture-name")
+            error = chooser.get_by_test_id("method-new-picture-error")
+            await expect(name).to_have_text("No picture chosen.")
+            picture_input = chooser.get_by_test_id("method-new-picture-input")
+
+            # A GIF is refused at once, and the method can still be added without a picture.
+            await picture_input.set_input_files(GIF_FILE)
+            await expect(error).to_have_text(
+                "Use a JPEG or PNG picture. Other kinds of file, including GIF and SVG, "
+                "are not accepted."
+            )
+            await expect(name).to_have_text("No picture chosen.")
+            await fill_qr(form, "DuitNow A")
+            await form.get_by_test_id("method-save").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Added.")
+            rows = page.get_by_test_id("payment-method")
+            await expect(rows).to_have_count(1)
+            assert picture_puts(world) == []
+            await expect(page.get_by_test_id("method-picture-view-preview")).to_have_count(0)
+
+            # A second QR method: a file over 2 MB is refused at once; a good one is kept.
+            await page.get_by_test_id("method-add").click()
+            await form.get_by_test_id("method-kind").select_option("qr")
+            await picture_input.set_input_files(BIG_FILE)
+            await expect(error).to_have_text(
+                "That picture is bigger than 2 MB. Choose a smaller one."
+            )
+            await picture_input.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await expect(error).to_have_count(0)
+            await expect(name).to_have_text("duitnow.png")
+            # Changing the kind away from DuitNow drops the chosen file.
+            await form.get_by_test_id("method-kind").select_option("transfer")
+            await expect(chooser).to_have_count(0)
+            await form.get_by_test_id("method-kind").select_option("qr")
+            await expect(name).to_have_text("No picture chosen.")
+            await picture_input.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            # Remove clears the choice; choosing again brings it back.
+            await chooser.get_by_test_id("method-new-picture-clear").click()
+            await expect(name).to_have_text("No picture chosen.")
+            await picture_input.set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await fill_qr(form, "DuitNow B")
+            await form.get_by_test_id("method-save").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Added.")
+            await expect(rows).to_have_count(2)
+            await expect(rows.nth(1).get_by_test_id("method-picture-view-preview")).to_be_visible()
+            created = world.methods[1]
+            assert created["label"] == "DuitNow B"
+            # The method is created first, then its picture is sent alone to its own route.
+            writes_ = [c for c in world.calls if c["method"] in {"POST", "PUT"}]
+            assert [(c["method"], c["path"]) for c in writes_] == [
+                ("POST", "payments/methods"),
+                ("POST", "payments/methods"),
+                ("PUT", f"payments/methods/{created['id']}/picture"),
+            ], writes_
+            sent = writes_[-1]
+            assert sent["csrf"] == "synthetic-csrf"
+            assert b'filename="duitnow.png"' in sent["upload"]
+            assert synthetic_png() in sent["upload"]
+            assert created["picture"] is not None
+
+            # A reload shows the picture as before.
+            await page.reload()
+            await expect(page.get_by_test_id("payments-settings")).to_be_visible(timeout=WAIT)
+            preview = (
+                page.get_by_test_id("payment-method")
+                .nth(1)
+                .get_by_test_id("method-picture-view-preview")
+            )
+            await expect(preview).to_be_visible()
+            await expect(preview).to_have_js_property("complete", True)
+
+    await with_browser(body)
+
+
+async def test_a_refused_picture_after_adding_opens_the_method_for_a_retry(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            await page.get_by_test_id("method-add").click()
+            form = page.get_by_test_id("method-form")
+            await form.get_by_test_id("method-kind").select_option("qr")
+            await form.get_by_test_id("method-new-picture-input").set_input_files(
+                picture_file("limit.png", "image/png", synthetic_png())
+            )
+            await fill_qr(form, "DuitNow")
+            await form.get_by_test_id("method-save").click()
+
+            # The method was added: it is in the list, and its edit form says the picture failed.
+            rows = page.get_by_test_id("payment-method")
+            await expect(rows).to_have_count(1)
+            edit = rows.get_by_test_id("method-form")
+            await expect(edit.get_by_role("heading", name="Edit DuitNow")).to_be_visible()
+            await expect(edit.get_by_test_id("method-form-notice")).to_have_text(
+                "The method was added, but the picture could not be saved: This company has "
+                "reached its limit of 300 pictures. Remove one you no longer use first."
+            )
+            assert [c["body"]["label"] for c in writes(world, "payments/methods")] == ["DuitNow"]
+            assert len(world.methods) == 1
+            assert world.methods[0]["picture"] is None
+            await expect(page.get_by_test_id("method-new-picture")).to_have_count(0)
+
+            # The picture field is there for a retry; a good file is saved and the notice goes.
+            field = edit.get_by_test_id("method-picture")
+            await expect(field.get_by_test_id("method-picture-choose")).to_have_text(
+                "Choose picture"
+            )
+            await field.get_by_test_id("method-picture-input").set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await expect(field.get_by_test_id("method-picture-preview")).to_be_visible()
+            await expect(edit.get_by_test_id("method-form-notice")).to_have_count(0)
+            assert [c["path"] for c in picture_puts(world)] == [
+                f"payments/methods/{world.methods[0]['id']}/picture"
+            ] * 2
+            await edit.get_by_role("button", name="Cancel").click()
+            await expect(rows.get_by_test_id("method-picture-view-preview")).to_be_visible()
+            # Nothing was added twice.
+            assert len(writes(world, "payments/methods")) == 1
+
+    await with_browser(body)
+
+
+async def test_admin_deletes_a_method_after_confirming(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        asset = "cccccccc-0000-4000-8000-000000000012"
+        world.assets.add(asset)
+        world.methods = [dict(BANK), {**DUITNOW, "picture": {"id": asset, "version": "v1"}}]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            section = page.get_by_test_id("payment-methods")
+            await expect(section).to_contain_text(
+                "A method can be turned off to keep it for later, or deleted."
+            )
+            await expect(section).not_to_contain_text("but not deleted")
+            # Delete is only inside a method's edit form.
+            await expect(page.get_by_test_id("method-delete")).to_have_count(0)
+            rows = page.get_by_test_id("payment-method")
+            row = rows.nth(1)
+            await row.get_by_test_id("method-edit").click()
+            form = row.get_by_test_id("method-form")
+            delete = form.get_by_test_id("method-delete")
+            await expect(delete).to_have_text("Delete method")
+            await expect(delete).to_be_enabled()
+
+            # Unsaved changes come first: Save or Cancel, then Delete.
+            label = form.get_by_test_id("method-label")
+            await label.fill("DuitNow shop")
+            await expect(delete).to_be_disabled()
+            await expect(form.get_by_test_id("method-delete-help")).to_have_text(
+                "Save or cancel your changes before deleting this method."
+            )
+            await label.fill("DuitNow")
+            await expect(delete).to_be_enabled()
+            await expect(form.get_by_test_id("method-delete-help")).to_have_count(0)
+
+            # A double click only opens the confirmation; Cancel changes nothing.
+            await delete.dblclick()
+            step = form.get_by_test_id("method-delete-confirm-step")
+            await expect(step).to_be_visible()
+            await expect(step.get_by_test_id("method-delete-question")).to_have_text(
+                "Delete DuitNow?"
+            )
+            await expect(step).to_contain_text("Customers stop seeing this method.")
+            await expect(step).to_contain_text("Its QR picture, if it has one, is removed too.")
+            await expect(step).to_contain_text("Turn it off instead to keep it for later.")
+            cancel = step.get_by_test_id("method-delete-cancel")
+            await expect(delete).to_be_disabled()
+            await cancel.click()
+            await expect(step).to_have_count(0)
+            assert deletes(world, f"payments/methods/{DUITNOW['id']}") == []
+            await expect(rows).to_have_count(2)
+
+            # The confirmation opens on Cancel, so Enter does not delete; then confirm, and the
+            # button cannot be used twice while the request runs.
+            await delete.click()
+            await expect(cancel).to_be_focused()
+            world.hold_delete = asyncio.Event()
+            confirm = step.get_by_test_id("method-delete-confirm")
+            await confirm.click()
+            await expect(confirm).to_be_disabled()
+            await expect(confirm).to_have_text("Deleting…")
+            await expect(step.get_by_test_id("method-delete-cancel")).to_be_disabled()
+            world.hold_delete.set()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
+            await expect(rows).to_have_count(1)
+            await expect(rows.get_by_test_id("method-label")).to_have_text("Bank")
+            await expect(page.get_by_test_id("method-form")).to_have_count(0)
+            sent = deletes(world, f"payments/methods/{DUITNOW['id']}")
+            assert [c["csrf"] for c in sent] == ["synthetic-csrf"], sent
+            assert [m["id"] for m in world.methods] == [BANK["id"]]
+            assert asset not in world.assets
+            world.hold_delete = None
+
+            # Payments are off, so the last bank transfer can go too; the settings then say a
+            # method is needed before payments can be switched on.
+            await expect(page.get_by_test_id("payments-enable-hint")).to_have_count(0)
+            await rows.get_by_test_id("method-edit").click()
+            await page.get_by_test_id("method-delete").click()
+            await expect(page.get_by_test_id("method-delete-confirm-step")).not_to_contain_text(
+                "QR picture"
+            )
+            await page.get_by_test_id("method-delete-confirm").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
+            await expect(page.get_by_test_id("methods-empty")).to_be_visible()
+            await expect(page.get_by_test_id("payments-enable-hint")).to_be_visible()
+            assert world.methods == []
+
+    await with_browser(body)
+
+
+async def test_a_refused_or_stale_delete_keeps_the_list_true(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.settings = {**world.settings, "enabled": True, "version": 1}
+        world.methods = [dict(BANK), {**DUITNOW, "is_active": False}, dict(CASH)]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            rows = page.get_by_test_id("payment-method")
+            # The only active bank transfer or DuitNow method while payments are on: refused, kept.
+            await rows.nth(0).get_by_test_id("method-edit").click()
+            form = rows.nth(0).get_by_test_id("method-form")
+            await form.get_by_test_id("method-delete").click()
+            await form.get_by_test_id("method-delete-confirm").click()
+            await expect(form.get_by_test_id("method-error")).to_have_text(
+                "Payments are on and this is the last active bank transfer or DuitNow method. "
+                "Turn payments off or add another method first."
+            )
+            await expect(form.get_by_test_id("method-delete-confirm-step")).to_have_count(0)
+            await expect(rows).to_have_count(3)
+            assert len(world.methods) == 3
+
+            # Any other failure reads as the form's usual sentence and keeps the method.
+            world.delete_errors = [(500, "synthetic outage")]
+            await form.get_by_test_id("method-delete").click()
+            await form.get_by_test_id("method-delete-confirm").click()
+            await expect(form.get_by_test_id("method-error")).to_have_text(
+                "Something went wrong on our side. Try again."
+            )
+            await expect(rows).to_have_count(3)
+            await form.get_by_role("button", name="Cancel").click()
+
+            # Someone else already deleted it: the stale row goes and the list is read again.
+            world.methods = [m for m in world.methods if m["id"] != DUITNOW["id"]]
+            await rows.nth(1).get_by_test_id("method-edit").click()
+            await page.get_by_test_id("method-delete").click()
+            reads_before = len([c for c in world.calls if c["path"] == "payments/methods"])
+            await page.get_by_test_id("method-delete-confirm").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text(
+                "This method was already deleted."
+            )
+            await expect(rows).to_have_count(2)
+            await expect(rows.get_by_test_id("method-label")).to_have_text(
+                ["Bank", "Cash at the shop"]
+            )
+            method_calls = [c for c in world.calls if c["path"] == "payments/methods"]
+            assert [c["method"] for c in method_calls[reads_before:]] == ["GET"], method_calls
+
+            # A cash method can always be deleted, payments on or not.
+            await rows.nth(1).get_by_test_id("method-edit").click()
+            await page.get_by_test_id("method-delete").click()
+            await page.get_by_test_id("method-delete-confirm").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
+            await expect(rows).to_have_count(1)
+            assert [m["id"] for m in world.methods] == [BANK["id"]]
 
     await with_browser(body)
