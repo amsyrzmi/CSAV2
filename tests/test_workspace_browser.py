@@ -1861,6 +1861,34 @@ async def test_the_idea_goes_when_the_panel_opens_and_a_new_page_may_offer_one_a
         await await_idea(page)
 
 
+async def test_returning_to_a_page_starts_a_fresh_visit_with_its_own_wait(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    base, upstream, _ = stack
+    api = admin_api(upstream)
+    async with shell_page(stack, api, "/portal/inbox", clock=True) as page:
+        await page.request.get(f"{base}/portal/hr", timeout=60_000)
+        await dock_ready(page)
+        await page.clock.run_for(BUBBLE_WAIT_MS + 1_000)
+        await await_idea(page)
+        # Leave with the bubble showing and come back (the back button is no page input) before
+        # the other page has offered anything: the return is a new visit, so no bubble at once...
+        await page.get_by_role("link", name="People & HR").click()
+        await expect(page).to_have_url(f"{base}/portal/hr", timeout=WAIT)
+        await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
+        await page.clock.run_for(5_000)
+        await page.go_back()
+        await expect(page).to_have_url(f"{base}/portal/inbox", timeout=WAIT)
+        await settle_render(page)
+        await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
+        # ...and not before a fresh wait has passed since the return.
+        await page.clock.run_for(BUBBLE_WAIT_MS - 5_000)
+        await settle_render(page)
+        await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
+        await page.clock.run_for(6_000)
+        await await_idea(page)
+
+
 async def test_no_idea_while_a_card_awaits_a_decision(
     stack: tuple[str, Upstream, Any],
 ) -> None:

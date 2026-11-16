@@ -85,16 +85,26 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
   }, [open, ensureLoaded]);
 
   // The idea bubble: after a quiet moment on the closed dock, one idea per page visit. `shown` is
-  // the idea offered on one page (`gone` once it was dismissed or taken up); the dock stays
-  // mounted across navigation, so a different `path` is a new visit with nothing shown yet.
-  const idleMs = useIdleTimer();
-  const [shown, setShown] = useState<{ path: string; idea: { id: string; text: string }; gone: boolean } | null>(null);
+  // the idea offered in the current visit (`gone` once it was dismissed or taken up). The dock
+  // stays mounted across navigation, so every path change starts a new visit: nothing shown, and
+  // the quiet starts over (the idle timer restarts on the path).
+  const idleMs = useIdleTimer(pathname);
+  const [shown, setShown] = useState<{ idea: { id: string; text: string }; gone: boolean } | null>(null);
+  const [visitPath, setVisitPath] = useState(pathname);
+  const sameVisit = visitPath === pathname;
+  if (!sameVisit) {
+    // Adjusted while rendering; React re-renders at once with the new visit, and this render
+    // below treats the old visit's idea as absent.
+    setVisitPath(pathname);
+    setShown(null);
+  }
+  const visit = sameVisit ? shown : null;
   const may = bubbleMayShow({
     panelOpen: open,
     cardOpen: openProposals(turns, outcomes).length > 0,
     onOverview: dockHidden(pathname, me, packages),
     busy,
-    shownThisVisit: shown?.path === pathname,
+    shownThisVisit: visit !== null,
     idleMs,
     hidden: document.visibilityState === "hidden",
   });
@@ -109,13 +119,13 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
   useEffect(() => {
     if (pending) ensureLoaded();
   }, [pending, ensureLoaded]);
-  if (may && loaded) {
+  if (may && loaded && sameVisit) {
     const picked = pickBubbleIdea(ideasFor(IDEAS, { ...ideaArgs, language }), dismissed, false);
     // Latched during render (React's adjust-state-while-rendering pattern): `may` is false from
     // the next render on, because this page's visit now has its idea.
-    if (picked) setShown({ path: pathname, idea: picked, gone: false });
+    if (picked) setShown({ idea: picked, gone: false });
   }
-  const idea = shown && shown.path === pathname && !shown.gone ? shown.idea : null;
+  const idea = visit && !visit.gone ? visit.idea : null;
 
   function retireIdea() {
     setShown((current) => (current ? { ...current, gone: true } : current));

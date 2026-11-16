@@ -14,10 +14,17 @@ const TICK_MS = 1000;
  * quiet from the wait itself, so the value stops changing and the component stops re-rendering).
  *
  * The clock does not run while the tab is hidden: when it is shown again the quiet starts over, so
- * a person returning to the tab is not greeted at once.
+ * a person returning to the tab is not greeted at once. A change of `restartKey` (the dock passes
+ * the page path) also starts the quiet over, for a move that is not itself an input, such as the
+ * browser's back button.
  */
-export function useIdleTimer(): number {
+export function useIdleTimer(restartKey: string): number {
   const [idleMs, setIdleMs] = useState(0);
+  const [seenKey, setSeenKey] = useState(restartKey);
+  if (seenKey !== restartKey) {
+    setSeenKey(restartKey);
+    setIdleMs(0);
+  }
 
   useEffect(() => {
     let last = Date.now();
@@ -42,7 +49,8 @@ export function useIdleTimer(): number {
       document.removeEventListener("visibilitychange", shown);
       window.clearInterval(timer);
     };
-  }, []);
+    // Re-run on a new key: the closure's `last` starts again from now.
+  }, [restartKey]);
 
   return idleMs;
 }
