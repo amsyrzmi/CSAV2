@@ -1,13 +1,14 @@
-"""HR process templates and processes: the service behind `/templates`, `/processes` and
-`/people/{employee_id}/processes`.
+"""HR process templates, processes and tasks: the service behind `/templates`, `/processes`,
+`/people/{employee_id}/processes` and `/tasks`.
 
-The database decides (0631-0633): who may see which process and which of its fields, what a valid
-template is, and every write with its idempotency receipt and audit. This module checks the
-session, keeps template reads and every write to the HR team (the HR owner or a Manage people
-holder; the database checks again), turns each database refusal into a stable problem code
-(`PROBLEMS` says what each one means) and validates every row into `process_models`. No database
-text ever reaches a response: an unknown refusal is re-raised and the HR route answers 503
-`hr_database_unavailable`.
+The database decides (0631-0634): who may see which process and which of its fields, what a valid
+template is, who may act on a task, and every write with its idempotency receipt and audit. This
+module checks the session, keeps template reads and the template and process writes to the HR
+team (the HR owner or a Manage people holder; the database checks again), leaves who may act on a
+task to the database (the assignee, the approver or the HR team, 0634 `hr_task_apply`), turns
+each database refusal into a stable problem code (`PROBLEMS` says what each one means) and
+validates every row into `process_models`. No database text ever reaches a response: an unknown
+refusal is re-raised and the HR route answers 503 `hr_database_unavailable`.
 """
 
 from __future__ import annotations
@@ -24,8 +25,12 @@ from csa.core.tenancy import tx
 from csa.hr.operations import HrOperations
 from csa.hr.policy import HrPolicyError
 from csa.hr.process_models import (
+    MyTask,
+    MyTaskPage,
     PersonProcesses,
     ProcessCancelReceipt,
+    ProcessClose,
+    ProcessCloseReceipt,
     ProcessDetail,
     ProcessKind,
     ProcessPage,
@@ -33,6 +38,15 @@ from csa.hr.process_models import (
     ProcessStart,
     ProcessStartReceipt,
     ProcessStatus,
+    TaskApprove,
+    TaskComplete,
+    TaskNote,
+    TaskOperation,
+    TaskReason,
+    TaskReassign,
+    TaskReceipt,
+    TaskReschedule,
+    TaskStatus,
     TemplateCreate,
     TemplateDeactivate,
     TemplateList,
@@ -83,7 +97,7 @@ REFUSALS: dict[str, str] = {
     # Probation (person.probation_set on POST /operations).
     "hr_person_changed": "person_changed",
     "hr_probation_end_invalid": "probation_end_invalid",
-    # Tasks (0634; the task routes are PR 2 Task 7).
+    # Tasks (0634, the /tasks routes and POST /processes/{process_id}/close).
     "hr_task_unavailable": "resource_unavailable",
     "hr_task_changed": "task_changed",
     "hr_task_closed": "task_closed",
@@ -149,7 +163,8 @@ PROBLEMS: dict[str, str] = {
     "task_assignee_unavailable": "Choose an active person of this company, or the HR pool.",
 }
 _WARNINGS = {"hr_template_step_after_last_day": "step_after_last_day"}
-_PAGE = 200  # processes per page at most; hr_process_rows returns one more to tell it was cut
+_PAGE = 200  # rows per page at most; the read returns one more to tell it was cut
+TaskBody = TaskComplete | TaskApprove | TaskReason | TaskNote | TaskReschedule | TaskReassign
 
 
 def _rules(row: dict[str, Any]) -> dict[str, Any]:
@@ -181,13 +196,23 @@ class HrProcesses:
             raise HrPolicyError(code) from None
 
     async def _write(
-        self, session: HrSession, path: str, body: dict[str, Any], key: UUID
+        self,
+        session: HrSession,
+        path: str,
+        body: dict[str, Any],
+        key: UUID,
+        *,
+        team: bool = True,
     ) -> dict[str, Any]:
+        """A write in the caller's session. `team`: for the HR team only, checked here first;
+        otherwise (task actions) the database alone decides who may act."""
         if session.csrf_hash is None or session.capability is not None or session.assistant:
             raise HrPolicyError("human_operation_required")
         fingerprint = _fingerprint(body["operation"], body)
         async with tx(self.core.pool, str(session.tenant_id)) as conn:
-            HrOperations.people_manager(await self.core._access(conn, session))
+            access = await self.core._access(conn, session)
+            if team:
+                HrOperations.people_manager(access)
             row = await self._call(conn, path, (session.tenant_id, key, fingerprint, Jsonb(body)))
             await self.core._session(conn, session)
         assert row is not None
@@ -326,4 +351,47 @@ class HrProcesses:
         payload = {"operation": "process.cancel", "process_id": str(process_id)}
         return ProcessCancelReceipt.model_validate(
             await self._write(session, "hr/process_cancel.sql", payload, key)
+        )
+
+    # ---- Tasks ------------------------------------------------------------------------------
+
+    async def my_tasks(
+        self,
+        session: HrSession,
+        *,
+        status: TaskStatus | None = None,
+        limit: int = 50,
+        after: UUID | None = None,
+    ) -> MyTaskPage:
+        limit = max(1, min(limit, _PAGE))
+        rows = await self._read(
+            session, "hr/task_rows_mine.sql", (session.tenant_id, status, limit + 1, after)
+        )
+        items = [MyTask.model_validate(row) for row in rows[:limit]]
+        cut = len(rows) > limit
+        return MyTaskPage(items=items, next_cursor=items[-1].task_id if cut else None)
+
+    async def task_action(
+        self,
+        session: HrSession,
+        operation: TaskOperation,
+        task_id: UUID,
+        body: TaskBody,
+        key: UUID,
+    ) -> TaskReceipt:
+        payload = {"operation": operation, "task_id": str(task_id), **body.model_dump(mode="json")}
+        return TaskReceipt.model_validate(
+            await self._write(session, "hr/task_apply.sql", payload, key, team=False)
+        )
+
+    async def close(
+        self, session: HrSession, process_id: UUID, body: ProcessClose, key: UUID
+    ) -> ProcessCloseReceipt:
+        payload = {
+            "operation": "process.close_anyway",
+            "process_id": str(process_id),
+            **body.model_dump(mode="json"),
+        }
+        return ProcessCloseReceipt.model_validate(
+            await self._write(session, "hr/task_apply.sql", payload, key)
         )

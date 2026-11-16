@@ -360,13 +360,13 @@ areas and HR owner row for the tenant are deleted, its membership is disabled an
 revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
 Each step happens once, whoever runs it.
 
-### Process templates and processes (HR processes PR 1, migrations 0630-0633)
+### Process templates, processes and tasks (HR processes PRs 1-2, migrations 0630-0634)
 
 A company keeps templates of ordered steps for onboarding, offboarding and custom processes.
 Adding or rehiring a person starts an onboarding from the matching template, marking them as
 leaving starts an offboarding (the `hr_employees` trigger of 0632); HR can also start and cancel
-processes by hand. Every route takes `client_id` (and `GET /processes` the filters below; any
-other key is 400 `invalid_hr_query`) and answers no-store. Writes need CSRF (403 without) and an
+processes by hand. Every route takes `client_id` (and `GET /processes` and `GET /tasks/mine` the
+filters below; any other key is 400 `invalid_hr_query`) and answers no-store. Writes need CSRF (403 without) and an
 `Idempotency-Key` (422 without); a read-only session's write is 403 `read_only_session`. A same-key
 retry returns the first receipt with `duplicate: true`; the same key with another body is 409
 `idempotency_conflict`. A caller the route does not serve gets 404 `resource_unavailable`, never
@@ -481,11 +481,68 @@ they were started with.
 returns the usual `OperationReceipt` with the person's new `version`; a stale version is 409
 `person_changed`. The date reads back in `GET /people/{employee_id}/processes` `anchor_dates`.
 
+**Tasks** (migration 0634, `hr_task_apply` and `hr_task_rows_mine`). Who may act is decided by
+the database: the assignee (the person a step is assigned to, through their linked account), the
+approver of a step waiting for approval (the person's manager when the step says so and the manager
+is active and linked, else the HR team) and the HR team (the HR owner and Manage people holders: any
+step, on anyone's behalf; the event log names who really did it). A read-only member's writes are
+refused by the session (403 `read_only_session`) even when they are linked to an assignee, so the
+console shows a read-only member their My tasks without the action buttons. Someone with no part in
+a step (not its assignee, not the manager of the process's person, not HR), and a step or process of
+another company, gets 404 `resource_unavailable`, as does a manager or assignee asking for an
+HR-only action (skip, reschedule, reassign, close). Every task action but `note` sends
+`expected_version` (the step's `version` from My tasks or the process detail; stale is 409
+`task_changed`). A done or skipped step, or one whose process is closed, is 409 `task_closed`. Each
+action raises the step's `version` and returns `TaskReceipt` `{operation, task_id, process_id,
+task_status, version, process_status, status: "saved", duplicate}` (`process_status` becomes
+`completed` when the action settles the last required step). Notes and reasons may hold line
+breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
+
+- `GET /tasks/mine?status=&limit=&after=` returns `MyTaskPage` `{items, next_cursor}`: the caller's
+  own steps, the HR pool for the HR team (`pool: true`: no assignee) and the steps waiting for the
+  caller's approval (`needs_my_approval: true`), soonest due first (no due date last), keyset by
+  `next_cursor` (pass it as `after`) while more remain. `status` is a task status (`todo`,
+  `awaiting_approval`, `done`, `rejected`, `skipped`); without it, the open ones (not done or
+  skipped). `limit` is 1-200 (default 50). Each `MyTask` has every field, always present:
+  `task_id`, `process_id`, `process_kind`, `process_name` (the template's), `employee_name` (the
+  person the process is about), `ordinal`, `title_en`, `title_ms`, `description_en`,
+  `description_ms`, `owner_role`, `due_on`, `required`, `approval_by`, `auto_check`,
+  `reference_note`, `status`, `note` (the shared note), `version`, `overdue`, `pool`,
+  `needs_my_approval`, `sent_back_reason` (why the approver sent it back, for the assignee and HR;
+  `null` once completed again). On a row the caller only approves (a manager's approval of a
+  report's step), the descriptions, `reference_note`, `note` and `sent_back_reason` are `null`. A
+  caller with nothing to do gets an empty page.
+- `POST /tasks/{task_id}/complete` `TaskComplete` `{expected_version, note?}` (the assignee or the
+  HR team): `done`, or `awaiting_approval` for a step with an approver. A `note` (at most 2000
+  characters) replaces the shared note; absent or `null` keeps it. A step with an automatic check
+  completes only when the check holds (409 `check_not_met`; HR may skip it); `access_removed` is 409
+  `task_system_only`; a step waiting for approval is 409 `task_awaiting_approval`.
+- `POST /tasks/{task_id}/approve` `TaskApprove` `{expected_version}` (the approver): `done`. Not
+  waiting is 409 `task_not_awaiting_approval`; someone else 409 `task_not_approver`; the person who
+  completed it 409 `task_self_approval`, except the HR owner when nobody else is in the HR team
+  (recorded as `approved_without_second_person`).
+- `POST /tasks/{task_id}/send-back` `TaskReason` `{expected_version, reason}` (the approver): back to
+  `todo`, the `reason` (1-500 characters) shown to the assignee as `sent_back_reason`; the note is
+  kept. A step of a person who has left is skipped instead.
+- `POST /tasks/{task_id}/note` `TaskNote` `{note}` (the assignee or the HR team): replaces the shared
+  note (at most 2000 characters); `null` or `""` clears it. `note` must be sent. No version check.
+- `POST /tasks/{task_id}/skip` `TaskReason` `{expected_version, reason}` (the HR team): `skipped`;
+  the reason (1-500 characters) stays in HR's event log.
+- `POST /tasks/{task_id}/reschedule` `TaskReschedule` `{expected_version, due_on}` (the HR team): a
+  new due date (`YYYY-MM-DD`) that stays put when the anchor date moves.
+- `POST /tasks/{task_id}/reassign` `TaskReassign` `{expected_version, assignee_employee_id}` (the HR
+  team): an active person of this company (else 409 `task_assignee_unavailable`) or `null` for the
+  HR pool; it stays put when the manager changes. The key must be sent.
+- `POST /processes/{process_id}/close` `ProcessClose` `{note}` (the HR team) closes an active
+  process anyway: its open steps are skipped and it completes; the note (1-500 characters) stays in
+  HR's event log. It returns `ProcessCloseReceipt` `{operation: "process.close_anyway", process_id,
+  process_status: "completed", status: "saved", duplicate}`; a closed process is 409
+  `process_closed`.
+
 **Problem codes** (`detail` of the response; the console shows the sentence). Every refusal the
 database functions raise maps to one of these (`csa.hr.processes.REFUSALS` and `PROBLEMS`); any
 other database error is 503 `hr_database_unavailable`, with no database text. The `task_*` and
-`check_not_met` codes come from the task actions of migration 0634 (`hr_task_apply`); their routes
-are added with the task routes.
+`check_not_met` codes come from the task actions above (migration 0634, `hr_task_apply`).
 
 | Code | Status | Meaning |
 |---|---|---|

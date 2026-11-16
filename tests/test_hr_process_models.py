@@ -16,9 +16,12 @@ from uuid import uuid4
 import pytest
 from csa.hr.process_models import (
     AnchorDates,
+    MyTask,
+    ProcessCloseReceipt,
     ProcessEventAction,
     ProcessEventDetail,
     ProcessTask,
+    TaskReceipt,
     TemplateStep,
     TemplateStepOut,
     TemplateWarningCode,
@@ -280,3 +283,51 @@ def test_event_detail_returns_every_stored_value_as_it_is() -> None:
     assert event.model_dump(mode="json", by_alias=True)["detail"]["reason"] == (
         "  sent back:\nthe form is unsigned  "
     )
+
+
+def test_my_tasks_and_the_task_receipts_are_what_the_latest_migration_returns() -> None:
+    """MyTask, TaskReceipt and ProcessCloseReceipt forbid unknown keys: a migration that changes
+    hr_task_rows_mine's columns or hr_task_apply's result fails here, not as a 500 on a read."""
+    text = process_migrations()
+    *_, columns = re.findall(
+        r"CREATE FUNCTION public\.hr_task_rows_mine\(.*?RETURNS TABLE\((.*?)\)\s*LANGUAGE",
+        text,
+        re.S,
+    )
+    assert {c.split()[0] for c in columns.split(",")} == set(MyTask.model_fields)
+    *_, apply = text.split("CREATE OR REPLACE FUNCTION public.hr_task_apply(")
+    results = [keys(a) for a in build_objects(apply) if "'status'" in a[::2]]
+    assert set(TaskReceipt.model_fields) in results
+    assert set(ProcessCloseReceipt.model_fields) in results
+
+
+def _my_task(**over: object) -> dict[str, object]:
+    return {
+        **dict.fromkeys(MyTask.model_fields),
+        "task_id": str(uuid4()),
+        "process_id": str(uuid4()),
+        "process_kind": "custom",
+        "employee_name": "Synthetic",
+        "ordinal": 1,
+        "title_en": "Synthetic",
+        "owner_role": "hr",
+        "required": True,
+        "status": "todo",
+        "version": 1,
+        "overdue": False,
+        "pool": True,
+        "needs_my_approval": False,
+        **over,
+    }
+
+
+@pytest.mark.parametrize("field", ["description_en", "description_ms", "note", "sent_back_reason"])
+def test_a_my_tasks_row_keeps_line_breaks_and_refuses_other_controls(field: str) -> None:
+    text = "Synthetic: line one\nline two"
+    assert getattr(MyTask.model_validate(_my_task(**{field: text})), field) == text
+    for bad in ("tab\there", "nul\x00here", "lone\rreturn"):
+        with pytest.raises(ValidationError):
+            MyTask.model_validate(_my_task(**{field: bad}))
+    for single in ("title_en", "reference_note"):
+        with pytest.raises(ValidationError):
+            MyTask.model_validate(_my_task(**{single: "two\nlines"}))

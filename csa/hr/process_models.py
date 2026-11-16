@@ -38,12 +38,16 @@ __all__ = [
     "AnchorDates",
     "ApprovalBy",
     "AutoCheck",
+    "MyTask",
+    "MyTaskPage",
     "NoMatchingTemplate",
     "OwnerRole",
     "ProcessEventAction",
     "PersonProcess",
     "PersonProcesses",
     "ProcessCancelReceipt",
+    "ProcessClose",
+    "ProcessCloseReceipt",
     "ProcessDetail",
     "ProcessEvent",
     "ProcessEventDetail",
@@ -57,6 +61,14 @@ __all__ = [
     "ProcessStatus",
     "ProcessTask",
     "ProcessView",
+    "TaskApprove",
+    "TaskComplete",
+    "TaskNote",
+    "TaskOperation",
+    "TaskReason",
+    "TaskReassign",
+    "TaskReceipt",
+    "TaskReschedule",
     "TaskStatus",
     "TemplateCreate",
     "TemplateDeactivate",
@@ -107,9 +119,19 @@ ProcessEventAction = Literal[
     "task.rescheduled",
 ]
 TemplateWarningCode = Literal["step_after_last_day"]
+TaskOperation = Literal[
+    "task.complete",
+    "task.skip",
+    "task.approve",
+    "task.send_back",
+    "task.note",
+    "task.reschedule",
+    "task.reassign",
+]
 # Text that may hold line breaks: a step's descriptions, a task's note (the database appends
-# "person left" to a note on a new line, 0632 hr_process_person_left) and its send-back reason.
-_MULTILINE = frozenset({"description_en", "description_ms", "note", "sent_back_reason"})
+# "person left" to a note on a new line, 0632 hr_process_person_left), its send-back reason, the
+# reason of a skip or send back and the note of closing a process anyway.
+_MULTILINE = frozenset({"description_en", "description_ms", "note", "sent_back_reason", "reason"})
 
 
 class _StepText(HrModel):
@@ -474,3 +496,127 @@ class PersonProcesses(HrModel):
     processes: list[PersonProcess]
     anchor_dates: AnchorDates | None = None
     no_matching_template: NoMatchingTemplate | None = None
+
+
+# ---- Tasks: input and receipts (hr_task_apply, 0634) ------------------------------------------
+
+
+class _TaskText(_StepText):
+    """A note or reason typed in a browser textarea: CRLF line breaks are stored as LF."""
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def unix_line_breaks(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, str) and info.field_name in _MULTILINE:
+            return value.replace("\r\n", "\n")
+        return value
+
+
+class TaskComplete(_TaskText):
+    """Complete a step (the assignee, or the HR team). A `note` replaces the shared note the
+    assignee sees; `null` or absent keeps it. A step with an approver then waits for approval."""
+
+    expected_version: Version
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class TaskApprove(HrModel):
+    expected_version: Version
+
+
+class TaskReason(_TaskText):
+    """Skip (the HR team) or send back (the approver) a step. The reason of a send back is shown
+    to the assignee; the reason of a skip stays in HR's event log."""
+
+    expected_version: Version
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TaskNote(_TaskText):
+    """Replace the shared note (the assignee or the HR team). `note` must be sent: `null` or an
+    empty string clears it."""
+
+    note: str | None = Field(max_length=2000)
+
+
+class TaskReschedule(HrModel):
+    """A new due date (the HR team); it then stays put when the anchor date moves."""
+
+    expected_version: Version
+    due_on: date
+
+
+class TaskReassign(HrModel):
+    """A new assignee (the HR team): an active person of this company, or `null` for the HR pool.
+    `assignee_employee_id` must be sent; the task then stays put when the manager changes."""
+
+    expected_version: Version
+    assignee_employee_id: UUID | None
+
+
+class ProcessClose(_TaskText):
+    """Close an active process anyway (the HR team, spec 5.7.4): its open steps are skipped. The
+    note stays in HR's event log."""
+
+    note: str = Field(min_length=1, max_length=500)
+
+
+class TaskReceipt(HrModel):
+    operation: TaskOperation
+    task_id: UUID
+    process_id: UUID
+    task_status: TaskStatus
+    version: Version
+    process_status: ProcessStatus
+    status: Literal["saved"]
+    duplicate: bool
+
+
+class ProcessCloseReceipt(HrModel):
+    operation: Literal["process.close_anyway"]
+    process_id: UUID
+    process_status: ProcessStatus
+    status: Literal["saved"]
+    duplicate: bool
+
+
+# ---- Tasks: My tasks (hr_task_rows_mine, 0634) ------------------------------------------------
+
+
+class MyTask(_StepText):
+    """One row of My tasks: the caller's own steps, the HR pool for the HR team (`pool`), and the
+    steps waiting for the caller's approval (`needs_my_approval`). Every field is always present.
+    On a row the caller only approves (a manager's approval of a report's step) the
+    descriptions, `reference_note`, `note` and `sent_back_reason` are withheld as `null`; the
+    descriptions, `note` and `sent_back_reason` may hold line breaks.
+    tests/test_hr_process_models.py checks that these are the columns of the latest migration's
+    `hr_task_rows_mine`."""
+
+    task_id: UUID
+    process_id: UUID
+    process_kind: ProcessKind
+    process_name: str | None  # the template's name; null without one
+    employee_name: str  # the person the process is about
+    ordinal: int
+    title_en: str
+    title_ms: str | None
+    description_en: str | None
+    description_ms: str | None
+    owner_role: OwnerRole
+    due_on: date | None
+    required: bool
+    approval_by: ApprovalBy | None
+    auto_check: AutoCheck | None
+    reference_note: str | None
+    status: TaskStatus
+    note: str | None
+    version: Version
+    overdue: bool
+    pool: bool
+    needs_my_approval: bool
+    sent_back_reason: str | None
+
+
+class MyTaskPage(HrModel):
+    items: list[MyTask] = Field(max_length=200)
+    next_cursor: UUID | None = None

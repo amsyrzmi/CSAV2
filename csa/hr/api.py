@@ -72,6 +72,7 @@ from csa.hr.personal import HrPersonal, PersonalOut, PersonalReveal, PersonalRev
 from csa.hr.policy import HrPolicyError
 from csa.hr.process_routes import (
     PROCESS_QUERY_KEYS,
+    TASK_QUERY_KEYS,
     TEMPLATE_BODY_LIMIT,
     register_process_routes,
 )
@@ -106,6 +107,7 @@ _QUERY_KEYS = {
     "/console/v1/hr/access/recent": {"cursor"},
     "/console/v1/hr/people": {"q", "department", "manager", "status", "cursor"},
     "/console/v1/hr/processes": PROCESS_QUERY_KEYS,
+    "/console/v1/hr/tasks/mine": TASK_QUERY_KEYS,
 }
 
 
