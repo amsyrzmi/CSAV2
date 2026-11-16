@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getTranscript, retryItem, type TrainingItem, type TrainingTranscript } from "@/lib/training-api";
+import {
+  getTranscript,
+  retryItem,
+  thumbnailUrl,
+  type TrainingItem,
+  type TrainingTranscript,
+} from "@/lib/training-api";
 import { canRetry, HEVC_NOTE, refusalCopy, videoStateText } from "@/lib/training-view";
 import { action, Notice } from "../ui";
 import { codeOf, refusalText } from "./shared";
@@ -116,6 +122,7 @@ export default function VideoSection({
       {playable && (
         <div className={`grid min-w-0 gap-5 ${beside ? "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" : ""}`}>
           <VideoPlayer tenantId={tenantId} itemId={id} title={item.title} startAt={startAt}
+            poster={item.thumbnail ? thumbnailUrl(tenantId, id, item.thumbnail.version) : undefined}
             videoRef={videoRef} onTime={setSeconds} />
           <TranscriptPanel lines={lines} seconds={seconds} onSeek={seek}
             placeholder={waiting} />

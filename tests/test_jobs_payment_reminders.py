@@ -14,6 +14,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from csa.contracts.facts import PictureRef
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
@@ -974,3 +975,265 @@ async def test_the_daily_cap_follows_the_local_day_west_of_utc(
             f"invoice:{first}:reminder:0",
             f"invoice:{second}:reminder:0",
         ]
+
+
+# --- the QR picture on Telegram (pictures, task 13) ----------------------------------------------
+
+QR_LABEL = "Kedai Contoh QR"
+
+
+async def qr_company(
+    conn: psycopg.AsyncConnection[Any], *, picture: bool = True, **kwargs: Any
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]:
+    """A company with a transfer and a QR method (in that order); the QR has its stored picture
+    unless `picture` is false. Returns the company, the QR method and the picture's id."""
+    methods = (("transfer", TRANSFER, True, 0), ("qr", QR, True, 1))
+    client = await seed_company(conn, methods=methods, **kwargs)
+    cursor = await conn.execute(
+        "UPDATE payment_methods SET label = %s WHERE client_id = %s AND kind = 'qr' RETURNING id",
+        (QR_LABEL, client),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    method: uuid.UUID = row[0]
+    if not picture:
+        return client, method, None
+    cursor = await conn.execute(
+        "INSERT INTO media_assets (client_id, kind, subject_key, media_type, byte_size, width,"
+        " height, sha256, source) VALUES (%s, 'payment_qr', %s, 'image/png', 1000, 800, 800,"
+        " repeat('a', 64), 'upload') RETURNING id",
+        (client, str(method)),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    return client, method, row[0]
+
+
+async def written(conn: psycopg.AsyncConnection[Any], client: uuid.UUID) -> list[dict[str, Any]]:
+    """Every outbound message in the order written, with what delivery and the Inbox read."""
+    cursor = await conn.execute(
+        "SELECT m.idempotency_key, m.body, m.redacted_body, m.attachments, m.has_attachment,"
+        " m.send_authority, m.conversation_id, m.created_at,"
+        " (SELECT array_agg(d.created_at) FROM outbound_deliveries d WHERE d.message_id = m.id)"
+        " FROM messages m WHERE m.client_id = %s AND m.direction = 'outbound'"
+        " ORDER BY m.created_at, m.id",
+        (client,),
+    )
+    keys = [
+        "key", "body", "redacted", "attachments", "has_attachment", "authority", "conversation",
+        "created_at", "deliveries",
+    ]  # fmt: skip
+    return [dict(zip(keys, row, strict=True)) for row in await cursor.fetchall()]
+
+
+def assert_picture_then_text(
+    pair: list[dict[str, Any]], key: str, asset: uuid.UUID, caption: str, conversation: uuid.UUID
+) -> None:
+    image, text = pair
+    assert (image["key"], text["key"]) == (f"{key}:qr", key)
+    assert image["attachments"] == [{"type": "image", "asset_id": str(asset)}]
+    assert image["has_attachment"] is True
+    assert image["body"] == image["redacted"] == caption
+    assert text["attachments"] == [] and text["has_attachment"] is False
+    assert image["authority"] == text["authority"] == "reviewed"
+    assert image["conversation"] == text["conversation"] == conversation
+    assert image["created_at"] < text["created_at"]
+    assert len(image["deliveries"]) == len(text["deliveries"]) == 1
+    assert image["deliveries"][0] < text["deliveries"][0]
+
+
+async def test_telegram_reminder_queues_the_qr_picture_first_on_every_step(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client, _, asset = await qr_company(conn, reminder_days=[-7, 0])
+        assert asset is not None
+        person = await contact(conn, client)
+        malay = await contact(conn, client, locale="ms")
+        conversation = await chat(conn, client, person)
+        malay_chat = await chat(conn, client, malay)
+        # Step -7 is owed now; step 0 a week later.
+        inv = await invoice(conn, client, person, due_at=NOW + timedelta(days=7, hours=-1))
+        ms_inv = await invoice(conn, client, malay, due_at=NOW + timedelta(days=7, hours=-1))
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 2, "sent": 2}
+        week = NOW + timedelta(days=7)
+        assert await run(app_dsn, client, week) == ZERO | {"invoices": 2, "sent": 2}
+
+        rows = await written(conn, client)
+        assert len(rows) == 8
+        by_key = {row["key"]: row for row in rows}
+        for step in (-7, 0):
+            key = f"invoice:{inv}:reminder:{step}"
+            pair = [by_key[f"{key}:qr"], by_key[key]]
+            assert_picture_then_text(pair, key, asset, f"DuitNow QR: {QR_LABEL}", conversation)
+            ms_key = f"invoice:{ms_inv}:reminder:{step}"
+            ms_pair = [by_key[f"{ms_key}:qr"], by_key[ms_key]]
+            assert_picture_then_text(ms_pair, ms_key, asset, f"QR DuitNow: {QR_LABEL}", malay_chat)
+        # The text is the reminder as before: the QR is still listed by its DuitNow id.
+        assert f"DuitNow: {QR['duitnow_id']}" in by_key[f"invoice:{inv}:reminder:0"]["body"]
+        # Each picture comes right before its own text.
+        keys = [row["key"] for row in rows]
+        for key in keys[::2]:
+            assert keys[keys.index(key) + 1] == key.removesuffix(":qr")
+
+
+async def test_whatsapp_and_email_reminders_get_no_picture(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client, _, _ = await qr_company(conn)
+        texting = await contact(conn, client)
+        await chat(conn, client, texting, channel="whatsapp")
+        mailed = await contact(conn, client, email="mailed@example.test")
+        wa_inv = await invoice(conn, client, texting)
+        mail_inv = await invoice(conn, client, mailed)
+
+        assert await run(app_dsn, client) == ZERO | {
+            "invoices": 2,
+            "sent": 1,
+            "queued": 1,
+            "skipped": 2,
+        }
+        (message,) = await written(conn, client)
+        assert message["key"] == f"invoice:{wa_inv}:reminder:0"
+        assert message["attachments"] == [] and message["has_attachment"] is False
+        assert shape([r for r in await reminders(conn, client) if r["step"] == 0]) == {
+            (wa_inv, 0, "whatsapp", None, "sent"),
+            (mail_inv, 0, "email", "mailed@example.test", "queued"),
+        }
+
+        # WhatsApp ignores a picture handed to chat_message.
+        async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+            async with tx(pool, str(client)) as tenant_conn:
+                methods = await db.q.fetch_all(
+                    "payments/methods_list.sql",
+                    {"client_id": client, "active_only": True},
+                    conn=tenant_conn,
+                )
+                qr_id = next(r["id"] for r in methods if r["kind"] == "qr")
+                assert await notices.chat_message(
+                    tenant_conn,
+                    client,
+                    texting,
+                    channel="whatsapp",
+                    key="test:whatsapp:picture",
+                    body="Synthetic text",
+                    now=NOW,
+                    picture=PictureRef(
+                        kind="payment_qr", subject_key=str(qr_id), caption="DuitNow QR: x"
+                    ),
+                )
+        assert [m["key"] for m in await written(conn, client)] == [
+            f"invoice:{wa_inv}:reminder:0",
+            "test:whatsapp:picture",
+        ]
+        assert all(m["has_attachment"] is False for m in await written(conn, client))
+
+
+async def test_no_qr_picture_means_text_only(pg_container: object, app_dsn: str) -> None:
+    async with await owner(pg_container) as conn:
+        client, method, _ = await qr_company(conn, picture=False)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        inv = await invoice(conn, client, person)
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "sent": 1, "skipped": 1}
+        (message,) = await written(conn, client)
+        assert message["key"] == f"invoice:{inv}:reminder:0"
+        assert message["has_attachment"] is False
+
+        # The picture was chosen but removed before the write: the text goes alone, no failure.
+        async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+            async with tx(pool, str(client)) as tenant_conn:
+                assert await notices.chat_message(
+                    tenant_conn,
+                    client,
+                    person,
+                    channel="telegram",
+                    key="test:removed:picture",
+                    body="Synthetic text",
+                    picture=PictureRef(
+                        kind="payment_qr", subject_key=str(method), caption="DuitNow QR: x"
+                    ),
+                )
+        rows = await written(conn, client)
+        assert [m["key"] for m in rows] == [f"invoice:{inv}:reminder:0", "test:removed:picture"]
+        assert all(m["has_attachment"] is False for m in rows)
+        assert len(rows[1]["deliveries"]) == 1
+
+
+async def test_a_reminder_rerun_writes_no_second_picture(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        client, method, asset = await qr_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        inv = await invoice(conn, client, person)
+
+        assert await run(app_dsn, client) == ZERO | {"invoices": 1, "sent": 1, "skipped": 1}
+        assert await run(app_dsn, client) == ZERO
+        assert await run(app_dsn, client, NOW + timedelta(hours=3)) == ZERO
+        key = f"invoice:{inv}:reminder:0"
+        assert [m["key"] for m in await written(conn, client)] == [f"{key}:qr", key]
+
+        # The same key again writes nothing: neither the picture nor the text, nor a delivery.
+        picture = PictureRef(kind="payment_qr", subject_key=str(method), caption="DuitNow QR: x")
+        async with db.build_pool(app_dsn, max_size=1, autocommit=True) as pool:
+            async with tx(pool, str(client)) as tenant_conn:
+                for _ in range(2):
+                    assert await notices.chat_message(
+                        tenant_conn, client, person, channel="telegram", key=key,
+                        body="Synthetic text", picture=picture,
+                    )  # fmt: skip
+                # A text written before pictures existed never gets a picture after it.
+                assert await notices.chat_message(
+                    tenant_conn, client, person, channel="telegram", key="test:old", body="Old"
+                )
+                assert await notices.chat_message(
+                    tenant_conn, client, person, channel="telegram", key="test:old",
+                    body="Old", picture=picture,
+                )  # fmt: skip
+        rows = await written(conn, client)
+        assert [m["key"] for m in rows] == [f"{key}:qr", key, "test:old"]
+        assert rows[0]["attachments"] == [{"type": "image", "asset_id": str(asset)}]
+        assert all(len(m["deliveries"]) == 1 for m in rows)
+
+
+async def test_quiet_hours_cap_and_replies_off_still_hold(
+    pg_container: object, app_dsn: str
+) -> None:
+    async with await owner(pg_container) as conn:
+        # Quiet hours: nothing at all, then the morning sends the picture and the text.
+        client, _, _ = await qr_company(conn)
+        person = await contact(conn, client)
+        await chat(conn, client, person)
+        first, second = sorted([await invoice(conn, client, person) for _ in range(2)])
+        night = datetime(2026, 11, 19, 15, 0, tzinfo=UTC)  # 23:00 in Kuala Lumpur
+        assert await run(app_dsn, client, night) == ZERO | {"quiet": 1}
+        assert await written(conn, client) == []
+
+        # The daily cap: one reminder a day, so one picture, and none for the capped invoice.
+        assert await run(app_dsn, client) == ZERO | {
+            "invoices": 2,
+            "sent": 1,
+            "skipped": 2,
+            "capped": 1,
+        }
+        assert [m["key"] for m in await written(conn, client)] == [
+            f"invoice:{first}:reminder:0:qr",
+            f"invoice:{first}:reminder:0",
+        ]
+
+        # Replies off: no text, so no picture either.
+        off, _, _ = await qr_company(conn, mode="shadow")
+        quiet_person = await contact(conn, off)
+        await chat(conn, off, quiet_person)
+        await invoice(conn, off, quiet_person)
+        assert await run(app_dsn, off) == ZERO | {"invoices": 1, "no_channel": 1, "skipped": 1}
+        assert await written(conn, off) == []
+        # The capped invoice has no row for its step: it goes, picture and all, another day.
+        assert (second, 0) not in {
+            (r["invoice_id"], r["step"]) for r in await reminders(conn, client)
+        }

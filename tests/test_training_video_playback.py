@@ -581,7 +581,7 @@ async def test_read_routes_roles_package_and_machine_token(
     staff, _ = await sessions.member()
     item = str(uuid4())
     for browser, query in ((sessions.admin, f"?client_id={tenant}"), (staff, "")):
-        for suffix in ("playback", "video", "transcript"):
+        for suffix in ("playback", "video", "transcript", "thumbnail"):
             answer = await browser.get(f"{ITEMS}/{item}/{suffix}{query}")
             assert answer.status_code == 403, (suffix, answer.text)
             assert detail(answer) == "package_inactive"
@@ -598,7 +598,7 @@ async def test_read_routes_roles_package_and_machine_token(
         transport=httpx.ASGITransport(app=sessions.app), base_url=ORIGIN
     ) as machine:
         headers = {"Authorization": f"Bearer {MACHINE_TOKEN}", "X-Client-Id": tenant}
-        for suffix in ("playback", "video", "transcript"):
+        for suffix in ("playback", "video", "transcript", "thumbnail"):
             answer = await machine.get(f"{ITEMS}/{item}/{suffix}", headers=headers)
             assert answer.status_code == 403, (suffix, answer.text)
             assert detail(answer) == "human session required"

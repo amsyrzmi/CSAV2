@@ -200,8 +200,10 @@ The agent sets `AgentResultData.picture = PictureRef(kind, subject_key)` only wh
   reminders (section 10).
 - **Plan:** sign-up `readback` (the plan being signed up for), and a `status`/`mine` answer that names exactly one
   subscription. Never `plans` (list), the "which plan" question, pause/cancel/change answers.
-- **Product:** the single-product detail answer (`_detail`, by SKU; its read gains the product `id`). Never search,
-  availability or the order draft.
+- **Product:** the single-product detail answer (`_detail`, by SKU; its read gains the product `id`), and the
+  `product_availability` answer when exactly one of the company's own active products matches (owner decision
+  2026-11-16, option (a), built in PR 3b; a TikTok fact beside that one row does not change it, and a TikTok-only answer
+  has none). Never search results, an availability answer matching two or more products, or the order draft.
 - **Training thumbnail:** never sent to customers.
 Priority when several agents in one turn ask: the order of the coordinator's results; the first picture wins and the rest
 are dropped (so "pay" plus a plan question sends the QR). `coordinator.emit` turns the chosen `PictureRef` into one

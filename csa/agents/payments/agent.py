@@ -11,6 +11,9 @@ Facts are worded by `csa.payments.copy` in the customer's language (`ctx.locale`
 reference, amount and account number inserted from the database; the turn sends them as they
 stand (`csa.turn.deps.payment_facts`). Ids are constants with a 1-based index, never an invoice id.
 Staff-only fields (void reason, voider, payment note, who recorded it) are never read here.
+
+A how-to-pay answer that lists the methods also carries the first listed QR method's picture
+(`csa.payments.pictures.qr_picture`, captioned with its label only); no other answer has one.
 """
 
 from __future__ import annotations
@@ -24,13 +27,21 @@ from pydantic import BaseModel
 
 from csa.agents.base import AgentContext, SideEffects
 from csa.agents.payments.models import PaymentInput
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    AgentResultData,
+    Fact,
+    PictureRef,
+    ResultMeta,
+)
 from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.payments import copy
 from csa.payments.contracts import MethodOut
 from csa.payments.invoices import InvoiceRecord, customer_invoices, record_claim
+from csa.payments.pictures import qr_picture
 from csa.payments.reference import normalise_reference
 from csa.payments.settings import get_settings
 
@@ -49,13 +60,17 @@ def _fact(fact_id: str, text: str, ctx: AgentContext) -> Fact:
     return Fact(id=fact_id, text=text, source=SOURCE, as_of=ctx.now())
 
 
-def _answer(ctx: AgentContext, lines: Sequence[tuple[str, str]]) -> AgentResult:
+def _answer(
+    ctx: AgentContext, lines: Sequence[tuple[str, str]], picture: PictureRef | None = None
+) -> AgentResult:
     return AgentResult(
         ok=True,
         status="ok",
         task_id=ctx.idempotency_key,
         agent=SOURCE,
-        data=AgentResultData(facts=[_fact(fact_id, text, ctx) for fact_id, text in lines]),
+        data=AgentResultData(
+            facts=[_fact(fact_id, text, ctx) for fact_id, text in lines], picture=picture
+        ),
         meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
     )
 
@@ -118,7 +133,8 @@ class PaymentAgent:
                 line = copy.reference_unknown_line(typed, locale)
                 return _answer(ctx, [("payment_reference_unknown_1", line)])
             if inp.action == "instructions":
-                return _answer(ctx, await self._instructions(conn, ctx, invoices, locale))
+                lines, picture = await self._instructions(conn, ctx, invoices, locale)
+                return _answer(ctx, lines, picture)
             if inp.action == "status":
                 return _answer(ctx, self._status(ctx, invoices, locale))
             return _answer(ctx, await self._claim(conn, ctx, inp, invoices, locale))
@@ -129,8 +145,12 @@ class PaymentAgent:
         ctx: AgentContext,
         invoices: list[InvoiceRecord],
         locale: copy.Locale,
-    ) -> list[tuple[str, str]]:
-        """Each open invoice, then how to pay the ones not yet claimed, and what to do after."""
+    ) -> tuple[list[tuple[str, str]], PictureRef | None]:
+        """Each open invoice, then how to pay the ones not yet claimed, and what to do after.
+
+        The picture is the first listed QR method's (`qr_picture`), set only when the methods are
+        listed: never for nothing due, an invoice already paid, or open invoices all claimed.
+        """
         open_ = [inv for inv in invoices if inv.status in _OPEN]
         if not open_:
             if invoices:  # a referenced invoice that is already paid
@@ -139,8 +159,8 @@ class PaymentAgent:
                         "payment_already_paid_1",
                         copy.already_paid_line(copy.ref_of(invoices[0]), locale),
                     )
-                ]
-            return [("payment_nothing_due_1", copy.nothing_due_line(locale))]
+                ], None
+            return [("payment_nothing_due_1", copy.nothing_due_line(locale))], None
         to_pay = [inv for inv in open_ if inv.status != "proof_submitted"]
         methods: list[MethodOut] = []
         if to_pay:
@@ -151,7 +171,7 @@ class PaymentAgent:
             )
             methods = [MethodOut.model_validate(row) for row in rows]
             if not methods:  # settings refuse this; never tell a customer to pay nowhere
-                return [("payment_not_set_up_1", copy.not_set_up_line(locale))]
+                return [("payment_not_set_up_1", copy.not_set_up_line(locale))], None
         lines = [
             (
                 f"payment_invoice_{n}",
@@ -162,7 +182,7 @@ class PaymentAgent:
             for n, inv in enumerate(open_, start=1)
         ]
         if not to_pay:
-            return lines
+            return lines, None
         lines += [
             (f"payment_method_{n}", copy.method_line(method, locale))
             for n, method in enumerate(methods, start=1)
@@ -170,7 +190,7 @@ class PaymentAgent:
         refs = [copy.ref_of(inv) for inv in to_pay]
         lines.append(("payment_reference_1", copy.reference_line(refs, locale)))
         lines.append(("payment_after_1", copy.after_paying_line(locale)))
-        return lines
+        return lines, qr_picture(methods, locale)
 
     def _status(
         self, ctx: AgentContext, invoices: list[InvoiceRecord], locale: copy.Locale

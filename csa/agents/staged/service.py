@@ -51,6 +51,7 @@ from csa.agents.staged.subscription_facts import (
     REQUESTABLE_STATUSES,
     SUBSCRIPTION_SOURCE,
     plan_facts,
+    plan_picture,
     request_fact,
     subscription_facts,
 )
@@ -59,7 +60,15 @@ from csa.bookings import service as core
 from csa.bookings.bot import BotOutcome
 from csa.bookings.service import BookingRecord
 from csa.console.mailer import Mailer
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta, Ui
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    AgentResultData,
+    Fact,
+    PictureRef,
+    ResultMeta,
+    Ui,
+)
 from csa.contracts.plan import RiskClass
 from csa.core import db
 from csa.core.pii import is_email_placeholder
@@ -640,16 +649,35 @@ def resolve_subscription(
     return ("which", _which_names(requestable, timezone))
 
 
-def answer(ctx: AgentContext, facts: list[Fact]) -> AgentResult:
-    """An ok result made of subscription facts, dated now."""
+def answer(
+    ctx: AgentContext,
+    facts: list[Fact],
+    *,
+    picture: PictureRef | None = None,
+    ui: Ui | None = None,
+) -> AgentResult:
+    """An ok result made of subscription facts, dated now, with the reply's picture and buttons."""
     return AgentResult(
         ok=True,
         status="ok",
         task_id=ctx.idempotency_key,
         agent=SUBSCRIPTION_SOURCE,
-        data=AgentResultData(facts=[f.model_copy(update={"as_of": ctx.now()}) for f in facts]),
+        data=AgentResultData(
+            facts=[f.model_copy(update={"as_of": ctx.now()}) for f in facts],
+            ui=ui or Ui(),
+            picture=picture,
+        ),
         meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0),
     )
+
+
+def one_plan_picture(rows: Sequence[Mapping[str, Any]], shown: Sequence[Fact]) -> PictureRef | None:
+    """The plan picture of an answer whose one fact names exactly one subscription; none for
+    several, for none, or for a row the facts do not show."""
+    if len(rows) != 1 or len(shown) != 1:
+        return None
+    [row] = rows
+    return plan_picture(row["plan"], row["plan_name"], row["plan_has_picture"])
 
 
 class SubscriptionAgent:
@@ -687,12 +715,10 @@ class SubscriptionAgent:
                 return result(ctx, self.name, "Contact not found.", code="contact_not_found")
             if inp.action == "request_signup":
                 turn = await request_signup(conn, ctx, inp)
-                signed = answer(ctx, turn.facts)
-                if not turn.request_phone:
-                    return signed
-                # Telegram shows the "share my number" button with this reply.
-                ui = Ui(request_phone=True)
-                return signed.model_copy(update={"data": signed.data.model_copy(update={"ui": ui})})
+                # Telegram shows the "share my number" button with this reply when asked; the
+                # read-back carries the chosen plan's picture.
+                ui = Ui(request_phone=True) if turn.request_phone else None
+                return answer(ctx, turn.facts, picture=turn.picture, ui=ui)
             if inp.action == "plans":
                 plans = await db.q.fetch_all(
                     "agents/subscription_plans.sql", {"client_id": ctx.client_id}, conn=conn
@@ -708,8 +734,10 @@ class SubscriptionAgent:
                     },
                     conn=conn,
                 )
-                shown = subscription_facts([one] if one else [], ctx.timezone)
-                return answer(ctx, shown or [request_fact("none")])
+                found = [one] if one else []
+                shown = subscription_facts(found, ctx.timezone)
+                picture = one_plan_picture(found, shown)
+                return answer(ctx, shown or [request_fact("none")], picture=picture)
             rows = await db.q.fetch_all(
                 "agents/subscription_list.sql",
                 {
@@ -721,7 +749,9 @@ class SubscriptionAgent:
             )
             if inp.action in {"mine", "list", "status"}:
                 shown = subscription_facts(rows, ctx.timezone)
-                return answer(ctx, shown or [request_fact("none")])
+                # `list` is the whole history: never a single-subject answer, so no picture.
+                picture = one_plan_picture(rows, shown) if inp.action != "list" else None
+                return answer(ctx, shown or [request_fact("none")], picture=picture)
             return await self._request(conn, ctx, inp, rows)
 
     async def _request(

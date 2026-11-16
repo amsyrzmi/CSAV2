@@ -2,12 +2,14 @@
 
 Every file is generated here from ffmpeg's own sources (``testsrc``, ``sine``, ``anullsrc``,
 ``anoisesrc``) into the test's temporary directory; the repository is public and never holds a
-media file. Pictures are 64x48 at 5 fps, so a minute of video is small and quick to make.
+media file. Pictures are 64x48 (unless asked otherwise) at 5 fps, so a minute of video is small and
+quick to make.
 """
 
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Literal
@@ -38,15 +40,14 @@ def make_video(
     audio: AudioKind = "tone",
     container: Container = "mp4",
     video_codec: str = "libx264",
+    size: tuple[int, int] = (64, 48),
 ) -> Path:
     """Write a small synthetic video to ``path`` and return it.
 
     ``webm`` holds VP9 and Opus (the default ``libx264`` becomes ``libvpx-vp9`` there);
     ``mp4`` and ``mov`` hold the given video codec and AAC.
     """
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise RuntimeError("ffmpeg is not on PATH")
+    ffmpeg = _ffmpeg()
     if container == "webm" and video_codec == "libx264":
         video_codec = "libvpx-vp9"
     args = [
@@ -59,7 +60,7 @@ def make_video(
         "-f",
         "lavfi",
         "-i",
-        f"testsrc=size=64x48:rate=5:duration={seconds}",
+        f"testsrc=size={size[0]}x{size[1]}:rate=5:duration={seconds}",
     ]
     if audio != "none":
         args += ["-f", "lavfi", "-i", _AUDIO_SOURCES[audio].format(seconds=seconds)]
@@ -73,3 +74,69 @@ def make_video(
     args += ["-threads", "1", "-f", _MUXERS[container], str(path)]
     subprocess.run(args, check=True, stdin=subprocess.DEVNULL, timeout=120)
     return path
+
+
+def make_audio_only(path: Path, *, seconds: float) -> Path:
+    """Write an mp4 that holds a tone and no video stream at all (an audio-only upload)."""
+    _run(
+        [_ffmpeg(), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"]
+        + ["-i", _AUDIO_SOURCES["tone"].format(seconds=seconds), "-c:a", "aac", "-b:a", "32k"]
+        + ["-threads", "1", "-f", "mp4", str(path)]
+    )
+    return path
+
+
+def cover_art_first(video: Path, path: Path) -> Path:
+    """Write ``video`` (an mp4) to ``path`` with a 200x200 JPEG cover that reads as stream 0.
+
+    ffmpeg's mp4 muxer stores the cover (``attached_pic``) in ``moov/udta`` after the tracks, where
+    the demuxer numbers it last; moving ``udta`` before the ``trak`` atoms makes it stream 0. The
+    media data stays where it is (``moov`` comes after ``mdat``), so no chunk offset changes.
+    """
+    ffmpeg = _ffmpeg()
+    common = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+    cover = path.with_name(f"{path.stem}-cover.jpg")
+    _run(
+        [*common, "-f", "lavfi", "-i", "color=c=red:size=200x200", "-frames:v", "1"]
+        + ["-pix_fmt", "yuvj420p", str(cover)]
+    )
+    muxed = path.with_name(f"{path.stem}-muxed.mp4")
+    _run(
+        [*common, "-i", str(video), "-i", str(cover), "-map", "0", "-map", "1", "-c", "copy"]
+        + ["-disposition:v:1", "attached_pic", "-f", "mp4", str(muxed)]
+    )
+    atoms = []
+    for kind, atom in _atoms(muxed.read_bytes()):
+        if kind == b"moov":
+            children = sorted(
+                _atoms(atom[8:]), key=lambda child: {b"mvhd": 0, b"udta": 1}.get(child[0], 2)
+            )
+            assert [kind for kind, _ in children][:2] == [b"mvhd", b"udta"]
+            atom = atom[:8] + b"".join(child for _, child in children)
+        atoms.append((kind, atom))
+    assert [kind for kind, _ in atoms].index(b"mdat") < [kind for kind, _ in atoms].index(b"moov")
+    path.write_bytes(b"".join(atom for _, atom in atoms))
+    return path
+
+
+def _atoms(data: bytes) -> list[tuple[bytes, bytes]]:
+    found: list[tuple[bytes, bytes]] = []
+    offset = 0
+    while offset < len(data):
+        size, kind = struct.unpack(">I4s", data[offset : offset + 8])
+        if size < 8:
+            raise ValueError("an atom size this helper does not handle")
+        found.append((kind, data[offset : offset + size]))
+        offset += size
+    return found
+
+
+def _ffmpeg() -> str:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is not on PATH")
+    return ffmpeg
+
+
+def _run(args: list[str]) -> None:
+    subprocess.run(args, check=True, stdin=subprocess.DEVNULL, timeout=120)

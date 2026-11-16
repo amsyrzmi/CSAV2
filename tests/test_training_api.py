@@ -46,6 +46,7 @@ ITEM_FIELDS = {
     "failure",
     "processing",
     "notice",
+    "thumbnail",
 }
 
 

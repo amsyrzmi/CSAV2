@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor
@@ -31,7 +31,7 @@ from csa.training.models import (
     SummaryOut,
     SummaryRequest,
 )
-from csa.training.service import MEDIA_TYPE, STORAGE_UNAVAILABLE, TrainingLibrary
+from csa.training.service import MEDIA_TYPE, NOT_FOUND, STORAGE_UNAVAILABLE, TrainingLibrary
 
 Actor = Annotated[ConsoleActor, Depends(human)]
 Company = Annotated[UUID, Depends(tenant)]
@@ -52,6 +52,28 @@ _UPLOAD_BODY = {
 }
 _PDF_BODY: dict[int | str, dict[str, Any]] = {
     200: {"content": {MEDIA_TYPE: {"schema": {"type": "string", "format": "binary"}}}}
+}
+_THUMBNAIL_BODY: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "The thumbnail's bytes (a JPEG).",
+        "content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}},
+    },
+    304: {"description": "Not modified: `If-None-Match` names the current `ETag`."},
+    404: {
+        "description": (
+            "`training_not_found`: no such item, another company's, one the caller may not see,"
+            " or no thumbnail."
+        ),
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["detail"],
+                    "properties": {"detail": {"type": "string", "enum": [NOT_FOUND]}},
+                }
+            }
+        },
+    },
 }
 
 
@@ -117,6 +139,23 @@ def build_training_router(store: ObjectStore | None) -> APIRouter:
         lib: Annotated[TrainingLibrary, Depends(library)],
     ) -> StreamingResponse:
         return await lib.open_file(client_id, item_id)
+
+    @router.get(
+        "/training/items/{item_id}/thumbnail", response_class=Response, responses=_THUMBNAIL_BODY
+    )
+    async def open_thumbnail(
+        item_id: UUID,
+        actor: Actor,
+        client_id: Company,
+        lib: Annotated[TrainingLibrary, Depends(library)],
+        if_none_match: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        """A video's generated thumbnail, with the item's own visibility (readers: ready only).
+
+        `ETag` is the picture's SHA-256 and changes when it is replaced; `If-None-Match` gives 304.
+        Anything the caller may not see, or no thumbnail, is the same 404 `training_not_found`.
+        """
+        return await lib.open_thumbnail(actor, client_id, item_id, if_none_match=if_none_match)
 
     @router.get("/training/items/{item_id}/summary", response_model=SummaryOut | NoSummary)
     async def get_summary(

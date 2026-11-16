@@ -21,6 +21,7 @@ from csa.console.services import require_package
 from csa.core.tenancy import tx
 from csa.media import service
 from csa.media.contracts import PictureKind
+from csa.media.http import etag, etag_matches, picture_headers
 from csa.subscriptions.api import human_session
 
 __all__ = ["READ_RULES", "ReadRule", "build_media_router", "can_read"]
@@ -28,7 +29,6 @@ __all__ = ["READ_RULES", "ReadRule", "build_media_router", "can_read"]
 STAFF_ROLES = frozenset({Role.PLATFORM_ADMIN, Role.TENANT_ADMIN, Role.TENANT_STAFF})
 
 _NOT_FOUND = "picture_not_found"
-_CACHE_CONTROL = "private, no-cache"
 _RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": "The picture's bytes.",
@@ -79,29 +79,6 @@ def can_read(actor: ConsoleActor, kind: PictureKind) -> bool:
     return rule.roles is None or actor.platform_admin or actor.role in rule.roles
 
 
-def _matches(if_none_match: str | None, etag: str) -> bool:
-    if if_none_match is None:
-        return False
-    for candidate in if_none_match.split(","):
-        candidate = candidate.strip()
-        if candidate == "*" or candidate.removeprefix("W/") == etag:
-            return True
-    return False
-
-
-def _etag(sha256: str) -> str:
-    return f'"{sha256}"'
-
-
-def _headers(sha256: str) -> dict[str, str]:
-    return {
-        "ETag": _etag(sha256),
-        "Cache-Control": _CACHE_CONTROL,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Security-Policy": "default-src 'none'; sandbox",
-    }
-
-
 def build_media_router() -> APIRouter:
     """The picture read route (human sessions only; see the module docstring)."""
     router = APIRouter(
@@ -134,8 +111,8 @@ def build_media_router() -> APIRouter:
             if refused.status_code != 403:
                 raise
             raise HTTPException(404, _NOT_FOUND) from None
-        if _matches(if_none_match, _etag(meta.sha256)):
-            return Response(status_code=304, headers=_headers(meta.sha256))
+        if etag_matches(if_none_match, etag(meta.sha256)):
+            return Response(status_code=304, headers=picture_headers(meta.sha256))
         async with tx(pool, str(client_id)) as conn:
             stored = await service.get(conn, client_id, asset_id)
         # Removed since the metadata read: 404. Replaced (same id, same subject, so the same rule):
@@ -143,7 +120,9 @@ def build_media_router() -> APIRouter:
         if stored is None:
             raise HTTPException(404, _NOT_FOUND)
         return Response(
-            content=stored.data, media_type=stored.media_type, headers=_headers(stored.sha256)
+            content=stored.data,
+            media_type=stored.media_type,
+            headers=picture_headers(stored.sha256),
         )
 
     return router

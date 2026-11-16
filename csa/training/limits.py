@@ -161,6 +161,15 @@ FFMPEG_CHILD_WALL_SECONDS = 300
 PROBE_MAX_OUTPUT_BYTES = 262144
 """Most bytes of stdout read from one child; more refuses the file."""
 
+# The thumbnail frame's own child (same address space and output cap): 4 x its worst measured CPU
+# and wall (2160p 10-bit HEVC: 9.69 s and 14.03 s), docs/TRAINING_VIDEO_CAPACITY.md.
+
+FRAME_CHILD_CPU_SECONDS = 39
+"""CPU seconds the child that decodes one thumbnail frame may use (RLIMIT_CPU)."""
+
+FRAME_CHILD_WALL_SECONDS = 60
+"""Wall-clock seconds the thumbnail frame's child may take."""
+
 SILENCE_MAX_DB = -50.0
 """A first audio stream whose peak is at most this (dBFS) is silent: no speech to transcribe."""
 

@@ -1044,7 +1044,8 @@ class PostgresTurnDependencies:
         envelope = state.envelope
         draft = state.draft
         # An image message is written before the text it goes with, whatever order the outbound
-        # list has (a stable sort: the rest keep their order); see _insert_outbound.
+        # list has (a stable sort: the rest keep their order); see _insert_outbound. This pairs
+        # them only because a reply has at most one picture (coordinator `_pick_picture`).
         ordered = sorted(state.outbound, key=lambda message: message.kind != "image")
         async with tx(self._pool, str(envelope.client_id)) as conn:
             for message in ordered:
@@ -1264,6 +1265,16 @@ async def _insert_outbound(
         # An image reply goes to Telegram only (slice 1); elsewhere the text alone is sent. It
         # never carries the handoff's authority: only the message with the draft's text does.
         if envelope.channel != Channel.TELEGRAM:
+            return
+        # A resumed emit whose text is already written (the first emit had no picture) writes no
+        # image: the text may already have gone, and the picture would arrive after it. The text's
+        # key is the coordinator's (`_reply_messages`).
+        if (
+            await db.q.fetch_one(
+                "worker/get_message.sql", (envelope.client_id, f"{envelope.trace_id}:0"), conn=conn
+            )
+            is not None
+        ):
             return
         handoff = False
     if not await automation_allowed(

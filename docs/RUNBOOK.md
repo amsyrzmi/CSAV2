@@ -870,6 +870,25 @@ reference to use, and what to do if already paid. The channel is the first that 
    and it waits for 09:00 in quiet hours. A queued row older than 48 hours is dropped and never sent late.
 4. Otherwise a "no channel" row, shown under "Needs a nudge".
 
+**The QR picture on Telegram.** Every Telegram reminder step also carries the company's DuitNow QR picture when
+one of the methods the reminder lists (the first four active bank and DuitNow methods) is a DuitNow method with
+an uploaded picture; the first such method in the listed order is used. The picture is its own message, written
+just before the reminder text and sent first, with the caption "DuitNow QR: <label>" (Malay "QR DuitNow:
+<label>") and nothing else. The caption is the only place a customer sees the label and it is stored as it
+stands, so a QR method's label must never hold an account number, a phone number or other personal data. The
+picture is written only together with its text: quiet hours, the one-a-day limit and replies Off hold for it
+too, a rerun writes no second picture, and a reminder text written before pictures existed never gets one
+after it. WhatsApp and email reminders carry no picture (their text lists the DuitNow id). A picture removed
+since the run chose it means the text goes alone; one the delivery worker cannot send is skipped (it shows in
+the delivery dead letters) and never holds the text back. To see one invoice's reminder messages (the picture
+has the key ending `:qr` and `has_attachment` true):
+
+```sql
+SELECT idempotency_key, has_attachment, send_authority, created_at FROM public.messages
+WHERE client_id = '<client id>' AND idempotency_key LIKE 'invoice:<invoice id>:reminder:%'
+ORDER BY created_at, id;
+```
+
 A reminder row's status `sent` means the message was written for the delivery worker, not that it reached the
 customer: a Telegram or WhatsApp delivery that fails afterwards shows in the delivery dead letters and the staff
 notices, not on the invoice (feeding it back is a follow-up).

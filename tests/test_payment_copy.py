@@ -18,6 +18,7 @@ from csa.payments.copy import (
     invoice_line,
     locale_of,
     method_line,
+    qr_caption,
     reference_line,
     reminder_text,
 )
@@ -129,6 +130,16 @@ def test_method_lines_in_both_languages() -> None:
     )
     for locale in ("en", "ms"):
         assert method_line(TRANSFER, locale).count(ACCOUNT) == 1
+
+
+def test_qr_caption_in_both_languages() -> None:
+    """The QR picture's caption is the method's label and nothing else: no account, no amount."""
+    assert qr_caption("DuitNow", "en") == "DuitNow QR: DuitNow"
+    assert qr_caption("DuitNow", "ms") == "QR DuitNow: DuitNow"
+    longest = "L" * 60  # a method label is at most 60 characters
+    for locale in ("en", "ms"):
+        caption = qr_caption(longest, locale)
+        assert caption.endswith(longest) and len(caption) < 1024
 
 
 def test_reference_line_one_and_several() -> None:

@@ -19,7 +19,7 @@ import pytest
 from csa.agents.base import AgentContext
 from csa.agents.payments import PaymentAgent, PaymentInput
 from csa.contracts.callbacks import PendingActionStore
-from csa.contracts.facts import AgentResult
+from csa.contracts.facts import AgentResult, PictureRef
 from csa.payments.copy import local_date
 from psycopg.types.json import Jsonb
 from pydantic import ValidationError
@@ -128,17 +128,34 @@ class Shop:
         assert len(rows) == 1, "onboarding provisions payment_agent"
 
     async def method(
-        self, kind: str, details: dict[str, Any], *, order: int = 0, active: bool = True
-    ) -> None:
-        await self.w.q(
+        self,
+        kind: str,
+        details: dict[str, Any],
+        *,
+        order: int = 0,
+        active: bool = True,
+        label: str | None = None,
+    ) -> UUID:
+        rows = await self.w.q(
             "INSERT INTO payment_methods (client_id, kind, label, details, is_active, sort_order)"
-            " VALUES (%s,%s,%s,%s,%s,%s)",
+            " VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
             self.client,
             kind,
-            f"{kind.title()} method",
+            label or f"{kind.title()} method",
             Jsonb(details),
             active,
             order,
+        )
+        return rows[0]["id"]
+
+    async def picture(self, method_id: UUID, *, client: str | None = None) -> None:
+        """A stored QR picture for a method (metadata only: the reply never reads the bytes)."""
+        await self.w.q(
+            "INSERT INTO media_assets (client_id, kind, subject_key, media_type, byte_size, width,"
+            " height, sha256, source) VALUES (%s, 'payment_qr', %s, 'image/png', 1000, 800, 800,"
+            " repeat('a', 64), 'upload')",
+            client or self.client,
+            str(method_id),
         )
 
     async def invoice(self, contact: UUID, **kw: Any) -> tuple[str, str]:
@@ -612,3 +629,155 @@ async def test_the_longest_instructions_reply_shows_four_methods_and_fits_one_me
             assert f"51200000000000000{order:03d}" in text
         assert "51200000000000000004" not in text
         assert len(text) < 4096, (locale, len(text))
+
+
+# --- the QR picture (pictures, task 12) ---------------------------------------------------------
+
+QR_LABEL = "DuitNow Kedai Contoh"
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_how_to_pay_with_an_open_invoice_asks_for_the_qr_picture(shop: Shop) -> None:
+    qr = await shop.method("qr", QR, order=2, label=QR_LABEL)
+    await shop.picture(qr)
+    contact = await shop.ledger.contact()
+    _, ref = await shop.invoice(contact, amount="29.90")
+
+    for locale, caption in (
+        ("en", f"DuitNow QR: {QR_LABEL}"),
+        ("ms", f"QR DuitNow: {QR_LABEL}"),
+    ):
+        result = await shop.run(contact, {"action": "instructions"}, locale=locale)
+        assert result.picture == PictureRef(kind="payment_qr", subject_key=str(qr), caption=caption)
+        # The text is unchanged: the QR method is still listed with its DuitNow id.
+        texts = dict(facts(result))
+        assert texts["payment_method_2"].startswith(f"DuitNow: {QR['duitnow_id']}")
+        # The caption is the label only: no account, DuitNow id, amount or reference.
+        assert result.picture is not None
+        for secret in (QR["duitnow_id"], QR["account_name"], ACCOUNT, ref, "29.90"):
+            assert secret not in result.picture.caption
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_first_listed_qr_method_with_a_picture_wins(shop: Shop) -> None:
+    # The fixture's transfer (order 1) is listed first; a stray picture row on it is never used.
+    rows = await shop.w.q(
+        "SELECT id FROM payment_methods WHERE client_id = %s AND kind = 'transfer'", shop.client
+    )
+    await shop.picture(rows[0]["id"])
+    await shop.method("qr", QR, order=2, label="QR without a picture")
+    second = await shop.method("qr", QR, order=3, label="Second QR")
+    await shop.picture(second)
+    third = await shop.method("qr", QR, order=4, label="Third QR")
+    await shop.picture(third)
+    contact = await shop.ledger.contact()
+    await shop.invoice(contact)
+
+    result = await shop.run(contact, {"action": "instructions"})
+
+    assert result.picture == PictureRef(
+        kind="payment_qr", subject_key=str(second), caption="DuitNow QR: Second QR"
+    )
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_no_picture_when_no_listed_qr_has_one(shop: Shop) -> None:
+    contact = await shop.ledger.contact()
+    await shop.invoice(contact)
+    await shop.method("qr", QR, order=2, label="QR without a picture")
+    # Another company's picture under this method's id is not this company's picture.
+    other = await shop.method("qr", QR, order=3, label="Foreign picture QR")
+    foreign = await shop.w.q("SELECT id FROM clients WHERE id <> %s LIMIT 1", shop.client)
+    await shop.picture(other, client=str(foreign[0]["id"]))
+    # An inactive QR with a picture is never listed, so never sent.
+    inactive = await shop.method("qr", QR, order=2, active=False, label="Old QR")
+    await shop.picture(inactive)
+
+    first = await shop.run(contact, {"action": "instructions"})
+    assert first.picture is None
+    assert [i for i, _ in facts(first) if i.startswith("payment_method_")] == [
+        "payment_method_1",
+        "payment_method_2",
+        "payment_method_3",
+    ]
+
+    # Four methods are listed already; a fifth QR with a picture is not named, so not sent.
+    await shop.method("transfer", TRANSFER, order=4)
+    unlisted_qr = {"duitnow_id": "512000000019", "account_name": "Kedai Contoh Sdn Bhd"}
+    unlisted = await shop.method("qr", unlisted_qr, order=5, label="Unlisted QR")
+    await shop.picture(unlisted)
+    second = await shop.run(contact, {"action": "instructions"})
+    assert second.picture is None
+    assert [i for i, _ in facts(second) if i.startswith("payment_method_")] == [
+        f"payment_method_{n}" for n in range(1, 5)
+    ]
+    assert unlisted_qr["duitnow_id"] not in "\n".join(t for _, t in facts(second))
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_nothing_due_paid_or_claimed_get_no_picture(shop: Shop) -> None:
+    qr = await shop.method("qr", QR, order=2, label=QR_LABEL)
+    await shop.picture(qr)
+
+    nothing = await shop.ledger.contact()
+    result = await shop.run(nothing, {"action": "instructions"})
+    assert facts(result) == [("payment_nothing_due_1", NOTHING_EN)]
+    assert result.picture is None
+
+    payer = await shop.ledger.contact()
+    paid_at = datetime.now(UTC) - timedelta(days=2)
+    paid_id, paid = await shop.invoice(payer, status="paid", paid_at=paid_at)
+    await shop.ledger.ledger_payment(paid_id, received_at=paid_at)
+    result = await shop.run(payer, {"action": "instructions", "reference": paid})
+    assert facts(result) == [("payment_already_paid_1", f"Invoice {paid} is already paid.")]
+    assert result.picture is None
+
+    claimer = await shop.ledger.contact()
+    _, claimed = await shop.invoice(claimer, status="proof_submitted", amount="29.90")
+    result = await shop.run(claimer, {"action": "instructions"}, locale="ms")
+    assert [i for i, _ in facts(result)] == ["payment_invoice_1"]
+    assert result.picture is None
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_status_answer_never_asks_for_a_picture(shop: Shop) -> None:
+    qr = await shop.method("qr", QR, order=2, label=QR_LABEL)
+    await shop.picture(qr)
+    contact = await shop.ledger.contact()
+    _, ref = await shop.invoice(contact, amount="29.90")
+
+    for locale in ("en", "ms"):
+        result = await shop.run(contact, {"action": "status"}, locale=locale)
+        assert [i for i, _ in facts(result)] == ["payment_status_1"]
+        assert result.picture is None
+    named = await shop.run(contact, {"action": "status", "reference": ref})
+    assert named.picture is None
+
+
+@requires_docker
+@pytest.mark.asyncio
+async def test_claim_answers_never_ask_for_a_picture(shop: Shop) -> None:
+    qr = await shop.method("qr", QR, order=2, label=QR_LABEL)
+    await shop.picture(qr)
+
+    nobody = await shop.ledger.contact()
+    nothing = await shop.run(nobody, {"action": "claim_paid"})
+    assert facts(nothing) == [("payment_nothing_due_1", NOTHING_EN)]
+    assert nothing.picture is None
+
+    contact = await shop.ledger.contact()
+    _, first = await shop.invoice(contact)
+    await shop.invoice(contact, due_at=DUE + timedelta(days=1))
+    which = await shop.run(contact, {"action": "claim_paid"})
+    assert facts(which)[0][0] == "payment_which_1" and which.picture is None
+
+    noted = await shop.run(contact, {"action": "claim_paid", "reference": first})
+    assert facts(noted)[0][0] == "payment_claim_noted_1" and noted.picture is None
+
+    again = await shop.run(contact, {"action": "claim_paid", "reference": first}, locale="ms")
+    assert facts(again)[0][0] == "payment_claim_already_1" and again.picture is None

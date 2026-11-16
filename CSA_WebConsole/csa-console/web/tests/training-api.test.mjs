@@ -98,6 +98,19 @@ test("platform admins name the company on every call, the file link included", a
   assert.equal(training.fileUrl(null, "a/b"), "/console/v1/training/items/a%2Fb/file");
 });
 
+test("thumbnailUrl names the item and the version, and the company only for a platform admin", () => {
+  const tenant = "66666666-6666-4666-8666-666666666666";
+  const version = "a".repeat(64);
+  assert.equal(training.thumbnailUrl(null, ID, version), `/console/v1/training/items/${ID}/thumbnail?v=${version}`);
+  assert.equal(
+    training.thumbnailUrl(tenant, ID, version),
+    `/console/v1/training/items/${ID}/thumbnail?client_id=${tenant}&v=${version}`,
+  );
+  // A replaced picture has a new version, so a new address: the browser fetches it again.
+  assert.notEqual(training.thumbnailUrl(null, ID, version), training.thumbnailUrl(null, ID, "b".repeat(64)));
+  assert.equal(training.thumbnailUrl(null, "a/b", "v 1"), "/console/v1/training/items/a%2Fb/thumbnail?v=v+1");
+});
+
 test("a missing summary reads as null; a stored one comes back as sent", async () => {
   const [none] = await capture(() => training.getSummary(null, ID), () => Response.json({ summary: null }));
   assert.equal(none, null);

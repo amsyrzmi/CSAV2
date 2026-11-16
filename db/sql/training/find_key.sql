@@ -4,7 +4,9 @@ SELECT i.id, i.kind, i.title, i.description, i.category, i.view_mode, i.page_cou
            AND (i.kind = 'pdf' OR (i.status = 'ready' AND i.speech = 'speech')) AS has_summary,
        i.fingerprint,
        j.stage AS job_stage, j.status AS job_status, j.chunks_done, j.chunks_total,
-       j.error_code AS job_error
+       j.error_code AS job_error, t.sha256 AS thumbnail_version
 FROM public.training_items i
 LEFT JOIN public.training_video_jobs j ON j.client_id = i.client_id AND j.item_id = i.id
+LEFT JOIN public.media_assets t
+       ON t.client_id = i.client_id AND t.kind = 'training_thumbnail' AND t.subject_key = i.id::text
 WHERE i.client_id = %s AND i.request_key = %s;

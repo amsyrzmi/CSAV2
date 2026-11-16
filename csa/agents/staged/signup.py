@@ -39,11 +39,12 @@ from csa.agents.staged.subscription_facts import (
     VERIFIED_PHONE,
     SignupKind,
     plan_facts,
+    plan_picture,
     signup_fact,
 )
 from csa.bookings.notify import clean_address
 from csa.contacts.linking import live_contact
-from csa.contracts.facts import Fact
+from csa.contracts.facts import Fact, PictureRef
 from csa.core import db
 from csa.core.phone import normalise_my_phone
 from csa.payments.settings import get_settings
@@ -80,10 +81,12 @@ class Draft(BaseModel):
 
 @dataclass(frozen=True)
 class SignupTurn:
-    """The facts of a sign-up turn, and whether Telegram should offer the share button."""
+    """The facts of a sign-up turn, whether Telegram should offer the share button, and the
+    plan's picture (only on the read-back of the plan chosen, when the plan has one)."""
 
     facts: list[Fact]
     request_phone: bool = False
+    picture: PictureRef | None = None
 
 
 @dataclass
@@ -179,7 +182,8 @@ async def request_signup(conn: Conn, ctx: AgentContext, inp: SubscriptionInput) 
     read = _Reply().add(
         "readback", plan=plan_name, name=name, phone=shown, email=email, with_email=asks_email
     )
-    return await _ask(conn, ctx, contact_id, draft, read, asks_email=asks_email)
+    picture = plan_picture(code, plan_name, plan["has_picture"])
+    return await _ask(conn, ctx, contact_id, draft, read, asks_email=asks_email, picture=picture)
 
 
 async def _asks_email(conn: Conn, ctx: AgentContext, own: dict[str, Any] | None) -> bool:
@@ -327,16 +331,18 @@ async def _ask(
     *,
     request_phone: bool = False,
     asks_email: bool = False,
+    picture: PictureRef | None = None,
 ) -> SignupTurn:
     """Ask for the next thing (or read back), telling the data note in the first asking turn.
 
     `asks_email`: this sign-up asks for an email, so the note also says what an email is used for.
+    `picture`: the read-back's plan picture.
     """
     if not draft.noted:
         reply.add("data_note", with_email=asks_email)
         draft = draft.model_copy(update={"noted": True})
     await _save(conn, ctx, contact_id, draft)
-    return SignupTurn(reply.facts(extra), request_phone=request_phone)
+    return SignupTurn(reply.facts(extra), request_phone=request_phone, picture=picture)
 
 
 async def _load(conn: Conn, ctx: AgentContext, contact_id: UUID) -> Draft:
