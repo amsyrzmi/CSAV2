@@ -79,6 +79,9 @@ Reserved ranges (client growth program, 2026-10-27):
   another company's asset), both tenant isolated with grants to `csa_app`; `csa_ro` can read
   `media_assets` only.
 
+- `0611`: the staff assistant's page-key check also allows `payments` and `connections` (the Overview
+  assistant change added both tabs; same read-then-rebuild method as 0540).
+
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
 current list with `pg_get_constraintdef` and add to it, as 0531 does. A fixed list in a migration
