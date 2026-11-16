@@ -1,6 +1,6 @@
 # HR phase 1: process templates, onboarding and offboarding, a better org chart (design)
 
-Status: DRAFT for the owner's approval (written 2026-11-16; nothing is built).
+Status: DRAFT for the owner's approval (written 2026-11-16; revised after the builder check, section 5.7; nothing is built).
 Owner decisions so far (chat, 2026-11-16): HR for **corporate companies** (EPF, SOCSO, EIS, PCB), proper
 onboarding, recruitment, custom workflows (interview and any other HR process), a proper org chart and proper
 attendance; **approach C** (a small workflow core, then real consumers, in this order: processes with
@@ -116,7 +116,7 @@ For who sees what:
   started_at, closed_at)`: status `active`, `completed`, `cancelled`. One active process per (employee, kind) unless
   `custom`. A frozen copy of the template steps is stored on the process (rows below), not read back from the template.
 - `hr_process_tasks(client_id, id, process_id, ordinal, title_en, title_ms, description_en, description_ms, owner_role,
-  assignee_employee_id null, due_on, required, approval_by, status, completed_by, completed_at, approved_by,
+  assignee_employee_id null, anchor, due_offset_days, due_on null, due_overridden, required, approval_by, status, completed_by, completed_at, approved_by,
   approved_at, note, version)`. Status `todo`, `awaiting_approval`, `done`, `rejected` (returns to `todo` with the
   reason in the log), `skipped`. `assignee_employee_id` is resolved when the task is created and re-resolved when the
   manager changes (a manager change rewrites open `manager` tasks and writes an event).
@@ -179,6 +179,34 @@ start, cancel), `tasks` (mine, get, complete, skip, approve, send back, note), `
 Same envelope rules as the other HR routes (CSRF, `Idempotency-Key`, `expected_version`, problem codes); the OpenAPI
 file and `docs/CONSOLE_API.md` are updated with each route.
 
+### 5.7 Rulings after the builder check (my calls, marked; the owner may overrule any)
+
+1. **"The HR team"** for tasks and approvals means the HR owner plus every holder of `manage_people`. (The older
+   `hr_team` switch is not used for processes.) An `hr` task sits in a shared pool: any member may complete it, and
+   a reminder is written **per pool member** (dedupe key includes the recipient).
+2. **Approval deadlock:** see section 10, question 1 (owner decision). Until decided: the HR owner may approve a step
+   they completed themselves **only when no other eligible approver exists**, and the event is recorded as
+   `approved_without_second_person`.
+3. **A step anchored on a date that is not set** (`probation_end` null) exists with `due_on` null, shows "waiting for a
+   date" on the profile and in the process, is never overdue, and counts as an open required step for completion.
+4. **Completion:** an onboarding or offboarding process completes when every required task is `done` or `skipped`;
+   open optional tasks are then set to `skipped` by the system. HR may **close anyway** with a note (audited).
+5. **Existing data:** no backfill. People already employed get no onboarding; people already marked leaving get no
+   offboarding. HR can start a process for an existing person by hand.
+6. **Due dates are stored per task** with their `anchor` and `due_offset_days`. A change of `last_day`, `start_date`
+   or `probation_end` recomputes open tasks whose `due_overridden` is false. HR may change one task's due date
+   or assignee (sets `due_overridden`, audited).
+7. **A leaver-owned task whose offset falls after `last_day`:** the editor warns when the template is saved; at creation
+   the due date is clamped to `last_day` with a note; the leaving worker still skips anything left open.
+8. **Matching:** department by id (no parent coverage); employment type exact; legal entity and category compared
+   trimmed and case-insensitive. The editor offers the values that already exist as a pick list (free text still
+   allowed) so a typo does not hide a template.
+9. **Reminders for people without a console account** go to the HR pool. The Home card and My tasks read **live
+   task queries**; `hr_notifications` rows are only the alerts (assigned, due soon, due, overdue).
+10. **The review gate** blocks only the "create the Malaysian default templates" action in PR 4; the org chart ships
+    regardless. The builder gathers the official sources and timings during implementation; the owner (and the
+    practitioner the owner names) reviews before the action is enabled.
+
 ## 6. Malaysian grade: how it is enforced
 
 - **Defaults, not law in code.** The statutory steps are data in editable default templates. No rate, threshold or
@@ -225,10 +253,14 @@ assistant already knows the HR tab as a page; a read-only answer "what is outsta
 
 ## 10. Owner questions (answer or accept my default)
 
-1. **Reminders console-only in phase 1** if the Inbox layer is not merged yet? Default: yes, with the seam above.
-2. **Probation end date** as a new person field, set by HR (default: yes, optional).
-3. **Positions and vacancies** in the org chart with recruitment (phase 2) rather than here (default: yes, phase 2).
-4. **New hires without a console account:** HR completes their tasks; a later slice lets the invitation flow give them
+1. **A step needs approval but the only possible approver is the person who did it** (a one-person HR team, or an
+   unlinked manager that falls back to HR). Options: (a) the HR owner may approve their own step when nobody else
+   can, recorded as such in the audit trail (my default); (b) never, a second person is required (the process then
+   waits); (c) tenant admin override. Default: (a).
+2. **Reminders console-only in phase 1** if the Inbox layer is not merged yet? Default: yes, with the seam above.
+3. **Probation end date** as a new person field, set by HR (default: yes, optional).
+4. **Positions and vacancies** in the org chart with recruitment (phase 2) rather than here (default: yes, phase 2).
+5. **New hires without a console account:** HR completes their tasks; a later slice lets the invitation flow give them
    their own task list (default: later).
 
 ## 11. Build plan (4 PRs, subagent-driven, each reviewed)
