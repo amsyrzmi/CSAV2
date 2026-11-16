@@ -36,6 +36,8 @@ const TABS: readonly TabKey[] = [
   "bookings",
   "training_library",
   "activity",
+  "payments",
+  "connections",
   "chat",
 ];
 
@@ -53,11 +55,23 @@ export function dockTenant(me: Me, clientIdParam: string | null): string | null 
 }
 
 /**
- * The navigation entry that hosts a dock tab. The sandbox chat (`chat`) folded into Overview,
- * so it opens and is named as Overview; every other tab is its own entry.
+ * Whether the customer preview (the `chat` tab) is on offer: the company has Customer support
+ * `active` or `suspended` (mirrors the server gate), or the user is a platform admin.
+ */
+export function previewAvailable(me: Me, packages: PackageState[]): boolean {
+  if (me.role === "platform_admin") return true;
+  const status = packages.find((pkg) => pkg.key === "customer_support")?.status;
+  return status === "active" || status === "suspended";
+}
+
+/**
+ * The navigation entry that hosts a dock tab. The customer preview (`chat`) is a section of
+ * Services, so it opens there; every other tab is its own entry. `chat` is offered only where
+ * `previewAvailable` says so, which the rail alone cannot tell.
  */
 function navEntry(tab: TabKey, me: Me, packages: PackageState[]) {
-  const key = tab === "chat" ? "overview" : tab;
+  if (tab === "chat" && !previewAvailable(me, packages)) return undefined;
+  const key = tab === "chat" ? "services" : tab;
   return navigationFor(me, packages).find((item) => item.key === key);
 }
 
@@ -72,7 +86,9 @@ export function tabHref(
   const link = navEntry(tab, me, packages);
   if (!link) return null;
   const query = new URLSearchParams();
-  if (section) query.set("section", section);
+  // The preview is always the Services preview section, whatever the plan named.
+  const target = tab === "chat" ? "preview" : section;
+  if (target) query.set("section", target);
   // Platform admins keep the tenant in the URL so the dock stays available.
   if (me.role === "platform_admin" && tenantId) query.set("client_id", tenantId);
   return query.size ? `${link.href}?${query}` : link.href;
@@ -104,7 +120,9 @@ const TAB_NAMES: Record<TabKey, string> = {
   bookings: "Bookings",
   training_library: "Training library",
   activity: "Assistant activity",
-  chat: "Overview",
+  payments: "Payments",
+  connections: "Connections",
+  chat: "Customer preview",
 };
 
 export function tabName(tab: TabKey): string {
@@ -112,6 +130,7 @@ export function tabName(tab: TabKey): string {
 }
 
 export function tabLabel(tab: TabKey, me: Me, packages: PackageState[]): string {
+  if (tab === "chat") return TAB_NAMES.chat;
   return navEntry(tab, me, packages)?.label ?? tab;
 }
 
@@ -127,7 +146,11 @@ export function navigateText(
   packages: PackageState[],
   language: Language = "en",
 ): { text: string; error: boolean } {
-  if (!navigationFor(me, packages).some((item) => item.key === tab)) {
+  const available =
+    tab === "chat"
+      ? previewAvailable(me, packages)
+      : navigationFor(me, packages).some((item) => item.key === tab);
+  if (!available) {
     return { text: panelText(language, "navigate_unavailable", { tab: tabName(tab) }), error: true };
   }
   const key = resume ? "navigate_opened_resume" : "navigate_opened";

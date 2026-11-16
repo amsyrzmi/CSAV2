@@ -118,7 +118,7 @@ const en = {
   unavailable: "The assistant could not complete this request.",
   guidance_none: "No guidance is available for this page.",
   guidance_workspace_home_help:
-    "Use this internal workspace for staff guidance and authorized local business reads. Customer sandbox conversations are separate.",
+    "Use this internal workspace for staff guidance and authorized local business reads. Customer previews are on Services, Customer replies.",
   guidance_business_orders_help:
     "Business order views read tenant-scoped local records only. They do not query a marketplace or change an order.",
   guidance_business_order_help:
@@ -233,7 +233,7 @@ const ms: Record<PanelKey, string> = {
   unavailable: "Pembantu tidak dapat menyelesaikan permintaan ini.",
   guidance_none: "Tiada panduan tersedia untuk halaman ini.",
   guidance_workspace_home_help:
-    "Gunakan ruang kerja dalaman ini untuk panduan kakitangan dan bacaan data perniagaan tempatan yang dibenarkan. Perbualan sandbox pelanggan adalah berasingan.",
+    "Gunakan ruang kerja dalaman ini untuk panduan kakitangan dan bacaan data perniagaan tempatan yang dibenarkan. Pratonton pelanggan ada di Services, Customer replies.",
   guidance_business_orders_help:
     "Paparan pesanan perniagaan hanya membaca rekod tempatan bagi ruang kerja ini. Ia tidak membuat pertanyaan kepada pasar dalam talian dan tidak mengubah pesanan.",
   guidance_business_order_help:
