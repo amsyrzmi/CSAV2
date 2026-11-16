@@ -152,13 +152,16 @@ test("a message shows a picture only when the server sent one", () => {
   assert.equal(messagePictureId({}), null);
 });
 
-test("a picture that was not sent is explained in plain words and says the text still went", () => {
+test("a picture that was not sent is explained in plain words and leaves the text out of it", () => {
   for (const code of ["picture_unavailable", "picture_rejected", "picture_failed"]) {
     const notice = channels.deliveryNotice({
       delivery_status: "skipped", delivery_error: code, provider_status: null, provider_error: null,
     });
     assert.ok(notice && notice.startsWith("The picture was not sent."), code);
-    assert.ok(notice.includes("text reply"), notice);
+    assert.ok(notice.endsWith("The text message is not affected by this."), notice);
+    // Never a claim that the text reached the customer, nor that the picture is simply gone.
+    assert.ok(!notice.includes("got the text"), notice);
+    assert.ok(!notice.includes("no longer in your pictures"), notice);
     assert.ok(!notice.includes("_"), notice);
   }
   const [unavailable, rejected, failed] = ["picture_unavailable", "picture_rejected", "picture_failed"].map((code) =>
