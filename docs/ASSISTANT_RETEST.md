@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 78 model calls (one planner call per case plus one drafting call per draft case),
-  up to about 145 when cases are re-planned.
+- A run is about 86 model calls (one planner call per case plus one drafting call per draft case),
+  up to about 161 when cases are re-planned.
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -72,6 +72,8 @@ Tick each row when the result matches.
 | Buka Pembayaran | Subscriptions active | A navigate to the Payments tab; the answer line after it is Malay | `navigate-ms-4` |
 | Open Connections | none | A navigate to the Connections tab | `navigate-en-4` |
 | Buka Sambungan | none | A navigate to the Connections tab; the answer line after it is Malay | `navigate-ms-5` |
+| Open the customer preview | Customer support active | A navigate to the Customer preview tab (`chat`) | `navigate-en-5` |
+| Buka Customer preview | Customer support active | A navigate to the Customer preview tab (`chat`); the answer line after it is Malay | `navigate-ms-6` |
 | Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open; PASS checks only that such a navigate is locked, not the wording | `navigate-en-2` |
 | Any prompt | Read-only member | No assistant dock is shown: read-only members cannot post turns, so `navigate-en-2` has no hand retest | manual |
 | Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab; PASS checks only that such a navigate is locked, not the wording (check that by hand with the "Buka tab langganan" row below) | `navigate-ms-2` |
@@ -251,7 +253,7 @@ and the sentences are for a person to read. Use synthetic people and your own ma
 | The Customer preview works with replies Off | A company with Customer support and replies Off; on Services, Customer replies, open the Customer preview and ask it a question the bot can answer | The preview answers, and its banner still says "Your customers aren't getting replies yet."; a customer on Telegram or WhatsApp still gets nothing | manual |
 | The Customer preview works with "Staff approve each reply" | The same company, replies set to "Staff approve each reply"; ask the Customer preview the same question | The preview answers at once, with no draft in the Inbox | manual |
 | A review rule still holds the preview | A company with a `never_auto` intent or a confidence threshold; ask the Customer preview that kind of question | The preview holds the answer, as it would for a customer; it does not send it | manual |
-| An employee-only company has a small home | A company with People & HR and no Customer support; open Overview | The assistant page with its starting ideas (see "Overview is the assistant"), no banner, and no Assistant activity in the menu; "Ask the assistant at the side of the screen." shows only for people who have the assistant at the side of the screen, and a View only member sees the links without it | manual |
+| An employee-only company gets the assistant page | A company with People & HR and no Customer support; open Overview | The assistant page with its starting ideas (see "Overview is the assistant"), no banner, and no Assistant activity in the menu; a View only member, or anyone when the assistant is off for the company, sees the small home of links (`WorkspaceHome`) instead, with no sentence about an assistant | manual |
 | A platform admin switches company | Choose a company with Customer support, then one without, then back | Overview shows the assistant page for each company (with the replies banner only for the one with Customer support); it never shows one company's page, banner or conversation for the other | manual |
 
 ## Overview is the assistant (2026-11-16)
@@ -268,18 +270,18 @@ People & HR only.
 | Open Overview as tenant staff of an employee-only company | People & HR only, no Customer support | The assistant page and its ideas, no banner | manual |
 | Press a starting idea | Any company above | The idea's text fills the composer and is not sent; Enter or Send then sends it | manual |
 | The ideas fit the member | Compare a company with and without Subscriptions, HR and Staff email; staff and Admin | "Open Payments", "Open the HR tab" and the email idea show only where the package is on and the role has the tab; Admin and staff see the same ideas for the same packages | manual |
-| Type "open Payments" on Overview | Subscriptions active | The browser moves to Payments, the dock is open on that page, and it shows the same conversation: the question and the "Opened Payments." answer, one thread, no second copy on Overview afterwards | manual |
-| Type "open Connections", then "buka Sambungan" | Any member | Both move to Connections, the answer line after the second is Malay, and the conversation continues in the dock | manual |
+| Type "open Payments" on Overview | Subscriptions active | The browser moves to Payments and the dock there stays closed (a plain navigate never opens it); opening it shows the same conversation: the question and the "Opened Payments." answer, one thread, no second copy on Overview afterwards. Only a request the assistant finishes on the target page (a navigate that carries the question on, shown as "Opening <tab> and continuing…" while it waits) opens the dock by itself there, with the composer focused, and the answer arrives in it | manual |
+| Type "open Connections" on Overview, then open the dock on Connections and type "buka Sambungan" | Any member | The first moves to Connections and the second stays there; the answer line after the second is Malay, and the dock shows both in one thread | manual |
 | Type "open Payments" as a View only member | Subscriptions active | A View only member has no Payments link and, because the assistant needs a member who can post turns, no assistant either, so there is no typed request to refuse: the refusal is the planner's `navigate-en-2` case and the missing link. Confirm the small home (see "Open Overview as a View only member") | manual |
-| Type "open Payments" as tenant staff without the Payments tab | The role cannot open Payments | No page opens and there is no "Opened" line; the answer says it isn't available to the role | manual |
-| Type "open the customer preview" | A company with Customer support active | The browser lands on Services with the Customer preview open (`?section=preview`); a company without Customer support gets the "isn't available" line | manual |
+| Type "open Payments" as tenant staff of a company without Subscriptions | Subscriptions not active. Staff are never refused Payments for their role (only View only members are, and they have no assistant): they lack the tab only when Subscriptions is off | No page opens and there is no "Opened" line; the answer is "The Payments tab needs the Subscriptions service, which is not active for this workspace. Ask your administrator to activate it on the Services page." | manual |
+| Type "open the customer preview" | A company with Customer support active; once from Overview, once on Services with the preview collapsed | The browser lands on Services with the Customer preview open (`?section=preview`); asked on Services, the collapsed section opens in place. Known limit: after collapsing it by hand while the address still ends in `section=preview`, asking again leaves it collapsed. A company without Customer support gets no page and the answer "The Customer preview tab needs the Customer support service, which is not active for this workspace. Ask your administrator to activate it on the Services page." | manual |
 | Ask for the preview in Malay: "Buka Customer preview" | Same company | Same result; the answer line after it is Malay (the tab is named Customer preview in both languages) | manual |
 | Open the Customer preview on Services | Customer support active; also a suspended company as a platform admin | The section is collapsed until opened; once open it behaves as the old Overview chat did: sandbox threads, history and held answers; the persona set and then cleared changes only the wording; the replies Off banner shows; a held answer stays held. A suspended company shows the preview on its own row, with no persona form | manual |
 | Old links `/chat` and `/portal/chat` | Any member | Both redirect to Services with the Customer preview open, keeping `client_id` | manual |
 | Open Overview as a View only member | Any company | The small home of links (`WorkspaceHome`); no assistant page and no dock. The same small home shows when the assistant is switched off for the company | manual |
 | Switch company on Overview | Platform admin, two companies each with a staff conversation | Overview shows "Loading" for a moment and then that company's own conversation; the previous company's turns, card and unsent text are gone, and an open card of the first company is withdrawn | manual |
 | A held resume | Type "open Payments" while the answer is pending, or use Back after it | The dock opens by itself on the target page when an answer is pending; it never opens an empty closed dock that hides the pending answer | manual |
-| Malay ideas and headline | A thread whose latest turn is Malay | The headline and starting ideas read Malay only once the thread has a Malay turn. Known limit: the language comes from the latest turn, so an empty Overview always shows English | manual |
+| Malay headline | A thread whose latest turn is Malay | The headline reads Malay once the thread's latest turn is Malay. Starting ideas show only on an empty thread, and an empty thread's language is English, so Malay starting ideas cannot show in 3a (they are for 3b); an empty Overview always shows the English headline and ideas | manual |
 
 ## Business knowledge add-on
 

@@ -80,7 +80,10 @@
     "expect": {
       "actions": [
         "navigate"
-      ]
+      ],
+      "fields": {
+        "tab": "payments"
+      }
     }
   },
   {
@@ -93,7 +96,10 @@
     "expect": {
       "actions": [
         "navigate"
-      ]
+      ],
+      "fields": {
+        "tab": "payments"
+      }
     }
   },
   {
@@ -106,7 +112,10 @@
     "expect": {
       "actions": [
         "navigate"
-      ]
+      ],
+      "fields": {
+        "tab": "connections"
+      }
     }
   },
   {
@@ -119,7 +128,42 @@
     "expect": {
       "actions": [
         "navigate"
-      ]
+      ],
+      "fields": {
+        "tab": "connections"
+      }
+    }
+  },
+  {
+    "id": "navigate-en-5",
+    "language": "en",
+    "message": "Open the customer preview",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ],
+      "fields": {
+        "tab": "chat"
+      }
+    }
+  },
+  {
+    "id": "navigate-ms-6",
+    "language": "ms",
+    "message": "Buka Customer preview",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ],
+      "fields": {
+        "tab": "chat"
+      }
     }
   },
   {
