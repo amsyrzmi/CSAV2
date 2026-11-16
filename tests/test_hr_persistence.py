@@ -150,10 +150,13 @@ async def test_identity_fixture_reset_clears_hr_ledgers_and_restores_protection(
 
 
 @pytest.fixture(scope="module")
-def hr_database() -> Iterator[str]:
-    """Use a cached image ID (no pull fallback), record ID, remove only this container."""
+def hr_database(combined_pg_image: str) -> Iterator[str]:
+    """Use the shared test image (built once per session by ``combined_pg_image``, never pulled),
+    record the container ID, remove only this container. Asking for the shared fixture keeps this
+    file independent of the order of the files before it: run alone, as the changed-files job does,
+    the image would otherwise be missing."""
     client = docker.from_env()
-    image = client.images.get("csa/pg16-postgis-vector:test")
+    image = client.images.get(combined_pg_image)
     image_id = image.id
     assert image_id is not None
     task_name = f"csav2-hr-tests-{uuid4().hex}"
