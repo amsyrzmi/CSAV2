@@ -10,6 +10,7 @@ server-side from a loopback stub, and Playwright answers every browser-side
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 import struct
 import zlib
@@ -231,6 +232,12 @@ class World:
         self.held_answered = asyncio.Event()
         # While set, a method DELETE waits for it before it answers.
         self.hold_delete: asyncio.Event | None = None
+        # While set, a picture upload waits for it before it answers.
+        self.hold_picture: asyncio.Event | None = None
+        # While set, a methods list read is answered as the list stood when it was asked, but only
+        # once the event is set (an answer that arrives late, after later changes).
+        self.hold_list: asyncio.Event | None = None
+        self.held_list_answered = asyncio.Event()
         # Refusals the next method DELETEs answer with, in order, before the real rules apply.
         self.delete_errors: list[tuple[int, str]] = []
         self.mark_paid_errors: list[tuple[int, str]] = []
@@ -396,6 +403,16 @@ class World:
         hold = self.hold_more if path == "payments/invoices" and "before" in params else None
         if request.method == "DELETE" and re.fullmatch(r"payments/methods/[^/]+", path):
             hold = self.hold_delete
+        if upload:
+            hold = self.hold_picture
+        if path == "payments/methods" and request.method == "GET" and self.hold_list is not None:
+            held = self.hold_list
+            status, data = self.answer(request.method, path, params, body)
+            data = copy.deepcopy(data)
+            await held.wait()
+            await request_route.fulfill(status=status, json=data)
+            self.held_list_answered.set()
+            return
         if hold is not None:
             await hold.wait()
         status, data = self.answer(request.method, path, params, body)
@@ -1557,6 +1574,10 @@ def deletes(world: World, path: str) -> list[dict[str, Any]]:
     return [c for c in world.calls if c["path"] == path and c["method"] == "DELETE"]
 
 
+def list_gets(world: World) -> list[dict[str, Any]]:
+    return [c for c in world.calls if c["path"] == "payments/methods" and c["method"] == "GET"]
+
+
 def picture_puts(world: World) -> list[dict[str, Any]]:
     return [c for c in world.calls if c["method"] == "PUT" and c["path"].endswith("/picture")]
 
@@ -1736,6 +1757,19 @@ async def test_admin_deletes_a_method_after_confirming(site: Site) -> None:
             await expect(delete).to_have_text("Delete method")
             await expect(delete).to_be_enabled()
 
+            # Delete waits while the picture is being saved.
+            world.hold_picture = asyncio.Event()
+            await form.get_by_test_id("method-picture-input").set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await expect(form.get_by_test_id("method-picture-choose")).to_have_text("Saving…")
+            await expect(delete).to_be_disabled()
+            world.hold_picture.set()
+            await expect(form.get_by_test_id("method-picture-choose")).to_have_text("Replace")
+            await expect(delete).to_be_enabled()
+            assert world.puts == 1
+            world.hold_picture = None
+
             # Unsaved changes come first: Save or Cancel, then Delete.
             label = form.get_by_test_id("method-label")
             await label.fill("DuitNow shop")
@@ -1766,6 +1800,13 @@ async def test_admin_deletes_a_method_after_confirming(site: Site) -> None:
 
             # The confirmation opens on Cancel, so Enter does not delete; then confirm, and the
             # button cannot be used twice while the request runs.
+            await delete.click()
+            await expect(cancel).to_be_focused()
+            # Enter on the focused Keep closes the confirmation and sends nothing; focus goes back.
+            await page.keyboard.press("Enter")
+            await expect(step).to_have_count(0)
+            await expect(delete).to_be_focused()
+            assert deletes(world, f"payments/methods/{DUITNOW['id']}") == []
             await delete.click()
             await expect(cancel).to_be_focused()
             world.hold_delete = asyncio.Event()
@@ -1855,5 +1896,52 @@ async def test_a_refused_or_stale_delete_keeps_the_list_true(site: Site) -> None
             await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
             await expect(rows).to_have_count(1)
             assert [m["id"] for m in world.methods] == [BANK["id"]]
+
+    await with_browser(body)
+
+
+async def test_a_late_list_read_never_brings_a_deleted_method_back(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.methods = [dict(BANK), dict(DUITNOW)]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            rows = page.get_by_test_id("payment-method")
+            # A save: its reread is asked while DuitNow still exists, and is held.
+            world.hold_list = asyncio.Event()
+            held = world.hold_list
+            await rows.nth(0).get_by_test_id("method-edit").click()
+            form = rows.nth(0).get_by_test_id("method-form")
+            await form.get_by_test_id("method-label").fill("Main")
+            # The page's own loads (twice in development mode) are done before the save.
+            await expect(rows).to_have_count(2)
+            before = len(list_gets(world))
+            await form.get_by_test_id("method-save").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Saved.")
+            # One more read: the save's reread, now held.
+            for _ in range(200):
+                if len(list_gets(world)) == before + 1:
+                    break
+                await asyncio.sleep(0.05)
+            assert len(list_gets(world)) == before + 1, list_gets(world)
+            world.hold_list = None
+
+            # DuitNow is deleted; its own reread answers at once.
+            await rows.nth(1).get_by_test_id("method-edit").click()
+            await page.get_by_test_id("method-delete").click()
+            await page.get_by_test_id("method-delete-confirm").click()
+            await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
+            await expect(rows).to_have_count(1)
+
+            # The save's old answer (with DuitNow in it) arrives last and is ignored.
+            async with page.expect_response(
+                lambda r: (
+                    r.url.endswith("/console/v1/payments/methods") and r.request.method == "GET"
+                )
+            ):
+                held.set()
+            await world.held_list_answered.wait()
+            await page.wait_for_timeout(500)
+            await expect(rows).to_have_count(1)
+            await expect(rows.get_by_test_id("method-label")).to_have_text("Main")
 
     await with_browser(body)

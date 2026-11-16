@@ -755,23 +755,30 @@ function SettingsView({ tenantId, admin, onRefused }: {
     setSettings(read);
     return read;
   }, [tenantId]);
+  // Every save, delete and reread of the methods takes the next number; a reread's answer is shown
+  // only while its number is still the latest, so an answer read before a later save or delete
+  // (a deleted method still in it, an older version) never replaces what that change showed.
+  const methodsSeq = useRef(0);
   const rereadMethods = useCallback(async () => {
+    const seq = ++methodsSeq.current;
     const list = await listMethods(tenantId);
-    setMethods(list);
+    if (methodsSeq.current === seq) setMethods(list);
     return list;
   }, [tenantId]);
   // The saved method shows at once; the reread then brings anything else that changed. If the
   // reread fails, the list keeps the saved method, so it still matches "Added." or "Saved.".
   const methodSaved = useCallback((saved: PaymentMethod) => {
+    methodsSeq.current += 1;
     setMethods((current) => upsertMethod(current ?? [], saved));
-    listMethods(tenantId).then(setMethods).catch(() => undefined);
-  }, [tenantId]);
+    rereadMethods().catch(() => undefined);
+  }, [rereadMethods]);
   // A deleted method (or one someone else deleted first) leaves the list at once, so the settings
   // see it gone too; the reread then brings anything else that changed.
   const methodRemoved = useCallback((id: string) => {
+    methodsSeq.current += 1;
     setMethods((current) => removeMethod(current ?? [], id));
-    listMethods(tenantId).then(setMethods).catch(() => undefined);
-  }, [tenantId]);
+    rereadMethods().catch(() => undefined);
+  }, [rereadMethods]);
   if (error) return <Notice error>{error}</Notice>;
   if (!settings || !methods) return <Notice>Loading the payment settings…</Notice>;
   return (
@@ -1083,6 +1090,8 @@ function MethodForm({
   const [pictureFile, setPictureFile] = useState<File | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // The edit form's picture upload or removal is running: Delete waits for it.
+  const [pictureBusy, setPictureBusy] = useState(false);
   const kindRef = useRef<HTMLSelectElement>(null);
   const labelRef = useRef<HTMLInputElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
@@ -1218,7 +1227,7 @@ function MethodForm({
       {base && base.kind === "qr" && (
         <PictureField tenantId={tenantId} testId="method-picture" label="QR picture"
           subject={base.label} path={methodPicturePath(tenantId, base.id)}
-          picture={base.picture ?? null} hint={QR_HINT}
+          picture={base.picture ?? null} hint={QR_HINT} onBusy={setPictureBusy}
           onChanged={(picture) => {
             const next = { ...base, picture };
             setBase(next);
@@ -1228,7 +1237,7 @@ function MethodForm({
       )}
       {!base && draft.kind === "qr" && (
         <PictureChooser testId="method-new-picture" label="QR picture (optional)" hint={QR_HINT}
-          file={pictureFile} onChange={setPictureFile} />
+          file={pictureFile} onChange={setPictureFile} disabled={busy} />
       )}
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" className="size-4 accent-brand-600" data-testid="method-active" checked={draft.is_active}
@@ -1247,7 +1256,7 @@ function MethodForm({
       {base && onDeleted && (
         <div className="space-y-2 border-t border-[color:var(--fs-border)] pt-3">
           <button ref={deleteRef} type="button" className={secondary} data-testid="method-delete"
-            disabled={unsaved || busy || deleting || confirming} title={unsaved ? DELETE_HELP : undefined}
+            disabled={unsaved || busy || deleting || confirming || pictureBusy} title={unsaved ? DELETE_HELP : undefined}
             aria-describedby={unsaved ? `${formId}-delete-help` : undefined}
             onClick={() => { setConfirming(true); setError(""); setFormNotice(""); }}>Delete method</button>
           {unsaved && <p id={`${formId}-delete-help`} className={helpText} data-testid="method-delete-help">
@@ -1259,7 +1268,8 @@ function MethodForm({
                 {deleteMethodQuestion(base)}</p>
               <p className="text-sm text-ink-700">{deleteMethodSentences(base).join(" ")}</p>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className={action} disabled={deleting} data-testid="method-delete-confirm"
+                <button type="button" className={action} disabled={deleting || pictureBusy}
+                  data-testid="method-delete-confirm"
                   onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete method"}</button>
                 <button ref={keepRef} type="button" className={secondary} disabled={deleting}
                   data-testid="method-delete-cancel" onClick={() => setConfirming(false)}>Keep method</button>
