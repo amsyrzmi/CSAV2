@@ -1121,6 +1121,34 @@ on the local backend the gateway's own origin. No CSP sets `media-src` today.
   completes the TLS handshake with it (`docs/TRAINING_VIDEO_CAPACITY.md`). The first video on
   production is the end-to-end check against the bucket's own host.
 
+## Pictures (PR 2b): before the first production deploy
+
+Pull request 2b (the payment QR picture with how-to-pay answers and Telegram reminders) is the first
+code that writes picture messages. The code that reads them is pull request 2a, merged as
+`c770ad770eb426ebc93ad923e55fd3f588afc05a` (`c770ad77`). Production must run 2a on every process
+before any commit containing 2b is deployed there:
+
+1. Check what production runs (the last successful `deploy-production` apply log ends with
+   `Rollout of <sha7> finished.`). If that commit already contains `c770ad77`
+   (`git merge-base --is-ancestor c770ad77 <running sha>`), go on to the normal deploy.
+2. Otherwise deploy `c770ad77`, or a later staged commit on `main` from before 2b, first, with an
+   explicit full SHA (Deploying from GitHub, step 2):
+
+   ```bash
+   gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main -f sha=c770ad770eb426ebc93ad923e55fd3f588afc05a
+   ```
+
+   It passes the staged gate (staging ran `c770ad77` on 2026-11-16). Do not start a default run
+   (empty `sha`) before this one has finished: an empty `sha` deploys the tip of `main`, which
+   contains 2b. Migration 0610 (pictures pull request 1) must be applied on production by then; it
+   comes with that commit if it is not there yet, so that first deploy has a migration pending
+   and stops the app services while it runs.
+3. Only then deploy a commit containing 2b, as usual.
+
+Never roll production back past 2a once 2b has run there: an older delivery process sends a
+picture message's caption as plain text, and an older worker fails a saved conversation turn that
+carries a picture. Fix forward instead.
+
 ## Pointing the model at a stub (capacity test only)
 
 The gateway and worker read the model endpoint from `GROQ_CHAT_URL`. To load-test without spending

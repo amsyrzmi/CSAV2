@@ -18,6 +18,13 @@ the plan printed. Details, every refusal and the recovery steps: `deploy/PRODUCT
 Only `gh` commands from the main checkout `/home/amsyrzmi/CSAV2`, against the repository
 `amsyrzmi/CSAV2`. Nothing runs on the instance from here: Systems Manager runs the rollout there.
 
+## Hold before step 1
+
+If the target contains the pictures PR 2b commits (the QR picture with payment answers and Telegram
+reminders) and production does not yet run `c770ad77` (`c770ad770eb426ebc93ad923e55fd3f588afc05a`,
+PR 2a) or a later commit, stop and tell the owner: production must first deploy `c770ad77` with
+an explicit `sha` (`deploy/PRODUCTION.md`, "Pictures (PR 2b): before the first production deploy").
+
 ## Steps
 
 1. Pick the commit. Leave `sha` empty when no commit is named: an empty `sha` means the tip of

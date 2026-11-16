@@ -216,6 +216,22 @@ async def test_resumed_emit_writes_nothing_twice(sessions: SessionWorld) -> None
 
 
 @requires_docker
+async def test_resumed_emit_never_puts_the_image_after_its_text(sessions: SessionWorld) -> None:
+    w = sessions
+    env, _ = await seed(w)
+    # The first emit wrote the text alone: the picture was missing then.
+    await emit(w, env, image(env), text(env))
+    assert [r["idempotency_key"] for r in await outbound(w, env.trace_id)] == [f"{env.trace_id}:0"]
+    # The picture is uploaded since; the resumed emit writes no image after the text, which may
+    # already have gone.
+    await a_picture(w, env.client_id)
+    await emit(w, env, image(env), text(env))
+    rows = await outbound(w, env.trace_id)
+    assert [r["idempotency_key"] for r in rows] == [f"{env.trace_id}:0"]
+    assert rows[0]["has_attachment"] is False
+
+
+@requires_docker
 async def test_history_leaves_out_outbound_pictures_but_keeps_inbound_attachments(
     sessions: SessionWorld,
 ) -> None:

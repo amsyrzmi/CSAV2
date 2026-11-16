@@ -1266,6 +1266,16 @@ async def _insert_outbound(
         # never carries the handoff's authority: only the message with the draft's text does.
         if envelope.channel != Channel.TELEGRAM:
             return
+        # A resumed emit whose text is already written (the first emit had no picture) writes no
+        # image: the text may already have gone, and the picture would arrive after it. The text's
+        # key is the coordinator's (`_reply_messages`).
+        if (
+            await db.q.fetch_one(
+                "worker/get_message.sql", (envelope.client_id, f"{envelope.trace_id}:0"), conn=conn
+            )
+            is not None
+        ):
+            return
         handoff = False
     if not await automation_allowed(
         conn, envelope.client_id, conversation_id, envelope.trace_id, handoff=handoff
