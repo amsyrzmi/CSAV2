@@ -17,13 +17,15 @@ const STUCK =
  * where it was, playing if it was playing. `startAt` (the page's `?t=`) puts the player there: on
  * load, once the first metadata is in (not playing), and whenever it changes while the page is open
  * (the assistant's "Watch from" link for the video already on screen), straight away, playing. The
- * parent keeps the element in `videoRef` to seek it from the transcript.
+ * parent keeps the element in `videoRef` to seek it from the transcript. `poster` is the video's
+ * generated preview, shown until it plays, when it has one.
  */
 export default function VideoPlayer({
   tenantId,
   itemId,
   title,
   startAt,
+  poster,
   videoRef,
   onTime,
 }: {
@@ -31,6 +33,8 @@ export default function VideoPlayer({
   itemId: string;
   title: string;
   startAt: number | null;
+  /** The thumbnail route's address, or undefined when the video has no preview. */
+  poster?: string;
   videoRef: RefObject<HTMLVideoElement | null>;
   /** The playing position in seconds, as the player reports it. */
   onTime: (seconds: number) => void;
@@ -124,6 +128,7 @@ export default function VideoPlayer({
         data-testid="training-video-player"
         className="aspect-video max-h-[70vh] w-full rounded-[var(--fs-radius-control)] bg-[var(--fs-surface-blue)]"
         src={url ?? undefined}
+        poster={poster}
         onLoadedMetadata={(event) => seekWhenReady(event.currentTarget)}
         onLoadedData={() => {
           refreshes.current = 0;

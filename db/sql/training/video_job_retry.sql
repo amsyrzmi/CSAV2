@@ -31,6 +31,8 @@ SELECT item.id, item.kind, item.title, item.description, item.category, item.vie
            AND (item.kind = 'pdf' OR (item.status = 'ready' AND item.speech = 'speech'))
            AS has_summary,
        job.stage AS job_stage, job.status AS job_status, job.chunks_done, job.chunks_total,
-       job.error_code AS job_error
+       job.error_code AS job_error, t.sha256 AS thumbnail_version
 FROM item
-JOIN job ON job.client_id = item.client_id AND job.item_id = item.id;
+JOIN job ON job.client_id = item.client_id AND job.item_id = item.id
+LEFT JOIN public.media_assets t
+       ON t.client_id = item.client_id AND t.kind = 'training_thumbnail' AND t.subject_key = item.id::text;

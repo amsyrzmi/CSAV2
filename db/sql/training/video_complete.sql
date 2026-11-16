@@ -16,6 +16,9 @@ WITH done AS (
     USING done
     WHERE u.client_id = done.client_id AND u.item_id = done.id
 )
-SELECT id, kind, title, description, category, view_mode, page_count, byte_size, created_at,
-       created_by, status, duration_ms, failure_code, video_codec, false AS has_summary
-FROM done;
+SELECT d.id, d.kind, d.title, d.description, d.category, d.view_mode, d.page_count, d.byte_size,
+       d.created_at, d.created_by, d.status, d.duration_ms, d.failure_code, d.video_codec,
+       false AS has_summary, t.sha256 AS thumbnail_version
+FROM done d
+LEFT JOIN public.media_assets t
+       ON t.client_id = d.client_id AND t.kind = 'training_thumbnail' AND t.subject_key = d.id::text;

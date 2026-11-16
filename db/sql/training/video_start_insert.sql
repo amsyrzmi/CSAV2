@@ -19,6 +19,8 @@ WITH item AS (
 )
 SELECT i.id, i.kind, i.title, i.description, i.category, i.view_mode, i.page_count, i.byte_size,
        i.created_at, i.created_by, i.status, i.duration_ms, i.failure_code, i.video_codec,
-       false AS has_summary
+       false AS has_summary, t.sha256 AS thumbnail_version
 FROM item i
-JOIN upload u ON u.item_id = i.id;
+JOIN upload u ON u.item_id = i.id
+LEFT JOIN public.media_assets t
+       ON t.client_id = i.client_id AND t.kind = 'training_thumbnail' AND t.subject_key = i.id::text;

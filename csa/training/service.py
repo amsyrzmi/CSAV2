@@ -36,7 +36,7 @@ from uuid import UUID, uuid4
 
 import structlog
 from fastapi import HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from starlette.datastructures import UploadFile
@@ -47,6 +47,9 @@ from csa.console.multipart import upload_form
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.decide.completion import CompletionError, JsonCompletionClient
+from csa.media import service as pictures
+from csa.media.contracts import ThumbnailOut
+from csa.media.http import etag, etag_matches, picture_headers
 from csa.media.service import delete_for
 from csa.metering.context import MeterContext, meter_context
 from csa.storage.base import ObjectStore, StorageError, durable_put
@@ -469,6 +472,46 @@ class TrainingLibrary:
             handles.pop_all()
             return response
 
+    async def open_thumbnail(
+        self,
+        actor: ConsoleActor,
+        client_id: UUID,
+        item_id: UUID,
+        *,
+        if_none_match: str | None = None,
+    ) -> Response:
+        """The item's generated thumbnail, with the item's own visibility (readers: a ready item
+        only; managers: any state). A missing item, another company's, one the caller may not see
+        and one with no thumbnail are the same 404.
+
+        The visibility and the ``If-None-Match`` comparison run on the metadata; the bytes are
+        read only for a 200, so a refusal or a 304 never touches them.
+        """
+        async with tx(self.pool, str(client_id)) as conn:
+            row = await db.q.fetch_one(
+                "training/thumbnail_get.sql", (client_id, item_id), conn=conn
+            )
+            if row is None or row["thumbnail_id"] is None:
+                raise HTTPException(404, NOT_FOUND)
+            await self._visible(conn, actor, client_id, row)
+        if etag_matches(if_none_match, etag(row["sha256"])):
+            return Response(status_code=304, headers=picture_headers(row["sha256"]))
+        async with tx(self.pool, str(client_id)) as conn:
+            stored = await pictures.get(conn, client_id, row["thumbnail_id"])
+        # Removed with its item since the metadata read: 404. The row id stays on a replace, so the
+        # headers follow the bytes actually sent.
+        if (
+            stored is None
+            or stored.kind != "training_thumbnail"
+            or stored.subject_key != str(item_id)
+        ):
+            raise HTTPException(404, NOT_FOUND)
+        return Response(
+            content=stored.data,
+            media_type=stored.media_type,
+            headers=picture_headers(stored.sha256),
+        )
+
     async def get_summary(
         self, actor: ConsoleActor, client_id: UUID, item_id: UUID
     ) -> SummaryOut | None:
@@ -644,6 +687,12 @@ class TrainingLibrary:
                 failure=row["failure_code"] if manage and row["status"] == "failed" else None,
                 processing=_processing(row) if manage else None,
                 notice="hevc" if manage and row["video_codec"] == "hevc" else None,
+                # The version only: the bytes are read from the thumbnail route.
+                thumbnail=(
+                    ThumbnailOut(version=row["thumbnail_version"])
+                    if row["thumbnail_version"] is not None
+                    else None
+                ),
             )
             for row in rows
         ]

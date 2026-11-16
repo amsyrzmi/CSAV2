@@ -1807,7 +1807,9 @@ admin, tenant staff) with the `subscriptions` package active; a plan picture for
 company with `subscriptions` active; a product picture for staff with `orders_products` or
 `marketplaces` active. Anything else (an unknown id, another company's, a role or package that may
 not read, a training thumbnail) is `404 {"detail": "picture_not_found"}`, never 403, and is decided
-before the `ETag` comparison. A malformed id is 422; the machine token is 403.
+before the `ETag` comparison. A training video's thumbnail is served only by the training route
+(`GET /console/v1/training/items/{id}/thumbnail`, [The thumbnail route](#the-thumbnail-route)), so
+the library's "readers see only ready items" rule holds for it too. A malformed id is 422; the machine token is 403.
 
 Upload and remove: `PUT|DELETE /console/v1/payments/methods/{id}/picture` (admins, `qr` methods
 only), `PUT|DELETE /console/v1/subscriptions/plans/{code}/picture` (plan writers),
@@ -2051,7 +2053,7 @@ of scope are in [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md). Migrations `0540` 
 and `0541` (`training_items`, `training_is_hr_owner()`). The schemas are published in
 `docs/console_openapi.json` as `ItemOut`, `Processing`, `ItemList`, `ItemPatch`, `SummaryRequest`,
 `SummaryOut`, `NoSummary`, `VideoStart`, `VideoUploadOut`, `PieceOut`, `PlaybackOut`,
-`TranscriptLine` and `TranscriptOut`. Migrations `0600` and
+`TranscriptLine`, `TranscriptOut` and `ThumbnailOut`. Migrations `0600` and
 `0601` add video to the same items and the tables behind it.
 
 All routes are under `/console/v1`, behind the `training_library` package gate (`active` only, so
@@ -2067,7 +2069,7 @@ always 404 `training_not_found`, never 403. The file store is the `training` sto
 
 Who may call:
 
-- **Read** (list, file, playback, video, transcript, read a summary, ask for a summary): any member
+- **Read** (list, file, playback, video, thumbnail, transcript, read a summary, ask for a summary): any member
   of the company, every role including `read_only`, and a platform admin who chose the company.
 - **Manage** (add, edit, remove, regenerate a summary, every video upload route, retry): a platform
   admin who chose the company, a tenant admin, and the company's HR owner when that person is a
@@ -2084,13 +2086,14 @@ Who may call:
 
 | Method/path | Who | Result |
 |---|---|---|
-| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. The list never carries summary text |
+| `GET /training/items` | read | `ItemList` `{items, categories, can_manage}`. `items` are newest first, each `ItemOut` `{id, kind, title, description, category, view_mode, page_count, byte_size, created_at, uploaded_by_name, has_summary, status, duration_ms, failure, processing, notice, thumbnail}`. `kind` is `pdf` or `video`. For a PDF, `view_mode` is `slides` or `document`, `page_count` is set, `status` is `ready` and `duration_ms`, `failure`, `processing` and `notice` are `null`. For a video, `view_mode` and `page_count` are `null`, `duration_ms` is set once it is known and `status` is `uploading`, `uploaded`, `transcribing`, `summarising`, `ready` or `failed`. Readers (every member who cannot manage) get PDFs and `ready` videos only, and `failure`, `processing` and `notice` are always `null` for them. Managers get every video in every state, with `failure` (a `training_` code, on a `failed` video), `processing` `{stage, chunks_done, chunks_total, waiting}` (while the video is `uploaded`, `transcribing` or `summarising`; `stage` is `transcribing` or `summarising`, `chunks_total` is `null` until known, `waiting` says the daily processing limit is used up) and `notice` (`hevc`: the video may not play on some computers). `has_summary` is true for a PDF with a stored summary and for a `ready` video with speech and a stored summary, never for a silent or failed video. `categories` lists each non-empty category once (compared case-insensitively), in alphabetical order. `uploaded_by_name` is the uploader's display name, `null` when a platform admin uploaded it or the name could not be read. `thumbnail` is `{version}` (`ThumbnailOut`) when the video has a generated preview, else `null` (always `null` for a PDF, for a video uploaded before previews, for one still being processed and for one whose frame could not be taken); `version` is the picture's SHA-256, never its bytes, and every answer that carries an `ItemOut` carries it. The list never carries summary text |
 | `POST /training/items` | manage | 201 `ItemOut`. `multipart/form-data` with one part named `file` and no other field, plus the `Idempotency-Key` header (a UUID). Title is the file name without `.pdf` (cut to 120 characters), `view_mode` is `slides` when the first page is landscape (its `/Rotate` counted), else `document`. Step one of the two-step upload, below |
 | `PATCH /training/items/{id}` | manage | `ItemPatch`: any of `title`, `description`, `category`, `view_mode`; returns the `ItemOut`. Step two of the upload, below. On a video `title`, `description` and `category` work in every state; `view_mode` is 422 `training_not_pdf` and nothing in that request is applied |
 | `DELETE /training/items/{id}` | manage | 204. Removes the row (a video's pieces, job, transcript and search windows go with it, in any state), then the file or the unfinished upload and the store's multipart upload. The video's processing-usage row stays, so deleting does not give its seconds back |
 | `GET /training/items/{id}/file` | read | The PDF, streamed. Headers below. A video is 404 `training_not_found` here |
 | `GET /training/items/{id}/playback` | read | `PlaybackOut` `{url, expires_at, media_type}` for a video: where to play it from for the next 15 minutes (ask again after `expires_at`). On S3 `url` is a presigned inline GET under the company's own prefix (`private, no-store`, never log or store it); on the local store it is the gateway's `/console/v1/training/items/{id}/video` (with `?client_id=` for a platform admin). `media_type` is `video/mp4` (a `.mov` plays as that) or `video/webm`. A PDF, an item of another company, and for a reader any video that is not `ready` are 404 `training_not_found`; so is a manager's video with no file to play (still `uploading`, or failed for a reason in the file itself, whose file the worker deleted). The answer is `Cache-Control: private, no-store`. See [The video route](#the-video-route) |
 | `GET /training/items/{id}/video` | read | The video itself, local store only (404 `training_not_found` on S3, where `playback` gives the URL), answering HTTP Range. See [The video route](#the-video-route) |
+| `GET /training/items/{id}/thumbnail` | read | The video's generated preview (a JPEG, 320 px wide), with the item's own visibility: a reader gets it for a `ready` item only, a manager in every state. A missing item, another company's, one the caller may not see and one with no thumbnail are all the same 404 `training_not_found`. Headers, `ETag` and `304` below, in [The thumbnail route](#the-thumbnail-route) |
 | `GET /training/items/{id}/transcript` | read | `TranscriptOut` `{language, speech, segments}`; `segments` are `{start_ms, end_ms, text}` in time order. `speech` is `speech`, `no_speech` or `no_audio` and `language` the transcript's language, both `null` until transcribing has decided them. A reader gets it for a `ready` video only (404 otherwise); a manager gets it in every state, the lines made so far while the video is transcribing. A silent video has no segments. A PDF is 404. `Cache-Control: private, no-store` |
 | `GET /training/items/{id}/summary` | read | `SummaryOut` when one is stored, else `{"summary": null}` (`NoSummary`). Never calls the model. Works for a video as for a PDF; a video that is not `ready` is 404 for a reader, and a silent or failed video answers `{"summary": null}` to a manager |
 | `POST /training/videos` | manage | 201 `VideoUploadOut`. Starts a video upload; see [Video uploads](#video-uploads) |
@@ -2335,6 +2338,26 @@ Every answer, 416 included, carries `Accept-Ranges: bytes`, `Content-Disposition
 carries `Content-Type` from the stored container (`video/mp4` for `.mp4`, `.m4v` and `.mov`,
 `video/webm` for `.webm`). A missing object is 503 `training_storage_unavailable` (404 when the item was
 removed in the meantime).
+
+### The thumbnail route
+
+`GET /training/items/{id}/thumbnail` reads the item and its thumbnail's metadata (never the bytes)
+under the tenant context and decides from that alone: the item's visibility first (readers: `ready`
+only; managers: any state), then `If-None-Match`; the bytes are read only for a 200. So a refusal and
+a `304` never read the picture, and a reader's cached copy of a video that is no longer visible is
+never revalidated into a `304`. Headers, as on the generic picture route:
+
+- `Content-Type`: the stored type (`image/jpeg` for a generated thumbnail)
+- `ETag: "<version>"`: the picture's SHA-256, the same `version` the list carries; it changes when
+  the picture changes
+- `Cache-Control: private, no-cache` (the browser keeps a copy and revalidates each time)
+- `X-Content-Type-Options: nosniff`
+- `Content-Security-Policy: default-src 'none'; sandbox`
+
+`If-None-Match` with the current `ETag` (a list, a `W/` prefix and `*` are understood) is `304` with
+the same headers and no body. The web adds `?v=<version>` to the address (`thumbnailUrl` in
+`web/lib/training-api.ts`; a platform admin's address also carries `client_id`) so a changed picture
+is a new address. The thumbnail is a staff view only: it is never sent to customers.
 
 ### The summary
 

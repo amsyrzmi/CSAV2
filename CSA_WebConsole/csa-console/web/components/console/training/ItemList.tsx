@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useId, useState } from "react";
-import type { TrainingItem, TrainingList } from "@/lib/training-api";
+import { thumbnailUrl, type TrainingItem, type TrainingList } from "@/lib/training-api";
 import { itemFacts } from "@/lib/training-form";
 import { categoriesOf, filterItems, videoStateText } from "@/lib/training-view";
 import { action, field, secondary } from "../ui";
@@ -11,19 +11,67 @@ import { muted } from "./shared";
 const ring =
   "rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 
+// Every row's picture box is this size, image or placeholder, so a picture arriving late (or
+// failing) never moves the row. 16:9, the shape of most videos; a thumbnail of another shape is
+// cropped to fit.
+const THUMB_WIDTH = 112;
+const THUMB_HEIGHT = 63;
+const thumbBox = "h-[63px] w-[112px] shrink-0 overflow-hidden rounded-[var(--fs-radius-control)]";
+
+/**
+ * The row's first child: a video's generated preview, else a placeholder (a PDF, a video uploaded
+ * before previews, one still being processed, or a preview that would not load). Decorative: the
+ * title sits next to it, so the image has empty alt text and the placeholder is hidden from
+ * assistive technology.
+ */
+function ItemThumbnail({ tenantId, item }: { tenantId: string | null; item: TrainingItem }) {
+  // The version that failed to load; a new version (a changed picture) is tried afresh.
+  const [failed, setFailed] = useState<string | null>(null);
+  const version = item.thumbnail?.version ?? null;
+  if (version !== null && failed !== version) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- a same-origin route, revalidated on its ETag
+      <img
+        src={thumbnailUrl(tenantId, item.id, version)}
+        alt=""
+        width={THUMB_WIDTH}
+        height={THUMB_HEIGHT}
+        loading="lazy"
+        decoding="async"
+        data-testid={`training-thumbnail-${item.id}`}
+        className={`${thumbBox} bg-[var(--fs-surface-blue)] object-cover`}
+        onError={() => setFailed(version)}
+      />
+    );
+  }
+  return (
+    <div
+      aria-hidden="true"
+      data-testid={`training-thumbnail-placeholder-${item.id}`}
+      className={`${thumbBox} flex items-center justify-center bg-[var(--fs-surface-blue)] text-xs font-semibold tracking-wide text-[color:var(--fs-text-secondary)]`}
+    >
+      {item.kind === "video" ? "VIDEO" : "PDF"}
+    </div>
+  );
+}
+
 /**
  * The company's PDFs and videos, newest first (the server's order), with a category filter and a
  * search by title. Managers get "Add a PDF or video" and, on each row, "Edit details" and "Remove",
  * and see where a video is in processing; readers get none of that. An empty library says what
- * will appear; a filter with no match says how to undo it.
+ * will appear; a filter with no match says how to undo it. Each row starts with the video's
+ * preview, or a placeholder.
  */
 export default function ItemList({
+  tenantId,
   list,
   hrefFor,
   onAdd,
   onEdit,
   onRemove,
 }: {
+  /** Null for a tenant member; the chosen company for a platform admin (the preview names it). */
+  tenantId: string | null;
   list: TrainingList;
   hrefFor: (id: string) => string;
   onAdd: () => void;
@@ -110,6 +158,7 @@ export default function ItemList({
               data-testid={`training-item-${item.id}`}
               className="card flex min-w-0 flex-col gap-3 rounded-[14px] p-4 sm:flex-row sm:items-start sm:justify-between"
             >
+              <ItemThumbnail tenantId={tenantId} item={item} />
               <div className="min-w-0 flex-1">
                 <h2 className="font-(family-name:--fs-font-heading) text-base font-semibold [overflow-wrap:anywhere]">
                   <Link

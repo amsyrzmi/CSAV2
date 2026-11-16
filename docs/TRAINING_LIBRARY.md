@@ -201,7 +201,9 @@ play it (HEVC is accepted, with a note to the manager). The routes, codes and fi
 [Video processing](./CONSOLE_API.md#video-processing).
 
 Readers see only `ready` videos. Managers see every state, with a plain sentence for where a video is
-or why it failed, and "Try again" for a failure worth another go.
+or why it failed, and "Try again" for a failure worth another go. Each row of the list starts with
+the video's preview picture, made from one frame while the video is processed (see
+[Thumbnails](#thumbnails)); a PDF, and a video without one, shows a placeholder.
 
 ### Who can do what with video
 
@@ -300,8 +302,9 @@ The states staff see: `uploading`, `uploaded`, `transcribing`, `summarising`, `r
    transaction: jobs whose heartbeat is older than 600 s are requeued (or failed once their three
    attempts are used), then the oldest due job is claimed, and only while none of the company's
    jobs is processing. A claim adds one attempt.
-3. **Transcribing.** Probe the duration and codecs (refusals below). No sound stream: `no_audio`,
-   `ready`. A silent track: `no_speech`, `ready`, no provider call. Then the daily cap is reserved
+3. **Transcribing.** Probe the duration and codecs (refusals below). Then, once per video, take one
+   frame for its thumbnail (best-effort: a failure never fails, retries or deletes the item; see
+   [Thumbnails](#thumbnails)). No sound stream: `no_audio`, `ready`. A silent track: `no_speech`, `ready`, no provider call. Then the daily cap is reserved
    (below). Then, for each 5-minute chunk from `chunks_done`: ffmpeg reads that chunk's audio from
    the source (on S3 through a presigned link made for that chunk; locally from the file), the speech
    endpoint transcribes it, and the chunk's lines and `chunks_done` are committed in one transaction.
@@ -378,6 +381,41 @@ front of the bucket is the later fix.
 - **What leaves the company.** The sound goes to the speech-to-text provider; transcript text goes to
   the language-model provider for the summary and for a question. The add dialog says so.
 
+### Thumbnails
+
+This reverses the earlier non-goal "no thumbnails generated from frames" (the video design of
+2026-11-13): the uploaded file still plays as uploaded, and a single still frame is kept beside it.
+
+- **What.** One JPEG, 320 px wide (height kept to the video's shape), taken at 1 second or a tenth
+  of the video's length, whichever is earlier, by the same hardened ffmpeg child as the audio work
+  (empty environment, CPU, memory and file-size limits, forced demuxer, protocol whitelist). It is
+  stored as the item's picture in `media_assets` (`kind = 'training_thumbnail'`, `subject_key` the
+  item id, `source = 'generated'`), checked as an uploaded picture is (`check_image`), and does not
+  count toward the company's 300 pictures. Measured limits are in
+  [TRAINING_VIDEO_CAPACITY.md](./TRAINING_VIDEO_CAPACITY.md#thumbnail-frame): the worst case, a 4K
+  10-bit HEVC frame, peaked at 249.5 of the container's 256 MiB.
+- **When.** During transcribing, after the probe and before the no-sound and silence checks (so a
+  video without sound still gets one), on every attempt until the item has a picture; a picture that
+  is there (generated, or a later upload) ends the step at once.
+- **Best-effort.** Every failure (a frame the child cannot decode within its limits, a picture
+  `check_image` refuses, such as a video wider than 5:1, a storage or database error) means no
+  thumbnail, logged as `training_thumbnail_failed` with a code only; the video goes on being
+  processed as before.
+- **Where it shows.** The list sends the thumbnail's version only (`ItemOut.thumbnail`, the
+  picture's SHA-256, never the bytes); the page loads the picture from
+  `GET /console/v1/training/items/{id}/thumbnail`, which follows the item's own visibility (readers:
+  `ready` items only; managers: every state) and answers every refusal with the same 404. Each list
+  row starts with a fixed-size picture box, so a picture that loads late or fails never moves the
+  row; the video's player uses it as its poster. Details in
+  [CONSOLE_API.md](./CONSOLE_API.md#the-thumbnail-route).
+- **A placeholder instead** for a PDF; for a video uploaded before thumbnails shipped (existing
+  `ready` videos are not given one: there is no backfill); for a video still being processed; for a
+  video whose video track ends before the frame's time (for example a still image with narration);
+  for one whose frame failed; and whenever the picture does not load.
+- **Staff only.** The thumbnail is never sent to customers: delivery's picture read
+  (`db/sql/media/send_read.sql`) gives no row for a training thumbnail.
+- **Removal.** Deleting an item deletes its thumbnail in the same transaction.
+
 ### Storage and retention
 
 - Files are `<uuid>.<ext>` under `training/<company id>/` on S3 (a multipart upload until completed)
@@ -387,8 +425,8 @@ front of the bucket is the later fix.
   The bucket's rule that aborts incomplete multipart uploads must say 2 days, not 1, before video is
   switched on: a video upload stays open while pieces arrive and is abandoned only after 24 hours
   without one.
-- Deleting a video removes its file or upload, pieces, job, transcript, windows and summary; only its
-  processing-usage row stays. Assistant turns that quoted it are not rewritten.
+- Deleting a video removes its file or upload, pieces, job, transcript, windows, summary and
+  thumbnail; only its processing-usage row stays. Assistant turns that quoted it are not rewritten.
 
 ### Operations notes for video
 
@@ -424,6 +462,9 @@ front of the bucket is the later fix.
 - **A retry is not counted twice.** A video already booked against the daily cap is not booked again
   by "Try again" while its usage row exists (up to 2 days); after the row is pruned it books again.
 - **An audio-only file is refused** with the codec sentence, which does not say why.
+- **Thumbnails are for videos uploaded after they shipped.** Existing videos keep the placeholder;
+  a "make previews" action is a possible later step. A frame that always fails is tried again on
+  each attempt of the transcribing stage (at most 3, each up to the child's wall clock).
 - **Real-model and real-bucket behaviour was not exercised in the build:** see
   [TRAINING_RETEST.md](./TRAINING_RETEST.md).
 
@@ -431,6 +472,8 @@ front of the bucket is the later fix.
 
 - PPTX, audio-only files or any file that is not a PDF or a video (MP4, M4V, MOV, WebM).
 - For video: transcoding or adaptive streaming, captions inside the player and transcript editing,
+  choosing or uploading a replacement thumbnail (a later slice; a generated one never overwrites an
+  uploaded one, so the store is ready for it),
   making a new summary of a video on request, uploads straight from the browser to S3, and asking the
   assistant about a PDF (it answers about videos only).
 - Courses, ordered lessons, required items, due dates, reminders, quizzes, certificates, comments.

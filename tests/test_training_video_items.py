@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.media import service as media
+from csa.media.images import check_image
 from csa.storage.base import ObjectStore, StorageError
 from csa.storage.local import LocalObjectStore
 from csa.training import limits
@@ -16,6 +21,7 @@ from csa.training.store_sweep import STORED
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker
+from tests.media_images import jpeg, png
 from tests.test_console_sessions import SessionWorld
 from tests.test_training_api import (
     ITEM_FIELDS,
@@ -596,3 +602,204 @@ async def test_company_b_cannot_list_patch_delete_or_summarise_company_a_video(
             assert answer.status_code == 404 and detail(answer) == "training_not_found", answer.text
     assert {str(row["id"]) for row in await rows(sessions, tenant)} == {ready, failed}
     assert all(row["title"].startswith("Video") for row in await rows(sessions, tenant))
+
+
+# ---- Thumbnails (pictures plan, Task 19) -------------------------------------------------------
+
+THUMBNAIL_CSP = "default-src 'none'; sandbox"
+
+
+async def put_thumbnail(
+    world: SessionWorld,
+    tenant: str,
+    item: str,
+    picture: bytes | None = None,
+    *,
+    source: Literal["upload", "generated"] = "generated",
+) -> str:
+    """A thumbnail for `item` in `tenant`, as the worker stores it; its version (sha256)."""
+    picture = picture if picture is not None else jpeg(320, 180)
+    async with tx(world.pool, tenant) as conn:
+        stored = await media.put(
+            conn,
+            UUID(tenant),
+            "training_thumbnail",
+            item,
+            picture,
+            check_image(picture, None),
+            source=source,
+            actor_id=None,
+        )
+    assert stored is not None
+    return stored.version
+
+
+def thumbnail(item: str) -> str:
+    return f"{ITEMS}/{item}/thumbnail"
+
+
+def assert_not_found(answer: httpx.Response) -> None:
+    assert answer.status_code == 404, answer.text
+    assert answer.json() == {"detail": "training_not_found"}
+
+
+async def test_thumbnail_route_follows_item_visibility(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    q = f"?client_id={tenant}"
+    admin, _ = await sessions.member(role="tenant_admin")
+    owner, owner_me = await sessions.member()
+    await make_owner(sessions, tenant, owner_me["user"]["id"])
+    staff, _ = await sessions.member()
+    reader, _ = await sessions.member(role="read_only")
+    made = await all_states(sessions, tenant)
+    for item in made.values():
+        await put_thumbnail(sessions, tenant, item)
+    bare = await video_row(sessions, tenant, status="ready", title="No thumbnail yet")
+    pdf = (await upload(sessions, admin, make_pdf(1))).json()["id"]
+
+    # Readers (staff without manage, read_only): a ready video only; every other state is the
+    # same 404 as a missing item.
+    for member in (staff, reader):
+        shown = await member.get(thumbnail(made["ready"]))
+        assert shown.status_code == 200, shown.text
+        assert shown.content == jpeg(320, 180)
+        for state in STATES:
+            if state != "ready":
+                assert_not_found(await member.get(thumbnail(made[state])))
+    # Managers: every state.
+    for manager, query in ((admin, ""), (owner, ""), (sessions.admin, q)):
+        for state in STATES:
+            answer = await manager.get(thumbnail(made[state]) + query)
+            assert answer.status_code == 200, (state, answer.text)
+            assert answer.headers["content-type"] == "image/jpeg"
+    # No thumbnail (an older video, a PDF) and no item at all: the same 404 for everyone.
+    for member, query in ((admin, ""), (staff, ""), (reader, ""), (sessions.admin, q)):
+        for item in (bare, pdf, str(uuid4())):
+            assert_not_found(await member.get(thumbnail(item) + query))
+    # The bare platform-admin request must name the company, as on every training route.
+    assert (await sessions.admin.get(thumbnail(made["ready"]))).status_code == 400
+
+
+async def test_thumbnail_headers_and_304(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    reader, _ = await sessions.member(role="read_only")
+    ready = await video_row(sessions, tenant, status="ready")
+    busy = await video_row(sessions, tenant, status="transcribing")
+    first = jpeg(320, 180)
+    version = await put_thumbnail(sessions, tenant, ready, first)
+    await put_thumbnail(sessions, tenant, busy)
+    etag = f'"{version}"'
+
+    shown = await reader.get(thumbnail(ready))
+    assert shown.status_code == 200, shown.text
+    assert shown.content == first
+    assert shown.headers["content-type"] == "image/jpeg"
+    assert shown.headers["etag"] == etag
+    assert shown.headers["cache-control"] == "private, no-cache"
+    assert shown.headers["x-content-type-options"] == "nosniff"
+    assert shown.headers["content-security-policy"] == THUMBNAIL_CSP
+
+    # Revalidation and every refusal are decided on the metadata: the bytes are never read.
+    reads: list[UUID] = []
+    real_get = media.get
+
+    async def counting(conn: Any, client_id: UUID, asset_id: UUID) -> Any:
+        reads.append(asset_id)
+        return await real_get(conn, client_id, asset_id)
+
+    monkeypatch.setattr(media, "get", counting)
+    same = await reader.get(thumbnail(ready), headers={"If-None-Match": etag})
+    assert same.status_code == 304 and same.content == b""
+    assert same.headers["etag"] == etag
+    assert same.headers["cache-control"] == "private, no-cache"
+    weak = await reader.get(thumbnail(ready), headers={"If-None-Match": f'"other", W/{etag}'})
+    assert weak.status_code == 304
+    # A reader's cached copy of a video that is not ready is never revalidated into a 304.
+    busy_etag = (await admin.get(thumbnail(busy))).headers["etag"]
+    reads.clear()
+    assert_not_found(await reader.get(thumbnail(busy), headers={"If-None-Match": busy_etag}))
+    assert_not_found(await reader.get(thumbnail(str(uuid4())), headers={"If-None-Match": etag}))
+    assert reads == []
+
+    # A replaced picture: a new ETag, and the old one no longer matches.
+    second = jpeg(640, 360)
+    changed_version = await put_thumbnail(sessions, tenant, ready, second, source="upload")
+    assert changed_version != version
+    changed = await reader.get(thumbnail(ready), headers={"If-None-Match": etag})
+    assert changed.status_code == 200 and changed.content == second
+    assert changed.headers["etag"] == f'"{changed_version}"'
+    assert len(reads) == 1
+
+
+async def test_other_company_thumbnail_is_404(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    other = await enable(sessions, sessions.tenants[1])
+    admin_a, _ = await sessions.member(role="tenant_admin")
+    foreign_admin, _ = await sessions.member(role="tenant_admin", tenant=other)
+    foreign_staff, _ = await sessions.member(tenant=other)
+    ready = await video_row(sessions, tenant, status="ready")
+    await put_thumbnail(sessions, tenant, ready)
+    # Company B holds a picture under A's item id (a stray row): it is never paired with A's item,
+    # and B cannot reach A's item through it.
+    lonely = await video_row(sessions, tenant, status="ready", title="Lonely")
+    await put_thumbnail(sessions, other, lonely, png(200, 200))
+
+    for browser in (foreign_admin, foreign_staff):
+        for item in (ready, lonely):
+            assert_not_found(await browser.get(thumbnail(item)))
+            assert_not_found(await browser.get(thumbnail(item), headers={"If-None-Match": "*"}))
+    for item in (ready, lonely):
+        assert_not_found(await sessions.admin.get(thumbnail(item) + f"?client_id={other}"))
+    # A's own view: its picture, and nothing for the item that has only B's stray row.
+    assert (await admin_a.get(thumbnail(ready))).status_code == 200
+    assert_not_found(await admin_a.get(thumbnail(lonely)))
+    listed = {row["id"]: row for row in (await admin_a.get(ITEMS)).json()["items"]}
+    assert listed[lonely]["thumbnail"] is None
+    assert listed[ready]["thumbnail"] is not None
+
+
+async def test_list_carries_the_thumbnail_version_never_bytes(sessions: SessionWorld) -> None:
+    tenant = await enable(sessions)
+    admin, _ = await sessions.member(role="tenant_admin")
+    reader, _ = await sessions.member(role="read_only")
+    pdf = (await upload(sessions, admin, make_pdf(1))).json()
+    assert pdf["thumbnail"] is None
+    ready = await video_row(sessions, tenant, status="ready")
+    busy = await video_row(sessions, tenant, status="transcribing")
+    older = await video_row(sessions, tenant, status="ready", title="Older video")
+    ready_version = await put_thumbnail(sessions, tenant, ready)
+    busy_version = await put_thumbnail(sessions, tenant, busy, png(400, 300))
+
+    # A reader sees the ready videos and the PDF, each thumbnail as its version only.
+    seen = (await reader.get(ITEMS)).json()["items"]
+    assert all(set(row) == ITEM_FIELDS for row in seen)
+    by_id = {row["id"]: row for row in seen}
+    assert set(by_id) == {pdf["id"], ready, older}
+    assert by_id[ready]["thumbnail"] == {"version": ready_version}
+    assert by_id[older]["thumbnail"] is None
+    assert by_id[pdf["id"]]["thumbnail"] is None
+    # A manager also sees the video still processing, with its thumbnail.
+    managed = {row["id"]: row for row in (await admin.get(ITEMS)).json()["items"]}
+    assert len(managed) == 4
+    assert managed[busy]["thumbnail"] == {"version": busy_version}
+    # One row per item, whatever the pictures: never the bytes, never their encodings.
+    listed = await admin.get(ITEMS)
+    assert len(listed.content) < 20_000
+    for picture in (jpeg(320, 180), png(400, 300)):
+        assert base64.b64encode(picture)[:40].decode() not in listed.text
+    # Every other answer that carries an item carries it too (patch.sql, get.sql, find_key.sql).
+    edited = await patch(sessions, admin, ready, {"title": "Renamed video"})
+    assert edited.status_code == 200 and edited.json()["thumbnail"] == {"version": ready_version}
+    [keyed] = await sessions.q("SELECT request_key FROM training_items WHERE id=%s", ready)
+    async with tx(sessions.pool, tenant) as conn:
+        for name, params in (
+            ("training/get.sql", (UUID(tenant), UUID(ready))),
+            ("training/find_key.sql", (UUID(tenant), keyed["request_key"])),
+            ("training/list.sql", {"client_id": UUID(tenant), "manage": True}),
+        ):
+            found = await db.q.fetch_all(name, params, conn=conn)
+            mine = [row for row in found if str(row["id"]) == ready]
+            assert [row["thumbnail_version"] for row in mine] == [ready_version], name

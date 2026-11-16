@@ -16,6 +16,8 @@ from pydantic import (
     model_validator,
 )
 
+from csa.media.contracts import ThumbnailOut
+
 ViewMode = Literal["slides", "document"]
 Kind = Literal["pdf", "video"]
 VideoStatus = Literal["uploading", "uploaded", "transcribing", "summarising", "ready", "failed"]
@@ -76,7 +78,10 @@ class ItemOut(_Model):
     """One library item. A PDF has a view mode and a page count; a video has a duration instead.
 
     ``failure``, ``processing`` and ``notice`` are for managers; readers always get ``None``.
-    ``status`` is ``ready`` for every PDF.
+    ``status`` is ``ready`` for every PDF. ``thumbnail`` is a video's generated preview as its
+    version only (never the bytes; read it from ``/training/items/{id}/thumbnail``); ``None`` for
+    a PDF, a video uploaded before thumbnails, one still being processed, or one whose frame
+    could not be taken.
     """
 
     id: UUID
@@ -95,6 +100,7 @@ class ItemOut(_Model):
     failure: str | None
     processing: Processing | None
     notice: Literal["hevc"] | None
+    thumbnail: ThumbnailOut | None = None
 
 
 class VideoStart(_Model):

@@ -94,6 +94,8 @@ def make_item(item_id: str, title: str, **extra: Any) -> dict[str, Any]:
         "failure": None,
         "processing": None,
         "notice": None,
+        # A video's preview version (docs/CONSOLE_API.md); a PDF never has one.
+        "thumbnail": None,
     }
     item.update(extra)
     return item

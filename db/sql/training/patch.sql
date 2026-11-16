@@ -14,6 +14,8 @@ SELECT c.id, c.kind, c.title, c.description, c.category, c.view_mode, c.page_cou
        c.summary IS NOT NULL
            AND (c.kind = 'pdf' OR (c.status = 'ready' AND c.speech = 'speech')) AS has_summary,
        j.stage AS job_stage, j.status AS job_status, j.chunks_done, j.chunks_total,
-       j.error_code AS job_error
+       j.error_code AS job_error, t.sha256 AS thumbnail_version
 FROM changed c
-LEFT JOIN public.training_video_jobs j ON j.client_id = c.client_id AND j.item_id = c.id;
+LEFT JOIN public.training_video_jobs j ON j.client_id = c.client_id AND j.item_id = c.id
+LEFT JOIN public.media_assets t
+       ON t.client_id = c.client_id AND t.kind = 'training_thumbnail' AND t.subject_key = c.id::text;

@@ -145,6 +145,7 @@ function LibraryPage({ scope }: { scope: Scope }) {
         <>
           {message && <div className="mb-4"><Notice testId="training-message">{message}</Notice></div>}
           <ItemList
+            tenantId={scope.tenantId}
             list={data}
             hrefFor={hrefFor}
             onAdd={() => { setMessage(""); setOpen({ kind: "add" }); }}
