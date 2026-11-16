@@ -101,6 +101,10 @@ ProcessEventAction = Literal[
     "task.skipped",
     "task.reassigned",
     "task.date_changed",
+    "task.approved",
+    "task.sent_back",
+    "task.noted",
+    "task.rescheduled",
 ]
 TemplateWarningCode = Literal["step_after_last_day"]
 # Text that may hold line breaks: a step's descriptions, and a task's note (the database appends
@@ -380,14 +384,19 @@ class ProcessTask(_StepText):
 
 
 class ProcessEventDetail(BaseModel):
-    """The detail of an event; which keys appear depends on the action (0632). Events are immutable,
-    so a stored value that a typed field refused would break the read for good: every value is
-    returned exactly as it is stored (any JSON value, not trimmed, no control-character rule), and a
-    key a later migration adds is passed through the same way. What 0632 writes today: `reason`
-    (a code such as `superseded`, `person_left`, `no_manager`), `kind`, `template_id`,
-    `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback` (`hr_pool`),
-    `clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or null),
-    `auto_check`."""
+    """The detail of an event; which keys appear depends on the action (0632, 0634). Events are
+    immutable, so a stored value that a typed field refused would break the read for good: every
+    value is returned exactly as it is stored (any JSON value, not trimmed, no control-character
+    rule), and a key a later migration adds is passed through the same way. What the migrations
+    write today: `reason` (a code such as `superseded`, `person_left`, `no_manager`,
+    `person_inactive`, `skipped_by_hr`, `reassigned_by_hr`, `closed_anyway`), `kind`,
+    `template_id`, `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback`
+    (`hr_pool`), `clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or
+    null), `auto_check`; from 0634 `remark` (HR's own words for a skip, send back or close
+    anyway, any text with line breaks; HR-only, like every event), `sent_back` (a send back that
+    skipped the task of a person who has left), `awaiting_approval` and `on_behalf` (a completion
+    that waits for approval, done by HR for the named assignee), `approver` (`hr` or `manager`)
+    and `approved_without_second_person` (the HR owner approved their own step, spec 5.7.2)."""
 
     model_config = ConfigDict(extra="allow", frozen=True, hide_input_in_errors=True)
 
@@ -406,6 +415,12 @@ class ProcessEventDetail(BaseModel):
     from_: JsonValue = Field(default=None, alias="from")
     to: JsonValue = None
     auto_check: JsonValue = None
+    remark: JsonValue = None
+    sent_back: JsonValue = None
+    awaiting_approval: JsonValue = None
+    on_behalf: JsonValue = None
+    approver: JsonValue = None
+    approved_without_second_person: JsonValue = None
 
 
 class ProcessEvent(HrModel):

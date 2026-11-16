@@ -156,6 +156,20 @@ async def set_task(world: HrWorld, process: UUID, ordinal: int, assignments: Lit
     )
 
 
+async def left_before_0634(world: HrWorld, employee: UUID) -> None:
+    """The person leaves with the trigger off for that one write: their onboarding stays active,
+    as 0632 left it when a required task was still open (0634, ledger I4, cancels it now). Old
+    data can still hold such a process; a rehire must close it."""
+    async with world.owner_pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute("ALTER TABLE hr_employees DISABLE TRIGGER hr_process_on_employee")
+            await conn.execute(
+                "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+                (world.tenant, employee),
+            )
+            await conn.execute("ALTER TABLE hr_employees ENABLE TRIGGER hr_process_on_employee")
+
+
 async def add_person(world: HrWorld, who: str = "owner", **values: Any) -> UUID:
     added = uuid4()
     await ok(world, who, add_body(added, start_date=START.isoformat(), **values))
@@ -383,21 +397,22 @@ async def test_rehire_starts_a_new_onboarding_and_old_ones_stay_closed(world: Hr
     )
     person = await add_person(world)
     first = await only_process(world, person)
-    # Leaving: the person's own task is skipped, nothing required is left, so the onboarding
-    # completes and the optional task is skipped by the system.
+    # Leaving ends the person's onboarding (0634, ledger I4): it is cancelled by the system and
+    # its open tasks are skipped.
     await ok(world, "owner", await leave_body(world, person, today))
     await set_last_day(world, person, today - timedelta(days=1))
     assert await finish(world, person) == "moved_finished"
     closed = await only_process(world, person)
-    assert (closed["status"], closed["closed_at"] is not None) == ("completed", True)
+    assert (closed["status"], closed["closed_at"] is not None) == ("cancelled", True)
     assert [(t["status"], t["note"]) for t in await tasks(world, first["id"])] == [
-        ("skipped", "person left"),
+        ("skipped", None),
         ("skipped", None),
     ]
     logged = await events(world, first["id"])
-    assert event(logged, "task.skipped", 1)["detail"] == {"reason": "person_left"}
-    assert event(logged, "task.skipped", 2)["detail"] == {"reason": "process_completed"}
-    assert event(logged, "process.completed")["actor"] is None
+    assert event(logged, "process.cancelled")["detail"] == {"reason": "person_left"}
+    assert event(logged, "task.skipped", 1)["detail"] == {"reason": "process_cancelled"}
+    assert event(logged, "task.skipped", 2)["detail"] == {"reason": "process_cancelled"}
+    assert event(logged, "process.cancelled")["actor"] is None
     closed_tasks = await tasks(world, first["id"])
 
     restart = today + timedelta(days=7)
@@ -431,10 +446,7 @@ async def test_starting_again_supersedes_the_active_process(world: HrWorld) -> N
     )
     person = await add_person(world)
     first = await only_process(world, person)
-    await ok(world, "owner", await leave_body(world, person, today))
-    await set_last_day(world, person, today - timedelta(days=1))
-    await finish(world, person)
-    # The HR task is still open, so the onboarding stays active after the person left.
+    await left_before_0634(world, person)
     assert (await only_process(world, person))["status"] == "active"
     await ok(
         world,
@@ -474,11 +486,9 @@ async def test_rehire_with_no_matching_template_still_closes_the_old_onboarding(
     )
     person = await add_person(world)
     first = await only_process(world, person)
-    await ok(world, "owner", await leave_body(world, person, today))
-    await set_last_day(world, person, today - timedelta(days=1))
-    await finish(world, person)
+    await left_before_0634(world, person)
     left = await only_process(world, person)
-    assert left["status"] == "active"  # Payroll still open
+    assert left["status"] == "active"
     await apply(
         world,
         "owner",
@@ -502,7 +512,11 @@ async def test_rehire_with_no_matching_template_still_closes_the_old_onboarding(
     logged = await events(world, first["id"])
     assert event(logged, "process.cancelled")["detail"] == {"reason": "rehired"}
     assert not [e for e in logged if e["action"] == "task.date_changed"]
-    assert actions(logged[len(before) :]) == [("process.cancelled", None), ("task.skipped", 2)]
+    assert actions(logged[len(before) :]) == [
+        ("process.cancelled", None),
+        ("task.skipped", 1),
+        ("task.skipped", 2),
+    ]
 
 
 # ---- Leaving --------------------------------------------------------------------------------
@@ -860,13 +874,13 @@ async def test_finishing_the_leaver_skips_open_leaver_tasks_and_completes_offboa
     # The worker's finish has no HR user: every one of these is the system's.
     finished_actions = ("task.completed", "task.skipped", "process.completed")
     assert all(e["actor"] is None for e in logged if e["action"] in finished_actions)
-    # The other process: the leaver's step is skipped and, nothing required left, it completes.
+    # The other process: the leaver's step there is a colleague's real work, so it goes to the HR
+    # pool (0634, ledger T3 M7) and the process stays active.
     other_id = UUID(mentored["process_id"])
-    assert [(t["status"], t["note"]) for t in await tasks(world, other_id)] == [
-        ("skipped", "person left"),
-        ("skipped", None),
-    ]
-    assert (await only_process(world, outsider))["status"] == "completed"
+    assert [
+        (t["status"], t["note"], t["assignee_employee_id"]) for t in await tasks(world, other_id)
+    ] == [("todo", None, None), ("todo", None, None)]
+    assert (await only_process(world, outsider))["status"] == "active"
 
     # A required HR task still open keeps the offboarding active; the leaver's own task is skipped.
     await ok(world, "owner", await leave_body(world, manager, today))

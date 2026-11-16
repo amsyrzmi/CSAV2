@@ -14388,15 +14388,24 @@
       },
       "ProcessEventDetail": {
         "additionalProperties": true,
-        "description": "The detail of an event; which keys appear depends on the action (0632). Events are immutable,\nso a stored value that a typed field refused would break the read for good: every value is\nreturned exactly as it is stored (any JSON value, not trimmed, no control-character rule), and a\nkey a later migration adds is passed through the same way. What 0632 writes today: `reason`\n(a code such as `superseded`, `person_left`, `no_manager`), `kind`, `template_id`,\n`template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback` (`hr_pool`),\n`clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or null),\n`auto_check`.",
+        "description": "The detail of an event; which keys appear depends on the action (0632, 0634). Events are\nimmutable, so a stored value that a typed field refused would break the read for good: every\nvalue is returned exactly as it is stored (any JSON value, not trimmed, no control-character\nrule), and a key a later migration adds is passed through the same way. What the migrations\nwrite today: `reason` (a code such as `superseded`, `person_left`, `no_manager`,\n`person_inactive`, `skipped_by_hr`, `reassigned_by_hr`, `closed_anyway`), `kind`,\n`template_id`, `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback`\n(`hr_pool`), `clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or\nnull), `auto_check`; from 0634 `remark` (HR's own words for a skip, send back or close\nanyway, any text with line breaks; HR-only, like every event), `sent_back` (a send back that\nskipped the task of a person who has left), `awaiting_approval` and `on_behalf` (a completion\nthat waits for approval, done by HR for the named assignee), `approver` (`hr` or `manager`)\nand `approved_without_second_person` (the HR owner approved their own step, spec 5.7.2).",
         "properties": {
           "anchor": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "approved_without_second_person": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "approver": {
             "$ref": "#/components/schemas/JsonValue"
           },
           "assignee_employee_id": {
             "$ref": "#/components/schemas/JsonValue"
           },
           "auto_check": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "awaiting_approval": {
             "$ref": "#/components/schemas/JsonValue"
           },
           "clamped": {
@@ -14420,10 +14429,19 @@
           "old": {
             "$ref": "#/components/schemas/JsonValue"
           },
+          "on_behalf": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
           "owner_role": {
             "$ref": "#/components/schemas/JsonValue"
           },
           "reason": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "remark": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "sent_back": {
             "$ref": "#/components/schemas/JsonValue"
           },
           "template_id": {

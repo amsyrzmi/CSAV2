@@ -40,5 +40,6 @@ SELECT current_user = 'csa_app' AND NOT rolsuper AND NOT rolbypassrls AS safe_ro
     AND to_regprocedure('public.hr_process_get(uuid,uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_task_rows_mine(uuid,text,integer,uuid)') IS NOT NULL
     AND to_regprocedure('public.hr_person_processes(uuid,uuid)') IS NOT NULL
+    AND to_regprocedure('public.hr_task_apply(uuid,uuid,text,jsonb)') IS NOT NULL
     AS schema_ready
 FROM pg_roles WHERE rolname=current_user;

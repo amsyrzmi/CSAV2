@@ -46,9 +46,9 @@ from csa.hr.service import HrService, _fingerprint
 
 __all__ = ["PROBLEMS", "REFUSALS", "HrProcesses"]
 
-# Every RAISE of hr_template_apply, hr_process_start_apply, hr_process_cancel_apply and
-# hr_probation_set (0631, 0632), and the problem code it becomes. tests/test_hr_process_api.py
-# checks that every code the migrations raise is here.
+# Every RAISE of hr_template_apply, hr_process_start_apply, hr_process_cancel_apply,
+# hr_probation_set and hr_task_apply (0631, 0632, 0634), and the problem code it becomes.
+# tests/test_hr_process_api.py checks that every code the migrations raise is here.
 REFUSALS: dict[str, str] = {
     "hr_people_manager_required": "permission_denied",
     "hr_idempotency_conflict": "idempotency_conflict",
@@ -83,6 +83,21 @@ REFUSALS: dict[str, str] = {
     # Probation (person.probation_set on POST /operations).
     "hr_person_changed": "person_changed",
     "hr_probation_end_invalid": "probation_end_invalid",
+    # Tasks (0634; the task routes are PR 2 Task 7).
+    "hr_task_unavailable": "resource_unavailable",
+    "hr_task_changed": "task_changed",
+    "hr_task_closed": "task_closed",
+    "hr_task_not_assignee": "task_not_assignee",
+    "hr_task_not_approver": "task_not_approver",
+    "hr_task_awaiting_approval": "task_awaiting_approval",
+    "hr_task_not_awaiting_approval": "task_not_awaiting_approval",
+    "hr_task_self_approval": "task_self_approval",
+    "hr_task_check_not_met": "check_not_met",
+    "hr_task_system_only": "task_system_only",
+    "hr_task_reason_invalid": "task_reason_invalid",
+    "hr_task_note_invalid": "task_note_invalid",
+    "hr_task_due_invalid": "task_due_invalid",
+    "hr_task_assignee_unavailable": "task_assignee_unavailable",
 }
 # Each problem code of these routes in a plain sentence, for docs/CONSOLE_API.md and the console.
 PROBLEMS: dict[str, str] = {
@@ -119,6 +134,19 @@ PROBLEMS: dict[str, str] = {
     "process_closed": "This process is already completed or cancelled.",
     "person_changed": "Someone changed this person since you opened it. Reload to see it.",
     "probation_end_invalid": "Give the probation end as a date, or clear it.",
+    "task_changed": "Someone changed this step since you opened it. Reload to see it.",
+    "task_closed": "This step is already done or skipped, or its process is closed.",
+    "task_not_assignee": "Only the person this step is assigned to, or HR, can do this.",
+    "task_not_approver": "Only the approver of this step can approve it or send it back.",
+    "task_awaiting_approval": "This step is waiting for approval.",
+    "task_not_awaiting_approval": "This step is not waiting for approval.",
+    "task_self_approval": "Someone other than the person who completed this step must approve it.",
+    "check_not_met": "The automatic check for this step is not met yet.",
+    "task_system_only": "The system completes this step when the person's access is removed.",
+    "task_reason_invalid": "Give a reason of 1 to 500 characters.",
+    "task_note_invalid": "A note is at most 2000 characters.",
+    "task_due_invalid": "Give the new due date as a date.",
+    "task_assignee_unavailable": "Choose an active person of this company, or the HR pool.",
 }
 _WARNINGS = {"hr_template_step_after_last_day": "step_after_last_day"}
 _PAGE = 200  # processes per page at most; hr_process_rows returns one more to tell it was cut

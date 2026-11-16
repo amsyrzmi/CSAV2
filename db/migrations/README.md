@@ -101,6 +101,15 @@ Reserved ranges (client growth program, 2026-10-27):
   person their own onboarding and offboarding with progress and only their own tasks (not custom
   processes about them), an assignee only their own tasks. It also adds the indexes
   `hr_processes_by_start` and `hr_employees_by_manager`.
+  0634 adds `hr_task_apply` (complete, skip, approve, send back, note, reschedule, reassign, close
+  anyway; the tenant's HR operations lock first, receipt in `hr_operations`, one event per action with
+  the real actor; approvals by the HR team or the person's manager, never by the person who completed
+  the step except the HR owner with no one else, flagged; automatic checks on complete),
+  `hr_process_tasks.assignee_overridden` (HR's reassignment survives a manager change), and
+  `hr_task_rows_mine` again with `needs_my_approval` (dropped and made again for the new column). It
+  changes three 0632 functions: a person step whose named owner has left starts in the HR pool, a
+  leaver's own onboarding and custom processes are cancelled, and a leaver's open steps in other
+  people's processes go to the HR pool instead of being skipped.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

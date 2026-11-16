@@ -480,7 +480,9 @@ returns the usual `OperationReceipt` with the person's new `version`; a stale ve
 
 **Problem codes** (`detail` of the response; the console shows the sentence). Every refusal the
 database functions raise maps to one of these (`csa.hr.processes.REFUSALS` and `PROBLEMS`); any
-other database error is 503 `hr_database_unavailable`, with no database text.
+other database error is 503 `hr_database_unavailable`, with no database text. The `task_*` and
+`check_not_met` codes come from the task actions of migration 0634 (`hr_task_apply`); their routes
+are added with the task routes.
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -514,6 +516,19 @@ other database error is 503 `hr_database_unavailable`, with no database text.
 | `process_closed` | 409 | This process is already completed or cancelled. |
 | `person_changed` | 409 | Someone changed this person since you opened it. Reload to see it. |
 | `probation_end_invalid` | 409 | Give the probation end as a date, or clear it. |
+| `task_changed` | 409 | Someone changed this step since you opened it. Reload to see it. |
+| `task_closed` | 409 | This step is already done or skipped, or its process is closed. |
+| `task_not_assignee` | 409 | Only the person this step is assigned to, or HR, can do this. |
+| `task_not_approver` | 409 | Only the approver of this step can approve it or send it back. |
+| `task_awaiting_approval` | 409 | This step is waiting for approval. |
+| `task_not_awaiting_approval` | 409 | This step is not waiting for approval. |
+| `task_self_approval` | 409 | Someone other than the person who completed this step must approve it. |
+| `check_not_met` | 409 | The automatic check for this step is not met yet. |
+| `task_system_only` | 409 | The system completes this step when the person's access is removed. |
+| `task_reason_invalid` | 409 | Give a reason of 1 to 500 characters. |
+| `task_note_invalid` | 409 | A note is at most 2000 characters. |
+| `task_due_invalid` | 409 | Give the new due date as a date. |
+| `task_assignee_unavailable` | 409 | Choose an active person of this company, or the HR pool. |
 
 ## Authentication, tenancy and settings
 

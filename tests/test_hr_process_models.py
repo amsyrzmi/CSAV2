@@ -119,14 +119,14 @@ def test_every_event_action_detail_key_warning_and_anchor_date_is_modelled() -> 
 def test_the_guard_fails_for_a_new_action_key_or_warning() -> None:
     synthetic = """
     INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
-    VALUES(p_client,pid,tid,p_actor,'task.approved',
-     jsonb_build_object('approver',a,'reason',r) || jsonb_build_object('second_person',false));
+    VALUES(p_client,pid,tid,p_actor,'task.escalated',
+     jsonb_build_object('escalated_to',a,'reason',r) || jsonb_build_object('second_person',false));
     SELECT jsonb_build_object('code','hr_template_step_without_owner','ordinal',s.ordinal);
     SELECT jsonb_build_object('start_date',e.start_date,'contract_end',e.contract_end);
     """
     assert missing(synthetic) == {
-        "actions": {"task.approved"},
-        "detail": {"approver", "second_person"},
+        "actions": {"task.escalated"},
+        "detail": {"escalated_to", "second_person"},
         "warnings": {"hr_template_step_without_owner"},
         "anchor_dates": {"contract_end"},
     }
@@ -149,12 +149,12 @@ def test_reads_tolerate_what_a_later_migration_adds() -> None:
             "event_id": str(uuid4()),
             "at": "2026-11-16T00:00:00+08:00",
             "actor": None,
-            "action": "task.approved",
+            "action": "task.escalated",
             "task_id": None,
             "detail": {"reason": "ok", "second_person": False},
         }
     )
-    assert event.action == "task.approved"
+    assert event.action == "task.escalated"
     assert event.detail.model_dump(by_alias=True, exclude_unset=True) == {
         "reason": "ok",
         "second_person": False,
@@ -257,6 +257,12 @@ def test_event_detail_returns_every_stored_value_as_it_is() -> None:
         "assignee_employee_id": 7,
         "due_on": "soon",
         "clamped": "yes",
+        "remark": "  wrong form,\nsee me  ",
+        "sent_back": "yes",
+        "awaiting_approval": 1,
+        "on_behalf": None,
+        "approver": "board",
+        "approved_without_second_person": "true",
         "note": "tab\there",
     }
     assert set(detail) - {"note"} == detail_names()
