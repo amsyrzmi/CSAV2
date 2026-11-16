@@ -16,7 +16,10 @@ The channel, in order: Telegram, when the company's gates allow an automatic mes
 (`csa.bookings.bot.gate`); a WhatsApp chat the customer wrote in within 23 hours, under the same
 gate; an email row when the contact has an address (`contacts.email`, else the address given in a
 chat) and `customers_remindable` holds; else `no_channel`. A chat message is written for the
-delivery worker in the invoice's transaction, `reviewed`, as booking reminders are.
+delivery worker in the invoice's transaction, `reviewed`, as booking reminders are. On Telegram
+every step also carries the company's QR picture when one of the listed QR methods has one
+(`payments.pictures.qr_picture`): an image message written just before the text, under the key
+`invoice:{id}:reminder:{step}:qr`, and only with it, so the gates above hold for it too.
 
 The payment_reminder_mail job (`run_payment_reminder_mail`) sends the queued email rows, once for
 every company, as booking reminder mail does (`csa.jobs.bookings.run_reminder_mail`): the owner
@@ -59,6 +62,7 @@ from csa.payments import notices
 from csa.payments.contracts import MethodOut
 from csa.payments.copy import CUSTOMER_METHODS, locale_of, reminder_text
 from csa.payments.invoices import InvoiceRecord
+from csa.payments.pictures import qr_picture
 from csa.payments.settings import PAYABLE_KINDS, get_settings, list_methods
 
 logger = structlog.get_logger(__name__)
@@ -242,21 +246,26 @@ async def _remind(
 
     step: int = due["newest"]
     invoice = _invoice_record(locked)
+    locale = locale_of(contact["locale"])
     text = reminder_text(
         invoice,
         company.methods,
         today=now.astimezone(company.zone).date(),
         brand=company.brand,
-        locale=locale_of(contact["locale"]),
+        locale=locale,
         tz=company.zone,
     )
     message_key = f"invoice:{invoice_id}:reminder:{step}"
+    # On Telegram every step carries the company's QR picture, written just before the text (and
+    # only with it); WhatsApp and email get the text alone.
+    picture = qr_picture(company.methods, locale)
     try:
         async with conn.transaction():
             address = None
             if company.chats and await notices.chat_message(
-                conn, client_id, contact["id"], channel="telegram", key=message_key, body=text
-            ):
+                conn, client_id, contact["id"], channel="telegram", key=message_key, body=text,
+                picture=picture,
+            ):  # fmt: skip
                 channel, status = "telegram", "sent"
             elif company.chats and await notices.chat_message(
                 conn,
