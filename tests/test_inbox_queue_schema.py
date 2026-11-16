@@ -117,11 +117,15 @@ def _seed(
                 (client_id, conversation_id, str(uuid.uuid4()), status, expires_in, ago),
             )
         # These rows stand for data from before 0622, which is what the backfill meets: the 0622
-        # escalation trigger has already queued an escalated conversation, so its queue columns
-        # go back to their defaults here.
+        # triggers have already queued an escalated conversation and stamped the message times,
+        # so every column the backfill derives goes back to what 0620 found (last_activity_at to
+        # an old sentinel, as no real value is that old), and the backfill has to work each out.
         conn.execute(
             "UPDATE conversations SET queue_status = 'bot', queue_reason = NULL,"
-            " priority = 'normal', needs_staff_since = NULL, due_at = NULL WHERE id = %s",
+            " priority = 'normal', needs_staff_since = NULL, due_at = NULL,"
+            " assignee_user_id = NULL, claimed_at = NULL, snoozed_until = NULL,"
+            " resolved_at = NULL, last_activity_at = '2000-01-01T00:00:00Z',"
+            " last_customer_at = NULL, last_staff_reply_at = NULL WHERE id = %s",
             (conversation_id,),
         )
     return Seeded(client_id, conversation_id, contact_id)

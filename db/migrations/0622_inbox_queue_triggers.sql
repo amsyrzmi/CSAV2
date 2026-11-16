@@ -22,7 +22,8 @@
 --     last_customer_at and the inbound transition: an item waiting on the customer, snoozed or
 --     resolved returns to needs_staff (reason customer_message, its current priority) when a person
 --     owns the conversation or a live held reply is pending, else to bot (claim, clock, due time,
---     reason, snooze and resolve times cleared). needs_staff and bot items keep their state.
+--     reason, snooze and resolve times cleared; one inbox_queue_events row 'handed_back' with no
+--     actor and details {"cause": "customer_message"}). needs_staff and bot items keep their state.
 --     Outbound messages (bot replies, notices, a person's reply, an approved held reply) never
 --     change the queue state: the code that knows who answered does that (plan task 4).
 --   Trigger inbox_queue_after_escalation, AFTER INSERT ON escalations WHEN conversation_id IS NOT
@@ -30,7 +31,8 @@
 --     writers (the escalation agent, the turn fail-safe, approval expiry); an insert skipped by their
 --     ON CONFLICT DO NOTHING fires nothing.
 -- Cost and locks: a message costs one UPDATE of its conversation row (the return to bot is part of
---   that same statement); only a return to needs_staff adds the inbox_queue_enter call. The worker
+--   that same statement; a customer's message also reads the row first, without a lock); only a
+--   return to needs_staff adds the inbox_queue_enter call. The worker
 --   and the console already lock or update that row in the same transaction (lock_conversation.sql,
 --   automation_allowed.sql, increment_turn_count.sql), and the insert itself holds a key-share lock
 --   on it through the foreign key, so the trigger takes no lock on a row the transaction would not
@@ -172,8 +174,13 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  v_status text;
+  v_old text;
+  v_owned text;
+  v_to_bot boolean;
+  v_client uuid;
+  v_id uuid;
   v_priority text;
+  v_attempt integer := 0;
 BEGIN
   IF NEW.direction <> 'inbound' OR NEW.author <> 'contact' THEN
     UPDATE public.conversations c
@@ -182,43 +189,71 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  -- One statement: the times, and the return to bot of a waiting, snoozed or resolved item that
-  -- no person owns and that has no live held reply. d.to_bot is worked out once per row (OFFSET 0
-  -- keeps the planner from copying it into every column), and its first test keeps the lookups
-  -- off the common path: a bot or needs_staff item stops there.
-  UPDATE public.conversations c
-     SET (last_activity_at, last_customer_at, queue_status, queue_reason, assignee_user_id,
-          claimed_at, needs_staff_since, due_at, snoozed_until, resolved_at) =
-         (SELECT greatest(c.last_activity_at, NEW.created_at),
-                 greatest(c.last_customer_at, NEW.created_at),
-                 CASE WHEN d.to_bot THEN 'bot' ELSE c.queue_status END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.queue_reason END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.assignee_user_id END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.claimed_at END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.needs_staff_since END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.due_at END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.snoozed_until END,
-                 CASE WHEN d.to_bot THEN NULL ELSE c.resolved_at END
-            FROM (SELECT c.queue_status IN ('waiting_customer', 'snoozed', 'resolved')
-                         AND c.owned_by IS DISTINCT FROM 'human_support'
-                         AND NOT EXISTS (
-                           SELECT 1 FROM public.approvals a
-                            WHERE a.client_id = c.client_id AND a.conversation_id = c.id
-                              AND a.status = 'pending' AND a.expires_at > now())
-                         AND c.channel IN ('telegram', 'whatsapp')
-                         AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t
-                                          WHERE t.id = c.id)
-                         AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
-                                          WHERE p.contact_id = c.contact_id) AS to_bot
-                  OFFSET 0) d)
-   WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
-  RETURNING c.queue_status, c.priority INTO v_status, v_priority;
+  -- One UPDATE: the times, and the return to bot of a waiting, snoozed or resolved item that no
+  -- person owns and that has no live held reply. The state is read without a lock and the UPDATE
+  -- only applies while queue_status and owned_by still hold what was read (re-checked on the
+  -- newest row version when another transaction changed it meanwhile); otherwise it reads again.
+  -- So the old state, which the event row needs, is exact without an extra row lock.
+  LOOP
+    v_attempt := v_attempt + 1;
+    IF v_attempt > 5 THEN
+      RAISE EXCEPTION 'inbox_queue_on_message: conversation % keeps changing', NEW.conversation_id
+        USING ERRCODE = 'lock_not_available';
+    END IF;
+    SELECT c.queue_status, c.owned_by,
+           c.queue_status IN ('waiting_customer', 'snoozed', 'resolved')
+             AND c.owned_by IS DISTINCT FROM 'human_support'
+             AND NOT EXISTS (
+               SELECT 1 FROM public.approvals a
+                WHERE a.client_id = c.client_id AND a.conversation_id = c.id
+                  AND a.status = 'pending' AND a.expires_at > now())
+             AND c.channel IN ('telegram', 'whatsapp')
+             AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
+             AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
+                              WHERE p.contact_id = c.contact_id)
+      INTO v_old, v_owned, v_to_bot
+      FROM public.conversations c
+     WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id;
+    IF NOT FOUND THEN
+      RETURN NULL;
+    END IF;
 
-  -- Still waiting, snoozed or resolved: a person owns it or a held reply is live (or it is outside
-  -- the queue, where inbox_queue_enter does nothing).
-  IF v_status IN ('waiting_customer', 'snoozed', 'resolved') THEN
-    PERFORM public.inbox_queue_enter(NEW.client_id, NEW.conversation_id, 'customer_message',
-                                     v_priority);
+    IF v_to_bot THEN
+      UPDATE public.conversations c
+         SET last_activity_at = greatest(c.last_activity_at, NEW.created_at),
+             last_customer_at = greatest(c.last_customer_at, NEW.created_at),
+             queue_status = 'bot',
+             queue_reason = NULL,
+             assignee_user_id = NULL,
+             claimed_at = NULL,
+             needs_staff_since = NULL,
+             due_at = NULL,
+             snoozed_until = NULL,
+             resolved_at = NULL
+       WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
+         AND c.queue_status = v_old AND c.owned_by IS NOT DISTINCT FROM v_owned
+      RETURNING c.client_id, c.id, c.priority INTO v_client, v_id, v_priority;
+    ELSE
+      UPDATE public.conversations c
+         SET last_activity_at = greatest(c.last_activity_at, NEW.created_at),
+             last_customer_at = greatest(c.last_customer_at, NEW.created_at)
+       WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
+         AND c.queue_status = v_old AND c.owned_by IS NOT DISTINCT FROM v_owned
+      RETURNING c.client_id, c.id, c.priority INTO v_client, v_id, v_priority;
+    END IF;
+    EXIT WHEN FOUND;
+  END LOOP;
+
+  IF v_to_bot THEN
+    -- The bot has the conversation again: recorded like a hand back, by no person.
+    INSERT INTO public.inbox_queue_events
+        (client_id, conversation_id, actor_user_id, action, from_status, to_status, details)
+    VALUES (v_client, v_id, NULL, 'handed_back', v_old, 'bot',
+            jsonb_build_object('cause', 'customer_message'));
+  ELSIF v_old IN ('waiting_customer', 'snoozed', 'resolved') THEN
+    -- A person owns it or a held reply is live (or it is outside the queue, where
+    -- inbox_queue_enter does nothing).
+    PERFORM public.inbox_queue_enter(v_client, v_id, 'customer_message', v_priority);
   END IF;
   RETURN NULL;
 END $$;

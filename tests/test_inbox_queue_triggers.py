@@ -8,6 +8,7 @@ console do, so row security and grants are part of every check.
 
 from __future__ import annotations
 
+import threading
 import typing
 import uuid
 from dataclasses import dataclass
@@ -350,9 +351,10 @@ def test_a_customer_writing_to_a_bot_owned_item_returns_it_to_the_bot(
     migrated_dsn: str, app_dsn: str, state: str, owned_by: str | None
 ) -> None:
     user_id = _user(migrated_dsn)
+    c = _company(migrated_dsn)
     s = _seed(
         migrated_dsn,
-        _company(migrated_dsn),
+        c,
         owned_by=owned_by,
         queue_status=state,
         priority="high",
@@ -376,6 +378,81 @@ def test_a_customer_writing_to_a_bot_owned_item_returns_it_to_the_bot(
         assert row[cleared] is None, cleared
     assert row["priority"] == "high"
     assert row["last_customer_at"] == row["newest"]
+    # The return to the bot is recorded, by no person.
+    [event] = _events(migrated_dsn, s)
+    assert event == {
+        "client_id": uuid.UUID(c),
+        "conversation_id": uuid.UUID(s.conversation_id),
+        "actor_user_id": None,
+        "action": "handed_back",
+        "from_status": state,
+        "to_status": "bot",
+        "details": {"cause": "customer_message"},
+    }
+    # A second message on the now bot item records nothing more.
+    _inbound(app_dsn, s)
+    assert len(_events(migrated_dsn, s)) == 1
+
+
+@pytest.mark.parametrize("owned_by", ["ai", "human_support"])
+def test_bot_and_needs_staff_items_get_no_hand_back_row(
+    migrated_dsn: str, app_dsn: str, owned_by: str
+) -> None:
+    c = _company(migrated_dsn)
+    bot = _seed(migrated_dsn, c, owned_by=owned_by)
+    queued = _seed(migrated_dsn, c, owned_by=owned_by, **_needs_staff("held_reply"))
+    for seeded in (bot, queued):
+        _inbound(app_dsn, seeded)
+        _inbound(app_dsn, seeded)
+        assert _events(migrated_dsn, seeded) == []
+    assert _state(migrated_dsn, bot)["queue_status"] == "bot"
+    assert _state(migrated_dsn, queued)["queue_status"] == "needs_staff"
+
+
+def test_a_state_change_that_lands_while_the_message_waits_is_seen(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    """The trigger reads the state without a lock: when another transaction moves the item while
+    the message insert waits for the row, the trigger reads again and records the real old state.
+    """
+    s = _seed(migrated_dsn, _company(migrated_dsn), owned_by="ai")
+    mover = _app(app_dsn, s.client_id)
+    mover.execute(
+        "UPDATE conversations SET queue_status = 'resolved', resolved_at = now() WHERE id = %s",
+        (s.conversation_id,),
+    )
+    with _app(app_dsn, s.client_id) as writer:
+        # The writer's trigger has read 'bot'; its UPDATE waits for the mover's row lock.
+        writer.execute("SET lock_timeout = '20s'")
+        done = threading.Event()
+        failure: list[BaseException] = []
+
+        def insert() -> None:
+            try:
+                writer.execute(
+                    db.q.load("worker/insert_message.sql"),
+                    _inbound_params(s, str(uuid.uuid4())),
+                ).fetchone()
+                writer.commit()
+            except BaseException as exc:  # pragma: no cover - reported below
+                failure.append(exc)
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=insert)
+        worker.start()
+        assert not done.wait(1.0), "the insert should wait for the mover's lock"
+        mover.commit()
+        mover.close()
+        worker.join(30)
+    assert failure == []
+    assert _state(migrated_dsn, s)["queue_status"] == "bot"
+    [event] = _events(migrated_dsn, s)
+    assert (event["action"], event["from_status"], event["to_status"]) == (
+        "handed_back",
+        "resolved",
+        "bot",
+    )
 
 
 def test_a_live_held_reply_keeps_a_bot_owned_item_in_the_queue(
