@@ -8,8 +8,9 @@
    (``check_playable``), so it never reaches the thumbnail. Otherwise the duration, both codecs
    (the list's HEVC notice reads ``video_codec``) and the number of chunks are stored in one fenced
    transaction, which also decides ``speech='no_audio'`` for a video without an audio stream.
-2. **Thumbnail** (best-effort, on every attempt that gets here): when the item has no
-   ``training_thumbnail`` picture yet (an existing one, uploaded or generated, ends the step
+2. **Thumbnail** (best-effort, only on the first attempt, or on the attempt that stored the
+   probe, so a requeue after the worker died mid-frame never decodes it again): when the item
+   has no ``training_thumbnail`` picture yet (an existing one, uploaded or generated, ends the step
    before any source is asked for), a heartbeat, a fresh source, one frame at
    ``frame_time_ms(duration)`` (``extract_frame``), ``check_image``, and ``put(...,
    source="generated")`` in its own fenced transaction, so a failed write cannot touch the job's
@@ -287,8 +288,13 @@ class TranscribeStage:
             duration_ms = found.duration_ms
         if duration_ms > limits.MAX_VIDEO_SECONDS * 1000:
             raise Permanent(TOO_LONG)
-        # Alone, before the loudness pass and the chunks: no other ffmpeg child is alive.
-        await self._thumbnail(claim, job, duration_ms)
+        # Alone, before the loudness pass and the chunks: no other ffmpeg child is alive. Never on
+        # a requeue: on a 256 MiB worker the OOM killer may take the worker, not ffmpeg, mid-frame,
+        # and a retaken frame would repeat that kill on every attempt until the item fails. A later
+        # attempt runs it only if it probed (``found``): the probe is stored before this step, so
+        # no earlier attempt of the job can have reached the frame.
+        if claim.attempt == 1 or found is not None:
+            await self._thumbnail(claim, job, duration_ms)
         if found is not None and not found.has_audio:
             self._decided(claim, "no_audio")
             return "ready"

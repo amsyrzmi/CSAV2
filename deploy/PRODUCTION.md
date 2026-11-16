@@ -1066,7 +1066,14 @@ with `docker rm -f csa-staging-training-worker-1`.
 ### Owner steps before video is switched on
 
 1. **Production host capacity.** Take the three readings above again before the switch: a video
-   job adds ffmpeg (up to about 54 MiB resident) and the job's buffers to the idle worker.
+   job adds ffmpeg (up to about 54 MiB resident) and the job's buffers to the idle worker. Then the
+   thumbnail frame: its worst case (a 4K 10-bit HEVC frame) peaked at 249.5 of 256 MiB beside an
+   imports-only process (`docs/TRAINING_VIDEO_CAPACITY.md`, "Thumbnail frame"), not the real worker.
+   Run the production image's training worker as production runs it (256 MiB cap, `oom_score_adj`
+   600) on a 4K 10-bit HEVC clip, watch `docker events --filter event=oom`, and confirm the item
+   reaches `ready`. Staging has no memory cap, so its retest cannot show this. If the worker is
+   killed, the requeue skips the frame and the video finishes without a thumbnail; decide on the
+   limit before the switch.
 2. **The training worker key** (`csa-prod-training`): create it with the policy in
    `docs/OBJECT_STORAGE.md` ("IAM policy for the training worker key"), then write its two files
    with the hidden-prompt block under "Secret files the overlay needs" (names

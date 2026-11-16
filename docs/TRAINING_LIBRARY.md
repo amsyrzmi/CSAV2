@@ -395,7 +395,8 @@ This reverses the earlier non-goal "no thumbnails generated from frames" (the vi
   [TRAINING_VIDEO_CAPACITY.md](./TRAINING_VIDEO_CAPACITY.md#thumbnail-frame): the worst case, a 4K
   10-bit HEVC frame, peaked at 249.5 of the container's 256 MiB.
 - **When.** During transcribing, after the probe and before the no-sound and silence checks (so a
-  video without sound still gets one), on every attempt until the item has a picture; a picture that
+  video without sound still gets one), once: on the first attempt only (or the attempt that stores
+  the probe), so a requeue after the worker died mid-frame never decodes it again. A picture that
   is there (generated, or a later upload) ends the step at once.
 - **Best-effort.** Every failure (a frame the child cannot decode within its limits, a picture
   `check_image` refuses, such as a video wider than 5:1, a storage or database error) means no

@@ -862,6 +862,56 @@ async def test_a_thumbnail_failure_never_fails_retries_or_deletes_the_item(
         assert SECRET not in text and str(world.tmp_path) not in text
 
 
+async def test_the_frame_is_taken_on_the_first_attempt(world: World) -> None:
+    await world.video(seconds=3, audio="silence")
+
+    claim = await world.claim()
+    assert claim.attempt == 1
+    assert await world.worker.process(claim) == "ready"
+    assert len(world.frames) == 1
+
+
+async def test_a_worker_killed_in_the_frame_step_is_not_retaken_on_the_requeue(
+    world: World,
+) -> None:
+    # Production's 256 MiB worker: decoding a large frame can make the OOM killer take the
+    # worker itself. The requeued attempt must not decode the frame again, or the same kill
+    # repeats until the attempts run out and the item fails.
+    item, _ = await world.video(seconds=3, audio="silence")
+    inside = asyncio.Event()
+
+    async def killed() -> None:
+        inside.set()
+        await asyncio.Event().wait()  # the worker dies here
+
+    world.frame_hook = killed
+    first = await world.claim()
+    assert first.attempt == 1
+    running = asyncio.create_task(world.worker.process(first))
+    await asyncio.wait_for(inside.wait(), 60)
+    running.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await running
+    await world.sessions.q(
+        "UPDATE training_video_jobs SET locked_at = now() - interval '11 minutes'"
+        " WHERE item_id = %s",
+        item,
+    )
+    world.frame_hook = None
+
+    second = await world.claim()
+    # The probe was stored before the frame step: the requeue holds the duration.
+    assert (second.attempt, second.duration_ms) == (2, 3000)
+    with capture_logs() as logs:
+        assert await world.worker.process(second) == "ready"
+
+    assert len(world.frames) == 1
+    assert await world.thumbnails(item) == []
+    assert thumbnail_logs(logs) == []
+    row = await world.item(item)
+    assert (row["status"], row["speech"], row["failure_code"]) == ("ready", "no_speech", None)
+
+
 async def test_a_retry_with_a_thumbnail_reads_no_extra_source(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
