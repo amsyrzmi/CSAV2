@@ -339,13 +339,26 @@ async def test_delete_keeps_the_last_active_method_of_an_enabled_company(a: Comp
     assert [m.id for m in await a.methods()] == [transfer.id]
 
 
+async def until_waiting(w: SessionWorld) -> bool:
+    """Whether some transaction comes to wait for an advisory lock within about five seconds."""
+    deadline = asyncio.get_running_loop().time() + 5
+    while asyncio.get_running_loop().time() < deadline:
+        [row] = await w.q(
+            "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+        )
+        if row["n"]:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
 async def test_two_deletes_at_once_give_the_loser_a_404(a: Company) -> None:
     method = await a.add("transfer", "Bank")
     async with tx(a.w.pool, str(a.tenant)) as first:
         await payments.delete_method(first, a.tenant, a.actor, method.id)
         # The second delete waits on the payments lock the first still holds.
         second = asyncio.create_task(a.delete(method.id))
-        await asyncio.sleep(0.3)
+        assert await until_waiting(a.w)
         assert not second.done()
     await refused(second, 404, "method_not_found")
     assert await a.methods() == []
@@ -359,8 +372,8 @@ async def test_a_picture_upload_and_a_delete_at_once_leave_no_orphan_picture(a: 
         # The upload route checks the method, then stores the picture, in one transaction.
         await payments.require_qr_method(upload, a.tenant, method.id)
         deleting = asyncio.create_task(a.delete(method.id))
-        await asyncio.sleep(0.3)
-        assert not deleting.done()  # the delete waits for the upload to finish
+        assert await until_waiting(a.w)  # the delete waits for the upload to finish
+        assert not deleting.done()
         await media.set_picture(upload, a.tenant, a.actor, "payment_qr", str(method.id), data, info)
     await deleting
     assert await a.methods() == []

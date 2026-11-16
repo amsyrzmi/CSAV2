@@ -722,8 +722,11 @@ admin-only to change; staff see it read-only. It is a view of the same page, not
 least one method under "Payment methods": "Add a payment method", then "Bank transfer" (bank name, account name,
 account number of 6 to 20 digits) or "DuitNow" (the DuitNow ID and account name), with optional instructions of
 up to 500 characters that customers read after the bank line. Each method shows "Customers see:" with the exact
-line a customer gets. A method can be turned off and edited but never deleted. Customers are shown only the
-first four active bank and DuitNow methods, in the order of the list (a company with more than four sees the
+line a customer gets. A method can be turned off (it is kept for later and can be turned back on), edited, or
+deleted. A delete also removes the method's QR picture and cannot be undone; deleting the last active bank
+transfer or DuitNow method while payments are on is refused (turn payments off or add another method first).
+Invoices and payments already recorded keep their method type and are not changed by a delete. Customers are
+shown only the first four active bank and DuitNow methods, in the order of the list (a company with more than four sees the
 rest only in the console), so a reminder or a reply stays one chat message. Cash cannot be added here (cash is
 paid through a booking, which is Payments 2); it does not count toward switching on. Then turn on "Send invoices
 and reminders" and save. Saving with no active bank or DuitNow method is refused ("Add an active bank account or
@@ -731,7 +734,8 @@ DuitNow ID before switching payments on."), and so is turning off the last activ
 ("Keep one active method while payments are on."). A company with no saved settings reads as off, 7 days,
 reminders `-7, 0, 3, 7`, no pause. If two admins save at once the second sees "Someone else changed this. Check
 and save again." Settings and methods are audited (`payments.settings.updated`, `payments.method.created`,
-`payments.method.updated`).
+`payments.method.updated`, `payments.method.deleted`; a deleted method's QR picture also leaves
+`media.picture.removed`).
 
 The settings are: "Days before each renewal to make the invoice" (1 to 30, default 7), "Reminder days" (days
 from the due date, at most 6, from -30 to 60; `-7` is 7 days before, `0` the due day, default `-7, 0, 3, 7`),
