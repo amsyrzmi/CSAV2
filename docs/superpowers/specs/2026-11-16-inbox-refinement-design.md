@@ -2,7 +2,7 @@
 
 Date: 2026-11-16. Owner: Amsyar. Status: draft for owner approval (nothing is built).
 Branch: `feat/inbox-refinement` (worktree `.claude/worktrees/feat-inbox-refinement`).
-Migrations: 0620 to 0629 only.
+Migrations: 0620 to 0629 only (plan: 0620 to 0622 in PR 1, 0623 to 0625 in PR 2 and 3).
 
 ## 1. Intent
 
@@ -55,6 +55,11 @@ free text and staff would see two records per conversation; (C) one generic work
 modules, rejected because it duplicates conversation state and adds a join to every Inbox query, while
 the reminder module gives HR the reuse without it.
 
+**Owner decision pending (recommended default is written into this document):** payment proofs, order
+approvals and pending bookings stay on their own pages (Payments, Orders, Bookings) and are not queue
+items in the Inbox. The queue holds conversation work only: escalations, held replies, customers
+waiting on a person, and items a person took over. See section 12.
+
 ## 3. What exists today (verified in the code, 2026-11-16)
 
 - `conversations`: `status` ('open' or 'escalated'; nothing ever writes 'closed'), `owned_by`
@@ -84,6 +89,16 @@ the reminder module gives HR the reuse without it.
 - Background jobs: `csa/jobs/registry.py` periodic jobs under a per-job advisory lock, so several
   worker processes run each job once. Booking reminders are the precedent (scan, dedupe by unique
   key, send, settle).
+- The `mute_expiry` job (every 5 minutes) ends an escalation's one-day mute by setting `owned_by` back to
+  `ai` and `status` to `open`; the Telegram staff-chat "Resume AI" button does the same.
+- Approved held replies are inserted as an `assistant` message with `send_authority = automation` and
+  updated to `reviewed` afterwards. Automated payment notices, booking messages and staff-chat order
+  decisions are also written as `assistant` and updated to `reviewed` (or `human`) so a takeover does
+  not hold them back. So neither `author` nor `send_authority` says "a person answered".
+- There is one Telegram staff target per company: saving the staff chat on the Channels page disables
+  every other enabled Telegram target (`console/telegram_staff_target_replace.sql`).
+- `pg_trgm` is already installed (`db/schema_baseline.sql`). The 0581 index on `phone_digits` is a plain
+  btree and does not serve the contains match the search uses.
 - Roles: platform admin, tenant admin and tenant staff have identical Inbox rights; read-only members
   get 403 on the whole Inbox. The team list API is admin-only.
 
@@ -108,8 +123,8 @@ customer writes
 ```
 
 1. **New message.** If the bot is handling the conversation nothing changes. If the bot escalates, or a
-   held reply is created, or the customer writes while a person owns the conversation, the item
-   enters NEEDS US with a reason, a priority and a due time.
+   held reply is created, or the customer writes while a person owns the conversation, or a person
+   takes the conversation over, the item enters NEEDS US with a reason, a priority and a due time.
 2. **Triage.** The queue lists NEEDS US items, overdue first, then oldest waiting. Each row shows the
    customer, a one-line last message, reason, topic, priority, how long it has waited and the
    assignee.
@@ -118,10 +133,20 @@ customer writes
 4. **Act.** Reply (after takeover, as today), decide a held reply, change priority or topic, add a
    reason.
 5. **Resolve, snooze, reopen.** Resolve ends the item and hands the conversation back to the bot
-   (a single action, so a taken-over conversation is never left silent). Snooze hides it until a
-   chosen time, then it returns to NEEDS US and the assignee is notified. A customer message on a
-   RESOLVED item reopens it only if a person still owns the conversation; if the bot owns it, the
-   state returns to `bot`.
+   (a single action, so a taken-over conversation is never left silent). It closes the open escalation
+   record and its ticket so a later escalation starts a new one. Resolve is refused while a held reply
+   is still pending (decide it first), and when the customer has written since the person loaded the
+   item. Snooze hides the item until a chosen time, then it returns to NEEDS US and the assignee is
+   notified. A customer message on a snoozed, waiting or resolved item puts it back in NEEDS US when a
+   person still owns the conversation or a held reply is pending; otherwise the state returns to `bot`.
+6. **Words.** "Release claim" gives up the assignment only. "Hand back" (the existing `/release` route
+   and the staff-chat "Resume AI" button) returns the conversation to the bot, and counts as resolving
+   the item. The automatic end of an escalation's one-day mute is not a hand-back by a person: the bot
+   answers again, but the item stays in NEEDS US until a person replies, resolves or snoozes it, so an
+   escalation nobody handled never disappears.
+7. **Takeover.** Taking over a bot conversation puts the item in NEEDS US with reason `manual`,
+   claimed by the person who took it over, so a takeover nobody follows up with becomes overdue and
+   reminds its owner instead of leaving the customer silent.
 
 ### Who sees and does what
 
@@ -145,8 +170,8 @@ The assignee picker needs the member list. The existing team route is admin-only
 | Column | Meaning |
 |---|---|
 | `queue_status` | `bot` (default), `needs_staff`, `waiting_customer`, `snoozed`, `resolved` |
-| `queue_reason` | why it needs us: `escalation`, `held_reply`, `customer_message`, `payment_proof`, `order_approval`, `booking_pending`, `manual` |
-| `topic` | `purchase`, `question`, `complaint`, `payment`, `booking`, `subscription`, `other`; set by the cause (payment proof gives `payment`, booking gives `booking`, order approval gives `purchase`), by a fixed mapping from the escalation's reason where it matches, else `other`; staff can change it with one tap |
+| `queue_reason` | why it needs us: `escalation`, `held_reply`, `customer_message`, `manual` (a person took the conversation over) |
+| `topic` | `purchase`, `question`, `complaint`, `payment`, `booking`, `subscription`, `other`; set by a fixed mapping from the escalation's reason or the conversation's last intent where one matches, else `other`; staff can change it with one tap |
 | `priority` | `low`, `normal`, `high`, `urgent`; from the escalation, else `normal`; staff can raise or lower |
 | `assignee_user_id`, `claimed_at` | console user holding the item (nullable) |
 | `needs_staff_since` | when the item last entered NEEDS US; the "waiting on us" clock |
@@ -154,7 +179,7 @@ The assignee picker needs the member list. The existing team route is admin-only
 | `snoozed_until` | set while snoozed |
 | `resolved_at` | set when resolved |
 | `last_activity_at` | last message time, else `opened_at` (replaces the lateral lookup) |
-| `last_customer_at`, `last_staff_reply_at` | last inbound message; last message by a person or an approved held reply |
+| `last_customer_at`, `last_staff_reply_at` | last inbound message; last reply by a person or an approved or edited held reply |
 
 `last_inbound_at` keeps its WhatsApp service-window meaning and is not reused.
 
@@ -163,39 +188,53 @@ action, from and to state, details. It feeds the item's history line, audit and 
 
 ### 5.2 How the state is maintained
 
-- **From messages: one trigger.** An `AFTER INSERT` trigger on `messages` updates `last_activity_at`,
-  `last_customer_at`, `last_staff_reply_at` and applies the message transitions below. A trigger
-  covers every insert path (the worker's inbound insert and seven outbound paths) without touching any of them. It does not bump `inbox_version` (a bump
-  per inbound message would make every staff reply fail with 409). Cost: one more `UPDATE` of the
-  conversation per message; the worker already updates `turn_count` there.
-- **From events: the code that causes them.** Escalation, approval creation and expiry, payment proof
-  submitted, order awaiting approval and pending booking call one function in a new
-  `csa/inbox_queue` module (`enter_needs_staff(reason, priority, topic)`). Staff actions (claim,
-  assign, snooze, resolve, priority, topic) go through the same module. Each transition writes an
-  event row and, for staff actions, bumps `inbox_version`.
+What a message row says cannot decide who answered, so the trigger only records facts and the code
+that knows who acted makes every other transition.
 
-Message transitions:
+- **Trigger on `messages` (inbound only, `AFTER INSERT`).** It updates `last_activity_at` on every
+  message and, for `author = 'contact'`, `last_customer_at`, and applies the one inbound transition
+  below. It does not bump `inbox_version` (a bump per inbound message would make every staff reply fail
+  with 409). Cost: one more `UPDATE` of the conversation per message; the worker already updates
+  `turn_count` there. Conversations of other channels (the sandbox `web` channel) and console chat
+  conversations stay `bot` forever; the trigger checks the channel and the console chat tables.
+- **Explicit transitions in a new `csa/inbox_queue` module**, called by the code that knows the
+  actor and the cause. Each writes an `inbox_queue_events` row; staff actions also bump
+  `inbox_version`:
 
-| Message | Condition | Result |
+| Cause | Called from | Result |
 |---|---|---|
-| inbound | person owns the conversation (`owned_by = human_support`) and state is any except `needs_staff` | `needs_staff`, reason `customer_message`, clock starts |
-| inbound | bot owns it and state is `resolved` or `waiting_customer` or `snoozed` | `bot` |
-| outbound, author `human_support` | any | `waiting_customer`; claims for the author if unclaimed |
-| outbound with `send_authority = reviewed` (approved held reply) | any | `waiting_customer` |
-| outbound by the assistant | any | no change |
+| bot escalation | escalation agent | `needs_staff`, reason `escalation`, priority from the escalation |
+| held reply created | approval creation | `needs_staff`, reason `held_reply` |
+| takeover of a bot conversation | `/takeover` route | `needs_staff`, reason `manual`, claimed by the actor |
+| person's reply | `/reply` route | `waiting_customer`; claims for the author if unclaimed; sets `last_staff_reply_at` |
+| held reply approved or edited | approval settle | `waiting_customer`; sets `last_staff_reply_at`; claims for the decider when the decider is a console user |
+| held reply rejected or expired | approval settle | stays `needs_staff`, reason `customer_message` (the customer got no answer) |
+| hand back | `/release` route, staff-chat "Resume AI" | `bot`, claim cleared, escalation closed |
+| resolve | queue routes, bulk | as hand back; refused while a held reply is pending or the customer wrote since the person loaded the item |
+| snooze | queue routes, bulk | `snoozed` with `snoozed_until` |
+| snooze ends | `inbox_snooze_wake` job (every minute, in PR 1) | `needs_staff` with a fresh clock |
+| claim, unclaim, assign, priority, topic | queue routes, bulk | field change plus an event |
 
-Other transitions: escalation to `needs_staff` (priority from the escalation); a held reply to
-`needs_staff` with reason `held_reply`; the decision of the last pending held reply leaves
-`needs_staff` only through the outbound message it produces (a rejected or expired reply stays
-`needs_staff` with reason `customer_message` and a note, because the customer got no answer); release
-or resolve returns the item to `bot` and the conversation to the AI.
+Messages that are not a person's answer never change the state: automated payment reminders and
+notices, booking messages, staff-chat order decisions and the bot's own replies. The mute expiry job
+changes `owned_by` and `status` as today and does not touch the queue state.
 
-Migration backfill (one statement per rule): `last_*` from the newest message; escalated or
-human-owned conversations and conversations with a live pending approval become `needs_staff`, with
-`needs_staff_since` from the open escalation, pending approval or newest customer message; human-owned
-conversations whose newest message is from staff become `waiting_customer`; everything else is `bot`.
+Inbound transition (the trigger): when the item is `waiting_customer`, `snoozed` or `resolved`, it
+becomes `needs_staff` with reason `customer_message` and a fresh clock if a person owns the
+conversation or a live held reply is pending, and `bot` otherwise. An item already `needs_staff` keeps
+its reason and clock.
 
-### 5.3 Settings per company (`inbox_settings`, 0624)
+The decision of a held reply made outside the Inbox (Telegram staff-chat buttons, the staff assistant's
+cards) goes through the same approval settle code, so it applies the same rows above.
+
+Migration backfill (one statement per rule): `last_*` from the newest message; conversations that are
+escalated and open, human-owned with an inbound newest message, or holding a live pending approval, and
+whose triggering event is within the last 30 days, become `needs_staff` (`needs_staff_since` from the
+open escalation, pending approval or newest customer message); human-owned conversations whose newest
+message is from staff become `waiting_customer`; everything else, including older unhandled
+escalations, is `bot`. No reminders are scheduled by the backfill itself (see 7.3).
+
+### 5.3 Settings per company (`inbox_settings`, 0622; ships in PR 1 because `due_at` needs it)
 
 Same shape as `booking_settings` (client id primary key, `version`, check ranges, `GET` for any
 member, `PUT` for admins, audited in `console_audit`, 409 on a stale version).
@@ -235,7 +274,7 @@ parameters, private to the person).
 | `reason` | one or more reasons |
 | `topic` | one or more topics |
 | `channel` | `telegram` or `whatsapp` |
-| `sender` | `known` or `new` (unchanged rule) |
+| `sender` | `known` or `new` (unchanged rule; evaluated per scanned row, see 6.5) |
 | `overdue` | state `needs_staff` and `due_at < now()` |
 | `waiting_over` | minutes; state `needs_staff` and `needs_staff_since < now() - n` |
 | `needs_review` | kept for compatibility: a live pending approval (reason `held_reply`) |
@@ -263,13 +302,16 @@ navigation badge read it. `needs_review_count` stays in the list response for cu
 - `(client_id, needs_staff_since, id) WHERE queue_status = 'needs_staff'` for `waiting`.
 - `(client_id, snoozed_until) WHERE queue_status = 'snoozed'`.
 - `(client_id, last_staff_reply_at) WHERE queue_status = 'waiting_customer'`.
-- Search: trigram indexes on contact name and @username (the generated `phone_digits` column from 0581
-  already serves phone search with a suffix match), if the `pg_trgm` extension is available to the
-  migration owner; otherwise name and @username search keep today's behaviour and the limit is
-  documented. The builder must confirm availability before the plan is fixed.
+- Search: `pg_trgm` is already installed, so GIN trigram indexes on contact name, @username and
+  `phone_digits` (the plain btree from 0581 does not serve a contains match). The national-form suffix
+  rule for phones stays in the query.
 
-The list query drops the per-row lateral lookups: last message and times come from the row; the
-"known sender" check and the pending approvals count are computed only for the page of rows returned.
+The list query drops the per-row lateral lookups: last message and times come from the row, and the
+pending approvals count is computed for the page of rows returned. The "known sender" check (orders,
+subscriptions, email, address) cannot be stored on the row because other tables change it, so it is
+computed per scanned row when the `sender` filter is on; the scan stops after one page, and a test with
+50,000 conversations bounds that case. The existing exclusions (channel `telegram` or `whatsapp`, no
+console chat conversations) stay in the query; the queue partial indexes never contain such rows.
 Counts and queue tabs touch only the partial indexes, so `bot` and `resolved` rows (the large majority)
 never enter them. A test seeds 50,000 synthetic conversations for one company and asserts each tab's
 query plan uses its index and returns a page without a sort node.
@@ -279,7 +321,7 @@ query plan uses its index and returns a page without a sort node.
 `POST /inbox/bulk` takes up to 50 conversation ids and one action: claim, assign (admin), release
 claim, resolve, snooze, set priority, set topic. Each item runs in its own savepoint with its own
 `inbox_version` check; the response lists per-item outcomes (done, version conflict, not allowed), so
-one stale item does not fail the batch. Bulk reply is not offered.
+one stale item does not fail the batch. Outcomes include `held_reply_pending` and `customer_wrote` for resolve and snooze. Bulk reply is not offered.
 
 ## 7. Reminders and notifications
 
@@ -293,7 +335,7 @@ await schedule(conn, client_id, kind, subject_type, subject_id, due_at, payload,
 await cancel(conn, client_id, kind, subject_type, subject_id)
 ```
 
-- Table `reminders` (0622; tenant isolated): `kind`, `subject_type`, `subject_id` (opaque text),
+- Table `reminders` (0623; tenant isolated): `kind`, `subject_type`, `subject_id` (opaque text),
   `due_at`, `state` (`scheduled`, `fired`, `cancelled`, `done`), `fire_count`, `last_fired_at`,
   `payload`, unique `(client_id, dedupe_key)`.
 - A periodic job (`reminders_fire`, every minute, under the job advisory lock) claims due rows with
@@ -310,7 +352,7 @@ await cancel(conn, client_id, kind, subject_type, subject_id)
 Two delivery paths share one call, `notify_people(...)`, which takes a language-neutral message (a key
 plus parameters) so each surface renders it in its own language:
 
-1. **Console notification centre** (`console_notifications`, 0623; tenant isolated). One row per
+1. **Console notification centre** (`console_notifications`, 0624; tenant isolated). One row per
    recipient: `user_id`, `kind`, `priority`, message key and parameters, link (route and parameters),
    `read_at`, `created_at`. A bell in the shell header shows the unread count; the panel lists the
    latest 50; a row opens the conversation (`/inbox?conversation=<id>`); "mark all read". Rows older
@@ -319,7 +361,7 @@ plus parameters) so each surface renders it in its own language:
    hours, outbox, retries. `format_notification` becomes language-aware through a `language` column on
    targets (`en` default, `ms`) and learns the new events.
 3. **Email to a person** through the existing console mailer, off by default and set per person
-   (`console_notification_prefs`, 0623): choose kinds, priority floor. Emails never include customer
+   (`console_notification_prefs`, 0625): choose kinds, priority floor. Emails never include customer
    message text; they name the customer by display name only and link to the conversation.
 
 Per-person Telegram messages are out of scope (the console user has no Telegram identity).
@@ -333,11 +375,16 @@ Per-person Telegram messages are out of scope (the console user has no Telegram 
 | `inbox.snooze_due` | at `snoozed_until` | assignee, else team (console) | the item returns to NEEDS US with a fresh clock before notifying |
 | `inbox.stale_claim` | `stale_claim_hours` after a claim with no staff action while the item is `needs_staff` | the claimer, then tenant admins | cleared when the claim is released or reassigned |
 | `inbox.follow_up` | `follow_up_hours` after the last staff reply while `waiting_customer` | assignee, else team (console only, never the staff chat) | text: follow up or resolve |
-| `inbox.handback` | `handback_prompt_hours` after the last staff reply while a person owns the conversation and nothing is waiting | assignee, else team (console only) | text: hand it back to the assistant |
+| `inbox.handback` | `handback_prompt_hours` after the last staff reply while the item is `waiting_customer` and a person owns the conversation | assignee, else team (console only) | text: hand it back to the assistant |
 
 The existing immediate events (`escalation`, `approval_needed`, `booking_pending`) stay as they are and
 are not duplicated; the inbox reminders cover waiting time.
 
+- **Existing items at rollout.** A one-time job in PR 2 schedules the overdue reminder for each
+  backfilled `needs_staff` item with a fresh clock (due one response target after rollout), so no company
+  receives a burst of reminders for old items.
+- **Existing staff-chat targets.** A migration adds `inbox.overdue` to the events of existing enabled
+  targets, as 0512 did for `booking_pending`; the other new kinds are console-only by default.
 - **Dedupe.** A reminder's dedupe key is `kind:subject:cycle` (the cycle is the item's
   `needs_staff_since` or claim time), and a notification's key is the reminder id plus fire number, so
   a worker crash or replay adds nothing. Console rows are unique on that key per recipient.
@@ -350,9 +397,11 @@ are not duplicated; the inbox reminders cover waiting time.
 
 Settings, Notifications (new; tenant admin writes, staff read): list the company's targets with
 channel, address (masked), events, minimum priority, quiet hours, language, enabled and verified
-state; add, edit, disable and remove. Channels offered: Telegram (the existing staff-chat
-verification flow is reused) and email (a shared mailbox address, sent through the console mailer).
-WhatsApp and webhook targets exist in the schema but have no sender, so the page does not offer them.
+state. There is one Telegram staff chat per company, still set on the Channels page (its flow replaces
+the previous chat); this page edits that chat's events, minimum priority, quiet hours and language.
+Email targets (a shared mailbox address, sent through the console mailer) can be added, edited,
+disabled and removed, several per company. WhatsApp and webhook targets exist in the schema but have no
+sender, so the page does not offer them.
 The same page holds the Inbox settings of 5.3 and each person's own notification preferences.
 
 ## 8. The reusable layer (statement for HR)
@@ -366,14 +415,19 @@ of HR is not part of this project.
 
 ## 9. Delivery in three pull requests
 
-1. **Queue and flow (migrations 0620, 0621, 0624 if settings ship here).** Queue columns, trigger,
-   `csa/inbox_queue`, events and saved views, the new list, counts and bulk routes, the indexes, and
-   the Inbox UI: tabs with counts, filters, saved views, claim, snooze, resolve, priority and topic,
-   bulk selection, settings (read and write). No reminders yet.
-2. **Reminders and the notification centre (0622, 0623).** `csa/reminders`, the job, the Inbox
-   reminder kinds, `console_notifications`, the bell and panel, Overview strip and navigation badge.
-3. **Targets page and delivery options.** Notification targets page, language-aware staff chat
-   messages, the email sender and per-person preferences.
+1. **Queue and flow (migrations 0620 queue columns and indexes, 0621 events and saved views, 0622
+   settings).** Queue columns, the inbound trigger, `csa/inbox_queue` with the explicit transitions
+   wired into the escalation agent, approval creation and settle, the takeover, reply and release
+   routes, the `inbox_snooze_wake` job, the new list, counts and bulk routes, the indexes, settings, the
+   assignee list, and the Inbox UI: tabs with counts, filters, saved views, claim, snooze, resolve,
+   priority and topic, bulk selection. No reminders yet.
+2. **Reminders and the notification centre (0623 reminders, 0624 console notifications).**
+   `csa/reminders`, the firing job, the Inbox reminder kinds, the one-time schedule for existing items,
+   `console_notifications`, the bell and panel, the Overview strip and navigation badge, the
+   language-aware staff-chat formatter with the new events, and the migration that opts existing
+   targets into `inbox.overdue`.
+3. **Targets page and delivery options (0625 target language and per-person preferences).** The
+   notification targets page, the email sender and per-person email preferences.
 
 Each PR is independently shippable. Migrations stop all four services during a staging rollout; the
 columns are additive and defaulted, so old code keeps working against the new schema.
@@ -410,7 +464,21 @@ columns are additive and defaulted, so old code keeps working against the new sc
     security tests for every new table).
 12. *Second consumer.* A test kind `demo.due` is scheduled, fires, re-checks and notifies through the
     same layer with no Inbox code involved.
-13. *Replay safety.* Delivering the same reminder twice (worker crash after send) creates one console
+13. *Takeover nobody follows up.* Person 1 takes over a bot conversation and never replies: it is
+    `needs_staff` (reason `manual`, claimed), overdue after the normal target, and Person 1 is reminded.
+14. *Unhandled escalation.* An escalation sits unhandled; after a day the mute expires and the bot answers
+    again, and the item is still in Needs us until a person replies, snoozes or resolves it.
+15. *Resolve races a new message.* Person 1 loads an item as waiting on customer; the customer writes;
+    Person 1 presses Resolve: refused with `customer_wrote`, the item shows in Needs us.
+16. *Resolve with a held reply.* An item with a pending held reply cannot be resolved until the reply is
+    decided; in bulk it is reported as `held_reply_pending`.
+17. *Not a staff answer.* An automated payment reminder to a customer in Needs us changes nothing: the
+    item stays in Needs us and its reminders continue.
+18. *Sandbox and console chat.* Sandbox (`web`) and console chat conversations never enter any tab or
+    count.
+19. *Rollout.* After the migration, a company with old unhandled items sees them in Needs us and
+    receives no burst of reminders; each gets its first reminder one response target later.
+20. *Replay safety.* Delivering the same reminder twice (worker crash after send) creates one console
     row and one chat message.
 
 ## 11. Constraints and checks
@@ -432,6 +500,9 @@ columns are additive and defaulted, so old code keeps working against the new sc
 
 ## 12. Out of scope
 
+- Payment proofs, order approvals and pending bookings as queue items (they stay on Payments,
+  Orders and Bookings; the reminder layer can carry them later, and the Overview can show them
+  beside the Inbox counts).
 - Bot behaviour: escalation rules, replies, tone (a separate topic, see the customer-bot escalation
   work).
 - Tickets as a console feature; the ticket and its SLA remain the escalation record and are not shown.
