@@ -48,19 +48,6 @@
     "ms": "Tolong buka tab HR untuk saya"
   },
   {
-    "id": "find-colleague",
-    "tab": "any",
-    "roles": [
-      "tenant_admin",
-      "tenant_staff"
-    ],
-    "packages": [
-      "hr"
-    ],
-    "en": "Find Danial Hakim in the company directory",
-    "ms": "Tolong cari Danial Hakim dalam direktori syarikat"
-  },
-  {
     "id": "email-finance-manager",
     "tab": "any",
     "roles": [
@@ -74,32 +61,6 @@
     "ms": "Tolong emel pengurus kewangan tentang bajet"
   },
   {
-    "id": "who-reports",
-    "tab": "hr",
-    "roles": [
-      "tenant_admin",
-      "tenant_staff"
-    ],
-    "packages": [
-      "hr"
-    ],
-    "en": "Who reports to Razak?",
-    "ms": "Siapa yang melapor kepada Razak?"
-  },
-  {
-    "id": "open-profile",
-    "tab": "hr",
-    "roles": [
-      "tenant_admin",
-      "tenant_staff"
-    ],
-    "packages": [
-      "hr"
-    ],
-    "en": "Open Siti's profile",
-    "ms": "Buka profil Siti"
-  },
-  {
     "id": "email-attention",
     "tab": "email",
     "roles": [
@@ -111,19 +72,6 @@
     ],
     "en": "What needs my attention in my email today?",
     "ms": "Apa emel yang perlu perhatian saya hari ini?"
-  },
-  {
-    "id": "aina-free",
-    "tab": "bookings",
-    "roles": [
-      "tenant_admin",
-      "tenant_staff"
-    ],
-    "packages": [
-      "bookings"
-    ],
-    "en": "When is Aina free tomorrow?",
-    "ms": "Bila Aina ada masa kosong esok?"
   },
   {
     "id": "renewal-reminders",
