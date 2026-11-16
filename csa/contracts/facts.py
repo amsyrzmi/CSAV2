@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from csa.contracts.envelope import ContractModel
 
@@ -85,10 +85,45 @@ class ResultMeta(ContractModel):
     was_duplicate: bool | None = None
 
 
+SentPictureKind = Literal["payment_qr", "plan", "product"]
+
+
+class PictureRef(ContractModel):
+    """The one picture a reply may carry: which stored picture, and the caption code wrote for it.
+
+    ``training_thumbnail`` is deliberately not a kind here: it is never sent to a customer.
+    """
+
+    kind: SentPictureKind
+    subject_key: str = Field(min_length=1, max_length=128)
+    caption: str = Field(min_length=1, max_length=1024)
+
+
+def dump_without_missing_picture(
+    handler: SerializerFunctionWrapHandler, model: Any
+) -> dict[str, Any]:
+    """Serialise ``model`` but leave out a ``picture`` that is None.
+
+    These models are saved in LangGraph checkpoints and have ``extra="forbid"``, so a process
+    from before the field existed rejects an explicit ``"picture": null``. Omitting it keeps
+    state written by a new process readable by an old one until a picture is actually set.
+    """
+    dumped: dict[str, Any] = handler(model)
+    if dumped.get("picture") is None:
+        dumped.pop("picture", None)
+    return dumped
+
+
 class AgentResultData(ContractModel):
     facts: list[Fact] = Field(default_factory=list, max_length=100)
     ui: Ui = Field(default_factory=Ui)
     suggested_actions: list[str] = Field(default_factory=list, max_length=20)
+    # Optional with a default: results saved before this field existed still load.
+    picture: PictureRef | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_missing_picture(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return dump_without_missing_picture(handler, self)
 
 
 class AgentResult(ContractModel):
@@ -110,7 +145,7 @@ class AgentResult(ContractModel):
             return value
         payload = dict(value)
         nested = payload.get("data")
-        flat_fields = ("facts", "ui", "suggested_actions")
+        flat_fields = ("facts", "ui", "suggested_actions", "picture")
         if nested is not None:
             if any(name in payload for name in flat_fields):
                 raise ValueError("AgentResult cannot mix nested and flat data fields")
@@ -133,3 +168,8 @@ class AgentResult(ContractModel):
     def suggested_actions(self) -> list[str]:
         """Expose suggested actions directly to graph code."""
         return self.data.suggested_actions
+
+    @property
+    def picture(self) -> PictureRef | None:
+        """Expose the optional picture directly to graph code."""
+        return self.data.picture

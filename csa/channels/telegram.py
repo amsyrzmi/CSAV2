@@ -353,6 +353,11 @@ class TelegramAdapter:
         except httpx.HTTPError as exc:
             raise TelegramDeliveryError("telegram_transport_error") from exc
 
+        return TelegramAdapter._receipt_from_response(response)
+
+    @staticmethod
+    def _receipt_from_response(response: httpx.Response) -> TelegramDeliveryReceipt:
+        """Map a send response to a receipt or a secret-free ``TelegramDeliveryError``."""
         try:
             body = _TelegramSendResponse.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
@@ -383,6 +388,47 @@ class TelegramAdapter:
             message_id=body.result.message_id,
             status_code=response.status_code,
         )
+
+    @staticmethod
+    async def send_photo(
+        bot_token: str,
+        *,
+        chat_id: str,
+        data: bytes,
+        media_type: str,
+        caption: str,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> TelegramDeliveryReceipt:
+        """Upload one picture with a caption (multipart ``sendPhoto``) and return the message id.
+
+        ``media_type`` is ``image/jpeg`` or ``image/png``; the bytes are sent unchanged.
+        Errors map exactly as in ``send_message`` and never contain the Bot API URL (it carries
+        the token).
+
+        Telegram limits, checked against https://core.telegram.org/bots/api#sendphoto on
+        2026-11-16: an uploaded photo is at most 10 MB; width plus height at most 10000; width to
+        height ratio at most 20; caption 0-1024 characters after entities parsing. Our own picture
+        constraints (2 MiB, 64-4096 px per side, longer side at most 10x the shorter) are stricter
+        on every count, so a stored picture never trips the photo limits. The caption is not
+        checked or truncated here: an over-long caption is rejected by Telegram with HTTP 400 and
+        surfaces as ``telegram_http_400``, like any other API rejection.
+        """
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        filename = "picture.png" if media_type == "image/png" else "picture.jpg"
+        form = {"chat_id": chat_id, "caption": caption}
+        files = {"photo": (filename, data, media_type)}
+        try:
+            if http_client is None:
+                timeout = httpx.Timeout(connect=3, read=10, write=10, pool=3)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(url, data=form, files=files)
+            else:
+                response = await http_client.post(url, data=form, files=files)
+        except httpx.TimeoutException as exc:
+            raise TelegramDeliveryError("telegram_timeout") from exc
+        except httpx.HTTPError as exc:
+            raise TelegramDeliveryError("telegram_transport_error") from exc
+        return TelegramAdapter._receipt_from_response(response)
 
     @staticmethod
     def verify(supplied_secret: str | None, expected_secret: str) -> bool:

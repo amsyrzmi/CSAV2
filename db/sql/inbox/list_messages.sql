@@ -1,6 +1,7 @@
 SELECT m.id, m.direction, m.author, coalesce(m.redacted_body, m.body) AS body,
        m.created_at, m.trace_id, d.status AS delivery_status,
-       d.last_error AS delivery_error, d.provider_status, d.provider_error
+       d.last_error AS delivery_error, d.provider_status, d.provider_error,
+       m.attachments
 FROM public.messages m
 LEFT JOIN public.outbound_deliveries d ON d.message_id = m.id AND d.client_id = m.client_id
 WHERE m.client_id = %s AND m.conversation_id = %s

@@ -103,6 +103,13 @@ const DEAD_NOTICES: Record<string, string> = {
   whatsapp_endpoint_unavailable:
     "Not delivered. This company's WhatsApp number is disconnected. Ask your administrator to connect it again in Services.",
   channel_not_configured: "Not delivered. WhatsApp is not switched on yet. Ask your administrator.",
+  // A picture reply is its own message, sent before the text; the text goes out either way.
+  picture_unavailable:
+    "The picture was not sent. It is no longer in your pictures, so the customer got the text reply only.",
+  picture_rejected:
+    "The picture was not sent. Telegram would not accept the file, so the customer got the text reply only.",
+  picture_failed:
+    "The picture was not sent. Telegram could not deliver it, so the customer got the text reply only.",
 };
 
 /** The short status after the author, or null when the message has no delivery. */

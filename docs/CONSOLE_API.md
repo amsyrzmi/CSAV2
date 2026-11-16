@@ -590,7 +590,7 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 |---|---|---|
 | `GET /conversations` | `before=UUID`, `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters) | `{items,next_cursor,needs_review_count}` |
 | `GET /conversations/{id}` | — | Ownership, mute and version metadata, plus `contact` with the full `phone` |
-| `GET /conversations/{id}/messages` | `before=UUID`, `limit=1..100` (50 default) | Bounded redacted text, direction, author and actual delivery status |
+| `GET /conversations/{id}/messages` | `before=UUID`, `limit=1..100` (50 default) | Bounded redacted text, direction, author, actual delivery status and, for a picture reply, `picture` |
 | `GET /approvals` | `before=bigint`, `conversation_id=UUID`, `include_handled=false`, `limit=1..50` | Pending reply approvals; optionally settled history |
 | `POST /conversations/{id}/takeover` | `{request_key: UUID, expected_version: int}` | Audited indefinite human ownership |
 | `POST /conversations/{id}/release` | Same | Audited AI ownership; old turns stay suppressed |
@@ -604,6 +604,18 @@ versions or changed content under a used key return 409. Mutation receipts, audi
 message and outbox share the transaction. Explicit same-key retry recovers committed
 results after lost acknowledgement. Reads use stable time/ID keyset ordering. No raw
 envelopes, routing credentials, attachment payloads or arbitrary source URLs are returned.
+
+A picture reply (for example a DuitNow QR) is its own outbound message, written and sent
+before the text that follows it. Its `body` is the caption and its message carries
+`picture: {asset_id: UUID}`; every other message, including every inbound one (an inbound
+photo's attachment is never exposed), has `picture: null`. The web shows a fixed-size
+thumbnail above the caption, loaded from `GET /console/v1/media/{asset_id}` (see
+[Pictures](#pictures)); a viewer the read rule refuses gets 404 there and the thumbnail
+hides itself, leaving the caption. A picture that was not delivered is a skipped delivery (`delivery_status` `skipped`, not `dead`) whose
+`delivery_error` is `picture_unavailable` (the stored picture is gone), `picture_rejected`
+(Telegram refused the file) or `picture_failed` (it could not be delivered, including a rate
+limit that would have held it for long); the text reply still goes out in each case, and the web
+inbox says so in a plain line.
 
 Muted new turns skip model/planner/spoke/composer work. Already-running computation may
 finish, but escalation, emit, hold, fail-safe and delivery recheck ownership. Taking

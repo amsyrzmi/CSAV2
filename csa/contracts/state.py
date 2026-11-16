@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from csa.contracts.envelope import Channel, ContractModel, Envelope
-from csa.contracts.facts import AgentError, AgentResult, Fact, Ui
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    Fact,
+    PictureRef,
+    Ui,
+    dump_without_missing_picture,
+)
 from csa.contracts.plan import Intent, Plan, Task
 
 RECENT_MESSAGES = 6
@@ -131,10 +138,23 @@ class OutboundMessage(ContractModel):
     trace_id: UUID
     contact_id: UUID
     channel: Channel
-    kind: Literal["text", "template", "notification"] = "text"
+    kind: Literal["text", "template", "notification", "image"] = "text"
     body: str = Field(min_length=1, max_length=8000)
     idempotency_key: str = Field(min_length=1, max_length=512)
     ui: Ui = Field(default_factory=Ui)
+    # An image message (``body`` is its caption) names the stored picture; no other kind has one.
+    # Optional with a default: outbound messages saved before this field existed still load.
+    picture: PictureRef | None = None
+
+    @model_validator(mode="after")
+    def image_kind_matches_picture(self) -> OutboundMessage:
+        if (self.kind == "image") != (self.picture is not None):
+            raise ValueError("an outbound message has a picture if and only if its kind is image")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_missing_picture(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return dump_without_missing_picture(handler, self)
 
 
 class TurnState(ContractModel):
@@ -146,6 +166,8 @@ class TurnState(ContractModel):
     results: Annotated[list[AgentResult], operator.add] = Field(default_factory=list)
     facts: list[Fact] = Field(default_factory=list)
     ui: Ui = Field(default_factory=Ui)
+    # The one picture chosen between collect and emit; optional so saved state still loads.
+    picture: PictureRef | None = None
     failures: list[AgentError] = Field(default_factory=list)
     handoff: Handoff | None = None
     draft: Draft | None = None
@@ -178,3 +200,7 @@ class TurnState(ContractModel):
     pending_tasks: list[Task] = Field(default_factory=list, max_length=3)
     collected: int = Field(default=0, ge=0)
     loop_stop: str | None = Field(default=None, max_length=64)
+
+    @model_serializer(mode="wrap")
+    def _omit_missing_picture(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return dump_without_missing_picture(handler, self)
