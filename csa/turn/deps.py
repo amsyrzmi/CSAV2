@@ -1044,7 +1044,8 @@ class PostgresTurnDependencies:
         envelope = state.envelope
         draft = state.draft
         # An image message is written before the text it goes with, whatever order the outbound
-        # list has (a stable sort: the rest keep their order); see _insert_outbound.
+        # list has (a stable sort: the rest keep their order); see _insert_outbound. This pairs
+        # them only because a reply has at most one picture (coordinator `_pick_picture`).
         ordered = sorted(state.outbound, key=lambda message: message.kind != "image")
         async with tx(self._pool, str(envelope.client_id)) as conn:
             for message in ordered:

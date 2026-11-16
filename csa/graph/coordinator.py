@@ -16,13 +16,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
-from csa.contracts.envelope import Envelope
+from csa.contracts.envelope import Channel, Envelope
 from csa.contracts.facts import (
     AgentError,
     AgentResult,
     AgentResultData,
     Fact,
+    PictureRef,
     ResultMeta,
+    SentPictureKind,
     Ui,
 )
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
@@ -59,6 +61,11 @@ _NODE_TIMEOUTS = {
 LOOP_MAX_STEPS = 3
 LOOP_MAX_TASKS = 6
 LOOP_STEP_TASKS = 2
+
+# One picture per reply: when several results ask for one, the kind decides (spec section 7).
+# Parallel spokes give no stable result order, so "pay" plus a plan question is pinned to the QR
+# by kind, not by which spoke finished first.
+_PICTURE_PRIORITY: dict[SentPictureKind, int] = {"payment_qr": 0, "plan": 1, "product": 2}
 
 
 class CoordinatorDependencies(Protocol):
@@ -272,7 +279,8 @@ def build_graph(
         else:
             facts, ui = list(state.facts), state.ui
         failures = list(state.failures)
-        for result in state.results[state.collected :]:
+        fresh = state.results[state.collected :]
+        for result in fresh:
             facts.extend(
                 fact.model_copy(update={"id": f"{result.task_id}:{fact.id}"})
                 for fact in result.facts
@@ -283,6 +291,7 @@ def build_graph(
         return {
             "facts": facts,
             "ui": ui,
+            "picture": _pick_picture(state.picture, fresh),
             "failures": failures,
             "collected": len(state.results),
             "node_error": None,
@@ -402,19 +411,9 @@ def build_graph(
             if state.outbound:
                 updated = state
             else:
-                if state.draft is None or state.plan is None:
+                if state.plan is None:
                     raise RuntimeError("emit_draft_missing")
-                if state.envelope.contact.id is None:
-                    raise RuntimeError("contact_id_missing")
-                outbound = OutboundMessage(
-                    trace_id=state.envelope.trace_id,
-                    contact_id=state.envelope.contact.id,
-                    channel=state.envelope.channel,
-                    body=state.draft.text,
-                    idempotency_key=f"{state.envelope.trace_id}:0",
-                    ui=state.ui,
-                )
-                updated = state.model_copy(update={"outbound": [outbound]})
+                updated = state.model_copy(update={"outbound": _reply_messages(state)})
             await deps.emit(updated)
             return {"outbound": updated.outbound, "node_error": None}
         except Exception as exc:
@@ -845,6 +844,54 @@ def _spoke_failure(
         data=AgentResultData(),
         meta=ResultMeta(trace_id=state.envelope.trace_id, latency_ms=0),
     )
+
+
+def _pick_picture(current: PictureRef | None, results: Sequence[AgentResult]) -> PictureRef | None:
+    """The one picture this reply carries, after a round of results.
+
+    A picture chosen in an earlier loop round is kept. Otherwise the kind decides (``payment_qr``
+    before ``plan`` before ``product``) and, between pictures of one kind, the result order. A
+    failed result never chooses one.
+    """
+    if current is not None:
+        return current
+    asked = [result.picture for result in results if result.ok and result.picture is not None]
+    # min keeps the first of equal keys, so result order breaks a tie.
+    return min(asked, key=lambda picture: _PICTURE_PRIORITY[picture.kind], default=None)
+
+
+def _reply_messages(state: TurnState) -> list[OutboundMessage]:
+    """The messages of an answered turn: the text, preceded by its picture on Telegram.
+
+    The image message's body is its caption, so a process that does not know image messages
+    sends the caption as plain text. WhatsApp and the web get the text alone (slice 1).
+    """
+    envelope = state.envelope
+    if state.draft is None:
+        raise RuntimeError("emit_draft_missing")
+    if envelope.contact.id is None:
+        raise RuntimeError("contact_id_missing")
+    text = OutboundMessage(
+        trace_id=envelope.trace_id,
+        contact_id=envelope.contact.id,
+        channel=envelope.channel,
+        body=state.draft.text,
+        idempotency_key=f"{envelope.trace_id}:0",
+        ui=state.ui,
+    )
+    picture = state.picture
+    if picture is None or envelope.channel != Channel.TELEGRAM:
+        return [text]
+    image = OutboundMessage(
+        trace_id=envelope.trace_id,
+        contact_id=envelope.contact.id,
+        channel=envelope.channel,
+        kind="image",
+        body=picture.caption,
+        picture=picture,
+        idempotency_key=f"{envelope.trace_id}:image",
+    )
+    return [image, text]
 
 
 def _merge_ui(left: Ui, right: Ui) -> Ui:

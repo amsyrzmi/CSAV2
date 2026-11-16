@@ -18,7 +18,14 @@ from csa.contracts.envelope import (
     Message,
     Meta,
 )
-from csa.contracts.facts import AgentError, AgentResult, AgentResultData, Fact, ResultMeta
+from csa.contracts.facts import (
+    AgentError,
+    AgentResult,
+    AgentResultData,
+    Fact,
+    PictureRef,
+    ResultMeta,
+)
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.state import (
     Context,
@@ -30,7 +37,7 @@ from csa.contracts.state import (
     TurnState,
     Verification,
 )
-from csa.graph.coordinator import run_turn
+from csa.graph.coordinator import _pick_picture, run_turn
 from csa.graph.policy.plan_rules import next_unresolved, resolve_order_status, validate_plan
 from csa.graph.policy.routing import route_turn
 from langgraph.checkpoint.memory import InMemorySaver
@@ -46,17 +53,18 @@ def make_envelope(
     *,
     callback: Callback | None = None,
     attachments: list | None = None,
+    channel: Channel = Channel.TELEGRAM,
 ) -> Envelope:
     return Envelope(
         trace_id=TRACE_ID,
         received_at=datetime(2026, 10, 11, tzinfo=UTC),
-        channel=Channel.TELEGRAM,
+        channel=channel,
         idempotency_key="test:event-1",
         client_id=CLIENT_ID,
         contact=Contact(
             id=CONTACT_ID,
             external_id="test-user",
-            channel=Channel.TELEGRAM,
+            channel=channel,
             display_name=None,
         ),
         conversation=ConversationRef(
@@ -89,14 +97,17 @@ def make_signals(
     )
 
 
-def make_result(task: Task, *, error: bool = False) -> AgentResult:
+def make_result(
+    task: Task, *, error: bool = False, picture: PictureRef | None = None
+) -> AgentResult:
     return AgentResult(
         ok=not error,
         status="error" if error else "ok",
         task_id=task.task_id,
         agent=task.agent,
         data=AgentResultData(
-            facts=[] if error else [Fact(id="answer", text="A fact", source=task.agent)]
+            facts=[] if error else [Fact(id="answer", text="A fact", source=task.agent)],
+            picture=picture,
         ),
         error=(
             AgentError(code="failed", category="internal", message="test failure")
@@ -141,6 +152,8 @@ class FakeDependencies:
         self.observed = 0
         self.fail_observe = False
         self.risks: dict[str, RiskClass] = {}
+        # The picture a spoke's result asks for, by task id.
+        self.pictures: dict[str, PictureRef] = {}
 
     async def next_step(self, state: TurnState) -> list[Task]:
         self.observed += 1
@@ -215,7 +228,7 @@ class FakeDependencies:
                 await asyncio.wait_for(self.both_spokes_started.wait(), timeout=1)
             finally:
                 self.active_spokes -= 1
-        return make_result(task)
+        return make_result(task, picture=self.pictures.get(task.task_id))
 
     async def handle_muted(
         self,
@@ -675,3 +688,84 @@ def test_timeline_summary_reports_loop_decisions() -> None:
     assert summary == {"next_tasks": ["alpha"], "step": 1}
     _, stopped = summarize("observe", {"step": 2, "pending_tasks": [], "loop_stop": "done"})
     assert stopped == {"next_tasks": [], "step": 2, "loop_stop": "done"}
+
+
+QR = PictureRef(kind="payment_qr", subject_key="method-1", caption="DuitNow QR: Synthetic Kedai")
+PLAN = PictureRef(kind="plan", subject_key="GOLD", caption="Gold plan")
+OTHER_PLAN = PictureRef(kind="plan", subject_key="SILVER", caption="Silver plan")
+PRODUCT = PictureRef(kind="product", subject_key="product-1", caption="Synthetic Tea")
+ALPHA = Task(task_id="alpha-1", agent="alpha", input={})
+BETA = Task(task_id="beta-1", agent="beta", input={})
+
+
+@pytest.mark.asyncio
+async def test_one_picture_per_reply_and_the_qr_wins() -> None:
+    # Kind decides before result order: a plan result before a QR result still gives the QR.
+    plan_then_qr = [make_result(ALPHA, picture=PLAN), make_result(BETA, picture=QR)]
+    assert _pick_picture(None, plan_then_qr) == QR
+    product_then_plan = [make_result(ALPHA, picture=PRODUCT), make_result(BETA, picture=PLAN)]
+    assert _pick_picture(None, product_then_plan) == PLAN
+    # Same kind: the first result wins; a failed result never chooses one.
+    two_plans = [make_result(ALPHA, picture=PLAN), make_result(BETA, picture=OTHER_PLAN)]
+    assert _pick_picture(None, two_plans) == PLAN
+    assert _pick_picture(None, [make_result(ALPHA, error=True, picture=QR)]) is None
+    assert _pick_picture(None, [make_result(ALPHA), make_result(BETA)]) is None
+
+    deps = FakeDependencies(parallel=True)
+    deps.pictures = {"alpha-1": PLAN, "beta-1": QR}
+
+    result = await run_turn(make_envelope("I want to pay and ask about the Gold plan"), deps)
+
+    images = [message for message in deps.emitted if message.kind == "image"]
+    assert [image.picture for image in images] == [QR]
+    assert result.picture == QR
+    assert len(deps.emitted) == 2
+
+
+@pytest.mark.asyncio
+async def test_emit_puts_the_image_before_the_text_on_telegram() -> None:
+    deps = FakeDependencies(parallel=True)
+    deps.pictures = {"alpha-1": QR}
+
+    result = await run_turn(make_envelope("How do I pay?"), deps)
+
+    assert [message.kind for message in deps.emitted] == ["image", "text"]
+    assert [message.idempotency_key for message in deps.emitted] == [
+        f"{TRACE_ID}:image",
+        f"{TRACE_ID}:0",
+    ]
+    image, text = deps.emitted
+    # The body is the caption: a process that does not know image messages sends it as text.
+    assert image.body == QR.caption and image.picture == QR
+    assert image.channel == Channel.TELEGRAM and image.contact_id == CONTACT_ID
+    assert text.body == "Hello there." and text.picture is None
+    assert result.outbound == deps.emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", [Channel.WHATSAPP, Channel.WEB])
+async def test_no_image_message_on_whatsapp_or_web(channel: Channel) -> None:
+    deps = FakeDependencies(parallel=True)
+    deps.pictures = {"alpha-1": QR}
+
+    await run_turn(make_envelope("How do I pay?", channel=channel), deps)
+
+    assert [(m.kind, m.body, m.idempotency_key) for m in deps.emitted] == [
+        ("text", "Hello there.", f"{TRACE_ID}:0")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_picture_from_an_earlier_round_is_kept() -> None:
+    assert _pick_picture(PLAN, [make_result(ALPHA, picture=QR)]) == PLAN
+    assert _pick_picture(PLAN, []) == PLAN
+    assert _pick_picture(None, [make_result(ALPHA, picture=QR)]) == QR
+
+    deps = _loop_deps([Task(task_id="x", agent="alpha", input={"query": "more"})])
+    deps.pictures = {"alpha-1": PLAN, "s1-0-alpha": QR}
+
+    result = await run_turn(make_envelope("What is this product?"), deps)
+
+    assert deps.executed_tasks == ["alpha", "beta", "alpha"]
+    assert result.picture == PLAN
+    assert [m.picture for m in deps.emitted if m.kind == "image"] == [PLAN]

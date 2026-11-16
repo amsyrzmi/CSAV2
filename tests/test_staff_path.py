@@ -417,6 +417,81 @@ async def test_held_reply_is_sent_once_when_staff_approves(world: World, owner_p
     assert world.q("SELECT count(*) FROM messages WHERE client_id=%s", world.client_id) == [(1,)]
 
 
+async def test_approved_held_reply_sends_text_only(world: World, owner_pool: Any) -> None:  # noqa: F811
+    """A held reply that had a picture: approving it sends the text alone (spec section 7)."""
+    from csa.contracts.facts import PictureRef
+    from csa.contracts.state import TurnState
+    from csa.core.tenancy import tx
+    from csa.graph.coordinator import run_turn
+    from csa.media import service
+    from csa.media.images import check_image
+    from csa.turn.deps import PostgresTurnDependencies
+
+    from tests.media_images import png
+    from tests.test_coordinator import FakeDependencies, make_envelope
+
+    endpoint_id = _seed_endpoint(world)
+    _seed_target(world)
+    data = png(800, 800)
+    async with tx(world.pool, str(world.client_id)) as conn:
+        stored = await service.put(
+            conn,
+            world.client_id,
+            "payment_qr",
+            "method-1",
+            data,
+            check_image(data, None),
+            source="upload",
+            actor_id=None,
+        )
+    assert stored is not None
+    trace_id = uuid.uuid4()
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO ingress_events (client_id, endpoint_id, idempotency_key, payload_hash, "
+            "trace_id) VALUES (%s,%s,%s,'h',%s)",
+            (world.client_id, endpoint_id, f"k-{trace_id}", trace_id),
+        )
+    envelope = make_envelope("How do I pay?")
+    envelope = envelope.model_copy(
+        update={
+            "client_id": world.client_id,
+            "trace_id": trace_id,
+            "contact": envelope.contact.model_copy(update={"id": world.contact_id}),
+            "conversation": envelope.conversation.model_copy(update={"id": world.conversation_id}),
+        }
+    )
+    real = PostgresTurnDependencies(world.pool)
+
+    class HeldForStaff(FakeDependencies):
+        async def hold(self, state: TurnState) -> None:
+            self.held += 1
+            await real.hold(state)
+
+    qr = PictureRef(kind="payment_qr", subject_key="method-1", caption="DuitNow QR: Synthetic")
+    deps = HeldForStaff(parallel=True)
+    deps.pictures = {"alpha-1": qr}
+    deps.gate_decision = "approve"
+
+    result = await run_turn(envelope, deps)
+
+    assert result.picture == qr
+    assert deps.held == 1 and deps.emitted == [] and result.outbound == []
+    assert world.q("SELECT count(*) FROM messages WHERE client_id=%s", world.client_id) == [(0,)]
+    sent: list[dict[str, Any]] = []
+    assert await _sender(world, owner_pool, sent).process_once()
+    assert await _tap_reply(world, endpoint_id, _tap_ids(sent)["Send reply"]) == (
+        "Approved. Reply queued."
+    )
+    assert world.q(
+        "SELECT body, attachments, has_attachment FROM messages WHERE client_id=%s",
+        world.client_id,
+    ) == [("Hello there.", [], False)]
+    assert world.q(
+        "SELECT count(*) FROM outbound_deliveries WHERE client_id=%s", world.client_id
+    ) == [(1,)]
+
+
 async def test_rejected_reply_sends_only_the_safe_fallback(world: World, owner_pool: Any) -> None:  # noqa: F811
     approval_id, endpoint_id, buttons = await _held_buttons(world, owner_pool)
     assert (await _tap_reply(world, endpoint_id, buttons["Reject"])).startswith("Rejected.")

@@ -9,9 +9,10 @@ import psycopg
 import pytest
 from csa.contracts.envelope import Channel, Envelope
 from csa.contracts.facts import PictureRef
-from csa.contracts.state import OutboundMessage, TurnState
+from csa.contracts.state import Draft, OutboundMessage, TurnState
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.graph.coordinator import _reply_messages
 from csa.media import service
 from csa.media.attachments import image_asset_id, image_attachments
 from csa.media.images import check_image
@@ -256,4 +257,49 @@ async def test_history_leaves_out_outbound_pictures_but_keeps_inbound_attachment
         ("inbound", "Synthetic question"),
         ("outbound", TEXT),
         ("inbound", "Here is my receipt"),
+    ]
+
+
+@requires_docker
+async def test_a_handoff_reply_never_lends_its_authority_to_the_image(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    env, conversation = await seed(w)
+    await a_picture(w, env.client_id)
+    # As the escalation agent leaves a handoff turn: an escalation for this trace and the chat
+    # muted for a person, so only the handoff reply itself may still be sent.
+    await w.q(
+        "INSERT INTO escalations (client_id, trace_id, conversation_id, contact_id, reason)"
+        " VALUES (%s,%s,%s,%s,'synthetic_handoff')",
+        env.client_id,
+        env.trace_id,
+        conversation,
+        env.contact.id,
+    )
+    await w.q(
+        "UPDATE conversations SET status='escalated', owned_by='human_support',"
+        " ai_muted_until=now() + interval '1 day' WHERE id=%s",
+        conversation,
+    )
+    state = TurnState(
+        envelope=env,
+        draft=Draft(text=TEXT, language="en", handoff=True),
+        picture=PictureRef(kind="payment_qr", subject_key="method-1", caption=CAPTION),
+    )
+    # The messages the coordinator's emit builds for this turn, written by the real emit.
+    messages = _reply_messages(state)
+    assert [m.kind for m in messages] == ["image", "text"]
+    await PostgresTurnDependencies(w.pool).emit(state.model_copy(update={"outbound": messages}))
+    rows = await w.q(
+        "SELECT idempotency_key, has_attachment, send_authority FROM messages"
+        " WHERE trace_id=%s AND direction='outbound'",
+        env.trace_id,
+    )
+    assert rows == [
+        {
+            "idempotency_key": f"{env.trace_id}:0",
+            "has_attachment": False,
+            "send_authority": "handoff",
+        }
     ]
