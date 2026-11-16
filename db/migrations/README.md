@@ -81,6 +81,10 @@ Reserved ranges (client growth program, 2026-10-27):
 
 - `0611`: the staff assistant's page-key check also allows `payments` and `connections` (the Overview
   assistant change added both tabs; same read-then-rebuild method as 0540).
+- `0630`-`0649`: HR processes. 0630 adds the process tables (`hr_process_templates`,
+  `hr_process_template_rules`, `hr_process_template_steps`, `hr_processes`, `hr_process_tasks`,
+  `hr_process_events`; tenant isolated, `SELECT` to `csa_app` only, written through definer functions
+  from 0631; the event log is immutable) and `hr_employees.probation_end`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
