@@ -16,6 +16,10 @@ what the English says, with the same names, amounts, phone, email, reference and
 names, from `csa.payments.copy.local_date`). It is built after the English and apart from it: a
 fault in the Malay leaves that fact English only (logged) and never touches the English or a
 sign-up already filed.
+
+A plan's picture (`plan_picture`) goes only with an answer about one plan: the sign-up's read-back
+of the plan chosen, and `mine` or `status` naming exactly one subscription. Its caption is the
+plan's name and nothing else.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from typing import Any, Literal
 import structlog
 
 from csa.agents.facts import day, money
-from csa.contracts.facts import Fact
+from csa.contracts.facts import Fact, PictureRef
 from csa.payments.copy import local_date
 
 logger = structlog.get_logger(__name__)
@@ -465,3 +469,17 @@ def _signup_ms(
         ),
     }
     return texts[kind]
+
+
+def plan_picture(code: object, name: object, has_picture: object) -> PictureRef | None:
+    """The plan's picture for a reply about that one plan, captioned with its name only; None when
+    the company has no picture for it (`has_picture` / `plan_has_picture` from the SQL is false).
+
+    A code or name a picture could not carry (empty or over the contract's length) also gives None:
+    a picture never fails the reply, which then goes as text alone.
+    """
+    if not has_picture or not isinstance(code, str) or not isinstance(name, str):
+        return None
+    if not 1 <= len(code) <= 128 or not name.strip() or len(name) > 1024:
+        return None
+    return PictureRef(kind="plan", subject_key=code, caption=name)

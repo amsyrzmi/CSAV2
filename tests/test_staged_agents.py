@@ -37,7 +37,7 @@ from csa.agents.staged.service import (
 )
 from csa.contracts.callbacks import PendingActionStore
 from csa.contracts.envelope import Envelope
-from csa.contracts.facts import AgentResult
+from csa.contracts.facts import AgentResult, PictureRef
 from csa.contracts.plan import Task
 from csa.contracts.state import Context
 from csa.core import db
@@ -2222,3 +2222,192 @@ async def test_with_payments_on_a_free_plan_sign_up_promises_no_invoice(world: W
             "what happens next. Nothing is active yet.",
         )
     ]
+
+
+# --- plan pictures (pictures, task 14) ----------------------------------------------------------
+
+
+async def plan_picture(
+    world: World, code: str, *, client: UUID | None = None, kind: str = "plan"
+) -> None:
+    """A stored picture for a plan code (metadata only: the reply never reads the bytes)."""
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "INSERT INTO media_assets (client_id, kind, subject_key, media_type, byte_size, width,"
+            " height, sha256, source) VALUES (%s, %s, %s, 'image/png', 1000, 800, 800,"
+            " repeat('a', 64), 'upload')",
+            (client or world.ctx.client_id, kind, code),
+        )
+
+
+def _keyed(ctx: AgentContext) -> AgentContext:
+    """The context with a fresh idempotency key, so each request is its own."""
+    return replace(ctx, idempotency_key=f"picture-{uuid4()}")
+
+
+@requires_docker
+async def test_signup_readback_asks_for_the_plan_picture(world: World) -> None:
+    ctx = await signup_chat(world)
+    await plan_picture(world, "besar")
+    await plan_picture(world, "kecil")
+    # Asking for the name is not the read-back: no picture yet.
+    asked = await signup_turn(world, ctx, **BESAR)
+    assert _kinds(asked) == ["signup_missing", "signup_data_note"] and asked.picture is None
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    assert _kinds(read) == ["signup_readback"]
+    # The text is unchanged; the picture is the plan's, captioned with its name only.
+    assert read.facts[0].text == (
+        "Sign-up for Plan Besar: name Ali Bin Abu, phone +60123456789. Is that right? Reply "
+        "yes to sign up. Nothing is filed until you do."
+    )
+    assert read.picture == PictureRef(kind="plan", subject_key="besar", caption="Plan Besar")
+    assert read.ui.request_phone is False
+    # A different plan reads back with that plan's picture.
+    other = await signup_turn(world, ctx, plan_code="Plan Kecil", confirmed=True)
+    assert _kinds(other) == ["signup_readback"]
+    assert other.picture == PictureRef(kind="plan", subject_key="kecil", caption="Plan Kecil")
+    # Filing is not the read-back: no picture.
+    filed = await signup_turn(world, ctx, plan_code="kecil", confirmed=True)
+    assert _kinds(filed) == ["signup_filed"] and filed.picture is None
+
+
+@requires_docker
+async def test_signup_readback_with_a_verified_phone_asks_for_the_plan_picture(
+    world: World,
+) -> None:
+    ctx = await signup_chat(world, phone=TYPED, verified=True)
+    await plan_picture(world, "besar")
+    read = await signup_turn(world, ctx, **BESAR, **ALI)
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.picture == PictureRef(kind="plan", subject_key="besar", caption="Plan Besar")
+
+
+@requires_docker
+async def test_plan_list_and_which_plan_never_ask_for_a_picture(world: World) -> None:
+    agent = SubscriptionAgent()
+    # The world's one plan on offer has a picture: a list of one is still a list.
+    await plan_picture(world, "pro")
+    plans = await agent.run(world.ctx, SubscriptionInput(action="plans"))
+    assert [f.id for f in plans.facts] == ["subscription_plan_1"] and plans.picture is None
+    # The sign-up's "which plan" question, for an unknown plan or none named.
+    ctx = await signup_chat(world)
+    await plan_picture(world, "besar")
+    await plan_picture(world, "kecil")
+    for fields in ({"plan_code": "Plan Emas"}, {}):
+        which = await signup_turn(world, ctx, **fields, **ALI)
+        assert _kinds(which)[0] == "signup_which" and which.picture is None
+    # A request on two subscriptions asks which one: no picture.
+    await name_plan(world, "basic", "Basic")
+    await plan_picture(world, "basic")
+    await add_subscription(world, plan="pro", started_days=10)
+    asked = await agent.run(_keyed(world.ctx), SubscriptionInput(action="request_cancel"))
+    assert [f.id for f in asked.facts] == ["subscription_which"] and asked.picture is None
+
+
+@requires_docker
+async def test_mine_with_one_subscription_asks_for_its_plan_picture(world: World) -> None:
+    agent = SubscriptionAgent()
+    await name_plan(world, "basic", "Basic")
+    await plan_picture(world, "basic")
+    # A cancelled one is not live, so `mine` still names exactly one subscription.
+    await add_subscription(world, plan="old", status="cancelled", started_days=20)
+    one = await agent.run(world.ctx, SubscriptionInput(action="mine"))
+    assert [f.text for f in one.facts] == ["Your plan: Basic, MYR 10.00 a month."]
+    expected = PictureRef(kind="plan", subject_key="basic", caption="Basic")
+    assert one.picture == expected
+    # `status` with no id answers as `mine`, picture included.
+    status = await agent.run(world.ctx, SubscriptionInput(action="status"))
+    assert status.facts == one.facts and status.picture == expected
+    # `list` is the whole history, never a single-subject answer.
+    listed = await agent.run(world.ctx, SubscriptionInput(action="list"))
+    assert len(listed.facts) == 2 and listed.picture is None
+    # With two live subscriptions, both with pictures, `mine` asks for none.
+    await name_plan(world, "pro", "Pro")
+    await plan_picture(world, "pro")
+    await add_subscription(world, plan="pro", started_days=10)
+    two = await agent.run(world.ctx, SubscriptionInput(action="mine"))
+    assert len(two.facts) == 2 and two.picture is None
+    status_two = await agent.run(world.ctx, SubscriptionInput(action="status"))
+    assert status_two.picture is None
+
+
+@requires_docker
+async def test_status_of_one_subscription_asks_for_its_plan_picture(world: World) -> None:
+    agent = SubscriptionAgent()
+    await name_plan(world, "basic", "Basic")
+    await plan_picture(world, "basic")
+    await name_plan(world, "pro", "Pro")  # no picture
+    second = await add_subscription(world, plan="pro", started_days=10)
+
+    def status(subscription: UUID) -> SubscriptionInput:
+        return SubscriptionInput(action="status", subscription_id=subscription)
+
+    one = await agent.run(world.ctx, status(world.subscription_id))
+    assert [f.text for f in one.facts] == ["Your plan: Basic, MYR 10.00 a month."]
+    assert one.picture == PictureRef(kind="plan", subject_key="basic", caption="Basic")
+    other = await agent.run(world.ctx, status(second))
+    assert other.facts[0].text.startswith("Your plan: Pro") and other.picture is None
+    # Another contact's subscription finds nothing, and no picture.
+    foreign = await add_subscription(world, plan="basic", contact=world.other_contact)
+    none = await agent.run(world.ctx, status(foreign))
+    assert [f.id for f in none.facts] == ["subscription_none"] and none.picture is None
+    # An archived plan's picture is never asked for; the text is as before.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE plans SET is_active = false WHERE client_id = %s AND code = 'basic'",
+            (world.ctx.client_id,),
+        )
+    archived = await agent.run(world.ctx, status(world.subscription_id))
+    assert archived.facts == one.facts and archived.picture is None
+
+
+@requires_docker
+async def test_pause_cancel_and_change_never_ask_for_a_picture(world: World) -> None:
+    agent = SubscriptionAgent()
+    await name_plan(world, "basic", "Basic")
+    await plan_picture(world, "basic")
+    await name_plan(world, "pro-plus", "Pro Plus")
+    await plan_picture(world, "pro-plus")
+    for action in ("request_pause", "request_cancel"):
+        passed = await agent.run(_keyed(world.ctx), SubscriptionInput(action=action))  # type: ignore[arg-type]
+        assert [f.id for f in passed.facts] == ["subscription_passed"], action
+        assert passed.picture is None, action
+    change = await agent.run(
+        _keyed(world.ctx), SubscriptionInput(action="request_change", plan_code="Pro Plus")
+    )
+    assert [f.id for f in change.facts] == ["subscription_passed"] and change.picture is None
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE subscriptions SET status = 'paused' WHERE id = %s", (world.subscription_id,)
+        )
+    paused = await agent.run(_keyed(world.ctx), SubscriptionInput(action="request_pause"))
+    assert [f.id for f in paused.facts] == ["subscription_already_paused"]
+    assert paused.picture is None
+
+
+@requires_docker
+async def test_plan_without_a_picture_asks_for_none(world: World) -> None:
+    ctx = await signup_chat(world)
+    # Not this plan's picture: another company's under the same code, and a product's picture
+    # whose key happens to be the same text.
+    await plan_picture(world, "besar", client=world.other_client)
+    await plan_picture(world, "besar", kind="product")
+    read = await signup_turn(world, ctx, **BESAR, **ALI, phone=TYPED)
+    assert _kinds(read) == ["signup_readback", "signup_data_note"]
+    assert read.facts[0].text.startswith("Sign-up for Plan Besar: name Ali Bin Abu")
+    assert read.picture is None
+    # One subscription whose plan has no picture: the text alone.
+    await name_plan(world, "basic", "Basic")
+    await plan_picture(world, "basic", client=world.other_client)
+    one = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="mine"))
+    assert [f.text for f in one.facts] == ["Your plan: Basic, MYR 10.00 a month."]
+    assert one.picture is None
+    # A subscription whose plan row is gone has no plan to show.
+    async with await psycopg.AsyncConnection.connect(world.owner_dsn) as conn:
+        await conn.execute(
+            "UPDATE subscriptions SET plan = 'gone' WHERE id = %s", (world.subscription_id,)
+        )
+    await plan_picture(world, "gone")
+    gone = await SubscriptionAgent().run(world.ctx, SubscriptionInput(action="mine"))
+    assert [f.text for f in gone.facts] == ["Your plan: gone, MYR 10.00."]
+    assert gone.picture is None
