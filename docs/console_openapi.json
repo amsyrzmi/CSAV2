@@ -33810,6 +33810,75 @@
       }
     },
     "/console/v1/payments/methods/{method_id}": {
+      "delete": {
+        "description": "Delete a method and its QR picture (404 `method_not_found`, 409 `last_active_method`).\n\nAdmins only, refused before anything is read. Invoices and payments keep `method_kind`\nonly, so they are unchanged.",
+        "operationId": "delete_method_console_v1_payments_methods__method_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "method_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Method Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Method",
+        "tags": [
+          "Payments"
+        ]
+      },
       "patch": {
         "operationId": "update_method_console_v1_payments_methods__method_id__patch",
         "parameters": [

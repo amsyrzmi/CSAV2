@@ -4,6 +4,7 @@ last-active-method rule, per-kind details, company isolation and audit rows (ser
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from uuid import UUID
@@ -11,6 +12,8 @@ from uuid import UUID
 import pytest
 from csa.console.contracts import ConsoleActor, MembershipOut, Role
 from csa.core.tenancy import tx
+from csa.media import service as media
+from csa.media.images import check_image
 from csa.payments import settings as payments
 from csa.payments.contracts import (
     MethodIn,
@@ -22,6 +25,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from tests.conftest import requires_docker
+from tests.media_images import png
 from tests.test_console_sessions import SessionWorld
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
@@ -86,6 +90,10 @@ class Company:
         data = MethodPatch.model_validate({**fields, "version": version})
         async with tx(self.w.pool, str(self.tenant)) as conn:
             return await payments.update_method(conn, self.tenant, self.actor, method_id, data)
+
+    async def delete(self, method_id: UUID) -> None:
+        async with tx(self.w.pool, str(self.tenant)) as conn:
+            await payments.delete_method(conn, self.tenant, self.actor, method_id)
 
 
 @pytest.fixture
@@ -306,3 +314,54 @@ async def test_every_write_leaves_an_audit_row_with_the_actor(a: Company) -> Non
         ("payments.method.updated", a.actor.user_id, str(method.id)),
         ("payments.settings.updated", a.actor.user_id, str(a.tenant)),
     ]
+
+
+async def test_a_deleted_method_is_gone_and_audited(a: Company, b: Company) -> None:
+    method = await a.add("transfer", "Bank")
+    await refused(b.delete(method.id), 404, "method_not_found")
+    await a.delete(method.id)
+    assert await a.methods() == []
+    await refused(a.delete(method.id), 404, "method_not_found")
+    rows = await a.w.q(
+        "SELECT action, actor_id, target_id FROM console_audit"
+        " WHERE client_id = %s AND action = 'payments.method.deleted'",
+        a.tenant,
+    )
+    assert [(r["action"], r["actor_id"], r["target_id"]) for r in rows] == [
+        ("payments.method.deleted", a.actor.user_id, str(method.id))
+    ]
+
+
+async def test_delete_keeps_the_last_active_method_of_an_enabled_company(a: Company) -> None:
+    transfer = await a.add("transfer", "Bank")
+    await a.save(0, enabled=True)
+    await refused(a.delete(transfer.id), 409, "last_active_method")
+    assert [m.id for m in await a.methods()] == [transfer.id]
+
+
+async def test_two_deletes_at_once_give_the_loser_a_404(a: Company) -> None:
+    method = await a.add("transfer", "Bank")
+    async with tx(a.w.pool, str(a.tenant)) as first:
+        await payments.delete_method(first, a.tenant, a.actor, method.id)
+        # The second delete waits on the payments lock the first still holds.
+        second = asyncio.create_task(a.delete(method.id))
+        await asyncio.sleep(0.3)
+        assert not second.done()
+    await refused(second, 404, "method_not_found")
+    assert await a.methods() == []
+
+
+async def test_a_picture_upload_and_a_delete_at_once_leave_no_orphan_picture(a: Company) -> None:
+    method = await a.add("qr", "DuitNow")
+    data = png(800, 800)
+    info = check_image(data, "qr.png")
+    async with tx(a.w.pool, str(a.tenant)) as upload:
+        # The upload route checks the method, then stores the picture, in one transaction.
+        await payments.require_qr_method(upload, a.tenant, method.id)
+        deleting = asyncio.create_task(a.delete(method.id))
+        await asyncio.sleep(0.3)
+        assert not deleting.done()  # the delete waits for the upload to finish
+        await media.set_picture(upload, a.tenant, a.actor, "payment_qr", str(method.id), data, info)
+    await deleting
+    assert await a.methods() == []
+    assert await a.w.q("SELECT id FROM media_assets WHERE subject_key = %s", str(method.id)) == []
