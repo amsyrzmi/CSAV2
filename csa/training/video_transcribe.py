@@ -4,22 +4,36 @@
 
 1. **Probe** (only while the item has no ``duration_ms``): duration and codecs. A refused file
    (unreadable, a codec outside the library's sets, longer than ``MAX_VIDEO_SECONDS``) is
-   ``Permanent``; nothing is stored or reserved for it. Otherwise the duration, both codecs (the
-   list's HEVC notice reads ``video_codec``) and the number of chunks are stored in one fenced
+   ``Permanent``; nothing is stored or reserved for it. An audio-only upload is refused here
+   (``check_playable``), so it never reaches the thumbnail. Otherwise the duration, both codecs
+   (the list's HEVC notice reads ``video_codec``) and the number of chunks are stored in one fenced
    transaction, which also decides ``speech='no_audio'`` for a video without an audio stream.
-2. **No audio stream**: ready, without a provider call or a summary.
-3. **Silence** (before the first chunk only): a first audio stream whose peak is at most
+2. **Thumbnail** (best-effort, on every attempt that gets here): when the item has no
+   ``training_thumbnail`` picture yet (an existing one, uploaded or generated, ends the step
+   before any source is asked for), a heartbeat, a fresh source, one frame at
+   ``frame_time_ms(duration)`` (``extract_frame``), ``check_image``, and ``put(...,
+   source="generated")`` in its own fenced transaction, so a failed write cannot touch the job's
+   other writes; a generated picture never overwrites one that is there. It runs alone: no other
+   ffmpeg child or chunk buffer is alive while the frame decodes (the 4K HEVC memory caution in
+   docs/TRAINING_VIDEO_CAPACITY.md). Every failure (``MediaRefused`` and ``MediaUnavailable``
+   alike, ``ValueError``, ``StorageError``, a database error) means no thumbnail: it is logged as
+   ``training_thumbnail_failed`` with a code and never fails, retries or deletes the item. Only
+   ``JobLost`` and ``ForeignKeyViolation`` pass through (the item went away). A video whose
+   video track ends before the frame's time gets none, and shows the placeholder.
+3. **No audio stream**: ready, without a provider call or a summary (after the thumbnail, so such
+   a video still gets one).
+4. **Silence** (before the first chunk only): a first audio stream whose peak is at most
    ``SILENCE_MAX_DB`` is ``speech='no_speech'``, ready, without a provider call.
-4. **The daily cap**: the video's seconds (rounded up) are reserved in their own fenced
+5. **The daily cap**: the video's seconds (rounded up) are reserved in their own fenced
    transaction before the first billed chunk, or the job waits (``Waiting``) with no call made.
-5. **Chunks** of ``AUDIO_CHUNK_SECONDS``, planned from the probed duration and resumed at
+6. **Chunks** of ``AUDIO_CHUNK_SECONDS``, planned from the probed duration and resumed at
    ``chunks_done``: each starts with a heartbeat, asks the store for a fresh source (on S3 a
    presigned URL for ``PLAYBACK_URL_SECONDS``), extracts exactly that chunk's seconds into a
    temporary directory under ``/tmp`` (never "until the end of the file"), sends it, keeps the
    segments worth keeping, and commits them with ``chunks_done = n + 1 WHERE chunks_done = n`` in
    one fenced transaction. A worker killed mid-chunk therefore repeats that chunk only: earlier
    chunks are neither sent nor written again, and the reservation is not booked twice.
-6. **Windows**: fewer than ``MIN_SPEECH_CHARS`` of kept text is ``no_speech`` (segments and
+7. **Windows**: fewer than ``MIN_SPEECH_CHARS`` of kept text is ``no_speech`` (segments and
    windows removed, ready). Otherwise the segments are grouped into windows of about
    ``WINDOW_SECONDS``, embedded as passages, and stored with ``speech='speech'`` and the most
    frequent language the provider reported, in one fenced transaction; the job moves on to
@@ -29,10 +43,10 @@ Every write goes through ``job.tx()`` (the claim's attempt and stage fence), so 
 lost its claim writes nothing. Errors: ``TranscriptionError``, ``KbEmbeddingError`` and
 ``MediaUnavailable`` are ``Transient("training_transcription_unavailable")``; ``StorageError``
 is ``Transient("training_storage_unavailable")``; ``MediaRefused`` from the probe is
-``Permanent(code)``. Once the probe has accepted the file (its duration is stored), an unreadable
-answer from the loudness or extract pass is ``Transient("training_transcription_unavailable")``:
-the probe read the file, so the cause is the attempt (an OOM kill, a full ``/tmp``), and a
-refusal would delete the upload.
+``Permanent(code)``; the thumbnail step handles its own errors (step 2). Once the probe has
+accepted the file (its duration is stored), an unreadable answer from the loudness or extract
+pass is ``Transient("training_transcription_unavailable")``: the probe read the file, so the cause
+is the attempt (an OOM kill, a full ``/tmp``), and a refusal would delete the upload.
 
 **An S3 source the probe cannot read.** ffmpeg's stderr is never read, so over https a bad file
 and a network failure both surface as ``MediaUnavailable("failed")``. In the probe step only, the
@@ -45,7 +59,7 @@ Known limits. A WebM without Cues (browser MediaRecorder output) cannot seek, so
 ``-ss`` demuxes from the start of the file: later chunks read more bytes over S3, bounded by the
 child's wall clock. The pinned ffmpeg build verifies a presigned URL's certificate chain but not
 its hostname (see ``csa/training/media.py``); each URL lives only ``PLAYBACK_URL_SECONDS`` and is
-made fresh for each probe, loudness pass and chunk.
+made fresh for each probe, thumbnail frame, loudness pass and chunk.
 
 Logs carry ids, the company id, the stage, the attempt, chunk indexes, byte counts, durations,
 the embedding model name and outcome codes: never transcript text, a title, a file name or a URL.
@@ -66,9 +80,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 import structlog
+from psycopg.errors import ForeignKeyViolation
 
 from csa.agents.kb.embedder import KbEmbedder, KbEmbeddingError, vector_to_sql
 from csa.core import db
+from csa.media import service as pictures
+from csa.media.images import check_image
 from csa.speech import SpeechTranscriber, TimedSegment, TimedTranscript, TranscriptionError
 from csa.storage.base import StorageError
 from csa.storage.multipart import MultipartStore
@@ -81,6 +98,8 @@ from csa.training.media import (
     Probe,
     check_playable,
     extract_chunk,
+    extract_frame,
+    frame_time_ms,
     max_volume_db,
     probe,
 )
@@ -126,6 +145,7 @@ WINDOW_MAX_CHARS = 8000
 """Most characters in one search window (the table's check)."""
 
 _CHUNK_MIME = "audio/ogg"
+_THUMBNAIL_KIND = "training_thumbnail"
 
 
 @dataclass(frozen=True)
@@ -261,14 +281,17 @@ class TranscribeStage:
         if claim.speech == "speech":
             return "summarising"
         duration_ms = claim.duration_ms
+        found: Probe | None = None
         if duration_ms is None:
             found = await self._probe(claim, job)
-            if not found.has_audio:
-                self._decided(claim, "no_audio")
-                return "ready"
             duration_ms = found.duration_ms
         if duration_ms > limits.MAX_VIDEO_SECONDS * 1000:
             raise Permanent(TOO_LONG)
+        # Alone, before the loudness pass and the chunks: no other ffmpeg child is alive.
+        await self._thumbnail(claim, job, duration_ms)
+        if found is not None and not found.has_audio:
+            self._decided(claim, "no_audio")
+            return "ready"
         total = _chunks(duration_ms)
         if claim.chunks_done == 0:
             async with _probed_already():
@@ -337,6 +360,65 @@ class TranscribeStage:
             outcome="probed",
         )
         return found
+
+    async def _thumbnail(self, claim: Claim, job: JobHandle, duration_ms: int) -> None:
+        """Keep one generated frame as the item's picture, at most once; best-effort (step 2).
+
+        Returns before any source is asked for when the item has a picture already. Any failure
+        is logged with a code and ends the step; ``JobLost`` and ``ForeignKeyViolation`` pass.
+        """
+        subject = str(claim.item_id)
+        try:
+            async with job.tx() as conn:
+                existing = await pictures.picture_for(
+                    conn, claim.client_id, _THUMBNAIL_KIND, subject
+                )
+            if existing is not None:
+                return
+            # The frame (up to its own wall clock) fits well inside JOB_STALE_SECONDS after this.
+            await job.heartbeat()
+            source = await self._source(claim)
+            data = await extract_frame(source, claim.container, frame_time_ms(duration_ms))
+            info = check_image(data, None)
+            async with job.tx() as conn:
+                stored = await pictures.put(
+                    conn,
+                    claim.client_id,
+                    _THUMBNAIL_KIND,
+                    subject,
+                    data,
+                    info,
+                    source="generated",
+                    actor_id=None,
+                )
+        except (JobLost, ForeignKeyViolation):
+            raise
+        except Exception as failure:
+            # A code only: never the exception's text, which may hold a path or a URL.
+            code = (
+                failure.code
+                if isinstance(failure, MediaRefused | MediaUnavailable)
+                else type(failure).__name__
+            )
+            logger.warning(
+                "training_thumbnail_failed",
+                client_id=str(claim.client_id),
+                item_id=str(claim.item_id),
+                stage=claim.stage,
+                attempt=claim.attempt,
+                code=code,
+            )
+            return
+        logger.info(
+            "training_thumbnail",
+            client_id=str(claim.client_id),
+            item_id=str(claim.item_id),
+            stage=claim.stage,
+            attempt=claim.attempt,
+            byte_size=info.byte_size,
+            # None: a picture arrived meanwhile (an upload); a generated one never replaces it.
+            outcome="stored" if stored is not None else "kept",
+        )
 
     async def _unreadable_or_unavailable(
         self, claim: Claim, job: JobHandle

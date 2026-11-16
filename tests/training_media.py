@@ -76,6 +76,16 @@ def make_video(
     return path
 
 
+def make_audio_only(path: Path, *, seconds: float) -> Path:
+    """Write an mp4 that holds a tone and no video stream at all (an audio-only upload)."""
+    _run(
+        [_ffmpeg(), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"]
+        + ["-i", _AUDIO_SOURCES["tone"].format(seconds=seconds), "-c:a", "aac", "-b:a", "32k"]
+        + ["-threads", "1", "-f", "mp4", str(path)]
+    )
+    return path
+
+
 def cover_art_first(video: Path, path: Path) -> Path:
     """Write ``video`` (an mp4) to ``path`` with a 200x200 JPEG cover that reads as stream 0.
 
