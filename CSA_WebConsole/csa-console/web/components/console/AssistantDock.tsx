@@ -31,7 +31,10 @@ export function AssistantDock() {
 function Dock({ conversation }: { conversation: AssistantConversation }) {
   const { me, packages, ensureLoaded, turns, busy, context, language, newConversation } = conversation;
   const panelId = useId();
-  const [open, setOpen] = useState(false);
+  // Closed on a page load, but open when it mounts with a resumed request on its way: a navigate
+  // from Overview (where the dock is hidden) lands here, and its answer must not arrive unseen.
+  // Read once at mount, so closing the panel is never undone by the resume.
+  const [open, setOpen] = useState(() => conversation.resumeTab !== null);
   const openButton = useRef<HTMLButtonElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const returnFocus = useRef(false);

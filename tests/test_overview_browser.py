@@ -709,6 +709,13 @@ async def test_overview_platform_admin_without_tenant_asks_to_choose(console: Co
         # No company, so no workspace route at all (Review Focus 2).
         assert api.workspace() == [], api.requests
         assert not [p for _, p in api.requests if p.startswith(("chat/", "inbox/", "services"))]
+        # Nor on a page that has the dock for everyone else: still no company, so no dock.
+        await page.goto(f"{console.base}/services")
+        await expect(page.get_by_test_id("services-tenant")).to_be_visible()
+        await page.wait_for_timeout(800)
+        await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
+        await expect(page.get_by_test_id("assistant-panel")).to_have_count(0)
+        assert api.workspace() == [], api.requests
 
 
 async def test_tenant_selector_writes_client_id_to_the_url(console: Console) -> None:
@@ -797,11 +804,11 @@ async def test_a_navigate_result_moves_to_the_tab_and_the_dock_there_continues_t
         await say(page, NAV_ASK)
         await expect(page).to_have_url(f"{console.base}/portal/services", timeout=WAIT)
         await expect(page.get_by_role("heading", name="Services", level=1)).to_be_visible()
-        # The dock is back on every page but Overview, over the same conversation.
-        dock = page.get_by_test_id("assistant-open")
-        await expect(dock).to_be_visible()
-        await dock.click()
+        # The dock is back on every page but Overview, over the same conversation, and it is
+        # already open: the resumed answer arrives where the user can see it, with no click.
         panel = page.get_by_test_id("assistant-panel")
+        await expect(panel).to_be_visible()
+        await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
         turns = panel.get_by_test_id("assistant-turn")
         await expect(turns).to_have_count(3, timeout=WAIT)
         await expect(turns.nth(0)).to_contain_text(ANSWER_ASK)
