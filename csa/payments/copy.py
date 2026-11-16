@@ -114,6 +114,15 @@ def method_line(m: MethodOut, locale: Locale) -> str:
     return f"{line} {instructions}" if instructions else line
 
 
+def qr_caption(label: str, locale: Locale) -> str:
+    """The caption of a QR method's picture: its label only (staff set it, at most 60
+    characters, and the text reply already shows it). Never an account, DuitNow id, amount or
+    reference: the caption is stored as it stands, unredacted."""
+    if locale == "ms":
+        return f"QR DuitNow: {label}"
+    return f"DuitNow QR: {label}"
+
+
 def reference_line(refs: Sequence[str], locale: Locale) -> str:
     """Asks for the reference with the payment: by name for one invoice, in general for several."""
     if len(set(refs)) == 1:
