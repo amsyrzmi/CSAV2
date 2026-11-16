@@ -89,6 +89,11 @@ Reserved ranges (client growth program, 2026-10-27):
   receipt in `hr_operations`, one `console_audit` row per change, tie conflicts and late leaver steps
   returned as warnings), the reads `hr_template_rows` and `hr_template_get`, and the internal
   `hr_process_match` (most specific active template of the kind, then the oldest).
+  0632 adds the trigger `hr_process_on_employee` on `hr_employees` (onboarding on add or rehire,
+  offboarding on leave, cancel on undo, due dates follow `start_date`, `last_day` and `probation_end`,
+  manager tasks follow the manager, the leaver's tasks closed when the leaver finishes; it runs in the
+  writer's transaction), `hr_process_settle` (the completion rule), and the HR entry points
+  `hr_process_start_apply`, `hr_process_cancel_apply` and `hr_probation_set`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
