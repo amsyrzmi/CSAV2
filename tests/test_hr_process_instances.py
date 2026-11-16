@@ -270,11 +270,30 @@ async def test_no_matching_template_adds_the_person_and_starts_nothing(world: Hr
     assert await processes(world, direct) == []
 
 
+async def reference_notes(world: HrWorld, process: UUID) -> list[str | None]:
+    found = await world.q(
+        "SELECT reference_note FROM hr_process_tasks WHERE client_id=%s AND process_id=%s"
+        " ORDER BY ordinal",
+        (world.tenant, process),
+    )
+    return [t["reference_note"] for t in found]
+
+
 async def test_process_is_a_frozen_copy(world: HrWorld) -> None:
-    template = await create(world, steps=[step(title_en="Sign the contract", due_offset_days=0)])
+    template = await create(
+        world,
+        steps=[
+            step(
+                title_en="Sign the contract",
+                due_offset_days=0,
+                reference_note="Synthetic statutory body, form A",
+            )
+        ],
+    )
     first = await add_person(world)
     process = await only_process(world, first)
     before = await tasks(world, process["id"])
+    assert await reference_notes(world, process["id"]) == ["Synthetic statutory body, form A"]
     updated = await apply(
         world,
         "owner",
@@ -285,7 +304,12 @@ async def test_process_is_a_frozen_copy(world: HrWorld) -> None:
             "name": "Renamed",
             "rules": {},
             "steps": [
-                step(title_en="Changed title", owner_role="manager", due_offset_days=9),
+                step(
+                    title_en="Changed title",
+                    owner_role="manager",
+                    due_offset_days=9,
+                    reference_note="Synthetic statutory body, form B",
+                ),
                 step(title_en="New step"),
             ],
             "is_active": True,
@@ -293,12 +317,14 @@ async def test_process_is_a_frozen_copy(world: HrWorld) -> None:
     )
     assert updated["version"] == 2
     assert await tasks(world, process["id"]) == before
+    assert await reference_notes(world, process["id"]) == ["Synthetic statutory body, form A"]
     assert (await only_process(world, first))["template_version"] == 1
     # The next person gets the new version.
     second = await add_person(world)
     newer = await only_process(world, second)
     assert newer["template_version"] == 2
     assert [t["title_en"] for t in await tasks(world, newer["id"])] == ["Changed title", "New step"]
+    assert await reference_notes(world, newer["id"]) == ["Synthetic statutory body, form B", None]
 
 
 async def test_task_assignees_resolved(world: HrWorld) -> None:

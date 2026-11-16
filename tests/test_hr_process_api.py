@@ -21,10 +21,11 @@ from csa.hr.documents import DocumentKind
 from csa.hr.operations import _PEOPLE_REFUSALS
 from csa.hr.process_models import AutoCheck
 from csa.hr.processes import PROBLEMS, REFUSALS
+from psycopg.types.json import Jsonb
 
 from tests.conftest import requires_docker
 from tests.test_hr_people import make_other_tenant_owner, make_people_manager, ok, person_row
-from tests.test_hr_people_records import db_today, leave_body, versioned
+from tests.test_hr_people_records import db_today, finish, leave_body, set_last_day, versioned
 from tests.test_hr_persistence import ORIGIN, HrWorld, hr_database, world
 from tests.test_hr_process_instances import START_SQL, run_in_other_tenant, start_body
 from tests.test_hr_process_templates import (
@@ -46,7 +47,12 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "db/migrations"
 ONBOARDING_STEPS = [
     step(title_en="Prepare the laptop"),
     step(title_en="Introduce the team", owner_role="manager"),
-    step(title_en="Submit bank details", owner_role="employee", description_en="Synthetic"),
+    step(
+        title_en="Submit bank details",
+        owner_role="employee",
+        description_en="Synthetic",
+        reference_note="Synthetic bank form",
+    ),
 ]
 # What each viewer gets of a process header and of a task (0633).
 HEADER_ALL = {"process_id", "kind", "name", "status", "employee_name"}
@@ -73,6 +79,7 @@ TASK_OWN = TASK_BASE | {
     "anchor",
     "approval_by",
     "auto_check",
+    "reference_note",
     "completed_at",
     "note",
     "version",
@@ -835,6 +842,7 @@ async def test_manager_person_and_assignee_views_omit_hidden_fields(world: HrWor
     [own] = as_self["tasks"]
     assert (own["title_en"], own["mine"], set(own)) == ("Submit bank details", True, TASK_OWN)
     assert own["description_en"] == "Synthetic"
+    assert own["reference_note"] == "Synthetic bank form"
 
     # An assignee of a custom process about someone else sees the header and their own task.
     plan = (
@@ -848,6 +856,7 @@ async def test_manager_person_and_assignee_views_omit_hidden_fields(world: HrWor
                     anchor="start_date",
                     owner_role="person",
                     owner_employee_id=str(staff),
+                    reference_note="Synthetic coaching guide",
                 ),
                 step(title_en="Review", anchor="start_date"),
             ],
@@ -858,6 +867,7 @@ async def test_manager_person_and_assignee_views_omit_hidden_fields(world: HrWor
     assert as_assignee["view"] == "assignee"
     assert set(as_assignee["process"]) == HEADER_ALL
     assert [(t["title_en"], set(t)) for t in as_assignee["tasks"]] == [("Coach", TASK_OWN)]
+    assert as_assignee["tasks"][0]["reference_note"] == "Synthetic coaching guide"
     problem(
         await world.call("manager", "GET", f"{PROCESSES}/{custom}"), 404, "resource_unavailable"
     )
@@ -994,3 +1004,46 @@ async def test_step_descriptions_keep_line_breaks_through_template_and_process(
     )
     assert response.status_code == 422
     assert await counts(world) == before
+
+
+async def test_a_leavers_noted_task_and_free_event_values_read_back_unchanged(
+    world: HrWorld,
+) -> None:
+    """0632 appends "person left" to a note on a new line, and event detail is immutable: the
+    read returns both exactly as stored instead of failing."""
+    staff = world.employees["staff"]
+    today = await db_today(world)
+    steps = [
+        step(title_en="Exit survey", anchor="last_day", owner_role="employee"),
+        step(title_en="Collect the laptop", anchor="last_day"),
+    ]
+    await post_template(world, kind="offboarding", name="Synthetic offboarding", steps=steps)
+    await ok(world, "owner", await leave_body(world, staff, today))
+    [row] = await world.q(
+        "SELECT id FROM hr_processes WHERE client_id=%s AND employee_id=%s AND kind='offboarding'",
+        (world.tenant, staff),
+    )
+    process = row["id"]
+    # A note a later task action (PR 2) will write, set here as the owner.
+    await world.q(
+        "UPDATE hr_process_tasks SET note='Synthetic note' WHERE client_id=%s AND process_id=%s"
+        " AND ordinal=1",
+        (world.tenant, process),
+    )
+    await set_last_day(world, staff, today - timedelta(days=1))
+    assert await finish(world, staff) == "moved_finished"
+    # An event whose values the typed fields of PR 1 did not expect (a later action's reason).
+    detail = {"reason": "  two\nlines  ", "fallback": "hr_team", "to": "not-a-uuid"}
+    await world.q(
+        "INSERT INTO hr_process_events(client_id,process_id,actor,action,detail)"
+        " VALUES (%s,%s,NULL,'task.sent_back',%s)",
+        (world.tenant, process, Jsonb(detail)),
+    )
+
+    found = await get_ok(world, "owner", f"{PROCESSES}/{process}")
+    assert [(t["status"], t["note"]) for t in found["tasks"]] == [
+        ("skipped", "Synthetic note\nperson left"),
+        ("todo", None),
+    ]
+    [sent_back] = [e for e in found["events"] if e["action"] == "task.sent_back"]
+    assert {k: sent_back["detail"][k] for k in detail} == detail

@@ -22,7 +22,9 @@
 --     (client_id, template_id, kind) means a process has the kind of its template. One active process per (employee, kind)
 --     except for kind custom (partial unique index hr_processes_one_active).
 --   public.hr_process_tasks: the frozen copy of the steps, with the resolved assignee, the due date
---     (NULL while its anchor date is not set), the status and the approval fields. Indexed by
+--     (NULL while its anchor date is not set), the status and the approval fields. reference_note
+--     (at most 500 characters) is the step's reference (an official body and form), copied so a
+--     later template edit never changes what a running task shows. Indexed by
 --     (client_id, assignee_employee_id, status, due_on) and unique by (client_id, process_id,
 --     ordinal). UNIQUE (client_id, process_id, id) is the target of the events' foreign key.
 --   public.hr_process_events: the log of everything that happens to a process, immutable through
@@ -130,6 +132,7 @@ CREATE TABLE IF NOT EXISTS public.hr_process_tasks(
  approval_by text CHECK(approval_by IN ('hr','manager')),
  auto_check text CHECK(auto_check IN ('account_linked','personal_details_complete','access_removed')
   OR (auto_check LIKE 'document\_uploaded:%' AND length(auto_check)>length('document_uploaded:'))),
+ reference_note text CHECK(char_length(reference_note)<=500),
  status text NOT NULL DEFAULT 'todo'
   CHECK(status IN ('todo','awaiting_approval','done','rejected','skipped')),
  completed_by uuid REFERENCES public.console_users(id),

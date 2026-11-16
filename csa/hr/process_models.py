@@ -19,8 +19,10 @@ from uuid import UUID
 
 from pydantic import (
     AwareDatetime,
+    BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StrictBool,
     StrictInt,
     ValidationInfo,
@@ -101,13 +103,15 @@ ProcessEventAction = Literal[
     "task.date_changed",
 ]
 TemplateWarningCode = Literal["step_after_last_day"]
-_MULTILINE = frozenset({"description_en", "description_ms"})
+# Text that may hold line breaks: a step's descriptions, and a task's note (the database appends
+# "person left" to a note on a new line, 0632 hr_process_person_left).
+_MULTILINE = frozenset({"description_en", "description_ms", "note"})
 
 
 class _StepText(HrModel):
-    """HrModel's control-character rule, except that a step's descriptions may hold line breaks
-    (line feeds). Every other control character, a tab or a lone carriage return included, is still
-    refused."""
+    """HrModel's control-character rule, except that a step's descriptions and a task's note may
+    hold line breaks (line feeds). Every other control character, a tab or a lone carriage return
+    included, is still refused."""
 
     @field_validator("*", mode="after")
     @classmethod
@@ -343,9 +347,9 @@ class ProcessHeader(HrModel):
 
 class ProcessTask(_StepText):
     """A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks
-    (and every task for HR) add the description, anchor, approval, check, completion time, note and
-    version. HR alone gets the assignee id, the offset and override, and who completed and approved
-    it."""
+    (and every task for HR) add the description, anchor, approval, check, reference note (copied
+    from the step when the process started), completion time, note and version. HR alone gets
+    the assignee id, the offset and override, and who completed and approved it."""
 
     task_id: UUID
     ordinal: int
@@ -363,6 +367,7 @@ class ProcessTask(_StepText):
     anchor: Anchor | None = None
     approval_by: ApprovalBy | None = None
     auto_check: AutoCheck | None = None
+    reference_note: str | None = None
     completed_at: AwareDatetime | None = None
     note: str | None = None
     version: Version | None = None
@@ -374,27 +379,33 @@ class ProcessTask(_StepText):
     approved_at: AwareDatetime | None = None
 
 
-class ProcessEventDetail(HrModel):
-    """The detail of an event; which keys appear depends on the action (0632). A key a later
-    migration adds is passed through as it is stored, so a new event never breaks a read."""
+class ProcessEventDetail(BaseModel):
+    """The detail of an event; which keys appear depends on the action (0632). Events are immutable,
+    so a stored value that a typed field refused would break the read for good: every value is
+    returned exactly as it is stored (any JSON value, not trimmed, no control-character rule), and a
+    key a later migration adds is passed through the same way. What 0632 writes today: `reason`
+    (a code such as `superseded`, `person_left`, `no_manager`), `kind`, `template_id`,
+    `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback` (`hr_pool`),
+    `clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or null),
+    `auto_check`."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", frozen=True, hide_input_in_errors=True)
 
-    reason: str | None = None
-    kind: ProcessKind | None = None
-    template_id: UUID | None = None
-    template_version: int | None = None
-    owner_role: OwnerRole | None = None
-    assignee_employee_id: UUID | None = None
-    due_on: date | None = None
-    fallback: Literal["hr_pool"] | None = None
-    clamped: bool | None = None
-    anchor: Anchor | None = None
-    old: date | None = None
-    new: date | None = None
-    from_: UUID | None = Field(default=None, alias="from")
-    to: UUID | None = None
-    auto_check: AutoCheck | None = None
+    reason: JsonValue = None
+    kind: JsonValue = None
+    template_id: JsonValue = None
+    template_version: JsonValue = None
+    owner_role: JsonValue = None
+    assignee_employee_id: JsonValue = None
+    due_on: JsonValue = None
+    fallback: JsonValue = None
+    clamped: JsonValue = None
+    anchor: JsonValue = None
+    old: JsonValue = None
+    new: JsonValue = None
+    from_: JsonValue = Field(default=None, alias="from")
+    to: JsonValue = None
+    auto_check: JsonValue = None
 
 
 class ProcessEvent(HrModel):

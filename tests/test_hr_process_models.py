@@ -219,11 +219,58 @@ def test_step_descriptions_keep_line_breaks_and_refuse_other_controls(field: str
             TemplateStepOut.model_validate(_step_out(**{field: bad}))
         with pytest.raises(ValidationError):
             ProcessTask.model_validate(_task(**{field: bad}))
-    # Only the descriptions: a title or a note keeps the single-line rule.
+    # Only the descriptions (and a task's note, below): a title keeps the single-line rule.
     for model, row in ((TemplateStepOut, _step_out()), (ProcessTask, _task())):
         with pytest.raises(ValidationError):
             model.model_validate({**row, "title_en": "two\nlines"})
     with pytest.raises(ValidationError):
-        ProcessTask.model_validate(_task(note="two\nlines"))
-    with pytest.raises(ValidationError):
         TemplateStep.model_validate({**step, "due_offset_days": 0, "reference_note": "a\nb"})
+    with pytest.raises(ValidationError):
+        ProcessTask.model_validate(_task(reference_note="a\nb"))
+
+
+def test_a_task_note_keeps_line_breaks_and_refuses_other_controls() -> None:
+    # 0632 hr_process_person_left appends "person left" to a note on a new line.
+    note = "Synthetic note\nperson left"
+    assert ProcessTask.model_validate(_task(note=note)).note == note
+    for bad in ("tab\there", "nul\x00here", "lone\rreturn", "bell\x07"):
+        with pytest.raises(ValidationError):
+            ProcessTask.model_validate(_task(note=bad))
+
+
+def test_event_detail_returns_every_stored_value_as_it_is() -> None:
+    from csa.hr.process_models import ProcessEvent
+
+    detail = {
+        "reason": "  sent back:\nthe form is unsigned  ",
+        "fallback": "hr_team",
+        "to": "the HR pool",
+        "from": "not-a-uuid",
+        "old": "sometime",
+        "new": 3,
+        "kind": "secondment",
+        "owner_role": "contractor",
+        "anchor": "contract_end",
+        "auto_check": "document_uploaded:visa",
+        "template_id": "x",
+        "template_version": "one",
+        "assignee_employee_id": 7,
+        "due_on": "soon",
+        "clamped": "yes",
+        "note": "tab\there",
+    }
+    assert set(detail) - {"note"} == detail_names()
+    event = ProcessEvent.model_validate(
+        {
+            "event_id": str(uuid4()),
+            "at": "2026-11-16T00:00:00+08:00",
+            "actor": None,
+            "action": "task.sent_back",
+            "task_id": None,
+            "detail": detail,
+        }
+    )
+    assert event.detail.model_dump(by_alias=True, exclude_unset=True) == detail
+    assert event.model_dump(mode="json", by_alias=True)["detail"]["reason"] == (
+        "  sent back:\nthe form is unsigned  "
+    )

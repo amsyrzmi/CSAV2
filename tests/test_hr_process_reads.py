@@ -417,7 +417,12 @@ async def test_assignee_sees_only_own_tasks(world: HrWorld) -> None:
         kind="custom",
         name="Mentoring",
         steps=[
-            step(title_en="Mentor the new hire", owner_role="person", owner_employee_id=str(staff)),
+            step(
+                title_en="Mentor the new hire",
+                owner_role="person",
+                owner_employee_id=str(staff),
+                reference_note="Synthetic mentoring guide, section 2",
+            ),
             step(title_en="File the mentoring form"),
         ],
     )
@@ -434,6 +439,7 @@ async def test_assignee_sees_only_own_tasks(world: HrWorld) -> None:
     assert [t["overdue"] for t in found] == [True, False]
     assert [t["pool"] for t in found] == [False, False]
     assert found[1]["note"] == "Synthetic own note"
+    assert [t["reference_note"] for t in found] == ["Synthetic mentoring guide, section 2", None]
     assert found[0]["task_id"] == await task_id(world, theirs, 1)
     assert "employee_id" not in found[0]
     # Soonest due first, keyset paged.
@@ -461,6 +467,7 @@ async def test_assignee_sees_only_own_tasks(world: HrWorld) -> None:
     }
     assert [t["title_en"] for t in seen["tasks"]] == ["Mentor the new hire"]
     assert seen["tasks"][0]["mine"] is True
+    assert seen["tasks"][0]["reference_note"] == "Synthetic mentoring guide, section 2"
     assert not {"completed_by", "approved_by", "assignee_employee_id"} & set(seen["tasks"][0])
     # Their own onboarding is the person's view (test_person_sees_own_progress_and_own_tasks_only).
     own_view = await get(world, "staff", own)

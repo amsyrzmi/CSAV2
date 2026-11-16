@@ -20,8 +20,9 @@
 --       dates and progress counts, and only the tasks assigned to them. Not the other tasks, no
 --       events. A custom process about the person (a performance plan, say) is not shown to them;
 --       they reach it only as an assignee of one of its tasks.
---     Assignee: their own tasks (with description and note, without actors), the process name and
---       kind and the person's display name; not the other tasks, not the person's id.
+--     Assignee: their own tasks (with description, reference note and note, without actors), the
+--       process name and kind and the person's display name; not the other tasks, not the
+--       person's id.
 --   A task is open while its status is not done or skipped; it is overdue when it is open, its
 --   process is active and due_on is before today in Asia/Kuala_Lumpur (as hr_leavers_due). A task
 --   with no due date is never overdue (spec 5.7.3). The HR pool is the open tasks with no assignee
@@ -45,7 +46,7 @@
 --     then id), keyset paged by the last task id like hr_process_rows. Columns: task_id,
 --     process_id, process_kind, process_name, employee_name, ordinal, title_en, title_ms,
 --     description_en, description_ms, owner_role, due_on, required, approval_by, auto_check,
---     status, note, version, overdue, pool.
+--     reference_note, status, note, version, overdue, pool.
 --   public.hr_person_processes(p_client,p_employee) RETURNS jsonb: {view, employee_id, processes:
 --     [{process_id, kind, name, status, started_at, closed_at, tasks_total, tasks_done, next_task:
 --     {title_en, title_ms, due_on} | null}] newest first} for the HR team, the person's manager and
@@ -235,8 +236,8 @@ BEGIN
     CROSS JOIN LATERAL (
      SELECT b.base||jsonb_build_object('description_en',x.description_en,
       'description_ms',x.description_ms,'anchor',x.anchor,'approval_by',x.approval_by,
-      'auto_check',x.auto_check,'completed_at',x.completed_at,'note',x.note,
-      'version',x.version) AS own) own
+      'auto_check',x.auto_check,'reference_note',x.reference_note,'completed_at',x.completed_at,
+      'note',x.note,'version',x.version) AS own) own
     CROSS JOIN LATERAL (
      SELECT jsonb_build_object('assignee_employee_id',x.assignee_employee_id,
       'due_offset_days',x.due_offset_days,'due_overridden',x.due_overridden,
@@ -258,7 +259,8 @@ CREATE OR REPLACE FUNCTION public.hr_task_rows_mine(p_client uuid, p_status text
 RETURNS TABLE(task_id uuid, process_id uuid, process_kind text, process_name text,
     employee_name text, ordinal integer, title_en text, title_ms text, description_en text,
     description_ms text, owner_role text, due_on date, required boolean, approval_by text,
-    auto_check text, status text, note text, version integer, overdue boolean, pool boolean)
+    auto_check text, reference_note text, status text, note text, version integer, overdue boolean,
+    pool boolean)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
  who record; today date:=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date; after_due date;
@@ -273,7 +275,7 @@ BEGIN
  RETURN QUERY
  SELECT x.id, p.id, p.kind, t.name, e.display_name, x.ordinal, x.title_en, x.title_ms,
   x.description_en, x.description_ms, x.owner_role, x.due_on, x.required, x.approval_by,
-  x.auto_check, x.status, x.note, x.version,
+  x.auto_check, x.reference_note, x.status, x.note, x.version,
   coalesce(p.status='active' AND x.status NOT IN ('done','skipped') AND x.due_on<today,false),
   x.assignee_employee_id IS NULL
  -- Two branches instead of an OR: who.team is a constant of the query, so for anyone outside the

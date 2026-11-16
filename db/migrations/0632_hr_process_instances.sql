@@ -22,16 +22,16 @@
 --     The template must be an active template of the kind (hr_template_unavailable). Ruling R1: an
 --     active process of the same person and kind (not custom) is first cancelled (reason
 --     superseded); a concurrent start that still meets the one-active index is
---     hr_process_already_active. Copies the steps into hr_process_tasks (the frozen copy) with the
---     anchor dates {start_date, last_day, probation_end} of the person, due_on = anchor date +
---     due_offset_days (NULL while the anchor date is NULL) and the assignee: manager -> the
---     person's manager when active and linked in hr_employee_accounts, else NULL (the HR pool) with
---     event detail {fallback: 'hr_pool', reason: no_manager | manager_inactive | manager_unlinked};
---     employee -> the person; person -> owner_employee_id; hr -> NULL (the pool). Spec 5.7.7: in an
---     offboarding, a task of the leaver (employee or person role assigned to the person) due after
---     last_day is due on last_day, event detail {clamped: true}. Events process.started {kind,
---     template_id, template_version} and one task.created {owner_role, assignee_employee_id,
---     due_on} per task.
+--     hr_process_already_active. Copies the steps into hr_process_tasks (the frozen copy, the
+--     reference_note included) with the anchor dates {start_date, last_day, probation_end} of the
+--     person, due_on = anchor date + due_offset_days (NULL while the anchor date is NULL) and the
+--     assignee: manager -> the person's manager when active and linked in hr_employee_accounts, else
+--     NULL (the HR pool) with event detail {fallback: 'hr_pool', reason: no_manager | manager_inactive
+--     | manager_unlinked}; employee -> the person; person -> owner_employee_id; hr -> NULL (the pool).
+--     Spec 5.7.7: in an offboarding, a task of the leaver (employee or person role assigned to the
+--     person) due after last_day is due on last_day, event detail {clamped: true}. Events
+--     process.started {kind, template_id, template_version} and one task.created {owner_role,
+--     assignee_employee_id, due_on} per task.
 --   public.hr_process_settle(p_client,p_process): spec 5.7.4, also called by the task actions
 --     (0634). An active process whose required tasks are all done or skipped is completed: its open
 --     optional tasks are skipped (task.skipped {reason: process_completed}) and process.completed is
@@ -216,9 +216,9 @@ BEGIN
    s.anchor, s.due_offset_days, dates) d;
   INSERT INTO public.hr_process_tasks(client_id,process_id,ordinal,title_en,title_ms,description_en,
    description_ms,owner_role,assignee_employee_id,anchor,due_offset_days,due_on,required,approval_by,
-   auto_check)
+   auto_check,reference_note)
   VALUES(p_client,pid,s.ordinal,s.title_en,s.title_ms,s.description_en,s.description_ms,s.owner_role,
-   who,s.anchor,s.due_offset_days,due,s.required,s.approval_by,s.auto_check)
+   who,s.anchor,s.due_offset_days,due,s.required,s.approval_by,s.auto_check,s.reference_note)
   RETURNING id INTO tid;
   INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
   VALUES(p_client,pid,tid,p_actor,'task.created',
