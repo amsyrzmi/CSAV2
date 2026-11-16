@@ -20,6 +20,8 @@ const en = {
   dock_title: "Assistant",
   new_conversation: "New conversation",
   close_assistant: "Close assistant",
+  // The idea bubble the closed dock offers after a quiet moment: the label of its close button.
+  dock_idea_dismiss: "Dismiss this idea",
   message_label: "Message",
   empty_hint:
     "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
@@ -145,6 +147,7 @@ const ms: Record<PanelKey, string> = {
   dock_title: "Pembantu",
   new_conversation: "Perbualan baharu",
   close_assistant: "Tutup pembantu",
+  dock_idea_dismiss: "Tutup idea ini",
   message_label: "Mesej",
   empty_hint:
     "Tanya tentang tab ini, cari rakan sekerja, atau sediakan satu tindakan. Tiada apa-apa yang berubah sehingga anda mengesahkannya.",

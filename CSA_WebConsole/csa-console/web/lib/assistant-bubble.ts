@@ -3,10 +3,10 @@
 /** How long the person must be idle before the dock offers an idea. */
 export const BUBBLE_WAIT_MS = 20_000;
 
-/** localStorage key holding the ids of ideas the person has dismissed. */
+/** sessionStorage key holding the ids of ideas the person has dismissed in this browser session. */
 export const DISMISSED_KEY = "fs-assistant-dismissed-ideas";
 
-/** Reads the stored dismissed ids; anything that is not a JSON list of strings gives what it can, never throws. */
+/** Reads the stored dismissed ids and never throws: input that is not a JSON array gives [], and non-string entries are dropped. */
 export function parseDismissed(raw: string | null): string[] {
   if (!raw) return [];
   try {
