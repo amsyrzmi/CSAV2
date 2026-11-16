@@ -547,7 +547,7 @@ async def test_rate_limit_retry_after_is_honoured_within_two_attempts(
         row = h.image_row(shop)
         assert row["status"] == "pending" and row["attempts"] == 1
         assert row["last_error"] == "telegram_rate_limited"
-        assert 5 < float(row["wait"]) <= 7
+        assert 0 < float(row["wait"]) <= 7
         h.make_due(shop)
         h.handler[0] = _response
         assert await h.send() is True

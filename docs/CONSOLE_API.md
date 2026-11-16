@@ -611,7 +611,7 @@ before the text that follows it. Its `body` is the caption and its message carri
 photo's attachment is never exposed), has `picture: null`. The web shows a fixed-size
 thumbnail above the caption, loaded from `GET /console/v1/media/{asset_id}` (see
 [Pictures](#pictures)); a viewer the read rule refuses gets 404 there and the thumbnail
-hides itself, leaving the caption. A picture that was not delivered is a dead delivery whose
+hides itself, leaving the caption. A picture that was not delivered is a skipped delivery (`delivery_status` `skipped`, not `dead`) whose
 `delivery_error` is `picture_unavailable` (the stored picture is gone), `picture_rejected`
 (Telegram refused the file) or `picture_failed` (it could not be delivered, including a rate
 limit that would have held it for long); the text reply still goes out in each case, and the web

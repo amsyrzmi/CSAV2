@@ -155,13 +155,13 @@ test("a message shows a picture only when the server sent one", () => {
 test("a picture that was not sent is explained in plain words and says the text still went", () => {
   for (const code of ["picture_unavailable", "picture_rejected", "picture_failed"]) {
     const notice = channels.deliveryNotice({
-      delivery_status: "dead", delivery_error: code, provider_status: null, provider_error: null,
+      delivery_status: "skipped", delivery_error: code, provider_status: null, provider_error: null,
     });
     assert.ok(notice && notice.startsWith("The picture was not sent."), code);
     assert.ok(notice.includes("text reply"), notice);
     assert.ok(!notice.includes("_"), notice);
   }
   const [unavailable, rejected, failed] = ["picture_unavailable", "picture_rejected", "picture_failed"].map((code) =>
-    channels.deliveryNotice({ delivery_status: "dead", delivery_error: code, provider_status: null, provider_error: null }));
+    channels.deliveryNotice({ delivery_status: "skipped", delivery_error: code, provider_status: null, provider_error: null }));
   assert.equal(new Set([unavailable, rejected, failed]).size, 3);
 });
