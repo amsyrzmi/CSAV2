@@ -48,6 +48,18 @@ export interface TrainingItem {
   processing: TrainingProcessing | null;
   /** Managers only: `hevc` means some browsers cannot play this video. */
   notice: "hevc" | null;
+  /**
+   * A video's generated preview, as its version (the picture's content hash) only; null for a PDF,
+   * a video uploaded before previews, one with no frame to take, and one whose frame has not been
+   * taken yet. The frame is taken early in transcribing, so a manager may see one while the video
+   * is still being processed; readers only ever get `ready` items. Show it through `thumbnailUrl`.
+   */
+  thumbnail: TrainingThumbnail | null;
+}
+
+/** `ThumbnailOut`: the version changes when the picture changes. */
+export interface TrainingThumbnail {
+  version: string;
 }
 
 export interface TrainingList {
@@ -121,6 +133,18 @@ export function removeItem(tenantId: string | null, id: string): Promise<void> {
 /** The same-origin PDF route; the viewer fetches it whole (the console forbids framing it). */
 export function fileUrl(tenantId: string | null, id: string): string {
   return trainingPath(tenantId, `${item(id)}/file`);
+}
+
+/**
+ * The item's thumbnail route (the same visibility as the item; any refusal is a 404). A platform
+ * admin must name the company (`client_id`); `v` makes the browser fetch it again after a change
+ * (the route itself revalidates on its ETag).
+ */
+export function thumbnailUrl(tenantId: string | null, itemId: string, version: string): string {
+  const query = new URLSearchParams();
+  if (tenantId) query.set("client_id", tenantId);
+  query.set("v", version);
+  return `${BASE}${item(itemId)}/thumbnail?${query.toString()}`;
 }
 
 /** The stored summary, or null when none has been made. Never calls the model. */

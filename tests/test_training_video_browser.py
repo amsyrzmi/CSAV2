@@ -19,6 +19,8 @@ import asyncio
 import hashlib
 import json
 import re
+import struct
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +56,7 @@ site = services.site
 PIECE = 8 * 1024 * 1024
 VIDEO_ROUTE = re.compile(r"/console/v1/training/items/([0-9a-f-]{36})/video")
 PIECES_ROUTE = re.compile(r"/console/v1/training/videos/([0-9a-f-]{36})/pieces/(\d+)")
+THUMBNAIL_ROUTE = re.compile(r"/console/v1/training/items/([0-9a-f-]{36})/thumbnail")
 NEW_VIDEO = "88888888-8888-4888-8888-0000000000a1"
 NOT_READY = "88888888-8888-4888-8888-0000000000a2"
 
@@ -195,8 +198,20 @@ class VideoLibrary(Library):
     forget_on_complete: set[int] = field(default_factory=set)
     piece_count: int = 0
     declared: int = 0
+    # The thumbnail route: item id -> the picture, or None for a 404; and every request's query.
+    thumbnails: dict[str, bytes | None] = field(default_factory=dict)
+    thumbnail_reads: list[tuple[str, str]] = field(default_factory=list)
 
     async def route(self, request_route: Route) -> None:
+        found = THUMBNAIL_ROUTE.fullmatch(urlsplit(request_route.request.url).path)
+        if found and request_route.request.method == "GET":
+            self.thumbnail_reads.append((found[1], urlsplit(request_route.request.url).query))
+            picture = self.thumbnails.get(found[1])
+            if picture is None:
+                await request_route.fulfill(status=404, json={"detail": "training_not_found"})
+            else:
+                await request_route.fulfill(status=200, content_type="image/png", body=picture)
+            return
         if VIDEO_ROUTE.fullmatch(urlsplit(request_route.request.url).path):
             if self.expire_links > 0:
                 self.expire_links -= 1
@@ -1200,5 +1215,114 @@ async def test_an_insecure_page_says_so_before_a_video_upload_starts(
                 "Open the console over https and try again."
             )
             assert library.starts == [], "an upload was started without a way to hash its pieces"
+
+    await with_browser(body)
+
+
+# ---- Thumbnails (pictures plan, Task 19) -------------------------------------------------------
+
+
+def solid_png(width: int, height: int, rgb: tuple[int, int, int] = (40, 120, 200)) -> bytes:
+    """A real, decodable PNG of one colour, built at run time (no media file is committed)."""
+
+    def chunk(name: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(name + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + name + body + struct.pack(">I", crc)
+
+    rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+WITH_PREVIEW = "88888888-8888-4888-8888-0000000000b1"
+OLDER_VIDEO = "88888888-8888-4888-8888-0000000000b2"
+PROCESSING = "88888888-8888-4888-8888-0000000000b3"
+BROKEN = "88888888-8888-4888-8888-0000000000b4"
+A_PDF = "88888888-8888-4888-8888-0000000000b5"
+PREVIEW_VERSION = "a" * 64
+
+
+@requires_ffmpeg
+async def test_list_shows_thumbnails_and_placeholders(
+    site: Site, videos: Videos, clip: bytes
+) -> None:
+    async def body(browser: Any) -> None:
+        library = VideoLibrary(Files(), videos=videos)
+        library.add(make_item(A_PDF, "Synthetic deck"))
+        add_video(library, videos, clip, OLDER_VIDEO, "Older video", thumbnail=None)
+        add_video(
+            library,
+            videos,
+            None,
+            PROCESSING,
+            "Still processing",
+            status="transcribing",
+            duration_ms=None,
+            processing=processing(0, None),
+            thumbnail=None,
+        )
+        # The list names a version, but the picture will not load: the placeholder replaces it.
+        add_video(library, videos, None, BROKEN, "Broken preview", thumbnail={"version": "b" * 64})
+        add_video(
+            library,
+            videos,
+            clip,
+            WITH_PREVIEW,
+            "Has a preview",
+            thumbnail={"version": PREVIEW_VERSION},
+        )
+        picture = solid_png(320, 180)
+        library.thumbnails[WITH_PREVIEW] = picture
+        library.thumbnails[BROKEN] = None
+        async with training_page(browser, site, library) as page:
+            image = page.get_by_test_id(f"training-thumbnail-{WITH_PREVIEW}")
+            await expect(image).to_be_visible()
+            await expect(image).to_have_attribute("alt", "")
+            await expect(image).to_have_attribute("loading", "lazy")
+            await expect(image).to_have_attribute("width", "112")
+            await expect(image).to_have_attribute("height", "63")
+
+            async def loaded() -> bool:
+                return await image.evaluate("i => i.complete && i.naturalWidth === 320")
+
+            await until(loaded, "the preview did not load")
+            for item in (A_PDF, OLDER_VIDEO, PROCESSING, BROKEN):
+                placeholder = page.get_by_test_id(f"training-thumbnail-placeholder-{item}")
+                await expect(placeholder).to_be_visible()
+                await expect(placeholder).to_have_attribute("aria-hidden", "true")
+                await expect(page.get_by_test_id(f"training-thumbnail-{item}")).to_have_count(0)
+            # Each row starts with its picture box, and every box is the same reserved size.
+            for item in (WITH_PREVIEW, A_PDF, OLDER_VIDEO, PROCESSING, BROKEN):
+                row = page.get_by_test_id(f"training-item-{item}")
+                first = await row.evaluate("li => li.firstElementChild.dataset.testid")
+                assert first.startswith("training-thumbnail"), (item, first)
+                box = await row.locator(":scope > :first-child").bounding_box()
+                assert box and (round(box["width"]), round(box["height"])) == (112, 63), box
+            # A member's request names no company; the version is in the address.
+            assert (WITH_PREVIEW, f"v={PREVIEW_VERSION}") in library.thumbnail_reads
+            assert (BROKEN, "v=" + "b" * 64) in library.thumbnail_reads
+            assert all(query.startswith("v=") for _, query in library.thumbnail_reads)
+            assert not any(
+                item in (A_PDF, OLDER_VIDEO, PROCESSING) for item, _ in library.thumbnail_reads
+            )
+
+            # The video's page uses the preview as the player's poster.
+            await page.get_by_test_id(f"training-open-{WITH_PREVIEW}").click()
+            player = page.get_by_test_id("training-video-player")
+            await expect(player).to_be_visible(timeout=WAIT)
+            await expect(player).to_have_attribute(
+                "poster",
+                f"/console/v1/training/items/{WITH_PREVIEW}/thumbnail?v={PREVIEW_VERSION}",
+            )
+            await page.go_back()
+            await page.get_by_test_id(f"training-open-{OLDER_VIDEO}").click()
+            await expect(page.get_by_test_id("training-video-section")).to_be_visible(timeout=WAIT)
+            older = page.get_by_test_id("training-video-player")
+            await expect(older).to_be_visible()
+            assert await older.get_attribute("poster") is None
 
     await with_browser(body)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import shutil
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -19,6 +19,8 @@ import pytest
 from csa.agents.kb.embedder import HASH_MODEL, DefaultKbEmbedder
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.media import service as pictures
+from csa.media.images import check_image
 from csa.speech import SpeechTranscriber, TimedSegment, TimedTranscript, TranscriptionError
 from csa.storage.base import ObjectStore, StorageError
 from csa.storage.local import LocalObjectStore
@@ -34,13 +36,15 @@ from csa.training.video_transcribe import (
     build_windows,
     keep_segments,
 )
+from psycopg.errors import ForeignKeyViolation
 from psycopg_pool import AsyncConnectionPool
 from structlog.testing import capture_logs
 
 from tests.conftest import requires_docker, requires_ffmpeg
+from tests.media_images import png
 from tests.test_console_sessions import SessionWorld
 from tests.test_training_api import ITEMS, enable, remove
-from tests.training_media import AudioKind, Container, make_video
+from tests.training_media import AudioKind, Container, make_audio_only, make_video
 
 pytestmark = [requires_docker, requires_ffmpeg, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -48,14 +52,17 @@ pytest_plugins = ["tests.test_console_sessions"]
 TRANSCRIPTION = "training_transcription_unavailable"
 STORAGE = "training_storage_unavailable"
 TITLE = "Synthetic induction walkthrough"
+SECRET = "synthetic-detail-never-logged"
 Hook = Callable[[int, int], Awaitable[TimedTranscript | None]]
+FrameHook = Callable[[], Awaitable[None]]
 
 
 class SourceStore(LocalObjectStore):
     """The local training store that hands out a fresh copy of the video for every source asked.
 
     Each copy stands for one presigned URL; ``https`` makes it answer an S3-looking URL instead,
-    and ``size_answer`` answers ``object_size`` (a number, or an error to raise).
+    ``size_answer`` answers ``object_size`` (a number, or an error to raise), and ``fail_at`` makes
+    the source asked for at that index (counted from 0) a ``StorageError``.
     """
 
     def __init__(self, root: Path, sources: Path) -> None:
@@ -64,8 +71,13 @@ class SourceStore(LocalObjectStore):
         self.sources: list[tuple[str, int]] = []
         self.https: str | None = None
         self.size_answer: int | StorageError | None = None
+        self.fail_at: int | None = None
+        self.asked = 0
 
     def media_source(self, tenant: UUID, name: str, ttl_seconds: int) -> str:
+        asked, self.asked = self.asked, self.asked + 1
+        if asked == self.fail_at:
+            raise StorageError(f"synthetic storage failure {SECRET}")
         if self.https is not None:
             self.sources.append((self.https, ttl_seconds))
             return self.https
@@ -153,11 +165,14 @@ class World:
         self.tenant = sessions.tenants[0]
         self.extracts: list[tuple[int, int]] = []
         self.extract_sources: list[str] = []
+        self.frames: list[tuple[str, int]] = []
+        self.frame_hook: FrameHook | None = None
         self.heartbeats = 0
         self.speech = StubSpeech(self.extracts)
         self.stage = TranscribeStage(store, self.speech, DefaultKbEmbedder())
         self.worker = VideoProcessor(owner_pool, sessions.pool, store, Transcribing(self.stage))
         real_extract = media.extract_chunk
+        real_frame = media.extract_frame
 
         async def recording_extract(
             source: str, container: Any, start_seconds: int, seconds: int, out: Path
@@ -166,6 +181,12 @@ class World:
             self.extract_sources.append(source)
             return await real_extract(source, container, start_seconds, seconds, out)
 
+        async def recording_frame(source: str, container: Any, at_ms: int) -> bytes:
+            self.frames.append((source, at_ms))
+            if self.frame_hook is not None:
+                await self.frame_hook()
+            return await real_frame(source, container, at_ms)
+
         real_heartbeat = JobHandle.heartbeat
 
         async def counting_heartbeat(handle: JobHandle) -> None:
@@ -173,6 +194,7 @@ class World:
             await real_heartbeat(handle)
 
         monkeypatch.setattr(video_transcribe, "extract_chunk", recording_extract)
+        monkeypatch.setattr(video_transcribe, "extract_frame", recording_frame)
         monkeypatch.setattr(JobHandle, "heartbeat", counting_heartbeat)
         monkeypatch.setattr(limits, "AUDIO_CHUNK_SECONDS", 2)
 
@@ -259,6 +281,16 @@ class World:
         )
         return [row["seconds"] for row in rows]
 
+    async def thumbnails(self, item: str) -> list[dict[str, Any]]:
+        """Every picture row for the item, in any company, with its bytes row's company."""
+        return await self.sessions.q(
+            "SELECT a.id, a.client_id, a.kind, a.subject_key, a.media_type, a.width, a.height,"
+            " a.byte_size, a.sha256, a.source, a.created_by, d.client_id AS data_client_id,"
+            " d.data FROM media_assets a LEFT JOIN media_asset_data d ON d.asset_id = a.id"
+            " WHERE a.subject_key = %s",
+            item,
+        )
+
     async def make_due(self, item: str) -> None:
         await self.sessions.q(
             "UPDATE training_video_jobs SET next_attempt_at = now() WHERE item_id = %s", item
@@ -315,8 +347,9 @@ async def test_tone_video_is_transcribed_with_offset_timestamps(world: World) ->
     assert world.extracts == [(0, 2), (2, 2), (4, 1)]
     assert [index for index, _ in world.speech.calls] == [0, 1, 2]
     assert all(size > 0 for _, size in world.speech.calls)
-    # One heartbeat per chunk, before its extraction and provider call.
-    assert world.heartbeats == 3
+    # One heartbeat before the thumbnail frame, then one per chunk, before its extraction and
+    # provider call.
+    assert world.heartbeats == 1 + 3
 
 
 async def test_timeout_on_chunk_three_resumes_at_chunk_three(world: World) -> None:
@@ -554,10 +587,12 @@ async def test_s3_source_is_presigned_per_chunk(world: World) -> None:
 
     assert await world.run() == "summarising"
 
-    # A fresh source for the probe, one for the loudness pass, then one per chunk.
-    assert len(world.store.sources) == 2 + 3
+    # A fresh source for the probe, one for the thumbnail frame, one for the loudness pass, then
+    # one per chunk.
+    assert len(world.store.sources) == 3 + 3
     assert {ttl for _, ttl in world.store.sources} == {limits.PLAYBACK_URL_SECONDS}
-    chunk_sources = [source for source, _ in world.store.sources[2:]]
+    assert [source for source, _ in world.frames] == [world.store.sources[1][0]]
+    chunk_sources = [source for source, _ in world.store.sources[3:]]
     assert world.extract_sources == chunk_sources
     assert len(set(chunk_sources)) == 3
 
@@ -700,3 +735,314 @@ async def test_keep_segments_and_windows() -> None:
     long = [SegmentRow(0, position, position, position + 1, "x" * 2000) for position in range(9)]
     assert [len(window.text) for window in build_windows(long)] == [6002, 6002, 6002]
     assert build_windows([]) == []
+
+
+# --- the generated thumbnail ----------------------------------------------------------------
+
+
+def thumbnail_logs(logs: Sequence[MutableMapping[str, Any]]) -> list[MutableMapping[str, Any]]:
+    return [log for log in logs if str(log["event"]).startswith("training_thumbnail")]
+
+
+async def test_a_video_gets_one_generated_thumbnail(world: World) -> None:
+    item, _ = await world.video(seconds=5)
+
+    with capture_logs() as logs:
+        assert await world.run() == "summarising"
+
+    [picture] = await world.thumbnails(item)
+    assert (picture["client_id"], picture["kind"], picture["subject_key"]) == (
+        UUID(world.tenant),
+        "training_thumbnail",
+        item,
+    )
+    assert (picture["source"], picture["created_by"]) == ("generated", None)
+    # The synthetic video is 64x48: a 320 px wide JPEG, the height kept to the ratio.
+    assert (picture["media_type"], picture["width"], picture["height"]) == ("image/jpeg", 320, 240)
+    data = bytes(picture["data"])
+    info = check_image(data, None)
+    assert (info.sha256, info.byte_size) == (picture["sha256"], picture["byte_size"])
+    assert picture["data_client_id"] == UUID(world.tenant)
+    # One frame, at a tenth of the 5 s video, from its own fresh source (after the probe's).
+    assert world.frames == [(world.store.sources[1][0], 500)]
+    [stored] = thumbnail_logs(logs)
+    assert (stored["event"], stored["outcome"]) == ("training_thumbnail", "stored")
+    # The rest of the stage ran as before.
+    assert [index for index, _ in world.speech.calls] == [0, 1, 2]
+
+
+async def test_a_video_without_audio_still_gets_a_thumbnail(world: World) -> None:
+    item, _ = await world.video(seconds=3, audio="none")
+
+    assert await world.run() == "ready"
+
+    row = await world.item(item)
+    assert (row["status"], row["speech"]) == ("ready", "no_audio")
+    [picture] = await world.thumbnails(item)
+    assert (picture["kind"], picture["source"], picture["width"]) == (
+        "training_thumbnail",
+        "generated",
+        320,
+    )
+    assert world.frames == [(world.store.sources[1][0], 300)]
+    assert world.speech.calls == [] and world.extracts == []
+
+
+async def test_audio_only_upload_is_refused_before_any_thumbnail(world: World) -> None:
+    item, name = await world.video(seconds=2)
+    path = world.tmp_path / "training" / world.tenant / name
+    make_audio_only(path, seconds=2)
+    await world.sessions.q(
+        "UPDATE training_items SET byte_size = %s WHERE id = %s", path.stat().st_size, item
+    )
+
+    assert await world.run() == "failed"
+
+    row = await world.item(item)
+    assert (row["status"], row["failure_code"]) == ("failed", "training_video_codec")
+    assert await world.thumbnails(item) == []
+    assert world.frames == []
+    # Only the probe asked for a source.
+    assert len(world.store.sources) == 1
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("breaks", "code"),
+    [
+        pytest.param("refused", "training_video_unreadable", id="media-refused"),
+        pytest.param("unavailable", "timeout", id="media-unavailable"),
+        pytest.param("value", "ValueError", id="value-error"),
+        pytest.param("storage", "StorageError", id="storage-error"),
+        pytest.param("database", "DivisionByZero", id="database-error-in-the-write"),
+    ],
+)
+async def test_a_thumbnail_failure_never_fails_retries_or_deletes_the_item(
+    world: World, monkeypatch: pytest.MonkeyPatch, breaks: str, code: str
+) -> None:
+    item, name = await world.video(seconds=3)
+    path = world.tmp_path / "training" / world.tenant / name
+
+    async def raising() -> None:
+        failures: dict[str, Exception] = {
+            "refused": media.MediaRefused(media.UNREADABLE),
+            "unavailable": MediaUnavailable("timeout"),
+            "value": ValueError(f"synthetic {SECRET} {path}"),
+        }
+        raise failures[breaks]
+
+    async def failing_write(conn: Any, *args: Any, **kwargs: Any) -> None:
+        # A real database error inside the thumbnail's own transaction: it must not reach the
+        # job's later writes.
+        await conn.execute("SELECT 1 / 0")
+
+    if breaks == "storage":
+        world.store.fail_at = 1  # the probe's source is 0, the thumbnail's 1
+    elif breaks == "database":
+        monkeypatch.setattr(video_transcribe.pictures, "put", failing_write)
+    else:
+        world.frame_hook = raising
+
+    with capture_logs() as logs:
+        assert await world.run() == "summarising"
+
+    # The job went on exactly as it would have without the step.
+    job = await world.job(item)
+    assert job is not None
+    assert (job["stage"], job["status"], job["error_code"]) == ("summarising", "queued", None)
+    row = await world.item(item)
+    assert (row["status"], row["speech"], row["failure_code"]) == ("summarising", "speech", None)
+    assert [index for index, _ in world.speech.calls] == [0, 1]
+    assert path.exists()
+    assert await world.thumbnails(item) == []
+    [failed] = thumbnail_logs(logs)
+    assert (failed["event"], failed["code"]) == ("training_thumbnail_failed", code)
+    for log in logs:
+        text = repr(log)
+        assert SECRET not in text and str(world.tmp_path) not in text
+
+
+async def test_the_frame_is_taken_on_the_first_attempt(world: World) -> None:
+    await world.video(seconds=3, audio="silence")
+
+    claim = await world.claim()
+    assert claim.attempt == 1
+    assert await world.worker.process(claim) == "ready"
+    assert len(world.frames) == 1
+
+
+async def test_a_worker_killed_in_the_frame_step_is_not_retaken_on_the_requeue(
+    world: World,
+) -> None:
+    # Production's 256 MiB worker: decoding a large frame can make the OOM killer take the
+    # worker itself. The requeued attempt must not decode the frame again, or the same kill
+    # repeats until the attempts run out and the item fails.
+    item, _ = await world.video(seconds=3, audio="silence")
+    inside = asyncio.Event()
+
+    async def killed() -> None:
+        inside.set()
+        await asyncio.Event().wait()  # the worker dies here
+
+    world.frame_hook = killed
+    first = await world.claim()
+    assert first.attempt == 1
+    running = asyncio.create_task(world.worker.process(first))
+    await asyncio.wait_for(inside.wait(), 60)
+    running.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await running
+    await world.sessions.q(
+        "UPDATE training_video_jobs SET locked_at = now() - interval '11 minutes'"
+        " WHERE item_id = %s",
+        item,
+    )
+    world.frame_hook = None
+
+    second = await world.claim()
+    # The probe was stored before the frame step: the requeue holds the duration.
+    assert (second.attempt, second.duration_ms) == (2, 3000)
+    with capture_logs() as logs:
+        assert await world.worker.process(second) == "ready"
+
+    assert len(world.frames) == 1
+    assert await world.thumbnails(item) == []
+    assert thumbnail_logs(logs) == []
+    row = await world.item(item)
+    assert (row["status"], row["speech"], row["failure_code"]) == ("ready", "no_speech", None)
+
+
+async def test_a_retry_with_a_thumbnail_reads_no_extra_source(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item, _ = await world.video(seconds=5)
+    real_loudness = video_transcribe.max_volume_db
+
+    async def failed_loudness(source: str, container: Any) -> float:
+        raise MediaUnavailable("failed")
+
+    monkeypatch.setattr(video_transcribe, "max_volume_db", failed_loudness)
+    assert await world.run() == "queued"
+    # The probe's source, the thumbnail's, and the loudness pass's.
+    assert len(world.store.sources) == 3
+    [first] = await world.thumbnails(item)
+    assert world.heartbeats == 1
+
+    monkeypatch.setattr(video_transcribe, "max_volume_db", real_loudness)
+    await world.make_due(item)
+    assert await world.run() == "summarising"
+    # The picture exists: no heartbeat, source or frame for it; the loudness pass and 3 chunks.
+    assert len(world.store.sources) == 3 + 1 + 3
+    assert len(world.frames) == 1
+    assert world.heartbeats == 1 + 3
+    [again] = await world.thumbnails(item)
+    assert (again["id"], again["sha256"]) == (first["id"], first["sha256"])
+
+
+async def test_an_uploaded_picture_is_never_replaced_by_a_generated_one(world: World) -> None:
+    uploaded = png(800, 800)
+
+    async def upload_picture(item: str) -> None:
+        async with tx(world.sessions.pool, world.tenant) as conn:
+            await pictures.put(
+                conn,
+                UUID(world.tenant),
+                "training_thumbnail",
+                item,
+                uploaded,
+                check_image(uploaded, None),
+                source="upload",
+                actor_id=None,
+            )
+
+    # There before the step: it returns before any source is asked for. (No audio, so each job
+    # ends ready and the next claim is the next video's.)
+    item, _ = await world.video(seconds=3, audio="none")
+    await upload_picture(item)
+    assert await world.run() == "ready"
+    [kept] = await world.thumbnails(item)
+    assert (kept["source"], bytes(kept["data"])) == ("upload", uploaded)
+    assert world.frames == []
+
+    # Arriving while the frame is taken: the generated write keeps the upload.
+    later, _ = await world.video(seconds=3, audio="none")
+
+    async def upload_meanwhile() -> None:
+        await upload_picture(later)
+
+    world.frame_hook = upload_meanwhile
+    with capture_logs() as logs:
+        assert await world.run() == "ready"
+    [kept] = await world.thumbnails(later)
+    assert (kept["source"], bytes(kept["data"])) == ("upload", uploaded)
+    assert len(world.frames) == 1
+    [outcome] = thumbnail_logs(logs)
+    assert (outcome["event"], outcome["outcome"]) == ("training_thumbnail", "kept")
+
+
+async def test_thumbnail_write_lands_only_in_the_jobs_company(world: World) -> None:
+    first, second = world.tenant, world.sessions.tenants[1]
+    items: dict[str, str] = {}
+    for tenant in (first, second):
+        world.tenant = tenant
+        items[tenant], _ = await world.video(seconds=2)
+        assert await world.run() == "summarising"
+
+    for tenant, other in ((first, second), (second, first)):
+        [picture] = await world.thumbnails(items[tenant])
+        assert picture["client_id"] == picture["data_client_id"] == UUID(tenant)
+        [counted] = await world.sessions.q(
+            "SELECT count(*) AS n FROM media_assets WHERE client_id = %s", tenant
+        )
+        assert counted["n"] == 1
+        async with tx(world.sessions.pool, tenant) as conn:
+            mine = await pictures.picture_for(
+                conn, UUID(tenant), "training_thumbnail", items[tenant]
+            )
+            assert mine is not None and mine.id == picture["id"]
+            # Row security: the other company's thumbnail is invisible, even asked for by name.
+            assert (
+                await pictures.picture_for(conn, UUID(other), "training_thumbnail", items[other])
+                is None
+            )
+            assert (
+                await pictures.picture_for(conn, UUID(tenant), "training_thumbnail", items[other])
+                is None
+            )
+
+
+async def test_item_deleted_mid_thumbnail_leaves_no_picture(world: World) -> None:
+    await enable(world.sessions, world.tenant)
+    admin, _ = await world.sessions.member(role="tenant_admin")
+    item, name = await world.video(seconds=3)
+
+    async def removed_meanwhile() -> None:
+        answer = await remove(world.sessions, admin, item)
+        assert answer.status_code == 204, answer.text
+
+    world.frame_hook = removed_meanwhile
+    with capture_logs() as logs:
+        assert await world.run() == "lost"
+
+    assert len(world.frames) == 1
+    assert await world.thumbnails(item) == []
+    assert await world.job(item) is None
+    assert not (world.tmp_path / "training" / world.tenant / name).exists()
+    assert world.speech.calls == []
+    # JobLost ends the attempt; it is not swallowed as a thumbnail failure.
+    assert thumbnail_logs(logs) == []
+
+
+async def test_a_foreign_key_violation_in_the_thumbnail_write_ends_the_job_quietly(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await world.video(seconds=2)
+
+    async def violating_write(*args: Any, **kwargs: Any) -> None:
+        raise ForeignKeyViolation("synthetic")
+
+    monkeypatch.setattr(video_transcribe.pictures, "put", violating_write)
+    with capture_logs() as logs:
+        assert await world.run() == "lost"
+    assert world.speech.calls == []
+    assert thumbnail_logs(logs) == []
