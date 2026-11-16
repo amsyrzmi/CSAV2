@@ -93,10 +93,12 @@ export function AssistantLauncher({
   }
 
   const state = busy ? "working" : awake && motion ? "wake" : "idle";
-  // The wrapper is the fixed corner; reversed, so the bubble sits above the button while the
+  // The wrapper is the fixed corner and takes no pointer events (it is as wide as the bubble, so
+  // its empty part beside the button would block the page); the button and the bubble take them.
+  // Reversed, so the bubble sits above the button while the
   // button stays first in DOM order (and so first in the tab order).
   return (
-    <div className={`fixed ${corner} z-40 flex flex-col-reverse items-end gap-2`}>
+    <div className={`pointer-events-none fixed ${corner} z-40 flex flex-col-reverse items-end gap-2`}>
       <button
         ref={own}
         type="button"
@@ -106,7 +108,7 @@ export function AssistantLauncher({
         onClick={press}
         onPointerEnter={wake}
         onFocus={wake}
-        className={`${action} rounded-full py-0 pl-1.5 shadow-[var(--fs-shadow-popover)]${hopping && motion ? " fs-dock-hop" : ""}`}
+        className={`${action} pointer-events-auto rounded-full py-0 pl-1.5 shadow-[var(--fs-shadow-popover)]${hopping && motion ? " fs-dock-hop" : ""}`}
       >
         <AgentAvatar agentId="assistant" size={48} state={state} label="" />
         {label}
@@ -117,7 +119,7 @@ export function AssistantLauncher({
           onKeyDown={(event) => {
             if (event.key === "Escape") dismiss(idea.id);
           }}
-          className="flex max-w-[min(18rem,calc(100vw-2.5rem))] items-start rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]"
+          className="pointer-events-auto flex max-w-[min(18rem,calc(100vw-2.5rem))] items-start rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]"
         >
           <button
             type="button"

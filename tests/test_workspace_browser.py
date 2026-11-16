@@ -1660,12 +1660,12 @@ async def test_the_dock_offers_one_idea_after_the_quiet_wait_and_loads_nothing_b
     api = admin_api(upstream)
     async with shell_page(stack, api, "/portal/inbox", clock=True) as page:
         await dock_ready(page)
-        await page.clock.run_for(BUBBLE_WAIT_MS - 5_000)
+        await page.clock.run_for(BUBBLE_WAIT_MS - 10_000)
         await settle_render(page)
         # Before the wait: no bubble, and the closed dock has asked for no thread or turns.
         await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
         assert api.workspace_calls() == []
-        await page.clock.run_for(6_000)
+        await page.clock.run_for(11_000)
         idea = await await_idea(page)
         assert api.workspace_calls() == ["GET workspace/conversations"]
         # Its own button, after the launcher in DOM order and not inside it.
@@ -1796,7 +1796,7 @@ async def test_activity_within_the_wait_postpones_the_idea(
     api = admin_api(upstream)
     async with shell_page(stack, api, "/portal/inbox", clock=True) as page:
         await dock_ready(page)
-        await page.clock.run_for(BUBBLE_WAIT_MS - 5_000)
+        await page.clock.run_for(BUBBLE_WAIT_MS - 10_000)
         if activity == "key":
             await page.keyboard.press("a")
         else:
@@ -1829,10 +1829,10 @@ async def test_the_wait_does_not_run_while_the_tab_is_hidden(
         await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
         # Back in view: the quiet starts again, so the person is not greeted at once.
         await page.evaluate(set_state, "visible")
-        await page.clock.run_for(15_000)
+        await page.clock.run_for(BUBBLE_WAIT_MS - 10_000)
         await settle_render(page)
         await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
-        await page.clock.run_for(6_000)
+        await page.clock.run_for(11_000)
         await await_idea(page)
 
 
@@ -1882,10 +1882,10 @@ async def test_returning_to_a_page_starts_a_fresh_visit_with_its_own_wait(
         await settle_render(page)
         await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
         # ...and not before a fresh wait has passed since the return.
-        await page.clock.run_for(BUBBLE_WAIT_MS - 5_000)
+        await page.clock.run_for(BUBBLE_WAIT_MS - 10_000)
         await settle_render(page)
         await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
-        await page.clock.run_for(6_000)
+        await page.clock.run_for(11_000)
         await await_idea(page)
 
 
@@ -1966,6 +1966,85 @@ async def test_nobody_is_offered_an_idea_they_have_dismissed_and_no_empty_elemen
             "(button) => button.parentElement.children.length"
         )
         assert siblings == 1
+        # Nothing left to offer, so the closed dock never read the conversation for it.
+        assert api.workspace_calls() == []
+
+
+async def test_the_idea_cap_never_runs_out_of_ideas_the_person_has_not_dismissed(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    api = admin_api(upstream)
+    # Five ideas are open to this company on any page; four are dismissed already. The default
+    # list of four must not be spent on those, so the fifth is still offered.
+    upstream.packages = [*PACKAGES, {"key": "subscriptions", "status": "active"}]
+    first_four = ["what-can-you-do", "open-connections", "open-payments", "open-hr"]
+    dismissed = f"window.sessionStorage.setItem('{DISMISSED_KEY}', JSON.stringify({first_four}));"
+    async with shell_page(stack, api, "/portal/inbox", clock=True, init_script=dismissed) as page:
+        await dock_ready(page)
+        await page.clock.run_for(BUBBLE_WAIT_MS + 1_000)
+        await await_idea(page, "Email the finance manager about the budget")
+
+
+async def test_the_idea_wrapper_does_not_block_the_page_beside_the_launcher(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    api = admin_api(upstream)
+    async with shell_page(stack, api, "/portal/inbox", clock=True) as page:
+        await dock_ready(page)
+        await page.clock.run_for(BUBBLE_WAIT_MS + 1_000)
+        await await_idea(page)
+        # A point left of the launcher, inside the wrapper's box (as wide as the bubble) but
+        # outside both the button and the bubble.
+        probe = await page.evaluate(
+            """() => {
+              const button = document.querySelector('[data-testid="assistant-open"]');
+              const bubble = document.querySelector('[data-testid="assistant-idea"]');
+              const wrapper = button.parentElement;
+              const b = button.getBoundingClientRect();
+              const w = wrapper.getBoundingClientRect();
+              const x = b.left - 12, y = b.top + b.height / 2;
+              const inside = x >= w.left && x <= w.right && y >= w.top && y <= w.bottom;
+              const bb = bubble.getBoundingClientRect();
+              const inBubble = y >= bb.top && y <= bb.bottom;
+              const hit = document.elementFromPoint(x, y);
+              return { inside, inBubble, blocked: !!hit && wrapper.contains(hit) };
+            }"""
+        )
+        assert probe["inside"], "the probe must lie in the wrapper's box to mean anything"
+        assert not probe["inBubble"]
+        assert not probe["blocked"], "the empty part of the wrapper must let clicks through"
+        # The button and the bubble themselves still take clicks.
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await expect(page.get_by_test_id("assistant-panel")).to_be_visible(timeout=WAIT)
+
+
+async def test_no_idea_over_an_unsent_draft_and_one_returns_once_it_is_cleared(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    api = admin_api(upstream)
+    async with shell_page(stack, api, "/portal/inbox", clock=True) as page:
+        await dock_ready(page)
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        composer = page.get_by_test_id("assistant-input")
+        await composer.fill("a half written note")
+        await page.get_by_role("button", name="Close assistant").click()
+        await dock_ready(page)
+        await page.clock.run_for(60_000)
+        await settle_render(page)
+        # The draft is the person's own: no bubble, and nothing was sent or created.
+        await expect(page.get_by_test_id("assistant-idea")).to_have_count(0)
+        assert [c for c in api.calls if c["method"] == "POST"] == []
+        # Emptied, the next quiet moment may offer an idea again.
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await expect(composer).to_have_value("a half written note")
+        await composer.fill("")
+        await page.get_by_role("button", name="Close assistant").click()
+        await dock_ready(page)
+        await page.clock.run_for(BUBBLE_WAIT_MS + 1_000)
+        await await_idea(page)
 
 
 async def test_escape_in_the_idea_dismisses_it_and_only_there(

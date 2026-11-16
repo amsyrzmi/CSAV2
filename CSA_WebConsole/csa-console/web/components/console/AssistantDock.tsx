@@ -66,6 +66,7 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
     busy,
     context,
     language,
+    body,
     setBody,
     newConversation,
   } = conversation;
@@ -101,7 +102,9 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
   const visit = sameVisit ? shown : null;
   const may = bubbleMayShow({
     panelOpen: open,
-    cardOpen: openProposals(turns, outcomes).length > 0,
+    // A card awaiting a decision, or unsent text in the composer (the conversation keeps it across
+    // close and navigation): either one is the person's own work, which an idea must not replace.
+    cardOpen: openProposals(turns, outcomes).length > 0 || body.trim() !== "",
     onOverview: dockHidden(pathname, me, packages),
     busy,
     shownThisVisit: visit !== null,
@@ -110,17 +113,18 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
   });
   // The closed dock has not read the thread, so it knows neither the language nor an open card.
   // Only once every other condition holds does it load them, and only if some idea is left.
+  // No cap: the default limit of four would be spent on ideas already dismissed.
   const ideaArgs = { tab: tabForPath(pathname, me, packages), role: me.role, packages };
   const dismissed = may ? readDismissed() : [];
   const pending =
     may &&
     !loaded &&
-    pickBubbleIdea(ideasFor(IDEAS, { ...ideaArgs, language: "en" }), dismissed, false) !== null;
+    pickBubbleIdea(ideasFor(IDEAS, { ...ideaArgs, language: "en", limit: IDEAS.length }), dismissed, false) !== null;
   useEffect(() => {
     if (pending) ensureLoaded();
   }, [pending, ensureLoaded]);
   if (may && loaded && sameVisit) {
-    const picked = pickBubbleIdea(ideasFor(IDEAS, { ...ideaArgs, language }), dismissed, false);
+    const picked = pickBubbleIdea(ideasFor(IDEAS, { ...ideaArgs, language, limit: IDEAS.length }), dismissed, false);
     // Latched during render (React's adjust-state-while-rendering pattern): `may` is false from
     // the next render on, because this page's visit now has its idea.
     if (picked) setShown({ idea: picked, gone: false });
