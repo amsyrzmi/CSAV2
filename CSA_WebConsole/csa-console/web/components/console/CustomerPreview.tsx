@@ -19,11 +19,20 @@ const SandboxWorkspace = dynamic(
 /**
  * A collapsed section on Services: the private chat where staff talk to their own bot as a
  * customer would. The chat mounts (and so reads its conversations) only while the section is
- * open; it starts open when the page was reached through `?section=preview`. `tenantId` is the
+ * open. It opens when the URL's `section` becomes `preview`, at mount or later (the assistant's
+ * "open the customer preview" pushes it to a Services page already shown); the parameter never
+ * closes it, and a collapse by hand holds until the parameter changes again. `tenantId` is the
  * chosen company for a platform administrator and null for a member.
  */
 export function CustomerPreview({ me, tenantId }: { me: Me; tenantId: string | null }) {
-  const [open, setOpen] = useState(useSearchParams().get("section") === "preview");
+  const section = useSearchParams().get("section");
+  const [open, setOpen] = useState(section === "preview");
+  // The parameter last acted on: a changed one is handled during render, before paint.
+  const [seenSection, setSeenSection] = useState(section);
+  if (section !== seenSection) {
+    setSeenSection(section);
+    if (section === "preview") setOpen(true);
+  }
   const regionId = useId();
   return (
     <section data-testid="customer-preview-section" className="mt-4">

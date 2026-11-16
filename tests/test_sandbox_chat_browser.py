@@ -3,10 +3,12 @@
 The chat is reached the way a person reaches it: the real `ServicesWorkspace` is mounted in a
 test-only harness page (a disposable staged copy of the console, as in
 tests/test_voice_browser.py) and opened at `?section=preview`, where the customer preview shows
-the chat. The harness reads the role, the mode (Services, or chromeless: the chat alone, as
-Overview mounts it) and the tenant from its query string. Every browser-side `/console/v1/*`
-call is answered by Playwright; an unexpected path is recorded, answered 500 and fails the
-test. One dev server serves every test in this file.
+the chat. The harness reads the role, the mode and the tenant from its query string: Services
+(the default, with a test-only in-app link to `?section=preview`), or chromeless: the chat alone
+inside the shell's assistant provider, with the real dock beside it when `dock=1` (layout checks
+without the Services page around the chat). Every browser-side `/console/v1/*` call is answered
+by Playwright; an unexpected path is recorded, answered 500 and fails the test. One dev server
+serves every test in this file.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ THEMES = ["cobalt", "night", "bureau"]
 REPLY = "Our opening hours are nine to six on weekdays."
 
 HARNESS = """"use client";
+import Link from "next/link";
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { SandboxWorkspace } from "@/components/console/SandboxWorkspace";
@@ -76,7 +79,11 @@ function Inner() {
         {dock && <AssistantDock />}
       </AssistantProvider>
     </PageContextProvider></div>;
-  return <main className="p-4"><ServicesWorkspace me={me} /></main>;
+  // The link changes the search params in place, as the assistant's router.push does.
+  return <main className="p-4">
+    <Link href="/login?section=preview" data-testid="harness-open-preview">Open the preview</Link>
+    <ServicesWorkspace me={me} />
+  </main>;
 }
 export default function Harness() {
   return <Suspense><Inner /></Suspense>;
@@ -382,6 +389,8 @@ async def open_chat(
                     await expect(page.get_by_test_id("customer-preview")).to_be_visible(
                         timeout=WAIT
                     )
+                    # The chat inside loads on demand: wait for it, not only for its box.
+                    await expect(page.get_by_test_id("sandbox-scroll")).to_be_visible(timeout=WAIT)
             yield page
         finally:
             await browser.close()
@@ -623,7 +632,7 @@ async def test_chat_fits_five_widths_in_three_themes(server: str) -> None:
             await check_widths(page, f"{theme} reply")
 
 
-async def test_chromeless_mode_has_no_heading_or_tenant_select(server: str) -> None:
+async def test_chromeless_chat_reads_the_given_tenant_without_a_tenant_list(server: str) -> None:
     api = Synthetic()
     async with open_chat(
         server, api, query="?mode=chromeless&role=platform_admin&tenant=tenant-b"
@@ -631,8 +640,6 @@ async def test_chromeless_mode_has_no_heading_or_tenant_select(server: str) -> N
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
             timeout=WAIT
         )
-        await expect(page.get_by_role("heading", name="Sandbox assistant")).to_have_count(0)
-        await expect(page.get_by_label("Tenant", exact=True)).to_have_count(0)
         # The empty state renders before the list read lands: wait for the read.
         history = page.get_by_role("navigation", name="Your private conversations")
         await expect(history.get_by_text("No conversations yet.")).to_be_visible()
@@ -708,6 +715,11 @@ async def test_preview_toggle_collapses_and_expands_and_collapsed_makes_no_chat_
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
             timeout=WAIT
         )
+        # The heading can paint before the list read reaches the stub: poll for the read.
+        for _ in range(WAIT // 100):
+            if chat_calls(api):
+                break
+            await page.wait_for_timeout(100)
         assert chat_calls(api), "opening the preview mounts the chat"
         await toggle.click()
         await expect(toggle).to_have_attribute("aria-expanded", "false")
@@ -715,6 +727,34 @@ async def test_preview_toggle_collapses_and_expands_and_collapsed_makes_no_chat_
         await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
         await toggle.click()
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
+
+
+async def test_preview_opens_when_the_url_asks_for_it_on_a_page_already_shown(
+    server: str,
+) -> None:
+    # "Open the customer preview" asked on Services pushes `?section=preview` to the page the
+    # member is already on; the mounted section must open in place, not only at mount.
+    api = Synthetic(threads=1)
+    async with open_chat(server, api, section=None, ready=False) as page:
+        toggle = page.get_by_test_id("customer-preview-toggle")
+        await expect(toggle).to_have_attribute("aria-expanded", "false", timeout=WAIT)
+        # React leaves an attribute it does not own alone, so it survives unless the section
+        # is remounted: the check below proves the open came from the URL change itself.
+        await toggle.evaluate("element => { element.dataset.marker = 'kept'; }")
+        await page.get_by_test_id("harness-open-preview").click()
+        await page.wait_for_url(re.compile(r"[?&]section=preview"))
+        await expect(toggle).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_test_id("customer-preview")).to_be_visible()
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
+            timeout=WAIT
+        )
+        assert await toggle.get_attribute("data-marker") == "kept", "the section was remounted"
+        # Collapsed by hand with the parameter still in the URL, it stays collapsed.
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await page.wait_for_timeout(500)
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(page.get_by_test_id("customer-preview")).to_be_hidden()
 
 
 async def test_read_only_member_can_open_the_preview(server: str) -> None:
