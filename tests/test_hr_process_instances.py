@@ -419,10 +419,11 @@ async def test_starting_again_supersedes_the_active_process(world: HrWorld) -> N
     assert (old["id"], old["status"], new["status"]) == (first["id"], "cancelled", "active")
     assert [t["status"] for t in await tasks(world, old["id"])] == ["skipped", "skipped"]
     logged = await events(world, old["id"])
-    assert event(logged, "process.cancelled")["detail"] == {"reason": "superseded"}
+    # The rehire closes the old employment's onboarding itself (spec 12: old ones stay closed).
+    assert event(logged, "process.cancelled")["detail"] == {"reason": "rehired"}
     assert event(logged, "task.skipped", 2)["detail"] == {"reason": "process_cancelled"}
     assert event(logged, "process.cancelled")["actor"] == world.users["owner"]
-    # A manual onboarding start for the same person supersedes the rehire's one too.
+    # A manual onboarding start for the same person supersedes the rehire's one.
     started = await run(world, "owner", START_SQL, start_body(person, "onboarding"))
     statuses = [(p["id"], p["status"]) for p in await processes(world, person)]
     assert statuses == [
@@ -430,6 +431,52 @@ async def test_starting_again_supersedes_the_active_process(world: HrWorld) -> N
         (new["id"], "cancelled"),
         (UUID(started["process_id"]), "active"),
     ]
+    superseded = event(await events(world, new["id"]), "process.cancelled")
+    assert superseded["detail"] == {"reason": "superseded"}
+
+
+async def test_rehire_with_no_matching_template_still_closes_the_old_onboarding(
+    world: HrWorld,
+) -> None:
+    today = await db_today(world)
+    template = await create(
+        world,
+        steps=[
+            step(title_en="Fill in details", owner_role="employee"),
+            step(title_en="Payroll set-up"),
+        ],
+    )
+    person = await add_person(world)
+    first = await only_process(world, person)
+    await ok(world, "owner", await leave_body(world, person, today))
+    await set_last_day(world, person, today - timedelta(days=1))
+    await finish(world, person)
+    left = await only_process(world, person)
+    assert left["status"] == "active"  # Payroll still open
+    await apply(
+        world,
+        "owner",
+        {"operation": "template.deactivate", "template_id": str(template), "expected_version": 1},
+    )
+    before = await events(world, first["id"])
+    restart = today + timedelta(days=7)
+    await ok(
+        world,
+        "owner",
+        await versioned(world, "person.rehire", person, start_date=restart.isoformat()),
+    )
+    # The old onboarding is closed, nothing new starts, and its tasks were never re-dated.
+    closed = await only_process(world, person)
+    assert (closed["id"], closed["status"]) == (first["id"], "cancelled")
+    assert closed["anchor_dates"] == left["anchor_dates"]  # not moved to the new start date
+    assert [(t["status"], t["due_on"]) for t in await tasks(world, first["id"])] == [
+        ("skipped", START),
+        ("skipped", START),
+    ]
+    logged = await events(world, first["id"])
+    assert event(logged, "process.cancelled")["detail"] == {"reason": "rehired"}
+    assert not [e for e in logged if e["action"] == "task.date_changed"]
+    assert actions(logged[len(before) :]) == [("process.cancelled", None), ("task.skipped", 2)]
 
 
 # ---- Leaving --------------------------------------------------------------------------------
@@ -807,6 +854,138 @@ async def test_finishing_the_leaver_skips_open_leaver_tasks_and_completes_offboa
         "done",
         "todo",
     ]
+
+
+async def test_a_leaving_managers_reports_tasks_move_to_the_heir(world: HrWorld) -> None:
+    """The report move of hr_finish_leaver re-resolves the reports' manager tasks (trigger step 5),
+    as the system."""
+    today = await db_today(world)
+    manager, heir = world.employees["manager"], world.employees["outsider"]
+    await create(world, steps=[step(title_en="Meet the team", owner_role="manager")])
+    report = await add_person(world, manager_id=str(manager))
+    pid = (await only_process(world, report))["id"]
+    assert (await tasks(world, pid))[0]["assignee_employee_id"] == manager
+    await ok(world, "owner", await leave_body(world, manager, today, new_manager=heir))
+    # On the last day the reports move while the manager is still active: the move itself
+    # re-resolves the task.
+    assert await finish(world, manager) == "moved"
+    assert (await person_row(world, manager))["is_active"] is True
+    assert (await person_row(world, report))["manager_id"] == heir
+    [task] = await tasks(world, pid)
+    assert (task["assignee_employee_id"], task["status"]) == (heir, "todo")
+    moved = event(await events(world, pid), "task.reassigned", 1)
+    assert moved["detail"] == {"from": str(manager), "to": str(heir)}
+    assert moved["actor"] is None
+    # The day after, the manager finishes; the task stays with the heir.
+    await set_last_day(world, manager, today - timedelta(days=1))
+    assert await finish(world, manager) == "finished"
+    assert (await tasks(world, pid))[0]["assignee_employee_id"] == heir
+    assert len([e for e in await events(world, pid) if e["action"] == "task.reassigned"]) == 1
+
+
+async def test_a_leaving_managers_task_in_a_former_reports_offboarding_goes_to_the_pool(
+    world: HrWorld,
+) -> None:
+    """An inactive former report is not moved by hr_finish_leaver; its still-active offboarding's
+    manager task, assigned to the leaving manager, goes to the HR pool when the manager leaves."""
+    today = await db_today(world)
+    manager = world.employees["manager"]
+    await create(
+        world,
+        kind="offboarding",
+        steps=[
+            step(title_en="Collect the laptop", anchor="last_day"),
+            step(title_en="Handover talk", anchor="last_day", owner_role="manager"),
+        ],
+    )
+    former = await add_person(world, manager_id=str(manager))
+    await ok(world, "owner", await leave_body(world, former, today))
+    pid = (await only_process(world, former))["id"]
+    await set_last_day(world, former, today - timedelta(days=1))
+    await finish(world, former)
+    assert (await person_row(world, former))["is_active"] is False
+    assert (await only_process(world, former))["status"] == "active"  # HR task still open
+    assert (await tasks(world, pid))[1]["assignee_employee_id"] == manager
+
+    await ok(world, "owner", await leave_body(world, manager, today))
+    await set_last_day(world, manager, today - timedelta(days=1))
+    assert await finish(world, manager) == "moved_finished"
+    assert (await person_row(world, former))["manager_id"] == manager  # not moved: inactive
+    handover = (await tasks(world, pid))[1]
+    assert (handover["assignee_employee_id"], handover["status"]) == (None, "todo")
+    moved = event(await events(world, pid), "task.reassigned", 2)
+    assert moved["detail"] == {
+        "from": str(manager),
+        "to": None,
+        "fallback": "hr_pool",
+        "reason": "manager_inactive",
+    }
+    assert moved["actor"] is None
+
+
+async def test_finishing_the_leaver_returns_hand_assigned_hr_tasks_to_the_pool(
+    world: HrWorld,
+) -> None:
+    today = await db_today(world)
+    staff = world.employees["staff"]
+    await create(world, steps=[step(title_en="Payroll set-up"), step(title_en="Order a desk")])
+    person = await add_person(world)
+    pid = (await only_process(world, person))["id"]
+    # HR handed the payroll task to the staff member (Task 6 writes this).
+    await world.q(
+        "UPDATE hr_process_tasks SET assignee_employee_id=%s"
+        " WHERE client_id=%s AND process_id=%s AND ordinal=1",
+        (staff, world.tenant, pid),
+    )
+    before = await tasks(world, pid)
+    await ok(world, "owner", await leave_body(world, staff, today))
+    await set_last_day(world, staff, today - timedelta(days=1))
+    assert await finish(world, staff) == "moved_finished"
+    after = await tasks(world, pid)
+    assert (after[0]["assignee_employee_id"], after[0]["status"]) == (None, "todo")
+    assert after[0]["version"] == before[0]["version"] + 1
+    assert after[1] == before[1]
+    returned = event(await events(world, pid), "task.reassigned", 1)
+    assert returned["detail"] == {
+        "from": str(staff),
+        "to": None,
+        "fallback": "hr_pool",
+        "reason": "person_left",
+    }
+    assert returned["actor"] is None
+    assert (await only_process(world, person))["status"] == "active"
+
+
+async def test_a_template_of_another_tenant_never_starts_or_touches_anything(
+    world: HrWorld,
+) -> None:
+    """Tenancy comes from the written row: a person write in this tenant ignores the other
+    tenant's matching templates and leaves its tables alone."""
+    today = await db_today(world)
+    await make_other_tenant_owner(world)
+    for kind in ("onboarding", "offboarding"):
+        await apply_other(world, create_body(kind=kind))
+
+    async def other_tenant_state() -> list[dict[str, Any]]:
+        return await world.q(
+            "SELECT (SELECT count(*) FROM hr_processes WHERE client_id=%s) AS processes,"
+            " (SELECT count(*) FROM hr_process_tasks WHERE client_id=%s) AS tasks,"
+            " (SELECT count(*) FROM hr_process_events WHERE client_id=%s) AS events,"
+            " (SELECT jsonb_agg(jsonb_build_array(id, version, is_active) ORDER BY id)"
+            "  FROM hr_process_templates WHERE client_id=%s) AS templates",
+            (world.other_tenant,) * 4,
+        )
+
+    theirs = await other_tenant_state()
+    assert theirs[0]["processes"] == 0 and len(theirs[0]["templates"]) == 2
+    added = await add_person(world)
+    staff = world.employees["staff"]  # the same id exists in the other tenant
+    await ok(world, "owner", await leave_body(world, staff, today))
+    await set_last_day(world, staff, today - timedelta(days=1))
+    await finish(world, staff)
+    assert await processes(world, added) == []
+    assert await processes(world, staff) == []
+    assert await other_tenant_state() == theirs
 
 
 # ---- Started and cancelled by HR ------------------------------------------------------------

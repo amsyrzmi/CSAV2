@@ -7,8 +7,10 @@
 --     Tenancy comes from NEW.client_id, never from session settings; the actor of its events is
 --     app.hr_user_id, NULL when unset or empty (the leaver worker, direct writes: "System"). In order:
 --     1. last_day set to NULL (person.leave_undo, person.rehire): the active offboarding is cancelled.
---     2. insert as active, or is_active false to true (person.add, person.rehire): an onboarding
---        starts when a template matches (hr_process_match), else nothing.
+--     2. insert as active, or is_active false to true (person.add, person.rehire): on a rehire the
+--        old employment's active onboarding is cancelled first (reason rehired), whether or not a
+--        template matches, so it is never re-dated as the new one; then an onboarding starts when a
+--        template matches (hr_process_match), else nothing.
 --     3. start_date, last_day or probation_end changed: every active process of the person gets the
 --        new anchor_dates, and its open tasks whose due_overridden is false get due_on recomputed.
 --     4. last_day NULL to a date while active (person.leave): an offboarding starts when a template
@@ -37,7 +39,9 @@
 --   public.hr_process_person_left(p_client,p_employee,p_actor): the leaver's open (todo or
 --     rejected) employee and person tasks in any active process are skipped with the note
 --     "person left" (task.skipped {reason: person_left}); open manager tasks still assigned to the
---     leaver are resolved again; open access_removed tasks of the leaver's active offboarding are
+--     leaver are resolved again; open hr tasks HR assigned by hand to the leaver go back to the pool
+--     (task.reassigned {from, to: null, fallback: hr_pool, reason: person_left}); open
+--     access_removed tasks of the leaver's active offboarding are
 --     done by the system (task.completed {auto_check: access_removed}); then every touched process
 --     and the offboarding are settled.
 --   Internal helpers: hr_process_cancel (open tasks skipped with task.skipped {reason:
@@ -311,6 +315,18 @@ BEGIN
                AND k.assignee_employee_id=p_employee AND k.status NOT IN ('done','skipped') LOOP
   PERFORM public.hr_process_reassign_manager(p_client,other,p_actor);
  END LOOP;
+ -- HR tasks HR handed to the leaver by hand go back to the HR pool.
+ FOR t IN SELECT k.id, k.process_id FROM public.hr_process_tasks k
+          JOIN public.hr_processes x ON x.client_id=k.client_id AND x.id=k.process_id
+          WHERE k.client_id=p_client AND x.status='active' AND k.owner_role='hr'
+           AND k.assignee_employee_id=p_employee AND k.status NOT IN ('done','skipped')
+          ORDER BY x.started_at, x.id, k.ordinal FOR UPDATE OF k LOOP
+  UPDATE public.hr_process_tasks k SET assignee_employee_id=NULL, version=k.version+1
+  WHERE k.client_id=p_client AND k.id=t.id;
+  INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
+  VALUES(p_client,t.process_id,t.id,p_actor,'task.reassigned',
+   jsonb_build_object('from',p_employee,'to',NULL,'fallback','hr_pool','reason','person_left'));
+ END LOOP;
  FOR t IN SELECT k.id, k.process_id FROM public.hr_process_tasks k
           JOIN public.hr_processes x ON x.client_id=k.client_id AND x.id=k.process_id
           WHERE k.client_id=p_client AND x.employee_id=p_employee AND x.kind='offboarding'
@@ -351,8 +367,17 @@ BEGIN
    PERFORM public.hr_process_cancel(NEW.client_id,pid,actor,'last_day_cleared');
   END LOOP;
  END IF;
- -- 2. A new or returning person.
+ -- 2. A new or returning person. A rehire first closes the old employment's onboarding, whether
+ -- or not a template matches now, so step 3 never re-dates it as the new one.
  IF NEW.is_active AND was_active IS NOT TRUE THEN
+  IF TG_OP='UPDATE' THEN
+   FOR pid IN SELECT p.id FROM public.hr_processes p
+              WHERE p.client_id=NEW.client_id AND p.employee_id=NEW.id AND p.kind='onboarding'
+               AND p.status='active'
+              ORDER BY p.started_at, p.id FOR UPDATE LOOP
+    PERFORM public.hr_process_cancel(NEW.client_id,pid,actor,'rehired');
+   END LOOP;
+  END IF;
   PERFORM public.hr_process_start(NEW.client_id,NEW.id,'onboarding',NULL,actor);
  END IF;
  -- 3. Anchor dates moved.
@@ -413,8 +438,9 @@ BEGIN
  EXCEPTION WHEN invalid_text_representation THEN
   RAISE EXCEPTION 'hr_template_unavailable' USING ERRCODE='23514';
  END;
- -- NO KEY UPDATE, as the person writes take: a concurrent new process (which only takes KEY SHARE
- -- for its foreign key) still meets the one-active index, never a silent supersede.
+ -- NO KEY UPDATE still waits for the person writes (they take FOR UPDATE or update the row), but
+ -- not for a concurrent new process, which takes only KEY SHARE for its foreign key: that one
+ -- meets the one-active index (hr_process_already_active), never a silent supersede.
  SELECT * INTO e FROM public.hr_employees x WHERE x.client_id=p_client AND x.id=target FOR NO KEY UPDATE;
  IF target IS NULL OR NOT FOUND THEN RAISE EXCEPTION 'hr_employee_unavailable' USING ERRCODE='23514'; END IF;
  IF pkind<>'custom' AND e.is_active IS NOT TRUE THEN
