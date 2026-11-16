@@ -18,7 +18,11 @@ States (``conversations.queue_status``):
 Resolve and hand back: both hand the conversation back to the AI with the columns of
 ``inbox/set_owner.sql`` (owned_by 'ai', status 'open', mute cleared, ``ai_suppressed_before`` now,
 one ``inbox_version`` bump), resolve its open escalations, close its open escalation ticket with a
-``ticket_events`` row, and clear the reason, clock, due time, claim and snooze. :func:`resolve`
+``ticket_events`` row, and clear the reason, clock, due time, claim and snooze. When the AI
+already has the chat (no person holds it: the /release route's ``human_muted`` rule), the owner
+columns and ``ai_suppressed_before`` are left alone, so the bot keeps its answer to a message
+arriving now; a queue change still bumps ``inbox_version`` once and writes its event, and a call
+with nothing to change writes nothing and returns False (``already_handled``). :func:`resolve`
 leaves ``resolved`` with ``resolved_at`` = now() and writes a ``resolved`` event; :func:`hand_back`
 (the ``/release`` route, the staff-chat "Resume AI" button) leaves ``bot`` with ``resolved_at``
 as it was and writes a ``handed_back`` event (a NULL actor is the staff-chat path; the 0622
@@ -88,6 +92,7 @@ async def _locked(
     if item is None:
         raise RuntimeError("conversation_not_found")
     item["contact_id"] = locked["contact_id"]
+    item["human_muted"] = locked["human_muted"]
     return item
 
 
@@ -195,18 +200,48 @@ async def _hand_back(
     *,
     actor_user_id: UUID | None,
     status: str,
-) -> None:
+) -> bool:
+    """The shared part of hand_back and resolve; False when there was nothing to do.
+
+    A person holding the chat (``human_muted``, the rule of the /release route) gets the release of
+    ``inbox/set_owner.sql``. When the AI already has the chat, set_owner.sql does not run: moving
+    ``ai_suppressed_before`` would cost the bot its answer to a customer message arriving now. Then
+    only a real change (queue state, claim, clock, an escalation or ticket closed) bumps
+    ``inbox_version`` once and writes the event; with none, nothing is written.
+    """
     escalations = await db.q.fetch_all(
         "inbox_queue/resolve_escalations.sql", (client_id, conversation_id), conn=conn
     )
     tickets = await _close_escalation_tickets(
         conn, client_id, conversation_id, item["contact_id"], actor_user_id
     )
-    # The release of the /release route, inbox_version + 1 included.
-    await db.q.execute("inbox/set_owner.sql", ("ai", "open", client_id, conversation_id), conn=conn)
+    human_muted = bool(item["human_muted"])
+    queue_changed = item["queue_status"] != status or any(
+        item[column] is not None
+        for column in (
+            "queue_reason",
+            "needs_staff_since",
+            "due_at",
+            "assignee_user_id",
+            "claimed_at",
+            "snoozed_until",
+        )
+    )
+    if not (human_muted or queue_changed or escalations or tickets):
+        return False
+    if human_muted:
+        # The release of the /release route, inbox_version + 1 included.
+        await db.q.execute(
+            "inbox/set_owner.sql", ("ai", "open", client_id, conversation_id), conn=conn
+        )
     await _changed(
         "inbox_queue/release.sql",
-        {"status": status, "client_id": client_id, "conversation_id": conversation_id},
+        {
+            "status": status,
+            "bump": not human_muted,
+            "client_id": client_id,
+            "conversation_id": conversation_id,
+        },
         conn,
     )
     await _event(
@@ -219,6 +254,7 @@ async def _hand_back(
         to_status=status,
         details={"ticket_ids": tickets, "escalations_resolved": len(escalations)},
     )
+    return True
 
 
 async def _set_assignee(
@@ -408,10 +444,14 @@ async def hand_back(
     conversation_id: UUID,
     *,
     actor_user_id: UUID | None,
-) -> None:
-    """Return the conversation to the bot: state ``bot``, ``resolved_at`` kept (see the module)."""
+) -> bool:
+    """Return the conversation to the bot: state ``bot``, ``resolved_at`` kept (see the module).
+
+    False when there was nothing to do (the AI already has the chat, the item is ``bot`` with no
+    claim, and no escalation or ticket was open): the route's ``already_handled``.
+    """
     item = await _staff_item(conn, client_id, conversation_id)
-    await _hand_back(
+    return await _hand_back(
         conn, client_id, conversation_id, item, actor_user_id=actor_user_id, status="bot"
     )
 
@@ -423,16 +463,17 @@ async def resolve(
     *,
     actor_user_id: UUID,
     seen_customer_at: datetime | None,
-) -> None:
+) -> bool:
     """End the item and hand the conversation back to the bot: state ``resolved``.
 
     Refused with ``held_reply_pending`` while a live held reply waits (decide it first), and with
     ``customer_wrote`` when ``seen_customer_at`` is earlier than the newest customer message.
-    ``seen_customer_at=None`` means the caller has no information and skips that check.
+    ``seen_customer_at=None`` means the caller has no information and skips that check. False when
+    the item was already ``resolved`` with nothing open and the AI has the chat (no event, no bump).
     """
     item = await _staff_item(conn, client_id, conversation_id)
     _refuse_if_unsafe(item, seen_customer_at)
-    await _hand_back(
+    return await _hand_back(
         conn, client_id, conversation_id, item, actor_user_id=actor_user_id, status="resolved"
     )
 

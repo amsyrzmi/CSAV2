@@ -323,7 +323,7 @@ async def test_hand_back_returns_the_conversation_to_the_bot(
     before = _conversation(migrated_dsn, s)
     entered = len(_events(migrated_dsn, s))
 
-    await _on(app_dsn, s, queue.hand_back, actor_user_id=_uid(user))
+    assert await _on(app_dsn, s, queue.hand_back, actor_user_id=_uid(user)) is True
 
     row = _state(migrated_dsn, s)
     assert row["queue_status"] == "bot"
@@ -340,6 +340,7 @@ async def test_hand_back_returns_the_conversation_to_the_bot(
     conv = _conversation(migrated_dsn, s)
     assert conv["owned_by"] == "ai" and conv["status"] == "open"
     assert conv["ai_muted_until"] is None and conv["ai_suppressed_before"] is not None
+    assert before["ai_suppressed_before"] is None
     assert conv["inbox_version"] == before["inbox_version"] + 1
     assert _escalations(migrated_dsn, s) == ["resolved", "resolved"]
     open_ticket, closed_ticket = _tickets(migrated_dsn, s)
@@ -385,6 +386,93 @@ async def test_hand_back_keeps_an_earlier_resolved_time(migrated_dsn: str, app_d
     s = _taken_over(migrated_dsn, c, queue_status="waiting_customer", resolved_at=earlier)
     await _on(app_dsn, s, queue.hand_back, actor_user_id=None)
     assert _state(migrated_dsn, s)["resolved_at"] == earlier
+
+
+def _ai_owned(dsn: str, client_id: str, **queue_columns: Any) -> Seeded:
+    """A conversation the AI owns, with a known ai_suppressed_before (no person holds the chat)."""
+    return _seed(
+        dsn,
+        client_id,
+        owned_by="ai",
+        ai_suppressed_before=datetime.now(UTC) - timedelta(days=1),
+        **queue_columns,
+    )
+
+
+async def test_hand_back_of_an_ai_owned_item_leaves_the_release_columns(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    user = _user(migrated_dsn)
+    s = _ai_owned(
+        migrated_dsn,
+        c,
+        **_needs_staff("customer_message", assignee_user_id=user, claimed_at=datetime.now(UTC)),
+    )
+    before = _conversation(migrated_dsn, s)
+
+    assert await _on(app_dsn, s, queue.hand_back, actor_user_id=_uid(user)) is True
+
+    row = _state(migrated_dsn, s)
+    assert row["queue_status"] == "bot" and row["assignee_user_id"] is None
+    conv = _conversation(migrated_dsn, s)
+    for kept in ("owned_by", "status", "ai_muted_until", "ai_suppressed_before"):
+        assert conv[kept] == before[kept], kept
+    assert conv["inbox_version"] == before["inbox_version"] + 1
+    [event] = _events(migrated_dsn, s)
+    assert event["action"] == "handed_back" and event["actor_user_id"] == _uid(user)
+    assert (event["from_status"], event["to_status"]) == ("needs_staff", "bot")
+
+    # Pressed again: nothing left to do, so no event and no bump (the route's already_handled).
+    assert await _on(app_dsn, s, queue.hand_back, actor_user_id=_uid(user)) is False
+    assert await _on(app_dsn, s, queue.hand_back, actor_user_id=None) is False
+    assert _conversation(migrated_dsn, s) == conv
+    assert len(_events(migrated_dsn, s)) == 1
+
+
+async def test_hand_back_of_an_ai_owned_bot_item_still_closes_its_ticket(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    s = _ai_owned(migrated_dsn, c)
+    ticket = _ticket(migrated_dsn, s)
+    before = _conversation(migrated_dsn, s)
+    assert await _on(app_dsn, s, queue.hand_back, actor_user_id=None) is True
+    assert _tickets(migrated_dsn, s)[0]["status"] == "resolved"
+    conv = _conversation(migrated_dsn, s)
+    assert conv["ai_suppressed_before"] == before["ai_suppressed_before"]
+    assert conv["inbox_version"] == before["inbox_version"] + 1
+    [event] = _events(migrated_dsn, s)
+    assert (event["from_status"], event["to_status"]) == ("bot", "bot")
+    assert event["details"] == {"ticket_ids": [ticket], "escalations_resolved": 0}
+
+
+async def test_resolve_of_an_ai_owned_item_leaves_the_release_columns(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    user = _user(migrated_dsn)
+    s = _ai_owned(migrated_dsn, c, **_needs_staff("customer_message"))
+    before = _conversation(migrated_dsn, s)
+
+    resolved = await _on(app_dsn, s, queue.resolve, actor_user_id=_uid(user), seen_customer_at=None)
+    assert resolved is True
+    row = _state(migrated_dsn, s)
+    assert row["queue_status"] == "resolved" and row["resolved_at"] is not None
+    conv = _conversation(migrated_dsn, s)
+    for kept in ("owned_by", "status", "ai_muted_until", "ai_suppressed_before"):
+        assert conv[kept] == before[kept], kept
+    assert conv["inbox_version"] == before["inbox_version"] + 1
+    [event] = _events(migrated_dsn, s)
+    assert event["action"] == "resolved"
+    assert (event["from_status"], event["to_status"]) == ("needs_staff", "resolved")
+
+    # Resolving a resolved item the AI owns again changes nothing, resolved_at included.
+    again = await _on(app_dsn, s, queue.resolve, actor_user_id=_uid(user), seen_customer_at=None)
+    assert again is False
+    assert _state(migrated_dsn, s) == row
+    assert _conversation(migrated_dsn, s) == conv
+    assert len(_events(migrated_dsn, s)) == 1
 
 
 async def test_resolve_leaves_resolved_and_hands_back_to_the_bot(
