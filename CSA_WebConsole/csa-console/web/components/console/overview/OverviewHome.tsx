@@ -52,7 +52,7 @@ export function OverviewHome({ me }: { me: Me }) {
   } else if (showing === "home") {
     body = <WorkspaceHome me={me} packages={packages ?? []} tenant={tenant} />;
   } else {
-    body = <SandboxWorkspace me={me} chromeless tenant={tenant} />;
+    body = <SandboxWorkspace me={me} tenant={tenant} />;
   }
 
   return (

@@ -26,7 +26,7 @@ const adoptedPages = new Set([
   "/portal/faq/add",
   "/portal/faq/questions",
   "/portal/faq/maintenance",
-  // The Sandbox assistant folded into Overview: these only redirect there (keeping client_id).
+  // The Sandbox assistant became the customer preview on Services: these only redirect there (keeping every query parameter).
   "/chat",
   "/portal/chat",
   "/inbox",

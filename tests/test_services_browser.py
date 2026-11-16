@@ -509,6 +509,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         )
 
         # (h) The panel: exact choices, the warning, Save blocked until there is a name.
+        services_start = len(calls)
         await page.goto(f"{base}/portal/services")
         panel = page.get_by_test_id("customer-replies-panel")
         # The panel sits in the Core service group, directly under the Customer support card.
@@ -520,6 +521,18 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             "(items) => items.map((item) => item.dataset.testid)"
         )
         assert order == ["services-card-customer_support", "services-customer-replies"], order
+        # The customer preview is a collapsed section in the same row, under the panel, and a
+        # collapsed preview never touches the chat API.
+        item = page.get_by_test_id("services-customer-replies")
+        toggle = item.get_by_test_id("customer-preview-toggle")
+        await expect(toggle).to_be_visible()
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(item.get_by_test_id("customer-preview")).to_be_hidden()
+        panel_box = await panel.bounding_box()
+        toggle_box = await toggle.bounding_box()
+        assert panel_box and toggle_box
+        assert toggle_box["y"] >= panel_box["y"] + panel_box["height"], (panel_box, toggle_box)
+        assert not [c for c in calls[services_start:] if c["path"].startswith("chat/")]
         await expect(panel).to_contain_text(
             "With Customer support alone, most customer questions go to your team.", timeout=WAIT
         )
@@ -595,6 +608,22 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         async with page.expect_response(is_save):
             await save.click()
         assert last_body() == {"mode": "auto", "brand_name": "Team Synthetic", "intro_line": ""}
+
+        # (i3) The old chat links only redirect to the customer preview section on Services and
+        # keep every query parameter (the company included).
+        upstream.me = make_me("platform_admin")
+        old = await context.request.get(f"{base}/chat?client_id={TENANT}&x=1", max_redirects=0)
+        assert old.status in {307, 308}, old.status
+        assert old.headers["location"].endswith(
+            f"/services?client_id={TENANT}&x=1&section=preview"
+        ), old.headers["location"]
+        upstream.me = make_me("tenant_admin")
+        await page.goto(f"{base}/portal/chat?client_id={TENANT}&x=1")
+        await expect(toggle).to_have_attribute("aria-expanded", "true", timeout=WAIT)
+        assert page.url == f"{base}/portal/services?client_id={TENANT}&x=1&section=preview", (
+            page.url
+        )
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
 
         # (j) Replies on: no banner, with no new sign-in.
         await page.goto(f"{base}/portal")

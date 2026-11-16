@@ -1,10 +1,12 @@
 """Real browser acceptance for the ChatGPT-style sandbox chat layout.
 
-`SandboxWorkspace` is mounted in a test-only harness page (a disposable staged copy of the
-console, as in tests/test_voice_browser.py): the harness reads the role, the mode (legacy page
-chrome or chromeless) and the tenant from its query string. Every browser-side
-`/console/v1/*` call is answered by Playwright; an unexpected path is recorded, answered 500
-and fails the test. One dev server serves every test in this file.
+The chat is reached the way a person reaches it: the real `ServicesWorkspace` is mounted in a
+test-only harness page (a disposable staged copy of the console, as in
+tests/test_voice_browser.py) and opened at `?section=preview`, where the customer preview shows
+the chat. The harness reads the role, the mode (Services, or chromeless: the chat alone, as
+Overview mounts it) and the tenant from its query string. Every browser-side `/console/v1/*`
+call is answered by Playwright; an unexpected path is recorded, answered 500 and fails the
+test. One dev server serves every test in this file.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ HARNESS = """"use client";
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { SandboxWorkspace } from "@/components/console/SandboxWorkspace";
+import { ServicesWorkspace } from "@/components/console/ServicesWorkspace";
 import { AssistantDock } from "@/components/console/AssistantDock";
 import type { Me } from "@/lib/identity-contracts";
 function Inner() {
@@ -65,10 +68,10 @@ function Inner() {
   const chosen = params.get("tenant") ?? undefined;
   if (params.get("mode") === "chromeless")
     return <div className="h-dvh">
-      <SandboxWorkspace me={me} chromeless tenant={chosen} />
+      <SandboxWorkspace me={me} tenant={chosen} />
       {dock && <AssistantDock me={me} packages={[]} />}
     </div>;
-  return <main className="p-4"><SandboxWorkspace me={me} /></main>;
+  return <main className="p-4"><ServicesWorkspace me={me} /></main>;
 }
 export default function Harness() {
   return <Suspense><Inner /></Suspense>;
@@ -113,6 +116,32 @@ def thread(sequence: int) -> dict[str, Any]:
     }
 
 
+def service(key: str, status: str) -> dict[str, Any]:
+    return {
+        "key": key,
+        "title": "Customer Support",
+        "summary": "Synthetic Customer Support package.",
+        "kind": "base",
+        "requires": [],
+        "sellable": True,
+        "tabs": [],
+        "status": status,
+        "reference": None,
+        "note": None,
+        "requested_at": None,
+        "activated_at": None,
+        "requested_by": None,
+        "activated_by": None,
+        "agents": [],
+        "inner_switch": None,
+        "consistent": True,
+        "inconsistencies": [],
+        "can_request": False,
+        "can_activate": False,
+        "can_suspend": False,
+    }
+
+
 class Synthetic:
     """The chat API as Playwright answers it, with every request recorded."""
 
@@ -131,6 +160,9 @@ class Synthetic:
         self.page_size = 50
         # Whether transcription answers "enabled" (the voice tray then shows its consent boxes).
         self.voice_enabled = False
+        # Services: the Customer support package's status ("none" leaves it out of the list).
+        self.support = "active"
+        self.can_manage = True
 
     @property
     def posts(self) -> list[str]:
@@ -151,6 +183,38 @@ class Synthetic:
                 {"id": "tenant-a", "name": "Tenant A"},
                 {"id": "tenant-b", "name": "Tenant B"},
             ]
+        elif path == "services" and request.method == "GET":
+            data = [service("customer_support", self.support)] if self.support != "none" else []
+        elif path == "services/customer-replies" and request.method == "GET":
+            data = {
+                "mode": "off",
+                "brand_name": None,
+                "persona_name": None,
+                "brand_tone": None,
+                "intro_line": None,
+                "can_manage": self.can_manage,
+                "warnings": ["replies_off"],
+            }
+        elif path == "channels/whatsapp" and request.method == "GET":
+            data = {
+                "connected": False,
+                "display_phone": None,
+                "phone_number_id_last4": None,
+                "waba_id": None,
+                "enabled": False,
+                "callback_url": None,
+                "connected_at": None,
+            }
+        elif path == "channels/telegram" and request.method == "GET":
+            data = {
+                "connected": False,
+                "bot_id": None,
+                "bot_username": None,
+                "webhook_registered": False,
+                "connected_at": None,
+                "staff_chat": None,
+                "hooks_ready": True,
+            }
         elif path == "chat/voice" and request.method == "GET":
             data = {"enabled": self.voice_enabled}
         elif path == "chat/conversations" and request.method == "GET":
@@ -274,8 +338,15 @@ async def open_chat(
     theme: str = "cobalt",
     init_script: str | None = None,
     reduced_motion: bool = False,
+    section: str | None = "preview",
+    ready: bool = True,
 ) -> AsyncIterator[Page]:
-    """A fresh browser on the harness; fails on unexpected API calls, page or console errors."""
+    """A fresh browser on the harness; fails on unexpected API calls, page or console errors.
+
+    Unless the query asks for `mode=chromeless`, this opens Services at `?section=preview` (the
+    one entry to the chat) and waits for the customer preview region to show. `section=None`
+    leaves the section out (the preview starts collapsed); `ready=False` skips the wait.
+    """
     errors: list[str] = []
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -296,7 +367,16 @@ async def open_chat(
             await page.route("**/console/v1/**", api.route)
             if init_script:
                 await page.add_init_script(init_script)
-            await page.goto(f"{server}/login{query}")
+            if "mode=chromeless" in query:
+                await page.goto(f"{server}/login{query}")
+            else:
+                extra = query.lstrip("?")
+                parts = ([f"section={section}"] if section else []) + ([extra] if extra else [])
+                await page.goto(f"{server}/login" + (f"?{'&'.join(parts)}" if parts else ""))
+                if ready:
+                    await expect(page.get_by_test_id("customer-preview")).to_be_visible(
+                        timeout=WAIT
+                    )
             yield page
         finally:
             await browser.close()
@@ -556,21 +636,109 @@ async def test_chromeless_mode_has_no_heading_or_tenant_select(server: str) -> N
         assert not any(path.startswith("admin/clients") for path in reads), reads
 
 
-async def test_legacy_mode_keeps_heading_and_tenant_select_for_platform_admin(server: str) -> None:
+def chat_calls(api: Synthetic) -> list[str]:
+    return [path for _, path in api.requests if path.startswith("chat/")]
+
+
+async def test_services_preview_section_sits_under_customer_replies_and_shows_the_chat(
+    server: str,
+) -> None:
     api = Synthetic()
-    async with open_chat(server, api, query="?role=platform_admin") as page:
-        await expect(page.get_by_role("heading", name="Sandbox assistant", level=1)).to_be_visible(
+    async with open_chat(server, api) as page:
+        toggle = page.get_by_test_id("customer-preview-toggle")
+        await expect(toggle).to_have_text("Customer preview: talk to your bot as a customer would")
+        await expect(toggle).to_have_attribute("aria-expanded", "true")
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
             timeout=WAIT
         )
-        tenant = page.get_by_label("Tenant", exact=True)
-        await expect(tenant.locator("option")).to_have_count(3)
-        await expect(page.get_by_text("Select a tenant to continue.")).to_be_visible()
-        await tenant.select_option("tenant-a")
+        # Same list item as the persona panel, directly under it; a fixed-height region.
+        item = page.get_by_test_id("services-customer-replies")
+        await expect(item.get_by_test_id("customer-replies-panel")).to_be_visible()
+        order = await item.evaluate(
+            "(el) => [...el.children].map((child) => child.dataset.testid || child.tagName)"
+        )
+        assert order[-1] == "customer-preview-section", order
+        assert order.index("customer-preview-section") > 0, order
+        region = item.get_by_test_id("customer-preview")
+        height = await region.evaluate("(el) => el.getBoundingClientRect().height")
+        assert height == 512, height  # 32rem
+        await expect(region.get_by_test_id("sandbox-scroll")).to_be_visible()
+
+
+async def test_suspended_customer_support_still_shows_the_preview(server: str) -> None:
+    api = Synthetic()
+    api.support = "suspended"
+    async with open_chat(server, api) as page:
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
+            timeout=WAIT
+        )
+        # No persona form for a suspended service: the preview has its own row under the card.
+        await expect(page.get_by_test_id("customer-replies-panel")).to_have_count(0)
+        order = (
+            await page.get_by_test_id("services-group-base")
+            .locator("> ul > *")
+            .evaluate_all("(items) => items.map((item) => item.dataset.testid)")
+        )
+        assert order == ["services-card-customer_support", "services-customer-preview"], order
+        await expect(page.get_by_test_id("customer-preview-toggle")).to_have_attribute(
+            "aria-expanded", "true"
+        )
+
+
+async def test_preview_toggle_collapses_and_expands_and_collapsed_makes_no_chat_request(
+    server: str,
+) -> None:
+    api = Synthetic(threads=1)
+    async with open_chat(server, api, section=None, ready=False) as page:
+        toggle = page.get_by_test_id("customer-preview-toggle")
+        region = page.get_by_test_id("customer-preview")
+        await expect(toggle).to_be_visible(timeout=WAIT)
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(region).to_be_hidden()
+        await page.wait_for_timeout(800)
+        assert chat_calls(api) == [], "a collapsed preview must not touch the chat API"
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-expanded", "true")
+        await expect(region).to_be_visible()
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible(
+            timeout=WAIT
+        )
+        assert chat_calls(api), "opening the preview mounts the chat"
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(region).to_be_hidden()
+        await expect(page.get_by_role("heading", name="How can I help today?")).to_have_count(0)
+        await toggle.click()
         await expect(page.get_by_role("heading", name="How can I help today?")).to_be_visible()
-        history = page.get_by_role("navigation", name="Your private conversations")
-        await expect(history.get_by_text("No conversations yet.")).to_be_visible()
-        reads = [path for method, path in api.requests if method == "GET"]
-        assert "chat/conversations?client_id=tenant-a" in reads, reads
+
+
+async def test_read_only_member_can_open_the_preview(server: str) -> None:
+    api = Synthetic(threads=1)
+    api.can_manage = False
+    async with open_chat(server, api, query="?role=read_only", section=None, ready=False) as page:
+        toggle = page.get_by_test_id("customer-preview-toggle")
+        await expect(toggle).to_be_visible(timeout=WAIT)
+        await toggle.click()
+        await expect(page.get_by_test_id("customer-preview")).to_be_visible()
+        await expect(
+            page.get_by_text("Read-only access: you can read your chats", exact=False)
+        ).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_label("Your question", exact=False)).to_be_disabled()
+        assert api.posts == []
+
+
+async def test_company_without_customer_support_has_no_preview_and_no_error(server: str) -> None:
+    api = Synthetic()
+    api.support = "none"
+    async with open_chat(server, api, ready=False) as page:  # opens at ?section=preview
+        await expect(page.get_by_role("heading", name="Services", level=1)).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(page.get_by_text("Loading services...")).to_have_count(0)
+        await expect(page.get_by_test_id("customer-preview-toggle")).to_have_count(0)
+        await expect(page.get_by_test_id("customer-preview")).to_have_count(0)
+        await page.wait_for_timeout(500)
+        assert chat_calls(api) == []
 
 
 async def test_switching_conversation_clears_a_failed_new_chat(server: str) -> None:

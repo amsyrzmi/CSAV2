@@ -26,6 +26,7 @@ const OWNED = [
   "components/console/RuntimeWorkspace.tsx",
   "components/console/InboxWorkspace.tsx",
   "components/console/SandboxWorkspace.tsx",
+  "components/console/CustomerPreview.tsx",
   "components/console/chat/",
   "components/console/overview/",
   "components/console/kit/",

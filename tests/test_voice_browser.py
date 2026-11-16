@@ -49,8 +49,8 @@ import { Suspense } from "react";
 import { SandboxWorkspace } from "@/components/console/SandboxWorkspace";
 import type { Me } from "@/lib/identity-contracts";
 export default function Harness() {
- return <Suspense><SandboxWorkspace me={{role:"tenant_staff",
- active_client_id:"synthetic-tenant"} as Me}/></Suspense>;
+ return <Suspense><div className="h-dvh"><SandboxWorkspace me={{role:"tenant_staff",
+ active_client_id:"synthetic-tenant"} as Me}/></div></Suspense>;
 }""")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

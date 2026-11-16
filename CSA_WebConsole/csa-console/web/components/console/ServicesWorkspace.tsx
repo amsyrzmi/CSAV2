@@ -15,6 +15,7 @@ import AgentAvatar from "./fs/AgentAvatar";
 import { useAvatarTransition } from "./fs/useAvatarTransition";
 import { AgentCard } from "./RuntimeWorkspace";
 import { action, field, Heading, Notice, secondary } from "./ui";
+import { CustomerPreview } from "./CustomerPreview";
 import { CustomerRepliesPanel } from "./CustomerRepliesPanel";
 import { WhatsAppPanel } from "./WhatsAppPanel";
 import { TelegramPanel } from "./TelegramPanel";
@@ -82,14 +83,14 @@ export function ServicesWorkspace({ me, initialClientId = "" }: { me: Me; initia
         </div>
       )}
       {!clientId ? <Notice>Select a tenant to see its services.</Notice> :
-        <ServiceList key={clientId} clientId={platform ? clientId : null} platform={platform}
+        <ServiceList key={clientId} me={me} clientId={platform ? clientId : null} platform={platform}
           canManage={platform || me.role === "tenant_admin"} />}
     </>
   );
 }
 
-function ServiceList({ clientId, platform, canManage }: {
-  clientId: string | null; platform: boolean; canManage: boolean;
+function ServiceList({ me, clientId, platform, canManage }: {
+  me: Me; clientId: string | null; platform: boolean; canManage: boolean;
 }) {
   const [services, setServices] = useState<Service[] | null>(null);
   const [error, setError] = useState("");
@@ -145,6 +146,13 @@ function ServiceList({ clientId, platform, canManage }: {
                   {service.key === "customer_support" && service.status === "active" && (
                     <li className="px-4 pb-4 sm:px-5" data-testid="services-customer-replies">
                       <CustomerRepliesPanel tenantId={clientId} />
+                      <CustomerPreview me={me} tenantId={clientId} />
+                    </li>
+                  )}
+                  {/* Suspended: staff can still try the bot, but there is no persona form to show. */}
+                  {service.key === "customer_support" && service.status === "suspended" && (
+                    <li className="px-4 pb-4 sm:px-5" data-testid="services-customer-preview">
+                      <CustomerPreview me={me} tenantId={clientId} />
                     </li>
                   )}
                 </Fragment>
