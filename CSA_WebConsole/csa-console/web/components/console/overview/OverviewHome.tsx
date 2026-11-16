@@ -3,26 +3,29 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
+import { useAssistantConversation } from "@/lib/assistant-conversation";
 import type { Client, Me } from "@/lib/identity-contracts";
-import { overviewBody } from "@/lib/overview-home";
+import { overviewBody, showsRepliesBanner } from "@/lib/overview-home";
 import { CustomerRepliesBanner } from "../CustomerRepliesBanner";
-import { SandboxWorkspace } from "../SandboxWorkspace";
 import { AssistantTile } from "../chat/ChatEmptyState";
 import { Notice } from "../ui";
+import { AssistantOverview } from "./AssistantOverview";
 import { StatusStrip } from "./StatusStrip";
 import { useActivePackages } from "./useActivePackages";
 import { WorkspaceHome } from "./WorkspaceHome";
 
 /**
- * Overview is the assistant home: a slim header (the tenant selector for platform
- * administrators and the status strip) above the sandbox chat, which fills the rest of the
- * window. The page is marked `data-fill`, so the shell drops its centred column and the chat's
- * message list scrolls inside instead of the page.
+ * Overview is the assistant page: a slim header (the tenant selector for platform administrators
+ * and the status strip), the customer-replies banner where it applies, and the shared assistant
+ * conversation filling the rest of the window. The page is marked `data-fill`, so the shell drops
+ * its centred column and the conversation's turns scroll inside instead of the page.
  *
- * A company without Customer support has no customers to chat as, so it gets the small home
- * instead of the chat and the customer-replies banner. The company's packages are read once here
- * and shared with the status strip; while they load nothing but a short wait shows, and a failed
- * read shows the chat, as before.
+ * Whoever has no assistant (a read-only member, or the gateway's assistant flag off) gets the
+ * small home instead. The company's packages are read once here and shared with the status strip
+ * and the banner rule; while they load only a short wait shows. That wait also covers the
+ * renders in which the conversation is not ready yet (the first render of every load, and one
+ * pre-paint render on a company switch, when the packages are being read again too), so the
+ * assistant-or-home choice is made only once both are known and never flashes the small home.
  */
 export function OverviewHome({ me }: { me: Me }) {
   const platform = me.role === "platform_admin";
@@ -31,7 +34,9 @@ export function OverviewHome({ me }: { me: Me }) {
   const tenant = platform ? chosen : me.active_client_id;
 
   const packages = useActivePackages(tenant ? (platform ? tenant : "") : null);
-  const showing = packages === undefined ? "loading" : overviewBody(packages);
+  const conversation = useAssistantConversation();
+  // The Loading branch comes first: see the comment above.
+  const showing = packages === undefined ? "loading" : overviewBody(packages, conversation !== null);
 
   let body: React.ReactNode;
   if (platform && !tenant) {
@@ -49,10 +54,10 @@ export function OverviewHome({ me }: { me: Me }) {
     );
   } else if (showing === "loading") {
     body = <p role="status" className="p-6 text-center text-sm text-[color:var(--fs-text-secondary)]">Loading</p>;
-  } else if (showing === "home") {
-    body = <WorkspaceHome me={me} packages={packages ?? []} tenant={tenant} />;
+  } else if (showing === "assistant" && conversation) {
+    body = <AssistantOverview conversation={conversation} />;
   } else {
-    body = <SandboxWorkspace me={me} chromeless tenant={tenant} />;
+    body = <WorkspaceHome me={me} packages={packages ?? []} tenant={tenant} />;
   }
 
   return (
@@ -66,8 +71,8 @@ export function OverviewHome({ me }: { me: Me }) {
           </div>
         )}
       </div>
-      {/* Only the chat has the banner, and it is silent unless customers aren't being answered. */}
-      {tenant && showing === "chat" && (
+      {/* Above whichever body shows, and silent unless customers aren't being answered. */}
+      {tenant && packages !== undefined && showsRepliesBanner(packages) && (
         <div className="shrink-0 px-4 pt-3 sm:px-6 empty:hidden">
           <CustomerRepliesBanner
             tenantId={platform ? tenant : null}

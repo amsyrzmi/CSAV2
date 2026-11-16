@@ -148,7 +148,9 @@ class ScriptedModel:
             return {"action": "booking_action", **case.expect.fields}
         if action == "navigate":
             # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
-            return {"action": "navigate", "tab": "subscriptions" if case.expect.locked else "hr"}
+            # A case that pins its tab gets that tab, as the model would plan it.
+            tab = "subscriptions" if case.expect.locked else "hr"
+            return {"action": "navigate", "tab": tab, **case.expect.fields}
         if action == "directory_lookup":
             query = " ".join(case.expect.query_words) or SCRIPTED_TEXT
             return {"action": "directory_lookup", "query": query}
@@ -440,6 +442,10 @@ def test_smoke_expected_recipient_and_locked_tab(capsys: pytest.CaptureFixture[s
     assert "FAIL navigate-ms-2 action=navigate locked" in capsys.readouterr().out
     assert smoke.main(["--case", "navigate-en-1"], client=OpenTabModel()) == 0
     capsys.readouterr()
+    # A case that pins its tab fails ``fields`` on another open tab (Overview is open to all).
+    for case_id in ("navigate-en-3", "navigate-ms-5", "navigate-en-5", "navigate-ms-6"):
+        assert smoke.main(["--case", case_id], client=OpenTabModel()) == 1, case_id
+        assert f"FAIL {case_id} action=navigate fields" in capsys.readouterr().out
 
 
 def test_smoke_checks_the_lookup_query_words(capsys: pytest.CaptureFixture[str]) -> None:

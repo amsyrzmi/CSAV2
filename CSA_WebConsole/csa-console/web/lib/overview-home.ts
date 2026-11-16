@@ -3,14 +3,24 @@ import type { NavLink } from "./navigation";
 import type { PackageState } from "./services-api";
 
 /**
- * The sandbox chat is for companies with Customer support (active, or suspended so staff can still
- * try it). A company without it gets the small home. `null` means the packages read failed: the
- * chat stays, so a failed read never removes anything.
+ * Overview is the assistant page for everyone who has the assistant (`assistant`: the shared
+ * conversation is there), for every kind of company; everyone else gets the small home. The
+ * packages no longer choose the body: they decide only the replies banner (showsRepliesBanner).
  */
-export function overviewBody(packages: PackageState[] | null): "chat" | "home" {
-  if (packages === null) return "chat";
+export function overviewBody(packages: PackageState[] | null, assistant: boolean): "assistant" | "home" {
+  void packages;
+  return assistant ? "assistant" : "home";
+}
+
+/**
+ * The customer-replies banner belongs to a company with Customer support (active, or suspended so
+ * staff still hear about held replies). `null` means the packages read failed: the banner stays,
+ * so a failed read never removes anything (it is silent unless customers aren't being answered).
+ */
+export function showsRepliesBanner(packages: PackageState[] | null): boolean {
+  if (packages === null) return true;
   const support = packages.find((item) => item.key === "customer_support")?.status;
-  return support === "active" || support === "suspended" ? "chat" : "home";
+  return support === "active" || support === "suspended";
 }
 
 export interface HomeLink { key: string; label: string; href: string }

@@ -1,0 +1,102 @@
+[
+  {
+    "id": "what-can-you-do",
+    "tab": "any",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [],
+    "en": "What can you help me with in this console?",
+    "ms": "Apa yang awak boleh bantu saya di sini?"
+  },
+  {
+    "id": "open-connections",
+    "tab": "any",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [],
+    "en": "Open Connections",
+    "ms": "Buka Sambungan"
+  },
+  {
+    "id": "open-payments",
+    "tab": "any",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "subscriptions"
+    ],
+    "en": "Open Payments",
+    "ms": "Buka Pembayaran"
+  },
+  {
+    "id": "open-hr",
+    "tab": "any",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "hr"
+    ],
+    "en": "Open the HR tab",
+    "ms": "Tolong buka tab HR untuk saya"
+  },
+  {
+    "id": "email-finance-manager",
+    "tab": "any",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "staff_email"
+    ],
+    "en": "Email the finance manager about the budget",
+    "ms": "Tolong emel pengurus kewangan tentang bajet"
+  },
+  {
+    "id": "email-attention",
+    "tab": "email",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "staff_email"
+    ],
+    "en": "What needs my attention in my email today?",
+    "ms": "Apa emel yang perlu perhatian saya hari ini?"
+  },
+  {
+    "id": "renewal-reminders",
+    "tab": "subscriptions",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "subscriptions"
+    ],
+    "en": "Draft an email to all our active subscribers reminding each of them of their own renewal date",
+    "ms": "Tolong draf emel kepada semua pelanggan aktif kita untuk ingatkan tarikh pembaharuan langganan mereka sendiri"
+  },
+  {
+    "id": "onboarding-video",
+    "tab": "training_library",
+    "roles": [
+      "tenant_admin",
+      "tenant_staff"
+    ],
+    "packages": [
+      "training_library"
+    ],
+    "en": "What does the onboarding video say about refund requests?",
+    "ms": "Apa yang video onboarding cakap tentang permintaan bayaran balik?"
+  }
+]

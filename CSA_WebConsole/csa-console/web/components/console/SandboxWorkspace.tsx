@@ -1,10 +1,9 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { Archive, History, Mic, MicOff, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
-import type { Client, Me } from "@/lib/identity-contracts";
+import type { Me } from "@/lib/identity-contracts";
 import type { Page, PendingSandboxTurn, SandboxThread, SandboxTurn, ScrollSnapshot } from "@/lib/sandbox-chat";
 import { chipsFor, farFromEnd, followUpsFor, followUpsReady, needsManualCheck, scrollPlan } from "@/lib/sandbox-chat";
 import { VoiceConversation } from "./VoiceConversation";
@@ -18,56 +17,24 @@ import { ChatHistory, threadLabel } from "./chat/ChatHistory";
 import { ChatMessages } from "./chat/ChatMessages";
 import { JumpToLatest } from "./chat/JumpToLatest";
 import { useSpeaking } from "./chat/useSpeaking";
-import { field, Heading, Notice, secondary } from "./ui";
+import { field, Notice, secondary } from "./ui";
 
 /**
- * The private sandbox assistant in a ChatGPT-style layout. By default it brings its own page
- * chrome (heading, and the tenant select for platform administrators). `chromeless` renders the
- * chat alone, filling its container's height, for a caller that owns the page header, the
- * no-tenant states and the tenant (Overview); without a tenant it renders nothing.
+ * The private sandbox assistant in a ChatGPT-style layout. It renders the chat alone, filling its
+ * container's height; the caller owns the page header, the no-tenant states and the tenant
+ * (platform administrators choose one; a member's is their active company). Without a tenant it
+ * renders nothing.
  */
-export function SandboxWorkspace({ me, chromeless = false, tenant: chosenTenant }: {
+export function SandboxWorkspace({ me, tenant: chosenTenant }: {
   me: Me;
-  chromeless?: boolean;
-  /** Chromeless only: the tenant the caller selected (platform administrators). */
+  /** The tenant the caller selected (platform administrators). */
   tenant?: string;
 }) {
-  const search = useSearchParams();
   const platform = me.role === "platform_admin";
-  const [selected, setSelected] = useState(search.get("client_id") ?? "");
-  const [clients, setClients] = useState<Client[]>([]);
-  const [error, setError] = useState("");
-  const loadClients = platform && !chromeless;
-  useEffect(() => {
-    if (!loadClients) return;
-    const controller = new AbortController();
-    api<Client[]>("/console/v1/admin/clients", { signal: controller.signal })
-      .then(setClients).catch((cause: Error) => {
-        if (!controller.signal.aborted) setError(cause.message);
-      });
-    return () => controller.abort();
-  }, [loadClients]);
-  const tenant = chromeless
-    ? (chosenTenant ?? (platform ? "" : me.active_client_id))
-    : (platform ? selected : me.active_client_id);
-  const sandbox = tenant ? <Sandbox key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""}
+  const tenant = chosenTenant ?? (platform ? "" : me.active_client_id);
+  return tenant ? <Sandbox key={tenant} query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""}
     canWrite={me.role !== null && me.role !== "read_only"} role={me.role}
     dockClearance={me.workspace_assistant === true} /> : null;
-  // Chromeless is only rendered by Overview, which owns the "choose a tenant" state and passes a tenant.
-  if (chromeless) return sandbox;
-  return <>
-    <Heading title="Sandbox assistant" description="Private to your account and selected tenant. Knowledge and product-information questions only." />
-    {error && <Notice error>{error}</Notice>}
-    {platform && <div className="my-5">
-      <label htmlFor="sandbox-tenant" className="block text-sm">Tenant</label>
-      <select id="sandbox-tenant" className={field} value={selected} onChange={(event) => setSelected(event.target.value)}>
-        <option value="">Select a tenant</option>
-        {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-      </select>
-    </div>}
-    {sandbox ? <div className="card h-[calc(100dvh-14rem)] min-h-[28rem] overflow-hidden">{sandbox}</div>
-      : <Notice>Select a tenant to continue.</Notice>}
-  </>;
 }
 
 const headerIcon =

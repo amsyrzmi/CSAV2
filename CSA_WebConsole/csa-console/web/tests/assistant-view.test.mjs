@@ -60,15 +60,60 @@ test("tab routes follow the shell navigation and keep the admin tenant", () => {
     assert.ok(view.tabHref(tab, staff, all, "t1"), tab);
 });
 
-test("the sandbox chat tab opens Overview, its home since the Sandbox entry folded into it", () => {
-  assert.equal(view.tabHref("chat", staff, all, "t1"), "/portal");
-  assert.equal(view.tabHref("chat", { ...staff, role: "read_only" }, [], "t1"), "/portal");
-  assert.equal(view.tabHref("chat", admin, [], "t9"), "/?client_id=t9");
-  assert.equal(view.tabLabel("chat", staff, all), "Overview");
+test("Payments and Connections tabs resolve through the rail like every other tab", () => {
+  const subscriptions = [...all, { key: "subscriptions", status: "active" }];
+  assert.equal(view.tabHref("payments", staff, subscriptions, "t1"), "/portal/payments");
+  assert.equal(view.tabHref("payments", staff, all, "t1"), null, "no Subscriptions, no Payments");
+  assert.equal(view.tabHref("payments", { ...staff, role: "read_only" }, subscriptions, "t1"), null, "read-only members get no Payments");
+  assert.equal(view.tabHref("payments", admin, [], "t9"), "/payments?client_id=t9");
+  assert.equal(view.tabHref("connections", staff, [], "t1"), "/portal/connections");
+  assert.equal(view.tabHref("connections", { ...staff, role: "read_only" }, [], "t1"), "/portal/connections");
+  assert.equal(view.tabHref("connections", admin, [], "t9"), "/connections?client_id=t9");
+  assert.equal(view.tabLabel("payments", staff, subscriptions), "Payments");
+  assert.equal(view.tabLabel("connections", staff, []), "Connections");
+  assert.equal(view.tabName("payments"), "Payments");
+  assert.equal(view.tabName("connections"), "Connections");
+  assert.equal(view.tabForPath("/portal/payments", staff, subscriptions), "payments");
+  assert.equal(view.tabForPath("/portal/connections", staff, []), "connections");
+});
+
+test("the chat tab is the customer preview on Services, only where Customer support is on", () => {
+  assert.equal(view.tabHref("chat", staff, all, "t1"), "/portal/services?section=preview");
+  assert.equal(view.tabHref("chat", { ...staff, role: "tenant_admin" }, all, "t1"), "/portal/services?section=preview");
+  const suspended = [{ key: "customer_support", status: "suspended" }];
+  assert.equal(view.tabHref("chat", staff, suspended, "t1"), "/portal/services?section=preview");
+  assert.equal(view.tabHref("chat", staff, [], "t1"), null);
+  assert.equal(view.tabHref("chat", staff, [{ key: "customer_support", status: "requested" }], "t1"), null);
+  assert.equal(view.tabHref("chat", staff, [{ key: "hr", status: "active" }], "t1"), null);
+  assert.equal(view.tabHref("chat", admin, [], "t9"), "/services?section=preview&client_id=t9");
+  // The section is forced: a planner-supplied one cannot redirect the preview.
+  assert.equal(view.tabHref("chat", staff, all, "t1", "other"), "/portal/services?section=preview");
+  assert.equal(view.tabLabel("chat", staff, all), "Customer preview");
+  assert.equal(view.tabLabel("chat", staff, []), "Customer preview");
+  assert.equal(view.tabName("chat"), "Customer preview");
+  assert.equal(view.previewAvailable(staff, all), true);
+  assert.equal(view.previewAvailable(staff, suspended), true);
+  assert.equal(view.previewAvailable(staff, []), false);
+  assert.equal(view.previewAvailable(staff, [{ key: "customer_support", status: "requested" }]), false);
+  assert.equal(view.previewAvailable(admin, []), true);
+  // A Services path is the services tab, never chat.
+  assert.equal(view.tabForPath("/portal/services", staff, all), "services");
   // The Overview route stays the overview tab for page context.
   assert.equal(view.tabForPath("/portal", staff, all), "overview");
   assert.equal(view.tabForPath("/", admin, []), "overview");
   assert.equal(view.tabForPath("/portal/chat", staff, all), null);
+});
+
+test("the dock hides on Overview, which is the assistant page, and shows on every other page", () => {
+  assert.equal(view.dockHidden("/portal", staff, all), true);
+  assert.equal(view.dockHidden("/portal", staff, []), true);
+  assert.equal(view.dockHidden("/", admin, []), true);
+  const subscriptions = [...all, { key: "subscriptions", status: "active" }, { key: "bookings", status: "active" }];
+  for (const path of ["/portal/services", "/portal/inbox", "/portal/hr", "/portal/hr/people/abc", "/portal/faq/add",
+    "/portal/payments", "/portal/connections", "/portal/bookings", "/portal/team", "/portal/chat"])
+    assert.equal(view.dockHidden(path, staff, subscriptions), false, path);
+  for (const path of ["/services", "/inbox", "/hr", "/connections", "/settings/clients"])
+    assert.equal(view.dockHidden(path, admin, []), false, path);
 });
 
 test("tabForPath resolves sub-pages to their group", () => {
@@ -148,6 +193,15 @@ test("open proposals honour local outcomes and expiry", () => {
   const now = Date.parse("2026-10-26T00:30:00Z");
   assert.deepEqual(view.openProposals(turns, {}, now).map((p) => p.id), ["a", "b"]);
   assert.deepEqual(view.openProposals(turns, { b: proposal("b", { status: "cancelled" }) }, now).map((p) => p.id), ["a"]);
+});
+
+test("merged turns keep one copy per id, oldest first, the newest copy winning", () => {
+  const turn = (id, body) => ({ id, request_key: "k", body, created_at: "x", duplicate: false, result: { action: "answer", markdown: body } });
+  const known = [turn(1, "one"), turn(3, "three")];
+  const merged = view.mergeTurns(known, [turn(2, "two"), turn(3, "three again")]);
+  assert.deepEqual(merged.map((t) => [t.id, t.body]), [[1, "one"], [2, "two"], [3, "three again"]]);
+  assert.deepEqual(known.map((t) => t.id), [1, 3]);
+  assert.deepEqual(view.mergeTurns([], []), []);
 });
 
 test("settled proposals summarise their receipts", () => {
@@ -315,15 +369,25 @@ test("a navigate to a hidden tab prints only the notice, never Opened", () => {
   assert.deepEqual(view.navigateText("knowledge_base", false, staff, []), { text: "Business knowledge is not available to you.", error: true });
 });
 
+test("navigate to the customer preview follows previewAvailable, not the rail", () => {
+  assert.deepEqual(view.navigateText("chat", false, staff, all), { text: "Opened Customer preview.", error: false });
+  assert.deepEqual(view.navigateText("chat", true, staff, all), { text: "Opened Customer preview and continued there.", error: false });
+  assert.deepEqual(view.navigateText("chat", false, admin, []), { text: "Opened Customer preview.", error: false });
+  assert.deepEqual(view.navigateText("chat", false, staff, []), { text: "Customer preview is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("payments", false, staff, all), { text: "Payments is not available to you.", error: true });
+  assert.deepEqual(view.navigateText("connections", false, staff, []), { text: "Opened Connections.", error: false });
+});
+
 test("a hidden tab is named as the sidebar names it", async () => {
   // A platform admin sees every tab, so the sidebar's labels are the reference.
   const nav = await import(await load("navigation.ts"));
   const everyTab = nav.navigationFor(admin, all);
   const tabs = ["overview", "services", "inbox", "knowledge_base", "business", "hr", "email", "subscriptions", "bookings",
-    "training_library", "activity", "chat"];
+    "training_library", "activity", "payments", "connections", "chat"];
   for (const tab of tabs) {
-    // The sandbox chat folded into Overview: the dock's `chat` tab is named as Overview.
-    const link = everyTab.find((item) => item.key === (tab === "chat" ? "overview" : tab));
+    // `chat` is the customer preview, which has no rail entry of its own.
+    if (tab === "chat") { assert.equal(view.tabName(tab), "Customer preview"); continue; }
+    const link = everyTab.find((item) => item.key === tab);
     assert.ok(link, tab);
     assert.equal(view.tabName(tab), link.label, tab);
   }

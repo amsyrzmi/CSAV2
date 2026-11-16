@@ -10,6 +10,7 @@ import { navigationFor } from "@/lib/navigation";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
+import { AssistantProvider } from "@/lib/assistant-conversation";
 import { useHrNav } from "@/components/console/hr/useHrNav";
 import { Rail } from "@/components/console/shell/Rail";
 import type { ShellAccount } from "@/components/console/shell/UserMenu";
@@ -126,11 +127,11 @@ export function AppShell({
         )}
         <main className="mx-auto max-w-6xl p-5 sm:p-8 has-[[data-fill]]:flex has-[[data-fill]]:min-h-0 has-[[data-fill]]:w-full has-[[data-fill]]:max-w-none has-[[data-fill]]:flex-1 has-[[data-fill]]:flex-col has-[[data-fill]]:p-0">
           <PageContextProvider>
-            {children}
-            {/* The dock reads ?client_id=, so it renders client-side under Suspense. */}
-            <Suspense fallback={null}>
-              <AssistantDock me={me} packages={packages} />
-            </Suspense>
+            {/* One assistant conversation for the page and the dock, kept across pages. */}
+            <AssistantProvider me={me} packages={packages}>
+              {children}
+              <AssistantDock />
+            </AssistantProvider>
           </PageContextProvider>
         </main>
       </div>

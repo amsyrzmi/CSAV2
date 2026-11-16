@@ -338,7 +338,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             # Overview's status strip (Overview is the assistant home).
             data = {"packages": upstream.packages}
         elif path == "chat/conversations" and request.method == "GET":
-            # Overview's sandbox chat history.
+            # The customer preview's chat history (Services, Customer replies).
             data = {"items": [], "next_cursor": None}
         elif path == "channels/whatsapp" and request.method == "GET":
             # The Services WhatsApp card; the gateway gates it on Customer Support.
@@ -478,14 +478,18 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect_navigation(page, ("Services",), GATED)
         assert any(c["path"] == "inbox/conversations" for c in calls[start:])
 
-        # (g) Replies are off: the banner shows on Overview (above the chat) and Inbox, and points
-        # to Services, which is where the panel lives.
+        # (g) Replies are off: the banner shows on Overview (above its body: the small home here,
+        # since this stub has no assistant) and Inbox, and points to Services, which is where the
+        # panel lives.
         support = [{"key": "customer_support", "status": "active"}]
         upstream.me, upstream.packages = make_me("tenant_admin"), support
         banner = page.get_by_test_id("customer-replies-banner")
+        # The customer preview's chat heading (Services); Overview without the assistant is the
+        # small home.
         chat_heading = page.get_by_role("heading", name="How can I help today?")
+        home_heading = page.get_by_role("heading", name="Your workspace")
         await page.goto(f"{base}/portal")
-        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(home_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_contain_text(
             "Your customers aren't getting replies yet.", timeout=WAIT
         )
@@ -509,6 +513,7 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         )
 
         # (h) The panel: exact choices, the warning, Save blocked until there is a name.
+        services_start = len(calls)
         await page.goto(f"{base}/portal/services")
         panel = page.get_by_test_id("customer-replies-panel")
         # The panel sits in the Core service group, directly under the Customer support card.
@@ -520,6 +525,18 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             "(items) => items.map((item) => item.dataset.testid)"
         )
         assert order == ["services-card-customer_support", "services-customer-replies"], order
+        # The customer preview is a collapsed section in the same row, under the panel, and a
+        # collapsed preview never touches the chat API.
+        item = page.get_by_test_id("services-customer-replies")
+        toggle = item.get_by_test_id("customer-preview-toggle")
+        await expect(toggle).to_be_visible()
+        await expect(toggle).to_have_attribute("aria-expanded", "false")
+        await expect(item.get_by_test_id("customer-preview")).to_be_hidden()
+        panel_box = await panel.bounding_box()
+        toggle_box = await toggle.bounding_box()
+        assert panel_box and toggle_box
+        assert toggle_box["y"] >= panel_box["y"] + panel_box["height"], (panel_box, toggle_box)
+        assert not [c for c in calls[services_start:] if c["path"].startswith("chat/")]
         await expect(panel).to_contain_text(
             "With Customer support alone, most customer questions go to your team.", timeout=WAIT
         )
@@ -596,16 +613,34 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             await save.click()
         assert last_body() == {"mode": "auto", "brand_name": "Team Synthetic", "intro_line": ""}
 
+        # (i3) The old chat links only redirect to the customer preview section on Services and
+        # keep every query parameter (the company included).
+        # A platform admin's link is followed in the browser (the redirect streams, so there is no
+        # bare 307 to read) and lands on Services with the company chosen and the preview open.
+        upstream.me = make_me("platform_admin")
+        await page.goto(f"{base}/chat?client_id={TENANT}&x=1")
+        await expect(toggle).to_have_attribute("aria-expanded", "true", timeout=WAIT)
+        assert page.url == f"{base}/services?client_id={TENANT}&x=1&section=preview", page.url
+        await expect(page.get_by_test_id("services-tenant")).to_have_value(TENANT)
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        upstream.me = make_me("tenant_admin")
+        await page.goto(f"{base}/portal/chat?client_id={TENANT}&x=1")
+        await expect(toggle).to_have_attribute("aria-expanded", "true", timeout=WAIT)
+        assert page.url == f"{base}/portal/services?client_id={TENANT}&x=1&section=preview", (
+            page.url
+        )
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
+
         # (j) Replies on: no banner, with no new sign-in.
         await page.goto(f"{base}/portal")
-        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(home_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
 
         # (k) Staff see the state and no controls, and are told who can change it.
         replies.update(mode="off", can_manage=False, warnings=["replies_off"])
         upstream.me = make_me("tenant_staff")
         await page.goto(f"{base}/portal")
-        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(home_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_contain_text("Ask your admin to turn replies on.", timeout=WAIT)
         await expect(banner.get_by_role("link")).to_have_count(0)
         await page.goto(f"{base}/portal/services")
@@ -622,15 +657,14 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         # (l) A refused or failed read shows no banner and no error, and the page still works.
         replies_status["read"] = 500
         await page.goto(f"{base}/portal")
-        await expect(chat_heading).to_be_visible(timeout=WAIT)
+        await expect(home_heading).to_be_visible(timeout=WAIT)
         await expect(banner).to_have_count(0)
-        # A company without Customer support has no customer chat: Overview is the small home,
-        # and the replies banner stays out of it.
+        # A company without Customer support has no replies to warn about: the banner stays out.
         upstream.packages = []
         replies_status["read"] = 200
         await page.goto(f"{base}/portal")
-        await expect(page.get_by_role("heading", name="Your workspace")).to_be_visible(timeout=WAIT)
-        # This stub has no assistant at the side of the screen, so the home does not point at one.
+        await expect(home_heading).to_be_visible(timeout=WAIT)
+        # Nothing points at an assistant at the side of the screen any more.
         await expect(
             page.get_by_text("Ask the assistant at the side of the screen.")
         ).to_have_count(0)

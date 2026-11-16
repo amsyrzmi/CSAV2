@@ -29,6 +29,7 @@ import pytest
 import pytest_asyncio
 from csa.email.models import DraftOut, RecipientOut
 from csa.workspace.contracts import (
+    AnswerResult,
     CardField,
     DirectoryResult,
     NavigateResult,
@@ -1144,4 +1145,271 @@ async def test_malay_plan_card_text(stack: tuple[str, Upstream, Any], tmp_path: 
         assert [c["path"] for c in api.posts("/confirm")] == [
             f"workspace/proposals/{plan_id(7)}/confirm",
             f"workspace/proposals/{plan_id(8)}/confirm",
+        ]
+
+
+# --- One conversation for every view: what the shared state must keep doing ------------------
+
+OTHER_TENANT = "11111111-1111-4111-8111-111111111112"
+OTHER_PROFILE = {**TENANT_PROFILE, "id": OTHER_TENANT, "slug": "other", "name": "Other Tenant"}
+TRAINER_ASK = "find who runs training"
+TRAINER_PICK = f"Use employee {ALI_B} for: {TRAINER_ASK}"
+TRAINER_ANSWER = "Ali Bakar runs the forklift training."
+UNSENT = "and remind me about the roster"
+EMPTY_HINT = (
+    "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you "
+    "confirm it."
+)
+# What People & HR loads for a member without HR duties (the same bodies `exercise` answers).
+HR_PAGES: dict[str, Any] = {
+    "hr/training-requests": EMPTY_PAGE,
+    "hr/records/balances": {"items": []},
+    f"hr/people/{ALI_B}/documents": {"items": []},
+    f"hr/people/{ALI_B}": {
+        "person": {
+            "employee_id": str(ALI_B),
+            "display_name": "Ali Bakar",
+            "job_title": "Driver",
+            "department_id": None,
+            "department": None,
+            "manager_id": None,
+            "manager_name": None,
+            "work_email": None,
+            "work_phone": None,
+            "start_date": None,
+            "employment_type": None,
+            "status": "active",
+            "employment_profile": None,
+            "version": None,
+            "account_linked": None,
+        },
+        "sections": ["overview", "personal", "documents"],
+        "can_edit": False,
+    },
+    f"hr/people/{ALI_B}/personal": {
+        "date_of_birth": None,
+        "home_address": None,
+        "personal_phone": None,
+        "emergency_name": None,
+        "emergency_relationship": None,
+        "emergency_phone": None,
+        "bank_name": None,
+        "ic_or_passport": None,
+        "bank_account": None,
+        "tax_number": None,
+        "epf_number": None,
+        "socso_number": None,
+        "version": None,
+        "can_edit": "contact",
+    },
+}
+
+
+def shell_planner(text: str, context: dict[str, Any] | None) -> WorkspaceActionResult | None:
+    """Non-card results: a colleague pick that has to finish on the HR tab."""
+    tab = (context or {}).get("tab")
+    if text == TRAINER_ASK:
+        return DirectoryResult(
+            action="directory_lookup",
+            candidates=[
+                PersonOut(
+                    employee_id=ALI_A,
+                    display_name="Ali Abdullah",
+                    job_title="Driver",
+                    work_email=None,
+                ),
+                PersonOut(
+                    employee_id=ALI_B,
+                    display_name="Ali Bakar",
+                    job_title="Trainer",
+                    work_email=None,
+                ),
+            ],
+        )
+    if text == TRAINER_PICK and tab != "hr":
+        return NavigateResult(action="navigate", tab="hr", resume=True)
+    if text == TRAINER_PICK:
+        return AnswerResult(action="answer", markdown=TRAINER_ANSWER)
+    return None
+
+
+class ShellApi(PlanApi):
+    """PlanApi plus a platform admin's companies, the HR pages and `shell_planner`'s results."""
+
+    def extra(self, method: str, path: str, body: Any) -> Any:
+        if path == "admin/clients" and self.upstream.me["role"] == "platform_admin":
+            return [TENANT_PROFILE, OTHER_PROFILE]
+        if method == "GET" and path in HR_PAGES:
+            return HR_PAGES[path]
+        if method == "POST" and path == self.turns_path:
+            result = shell_planner(body["body"], body.get("page_context"))
+            if result is None:
+                return None
+            turn = WorkspaceTurnOut(
+                id=len(self.turns) + 1,
+                request_key=UUID(body["request_key"]),
+                body=body["body"],
+                result=result,
+                created_at=datetime.now(UTC),
+            ).model_dump(mode="json")
+            self.turns.append(turn)
+            return turn
+        return None
+
+    async def route(self, request_route: Any) -> None:
+        request = request_route.request
+        path, _, query = request.url.split("/console/v1/")[1].partition("?")
+        body: Any = request.post_data_json if request.method == "POST" else None
+        data = self.extra(request.method, path, body)
+        if data is None:
+            await super().route(request_route)
+            return
+        self.calls.append(
+            {
+                "method": request.method,
+                "path": path,
+                "query": query,
+                "csrf": request.headers.get("x-csrf-token"),
+                "body": body,
+            }
+        )
+        await request_route.fulfill(status=200, json=data)
+
+
+@contextlib.asynccontextmanager
+async def shell_page(
+    stack: tuple[str, Upstream, Any], api: ShellApi, url: str
+) -> AsyncIterator[Page]:
+    """A page at `url` for whoever `upstream.me` is, every console call answered by `api`."""
+    base, upstream, browser = stack
+    context = await browser.new_context()
+    context.set_default_navigation_timeout(WAIT)
+    await context.add_cookies([{"name": "csa_session", "value": "synthetic-session", "url": base}])
+    page = await context.new_page()
+    diagnostics: list[str] = []
+    page.on("crash", lambda: diagnostics.append("Chromium page crashed"))
+    page.on("pageerror", lambda error: diagnostics.append(str(error)))
+    page.on("console", lambda message: diagnostics.append(f"{message.type}: {message.text}"))
+    try:
+        await page.route("**/console/v1/**", api.route)
+        await page.goto(f"{base}{url}")
+        yield page
+        assert not api.unexpected, api.unexpected
+        assert not upstream.unexpected, upstream.unexpected
+    except Exception as exc:
+        exc.add_note(f"Browser diagnostics: {diagnostics}")
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            await context.close()
+
+
+async def test_navigate_with_resume_keeps_the_thread_and_the_unsent_text(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    base, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = ShellApi(upstream, {}, {})
+    async with shell_page(stack, api, "/portal/inbox") as page:
+        # `next dev` compiles HR on first request; ask once so the resume below only routes.
+        await page.request.get(f"{base}/portal/hr", timeout=60_000)
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await say(page, TRAINER_ASK)
+        candidates = page.get_by_test_id("assistant-candidate")
+        await expect(candidates).to_have_count(2, timeout=WAIT)
+        # Typed and not sent: a pick that leaves the page must not lose it.
+        composer = page.get_by_test_id("assistant-input")
+        await composer.fill(UNSENT)
+        await candidates.filter(has_text="Ali Bakar").click()
+        await expect(page).to_have_url(f"{base}/portal/hr", timeout=WAIT)
+        turns = page.get_by_test_id("assistant-turn")
+        await expect(turns).to_have_count(3, timeout=WAIT)
+        await expect(turns.nth(0)).to_contain_text(TRAINER_ASK)
+        await expect(turns.nth(2)).to_contain_text(TRAINER_ANSWER)
+        await expect(composer).to_have_value(UNSENT)
+        # Past the resume grace period: nothing else is sent.
+        await page.wait_for_timeout(2_000)
+        picks = [c for c in api.posts(api.turns_path) if c["body"]["body"] == TRAINER_PICK]
+        assert [c["body"]["page_context"]["tab"] for c in picks] == ["inbox", "hr"]
+        assert picks[0]["body"]["request_key"] != picks[1]["body"]["request_key"]
+        assert len(api.posts(api.turns_path)) == 3
+        # One thread for the whole exchange, on both pages.
+        assert [c["path"] for c in api.posts("workspace/conversations")] == [
+            "workspace/conversations"
+        ]
+
+
+async def test_a_card_left_open_is_cancelled_when_a_rail_link_is_clicked(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    base, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = ShellApi(
+        upstream,
+        {"draft the leave note": email_proposal(SIDEBAR_PROPOSAL)},
+        {
+            (SIDEBAR_PROPOSAL, "cancel"): [
+                (200, email_proposal(SIDEBAR_PROPOSAL, status="cancelled"))
+            ]
+        },
+    )
+    async with shell_page(stack, api, "/portal/inbox") as page:
+        await page.request.get(f"{base}/portal/hr", timeout=60_000)
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await say(page, "draft the leave note")
+        card = page.get_by_test_id("proposal-card")
+        await expect(card.get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        cancel_route = re.compile(rf"/workspace/proposals/{SIDEBAR_PROPOSAL}/cancel")
+        async with page.expect_request(cancel_route, timeout=WAIT):
+            await page.get_by_role("link", name="People & HR").click()
+        await expect(page).to_have_url(f"{base}/portal/hr", timeout=WAIT)
+        await expect(card.get_by_test_id("proposal-outcome")).to_have_text(
+            "Cancelled. Nothing was changed.", timeout=WAIT
+        )
+        # Never confirmable on the page it was not proposed on.
+        await expect(card.get_by_test_id("proposal-confirm")).to_have_count(0)
+        assert [(c["path"], c["query"], c["csrf"]) for c in api.posts("/cancel")] == [
+            (f"workspace/proposals/{SIDEBAR_PROPOSAL}/cancel", f"client_id={TENANT}", CSRF)
+        ]
+        assert not api.posts("/confirm")
+        assert len(api.posts(api.turns_path)) == 1
+
+
+async def test_switching_company_ends_the_conversation_and_withdraws_its_card(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("platform_admin"), []
+    api = ShellApi(
+        upstream,
+        {"draft the shift swap": email_proposal(RESET_PROPOSAL)},
+        {(RESET_PROPOSAL, "cancel"): [(200, email_proposal(RESET_PROPOSAL, status="cancelled"))]},
+    )
+    async with shell_page(stack, api, f"/inbox?client_id={TENANT}") as page:
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await say(page, "draft the shift swap")
+        await expect(page.get_by_test_id("proposal-confirm")).to_be_visible(timeout=WAIT)
+        # A company chooser rewrites `?client_id=` in place (router.replace); no reload, so
+        # only the console itself can withdraw the card.
+        cancel_route = re.compile(rf"/workspace/proposals/{RESET_PROPOSAL}/cancel")
+        # The response, not the request: the stub records the call before it answers.
+        async with page.expect_response(cancel_route, timeout=WAIT):
+            await page.evaluate(
+                "(url) => window.history.replaceState(null, '', url)",
+                f"/inbox?client_id={OTHER_TENANT}",
+            )
+        assert [(c["query"], c["csrf"]) for c in api.posts("/cancel")] == [
+            (f"client_id={TENANT}", CSRF)
+        ]
+        # The other company's dock starts closed and empty: nothing from the first one shows.
+        await expect(page.get_by_test_id("assistant-panel")).to_have_count(0, timeout=WAIT)
+        listed = re.compile(rf"/workspace/conversations\?client_id={OTHER_TENANT}")
+        async with page.expect_request(listed, timeout=WAIT):
+            await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        panel = page.get_by_test_id("assistant-panel")
+        await expect(panel).to_contain_text(EMPTY_HINT, timeout=WAIT)
+        await expect(page.get_by_test_id("assistant-turn")).to_have_count(0)
+        await expect(page.get_by_test_id("proposal-card")).to_have_count(0)
+        assert not [
+            c for c in api.calls if c["path"] == api.turns_path and OTHER_TENANT in c["query"]
         ]

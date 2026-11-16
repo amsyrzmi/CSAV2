@@ -25,6 +25,8 @@ export type TabKey =
   | "bookings"
   | "training_library"
   | "activity"
+  | "payments"
+  | "connections"
   | "chat";
 
 export interface RecordRef {

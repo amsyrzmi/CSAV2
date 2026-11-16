@@ -12,24 +12,38 @@ const compile = (source) => ts.transpileModule(source, {
 const { navigationFor } = await import(moduleUrl(compile(await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8"))));
 const source = await readFile(new URL("../lib/overview-home.ts", import.meta.url), "utf8");
 const code = compile(source);
-const { overviewBody, homeLinks } = await import(moduleUrl(code));
+const { overviewBody, showsRepliesBanner, homeLinks } = await import(moduleUrl(code));
 
 const pkg = (key, status = "active") => ({ key, status });
 
-test("Customer support active or suspended keeps the chat", () => {
-  assert.equal(overviewBody([pkg("customer_support")]), "chat");
-  assert.equal(overviewBody([pkg("customer_support", "suspended"), pkg("hr")]), "chat");
+// The four package answers the page can hold: read failed, support active, suspended, absent.
+const READS = {
+  failed: null,
+  active: [pkg("customer_support"), pkg("hr")],
+  suspended: [pkg("customer_support", "suspended")],
+  absent: [pkg("hr"), pkg("staff_email")],
+};
+
+test("Overview is the assistant wherever the assistant is offered, whatever the packages", () => {
+  for (const [name, packages] of Object.entries(READS))
+    assert.equal(overviewBody(packages, true), "assistant", name);
+  assert.equal(overviewBody([], true), "assistant");
 });
 
-test("a company without Customer support gets the small home", () => {
-  assert.equal(overviewBody([]), "home");
-  assert.equal(overviewBody([pkg("hr"), pkg("staff_email")]), "home");
-  assert.equal(overviewBody([pkg("customer_support", "requested"), pkg("hr")]), "home");
-  assert.equal(overviewBody([pkg("customer_support", "available")]), "home");
+test("without the assistant Overview is the small home, whatever the packages", () => {
+  for (const [name, packages] of Object.entries(READS))
+    assert.equal(overviewBody(packages, false), "home", name);
+  assert.equal(overviewBody([], false), "home");
 });
 
-test("a failed read never removes the chat", () => {
-  assert.equal(overviewBody(null), "chat");
+test("the replies banner shows for Customer support active or suspended, and when the read failed", () => {
+  assert.equal(showsRepliesBanner(READS.failed), true, "a failed read never removes the banner");
+  assert.equal(showsRepliesBanner(READS.active), true);
+  assert.equal(showsRepliesBanner(READS.suspended), true);
+  assert.equal(showsRepliesBanner(READS.absent), false);
+  assert.equal(showsRepliesBanner([]), false);
+  assert.equal(showsRepliesBanner([pkg("customer_support", "requested")]), false);
+  assert.equal(showsRepliesBanner([pkg("customer_support", "available")]), false);
 });
 
 const member = (role = "tenant_staff") => ({ role, user: {}, memberships: [], active_client_id: "t" });

@@ -325,7 +325,8 @@ Actions:
 - answer: reply in markdown. Add reads only when needed: "read_current_record" (the open \
 record's summary), "my_profile" (the user's own manager), "my_packages" (active services).
 - navigate: open a console tab (overview, services, inbox, knowledge_base, business, hr, \
-email, subscriptions, bookings, activity, chat), optionally a section or record.
+email, subscriptions, bookings, payments, connections, activity, chat), optionally a section or \
+record. chat is the customer preview: talk to the company's bot as a customer would.
 - directory_lookup: search the company directory by a person's name or job title. When the \
 user names a person without an address (for example "email danial"), prefer directory_lookup \
 before asking for an address. The query holds only name words or a job title; write a job title \

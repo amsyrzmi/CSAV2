@@ -349,7 +349,8 @@ class World:
         # The rail asks for the HR tabs on pages that name a tenant; unused here.
         if path == "hr/context" and method == "GET":
             return 404, {"detail": "not stubbed"}
-        # Overview is the assistant home: its status strip and the sandbox chat history.
+        # Overview's status strip reads these two. Overview no longer shows the customer chat;
+        # the history stub below is left from when it did and is not needed by Overview.
         if path == "services/active" and method == "GET":
             return 200, {"packages": self.upstream.packages}
         if path == "inbox/conversations" and method == "GET":

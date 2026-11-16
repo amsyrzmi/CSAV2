@@ -25,6 +25,9 @@ const en = {
     "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
   retry_same: "Retry same request",
   start_new: "Start a new request",
+  // The Overview page: its headline and the starting ideas under an empty thread.
+  overview_headline: "How can I help today?",
+  ideas_label: "Ideas to start with",
   // Order card labels.
   order_source: "Source",
   order_tracking: "Tracking",
@@ -118,7 +121,7 @@ const en = {
   unavailable: "The assistant could not complete this request.",
   guidance_none: "No guidance is available for this page.",
   guidance_workspace_home_help:
-    "Use this internal workspace for staff guidance and authorized local business reads. Customer sandbox conversations are separate.",
+    "Use this internal workspace for staff guidance and authorized local business reads. Customer previews are on Services, Customer replies.",
   guidance_business_orders_help:
     "Business order views read tenant-scoped local records only. They do not query a marketplace or change an order.",
   guidance_business_order_help:
@@ -147,6 +150,8 @@ const ms: Record<PanelKey, string> = {
     "Tanya tentang tab ini, cari rakan sekerja, atau sediakan satu tindakan. Tiada apa-apa yang berubah sehingga anda mengesahkannya.",
   retry_same: "Cuba semula permintaan yang sama",
   start_new: "Mulakan permintaan baharu",
+  overview_headline: "Apa yang boleh saya bantu hari ini?",
+  ideas_label: "Idea untuk bermula",
   order_source: "Sumber",
   order_tracking: "No. penjejakan",
   order_carrier: "Kurier",
@@ -233,7 +238,7 @@ const ms: Record<PanelKey, string> = {
   unavailable: "Pembantu tidak dapat menyelesaikan permintaan ini.",
   guidance_none: "Tiada panduan tersedia untuk halaman ini.",
   guidance_workspace_home_help:
-    "Gunakan ruang kerja dalaman ini untuk panduan kakitangan dan bacaan data perniagaan tempatan yang dibenarkan. Perbualan sandbox pelanggan adalah berasingan.",
+    "Gunakan ruang kerja dalaman ini untuk panduan kakitangan dan bacaan data perniagaan tempatan yang dibenarkan. Pratonton pelanggan ada di Services, Customer replies.",
   guidance_business_orders_help:
     "Paparan pesanan perniagaan hanya membaca rekod tempatan bagi ruang kerja ini. Ia tidak membuat pertanyaan kepada pasar dalam talian dan tidak mengubah pesanan.",
   guidance_business_order_help:
