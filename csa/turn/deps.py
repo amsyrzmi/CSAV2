@@ -74,6 +74,8 @@ from csa.graph.policy.plan_rules import (
 )
 from csa.graph.policy.routing import has_hard_escalate_words
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
+from csa.media.attachments import image_attachments
+from csa.media.service import picture_for
 from csa.payments.settings import get_settings
 from csa.staff.ownership import automation_allowed, replies_off
 from csa.turn.texts import (
@@ -1041,8 +1043,11 @@ class PostgresTurnDependencies:
     async def emit(self, state: TurnState) -> None:
         envelope = state.envelope
         draft = state.draft
+        # An image message is written before the text it goes with, whatever order the outbound
+        # list has (a stable sort: the rest keep their order); see _insert_outbound.
+        ordered = sorted(state.outbound, key=lambda message: message.kind != "image")
         async with tx(self._pool, str(envelope.client_id)) as conn:
-            for message in state.outbound:
+            for message in ordered:
                 # The draft says it is the handoff reply; only the message that carries its text
                 # is sent on the handoff's authority (never on the web sandbox).
                 handoff = (
@@ -1254,10 +1259,29 @@ async def _insert_outbound(
     ):
         raise ValueError("sandbox_outbound_authority_or_action_invalid")
     conversation_id = _require_conversation(envelope)
+    picture = message.picture
+    if picture is not None:
+        # An image reply goes to Telegram only (slice 1); elsewhere the text alone is sent. It
+        # never carries the handoff's authority: only the message with the draft's text does.
+        if envelope.channel != Channel.TELEGRAM:
+            return
+        handoff = False
     if not await automation_allowed(
         conn, envelope.client_id, conversation_id, envelope.trace_id, handoff=handoff
     ):
         return
+    body, redacted_body = message.body, redact(message.body)
+    attachments: list[dict[str, str]] = []
+    if picture is not None:
+        stored = await picture_for(conn, envelope.client_id, picture.kind, picture.subject_key)
+        if stored is None:  # the subject has no picture (any more): the text goes alone
+            return
+        # The stored body is the caption code wrote, whatever `body` the message carried: the
+        # rule "an image message's body is its caption" is kept here, where the row is made.
+        body = redacted_body = picture.caption
+        attachments = image_attachments(stored.id)
+    # emit writes an image message before its text in one transaction; insert_message.sql and
+    # insert_delivery.sql stamp clock_timestamp(), so delivery and the Inbox keep that order.
     row = await db.q.fetch_one(
         "worker/insert_message.sql",
         (
@@ -1265,10 +1289,10 @@ async def _insert_outbound(
             conversation_id,
             "outbound",
             "assistant",
-            message.body,
-            redact(message.body),
-            Jsonb([]),
-            False,
+            body,
+            redacted_body,
+            Jsonb(attachments),
+            bool(attachments),
             message.idempotency_key,
             envelope.trace_id,
         ),
@@ -1284,7 +1308,8 @@ async def _insert_outbound(
             raise RuntimeError("outbound idempotency key conflicts with another turn")
     if handoff:
         await db.q.execute("staff/set_handoff.sql", (envelope.client_id, row["id"]), conn=conn)
-    ui = message.ui.model_dump(mode="json", exclude_none=True)
+    # Buttons belong on the text: an image message never gets a ui.
+    ui = {} if picture is not None else message.ui.model_dump(mode="json", exclude_none=True)
     if ui.get("confirmation") or ui.get("options") or ui.get("request_phone"):
         await db.q.fetch_one(
             "worker/set_message_ui.sql",
