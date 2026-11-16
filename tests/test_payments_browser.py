@@ -1819,6 +1819,8 @@ async def test_admin_deletes_a_method_after_confirming(site: Site) -> None:
             await expect(page.get_by_test_id("methods-notice")).to_have_text("Deleted.")
             await expect(rows).to_have_count(1)
             await expect(rows.get_by_test_id("method-label")).to_have_text("Bank")
+            # Keyboard users land on "Add a method", not on the page.
+            await expect(page.get_by_test_id("method-add")).to_be_focused()
             await expect(page.get_by_test_id("method-form")).to_have_count(0)
             sent = deletes(world, f"payments/methods/{DUITNOW['id']}")
             assert [c["csrf"] for c in sent] == ["synthetic-csrf"], sent
@@ -1943,5 +1945,34 @@ async def test_a_late_list_read_never_brings_a_deleted_method_back(site: Site) -
             await page.wait_for_timeout(500)
             await expect(rows).to_have_count(1)
             await expect(rows.get_by_test_id("method-label")).to_have_text("Main")
+
+    await with_browser(body)
+
+
+async def test_a_picture_saved_after_the_form_closed_still_shows(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.methods = [dict(BANK), dict(DUITNOW)]
+        async with settings_page(browser, site, world, role="tenant_admin") as page:
+            row = page.get_by_test_id("payment-method").nth(1)
+            await row.get_by_test_id("method-edit").click()
+            field = row.get_by_test_id("method-picture")
+            world.hold_picture = asyncio.Event()
+            await field.get_by_test_id("method-picture-input").set_input_files(
+                picture_file("duitnow.png", "image/png", synthetic_png())
+            )
+            await expect(field.get_by_test_id("method-picture-choose")).to_have_text("Saving…")
+            # The admin closes the form while the upload runs; the server still keeps the picture.
+            await row.get_by_role("button", name="Cancel").click()
+            await expect(row.get_by_test_id("method-form")).to_have_count(0)
+            world.hold_picture.set()
+            preview = row.get_by_test_id("method-picture-view-preview")
+            await expect(preview).to_be_visible()
+            asset = world.methods[1]["picture"]["id"]
+            await expect(preview).to_have_attribute("src", f"/console/v1/media/{asset}?v=v1")
+            # Only the picture changed: the other method and this one's details are as they were.
+            await expect(page.get_by_test_id("method-preview")).to_have_text(
+                [BANK_LINE, DUITNOW_LINE]
+            )
 
     await with_browser(body)

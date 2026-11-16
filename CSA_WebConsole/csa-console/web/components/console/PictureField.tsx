@@ -21,7 +21,10 @@ import { secondary } from "./ui";
  *
  * The field is controlled: it always shows `picture`, and a successful upload or removal is
  * reported through `onChanged`, which the owner must write into the data it keeps (so a remount,
- * a refresh or another person's change can never leave an older picture on screen).
+ * a refresh or another person's change can never leave an older picture on screen). `onChanged`
+ * is called even when the answer arrives after the field is gone (its form was closed during the
+ * upload): the server kept the picture, so the owner must record it by the subject's id, not in
+ * the closed form's state.
  */
 export default function PictureField({
   tenantId, path, picture, hint, onChanged, onBusy, testId, label = "Picture", subject, readOnly = false,
@@ -50,7 +53,7 @@ export default function PictureField({
   const hintId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // A late answer after the field is gone (its form closed, its subject deleted) changes nothing.
+  // After the field is gone only `onChanged` still runs (see above); its own state is left alone.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -83,7 +86,7 @@ export default function PictureField({
     refocus.current = true;
     try {
       const saved = await putPicture(path ?? "", file);
-      if (mounted.current) onChanged?.(saved);
+      onChanged?.(saved);
     } catch (cause) {
       if (mounted.current) setError(pictureFailure(cause));
     } finally {
@@ -98,7 +101,7 @@ export default function PictureField({
     refocus.current = true;
     try {
       await removePicture(path ?? "");
-      if (mounted.current) onChanged?.(null);
+      onChanged?.(null);
     } catch (cause) {
       if (mounted.current) setError(pictureFailure(cause));
     } finally {
