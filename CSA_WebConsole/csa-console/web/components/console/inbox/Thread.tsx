@@ -183,7 +183,7 @@ export function Thread({
         <ol className="flex flex-col">{threadItems(ordered).map((item) => item.kind === "day"
           ? <li key={item.key} className="my-3 flex justify-center">
             <span className="rounded-full border border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-2.5 py-0.5 text-[11px] text-ink-700">{item.label}</span></li>
-          : <MessageItem key={item.key} item={item} contactId={id} contactName={contact.display_name} motion={motion}
+          : <MessageItem key={item.key} item={item} contactId={id} contactName={contact.display_name} motion={motion} tenantId={actions.tenantId}
             arrived={baseline !== null && timeOf(item.message.created_at) > baseline} />)}</ol>
         {pending.length > 0 && <div className="mt-3 flex flex-col items-end gap-3">
           {pending.map((approval) => <div key={approval.id} className="w-full max-w-[92%] md:max-w-[84%]">

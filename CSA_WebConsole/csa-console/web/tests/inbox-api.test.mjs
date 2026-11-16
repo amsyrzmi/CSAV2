@@ -12,7 +12,11 @@ function moduleUrl(source) {
 const inbox = await import(moduleUrl(
   await readFile(new URL("../lib/inbox-api.ts", import.meta.url), "utf8"),
 ));
-const { inboxListQuery, approvalsPath, canConnectWhatsApp, mergeById, listTime } = inbox;
+const { inboxListQuery, approvalsPath, canConnectWhatsApp, mergeById, listTime, messagePictureId } = inbox;
+const apiUrl = moduleUrl(await readFile(new URL("../lib/api.ts", import.meta.url), "utf8"));
+const channels = await import(moduleUrl(
+  (await readFile(new URL("../lib/channels-api.ts", import.meta.url), "utf8")).replace('"./api"', JSON.stringify(apiUrl)),
+));
 
 const BASE = "/console/v1/inbox/conversations";
 const none = { tenantQuery: "", channel: "", needsReview: false, sender: "", q: "" };
@@ -138,4 +142,26 @@ test("a future timestamp is clamped to Just now", () => {
 test("an invalid date gives an empty string", () => {
   assert.equal(listTime("", NOW), "");
   assert.equal(listTime("not a date", NOW), "");
+});
+
+test("a message shows a picture only when the server sent one", () => {
+  const asset = "6f1c2d3e-0000-4000-8000-000000000002";
+  assert.equal(messagePictureId({ picture: { asset_id: asset } }), asset);
+  assert.equal(messagePictureId({ picture: null }), null);
+  // A server that predates the field sends none at all.
+  assert.equal(messagePictureId({}), null);
+});
+
+test("a picture that was not sent is explained in plain words and says the text still went", () => {
+  for (const code of ["picture_unavailable", "picture_rejected", "picture_failed"]) {
+    const notice = channels.deliveryNotice({
+      delivery_status: "dead", delivery_error: code, provider_status: null, provider_error: null,
+    });
+    assert.ok(notice && notice.startsWith("The picture was not sent."), code);
+    assert.ok(notice.includes("text reply"), notice);
+    assert.ok(!notice.includes("_"), notice);
+  }
+  const [unavailable, rejected, failed] = ["picture_unavailable", "picture_rejected", "picture_failed"].map((code) =>
+    channels.deliveryNotice({ delivery_status: "dead", delivery_error: code, provider_status: null, provider_error: null }));
+  assert.equal(new Set([unavailable, rejected, failed]).size, 3);
 });

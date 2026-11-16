@@ -35,6 +35,7 @@ from csa.console.services import package_gate
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.media.attachments import image_asset_id
 from csa.staff.ownership import lock_conversation
 from csa.workspace.registry import ProposalError
 
@@ -72,6 +73,12 @@ class InboxConversationPage(Contract):
     needs_review_count: int = 0
 
 
+class InboxPicture(Contract):
+    """The stored picture an outbound image reply showed; read through the media route."""
+
+    asset_id: UUID
+
+
 class InboxMessage(Contract):
     id: UUID
     direction: str
@@ -84,6 +91,8 @@ class InboxMessage(Contract):
     # WhatsApp status callbacks: 'failed' arrives after a send that returned 200.
     provider_status: Literal["sent", "delivered", "read", "failed"] | None = None
     provider_error: str | None = None
+    # Only an outbound image reply carries one; inbound attachments are never exposed here.
+    picture: InboxPicture | None = None
 
 
 class InboxMessagePage(Contract):
@@ -151,6 +160,19 @@ class InboxRoute(APIRoute):
             return await handler(request)
 
         return bounded
+
+
+def _message(row: dict[str, Any]) -> InboxMessage:
+    """A message row; only an outbound image reply gets a picture, read from its attachments."""
+    asset_id = image_asset_id(row["attachments"]) if row["direction"] == "outbound" else None
+    fields = {key: value for key, value in row.items() if key != "attachments"}
+    return InboxMessage.model_validate(
+        {
+            **fields,
+            "body": redact(row["body"])[:8000],
+            "picture": None if asset_id is None else {"asset_id": asset_id},
+        }
+    )
 
 
 def inbox_actor(request: Request) -> ConsoleActor:
@@ -406,10 +428,7 @@ def build_inbox_router() -> APIRouter:
                 (client_id, conversation_id, before, before, limit + 1),
                 conn=conn,
             )
-        items = [
-            InboxMessage.model_validate({**row, "body": redact(row["body"])[:8000]})
-            for row in rows[:limit]
-        ]
+        items = [_message(row) for row in rows[:limit]]
         return InboxMessagePage(
             items=items, next_cursor=items[-1].id if len(rows) > limit else None
         )

@@ -41,7 +41,14 @@ export type Message = {
   delivery_error: string | null;
   provider_status: "sent" | "delivered" | "read" | "failed" | null;
   provider_error: string | null;
+  /** Set only on an outbound picture reply: the stored picture, read through the media route. */
+  picture?: { asset_id: string } | null;
 };
+
+/** The stored picture a message shows, or null (also for a server that predates the field). */
+export function messagePictureId(message: { picture?: { asset_id: string } | null }): string | null {
+  return message.picture?.asset_id ?? null;
+}
 
 export type Approval = {
   id: number;
