@@ -654,8 +654,9 @@ async def test_how_to_pay_with_an_open_invoice_asks_for_the_qr_picture(shop: Sho
         texts = dict(facts(result))
         assert texts["payment_method_2"].startswith(f"DuitNow: {QR['duitnow_id']}")
         # The caption is the label only: no account, DuitNow id, amount or reference.
+        assert result.picture is not None
         for secret in (QR["duitnow_id"], QR["account_name"], ACCOUNT, ref, "29.90"):
-            assert secret not in caption
+            assert secret not in result.picture.caption
 
 
 @requires_docker
@@ -705,11 +706,15 @@ async def test_no_picture_when_no_listed_qr_has_one(shop: Shop) -> None:
 
     # Four methods are listed already; a fifth QR with a picture is not named, so not sent.
     await shop.method("transfer", TRANSFER, order=4)
-    unlisted = await shop.method("qr", QR, order=5, label="Unlisted QR")
+    unlisted_qr = {"duitnow_id": "512000000019", "account_name": "Kedai Contoh Sdn Bhd"}
+    unlisted = await shop.method("qr", unlisted_qr, order=5, label="Unlisted QR")
     await shop.picture(unlisted)
     second = await shop.run(contact, {"action": "instructions"})
     assert second.picture is None
-    assert "Unlisted QR" not in "\n".join(t for _, t in facts(second))
+    assert [i for i, _ in facts(second) if i.startswith("payment_method_")] == [
+        f"payment_method_{n}" for n in range(1, 5)
+    ]
+    assert unlisted_qr["duitnow_id"] not in "\n".join(t for _, t in facts(second))
 
 
 @requires_docker

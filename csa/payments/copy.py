@@ -115,9 +115,11 @@ def method_line(m: MethodOut, locale: Locale) -> str:
 
 
 def qr_caption(label: str, locale: Locale) -> str:
-    """The caption of a QR method's picture: its label only (staff set it, at most 60
-    characters, and the text reply already shows it). Never an account, DuitNow id, amount or
-    reference: the caption is stored as it stands, unredacted."""
+    """The caption of a QR method's picture: its label only, a name staff chose for customers
+    (at most 60 characters). The text line of a QR method shows its DuitNow id and account name,
+    not the label, so the caption is the only place a customer sees it. Nothing else may go in
+    the caption: never an account, DuitNow id, amount or reference, because it is stored as it
+    stands, unredacted."""
     if locale == "ms":
         return f"QR DuitNow: {label}"
     return f"DuitNow QR: {label}"
