@@ -611,12 +611,14 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
 
         # (i3) The old chat links only redirect to the customer preview section on Services and
         # keep every query parameter (the company included).
+        # A platform admin's link is followed in the browser (the redirect streams, so there is no
+        # bare 307 to read) and lands on Services with the company chosen and the preview open.
         upstream.me = make_me("platform_admin")
-        old = await context.request.get(f"{base}/chat?client_id={TENANT}&x=1", max_redirects=0)
-        assert old.status in {307, 308}, old.status
-        assert old.headers["location"].endswith(
-            f"/services?client_id={TENANT}&x=1&section=preview"
-        ), old.headers["location"]
+        await page.goto(f"{base}/chat?client_id={TENANT}&x=1")
+        await expect(toggle).to_have_attribute("aria-expanded", "true", timeout=WAIT)
+        assert page.url == f"{base}/services?client_id={TENANT}&x=1&section=preview", page.url
+        await expect(page.get_by_test_id("services-tenant")).to_have_value(TENANT)
+        await expect(chat_heading).to_be_visible(timeout=WAIT)
         upstream.me = make_me("tenant_admin")
         await page.goto(f"{base}/portal/chat?client_id={TENANT}&x=1")
         await expect(toggle).to_have_attribute("aria-expanded", "true", timeout=WAIT)
