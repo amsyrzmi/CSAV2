@@ -84,7 +84,9 @@ Reserved ranges (client growth program, 2026-10-27):
 
 - `0620`–`0629`: Customer Inbox refinement. 0620 adds the queue columns on `conversations`, their
   checks and indexes, and the backfill function `inbox_queue_backfill`; 0621 adds the tenant tables
-  `inbox_settings`, `inbox_queue_events` (append-only for `csa_app`) and `inbox_saved_views`; later
+  `inbox_settings`, `inbox_queue_events` (append-only for `csa_app`) and `inbox_saved_views`; 0622
+  adds `inbox_queue_enter` (the only way into `needs_staff`) and the message and escalation triggers
+  that keep the queue state (one conversation update per message, never `inbox_version`); later
   numbers are listed as they ship.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`

@@ -116,6 +116,14 @@ def _seed(
                 " now() + make_interval(secs => %s), now() - make_interval(secs => %s))",
                 (client_id, conversation_id, str(uuid.uuid4()), status, expires_in, ago),
             )
+        # These rows stand for data from before 0622, which is what the backfill meets: the 0622
+        # escalation trigger has already queued an escalated conversation, so its queue columns
+        # go back to their defaults here.
+        conn.execute(
+            "UPDATE conversations SET queue_status = 'bot', queue_reason = NULL,"
+            " priority = 'normal', needs_staff_since = NULL, due_at = NULL WHERE id = %s",
+            (conversation_id,),
+        )
     return Seeded(client_id, conversation_id, contact_id)
 
 
