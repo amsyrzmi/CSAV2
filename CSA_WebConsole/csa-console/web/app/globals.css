@@ -425,6 +425,20 @@
 .fs-px-anim.fs-px-wake .fs-px-f6 { animation-delay: 1.125s; }
 .fs-px-anim.fs-px-wake .fs-px-f7 { animation-name: fs-px-hold; animation-delay: 1.3125s; }
 
+/* The dock launcher's click hop: one short lift and landing (about 400 ms). AssistantLauncher
+   only adds the class while motion is allowed; the rules below are the backstop. */
+@keyframes fs-dock-hop {
+  0% { transform: none; }
+  40% { transform: translateY(-6px); }
+  100% { transform: none; }
+}
+.fs-dock-hop { animation: fs-dock-hop 400ms var(--fs-ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .fs-dock-hop { animation: none !important; }
+}
+/* No data-motion rule here: nothing above the dock sets that attribute. The JS motion gate
+   (useMotionAllowed) is the real one: AssistantLauncher never adds the class when it says no. */
+
 /* Frame 0 is forced visible only under .fs-px-anim: AgentAvatar always pairs fs-px-work and
    fs-px-wake with fs-px-anim, so a lone work/wake class (a class list lagging a render) would at
    worst blank one sprite for a frame, never show the wrong pose. Harmless; kept simple. */

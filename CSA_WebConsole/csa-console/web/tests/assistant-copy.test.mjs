@@ -27,6 +27,11 @@ test("English and Malay panel text have the same keys and no Malay value is empt
   for (const [key, value] of Object.entries(copy.PANEL.en)) assert.ok(value.trim(), key);
 });
 
+test("the dock's idea bubble has a Dismiss label in both languages", () => {
+  assert.equal(copy.PANEL.en.dock_idea_dismiss, "Dismiss this idea");
+  assert.equal(copy.PANEL.ms.dock_idea_dismiss, "Tutup idea ini");
+});
+
 test("the language of a turn or card defaults to English", () => {
   assert.equal(copy.languageOf({ language: "ms" }), "ms");
   assert.equal(copy.languageOf({ language: "en" }), "en");
