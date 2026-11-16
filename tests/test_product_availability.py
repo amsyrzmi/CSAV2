@@ -20,7 +20,7 @@ from csa.agents.ecommerce.agent import STOCK_UNCHECKED_TEXT
 from csa.agents.ecommerce.models import StockLookup
 from csa.agents.orders.agent import OrderAgent, OrderInput
 from csa.agents.orders.availability import SHOP_NOT_FOUND_TEXT
-from csa.contracts.facts import AgentResult
+from csa.contracts.facts import AgentResult, PictureRef
 from csa.marketplace.reads import LiveReadAccess, PostgresMarketplaceReader
 from psycopg_pool import AsyncConnectionPool
 from structlog.testing import capture_logs
@@ -410,3 +410,53 @@ async def test_a_cancelled_tiktok_read_still_propagates(
     await add_product(migrated_dsn, client, "LOCAL-LAMP", "Synthetic lamp", stock=7)
     with pytest.raises(asyncio.CancelledError):
         await ask_broken(pool, make_ctx(pool, client), "lamp", asyncio.CancelledError())
+
+
+async def add_product_picture(migrated_dsn: str, client: UUID, sku: str) -> str:
+    """A stored picture of the company's product ``sku`` (metadata only); returns the product id."""
+    async with await psycopg.AsyncConnection.connect(migrated_dsn) as conn:
+        cur = await conn.execute(
+            "SELECT id FROM products WHERE client_id = %s AND sku = %s", (client, sku)
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        product_id = str(row[0])
+        await conn.execute(
+            "INSERT INTO media_assets (client_id, kind, subject_key, media_type, byte_size, width,"
+            " height, sha256, source) VALUES (%s, 'product', %s, 'image/png', 1000, 800, 800,"
+            " repeat('a', 64), 'upload')",
+            (client, product_id),
+        )
+    return product_id
+
+
+async def test_the_availability_picture_counts_only_our_own_rows(
+    pool: AsyncConnectionPool, migrated_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = await store_for(migrated_dsn, pool)
+    client = binding.client_id
+    tiktok = FakeTikTok(binding.shop_id).install(monkeypatch)
+    await seed_listings(pool, client, binding.record_id, tiktok_mug(), synced_at=now())
+    tiktok.product_details["SYNTH-P-MUG"] = tiktok_mug(qty=8)
+    on = Switch(True)
+    # A TikTok-only answer never carries a picture: there is no product of ours to show.
+    only_tiktok = await ask(
+        pool, make_ctx(pool, client), "mug-blk-m", capability=on, live=live_access(pool)
+    )
+    assert [fact_id for fact_id, _ in pairs(only_tiktok)] == ["tiktok_stock"]
+    assert only_tiktok.picture is None
+    # One shop row beside the TikTok fact: the picture is our own product's; the facts are the
+    # ones a picture-less answer gives.
+    await add_product(migrated_dsn, client, "MUG-BLK-M", "Synthetic mug", stock=5, price="9.50")
+    product_id = await add_product_picture(migrated_dsn, client, "MUG-BLK-M")
+    both = await ask(
+        pool, make_ctx(pool, client), "mug-blk-m", capability=on, live=live_access(pool)
+    )
+    assert [fact_id for fact_id, _ in pairs(both)] == ["shop_product_0", "tiktok_stock"]
+    assert pairs(both)[0] == (
+        "shop_product_0",
+        "Synthetic mug (MUG-BLK-M): MYR 9.50, 5 available in our shop.",
+    )
+    assert both.picture == PictureRef(
+        kind="product", subject_key=product_id, caption="Synthetic mug"
+    )

@@ -6,8 +6,9 @@ turn's language. Reads (status, products) are never sent that way and stay Engli
 composer reads `text` alone.
 
 The product detail answer (one product) also carries that product's picture when the company has
-one (`product_picture`, captioned with its name only); a search, an availability read, a draft and
-every other answer never ask for one.
+one (`product_picture`, captioned with its name only), and so does an availability answer when
+exactly one of the company's own active products matches (owner decision, pictures 3b). A search,
+a draft and every other answer never ask for one.
 """
 
 from __future__ import annotations
@@ -227,7 +228,7 @@ class OrderAgent:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             rows = await db.q.fetch_all(
                 "orders/search_products.sql",
-                (ctx.client_id, pattern, pattern, pattern),
+                {"client_id": ctx.client_id, "pattern": pattern},
                 conn=conn,
             )
         if not rows:
@@ -255,7 +256,7 @@ class OrderAgent:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             rows = await db.q.fetch_all(
                 "orders/search_products.sql",
-                (ctx.client_id, pattern, pattern, pattern),
+                {"client_id": ctx.client_id, "pattern": pattern},
                 conn=conn,
             )
         lookup = None
@@ -274,7 +275,14 @@ class OrderAgent:
                 # CancelledError is a BaseException and still propagates.
                 logger.warning("product_availability_tiktok_failed", error_type=type(exc).__name__)
                 lookup = None
-        return self._ok(ctx, availability_facts(rows, lookup, ctx.now()))
+        # The picture rule counts the company's own rows only: exactly one active product of ours
+        # matched (search_products.sql reads active products of this company). Two or more, none,
+        # or a TikTok-only answer give no picture; a TikTok fact beside the one row changes nothing.
+        picture = None
+        if len(rows) == 1:
+            row = rows[0]
+            picture = product_picture(row.get("id"), row.get("name"), row.get("has_picture"))
+        return self._ok(ctx, availability_facts(rows, lookup, ctx.now()), picture=picture)
 
     async def _detail(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
@@ -621,8 +629,9 @@ class OrderAgent:
 
 
 def product_picture(product_id: object, name: object, has_picture: object) -> PictureRef | None:
-    """The product's picture for the detail answer, captioned with its name only (no price, stock
-    or SKU); None when the company has no picture for it (`has_picture` from get_product.sql).
+    """The product's picture for the detail answer and a one-product availability answer, captioned
+    with its name only (no price, stock or SKU); None when the company has no picture for it
+    (`has_picture` from get_product.sql or search_products.sql).
 
     An id or name a picture could not carry (blank, or over the contract's length) also gives None:
     a picture never fails the reply, which then goes as text alone.
