@@ -118,6 +118,8 @@ SMOKE = {case["id"]: case for case in json.loads(SMOKE_PATH.read_text(encoding="
 SMOKE_LEFT_OUT = {
     # No fact group, no email: navigation, help, bookings.
     "navigate-en-1", "navigate-ms-1", "navigate-en-2", "navigate-ms-2", "navigate-ms-3",
+    "navigate-en-3", "navigate-ms-4", "navigate-en-4", "navigate-ms-5",
+    "navigate-en-5", "navigate-ms-6",
     "answer-en-1", "answer-ms-1",
     "booking_book-en-1", "booking_book-ms-1", "booking_book-en-2",
     "booking_move-en-1", "booking_move-ms-1", "booking_move-ms-2",
