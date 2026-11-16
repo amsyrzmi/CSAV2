@@ -342,6 +342,7 @@ def build_graph(
             )
         except Exception as exc:
             result = _spoke_failure(state, type(exc).__name__, task=escalation_task)
+        # Its result's picture is ignored on purpose: no picture goes with a handoff reply.
         facts = [
             *state.facts,
             *(
@@ -864,7 +865,8 @@ def _reply_messages(state: TurnState) -> list[OutboundMessage]:
     """The messages of an answered turn: the text, preceded by its picture on Telegram.
 
     The image message's body is its caption, so a process that does not know image messages
-    sends the caption as plain text. WhatsApp and the web get the text alone (slice 1).
+    sends the caption as plain text. WhatsApp and the web get the text alone (slice 1), and so
+    does a handoff reply: it is the escalation message, never sent with a picture.
     """
     envelope = state.envelope
     if state.draft is None:
@@ -880,7 +882,7 @@ def _reply_messages(state: TurnState) -> list[OutboundMessage]:
         ui=state.ui,
     )
     picture = state.picture
-    if picture is None or envelope.channel != Channel.TELEGRAM:
+    if picture is None or envelope.channel != Channel.TELEGRAM or state.draft.handoff:
         return [text]
     image = OutboundMessage(
         trace_id=envelope.trace_id,

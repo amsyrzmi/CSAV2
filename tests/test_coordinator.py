@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, get_args
 from uuid import UUID
 
 import pytest
@@ -25,6 +25,7 @@ from csa.contracts.facts import (
     Fact,
     PictureRef,
     ResultMeta,
+    SentPictureKind,
 )
 from csa.contracts.plan import Intent, Plan, RiskClass, Task
 from csa.contracts.state import (
@@ -37,7 +38,7 @@ from csa.contracts.state import (
     TurnState,
     Verification,
 )
-from csa.graph.coordinator import _pick_picture, run_turn
+from csa.graph.coordinator import _PICTURE_PRIORITY, _pick_picture, run_turn
 from csa.graph.policy.plan_rules import next_unresolved, resolve_order_status, validate_plan
 from csa.graph.policy.routing import route_turn
 from langgraph.checkpoint.memory import InMemorySaver
@@ -748,8 +749,10 @@ async def test_no_image_message_on_whatsapp_or_web(channel: Channel) -> None:
     deps = FakeDependencies(parallel=True)
     deps.pictures = {"alpha-1": QR}
 
-    await run_turn(make_envelope("How do I pay?", channel=channel), deps)
+    result = await run_turn(make_envelope("How do I pay?", channel=channel), deps)
 
+    # The picture was chosen; only the channel keeps it from being sent.
+    assert result.picture == QR
     assert [(m.kind, m.body, m.idempotency_key) for m in deps.emitted] == [
         ("text", "Hello there.", f"{TRACE_ID}:0")
     ]
@@ -769,3 +772,26 @@ async def test_a_picture_from_an_earlier_round_is_kept() -> None:
     assert deps.executed_tasks == ["alpha", "beta", "alpha"]
     assert result.picture == PLAN
     assert [m.picture for m in deps.emitted if m.kind == "image"] == [PLAN]
+
+
+class _HandoffReply(FakeDependencies):
+    async def compose(self, state: TurnState) -> Draft:
+        self.compose_calls += 1
+        return Draft(text="A team member will help you with this.", language="en", handoff=True)
+
+
+@pytest.mark.asyncio
+async def test_a_handoff_reply_never_carries_a_picture() -> None:
+    deps = _HandoffReply(parallel=True)
+    deps.pictures = {"alpha-1": QR}
+
+    result = await run_turn(make_envelope("How do I pay?"), deps)
+
+    assert result.picture == QR
+    assert [m.kind for m in deps.emitted] == ["text"]
+    assert deps.emitted[0].body == "A team member will help you with this."
+
+
+def test_every_sent_picture_kind_has_a_priority() -> None:
+    # A kind without one would raise KeyError in collect and fail the turn.
+    assert set(_PICTURE_PRIORITY) == set(get_args(SentPictureKind))

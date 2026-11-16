@@ -287,10 +287,16 @@ async def test_a_handoff_reply_never_lends_its_authority_to_the_image(
         draft=Draft(text=TEXT, language="en", handoff=True),
         picture=PictureRef(kind="payment_qr", subject_key="method-1", caption=CAPTION),
     )
-    # The messages the coordinator's emit builds for this turn, written by the real emit.
-    messages = _reply_messages(state)
-    assert [m.kind for m in messages] == ["image", "text"]
-    await PostgresTurnDependencies(w.pool).emit(state.model_copy(update={"outbound": messages}))
+    # The coordinator no longer builds the image on a handoff turn (a handoff reply is the
+    # escalation message) ...
+    assert [m.kind for m in _reply_messages(state)] == ["text"]
+    # ... and should an image still meet a handoff reply, the writer never lends it the
+    # handoff's authority. Its body is the draft's text here, so emit offers it that authority
+    # and only the writer's rule refuses it: the real emit writes only the text, on it.
+    borrowing = image(env).model_copy(update={"body": TEXT})
+    await PostgresTurnDependencies(w.pool).emit(
+        state.model_copy(update={"outbound": [borrowing, text(env)]})
+    )
     rows = await w.q(
         "SELECT idempotency_key, has_attachment, send_authority FROM messages"
         " WHERE trace_id=%s AND direction='outbound'",
