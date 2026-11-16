@@ -16,13 +16,19 @@ import pytest
 from csa.core.tenancy import tx
 
 from tests.conftest import requires_docker
-from tests.test_hr_people import make_other_tenant_owner, make_people_manager, person_row
-from tests.test_hr_people_records import db_today
+from tests.test_hr_people import make_other_tenant_owner, make_people_manager, ok, person_row
+from tests.test_hr_people_records import (
+    db_today,
+    finish_now,
+    leave_body,
+    versioned,
+)
 from tests.test_hr_persistence import HrWorld, hr_database, world
 from tests.test_hr_process_instances import (
     CANCEL_SQL,
     PROBATION_SQL,
     START_SQL,
+    add_person,
     insert_employee,
     run,
     start_body,
@@ -44,7 +50,7 @@ PUBLIC_FUNCTIONS = (
 )
 INTERNAL_FUNCTIONS = (
     "hr_process_caller(uuid)",
-    "hr_process_summary(uuid,uuid)",
+    "hr_process_summary(uuid,uuid,uuid)",
 )
 NAMES = {
     "staff": "Synthetic Staff",
@@ -157,12 +163,12 @@ async def person(
 
 
 async def in_other_tenant(
-    world: HrWorld, sql: LiteralString, params: tuple[object, ...]
+    world: HrWorld, sql: LiteralString, params: tuple[object, ...], who: str = "owner"
 ) -> list[dict[str, Any]]:
-    """The other tenant's HR owner (make_other_tenant_owner) reads in the other tenant."""
+    """`who` reads in the other tenant (the owner is its HR owner after make_other_tenant_owner)."""
     async with tx(world.service.pool, str(world.other_tenant)) as conn:
         await conn.execute(
-            "SELECT set_config('app.hr_user_id', %s, true)", (str(world.users["owner"]),)
+            "SELECT set_config('app.hr_user_id', %s, true)", (str(world.users[who]),)
         )
         cursor = await conn.execute(sql, params)
         return await cursor.fetchall()
@@ -456,14 +462,15 @@ async def test_assignee_sees_only_own_tasks(world: HrWorld) -> None:
     assert [t["title_en"] for t in seen["tasks"]] == ["Mentor the new hire"]
     assert seen["tasks"][0]["mine"] is True
     assert not {"completed_by", "approved_by", "assignee_employee_id"} & set(seen["tasks"][0])
+    # Their own onboarding is the person's view (test_person_sees_own_progress_and_own_tasks_only).
     own_view = await get(world, "staff", own)
-    assert own_view is not None
+    assert own_view is not None and own_view["view"] == "self"
     assert [t["title_en"] for t in own_view["tasks"]] == ["Submit bank details"]
-    # An assignee lists no processes, and someone with no task in a process sees none of it.
-    assert await ids(world, "staff") == []
+    # An assignee lists only their own onboarding, not the processes they work in, and someone
+    # with no task in a process sees none of it.
+    assert await ids(world, "staff") == [own]
     assert await mine(world, "outsider") == []
     assert await get(world, "outsider", own) is None
-    assert await person(world, "staff", staff) is None
 
 
 async def test_pool_tasks_listed_for_hr_team_only(world: HrWorld) -> None:
@@ -528,7 +535,41 @@ async def test_other_tenant_sees_nothing(world: HrWorld) -> None:
     [theirs] = await in_other_tenant(world, PERSON_SQL, (other, staff))
     assert theirs["person"] is not None
     assert theirs["person"]["processes"] == []
-    assert theirs["person"]["no_matching_template"] == {"onboarding": True, "offboarding": True}
+    assert theirs["person"]["no_matching_template"] == {"onboarding": True, "offboarding": False}
+
+
+async def test_a_link_in_another_tenant_is_never_used_from_this_session(world: HrWorld) -> None:
+    """staff is also a member of the other tenant, linked there to an employee with a task."""
+    other, there = world.other_tenant, world.employees["staff"]
+    await world.q(
+        "INSERT INTO console_memberships(user_id,client_id,role) VALUES (%s,%s,'tenant_staff')",
+        (world.users["staff"], other),
+    )
+    await world.q(
+        "INSERT INTO hr_employee_accounts(client_id,user_id,employee_id) VALUES (%s,%s,%s)",
+        (other, world.users["staff"], there),
+    )
+    [created] = await world.q(
+        "INSERT INTO hr_processes(client_id,employee_id,kind) VALUES (%s,%s,'onboarding')"
+        " RETURNING id",
+        (other, there),
+    )
+    theirs = created["id"]
+    await world.q(
+        "INSERT INTO hr_process_tasks(client_id,process_id,ordinal,title_en,owner_role,"
+        "assignee_employee_id,anchor,due_offset_days)"
+        " VALUES (%s,%s,1,'Synthetic task there','employee',%s,'start_date',0)",
+        (other, theirs, there),
+    )
+    # In the other tenant itself, the link is used: the process and the task are theirs.
+    nothing = (other, None, None, None, None, None, 200, None)
+    assert len(await in_other_tenant(world, MINE_SQL, (other, None, 200, None), "staff")) == 1
+    assert len(await in_other_tenant(world, ROWS_SQL, nothing, "staff")) == 1
+    # From this tenant's session with the other tenant's id: nothing.
+    assert await mine(world, "staff", tenant=other) == []
+    assert await rows(world, "staff", tenant=other) == []
+    assert await get(world, "staff", theirs, tenant=other) is None
+    assert await person(world, "staff", there, tenant=other) is None
 
 
 # ---- The person's processes -------------------------------------------------------------------
@@ -543,7 +584,8 @@ async def test_person_processes_report_no_matching_template(world: HrWorld) -> N
         "employee_id": str(staff),
         "anchor_dates": {"start_date": None, "last_day": None, "probation_end": None},
         "processes": [],
-        "no_matching_template": {"onboarding": True, "offboarding": True},
+        # Offboarding counts only for a person with a last day.
+        "no_matching_template": {"onboarding": True, "offboarding": False},
     }
     version = (await person_row(world, staff))["version"]
     await run(
@@ -558,6 +600,12 @@ async def test_person_processes_report_no_matching_template(world: HrWorld) -> N
     profile = await person(world, "owner", staff)
     assert profile is not None
     assert profile["anchor_dates"]["probation_end"] == "2027-03-01"
+    assert profile["no_matching_template"] == {"onboarding": False, "offboarding": False}
+    last_day = (await db_today(world)) + timedelta(days=30)
+    await ok(world, "owner", await leave_body(world, staff, last_day))
+    profile = await person(world, "owner", staff)
+    assert profile is not None
+    assert profile["anchor_dates"]["last_day"] == last_day.isoformat()
     assert profile["no_matching_template"] == {"onboarding": False, "offboarding": True}
     process = await start(world, staff)
     await deactivate(world, template, 1)
@@ -580,6 +628,115 @@ async def test_person_processes_report_no_matching_template(world: HrWorld) -> N
     assert await person(world, "owner", uuid4()) is None
     await make_people_manager(world)
     assert await person(world, "operator", staff) == profile
+
+
+async def test_rehire_without_a_matching_template_is_reported(world: HrWorld) -> None:
+    today = await db_today(world)
+    onboarding = await onboarding_template(world)
+    offboarding = await create(
+        world,
+        kind="offboarding",
+        name="Standard offboarding",
+        steps=[step(title_en="Return the laptop", anchor="last_day")],
+    )
+    hired = await add_person(world)
+
+    async def flags() -> dict[str, bool]:
+        profile = await person(world, "owner", hired)
+        assert profile is not None
+        return profile["no_matching_template"]
+
+    assert await flags() == {"onboarding": False, "offboarding": False}
+    await finish_now(world, hired)
+    await deactivate(world, onboarding, 1)
+    await deactivate(world, offboarding, 1)
+    await ok(world, "owner", await versioned(world, "person.rehire", hired, start_date=str(today)))
+    # The first employment's onboarding and offboarding stay in the history, but do not count for
+    # the new one: no template matches now, and the read says so.
+    profile = await person(world, "owner", hired)
+    assert profile is not None
+    assert sorted(p["kind"] for p in profile["processes"]) == ["offboarding", "onboarding"]
+    assert profile["no_matching_template"] == {"onboarding": True, "offboarding": False}
+    await ok(world, "owner", await leave_body(world, hired, today + timedelta(days=14)))
+    assert await flags() == {"onboarding": True, "offboarding": True}
+
+
+# ---- The person -------------------------------------------------------------------------------
+
+
+async def test_person_sees_own_progress_and_own_tasks_only(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    today = await db_today(world)
+    await onboarding_template(world)
+    plan = await create(
+        world, kind="custom", name="Performance plan", steps=[step(title_en="Review the plan")]
+    )
+    onboarding = await start(world, staff)
+    performance = await start(world, staff, "custom", plan)
+    await set_task(
+        world,
+        onboarding,
+        1,
+        note="Synthetic private note",
+        status="done",
+        completed_by=world.users["owner"],
+    )
+    await set_task(world, onboarding, 2, due_on=today - timedelta(days=1))
+    await set_task(world, onboarding, 3, due_on=today + timedelta(days=3))
+
+    # The list: their onboarding, not the custom process about them; dates from their own tasks.
+    [row] = await rows(world, "staff")
+    assert row["process_id"] == onboarding
+    assert (row["tasks_total"], row["tasks_done"]) == (3, 1)
+    assert (row["next_due_on"], row["overdue"]) == (today + timedelta(days=3), False)
+    assert await ids(world, "staff", overdue=True) == []
+    assert await ids(world, "owner", overdue=True) == [onboarding]
+
+    seen = await get(world, "staff", onboarding)
+    assert seen is not None
+    assert seen["view"] == "self"
+    assert "events" not in seen
+    assert seen["process"] == {
+        "process_id": str(onboarding),
+        "kind": "onboarding",
+        "name": "Standard onboarding",
+        "status": "active",
+        "employee_name": "Synthetic Staff",
+        "started_at": seen["process"]["started_at"],
+        "closed_at": None,
+        "required_total": 3,
+        "required_done": 1,
+        "open_tasks": 2,
+    }
+    [task] = seen["tasks"]
+    assert (task["title_en"], task["mine"]) == ("Submit bank details", True)
+    assert not {"completed_by", "approved_by", "assignee_employee_id"} & set(task)
+    assert "Synthetic private note" not in str(seen)
+
+    profile = await person(world, "staff", staff)
+    assert profile is not None
+    assert set(profile) == {"view", "employee_id", "anchor_dates", "processes"}
+    assert profile["view"] == "self"
+    assert profile["anchor_dates"] == {"start_date": None, "last_day": None, "probation_end": None}
+    [summary] = profile["processes"]
+    assert summary["process_id"] == str(onboarding)
+    assert summary["next_task"] == {
+        "title_en": "Submit bank details",
+        "title_ms": None,
+        "due_on": (today + timedelta(days=3)).isoformat(),
+    }
+
+    # A custom process about the person stays hidden from them ...
+    assert await get(world, "staff", performance) is None
+    assert await ids(world, "staff", kind="custom") == []
+    # ... until they own one of its tasks, and then they see only that task.
+    await world.q(
+        "UPDATE hr_process_tasks SET assignee_employee_id=%s WHERE client_id=%s AND process_id=%s",
+        (staff, world.tenant, performance),
+    )
+    as_assignee = await get(world, "staff", performance)
+    assert as_assignee is not None and as_assignee["view"] == "assignee"
+    assert await ids(world, "staff") == [onboarding]
 
 
 async def test_functions_are_pinned_definers_and_only_the_public_ones_are_granted(

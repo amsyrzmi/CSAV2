@@ -96,8 +96,11 @@ Reserved ranges (client growth program, 2026-10-27):
   `hr_process_start_apply`, `hr_process_cancel_apply` and `hr_probation_set`.
   0633 adds the reads `hr_process_rows` (filters, keyset paging newest first), `hr_process_get`,
   `hr_task_rows_mine` (own tasks, plus the HR pool for the HR team) and `hr_person_processes` (anchor
-  dates and "no matching template" per kind); the HR team sees everything, a manager the processes
-  of direct reports without notes, actors or events, an assignee only their own tasks.
+  dates and "no matching template" per kind, counted within the current employment); the HR team
+  sees everything, a manager the processes of direct reports without notes, actors or events, the
+  person their own onboarding and offboarding with progress and only their own tasks (not custom
+  processes about them), an assignee only their own tasks. It also adds the indexes
+  `hr_processes_by_start` and `hr_employees_by_manager`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
