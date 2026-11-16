@@ -11,7 +11,9 @@ The input is read only through ``input_args``: the demuxer is forced from the st
 (``-f mov`` for mp4, ``-f matroska`` for webm), so an HLS playlist or an ffconcat list saved as a
 video is parsed as a damaged video, never followed; ``-protocol_whitelist`` allows only ``file``
 for a local path and ``https,tls,tcp`` for a presigned S3 URL; mov's data references stay off.
-Every audio command takes ``-vn`` and ``-threads 1``.
+Every audio command takes ``-vn`` and ``-threads 1``. The thumbnail frame (``extract_frame``)
+takes ``-an`` and ``-threads 1``, decodes one frame, and runs under its own, tighter CPU and
+wall limits.
 
 A presigned URL's query string is a credential, so an https source is read with ``-tls_verify 1``
 against ``_CA_FILE`` (the runtime image's Debian bundle; the static build's own default path does
@@ -58,6 +60,7 @@ from typing import Literal
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from csa.media.images import PictureRefused, check_image
 from csa.speech import MAX_AUDIO_BYTES
 from csa.training import limits
 from csa.training.limits import VideoContainer
@@ -73,6 +76,9 @@ CODEC: RefusalCode = "training_video_codec"
 
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_BITRATE = "32k"
+FRAME_WIDTH = 320
+FRAME_MEDIA_TYPE = "image/jpeg"
+_FRAME_AT_MOST_MS = 1000
 
 # The bootstrap's own exit codes, chosen away from ffmpeg's (0, 1, 69, 255 and negative AVERRORs).
 EXIT_NOT_READY = 125  # the limits could not be set
@@ -331,6 +337,72 @@ async def extract_chunk(
     return await _run("ffmpeg", "extract", args, source, written)
 
 
+def frame_time_ms(duration_ms: int) -> int:
+    """Where the thumbnail frame is taken: 1 s in, or a tenth of a shorter video (never < 0)."""
+    return max(0, min(_FRAME_AT_MOST_MS, duration_ms // 10))
+
+
+async def extract_frame(source: str, container: VideoContainer, at_ms: int) -> bytes:
+    """One frame of the first video stream at ``at_ms``: a JPEG ``FRAME_WIDTH`` pixels wide.
+
+    Arguments as measured in docs/TRAINING_VIDEO_CAPACITY.md ("Decision for Task 17"): the seek
+    before the input, one frame scaled to 320 wide (height kept to the ratio, even), ``mjpeg`` at
+    ``-q:v 5`` to stdout, under ``PROBE_MAX_OUTPUT_BYTES`` and the frame's own CPU and wall limits.
+    Returns bytes that passed ``check_image``. No thumbnail, for the caller, is any of:
+    ``MediaUnavailable("failed")`` for an empty answer, a picture ``check_image`` refuses (wider
+    than 5:1, taller than 1:10) or a killed child; ``MediaUnavailable("timeout")``; or
+    ``MediaRefused`` when ffmpeg itself fails (no frame reached the encoder, for one) or floods
+    stdout. Nothing is tried again here at another time.
+    """
+    if at_ms < 0:
+        raise ValueError("a frame is taken at or after 0")
+    args = [
+        *_COMMON,
+        "-threads",
+        "1",
+        "-ss",
+        f"{at_ms // 1000}.{at_ms % 1000:03d}",
+        *input_args(source, container),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale={FRAME_WIDTH}:-2",
+        "-c:v",
+        "mjpeg",
+        "-q:v",
+        "5",
+        "-threads",
+        "1",
+        "-f",
+        "image2pipe",
+        "pipe:1",
+    ]
+
+    def picture(output: bytes) -> bytes:
+        try:
+            info = check_image(output, None)
+        except PictureRefused:
+            raise MediaUnavailable("failed") from None
+        if info.media_type != FRAME_MEDIA_TYPE:
+            raise MediaUnavailable("failed")
+        return output
+
+    return await _run(
+        "ffmpeg",
+        "frame",
+        args,
+        source,
+        picture,
+        cpu_seconds=limits.FRAME_CHILD_CPU_SECONDS,
+        wall_seconds=limits.FRAME_CHILD_WALL_SECONDS,
+    )
+
+
 # --- output parsing -----------------------------------------------------------------------
 
 
@@ -436,14 +508,14 @@ def _binary(name: Tool) -> str:
     return os.path.abspath(found)
 
 
-def _command(tool: str, args: list[str]) -> list[str]:
+def _command(tool: str, args: list[str], cpu_seconds: int | None = None) -> list[str]:
     return [
         sys.executable,
         "-I",
         "-B",
         "-c",
         _LIMITED_EXEC,
-        str(limits.FFMPEG_CHILD_CPU_SECONDS),
+        str(limits.FFMPEG_CHILD_CPU_SECONDS if cpu_seconds is None else cpu_seconds),
         str(limits.FFMPEG_CHILD_MEMORY_BYTES),
         str(_CHILD_FILE_BYTES),
         str(_CHILD_OPEN_FILES),
@@ -458,12 +530,20 @@ async def _run[Result](
     args: list[str],
     source: str,
     parse: Callable[[bytes], Result],
+    *,
+    cpu_seconds: int | None = None,
+    wall_seconds: int | None = None,
 ) -> Result:
+    """Run one tool as a hardened child; ``None`` limits are the shared ``FFMPEG_CHILD_*`` ones.
+
+    ``parse`` reads stdout: ``ValueError`` and the like refuse the file, a ``MediaUnavailable`` it
+    raises passes through as it is.
+    """
     started = time.monotonic()
     outcome, code, output_bytes = "error", None, 0
     try:
         try:
-            argv = _command(_binary(tool), args)
+            argv = _command(_binary(tool), args, cpu_seconds)
         except MediaUnavailable as missing:
             outcome, code = "missing", missing.code
             raise
@@ -473,9 +553,8 @@ async def _run[Result](
             outcome, code = "start_failed", "failed"
             raise MediaUnavailable("failed") from None
         try:
-            returncode, output = await asyncio.wait_for(
-                _collect(process), limits.FFMPEG_CHILD_WALL_SECONDS
-            )
+            wall = limits.FFMPEG_CHILD_WALL_SECONDS if wall_seconds is None else wall_seconds
+            returncode, output = await asyncio.wait_for(_collect(process), wall)
         except TimeoutError:
             outcome, code = "timeout", "timeout"
             raise MediaUnavailable("timeout") from None
@@ -512,6 +591,9 @@ async def _run[Result](
         except (ValueError, UnicodeDecodeError, ValidationError, OSError):
             outcome, code = "bad_output", UNREADABLE
             raise MediaRefused(UNREADABLE) from None
+        except MediaUnavailable as unavailable:
+            outcome, code = "bad_output", unavailable.code
+            raise
         outcome = "ok"
         return result
     except asyncio.CancelledError:

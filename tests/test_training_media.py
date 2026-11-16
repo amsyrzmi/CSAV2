@@ -34,6 +34,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from csa.media.images import check_image
 from csa.speech import MAX_AUDIO_BYTES
 from csa.training import limits, media
 from csa.training.limits import VideoContainer
@@ -43,6 +44,8 @@ from csa.training.media import (
     Probe,
     check_playable,
     extract_chunk,
+    extract_frame,
+    frame_time_ms,
     input_args,
     max_volume_db,
     probe,
@@ -61,6 +64,8 @@ def test_limit_constants() -> None:
     assert limits.FFMPEG_CHILD_MEMORY_BYTES == 469762048
     assert limits.FFMPEG_CHILD_WALL_SECONDS == 300
     assert limits.PROBE_MAX_OUTPUT_BYTES == 262144
+    assert limits.FRAME_CHILD_CPU_SECONDS == 39
+    assert limits.FRAME_CHILD_WALL_SECONDS == 60
     assert limits.SILENCE_MAX_DB == -50.0
     assert limits.PLAYABLE_VIDEO == {"h264", "vp8", "vp9", "av1", "hevc"}
     assert limits.PLAYABLE_AUDIO == {"aac", "mp3", "opus", "vorbis"}
@@ -355,6 +360,32 @@ def _connections(listener: socket.socket) -> int:
         count += 1
 
 
+def _hostile_sources(
+    tmp_path: Path, marker: _OpenWatch, listener: socket.socket
+) -> tuple[Path, Path, Path]:
+    """An HLS playlist, an ffconcat list and a relative ffconcat list, each saved as a video.
+
+    Each points at ``marker`` (a local file outside the source) and at ``listener`` (the network).
+    """
+    remote = f"http://127.0.0.1:{listener.getsockname()[1]}"
+    hls = tmp_path / "playlist.mp4"
+    hls.write_text(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        f"#EXTINF:10.0,\nfile:{marker.path}\n#EXTINF:10.0,\n{marker.path}\n"
+        f"#EXTINF:10.0,\n{remote}/segment.ts\n#EXT-X-ENDLIST\n"
+    )
+    concat = tmp_path / "list.mp4"
+    concat.write_text(
+        f"ffconcat version 1.0\nfile '{marker.path}'\nfile 'file:{marker.path}'\n"
+        f"file '{remote}/clip.mp4'\n"
+    )
+    # A relative entry next to the list passes the concat demuxer's own safe=1 check, so only
+    # the forced demuxer keeps this one from being followed.
+    relative = tmp_path / "relative.mp4"
+    relative.write_text(f"ffconcat version 1.0\nfile '{marker.path.name}'\n")
+    return hls, concat, relative
+
+
 @requires_ffmpeg
 async def test_playlists_and_concat_lists_never_read_outside_the_source(tmp_path: Path) -> None:
     # The harness itself notices a read and a connection.
@@ -367,23 +398,7 @@ async def test_playlists_and_concat_lists_never_read_outside_the_source(tmp_path
 
     marker = _OpenWatch(tmp_path / "marker.ts")
     with socket.create_server(("127.0.0.1", 0), backlog=64) as listener:
-        port = listener.getsockname()[1]
-        remote = f"http://127.0.0.1:{port}"
-        hls = tmp_path / "playlist.mp4"
-        hls.write_text(
-            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"
-            f"#EXTINF:10.0,\nfile:{marker.path}\n#EXTINF:10.0,\n{marker.path}\n"
-            f"#EXTINF:10.0,\n{remote}/segment.ts\n#EXT-X-ENDLIST\n"
-        )
-        concat = tmp_path / "list.mp4"
-        concat.write_text(
-            f"ffconcat version 1.0\nfile '{marker.path}'\nfile 'file:{marker.path}'\n"
-            f"file '{remote}/clip.mp4'\n"
-        )
-        # A relative entry next to the list passes the concat demuxer's own safe=1 check, so
-        # only the forced demuxer keeps this one from being followed.
-        relative = tmp_path / "relative.mp4"
-        relative.write_text(f"ffconcat version 1.0\nfile '{marker.path.name}'\n")
+        hls, concat, relative = _hostile_sources(tmp_path, marker, listener)
         out = tmp_path / "out.ogg"
         for source in (hls, concat, relative):
             for container in ("mp4", "webm"):
@@ -733,6 +748,164 @@ async def test_extract_chunk_is_16k_mono_opus_under_the_request_cap(tmp_path: Pa
     assert abs(float(_ffprobe_audio(tail)["duration"]) - 10) <= 0.5
 
 
+# --- the thumbnail frame --------------------------------------------------------------------
+
+
+def test_frame_time_is_one_second_or_a_tenth() -> None:
+    assert frame_time_ms(3_600_000) == 1000
+    assert frame_time_ms(10_000) == 1000
+    assert frame_time_ms(9_990) == 999
+    assert frame_time_ms(3_000) == 300
+    assert frame_time_ms(9) == 0
+    # A duration of 0 (or one never measured) still gives a time ffmpeg accepts: the first frame.
+    assert frame_time_ms(0) == 0
+    assert frame_time_ms(-40) == 0
+
+
+@requires_ffmpeg
+async def test_extract_frame_is_a_320px_jpeg_under_the_output_cap(tmp_path: Path) -> None:
+    cases: list[tuple[str, VideoContainer, int]] = [("a.mp4", "mp4", 3), ("b.webm", "webm", 12)]
+    for name, container, seconds in cases:
+        video = make_video(tmp_path / name, seconds=seconds, container=container)
+        with capture_logs() as logs:
+            data = await extract_frame(str(video), container, frame_time_ms(seconds * 1000))
+        assert 0 < len(data) <= limits.PROBE_MAX_OUTPUT_BYTES
+        assert data[:3] == b"\xff\xd8\xff"
+        info = check_image(data, None)
+        # The synthetic videos are 64x48 (4:3): 320 wide and the height kept to the ratio.
+        assert (info.media_type, info.width, info.height) == ("image/jpeg", 320, 240)
+        assert [(entry["action"], entry["outcome"]) for entry in logs] == [("frame", "ok")]
+
+    # Past the end no frame reaches the encoder: ffmpeg refuses, so the video gets no thumbnail.
+    with pytest.raises(MediaRefused) as caught:
+        await extract_frame(str(tmp_path / "a.mp4"), "mp4", 60_000)
+    assert caught.value.code == "training_video_unreadable"
+    with pytest.raises(ValueError):
+        await extract_frame(str(tmp_path / "a.mp4"), "mp4", -1)
+
+
+async def test_extract_frame_runs_under_the_child_limits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CSA_SYNTHETIC_SECRET", "synthetic-value-not-a-real-key")
+    report = tmp_path / "report"
+    readlink = _tool("readlink")
+    cat = _tool("cat")
+    # Prints nothing: an empty answer is no picture.
+    _fake_tool(
+        monkeypatch,
+        tmp_path,
+        f"{cat} /proc/self/limits > {report}.limits\n"
+        f"{cat} /proc/$$/environ > {report}.environ\n"
+        f"{cat} /proc/$$/stat > {report}.stat\n"
+        f"{readlink} /proc/$$/fd/0 > {report}.stdin\n"
+        f"{readlink} /proc/$$/fd/2 > {report}.stderr\n"
+        f"printf '%s\\n' \"$@\" > {report}.args\n",
+    )
+    source = _junk(tmp_path / "a.mp4")
+    with capture_logs() as logs:
+        with pytest.raises(MediaUnavailable) as caught:
+            await extract_frame(str(source), "mp4", 300)
+    assert caught.value.code == "failed"
+    assert [(entry["action"], entry["outcome"], entry["code"]) for entry in logs] == [
+        ("frame", "bad_output", "failed")
+    ]
+
+    seen: dict[str, tuple[str, str]] = {}
+    for line in Path(f"{report}.limits").read_text().splitlines()[1:]:
+        found = re.match(r"(Max [a-z ]+?)\s{2,}(\S+)\s+(\S+)", line)
+        assert found is not None
+        seen[found.group(1)] = (found.group(2), found.group(3))
+    # The frame's own CPU limit (4 x its worst measured figure), under the shared one.
+    cpu = limits.FRAME_CHILD_CPU_SECONDS
+    assert cpu < limits.FFMPEG_CHILD_CPU_SECONDS
+    assert seen["Max cpu time"] == (str(cpu), str(cpu + 1))
+    memory = str(limits.FFMPEG_CHILD_MEMORY_BYTES)
+    assert seen["Max address space"] == (memory, memory)
+    assert seen["Max file size"] == (str(MAX_AUDIO_BYTES), str(MAX_AUDIO_BYTES))
+    assert seen["Max core file size"] == ("0", "0")
+    assert int(seen["Max open files"][1]) <= 64
+    assert Path(f"{report}.environ").read_bytes() == b""
+    stat = Path(f"{report}.stat").read_text()
+    fields = stat[stat.rindex(")") + 2 :].split()
+    assert int(fields[16]) == min(os.nice(0) + 10, 19)
+    assert Path(f"{report}.stdin").read_text().strip() == "/dev/null"
+    assert Path(f"{report}.stderr").read_text().strip() == "/dev/null"
+    # The measured arguments (docs/TRAINING_VIDEO_CAPACITY.md, "Decision for Task 17"): the
+    # seek before the input, the forced demuxer and whitelist, one frame, JPEG to stdout.
+    assert Path(f"{report}.args").read_text().splitlines() == [
+        *media._COMMON,
+        "-threads",
+        "1",
+        "-ss",
+        "0.300",
+        *input_args(str(source), "mp4"),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=320:-2",
+        "-c:v",
+        "mjpeg",
+        "-q:v",
+        "5",
+        "-threads",
+        "1",
+        "-f",
+        "image2pipe",
+        "pipe:1",
+    ]
+
+    # The frame's own wall clock.
+    assert limits.FRAME_CHILD_WALL_SECONDS < limits.FFMPEG_CHILD_WALL_SECONDS
+    monkeypatch.setattr(limits, "FRAME_CHILD_WALL_SECONDS", 1)
+    _fake_tool(monkeypatch, tmp_path, f"exec {_tool('sleep')} 60")
+    started = time.monotonic()
+    with pytest.raises(MediaUnavailable) as caught:
+        await extract_frame(str(source), "mp4", 1000)
+    assert caught.value.code == "timeout"
+    assert time.monotonic() - started < 4.0
+
+
+@pytest.mark.parametrize(
+    ("body", "outcome"),
+    [
+        # The OOM killer's SIGKILL: infrastructure, as for every other step.
+        pytest.param("kill -KILL $$", "killed", id="killed"),
+        pytest.param("printf 'not a picture'", "bad_output", id="not-a-picture"),
+        # A JPEG start with nothing behind it.
+        pytest.param("printf '\\377\\330\\377'", "bad_output", id="truncated-jpeg"),
+    ],
+)
+async def test_a_frame_that_is_no_picture_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str, outcome: str
+) -> None:
+    monkeypatch.setattr(limits, "FRAME_CHILD_WALL_SECONDS", 10)
+    _fake_tool(monkeypatch, tmp_path, body)
+    with capture_logs() as logs:
+        with pytest.raises(MediaUnavailable) as caught:
+            await extract_frame(str(_junk(tmp_path / "a.mp4")), "mp4", 1000)
+    assert caught.value.code == "failed"
+    assert [entry["outcome"] for entry in logs] == [outcome]
+
+
+@requires_ffmpeg
+async def test_playlists_never_reach_the_network_for_a_frame(tmp_path: Path) -> None:
+    marker = _OpenWatch(tmp_path / "marker.ts")
+    with socket.create_server(("127.0.0.1", 0), backlog=64) as listener:
+        for source in _hostile_sources(tmp_path, marker, listener):
+            for container in ("mp4", "webm"):
+                with pytest.raises(MediaRefused) as caught:
+                    await extract_frame(str(source), container, 1000)
+                assert caught.value.code == "training_video_unreadable"
+        assert _connections(listener) == 0
+    assert not marker.was_opened()
+
+
 def _ffprobe_audio(path: Path) -> dict[str, Any]:
     output = subprocess.run(
         [
@@ -1013,9 +1186,9 @@ async def test_webm_without_a_duration_is_measured_by_demuxing(
     commands: list[list[str]] = []
     original_command = media._command
 
-    def recording(tool: str, args: list[str]) -> list[str]:
+    def recording(tool: str, args: list[str], cpu_seconds: int | None = None) -> list[str]:
         commands.append(args)
-        return original_command(tool, args)
+        return original_command(tool, args, cpu_seconds)
 
     monkeypatch.setattr(media, "_command", recording)
     with capture_logs() as logs:
