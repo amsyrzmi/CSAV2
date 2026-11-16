@@ -94,6 +94,10 @@ Reserved ranges (client growth program, 2026-10-27):
   manager tasks follow the manager, the leaver's tasks closed when the leaver finishes; it runs in the
   writer's transaction), `hr_process_settle` (the completion rule), and the HR entry points
   `hr_process_start_apply`, `hr_process_cancel_apply` and `hr_probation_set`.
+  0633 adds the reads `hr_process_rows` (filters, keyset paging newest first), `hr_process_get`,
+  `hr_task_rows_mine` (own tasks, plus the HR pool for the HR team) and `hr_person_processes` (anchor
+  dates and "no matching template" per kind); the HR team sees everything, a manager the processes
+  of direct reports without notes, actors or events, an assignee only their own tasks.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
