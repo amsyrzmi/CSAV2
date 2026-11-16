@@ -2,18 +2,15 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { MessageSquare, X } from "lucide-react";
+import { X } from "lucide-react";
 import { panelText, PANEL } from "@/lib/assistant-copy";
 import { useAssistantConversation, type AssistantConversation } from "@/lib/assistant-conversation";
 import { dockHidden, tabLabel } from "@/lib/assistant-view";
 import AgentAvatar from "./fs/AgentAvatar";
 import { AssistantComposer } from "./assistant/AssistantComposer";
 import { AssistantTurns } from "./assistant/AssistantTurns";
-import { headerButton } from "./assistant/looks";
-import { action } from "./ui";
-
-/** The corner the launcher and the panel share: 20 px in, or clear of a notch or home bar. */
-const corner = "bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-[max(1.25rem,env(safe-area-inset-right))]";
+import { AssistantLauncher } from "./assistant/AssistantLauncher";
+import { corner, headerButton } from "./assistant/looks";
 
 /**
  * The floating view of the shared conversation; it renders nothing where none is offered, while
@@ -66,18 +63,13 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
 
   if (!open)
     return (
-      <button
-        ref={openButton}
-        type="button"
-        data-testid="assistant-open"
-        aria-expanded={false}
-        aria-controls={panelId}
-        onClick={() => setOpen(true)}
-        className={`${action} fixed ${corner} z-40 rounded-full shadow-[var(--fs-shadow-popover)]`}
-      >
-        <MessageSquare size={18} aria-hidden />
-        {text.dock_title}
-      </button>
+      <AssistantLauncher
+        label={text.dock_title}
+        busy={busy}
+        panelId={panelId}
+        onOpen={() => setOpen(true)}
+        buttonRef={openButton}
+      />
     );
 
   return (

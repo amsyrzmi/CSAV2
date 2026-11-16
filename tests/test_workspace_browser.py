@@ -653,7 +653,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             await page.goto(f"{base}/inbox")
         await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
         await page.goto(f"{base}/inbox?client_id={TENANT}")
-        async with page.expect_request(re.compile(r"/console/v1/workspace/conversations\?")):
+        # The response, not the request: the stub records the call before it answers.
+        async with page.expect_response(re.compile(r"/console/v1/workspace/conversations\?")):
             await page.get_by_test_id("assistant-open").click(timeout=WAIT)
         listed = [c for c in calls if c["path"] == "workspace/conversations"][-1]
         assert (listed["method"], listed["query"]) == ("GET", f"client_id={TENANT}")
@@ -1278,13 +1279,23 @@ class ShellApi(PlanApi):
 
 @contextlib.asynccontextmanager
 async def shell_page(
-    stack: tuple[str, Upstream, Any], api: ShellApi, url: str
+    stack: tuple[str, Upstream, Any],
+    api: ShellApi,
+    url: str,
+    *,
+    init_script: str | None = None,
+    **context_options: Any,
 ) -> AsyncIterator[Page]:
-    """A page at `url` for whoever `upstream.me` is, every console call answered by `api`."""
+    """A page at `url` for whoever `upstream.me` is, every console call answered by `api`.
+
+    `init_script` runs before the page's own scripts; `context_options` go to the browser context.
+    """
     base, upstream, browser = stack
-    context = await browser.new_context()
+    context = await browser.new_context(**context_options)
     context.set_default_navigation_timeout(WAIT)
     await context.add_cookies([{"name": "csa_session", "value": "synthetic-session", "url": base}])
+    if init_script:
+        await context.add_init_script(init_script)
     page = await context.new_page()
     diagnostics: list[str] = []
     page.on("crash", lambda: diagnostics.append("Chromium page crashed"))
@@ -1413,3 +1424,137 @@ async def test_switching_company_ends_the_conversation_and_withdraws_its_card(
         assert not [
             c for c in api.calls if c["path"] == api.turns_path and OTHER_TENANT in c["query"]
         ]
+
+
+# --- The living launcher: the closed dock button is the assistant's avatar --------------------
+
+# Records every sign of motion on the launcher: the wake state or class on its avatar, and the
+# hop class on the button, as they appear (the hop can be gone by the time a poll looks).
+LAUNCHER_WATCH = """
+window.__motion = { wake: false, hop: false };
+const seen = (node) => {
+  if (!(node instanceof Element)) return;
+  const launcher = node.closest('[data-testid="assistant-open"]');
+  if (!launcher) return;
+  if (launcher.classList.contains('fs-dock-hop')) window.__motion.hop = true;
+  if (launcher.querySelector('[data-state="wake"], .fs-px-wake')) window.__motion.wake = true;
+};
+new MutationObserver((records) => {
+  for (const record of records) {
+    seen(record.target);
+    for (const node of record.addedNodes) seen(node);
+  }
+}).observe(document, { subtree: true, childList: true, attributes: true });
+"""
+PAUSE_MOTION = "window.localStorage.setItem('fs-motion-paused', '1');"
+SLOW_ASK = "find who runs training"
+
+
+class SlowApi(ShellApi):
+    """ShellApi whose planner answer for `SLOW_ASK` waits until the test lets it go."""
+
+    def __init__(self, upstream: Upstream) -> None:
+        super().__init__(upstream, {}, {})
+        self.release = asyncio.Event()
+
+    async def route(self, request_route: Any) -> None:
+        request = request_route.request
+        if request.method == "POST" and request.url.split("?")[0].endswith("/turns"):
+            if (request.post_data_json or {}).get("body") == SLOW_ASK:
+                await self.release.wait()
+        await super().route(request_route)
+
+
+async def launcher_motion(page: Page) -> dict[str, bool]:
+    # Two animation frames: React has committed whatever the last event asked for.
+    return await page.evaluate(
+        "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame("
+        "() => done(window.__motion))))"
+    )
+
+
+async def test_the_closed_dock_button_is_the_assistant_avatar_and_wakes_on_hover(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = ShellApi(upstream, {}, {})
+    async with shell_page(stack, api, "/portal/inbox") as page:
+        launcher = page.get_by_test_id("assistant-open")
+        avatar = launcher.locator("[data-agent='assistant']")
+        await expect(avatar.locator("svg")).to_have_count(1, timeout=WAIT)
+        # The button keeps its name, state and link to the panel; the avatar adds no name.
+        await expect(launcher).to_have_accessible_name("Assistant")
+        await expect(launcher).to_have_attribute("aria-expanded", "false")
+        await expect(launcher).to_have_attribute("aria-controls", re.compile(r".+"))
+        await expect(avatar).to_have_attribute("data-state", "idle")
+        # Hover wakes it, and it settles back to idle after 1.5 s: waits are on the state.
+        await launcher.hover()
+        await expect(avatar).to_have_attribute("data-state", "wake")
+        await expect(avatar.locator("svg")).to_have_class(re.compile(r"fs-px-wake"))
+        await expect(avatar).to_have_attribute("data-state", "idle", timeout=5_000)
+        # Keyboard focus wakes it too.
+        await page.mouse.move(0, 0)
+        await launcher.focus()
+        await expect(avatar).to_have_attribute("data-state", "wake")
+        await expect(avatar).to_have_attribute("data-state", "idle", timeout=5_000)
+
+
+async def test_a_click_on_the_launcher_hops_and_opens_the_panel(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = ShellApi(upstream, {}, {})
+    async with shell_page(stack, api, "/portal/inbox", init_script=LAUNCHER_WATCH) as page:
+        launcher = page.get_by_test_id("assistant-open")
+        await expect(launcher).to_be_visible(timeout=WAIT)
+        await launcher.click()
+        await expect(page.get_by_test_id("assistant-panel")).to_be_visible(timeout=WAIT)
+        assert (await launcher_motion(page))["hop"], "the click must have applied the hop class"
+        # Closing returns focus to the launcher, as before.
+        await page.get_by_role("button", name="Close assistant").click()
+        await expect(launcher).to_be_focused(timeout=WAIT)
+
+
+@pytest.mark.parametrize("how", ["reduced_motion", "paused"])
+async def test_the_launcher_never_wakes_or_hops_when_motion_is_off(
+    stack: tuple[str, Upstream, Any], how: str
+) -> None:
+    _, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = ShellApi(upstream, {}, {})
+    reduced = how == "reduced_motion"
+    options: dict[str, Any] = {"reduced_motion": "reduce"} if reduced else {}
+    init_script = LAUNCHER_WATCH + ("" if reduced else PAUSE_MOTION)
+    async with shell_page(stack, api, "/portal/inbox", init_script=init_script, **options) as page:
+        launcher = page.get_by_test_id("assistant-open")
+        avatar = launcher.locator("[data-agent='assistant']")
+        await expect(avatar.locator("svg")).to_have_count(1, timeout=WAIT)
+        await launcher.hover()
+        await launcher.focus()
+        assert await launcher_motion(page) == {"wake": False, "hop": False}
+        # The avatar shows its rest frame: no loop class and a single frame.
+        await expect(avatar.locator("svg")).not_to_have_class(re.compile(r"fs-px-anim"))
+        await expect(avatar.locator(".fs-px-frame")).to_have_count(1)
+        await launcher.click()
+        await expect(page.get_by_test_id("assistant-panel")).to_be_visible(timeout=WAIT)
+        assert await launcher_motion(page) == {"wake": False, "hop": False}
+
+
+async def test_the_launcher_avatar_works_while_an_answer_is_pending(
+    stack: tuple[str, Upstream, Any],
+) -> None:
+    _, upstream, _ = stack
+    upstream.me, upstream.packages = make_me("tenant_admin"), PACKAGES
+    api = SlowApi(upstream)
+    async with shell_page(stack, api, "/portal/inbox") as page:
+        await page.get_by_test_id("assistant-open").click(timeout=WAIT)
+        await say(page, SLOW_ASK)
+        await page.get_by_role("button", name="Close assistant").click()
+        launcher = page.get_by_test_id("assistant-open")
+        avatar = launcher.locator("[data-agent='assistant']")
+        await expect(avatar).to_have_attribute("data-state", "working", timeout=WAIT)
+        await expect(avatar.locator("svg")).to_have_class(re.compile(r"fs-px-work"))
+        api.release.set()
+        await expect(avatar).not_to_have_attribute("data-state", "working", timeout=WAIT)
