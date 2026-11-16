@@ -326,11 +326,13 @@ height under 64, and one wider than 10:1 or taller than 1:10 breaks the 10-to-1 
 - **Format:** JPEG (`mjpeg`, present in the pinned 7.1.1), stored as `image/jpeg`. PNG is not
   needed.
 - **Arguments:** `*_COMMON, "-threads", "1", "-ss", <t>, *input_args(source, container), "-map",
-  "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1", "-vf", "scale=320:-2", "-c:v", "mjpeg", "-q:v",
+  "0:V:0", "-an", "-sn", "-dn", "-frames:v", "1", "-vf", "scale=320:-2", "-c:v", "mjpeg", "-q:v",
   "5", "-threads", "1", "-f", "image2pipe", "pipe:1"`, with `t = min(1 s, 10% of the probed
   duration)`, through the same `_run`. Output read from stdout under the existing
   `PROBE_MAX_OUTPUT_BYTES`; the parse step runs `check_image(output, "thumb.jpg")`, and an empty
   output or a refusal means no thumbnail (no second attempt at another `t`).
+- **Stream:** `-map 0:V:0`, not `0:v:0`: capital `V` skips attached pictures, so an mp4 whose
+  cover art (`attached_pic`) is stream 0 still gives a frame of the video track `probe` vetted.
 - **Caps:** not raised. `RLIMIT_AS` stays 448 MiB, 1.48x the worst `VmPeak` (302.8 MiB): less
   than the 2x margin rule above (which would give 640 MiB); a stream that needs more fails
   and gets no thumbnail. By the 4x rule on the frame's own worst figures, per-command limits would

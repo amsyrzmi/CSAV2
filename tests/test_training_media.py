@@ -54,7 +54,7 @@ from structlog.testing import capture_logs
 
 from tests.conftest import REPO_ROOT, requires_ffmpeg
 from tests.test_training_pdf_guard import _proc_stat, _running, _running_in_group, _settle
-from tests.training_media import make_video
+from tests.training_media import cover_art_first, make_video
 
 LOG_KEYS = {"event", "log_level", "tool", "action", "outcome", "code", "elapsed_ms", "output_bytes"}
 
@@ -754,8 +754,10 @@ async def test_extract_chunk_is_16k_mono_opus_under_the_request_cap(tmp_path: Pa
 def test_frame_time_is_one_second_or_a_tenth() -> None:
     assert frame_time_ms(3_600_000) == 1000
     assert frame_time_ms(10_000) == 1000
+    assert frame_time_ms(9_999) == 999
     assert frame_time_ms(9_990) == 999
     assert frame_time_ms(3_000) == 300
+    assert frame_time_ms(10) == 1
     assert frame_time_ms(9) == 0
     # A duration of 0 (or one never measured) still gives a time ffmpeg accepts: the first frame.
     assert frame_time_ms(0) == 0
@@ -841,7 +843,7 @@ async def test_extract_frame_runs_under_the_child_limits(
         "0.300",
         *input_args(str(source), "mp4"),
         "-map",
-        "0:v:0",
+        "0:V:0",
         "-an",
         "-sn",
         "-dn",
@@ -869,6 +871,27 @@ async def test_extract_frame_runs_under_the_child_limits(
         await extract_frame(str(source), "mp4", 1000)
     assert caught.value.code == "timeout"
     assert time.monotonic() - started < 4.0
+
+
+@requires_ffmpeg
+async def test_extract_frame_takes_the_video_track_never_the_cover_art(tmp_path: Path) -> None:
+    # An mp4 whose cover art (a 200x200 JPEG, attached_pic) is stream 0, before the 64x48 video:
+    # the thumbnail is the video's frame (320x240), never the cover (it would scale to 320x320).
+    video = cover_art_first(make_video(tmp_path / "plain.mp4", seconds=3), tmp_path / "a.mp4")
+    for at_ms in (0, frame_time_ms(3000)):
+        info = check_image(await extract_frame(str(video), "mp4", at_ms), None)
+        assert (info.media_type, info.width, info.height) == ("image/jpeg", 320, 240)
+
+
+@requires_ffmpeg
+async def test_a_frame_wider_than_5_to_1_is_unavailable(tmp_path: Path) -> None:
+    # check_image refuses a picture wider than 5:1; the frame step reports it as no thumbnail.
+    video = make_video(tmp_path / "wide.mp4", seconds=2, size=(384, 48))
+    with capture_logs() as logs:
+        with pytest.raises(MediaUnavailable) as caught:
+            await extract_frame(str(video), "mp4", frame_time_ms(2000))
+    assert caught.value.code == "failed"
+    assert [(entry["action"], entry["outcome"]) for entry in logs] == [("frame", "bad_output")]
 
 
 @pytest.mark.parametrize(

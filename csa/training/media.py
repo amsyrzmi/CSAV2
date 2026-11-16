@@ -35,9 +35,13 @@ a codec outside the library's sets is ``MediaRefused("training_video_codec")``.
 ``failed`` (the child could not start, a remote source failed, which may be the network, or the
 child was killed by SIGKILL or another outside signal: the OOM killer's choice is not the file's
 fault). The caller decides what a refusal after a successful probe means (``video_transcribe``
-retries it). Logs carry the tool, the action,
-the outcome, the code, byte counts and elapsed time only: never stderr (it is never read), a
-path, a URL or a file name.
+retries it). The frame step is the exception to "unavailable is infrastructure": ``extract_frame``
+maps empty output and a picture that is bad or that ``check_image`` refuses (a video wider than
+5:1, for one) to ``MediaUnavailable("failed")``, so its caller treats BOTH ``MediaRefused`` and
+``MediaUnavailable`` from the frame step as "no thumbnail" and must not copy the transcribe
+steps' "unavailable means try again" handling. Logs carry the tool, the action, the outcome, the
+code, byte counts and elapsed time only: never stderr (it is never read), a path, a URL or a file
+name.
 """
 
 from __future__ import annotations
@@ -343,16 +347,30 @@ def frame_time_ms(duration_ms: int) -> int:
 
 
 async def extract_frame(source: str, container: VideoContainer, at_ms: int) -> bytes:
-    """One frame of the first video stream at ``at_ms``: a JPEG ``FRAME_WIDTH`` pixels wide.
+    """One frame of the first real video stream at ``at_ms``: a JPEG ``FRAME_WIDTH`` pixels wide.
 
     Arguments as measured in docs/TRAINING_VIDEO_CAPACITY.md ("Decision for Task 17"): the seek
-    before the input, one frame scaled to 320 wide (height kept to the ratio, even), ``mjpeg`` at
-    ``-q:v 5`` to stdout, under ``PROBE_MAX_OUTPUT_BYTES`` and the frame's own CPU and wall limits.
-    Returns bytes that passed ``check_image``. No thumbnail, for the caller, is any of:
-    ``MediaUnavailable("failed")`` for an empty answer, a picture ``check_image`` refuses (wider
-    than 5:1, taller than 1:10) or a killed child; ``MediaUnavailable("timeout")``; or
-    ``MediaRefused`` when ffmpeg itself fails (no frame reached the encoder, for one) or floods
-    stdout. Nothing is tried again here at another time.
+    before the input, ``-map 0:V:0`` (the first video stream that is not an attached picture: the
+    track ``probe`` vetted, never an mp4's cover art), one frame scaled to 320 wide (height kept to
+    the ratio, even), ``mjpeg`` at ``-q:v 5`` to stdout, under ``PROBE_MAX_OUTPUT_BYTES`` and the
+    frame's own CPU and wall limits. Returns bytes that passed ``check_image``; nothing is tried
+    again here at another time.
+
+    For the caller, ANY ``MediaRefused`` or ``MediaUnavailable`` means "no thumbnail", never "try
+    again":
+
+    - ``MediaUnavailable("failed")``: an empty answer, a picture that is not a JPEG or that
+      ``check_image`` refuses (wider than 5:1, taller than 1:10), a child killed by SIGKILL or an
+      outside signal, a child that could not start, a missing CA bundle, or a non-zero exit on an
+      https source (stderr is never read, so the network and the file look the same);
+    - ``MediaUnavailable("timeout")``: the frame's own wall clock;
+    - ``MediaUnavailable("ffmpeg_missing")``: no ffmpeg on PATH;
+    - ``MediaRefused("training_video_unreadable")``: a non-zero exit on a local source (no frame
+      reached the encoder, for one: ``at_ms`` past the end of the video track), the frame's CPU
+      limit (SIGXCPU), SIGXFSZ or a crash signal, or a flooded stdout.
+
+    ``ValueError``, before any child: a negative ``at_ms``, a source that is neither an absolute
+    path nor an https URL, or an unknown container.
     """
     if at_ms < 0:
         raise ValueError("a frame is taken at or after 0")
@@ -364,7 +382,7 @@ async def extract_frame(source: str, container: VideoContainer, at_ms: int) -> b
         f"{at_ms // 1000}.{at_ms % 1000:03d}",
         *input_args(source, container),
         "-map",
-        "0:v:0",
+        "0:V:0",  # capital V: never an attached picture (cover art), the track probe vetted
         "-an",
         "-sn",
         "-dn",
