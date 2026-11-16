@@ -35,9 +35,13 @@ from pydantic import BaseModel, ConfigDict
 logger = structlog.get_logger(__name__)
 
 MAX_DELIVERY_ATTEMPTS = 5
-# An image row gets two attempts, then is skipped with one of these codes (never dead): the text
-# reply behind it must not wait on a picture.
+# After the takeover check an image row gets two attempts, then is skipped with one of these codes
+# (never dead): the text reply behind it must not wait on a picture. Failures before that check
+# (route, token, missing message, transient database errors) follow the text policy and can end
+# dead. A rate limit asking for a longer wait than MAX_PICTURE_RETRY_AFTER_SECONDS skips the image
+# at once instead of holding the text behind it.
 MAX_PICTURE_ATTEMPTS = 2
+MAX_PICTURE_RETRY_AFTER_SECONDS = 60
 PICTURE_CODES = ("picture_unavailable", "picture_rejected", "picture_failed")
 DELIVERY_REAPER_INTERVAL_SECONDS = 60
 DELIVERY_STALE_SECONDS = 180
@@ -408,11 +412,17 @@ class DeliveryWorker:
 
         A skipped row writes status ``skipped`` and then the same dead-letter row and ``dlq``
         notice as a dead row. ``picture`` applies the image-row policy to a retryable failure:
-        another attempt while fewer than ``MAX_PICTURE_ATTEMPTS`` were made, else skipped as
-        ``picture_failed`` (an image row is never dead).
+        another attempt while fewer than ``MAX_PICTURE_ATTEMPTS`` were made and any rate-limit wait
+        is at most ``MAX_PICTURE_RETRY_AFTER_SECONDS``, else skipped as ``picture_failed``. Such a
+        row is never dead; an image row that fails before the takeover check is not ``picture``
+        and follows the text policy, so it can end dead.
         """
         if picture and not skip:
-            if terminal or delivery.attempts >= MAX_PICTURE_ATTEMPTS:
+            long_wait = (
+                retry_after_seconds is not None
+                and retry_after_seconds > MAX_PICTURE_RETRY_AFTER_SECONDS
+            )
+            if terminal or long_wait or delivery.attempts >= MAX_PICTURE_ATTEMPTS:
                 skip, error_code = True, "picture_failed"
         dead = not skip and (terminal or delivery.attempts >= MAX_DELIVERY_ATTEMPTS)
         ended = dead or skip

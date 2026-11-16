@@ -557,6 +557,28 @@ async def test_rate_limit_retry_after_is_honoured_within_two_attempts(
 
 
 @requires_docker
+async def test_long_rate_limit_skips_the_picture_at_once_and_the_text_follows(
+    pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with harness(pg_container, app_dsn, monkeypatch) as h:
+        shop = _seed_shop(h.owner_dsn)
+        await h.put_picture(shop, "payment_qr")
+        await h.write(shop, "image", "text")
+        h.handler[0] = lambda request: (
+            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 120}})
+            if _method(request) == "sendPhoto"
+            else _response(request)
+        )
+        assert await h.send() is True
+        _assert_skipped(h, shop, "picture_failed", attempts=1, status_code=429)
+        assert h.attempts(shop) == [(1, 429, "picture_failed")]
+        # The text is claimed right after, with no wait.
+        assert await h.send() is True
+        assert [_method(r) for r in h.requests] == ["sendPhoto", "sendMessage"]
+        assert h.text_row(shop)["status"] == "delivered"
+
+
+@requires_docker
 async def test_stale_image_lease_after_two_attempts_is_skipped(
     pg_container: object, app_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
