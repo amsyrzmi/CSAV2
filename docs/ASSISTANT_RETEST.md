@@ -281,7 +281,30 @@ People & HR only.
 | Open Overview as a View only member | Any company | The small home of links (`WorkspaceHome`); no assistant page and no dock. The same small home shows when the assistant is switched off for the company | manual |
 | Switch company on Overview | Platform admin, two companies each with a staff conversation | Overview shows "Loading" for a moment and then that company's own conversation; the previous company's turns, card and unsent text are gone, and an open card of the first company is withdrawn | manual |
 | A held resume | Type "open Payments" while the answer is pending, or use Back after it | The dock opens by itself on the target page when an answer is pending; it never opens an empty closed dock that hides the pending answer | manual |
-| Malay headline | A thread whose latest turn is Malay | The headline reads Malay once the thread's latest turn is Malay. Starting ideas show only on an empty thread, and an empty thread's language is English, so Malay starting ideas cannot show in 3a (they are for 3b); an empty Overview always shows the English headline and ideas | manual |
+| Malay headline | A thread whose latest turn is Malay | The headline reads Malay once the thread's latest turn is Malay. Starting ideas show only on an empty thread, and an empty thread's language is English, so the Overview's Malay starting ideas never show; an empty Overview always shows the English headline and ideas. The dock's idea bubble (3b, next section) is in Malay only when the conversation's latest turn is Malay; an empty thread is English | manual |
+
+## The alive assistant dock (2026-11-16, PR 3b)
+
+The closed dock's button now carries a 48 px living avatar and, after a quiet moment, offers one idea in a small
+bubble. Front end only. None of these rows has been run by the owner yet. Use a company with the
+assistant on and a staff member who can post turns (not View only); for the idea rows, a company
+whose Inbox has at least one starting idea the member is allowed (the same ideas as on Overview).
+Open each page fresh and leave the mouse and keyboard alone for the waits below.
+
+| Step | Setup | Expected | Test |
+|---|---|---|---|
+| The launcher is the avatar | Open Inbox with the dock closed | The launcher in the bottom-right corner is still the filled pill with the visible word "Assistant"; the assistant's pixel avatar (48 px) now replaces the old speech-bubble icon beside the word, and it loops gently while idle | manual, not yet run by the owner |
+| It reacts to hover, focus and click | Move the pointer onto the avatar, then away; Tab onto it; click it | Hover or focus makes the avatar wake for about 1.5 seconds; the click makes it hop and the panel opens a moment (about 160 ms) after the click; the avatar shows its working look while the assistant is answering | manual, not yet run by the owner |
+| Reduced motion | Turn on the operating system's reduced-motion setting, reload Inbox; then turn it off and use the product's motion pause (`fs-motion-paused`) instead | In both cases the avatar does not loop, wake or hop and the panel opens at once on click; the idea bubble (next rows) still appears and works | manual, not yet run by the owner |
+| One idea after a quiet moment | Inbox, dock closed, panel not opened, no card waiting for a decision; do not touch the page for 20 seconds | About 20 seconds after load a small bubble above the launcher offers one idea (an idea the member may use on Inbox); no second bubble follows on the same page | manual, not yet run by the owner |
+| Clicking the idea fills the composer only | Click the bubble | The panel opens with the composer focused and the idea's text in it; nothing is sent (no new turn) until Enter or Send; the bubble is gone | manual, not yet run by the owner |
+| Dismiss keeps that idea away | Wait for a bubble, press its Dismiss button (label "Dismiss this idea"), or press Escape while the bubble is focused; reload the page and wait another 20 seconds | The bubble closes; after the reload the same idea does not come back in this browser session (the next idea the member may use can show instead, once); a new browser session can show it again | manual, not yet run by the owner |
+| Each page visit has its own wait | Wait for a bubble on Inbox, then move to another tab (for example Team) without opening the panel | The bubble goes with the page; the 20 seconds start again on the new tab and one idea can show there | manual, not yet run by the owner |
+| No bubble on Overview | Open Overview and wait 30 seconds | No dock and no bubble (the assistant is the page) | manual, not yet run by the owner |
+| No bubble with the panel open or a card waiting | Open the dock on Inbox and wait 30 seconds; separately, leave a proposed action card undecided, close the panel and wait 30 seconds | No bubble in either case | manual, not yet run by the owner |
+| No bubble where there is nothing to offer | A View only member (no assistant, so no dock); a member who has dismissed every idea offered (one at a time, reloading the page each time, because one bubble shows per visit) | The View only member has no dock; the other member's closed dock stays the plain launcher with no bubble | manual, not yet run by the owner |
+| No bubble over unsent text | Open the panel, type something in the composer without sending, close the panel and wait 30 seconds | No bubble (the draft is yours and an idea would replace it); after you clear the composer and close the panel, a bubble can show after another 20 quiet seconds | manual, not yet run by the owner |
+| A Malay conversation shows a Malay idea | Chat with the assistant in Malay (for example "buka Sambungan"), close the panel, open another tab and wait 20 seconds | The idea is in Malay and its Dismiss label is "Tutup idea ini"; a company with an English latest turn shows English | manual, not yet run by the owner |
 
 ## Business knowledge add-on
 
