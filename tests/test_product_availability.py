@@ -436,14 +436,19 @@ async def test_the_availability_picture_counts_only_our_own_rows(
     binding = await store_for(migrated_dsn, pool)
     client = binding.client_id
     tiktok = FakeTikTok(binding.shop_id).install(monkeypatch)
-    await seed_listings(pool, client, binding.record_id, tiktok_mug(), synced_at=now())
+    # A stale stored listing, so the first answer reads TikTok live (8 available); that read
+    # refreshes the stored copy, so the second answer quotes the fresh copy with its age.
+    old = tiktok_mug(qty=1)
+    old["update_time"] = 1_793_750_000
+    await seed_listings(pool, client, binding.record_id, old, synced_at=now() - timedelta(hours=2))
     tiktok.product_details["SYNTH-P-MUG"] = tiktok_mug(qty=8)
     on = Switch(True)
+    live_mug = ("tiktok_stock", "Synthetic mug (Black / M): 8 available on our TikTok Shop.")
     # A TikTok-only answer never carries a picture: there is no product of ours to show.
     only_tiktok = await ask(
         pool, make_ctx(pool, client), "mug-blk-m", capability=on, live=live_access(pool)
     )
-    assert [fact_id for fact_id, _ in pairs(only_tiktok)] == ["tiktok_stock"]
+    assert pairs(only_tiktok) == [live_mug]
     assert only_tiktok.picture is None
     # One shop row beside the TikTok fact: the picture is our own product's; the facts are the
     # ones a picture-less answer gives.
@@ -452,11 +457,14 @@ async def test_the_availability_picture_counts_only_our_own_rows(
     both = await ask(
         pool, make_ctx(pool, client), "mug-blk-m", capability=on, live=live_access(pool)
     )
-    assert [fact_id for fact_id, _ in pairs(both)] == ["shop_product_0", "tiktok_stock"]
-    assert pairs(both)[0] == (
-        "shop_product_0",
-        "Synthetic mug (MUG-BLK-M): MYR 9.50, 5 available in our shop.",
-    )
+    assert pairs(both) == [
+        ("shop_product_0", "Synthetic mug (MUG-BLK-M): MYR 9.50, 5 available in our shop."),
+        (
+            "tiktok_stock",
+            "Synthetic mug (Black / M) on our TikTok Shop: 8 were available as of less than a "
+            "minute ago.",
+        ),
+    ]
     assert both.picture == PictureRef(
         kind="product", subject_key=product_id, caption="Synthetic mug"
     )

@@ -884,10 +884,15 @@ async def test_availability_never_asks_for_an_inactive_products_picture(world: W
     archived = await _availability(world, "A1", "av-archived")
     assert _facts(archived) == [("shop_not_found", "I couldn't find that item in our shop.")]
     assert archived.picture is None
-    # Nor does it count: the one active product left is the only match, and has no picture.
+    # Nor does it count: the archived second match does not block the one active product's
+    # picture.
+    b2 = _product_id(world, "B2")
+    _picture(world, b2)
     remaining = await _availability(world, "Product", "av-remaining")
-    assert [f.id for f in remaining.data.facts] == ["shop_product_0"]
-    assert remaining.picture is None
+    assert _facts(remaining) == [
+        ("shop_product_0", "Product B2 (B2): MYR 4.50, 100 available in our shop.")
+    ]
+    assert remaining.picture == PictureRef(kind="product", subject_key=b2, caption="Product B2")
 
 
 async def test_availability_picture_ignores_another_companys_picture(world: World) -> None:
