@@ -14,6 +14,7 @@ from typing import Any, LiteralString
 import pytest
 from apps.gateway.main import EXPECTED_SCHEMA_VERSION
 from psycopg import errors
+from psycopg.rows import dict_row
 from scripts import migrate
 
 from tests.conftest import requires_docker
@@ -125,7 +126,7 @@ def _migration_text() -> str:
     return Path(paths["0630"]).read_text(encoding="utf-8")
 
 
-def test_tables_exist_with_rls_and_only_select_for_the_app_role(migrated_dsn: str) -> None:
+def test_tables_have_rls_and_no_privilege_for_any_application_role(migrated_dsn: str) -> None:
     with _owner(migrated_dsn) as conn:
         for table in TABLES:
             [flags] = conn.execute(
@@ -149,12 +150,39 @@ def test_tables_exist_with_rls_and_only_select_for_the_app_role(migrated_dsn: st
                         (role, f"public.{table}", p),
                     ).fetchone()["ok"]  # type: ignore[index]
                 }
-                assert held == ({"SELECT"} if role == "csa_app" else set()), (role, table)
+                assert held == set(), (role, table)
 
 
-def test_row_security_isolates_tenants_on_every_table(migrated_dsn: str, app_dsn: str) -> None:
+def test_the_app_role_cannot_read_or_write_any_table_directly(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    s = _seed(migrated_dsn)
+    with _app(app_dsn, s.client) as conn:
+        for table in TABLES:
+            with pytest.raises(errors.InsufficientPrivilege):
+                conn.execute(_q(f"SELECT 1 FROM {table}"))
+            conn.rollback()
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(
+                "INSERT INTO hr_process_templates (client_id, kind, name)"
+                " VALUES (%s, 'custom', 'Mine')",
+                (s.client,),
+            )
+
+
+def test_row_security_isolates_tenants_on_every_table(migrated_dsn: str) -> None:
+    """No application role can read these tables, so the tenant policy (defence in depth behind the
+    definer functions) is proved with a scratch role that is granted access inside a transaction
+    that is rolled back: it has no BYPASSRLS, so the policy alone decides what it sees."""
     a, b = _seed(migrated_dsn), _seed(migrated_dsn)
-    with _app(app_dsn, b.client) as conn:
+    probe = f"hr_process_probe_{uuid.uuid4().hex[:8]}"
+    conn = DictConnection.connect(migrated_dsn, row_factory=dict_row)
+    try:
+        conn.execute(_q(f"CREATE ROLE {probe} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+        for table in TABLES:
+            conn.execute(_q(f"GRANT SELECT, INSERT ON public.{table} TO {probe}"))
+        conn.execute(_q(f"SET LOCAL ROLE {probe}"))
+        conn.execute("SELECT set_config('app.client_id', %s, true)", (b.client,))
         for table in TABLES:
             seen = conn.execute(_q(f"SELECT client_id FROM {table}")).fetchall()
             assert seen, table
@@ -163,18 +191,27 @@ def test_row_security_isolates_tenants_on_every_table(migrated_dsn: str, app_dsn
                 _q(f"SELECT count(*) AS n FROM {table} WHERE client_id = %s"), (a.client,)
             )
             assert mine["n"] == 0, table
-        # No write grant: a direct INSERT is refused whoever's id it names.
-        for client in (a.client, b.client):
-            with pytest.raises(errors.InsufficientPrivilege):
-                conn.execute(
-                    "INSERT INTO hr_process_templates (client_id, kind, name)"
-                    " VALUES (%s, 'custom', 'Mine')",
-                    (client,),
-                )
-            conn.rollback()
-    with _app(app_dsn, None) as conn:
+        # A row for the other tenant fails the policy's WITH CHECK; one for this tenant passes.
+        conn.execute("SAVEPOINT before_insert")
+        with pytest.raises(errors.InsufficientPrivilege, match="row-level security"):
+            conn.execute(
+                "INSERT INTO hr_process_templates (client_id, kind, name)"
+                " VALUES (%s, 'custom', 'Other tenant')",
+                (a.client,),
+            )
+        conn.execute("ROLLBACK TO SAVEPOINT before_insert")
+        conn.execute(
+            "INSERT INTO hr_process_templates (client_id, kind, name)"
+            " VALUES (%s, 'custom', 'Own tenant')",
+            (b.client,),
+        )
+        # No tenant set: nothing is visible.
+        conn.execute("SELECT set_config('app.client_id', '', true)")
         for table in TABLES:
             assert conn.execute(_q(f"SELECT 1 FROM {table}")).fetchall() == [], table
+    finally:
+        conn.rollback()
+        conn.close()
 
 
 def test_events_are_immutable(migrated_dsn: str) -> None:
@@ -209,7 +246,7 @@ def _base_row(table: str, s: Seed, extra: dict[str, Any]) -> dict[str, Any]:
         row = {
             **c,
             "employee_id": s.other_employee,
-            "kind": "custom",
+            "kind": "onboarding",
             "template_id": s.template,
             "template_version": 1,
         }
@@ -380,11 +417,13 @@ def test_one_active_process_per_person_and_kind_except_custom(migrated_dsn: str)
         # A finished one does not count, nor does another kind or another person.
         _insert(conn, "hr_processes", {**dupe, "status": "completed"})
         _insert(conn, "hr_processes", {**dupe, "status": "cancelled"})
-        _insert(conn, "hr_processes", {**dupe, "kind": "offboarding"})
         _insert(conn, "hr_processes", {**dupe, "employee_id": s.other_employee})
+        # Another kind: no template of that kind exists here, so it has none.
+        no_template = {**dupe, "template_id": None, "template_version": None}
+        _insert(conn, "hr_processes", {**no_template, "kind": "offboarding"})
         # Custom processes may overlap freely.
         for _ in range(2):
-            _insert(conn, "hr_processes", {**dupe, "kind": "custom"})
+            _insert(conn, "hr_processes", {**no_template, "kind": "custom"})
 
 
 def test_rows_never_point_at_another_companys_parent(migrated_dsn: str) -> None:
@@ -537,3 +576,70 @@ def test_0630_is_recorded_and_is_the_expected_version(migrated_dsn: str) -> None
         applied = {r["version"] for r in conn.execute("SELECT version FROM schema_migrations")}
     assert "0630" in applied
     assert EXPECTED_SCHEMA_VERSION == max(applied)
+
+
+def test_a_process_has_the_kind_of_its_template(migrated_dsn: str) -> None:
+    s = _seed(migrated_dsn)  # the template is an onboarding template
+    with _owner(migrated_dsn) as conn:
+        with pytest.raises(errors.ForeignKeyViolation):
+            _insert(
+                conn,
+                "hr_processes",
+                _base_row("hr_processes", s, {"kind": "offboarding"}),
+            )
+        with pytest.raises(errors.ForeignKeyViolation):
+            _insert(conn, "hr_processes", _base_row("hr_processes", s, {"kind": "custom"}))
+        # A template's kind cannot change under a process that uses it.
+        with pytest.raises(errors.ForeignKeyViolation):
+            conn.execute(
+                "UPDATE hr_process_templates SET kind = 'offboarding' WHERE id = %s", (s.template,)
+            )
+        # The same kind passes, and a manual custom process may have no template at all.
+        _insert(conn, "hr_processes", _base_row("hr_processes", s, {}))
+        _insert(
+            conn,
+            "hr_processes",
+            _base_row(
+                "hr_processes",
+                s,
+                {"kind": "custom", "template_id": None, "template_version": None},
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"template_id": None}, {"template_version": None}],
+)
+def test_template_and_version_are_both_set_or_both_null(
+    migrated_dsn: str, extra: dict[str, Any]
+) -> None:
+    _expect_check(migrated_dsn, "hr_processes", extra)
+
+
+def test_an_event_names_a_task_of_its_own_process(migrated_dsn: str) -> None:
+    s = _seed(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        other = _insert(
+            conn,
+            "hr_processes",
+            _base_row("hr_processes", s, {}),
+        )
+        # s.task belongs to s.process, so an event of the other process may not name it.
+        with pytest.raises(errors.ForeignKeyViolation):
+            _insert(
+                conn,
+                "hr_process_events",
+                _base_row("hr_process_events", s, {"process_id": other["id"], "task_id": s.task}),
+            )
+        # Its own process's task, or no task at all, is fine.
+        _insert(
+            conn,
+            "hr_process_events",
+            _base_row("hr_process_events", s, {"task_id": s.task}),
+        )
+        _insert(
+            conn,
+            "hr_process_events",
+            _base_row("hr_process_events", s, {"process_id": other["id"]}),
+        )
