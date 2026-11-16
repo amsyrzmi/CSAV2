@@ -360,6 +360,152 @@ areas and HR owner row for the tenant are deleted, its membership is disabled an
 revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
 Each step happens once, whoever runs it.
 
+### Process templates and processes (HR processes PR 1, migrations 0630-0633)
+
+A company keeps templates of ordered steps for onboarding, offboarding and custom processes.
+Adding or rehiring a person starts an onboarding from the matching template, marking them as
+leaving starts an offboarding (the `hr_employees` trigger of 0632); HR can also start and cancel
+processes by hand. Every route takes `client_id` (and `GET /processes` the filters below; any
+other key is 400 `invalid_hr_query`) and answers no-store. Writes need CSRF (403 without) and an
+`Idempotency-Key` (422 without); a read-only session's write is 403 `read_only_session`. A same-key
+retry returns the first receipt with `duplicate: true`; the same key with another body is 409
+`idempotency_conflict`. A caller the route does not serve gets 404 `resource_unavailable`, never
+403. A 422 is `{detail: "invalid_hr_input", invalid_fields}` and never repeats the input.
+
+**Templates** (the HR owner and Manage people holders only):
+
+- `GET /templates` returns `TemplateList`: up to 500 `items` of `TemplateSummary` (`template_id`,
+  `kind`, `name`, `version`, `is_active`, `rules`, `step_count`, `created_at`, `updated_at`),
+  by kind, then name.
+- `GET /templates/{template_id}` returns `TemplateOut`: the summary fields, `steps` (each
+  `TemplateStepOut`: `ordinal`, `title_en`, `title_ms`, `description_en`, `description_ms`,
+  `owner_role`, `owner_employee_id`, `anchor`, `due_offset_days`, `required`, `approval_by`,
+  `auto_check`, `reference_note`), `conflicts` and `warnings`.
+- `POST /templates` `TemplateCreate` `{kind, name, rules?, steps}` answers 201 `TemplateReceipt`
+  `{operation: "template.create", template_id, version, conflicts, warnings, status: "saved",
+  duplicate}`.
+- `PUT /templates/{template_id}` `TemplateUpdate` `{expected_version, name, rules, steps,
+  is_active?}` replaces the name, rules and steps (`version` + 1; the kind never changes). `rules`
+  must be sent: `null` makes the template the company default, and a body without the key is 422,
+  so a client can never clear the rules by forgetting them. `is_active` `null` or absent keeps it.
+  A stale version is 409 `template_changed`.
+- `POST /templates/{template_id}/deactivate` `{expected_version}` returns `TemplateReceipt`
+  (`version` + 1).
+
+`kind` is `onboarding`, `offboarding` or `custom`; `name` 1-120 characters. `rules` is
+`{department_id, employment_type, legal_entity_reference, region}`, each `null` for "anyone":
+`employment_type` is one of the `hr_employees` types (`full_time`, `part_time`, `contract`,
+`intern`), `region` one of `peninsular_labuan`, `sabah`, `sarawak`, the legal entity at most 200
+characters (compared trimmed and case-insensitive). The most specific matching active template
+wins, then the oldest; a template with no rule is the default. `steps` holds 1 to 40 steps, numbered
+by position: `title_en` 1-160 characters, `title_ms` at most 160, `description_en` and
+`description_ms` at most 2000, `reference_note` at most 500 (text is trimmed; an empty string is
+stored as `null`); `owner_role` `hr`, `manager`, `employee` (the person the process is about) or
+`person` (then `owner_employee_id`, an active person of this company, and only then);
+`anchor` `start_date` or `probation_end` for onboarding, `last_day` for offboarding, any for custom;
+`due_offset_days` an integer from -365 to 365; `required` (default `true`); `approval_by` `hr`,
+`manager` or `null`; `auto_check` `account_linked`, `personal_details_complete`, `access_removed`,
+`document_uploaded:<contract|identity|certificate|other>` or `null`. `conflicts` lists the other
+active templates of the same kind that may tie with this one for some person (they may; runtime
+picks the oldest and never errors); `warnings` holds `{code: "step_after_last_day", ordinal}` for a
+step of the leaver due after the last day (it will be due on the last day). Running processes keep
+the steps they were started with.
+
+**Processes:**
+
+- `GET /processes?kind=&status=&overdue=&department=&owner=&limit=&after=` returns `ProcessPage`:
+  `items` of `ProcessRow` (`process_id`, `employee_id`, `employee_name`, `department_id`, `kind`,
+  `name` (the template's), `status`, `started_at`, `closed_at`, `tasks_total`, `tasks_done` (done or
+  skipped), `next_due_on`, `overdue`), newest first, and `next_cursor` (pass it as `after`) while
+  more remain. `limit` is 1-200 (default 50); `status` is `active`, `completed` or `cancelled`;
+  `overdue=true` keeps processes with an open task due before today (Asia/Kuala_Lumpur);
+  `department` is the person's department; `owner` an employee with a task in the process. The HR
+  team sees every process, a manager the processes of their direct reports, the person their own
+  onboarding and offboarding (`next_due_on` and `overdue` then count only their own tasks); anyone
+  else an empty page.
+- `GET /processes/{process_id}` returns `ProcessDetail` `{view, process, tasks, events?}` with
+  `view` `hr`, `manager`, `self` or `assignee` (a person who owns a task in it). What each view gets
+  is below; a field the caller may not see is **absent** (the route answers with
+  `response_model_exclude_unset`), a visible empty field is `null`.
+  - `process` (`ProcessHeader`): everyone `process_id`, `kind`, `name`, `status`,
+    `employee_name`; `hr`, `manager` and `self` add `started_at`, `closed_at`; `hr` and `manager`
+    add `employee_id`, `tasks_total`, `tasks_done`; `self` adds `required_total`, `required_done`,
+    `open_tasks`; `hr` adds `template_id`, `template_version`, `anchor_dates` (`{start_date,
+    last_day, probation_end}`) and `started_by`.
+  - `tasks` (`ProcessTask`): `self` and `assignee` get only their own tasks. Every task has
+    `task_id`, `ordinal`, `title_en`, `title_ms`, `owner_role`, `assignee_name`, `due_on`, `status`
+    (`todo`, `awaiting_approval`, `done`, `rejected`, `skipped`), `required`, `overdue`, `mine`.
+    The caller's own tasks, and every task for `hr`, add `description_en`, `description_ms`,
+    `anchor`, `approval_by`, `auto_check`, `completed_at`, `note`, `version`. `hr` alone adds
+    `assignee_employee_id`, `due_offset_days`, `due_overridden`, `completed_by`, `approved_by`,
+    `approved_at`. A task with no assignee is in the HR pool.
+  - `events` (`hr` only): `{event_id, at, actor, action, task_id, detail}`; `actor` `null` is the
+    system; `action` is `process.started`, `process.cancelled`, `process.completed`,
+    `task.created`, `task.completed`, `task.skipped`, `task.reassigned` or `task.date_changed`;
+    `detail` holds the keys that action writes (`reason`, `kind`, `template_id`,
+    `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback`, `clamped`,
+    `anchor`, `old`, `new`, `from`, `to`, `auto_check`).
+- `POST /processes` `ProcessStart` `{employee_id, kind, template_id?}` (HR team) starts a custom
+  process (`template_id` required) or an onboarding or offboarding of an existing person
+  (`template_id` optional: the matching template; a still-active process of the same kind is
+  cancelled first). It answers 201 `ProcessStartReceipt` `{operation: "process.start", process_id,
+  employee_id, kind, template_id, status: "saved", duplicate}`.
+- `POST /processes/{process_id}/cancel` (no body; HR team) cancels an active process: its open
+  tasks are skipped. It returns `ProcessCancelReceipt` `{operation: "process.cancel", process_id,
+  status: "saved", duplicate}`.
+- `GET /people/{employee_id}/processes` returns `PersonProcesses` `{view, employee_id, processes,
+  anchor_dates?, no_matching_template?}` for the HR team (`view` `hr`), the person's manager
+  (`manager`) and the person (`self`, onboarding and offboarding only). `processes` are newest
+  first: `{process_id, kind, name, status, started_at, closed_at, tasks_total, tasks_done,
+  next_task: {title_en, title_ms, due_on} | null}` (for `self`, the next of their own tasks).
+  `anchor_dates` (HR and the person) is `{start_date, last_day, probation_end}`;
+  `no_matching_template` (HR only) is `{onboarding, offboarding}`, true when the person has no
+  process of that kind in their current employment and no template matches them. Absent fields
+  as for the process detail.
+
+**Probation end** on `POST /operations` (HR owner or Manage people holder):
+`person.probation_set` `{employee_id, expected_version, probation_end}` sets (a date) or clears
+(`null`) the end of probation; the key must be sent. Open tasks counted from it move with it. It
+returns the usual `OperationReceipt` with the person's new `version`; a stale version is 409
+`person_changed`. The date reads back in `GET /people/{employee_id}/processes` `anchor_dates`.
+
+**Problem codes** (`detail` of the response; the console shows the sentence). Every refusal the
+database functions raise maps to one of these (`csa.hr.processes.REFUSALS` and `PROBLEMS`); any
+other database error is 503 `hr_database_unavailable`, with no database text.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `permission_denied` | 404 (as `resource_unavailable`) | Only the HR owner or someone with Manage people can do this. |
+| `resource_unavailable` | 404 | That item does not exist, or you cannot see it. |
+| `idempotency_conflict` | 409 | This request key was already used for a different change. |
+| `unsupported_operation` | 409 | That change is not supported. |
+| `human_operation_required` | 409 | Only a signed-in person can make this change. |
+| `template_unavailable` | 409 | That template is not available for this kind of process. |
+| `template_changed` | 409 | Someone changed this template since you opened it. Reload to see it. |
+| `template_kind_invalid` | 409 | Choose onboarding, offboarding or custom. |
+| `template_name_invalid` | 409 | Give the template a name of at most 120 characters. |
+| `template_invalid` | 409 | Active must be yes or no. |
+| `template_rules_invalid` | 409 | Check who the template applies to. |
+| `department_unavailable` | 409 | That department is not in this company. |
+| `template_steps_invalid` | 409 | A template needs 1 to 40 steps. |
+| `template_step_title_invalid` | 409 | Each step needs an English title of at most 160 characters. |
+| `template_step_text_invalid` | 409 | A description is at most 2000 characters, a reference 500. |
+| `template_step_owner_invalid` | 409 | Only a step owned by a named person names that person. |
+| `template_step_person_unavailable` | 409 | Choose an active person of this company for the step. |
+| `template_step_anchor_invalid` | 409 | Onboarding steps count from the start date or the probation end, offboarding steps from the last day. |
+| `template_step_offset_invalid` | 409 | A step is due at most 365 days before or after its date. |
+| `template_step_approval_invalid` | 409 | A step is approved by HR or the manager. |
+| `template_step_check_invalid` | 409 | That automatic check is not available. |
+| `process_kind_invalid` | 409 | Choose onboarding, offboarding or custom. |
+| `person_not_active` | 409 | This person is not active. |
+| `person_not_leaving` | 409 | Mark this person as leaving before starting their offboarding. |
+| `process_template_required` | 409 | Choose a template for a custom process. |
+| `process_no_template` | 409 | No active template applies to this person. |
+| `process_already_active` | 409 | This person already has an active process of this kind. |
+| `process_closed` | 409 | This process is already completed or cancelled. |
+| `person_changed` | 409 | Someone changed this person since you opened it. Reload to see it. |
+| `probation_end_invalid` | 409 | Give the probation end as a date, or clear it. |
+
 ## Authentication, tenancy and settings
 
 Development reset safety: `make db-reset` is destructive. Its default target is loopback

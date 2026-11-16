@@ -155,6 +155,16 @@ class PersonRehire(HrModel):
     start_date: date
 
 
+class PersonProbationSet(HrModel):
+    """Set or clear the end of a person's probation (`null` clears it). Open process tasks counted
+    from it move with it (0632). The key must be sent: there is no default."""
+
+    operation: Literal["person.probation_set"]
+    employee_id: UUID
+    expected_version: Version
+    probation_end: date | None
+
+
 _KUALA_LUMPUR = ZoneInfo("Asia/Kuala_Lumpur")
 
 
@@ -505,6 +515,7 @@ HrOperation = Annotated[
     | PersonLeave
     | PersonLeaveUndo
     | PersonRehire
+    | PersonProbationSet
     | DepartmentSave
     | AccountLink
     | PersonalSave,

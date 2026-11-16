@@ -70,6 +70,11 @@ from csa.hr.people_contracts import (
 from csa.hr.people_service import HrPeople
 from csa.hr.personal import HrPersonal, PersonalOut, PersonalReveal, PersonalRevealIn
 from csa.hr.policy import HrPolicyError
+from csa.hr.process_routes import (
+    PROCESS_QUERY_KEYS,
+    TEMPLATE_BODY_LIMIT,
+    register_process_routes,
+)
 from csa.hr.records import (
     AgentSwitch,
     ConfirmationProjection,
@@ -91,6 +96,7 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy
 # Request body caps in bytes; every other HR path keeps 8192.
 _BODY_LIMITS = {"/console/v1/hr/operations": 262144, "/console/v1/hr/access/changes": 65536}
 _DOCUMENT_UPLOAD = re.compile(r"/console/v1/hr/people/[0-9a-fA-F-]{36}/documents")
+_TEMPLATE_WRITE = re.compile(r"/console/v1/hr/templates(/[0-9a-fA-F-]{36})?")
 # Extra query keys per GET path; every HR path also takes client_id.
 _QUERY_KEYS = {
     "/console/v1/hr/employees": {"limit", "after"},
@@ -99,6 +105,7 @@ _QUERY_KEYS = {
     "/console/v1/hr/access/people": {"cursor", "q", "team", "has", "reports_to"},
     "/console/v1/hr/access/recent": {"cursor"},
     "/console/v1/hr/people": {"q", "department", "manager", "status", "cursor"},
+    "/console/v1/hr/processes": PROCESS_QUERY_KEYS,
 }
 
 
@@ -147,6 +154,9 @@ class HrRoute(APIRoute):
                 maximum = (
                     MAX_UPLOAD_BODY_BYTES
                     if request.method == "POST" and _DOCUMENT_UPLOAD.fullmatch(request.url.path)
+                    else TEMPLATE_BODY_LIMIT
+                    if request.method in {"POST", "PUT"}
+                    and _TEMPLATE_WRITE.fullmatch(request.url.path)
                     else _BODY_LIMITS.get(request.url.path, 8192)
                 )
                 async for chunk in request.stream():
@@ -652,4 +662,5 @@ def build_hr_router(hr_store: ObjectStore | None = None) -> APIRouter:
     ) -> TrainingReceipt:
         return await service.transition(session, request_id, body, request_key)
 
+    register_process_routes(router, _session, _service)
     return router
