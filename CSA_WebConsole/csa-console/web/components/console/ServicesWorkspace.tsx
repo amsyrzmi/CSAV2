@@ -149,7 +149,8 @@ function ServiceList({ me, clientId, platform, canManage }: {
                       <CustomerPreview me={me} tenantId={clientId} />
                     </li>
                   )}
-                  {/* Suspended: staff can still try the bot, but there is no persona form to show. */}
+                  {/* Suspended: staff can still try the bot, but there is no persona form to show. Active or
+                      suspended on this row is what previewAvailable() decides from the package list. */}
                   {service.key === "customer_support" && service.status === "suspended" && (
                     <li className="px-4 pb-4 sm:px-5" data-testid="services-customer-preview">
                       <CustomerPreview me={me} tenantId={clientId} />

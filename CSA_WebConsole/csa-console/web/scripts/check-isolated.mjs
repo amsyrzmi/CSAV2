@@ -48,6 +48,7 @@ try {
     "lib/hr-records-api.ts",
     "lib/hr-records.ts",
     "lib/customer-replies.ts",
+    "lib/preview-redirect.ts",
     "lib/hr-owner.ts",
     "lib/hr-person-card.ts",
     "lib/hr-pickers.ts",
