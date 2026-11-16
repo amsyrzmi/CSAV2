@@ -83,8 +83,9 @@ Reserved ranges (client growth program, 2026-10-27):
   assistant change added both tabs; same read-then-rebuild method as 0540).
 
 - `0620`–`0629`: Customer Inbox refinement. 0620 adds the queue columns on `conversations`, their
-  checks and indexes, and the backfill function `inbox_queue_backfill`; later numbers are listed as
-  they ship.
+  checks and indexes, and the backfill function `inbox_queue_backfill`; 0621 adds the tenant tables
+  `inbox_settings`, `inbox_queue_events` (append-only for `csa_app`) and `inbox_saved_views`; later
+  numbers are listed as they ship.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
