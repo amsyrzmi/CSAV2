@@ -1,4 +1,4 @@
-import { api, ApiError, explainedMessage, patch, post } from "./api";
+import { api, ApiError, del, explainedMessage, patch, post } from "./api";
 import type { Picture } from "./pictures";
 
 /**
@@ -143,7 +143,7 @@ export interface QrDetails {
   account_name: string;
 }
 
-/** `MethodOut`: one way a customer can pay. A method is never deleted, only turned off. */
+/** `MethodOut`: one way a customer can pay. A method can be turned off (kept for later) or deleted. */
 export interface PaymentMethod {
   id: string;
   kind: MethodKind;
@@ -261,6 +261,15 @@ export function updateMethod(
   body: PaymentMethodPatch,
 ): Promise<PaymentMethod> {
   return patch(paymentsPath(tenantId, `/methods${id(methodId)}`), body);
+}
+
+/**
+ * Admins only; 204, no body. The method's QR picture goes with it; invoices keep only the kind.
+ * 409 `last_active_method` (the last active bank transfer or DuitNow method while payments are
+ * on); 404 `method_not_found` (also when someone else deleted it first).
+ */
+export function deleteMethod(tenantId: string | null, methodId: string): Promise<void> {
+  return del(paymentsPath(tenantId, `/methods${id(methodId)}`));
 }
 
 /** One opened "Mark paid" dialog: every submit from it sends the same request key. */
@@ -391,6 +400,25 @@ export function isVersionConflict(cause: unknown): boolean {
 /** Switching payments on with no active bank transfer or DuitNow method: the switch goes back to the saved state. */
 export function isNoActiveMethod(cause: unknown): boolean {
   return cause instanceof ApiError && cause.code === "no_active_method";
+}
+
+/** Turning off or deleting the last active bank transfer or DuitNow method while payments are on. */
+export function isLastActiveMethod(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === "last_active_method";
+}
+
+/** The method is gone: someone else deleted it first. */
+export function isMethodNotFound(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === "method_not_found";
+}
+
+/** Why a delete was refused. `last_active_method` here is about deleting, not turning off. */
+export function deleteMethodMessage(cause: unknown): string {
+  if (isLastActiveMethod(cause)) {
+    return "Payments are on and this is the last active bank transfer or DuitNow method. " +
+      "Turn payments off or add another method first.";
+  }
+  return setupMessage(cause);
 }
 
 /**

@@ -21,10 +21,13 @@ import { secondary } from "./ui";
  *
  * The field is controlled: it always shows `picture`, and a successful upload or removal is
  * reported through `onChanged`, which the owner must write into the data it keeps (so a remount,
- * a refresh or another person's change can never leave an older picture on screen).
+ * a refresh or another person's change can never leave an older picture on screen). `onChanged`
+ * is called even when the answer arrives after the field is gone (its form was closed during the
+ * upload): the server kept the picture, so the owner must record it by the subject's id, not in
+ * the closed form's state.
  */
 export default function PictureField({
-  tenantId, path, picture, hint, onChanged, testId, label = "Picture", subject, readOnly = false,
+  tenantId, path, picture, hint, onChanged, onBusy, testId, label = "Picture", subject, readOnly = false,
 }: {
   /** Null for a tenant member; the target company for a platform admin (the read route needs it). */
   tenantId: string | null;
@@ -36,6 +39,8 @@ export default function PictureField({
   hint?: string;
   /** Told the new picture after a set or replace, and null after a removal. */
   onChanged?: (picture: Picture | null) => void;
+  /** Told when an upload or removal starts (true) and ends (false), so the owner can hold other actions. */
+  onBusy?: (busy: boolean) => void;
   testId: string;
   label?: string;
   /** Names what the picture belongs to ("Blue mug 1"): the preview's alt text and the buttons' names. */
@@ -48,6 +53,16 @@ export default function PictureField({
   const hintId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // After the field is gone only `onChanged` still runs (see above); its own state is left alone.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const working = (value: boolean) => {
+    setBusy(value);
+    onBusy?.(value);
+  };
   // The busy state disables the button that had focus; once it is enabled again, focus returns to it.
   useEffect(() => {
     if (busy || !refocus.current) return;
@@ -66,30 +81,31 @@ export default function PictureField({
     if (!file || busy) return;
     const problem = pictureProblem(file);
     if (problem) { setError(problem); return; }
-    setBusy(true);
+    working(true);
     setError("");
     refocus.current = true;
     try {
-      onChanged?.(await putPicture(path ?? "", file));
+      const saved = await putPicture(path ?? "", file);
+      onChanged?.(saved);
     } catch (cause) {
-      setError(pictureFailure(cause));
+      if (mounted.current) setError(pictureFailure(cause));
     } finally {
-      setBusy(false);
+      if (mounted.current) working(false);
     }
   }
 
   async function remove() {
     if (busy) return;
-    setBusy(true);
+    working(true);
     setError("");
     refocus.current = true;
     try {
       await removePicture(path ?? "");
       onChanged?.(null);
     } catch (cause) {
-      setError(pictureFailure(cause));
+      if (mounted.current) setError(pictureFailure(cause));
     } finally {
-      setBusy(false);
+      if (mounted.current) working(false);
     }
   }
 

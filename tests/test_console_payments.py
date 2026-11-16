@@ -271,6 +271,7 @@ async def test_read_only_and_the_package_gate_refuse_everything(sessions: Sessio
         ),
         ("/methods", {"kind": "cash", "label": "Counter", "details": {}}, "POST"),
         (f"/methods/{method}", {"label": "x", "version": 1}, "PATCH"),
+        (f"/methods/{method}", None, "DELETE"),
         (f"/invoices/{invoice_id}/mark-paid", mark, "POST"),
         (f"/invoices/{invoice_id}/void", {"reason": "Typo"}, "POST"),
         (f"/invoices/{invoice_id}/reject-claim", {"reason": "Not seen"}, "POST"),

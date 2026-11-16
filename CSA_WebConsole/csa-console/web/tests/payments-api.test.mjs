@@ -324,3 +324,43 @@ test("the QR picture route is the method's own and names the company only for a 
     `/console/v1/payments/methods/${method}/picture?client_id=${tenant}`,
   );
 });
+
+// ---------------------------------------------------------------- Deleting a method
+
+test("deleting a method is a DELETE on its own route with the CSRF token, and answers nothing", async () => {
+  const [results, requests] = await capture(async () => [
+    await pay.deleteMethod(null, METHOD),
+    await pay.deleteMethod("t1", "odd/id"),
+  ], () => new Response(null, { status: 204 }));
+  assert.deepEqual(results, [undefined, undefined]);
+  assert.deepEqual(shape(requests), [
+    ["DELETE", `/console/v1/payments/methods/${METHOD}`],
+    ["DELETE", "/console/v1/payments/methods/odd%2Fid?client_id=t1"],
+  ]);
+  for (const [, init] of requests) {
+    assert.equal(init.headers.get("X-CSRF-Token"), "synthetic-csrf");
+    assert.equal(init.body, undefined);
+  }
+});
+
+test("a refused delete reads in plain words; the last active method has its own sentence", () => {
+  const last = new ApiError(409, "last_active_method", "last_active_method");
+  const gone = new ApiError(404, "method_not_found", "method_not_found");
+  assert.equal(pay.isLastActiveMethod(last), true);
+  assert.equal(pay.isLastActiveMethod(new ApiError(409, "version_conflict", "version_conflict")), false);
+  assert.equal(pay.isLastActiveMethod(new Error("last_active_method")), false);
+  assert.equal(pay.isMethodNotFound(gone), true);
+  assert.equal(pay.isMethodNotFound(new ApiError(404, "invoice_not_found", "invoice_not_found")), false);
+  assert.equal(pay.isMethodNotFound(new Error("method_not_found")), false);
+  assert.equal(pay.deleteMethodMessage(last),
+    "Payments are on and this is the last active bank transfer or DuitNow method. " +
+    "Turn payments off or add another method first.");
+  // Turning a method off keeps its own sentence.
+  assert.equal(pay.setupMessage(last), "Keep one active method while payments are on.");
+  // Anything else reads as the form's usual sentence.
+  for (const cause of [
+    new ApiError(503, "synthetic outage", "synthetic outage"),
+    new ApiError(403, "payments tenant is not authorized", "payments tenant is not authorized"),
+    new TypeError("fetch failed"),
+  ]) assert.equal(pay.deleteMethodMessage(cause), pay.setupMessage(cause));
+});

@@ -396,3 +396,26 @@ test("the reject confirm says what happens next and that the customer is not mes
   assert.match(view.REJECT_CLAIM_CONSEQUENCE, /does not message the customer/);
   assert.match(view.REJECT_CLAIM_CONSEQUENCE, /Inbox/);
 });
+
+test("a deleted method leaves the list; the list given is unchanged", () => {
+  const list = [TRANSFER, QR];
+  assert.deepEqual(view.removeMethod(list, TRANSFER.id), [QR]);
+  assert.deepEqual(list, [TRANSFER, QR]);
+  assert.deepEqual(view.removeMethod(list, "88888888-8888-4888-8888-888888888888"), [TRANSFER, QR]);
+  // A payable list can become unpayable, which the settings hint follows.
+  assert.equal(view.hasPayableMethod(view.removeMethod([TRANSFER], TRANSFER.id)), false);
+});
+
+test("the delete confirmation says customers stop seeing it, the QR picture goes, and Off keeps it", () => {
+  assert.equal(view.deleteMethodQuestion(QR), "Delete DuitNow?");
+  assert.deepEqual(view.deleteMethodSentences(QR), [
+    "Customers stop seeing this method.",
+    "Its QR picture, if it has one, is removed too.",
+    "Turn it off instead to keep it for later.",
+  ]);
+  // A bank transfer or cash method never has a picture, so its confirmation does not mention one.
+  assert.deepEqual(view.deleteMethodSentences(TRANSFER), [
+    "Customers stop seeing this method.",
+    "Turn it off instead to keep it for later.",
+  ]);
+});

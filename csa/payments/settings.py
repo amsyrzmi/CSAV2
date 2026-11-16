@@ -4,7 +4,9 @@ Every function runs inside the caller's tenant transaction (`tx(pool, client_id)
 `HTTPException`s with a short code: 404 `method_not_found`; 409 `version_conflict`,
 `no_active_method` and `last_active_method`; 422 `invalid_details`. Settings and methods share one
 transaction-long lock per company, so "switch payments on" and "turn the last method off" cannot
-both succeed on the strength of each other's old state. A method is never deleted, only turned off.
+both succeed on the strength of each other's old state. An admin may turn a method off or delete
+it; deleting takes the method's QR picture with it, in the same transaction, and never touches an
+invoice or a payment (they keep only `method_kind`, never a method id).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pydantic import ValidationError
 from csa.console.contracts import ConsoleActor
 from csa.console.kb_uploads import audit
 from csa.core import db
+from csa.media import service as media
 from csa.payments.contracts import (
     MethodIn,
     MethodOut,
@@ -162,8 +165,38 @@ async def update_method(
     return MethodOut.model_validate(row)
 
 
+async def delete_method(conn: Conn, client_id: UUID, actor: ConsoleActor, method_id: UUID) -> None:
+    """Delete a method and its QR picture; audit `payments.method.deleted`.
+
+    404 `method_not_found` (also another company's id, and the loser of two deletes at once);
+    deleting the last active QR or transfer method of an enabled company is 409
+    `last_active_method`. An inactive method, a cash method, or any method while payments are off
+    can always go. The picture removal is audited `media.picture.removed` only when one was there.
+    """
+    await lock(conn, client_id)
+    current = await db.q.fetch_one(
+        "payments/method_get.sql", {"client_id": client_id, "method_id": method_id}, conn=conn
+    )
+    if current is None:
+        raise HTTPException(404, "method_not_found")
+    if current["is_active"] and current["kind"] in PAYABLE_KINDS:
+        await ensure_another_payable_method(conn, client_id, method_id)
+    deleted = await db.q.fetch_one(
+        "payments/method_delete.sql", {"client_id": client_id, "method_id": method_id}, conn=conn
+    )
+    if deleted is None:
+        raise HTTPException(404, "method_not_found")
+    await media.remove_picture(conn, client_id, actor, "payment_qr", str(method_id))
+    await audit(conn, actor, client_id, "payments.method.deleted", str(method_id))
+
+
 async def require_qr_method(conn: Conn, client_id: UUID, method_id: UUID) -> None:
-    """404 `method_not_found` unless the method is this company's; 422 unless it is a QR."""
+    """404 `method_not_found` unless the method is this company's; 422 unless it is a QR.
+
+    Takes the payments lock first, so a picture stored after this check in the same transaction
+    cannot outlive a delete of the method that commits in between.
+    """
+    await lock(conn, client_id)
     row = await db.q.fetch_one(
         "payments/method_get.sql", {"client_id": client_id, "method_id": method_id}, conn=conn
     )
