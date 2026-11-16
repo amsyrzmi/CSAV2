@@ -76,6 +76,7 @@ const OWNED = [
   "components/console/HrAccessMore.tsx",
   "components/console/WhatsAppPanel.tsx",
   "components/console/AssistantDock.tsx",
+  "components/console/assistant/",
   "components/console/ProposalCard.tsx",
   "components/console/training/",
   "components/console/TrainingWorkspace.tsx",
