@@ -192,6 +192,10 @@ TAB_GATES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "subscriptions": (frozenset({"subscriptions"}), ACTIVE),
     "bookings": (frozenset({"bookings"}), ACTIVE),
     "training_library": (frozenset({"training_library"}), ACTIVE),
+    "payments": (frozenset({"subscriptions"}), ACTIVE),
+    # `chat` is the customer preview (the company's bot, talked to as a customer would); it needs
+    # the customer-facing package, active or suspended like the inbox.
+    "chat": (frozenset({"customer_support"}), frozenset({"active", "suspended"})),
 }
 # Tab -> the label the console's sidebar shows (``lib/navigation.ts``). The assistant names a tab
 # this way in every language; a test keeps the copy in step with the console.
@@ -205,12 +209,14 @@ TAB_LABELS: dict[str, str] = {
     "email": "Email assistant",
     "subscriptions": "Subscriptions",
     "bookings": "Bookings",
+    "payments": "Payments",
+    "connections": "Connections",
     "training_library": "Training library",
     "activity": "Assistant activity",
-    "chat": "Overview",
+    "chat": "Customer preview",
 }
 # Tabs the console shows only to members who can write (not read_only).
-WRITER_TABS = frozenset({"inbox", "email", "business"})
+WRITER_TABS = frozenset({"inbox", "email", "business", "payments"})
 Gate = tuple[frozenset[str], frozenset[str]]
 
 

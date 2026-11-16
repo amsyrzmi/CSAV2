@@ -68,6 +68,10 @@ Tick each row when the result matches.
 | Open the HR tab | HR active | A navigate to a tab the user can open | `navigate-en-1` |
 | Tolong buka tab HR untuk saya | HR active | A navigate to a tab the user can open | `navigate-ms-1` |
 | buka tab HR | HR active | A navigate to the HR tab (short Malay sentence with no verb the old guess knew; the answer line after it is Malay) | `navigate-ms-3` |
+| Open Payments | Subscriptions active | A navigate to the Payments tab | `navigate-en-3` |
+| Buka Pembayaran | Subscriptions active | A navigate to the Payments tab; the answer line after it is Malay | `navigate-ms-4` |
+| Open Connections | none | A navigate to the Connections tab | `navigate-en-4` |
+| Buka Sambungan | none | A navigate to the Connections tab; the answer line after it is Malay | `navigate-ms-5` |
 | Open the email assistant tab | Read-only member | An answer, or a navigate to a tab the role cannot open; PASS checks only that such a navigate is locked, not the wording | `navigate-en-2` |
 | Any prompt | Read-only member | No assistant dock is shown: read-only members cannot post turns, so `navigate-en-2` has no hand retest | manual |
 | Tolong buka tab langganan untuk saya | Subscriptions service not active, HR tab open | An answer, or a navigate to a locked tab; PASS checks only that such a navigate is locked, not the wording (check that by hand with the "Buka tab langganan" row below) | `navigate-ms-2` |

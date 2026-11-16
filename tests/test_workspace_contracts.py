@@ -651,13 +651,15 @@ def test_tab_labels_match_the_console_navigation() -> None:
 
     source = Path(__file__).parents[1] / "CSA_WebConsole/csa-console/web/lib/navigation.ts"
     labels = dict(re.findall(r'\{ key: "(\w+)", label: "([^"]+)"', source.read_text()))
-    # The sandbox chat folded into Overview: the dock's `chat` tab opens and is named as Overview.
-    labels["chat"] = labels["overview"]
+    # `chat` is the customer preview, not a sidebar entry of its own, so it is named here.
+    assert TAB_LABELS["chat"] == "Customer preview"
     tab_keys = set(get_args(TabKey))
     assert tab_keys <= TAB_LABELS.keys()
-    assert tab_keys <= labels.keys()
+    assert tab_keys - {"chat"} <= labels.keys()
+    assert {"payments", "connections"} <= tab_keys
     for key, label in TAB_LABELS.items():
-        assert labels[key] == label
+        if key != "chat":
+            assert labels[key] == label
 
 
 def test_text_tables_have_the_same_keys() -> None:

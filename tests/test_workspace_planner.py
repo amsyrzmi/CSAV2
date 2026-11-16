@@ -747,8 +747,20 @@ def test_tab_available_ports_the_console_rule() -> None:
     assert tab_available("business", Role.TENANT_ADMIN, [state("marketplaces")])
     assert not tab_available("business", Role.TENANT_ADMIN, [])
     # Ungated tabs are always there; platform admins skip the package gate.
-    for tab in ("overview", "services", "chat"):
+    for tab in ("overview", "services", "connections"):
         assert tab_available(tab, Role.TENANT_STAFF, []), tab
+    # Payments follows Subscriptions and is a writer tab; Connections is open to everyone.
+    assert not tab_available("payments", Role.READ_ONLY, [state("subscriptions")])
+    assert not tab_available("payments", Role.TENANT_STAFF, [])
+    assert tab_available("payments", Role.TENANT_STAFF, [state("subscriptions")])
+    assert tab_available("payments", Role.PLATFORM_ADMIN, [])
+    assert tab_available("connections", Role.READ_ONLY, [])
+    # `chat` is the customer preview: it needs Customer support, active or suspended.
+    assert tab_available("chat", Role.TENANT_STAFF, [state("customer_support", "suspended")])
+    assert tab_available("chat", Role.TENANT_STAFF, [state("customer_support")])
+    assert not tab_available("chat", Role.TENANT_STAFF, [])
+    assert not tab_available("chat", Role.TENANT_STAFF, [state("customer_support", "available")])
+    assert tab_available("chat", Role.PLATFORM_ADMIN, [])
     # Assistant activity follows Customer Support, active or suspended; platform admins keep it.
     assert not tab_available("activity", Role.TENANT_STAFF, [])
     assert not tab_available("activity", Role.TENANT_STAFF, [state("hr"), state("staff_email")])
@@ -1095,6 +1107,45 @@ async def test_navigate_to_locked_tab_is_answered_not_refused(planned) -> None:
     assert result["action"] == "answer"
     assert "not active" in result["markdown"] and "Staff email" in result["markdown"]
     assert result["markdown"].startswith("The Email assistant tab")
+
+
+@requires_docker
+async def test_navigate_to_payments_and_the_customer_preview(planned) -> None:
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "navigate", "tab": "payments"})
+    locked = await _turn(w, browser, thread, "Open Payments", "overview")
+    assert locked.status_code == 201, locked.text
+    assert locked.json()["result"] == {
+        "action": "answer",
+        "markdown": "The Payments tab needs the Subscriptions service, which is not active "
+        "for this workspace. Ask your administrator to activate it on the Services page.",
+    }
+    model.reply({"action": "navigate", "tab": "chat"})
+    preview = await _turn(w, browser, thread, "Open the customer preview", "overview")
+    assert preview.status_code == 201, preview.text
+    assert preview.json()["result"] == {
+        "action": "answer",
+        "markdown": "The Customer preview tab needs the Customer support service, which is not "
+        "active for this workspace. Ask your administrator to activate it on the Services page.",
+    }
+    model.reply({"action": "navigate", "tab": "connections"})
+    open_tab = await _turn(w, browser, thread, "Open Connections", "overview")
+    assert open_tab.status_code == 201, open_tab.text
+    assert open_tab.json()["result"]["action"] == "navigate"
+    assert open_tab.json()["result"]["tab"] == "connections"
+    await activate(w, w.tenants[0], "subscriptions")
+    model.reply({"action": "navigate", "tab": "payments"})
+    unlocked = await _turn(w, browser, thread, "Open Payments", "overview")
+    assert unlocked.status_code == 201, unlocked.text
+    assert unlocked.json()["result"]["action"] == "navigate"
+    assert unlocked.json()["result"]["tab"] == "payments"
+    # Activating the add-on brought Customer support with it, so the preview opens too.
+    model.reply({"action": "navigate", "tab": "chat"})
+    allowed = await _turn(w, browser, thread, "Open the customer preview", "overview")
+    assert allowed.status_code == 201, allowed.text
+    assert allowed.json()["result"]["tab"] == "chat"
 
 
 @requires_docker

@@ -71,6 +71,58 @@
     }
   },
   {
+    "id": "navigate-en-3",
+    "language": "en",
+    "message": "Open Payments",
+    "facts": {
+      "preset": "staff_subscriptions"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ]
+    }
+  },
+  {
+    "id": "navigate-ms-4",
+    "language": "ms",
+    "message": "Buka Pembayaran",
+    "facts": {
+      "preset": "staff_subscriptions"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ]
+    }
+  },
+  {
+    "id": "navigate-en-4",
+    "language": "en",
+    "message": "Open Connections",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ]
+    }
+  },
+  {
+    "id": "navigate-ms-5",
+    "language": "ms",
+    "message": "Buka Sambungan",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "navigate"
+      ]
+    }
+  },
+  {
     "id": "answer-en-1",
     "language": "en",
     "message": "What can you help me with in this console?",
