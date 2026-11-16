@@ -14935,7 +14935,7 @@
       },
       "ProcessTask": {
         "additionalProperties": false,
-        "description": "A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks\n(and every task for HR) add the description, anchor, approval, check, reference note (copied\nfrom the step when the process started), completion time, note and version. HR alone gets\nthe assignee id, the offset and override, and who completed and approved it.",
+        "description": "A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks\n(and every task for HR) add the description, anchor, approval, check, reference note (copied\nfrom the step when the process started), completion time, note, version and the send-back\nreason (why the approver sent it back; cleared when it is completed again). HR alone gets\nthe assignee id, the offset and override, and who completed and approved it.",
         "properties": {
           "anchor": {
             "anyOf": [
@@ -15162,6 +15162,17 @@
           "required": {
             "title": "Required",
             "type": "boolean"
+          },
+          "sent_back_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent Back Reason"
           },
           "status": {
             "enum": [

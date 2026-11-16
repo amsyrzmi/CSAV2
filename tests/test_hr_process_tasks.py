@@ -40,6 +40,7 @@ from tests.test_hr_process_instances import (
     run,
     start_body,
 )
+from tests.test_hr_process_reads import get as get_process
 from tests.test_hr_process_reads import mine, read_as
 from tests.test_hr_process_templates import FP, OTHER_FP, create, step
 
@@ -105,7 +106,7 @@ async def refused(world: HrWorld, code: str, who: str, operation: str, **body: A
 async def task(world: HrWorld, process: UUID, ordinal: int) -> dict[str, Any]:
     [row] = await world.q(
         "SELECT id, status, assignee_employee_id, assignee_overridden, due_on, due_overridden,"
-        " completed_by, completed_at, approved_by, approved_at, note, version"
+        " completed_by, completed_at, approved_by, approved_at, note, sent_back_reason, version"
         " FROM hr_process_tasks WHERE client_id=%s AND process_id=%s AND ordinal=%s",
         (world.tenant, process, ordinal),
     )
@@ -829,7 +830,7 @@ async def test_my_tasks_lists_tasks_awaiting_my_approval(world: HrWorld) -> None
 
     by_manager = await mine(world, "manager")
     assert flags(by_manager) == {"Bank details": True}
-    assert set(by_manager[0]) == MINE_COLUMNS | {"needs_my_approval"}
+    assert set(by_manager[0]) == MINE_COLUMNS | {"needs_my_approval", "sent_back_reason"}
     assert by_manager[0]["note"] is None  # a manager who only approves gets no note
     assert by_manager[0]["status"] == "awaiting_approval"
     # The owner completed Payroll (a pool task, listed), so it is not theirs to approve.
@@ -1068,3 +1069,152 @@ async def test_functions_are_pinned_definers_and_only_the_entry_point_is_granted
         " WHERE table_name='hr_process_tasks' AND column_name='assignee_overridden'"
     )
     assert column == {"data_type": "boolean", "is_nullable": "NO", "column_default": "false"}
+
+
+# ---- Review fix round 1 -----------------------------------------------------------------------
+
+
+async def test_the_send_back_reason_is_shown_to_the_assignee_and_hr(world: HrWorld) -> None:
+    """Review I1: a send-back reason is addressed to the assignee (sent_back_reason), apart from
+    the shared note; a manager's view of other people's tasks and a stranger never get it."""
+    staff = world.employees["staff"]
+    pid = await custom(
+        world,
+        staff,
+        step(title_en="Bank details", owner_role="employee", approval_by="manager"),
+        step(title_en="Payroll"),
+    )
+    await act(
+        world,
+        "staff",
+        "task.complete",
+        **await versioned_task(world, pid, 1),
+        note="Synthetic: staff note",
+    )
+    waiting = await versioned_task(world, pid, 1)
+    await refused(
+        world, "hr_task_reason_invalid", "manager", "task.send_back", **waiting, reason="x" * 501
+    )
+    reason = "Synthetic: the account number\nis missing a digit"
+    await act(world, "manager", "task.send_back", **waiting, reason=f"  {reason}  ")
+    row = await task(world, pid, 1)
+    assert (row["status"], row["sent_back_reason"], row["note"]) == (
+        "todo",
+        reason,
+        "Synthetic: staff note",
+    )
+    assert event(await events(world, pid), "task.sent_back", 1)["detail"] == {"remark": reason}
+    [own] = [r for r in await mine(world, "staff") if r["title_en"] == "Bank details"]
+    assert (own["sent_back_reason"], own["note"]) == (reason, "Synthetic: staff note")
+    as_assignee = await get_process(world, "staff", pid)
+    assert as_assignee is not None and as_assignee["view"] == "assignee"
+    assert as_assignee["tasks"][0]["sent_back_reason"] == reason
+    as_hr = await get_process(world, "owner", pid)
+    assert as_hr is not None
+    assert [t.get("sent_back_reason") for t in as_hr["tasks"]] == [reason, None]
+    as_manager = await get_process(world, "manager", pid)
+    assert as_manager is not None and as_manager["view"] == "manager"
+    assert all("sent_back_reason" not in t for t in as_manager["tasks"])
+    assert await mine(world, "manager") == []
+    assert await get_process(world, "outsider", pid) is None
+    assert await mine(world, "outsider") == []
+
+    # Completing again clears it.
+    await act(world, "staff", "task.complete", **await versioned_task(world, pid, 1))
+    assert (await task(world, pid, 1))["sent_back_reason"] is None
+    [again] = [r for r in await mine(world, "staff") if r["title_en"] == "Bank details"]
+    assert again["sent_back_reason"] is None
+    assert again["note"] == "Synthetic: staff note"
+
+
+async def test_a_managers_approval_rows_hide_descriptions_and_reference(world: HrWorld) -> None:
+    """Review m1: an approval row of a task that is not the manager's own carries what 0633's
+    manager view shows (title, status, due date), not the descriptions or reference note."""
+    staff = world.employees["staff"]
+    pid = await custom(
+        world,
+        staff,
+        step(
+            title_en="Bank details",
+            owner_role="employee",
+            approval_by="manager",
+            description_en="Synthetic: bring the bank letter",
+            description_ms="Synthetic: bawa surat bank",
+            reference_note="Synthetic bank form",
+        ),
+    )
+    await act(world, "staff", "task.complete", **await versioned_task(world, pid, 1))
+    [approval] = await mine(world, "manager")
+    [own] = await mine(world, "staff")
+    assert approval["needs_my_approval"] is True
+    assert (approval["description_en"], approval["description_ms"], approval["reference_note"]) == (
+        None,
+        None,
+        None,
+    )
+    assert (approval["title_en"], approval["status"], approval["due_on"]) == (
+        own["title_en"],
+        "awaiting_approval",
+        own["due_on"],
+    )
+    assert (own["description_en"], own["description_ms"], own["reference_note"]) == (
+        "Synthetic: bring the bank letter",
+        "Synthetic: bawa surat bank",
+        "Synthetic bank form",
+    )
+
+
+async def test_an_employee_step_for_a_person_who_left_goes_to_the_pool(world: HrWorld) -> None:
+    """Review m2: a custom process may be started for someone who has left; their employee step
+    starts in the HR pool instead of with a person who can never act on it."""
+    gone = await insert_employee(world, active=False)
+    pid = await custom(world, gone, step(title_en="Confirm bank account", owner_role="employee"))
+    assert (await task(world, pid, 1))["assignee_employee_id"] is None
+    assert event(await events(world, pid), "task.created", 1)["detail"] == {
+        "owner_role": "employee",
+        "assignee_employee_id": None,
+        "due_on": START.isoformat(),
+        "fallback": "hr_pool",
+        "reason": "person_inactive",
+    }
+    pooled = [r for r in await mine(world, "owner") if r["process_id"] == pid]
+    assert [(r["title_en"], r["pool"]) for r in pooled] == [("Confirm bank account", True)]
+
+
+async def test_close_anyway_replayed_with_the_same_key_writes_one_event(world: HrWorld) -> None:
+    pid = await custom(world, world.employees["staff"], step(title_en="Payroll"))
+    key = uuid4()
+    first = await act(world, "owner", "process.close_anyway", process_id=pid, note="x", key=key)
+    written = await events(world, pid)
+    again = await act(world, "owner", "process.close_anyway", process_id=pid, note="x", key=key)
+    assert again == {**first, "duplicate": True}
+    assert await events(world, pid) == written
+    assert [e["action"] for e in written].count("process.completed") == 1
+
+
+async def test_a_caller_whose_employee_is_no_longer_active_gets_nothing(world: HrWorld) -> None:
+    """A member whose linked employee is inactive (still signed in) is nobody to the task
+    functions: hr_process_caller resolves only an active linked employee."""
+    staff, outsider = world.employees["staff"], world.employees["outsider"]
+    pid = await custom(
+        world,
+        outsider,
+        step(title_en="Mentor session", owner_role="person", owner_employee_id=str(staff)),
+    )
+    await world.q(
+        "UPDATE hr_employees SET is_active=false WHERE client_id=%s AND id=%s",
+        (world.tenant, staff),
+    )
+    # The trigger sent the step to the pool; put it back on the person, as old data could hold
+    # it, so only the caller rule is under test.
+    await world.q(
+        "UPDATE hr_process_tasks SET assignee_employee_id=%s WHERE client_id=%s AND process_id=%s",
+        (staff, world.tenant, pid),
+    )
+    body = await versioned_task(world, pid, 1)
+    await refused(world, "hr_task_unavailable", "staff", "task.complete", **body)
+    await refused(
+        world, "hr_task_unavailable", "staff", "task.note", task_id=body["task_id"], note="x"
+    )
+    assert await mine(world, "staff") == []
+    assert (await task(world, pid, 1))["version"] == body["expected_version"]

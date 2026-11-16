@@ -438,18 +438,21 @@ they were started with.
     `task_id`, `ordinal`, `title_en`, `title_ms`, `owner_role`, `assignee_name`, `due_on`, `status`
     (`todo`, `awaiting_approval`, `done`, `rejected`, `skipped`), `required`, `overdue`, `mine`.
     The caller's own tasks, and every task for `hr`, add `description_en`, `description_ms`,
-    `anchor`, `approval_by`, `auto_check`, `reference_note`, `completed_at`, `note`, `version`.
-    `reference_note` is the step's reference, copied when the process started, so a later
+    `anchor`, `approval_by`, `auto_check`, `reference_note`, `completed_at`, `note`, `version`,
+    `sent_back_reason` (why the approver sent the step back, for the assignee; `null` once it is
+    completed again; may hold line breaks). `reference_note` is the step's reference, copied when the process started, so a later
     template edit does not change it. The descriptions and `note` may hold line breaks (`\n`):
     when the person leaves, "person left" is added to a skipped task's note on a new line. `hr`
     alone adds `assignee_employee_id`, `due_offset_days`, `due_overridden`, `completed_by`,
     `approved_by`, `approved_at`. A task with no assignee is in the HR pool.
   - `events` (`hr` only): `{event_id, at, actor, action, task_id, detail}`; `actor` `null` is the
     system; `action` is `process.started`, `process.cancelled`, `process.completed`,
-    `task.created`, `task.completed`, `task.skipped`, `task.reassigned` or `task.date_changed`;
-    `detail` holds the keys that action writes (`reason`, `kind`, `template_id`,
-    `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback`, `clamped`,
-    `anchor`, `old`, `new`, `from`, `to`, `auto_check`). Every `detail` value is any JSON value,
+    `task.created`, `task.completed`, `task.skipped`, `task.reassigned`, `task.date_changed`,
+    `task.approved`, `task.sent_back`, `task.noted` or `task.rescheduled`; `detail` holds the keys
+    that action writes (`reason`, `kind`, `template_id`, `template_version`, `owner_role`,
+    `assignee_employee_id`, `due_on`, `fallback`, `clamped`, `anchor`, `old`, `new`, `from`, `to`,
+    `auto_check`, `remark`, `sent_back`, `awaiting_approval`, `on_behalf`, `approver`,
+    `approved_without_second_person`). Every `detail` value is any JSON value,
     returned exactly as stored (not trimmed; text may hold line breaks), because events never
     change. Later releases add actions and keys (the task actions of PR 2): `action` is typed as a
     string of at most 80 characters and unknown `detail` keys pass through, so a client should show

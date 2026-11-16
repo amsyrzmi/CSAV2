@@ -83,6 +83,7 @@ TASK_OWN = TASK_BASE | {
     "completed_at",
     "note",
     "version",
+    "sent_back_reason",
 }
 TASK_HR = TASK_OWN | {
     "assignee_employee_id",

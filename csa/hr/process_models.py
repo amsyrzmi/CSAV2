@@ -107,9 +107,9 @@ ProcessEventAction = Literal[
     "task.rescheduled",
 ]
 TemplateWarningCode = Literal["step_after_last_day"]
-# Text that may hold line breaks: a step's descriptions, and a task's note (the database appends
-# "person left" to a note on a new line, 0632 hr_process_person_left).
-_MULTILINE = frozenset({"description_en", "description_ms", "note"})
+# Text that may hold line breaks: a step's descriptions, a task's note (the database appends
+# "person left" to a note on a new line, 0632 hr_process_person_left) and its send-back reason.
+_MULTILINE = frozenset({"description_en", "description_ms", "note", "sent_back_reason"})
 
 
 class _StepText(HrModel):
@@ -352,7 +352,8 @@ class ProcessHeader(HrModel):
 class ProcessTask(_StepText):
     """A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks
     (and every task for HR) add the description, anchor, approval, check, reference note (copied
-    from the step when the process started), completion time, note and version. HR alone gets
+    from the step when the process started), completion time, note, version and the send-back
+    reason (why the approver sent it back; cleared when it is completed again). HR alone gets
     the assignee id, the offset and override, and who completed and approved it."""
 
     task_id: UUID
@@ -375,6 +376,7 @@ class ProcessTask(_StepText):
     completed_at: AwareDatetime | None = None
     note: str | None = None
     version: Version | None = None
+    sent_back_reason: str | None = None
     assignee_employee_id: UUID | None = None
     due_offset_days: int | None = None
     due_overridden: bool | None = None

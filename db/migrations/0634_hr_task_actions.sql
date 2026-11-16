@@ -3,6 +3,10 @@
 --   public.hr_process_tasks.assignee_overridden boolean NOT NULL DEFAULT false: true once HR has
 --     reassigned the task by hand (task.reassign). A manager change (0632 trigger step 5, through
 --     hr_process_reassign_manager) no longer moves such a task.
+--   public.hr_process_tasks.sent_back_reason text NULL (at most 500 characters): why the approver
+--     sent the step back, addressed to the assignee; set by task.send_back, cleared by the next
+--     task.complete. Shown to the assignee and the HR team (My tasks, and the own and HR task
+--     shapes of hr_process_get), never in a manager's view of other people's tasks.
 --   public.hr_task_apply(p_client,p_key,p_fingerprint,p_body): every task action. Who is asking
 --     comes from hr_process_caller (0633): the HR team (HR owner or people.manage holder) or the
 --     caller's active linked employee; anyone else, and anyone for another tenant than
@@ -25,7 +29,8 @@
 --       emergency_phone, are all set; document_uploaded:<kind>: a document of that kind of the
 --       person is on file, not removed) must hold, else hr_task_check_not_met (HR may skip). A
 --       step with approval_by goes to awaiting_approval, else done; completed_by and
---       completed_at are set; a note given replaces the shared note. Event task.completed
+--       completed_at are set, sent_back_reason is cleared; a note given replaces the shared note.
+--       Event task.completed
 --       {awaiting_approval, on_behalf (a named assignee who is not the caller), auto_check}.
 --     task.approve {task_id, expected_version}: the task must be awaiting_approval
 --       (hr_task_not_awaiting_approval). The approver (hr_task_approver): approval_by hr is the
@@ -38,7 +43,8 @@
 --       approved_by and approved_at set. Event task.approved {approver: hr | manager, and
 --       approved_without_second_person: true for that exception}.
 --     task.send_back {task_id, expected_version, reason}: the approver (the completer included).
---       Back to todo, completed_by and completed_at cleared, event task.sent_back {remark}. When
+--       Back to todo, completed_by and completed_at cleared, sent_back_reason set to the reason
+--       (the assignee sees it; the note is untouched), event task.sent_back {remark}. When
 --       the assignee is a person who has left, the task is skipped instead, never reopened for
 --       them (event task.skipped {reason: person_left, remark, sent_back: true}).
 --     task.note {task_id, note}: the assignee or the HR team; the shared note (seen by the
@@ -56,8 +62,10 @@
 --       active (hr_process_unavailable, hr_process_closed); its open tasks are skipped
 --       (task.skipped {reason: process_closed_anyway}) and it completes (process.completed
 --       {reason: closed_anyway, remark}).
---     HR-only remarks (the reasons of skip, send back and close anyway) are kept in the event
---     detail as remark (events are HR-only), never in the task note, which the assignee sees.
+--     HR-only remarks (the reasons of skip and close anyway) are kept in the event detail as
+--     remark (events are HR-only), never in the task note, which the assignee sees. A send-back
+--     reason is a message to the assignee: it is kept in sent_back_reason, and in the event as
+--     remark for the record.
 --     A reason or a close-anyway note is 1-500 characters after trimming (hr_task_reason_invalid).
 --     Skip, reschedule, reassign and close anyway by anyone outside the HR team:
 --     hr_people_manager_required; complete and note by someone else: hr_task_not_assignee; an
@@ -68,12 +76,18 @@
 --     needs_my_approval: the tasks awaiting approval the caller may approve now are listed too
 --     (the HR team: approver hr, which includes manager approval with no manager resolved; the
 --     manager: approver manager of their report), true on those rows. A manager who is neither
---     the assignee nor HR does not get the note of such a row. Every other column, the
+--     the assignee nor HR gets neither the note nor the descriptions and reference note of such a
+--     row (0633's manager view withholds them), only title, status, due date and the rest. A
+--     last column sent_back_reason goes to the assignee and the HR team. Every other column, the
 --     visibility of the other rows and the order (soonest due first, keyset by task id) are
 --     unchanged.
 --   Changed from 0632 (CREATE OR REPLACE, the rest of each body unchanged):
---     hr_process_start: a person step whose named owner is no longer active goes to the HR pool,
---       event task.created detail {fallback: hr_pool, reason: person_inactive}.
+--     hr_process_start: a person step whose named owner is no longer active, and an employee step
+--       of a process for a person who is not active (a custom process may be started for someone
+--       who has left), go to the HR pool, event task.created detail {fallback: hr_pool, reason:
+--       person_inactive}.
+--   Changed from 0633 (CREATE OR REPLACE, the rest of the body unchanged): hr_process_get adds
+--     sent_back_reason to the own task shape (the caller's own tasks, and every task for HR).
 --     hr_process_reassign_manager: skips tasks HR reassigned by hand (assignee_overridden).
 --     hr_process_person_left: when a person leaves, (1) their own active onboarding and custom
 --       processes are cancelled (process.cancelled {reason: person_left}; open tasks skipped as
@@ -96,13 +110,17 @@
 --   DROP FUNCTION public.hr_task_approval_right(uuid,uuid); DROP FUNCTION public.hr_task_approver(uuid,uuid);
 --   DROP FUNCTION public.hr_task_check(uuid,uuid,text);
 --   re-run the hr_task_rows_mine part of 0633 after DROP FUNCTION public.hr_task_rows_mine(uuid,text,integer,uuid),
---   and the hr_process_start, hr_process_reassign_manager and hr_process_person_left parts of
---   0632; ALTER TABLE public.hr_process_tasks DROP COLUMN assignee_overridden (who reassigned by
---   hand is lost); then delete the schema_migrations row for 0634. Events already written stay.
+--   the hr_process_get part of 0633, and the hr_process_start, hr_process_reassign_manager and
+--   hr_process_person_left parts of 0632; ALTER TABLE public.hr_process_tasks DROP COLUMN
+--   assignee_overridden, DROP COLUMN sent_back_reason (who reassigned by hand and open send-back
+--   reasons are lost); then delete the schema_migrations row for 0634. Events already written stay.
 
 ALTER TABLE public.hr_process_tasks ADD COLUMN IF NOT EXISTS assignee_overridden boolean NOT NULL DEFAULT false;
+ALTER TABLE public.hr_process_tasks ADD COLUMN IF NOT EXISTS sent_back_reason text
+ CHECK(char_length(sent_back_reason)<=500);
 
--- 0632, with ledger I3: a person step whose named owner has left goes to the HR pool.
+-- 0632, with ledger I3: a person step whose named owner has left goes to the HR pool, and so does an
+-- employee step of a person who is not active (review m2: a custom process for someone who left).
 CREATE OR REPLACE FUNCTION public.hr_process_start(p_client uuid, p_employee uuid, p_kind text,
     p_template uuid, p_actor uuid)
 RETURNS uuid
@@ -149,7 +167,12 @@ BEGIN
   why:=NULL;
   IF s.owner_role='manager' THEN
    SELECT m.assignee, m.reason INTO who, why FROM public.hr_process_manager_of(p_client,p_employee) m;
-  ELSIF s.owner_role='employee' THEN who:=p_employee;
+  ELSIF s.owner_role='employee' THEN
+   who:=p_employee;
+   IF NOT EXISTS(SELECT 1 FROM public.hr_employees o
+                 WHERE o.client_id=p_client AND o.id=who AND o.is_active) THEN
+    who:=NULL; why:='person_inactive';
+   END IF;
   ELSIF s.owner_role='person' THEN
    who:=s.owner_employee_id;
    -- The template was saved while the person was active (0631); they may have left since.
@@ -477,7 +500,7 @@ BEGIN
    RAISE EXCEPTION 'hr_task_check_not_met' USING ERRCODE='23514'; END IF;
   UPDATE public.hr_process_tasks t
   SET status=CASE WHEN k.approval_by IS NULL THEN 'done' ELSE 'awaiting_approval' END,
-   completed_by=actor, completed_at=clock_timestamp(),
+   completed_by=actor, completed_at=clock_timestamp(), sent_back_reason=NULL,
    note=CASE WHEN has_note THEN txt ELSE t.note END, version=t.version+1
   WHERE t.client_id=p_client AND t.id=k.id;
   INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
@@ -508,7 +531,7 @@ BEGIN
     jsonb_build_object('reason','person_left','remark',txt,'sent_back',true));
   ELSE
    UPDATE public.hr_process_tasks t SET status='todo', completed_by=NULL, completed_at=NULL,
-    version=t.version+1
+    sent_back_reason=txt, version=t.version+1
    WHERE t.client_id=p_client AND t.id=k.id;
    INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
    VALUES(p_client,pid,k.id,actor,'task.sent_back',jsonb_build_object('remark',txt));
@@ -569,8 +592,95 @@ BEGIN
  RETURN result;
 END $$;
 
--- 0633's My tasks, plus the tasks awaiting the caller's approval (needs_my_approval). A new
--- result column cannot be added by CREATE OR REPLACE.
+-- 0633, with the send-back reason in the own task shape (the caller's own tasks, every task for
+-- HR); a manager's view of other people's tasks (the base shape) does not get it.
+CREATE OR REPLACE FUNCTION public.hr_process_get(p_client uuid, p_process uuid) RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+DECLARE
+ who record; p public.hr_processes%ROWTYPE; e public.hr_employees%ROWTYPE; viewer text; tname text;
+ header jsonb; today date:=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date; result jsonb;
+BEGIN
+ SELECT * INTO who FROM public.hr_process_caller(p_client) c;
+ IF NOT who.team AND who.employee IS NULL THEN RETURN NULL; END IF;
+ SELECT * INTO p FROM public.hr_processes x WHERE x.client_id=p_client AND x.id=p_process;
+ IF NOT FOUND THEN RETURN NULL; END IF;
+ SELECT * INTO e FROM public.hr_employees x WHERE x.client_id=p_client AND x.id=p.employee_id;
+ IF who.team THEN viewer:='hr';
+ ELSIF e.manager_id=who.employee THEN viewer:='manager';
+ ELSIF p.employee_id=who.employee AND p.kind IN ('onboarding','offboarding') THEN viewer:='self';
+ ELSIF EXISTS(SELECT 1 FROM public.hr_process_tasks x
+              WHERE x.client_id=p_client AND x.process_id=p.id
+               AND x.assignee_employee_id=who.employee) THEN viewer:='assignee';
+ ELSE RETURN NULL;
+ END IF;
+ SELECT t.name INTO tname FROM public.hr_process_templates t
+  WHERE t.client_id=p_client AND t.id=p.template_id;
+ header:=jsonb_build_object('process_id',p.id,'kind',p.kind,'name',tname,'status',p.status,
+  'employee_name',e.display_name);
+ IF viewer IN ('hr','manager','self') THEN
+  header:=header||jsonb_build_object('started_at',p.started_at,'closed_at',p.closed_at);
+ END IF;
+ IF viewer IN ('hr','manager') THEN
+  header:=header||jsonb_build_object('employee_id',p.employee_id,
+   'tasks_total',(SELECT count(*) FROM public.hr_process_tasks x
+                  WHERE x.client_id=p_client AND x.process_id=p.id),
+   'tasks_done',(SELECT count(*) FROM public.hr_process_tasks x
+                 WHERE x.client_id=p_client AND x.process_id=p.id
+                  AND x.status IN ('done','skipped')));
+ END IF;
+ IF viewer='self' THEN
+  SELECT header||jsonb_build_object('required_total',count(*) FILTER (WHERE x.required),
+   'required_done',count(*) FILTER (WHERE x.required AND x.status IN ('done','skipped')),
+   'open_tasks',count(*) FILTER (WHERE x.status NOT IN ('done','skipped')))
+  INTO header
+  FROM public.hr_process_tasks x WHERE x.client_id=p_client AND x.process_id=p.id;
+ END IF;
+ IF viewer='hr' THEN
+  header:=header||jsonb_build_object('template_id',p.template_id,'template_version',p.template_version,
+   'anchor_dates',p.anchor_dates,'started_by',p.started_by);
+ END IF;
+ -- Three task shapes, each built on the one before: what a manager may see of anyone's task, what
+ -- an assignee sees of their own, and the HR team's whole row. The person and an assignee get
+ -- only their own rows.
+ result:=jsonb_build_object('view',viewer,'process',header,'tasks',
+  (SELECT coalesce(jsonb_agg(CASE WHEN viewer='hr' THEN s.own||s.hr_only
+                                  WHEN s.mine THEN s.own
+                                  ELSE s.base END ORDER BY s.ordinal),'[]'::jsonb)
+   FROM (
+    SELECT b.ordinal, b.mine, b.base, own.own, hr_only.hr_only
+    FROM public.hr_process_tasks x
+    LEFT JOIN public.hr_employees a ON a.client_id=x.client_id AND a.id=x.assignee_employee_id
+    CROSS JOIN LATERAL (
+     SELECT x.ordinal, coalesce(x.assignee_employee_id=who.employee,false) AS mine,
+      jsonb_build_object('task_id',x.id,'ordinal',x.ordinal,'title_en',x.title_en,
+       'title_ms',x.title_ms,'owner_role',x.owner_role,'assignee_name',a.display_name,
+       'due_on',x.due_on,'status',x.status,'required',x.required,
+       'overdue',coalesce(p.status='active' AND x.status NOT IN ('done','skipped')
+                          AND x.due_on<today,false),
+       'mine',coalesce(x.assignee_employee_id=who.employee,false)) AS base) b
+    CROSS JOIN LATERAL (
+     SELECT b.base||jsonb_build_object('description_en',x.description_en,
+      'description_ms',x.description_ms,'anchor',x.anchor,'approval_by',x.approval_by,
+      'auto_check',x.auto_check,'reference_note',x.reference_note,'completed_at',x.completed_at,
+      'note',x.note,'version',x.version,'sent_back_reason',x.sent_back_reason) AS own) own
+    CROSS JOIN LATERAL (
+     SELECT jsonb_build_object('assignee_employee_id',x.assignee_employee_id,
+      'due_offset_days',x.due_offset_days,'due_overridden',x.due_overridden,
+      'completed_by',x.completed_by,'approved_by',x.approved_by,'approved_at',x.approved_at)
+      AS hr_only) hr_only
+    WHERE x.client_id=p_client AND x.process_id=p.id
+     AND (viewer NOT IN ('self','assignee') OR x.assignee_employee_id=who.employee)) s));
+ IF viewer='hr' THEN
+  result:=result||jsonb_build_object('events',
+   (SELECT coalesce(jsonb_agg(jsonb_build_object('event_id',v.id,'at',v.at,'actor',v.actor,
+      'action',v.action,'task_id',v.task_id,'detail',v.detail) ORDER BY v.at, v.id),'[]'::jsonb)
+    FROM public.hr_process_events v WHERE v.client_id=p_client AND v.process_id=p.id));
+ END IF;
+ RETURN result;
+END $$;
+
+-- 0633's My tasks, plus the tasks awaiting the caller's approval (needs_my_approval) and the
+-- send-back reason. A new result column cannot be added by CREATE OR REPLACE.
 DROP FUNCTION IF EXISTS public.hr_task_rows_mine(uuid,text,integer,uuid);
 CREATE FUNCTION public.hr_task_rows_mine(p_client uuid, p_status text, p_limit integer,
     p_after uuid)
@@ -578,7 +688,7 @@ RETURNS TABLE(task_id uuid, process_id uuid, process_kind text, process_name tex
     employee_name text, ordinal integer, title_en text, title_ms text, description_en text,
     description_ms text, owner_role text, due_on date, required boolean, approval_by text,
     auto_check text, reference_note text, status text, note text, version integer, overdue boolean,
-    pool boolean, needs_my_approval boolean)
+    pool boolean, needs_my_approval boolean, sent_back_reason text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
  who record; today date:=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date; after_due date;
@@ -592,15 +702,21 @@ BEGIN
  END IF;
  RETURN QUERY
  SELECT x.id, p.id, p.kind, t.name, e.display_name, x.ordinal, x.title_en, x.title_ms,
-  x.description_en, x.description_ms, x.owner_role, x.due_on, x.required, x.approval_by,
-  x.auto_check, x.reference_note, x.status,
-  -- The note is shared with the assignee (and HR), not with a manager who only approves.
+  -- A manager who only approves gets what 0633's manager view shows: no descriptions, reference
+  -- note, note or send-back reason (those are the assignee's and HR's).
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.description_en END,
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.description_ms END,
+  x.owner_role, x.due_on, x.required, x.approval_by,
+  x.auto_check,
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.reference_note END,
+  x.status,
   CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.note END,
   x.version,
   coalesce(p.status='active' AND x.status NOT IN ('done','skipped') AND x.due_on<today,false),
   x.assignee_employee_id IS NULL,
   x.status='awaiting_approval'
-   AND coalesce(public.hr_task_approval_right(p_client,x.id) IN ('hr','manager','hr_sole_owner'),false)
+   AND coalesce(public.hr_task_approval_right(p_client,x.id) IN ('hr','manager','hr_sole_owner'),false),
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.sent_back_reason END
  -- Branches instead of an OR: who.team is a constant of the query, so for anyone outside the
  -- HR team the pool branch is a one-time false filter and never reads the unassigned tasks.
  FROM (SELECT y.* FROM public.hr_process_tasks y
@@ -631,7 +747,8 @@ DO $$ DECLARE f regprocedure; BEGIN
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_app,csa_ro,csa_identity,csa_hr_maintenance',f);
  END LOOP;
  FOREACH f IN ARRAY ARRAY['public.hr_task_apply(uuid,uuid,text,jsonb)'::regprocedure,
-  'public.hr_task_rows_mine(uuid,text,integer,uuid)'::regprocedure] LOOP
+  'public.hr_task_rows_mine(uuid,text,integer,uuid)'::regprocedure,
+  'public.hr_process_get(uuid,uuid)'::regprocedure] LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_ro,csa_identity,csa_hr_maintenance',f);
   EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO csa_app',f);
  END LOOP;
