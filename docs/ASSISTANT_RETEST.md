@@ -248,11 +248,38 @@ and the sentences are for a person to read. Use synthetic people and your own ma
 | Off again | Tenant admin saves Off | The next message gets no reply, even if the turn fails, and the banner is back | manual |
 | Nothing to answer from | The Business knowledge add-on is active with no processed file, replies on | The panel and the banner say "Your bot has nothing to answer from yet." until a file finishes | manual |
 | Who can change it | Staff and read-only members on Services | They see the state and "Ask your admin to change this.", with no controls | manual |
-| The Overview chat previews with replies Off | A company with Customer support and replies Off; ask the Overview chat a question the bot can answer | The chat answers, and the banner above it still says "Your customers aren't getting replies yet."; a customer on Telegram or WhatsApp still gets nothing | manual |
-| The Overview chat previews with "Staff approve each reply" | The same company, replies set to "Staff approve each reply"; ask the Overview chat the same question | The chat answers at once, with no draft in the Inbox | manual |
-| A review rule still holds the preview | A company with a `never_auto` intent or a confidence threshold; ask the Overview chat that kind of question | The chat holds the answer, as it would for a customer; it does not send it | manual |
-| An employee-only company has a small home | A company with People & HR and no Customer support; open Overview | Links to People & HR and Services, no chat, no banner, and no Assistant activity in the menu; "Ask the assistant at the side of the screen." shows only for people who have the assistant at the side of the screen, and a View only member sees the links without it | manual |
-| A platform admin switches company | Choose a company with Customer support, then one without, then back | Overview shows the chat, then the small home, then the chat; it never shows one company's page for the other | manual |
+| The Customer preview works with replies Off | A company with Customer support and replies Off; on Services, Customer replies, open the Customer preview and ask it a question the bot can answer | The preview answers, and its banner still says "Your customers aren't getting replies yet."; a customer on Telegram or WhatsApp still gets nothing | manual |
+| The Customer preview works with "Staff approve each reply" | The same company, replies set to "Staff approve each reply"; ask the Customer preview the same question | The preview answers at once, with no draft in the Inbox | manual |
+| A review rule still holds the preview | A company with a `never_auto` intent or a confidence threshold; ask the Customer preview that kind of question | The preview holds the answer, as it would for a customer; it does not send it | manual |
+| An employee-only company has a small home | A company with People & HR and no Customer support; open Overview | The assistant page with its starting ideas (see "Overview is the assistant"), no banner, and no Assistant activity in the menu; "Ask the assistant at the side of the screen." shows only for people who have the assistant at the side of the screen, and a View only member sees the links without it | manual |
+| A platform admin switches company | Choose a company with Customer support, then one without, then back | Overview shows the assistant page for each company (with the replies banner only for the one with Customer support); it never shows one company's page, banner or conversation for the other | manual |
+
+## Overview is the assistant (2026-11-16)
+
+Overview (`/` for platform admins, `/portal` for tenant members) is now the full-page staff
+assistant: the same conversation as the dock, with the replies banner above it when replies are off.
+The customer sandbox chat moved to Services, Customer replies, where it is called "Customer preview".
+The dock is hidden while Overview is open. Use test companies: one with Customer support, one with
+People & HR only.
+
+| Step | Setup | Expected | Test |
+|---|---|---|---|
+| Open Overview as tenant staff of a company with Customer support | Replies Off | The status strip, the replies banner ("Your customers aren't getting replies yet."), the heading "How can I help today?" and up to four starting ideas; no dock button | manual |
+| Open Overview as tenant staff of an employee-only company | People & HR only, no Customer support | The assistant page and its ideas, no banner | manual |
+| Press a starting idea | Any company above | The idea's text fills the composer and is not sent; Enter or Send then sends it | manual |
+| The ideas fit the member | Compare a company with and without Subscriptions, HR and Staff email; staff and Admin | "Open Payments", "Open the HR tab" and the email idea show only where the package is on and the role has the tab; Admin and staff see the same ideas for the same packages | manual |
+| Type "open Payments" on Overview | Subscriptions active | The browser moves to Payments, the dock is open on that page, and it shows the same conversation: the question and the "Opened Payments." answer, one thread, no second copy on Overview afterwards | manual |
+| Type "open Connections", then "buka Sambungan" | Any member | Both move to Connections, the answer line after the second is Malay, and the conversation continues in the dock | manual |
+| Type "open Payments" as a View only member | Subscriptions active | A View only member has no Payments link and, because the assistant needs a member who can post turns, no assistant either, so there is no typed request to refuse: the refusal is the planner's `navigate-en-2` case and the missing link. Confirm the small home (see "Open Overview as a View only member") | manual |
+| Type "open Payments" as tenant staff without the Payments tab | The role cannot open Payments | No page opens and there is no "Opened" line; the answer says it isn't available to the role | manual |
+| Type "open the customer preview" | A company with Customer support active | The browser lands on Services with the Customer preview open (`?section=preview`); a company without Customer support gets the "isn't available" line | manual |
+| Ask for the preview in Malay: "Buka Customer preview" | Same company | Same result; the answer line after it is Malay (the tab is named Customer preview in both languages) | manual |
+| Open the Customer preview on Services | Customer support active; also a suspended company as a platform admin | The section is collapsed until opened; once open it behaves as the old Overview chat did: sandbox threads, history and held answers; the persona set and then cleared changes only the wording; the replies Off banner shows; a held answer stays held. A suspended company shows the preview on its own row, with no persona form | manual |
+| Old links `/chat` and `/portal/chat` | Any member | Both redirect to Services with the Customer preview open, keeping `client_id` | manual |
+| Open Overview as a View only member | Any company | The small home of links (`WorkspaceHome`); no assistant page and no dock. The same small home shows when the assistant is switched off for the company | manual |
+| Switch company on Overview | Platform admin, two companies each with a staff conversation | Overview shows "Loading" for a moment and then that company's own conversation; the previous company's turns, card and unsent text are gone, and an open card of the first company is withdrawn | manual |
+| A held resume | Type "open Payments" while the answer is pending, or use Back after it | The dock opens by itself on the target page when an answer is pending; it never opens an empty closed dock that hides the pending answer | manual |
+| Malay ideas and headline | A thread whose latest turn is Malay | The headline and starting ideas read Malay only once the thread has a Malay turn. Known limit: the language comes from the latest turn, so an empty Overview always shows English | manual |
 
 ## Business knowledge add-on
 
@@ -454,7 +481,7 @@ messages from this rollout on; every other company stays on the LLM. Last, only 
 gate in the runbook passes (`ENV=dev uv run python -m csa.evals.decisions --provider both --out`
 to a path outside the repository; the `jev` row at least 90 percent on intent, language and urgent,
 95 on wants_human, injection and both recalls), a reviewed PR adds
-`CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=cascade`; then chat as a customer in the sandbox and check
+`CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=cascade`; then chat as a customer in the Customer preview (Services, Customer replies) and check
 the `signals` rows (provider `jev`, or `llm` with a fallback reason) and that a company with its own
 stored `decide_mode` is unaffected. To turn one area off again, a reviewed PR sets its
 `CSA_STAGING_ASSISTANT_DECIDER_*` line to `llm`.
@@ -464,8 +491,8 @@ stored `decide_mode` is unaffected. To turn one area off again, a reviewed PR se
 The customer bot follows one default guide for every company: it answers first, then offers one
 next step (the missing detail, the buttons shown, or "a team member will follow up"), invents
 no service and promises no refund, discount or date. The persona name, tone and greeting an Admin
-sets on Services, Customer replies change its wording only. Chat as a customer in the sandbox
-(Overview) with a test company, once with the persona set and once with it cleared.
+sets on Services, Customer replies change its wording only. Chat as a customer in the Customer preview
+(Services, Customer replies) with a test company, once with the persona set and once with it cleared.
 
 | Message | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
