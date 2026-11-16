@@ -183,6 +183,15 @@ test("open proposals honour local outcomes and expiry", () => {
   assert.deepEqual(view.openProposals(turns, { b: proposal("b", { status: "cancelled" }) }, now).map((p) => p.id), ["a"]);
 });
 
+test("merged turns keep one copy per id, oldest first, the newest copy winning", () => {
+  const turn = (id, body) => ({ id, request_key: "k", body, created_at: "x", duplicate: false, result: { action: "answer", markdown: body } });
+  const known = [turn(1, "one"), turn(3, "three")];
+  const merged = view.mergeTurns(known, [turn(2, "two"), turn(3, "three again")]);
+  assert.deepEqual(merged.map((t) => [t.id, t.body]), [[1, "one"], [2, "two"], [3, "three again"]]);
+  assert.deepEqual(known.map((t) => t.id), [1, 3]);
+  assert.deepEqual(view.mergeTurns([], []), []);
+});
+
 test("settled proposals summarise their receipts", () => {
   // Export receipts hold no subject or address (counts-only cards), so the line is generic.
   assert.equal(view.resultSummary(proposal("p", { status: "executed", result: { draft_id: "d1", status: "exported", gmail_draft_id: "g1" } })), "Saved to your Gmail drafts. Nothing was sent.");

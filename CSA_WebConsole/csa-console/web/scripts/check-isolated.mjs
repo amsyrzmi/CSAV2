@@ -92,6 +92,7 @@ try {
     "lib/page-context.tsx",
     "lib/page-context-state.ts",
     "lib/assistant-view.ts",
+    "lib/assistant-conversation.tsx",
     "lib/plan-card.ts",
     "lib/assistant-copy.ts",
     "lib/assistant-ideas.json",

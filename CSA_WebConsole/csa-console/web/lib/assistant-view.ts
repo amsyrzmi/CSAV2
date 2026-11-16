@@ -458,6 +458,12 @@ export function resultView(result: WorkspaceResult, language: Language = "en"): 
   }
 }
 
+/** Turns known so far plus newly read or sent ones: one per id, oldest first. */
+export function mergeTurns(current: WorkspaceTurn[], added: WorkspaceTurn[]): WorkspaceTurn[] {
+  const unique = new Map([...current, ...added].map((turn) => [turn.id, turn]));
+  return [...unique.values()].sort((left, right) => left.id - right.id);
+}
+
 /** Proposals in these turns that are still awaiting a decision at `now`. */
 export function openProposals(
   turns: WorkspaceTurn[],
