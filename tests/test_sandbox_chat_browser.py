@@ -58,7 +58,9 @@ import { useSearchParams } from "next/navigation";
 import { SandboxWorkspace } from "@/components/console/SandboxWorkspace";
 import { ServicesWorkspace } from "@/components/console/ServicesWorkspace";
 import { AssistantDock } from "@/components/console/AssistantDock";
+import { AssistantProvider } from "@/lib/assistant-conversation";
 import type { Me } from "@/lib/identity-contracts";
+import { PageContextProvider } from "@/lib/page-context";
 function Inner() {
   const params = useSearchParams();
   const role = params.get("role") ?? "tenant_staff";
@@ -67,10 +69,13 @@ function Inner() {
   const me = { role, active_client_id: tenant, workspace_assistant: dock } as Me;
   const chosen = params.get("tenant") ?? undefined;
   if (params.get("mode") === "chromeless")
-    return <div className="h-dvh">
-      <SandboxWorkspace me={me} tenant={chosen} />
-      {dock && <AssistantDock me={me} packages={[]} />}
-    </div>;
+    // Nested as AppShell nests them: the dock renders the shell's shared conversation.
+    return <div className="h-dvh"><PageContextProvider>
+      <AssistantProvider me={me} packages={[]}>
+        <SandboxWorkspace me={me} tenant={chosen} />
+        {dock && <AssistantDock />}
+      </AssistantProvider>
+    </PageContextProvider></div>;
   return <main className="p-4"><ServicesWorkspace me={me} /></main>;
 }
 export default function Harness() {
