@@ -104,6 +104,18 @@ test("the chat tab is the customer preview on Services, only where Customer supp
   assert.equal(view.tabForPath("/portal/chat", staff, all), null);
 });
 
+test("the dock hides on Overview, which is the assistant page, and shows on every other page", () => {
+  assert.equal(view.dockHidden("/portal", staff, all), true);
+  assert.equal(view.dockHidden("/portal", staff, []), true);
+  assert.equal(view.dockHidden("/", admin, []), true);
+  const subscriptions = [...all, { key: "subscriptions", status: "active" }, { key: "bookings", status: "active" }];
+  for (const path of ["/portal/services", "/portal/inbox", "/portal/hr", "/portal/hr/people/abc", "/portal/faq/add",
+    "/portal/payments", "/portal/connections", "/portal/bookings", "/portal/team", "/portal/chat"])
+    assert.equal(view.dockHidden(path, staff, subscriptions), false, path);
+  for (const path of ["/services", "/inbox", "/hr", "/connections", "/settings/clients"])
+    assert.equal(view.dockHidden(path, admin, []), false, path);
+});
+
 test("tabForPath resolves sub-pages to their group", () => {
   assert.equal(view.tabForPath("/portal/business/stores", staff, all), "business");
   assert.equal(view.tabForPath("/portal/faq/add", staff, all), "knowledge_base");

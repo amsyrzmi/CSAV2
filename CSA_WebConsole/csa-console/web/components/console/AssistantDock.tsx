@@ -1,31 +1,35 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { MessageSquare, X } from "lucide-react";
 import { panelText, PANEL } from "@/lib/assistant-copy";
 import { useAssistantConversation, type AssistantConversation } from "@/lib/assistant-conversation";
-import { tabLabel } from "@/lib/assistant-view";
+import { dockHidden, tabLabel } from "@/lib/assistant-view";
 import AgentAvatar from "./fs/AgentAvatar";
-import { AssistantComposer, headerButton } from "./assistant/AssistantComposer";
+import { AssistantComposer } from "./assistant/AssistantComposer";
 import { AssistantTurns } from "./assistant/AssistantTurns";
+import { headerButton } from "./assistant/looks";
 import { action } from "./ui";
 
 /** The corner the launcher and the panel share: 20 px in, or clear of a notch or home bar. */
 const corner = "bottom-[max(1.25rem,env(safe-area-inset-bottom))] right-[max(1.25rem,env(safe-area-inset-right))]";
 
 /**
- * The floating view of the shared conversation; it renders nothing where none is offered or
- * while the conversation is not ready.
+ * The floating view of the shared conversation; it renders nothing where none is offered, while
+ * the conversation is not ready, and on Overview, where the page itself is the assistant.
  */
 export function AssistantDock() {
   const conversation = useAssistantConversation();
+  const pathname = usePathname();
   if (!conversation) return null;
+  if (dockHidden(pathname, conversation.me, conversation.packages)) return null;
   // Keyed by company, so a change of company also starts the panel closed.
   return <Dock key={conversation.tenant} conversation={conversation} />;
 }
 
 function Dock({ conversation }: { conversation: AssistantConversation }) {
-  const { me, packages, ensureLoaded, turns, body, busy, context, language, newConversation } = conversation;
+  const { me, packages, ensureLoaded, turns, busy, context, language, newConversation } = conversation;
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const openButton = useRef<HTMLButtonElement>(null);
@@ -41,14 +45,6 @@ function Dock({ conversation }: { conversation: AssistantConversation }) {
     if (open) input.current?.focus();
     else if (returnFocus.current) openButton.current?.focus();
   }, [open]);
-
-  // The message box grows with what is typed (up to about six lines) and shrinks back after a send.
-  useEffect(() => {
-    const box = input.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = `${Math.min(box.scrollHeight, 152)}px`;
-  }, [body, open]);
 
   // The newest reply scrolls into view; an open question stays visible while the assistant works.
   const list = useRef<HTMLDivElement>(null);

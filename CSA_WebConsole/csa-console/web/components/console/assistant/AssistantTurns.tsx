@@ -29,6 +29,10 @@ import { Notice, secondary } from "../ui";
  * The turns of the shared conversation: each request with its result, the working row, and the
  * resume and error notices. It has no box of its own beyond the scroll region; the dock and the
  * Overview page give it a width and a height, and `listRef` reaches the scroll element.
+ *
+ * The scroll region is `flex-1 overflow-y-auto`: it scrolls only inside a flex-column parent
+ * whose height is bounded (the dock's max-height panel, the Overview page's full-height column).
+ * Elsewhere it grows with its turns and the page scrolls instead.
  */
 export function AssistantTurns({
   conversation,
@@ -52,10 +56,14 @@ export function AssistantTurns({
     ask,
     settle,
   } = conversation;
-  // Panel-wide lines follow the newest turn; each turn's own lines follow that turn.
   const text = PANEL[language];
   return (
-    <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-3" aria-live="polite">
+    <div
+      ref={listRef}
+      data-testid="assistant-scroll"
+      className="flex-1 space-y-4 overflow-y-auto px-4 py-3"
+      aria-live="polite"
+    >
       {!loaded && <p className="text-sm text-[color:var(--fs-text-secondary)]">{PANEL.en.loading}</p>}
       {loaded && turns.length === 0 && (
         <p className="text-sm text-[color:var(--fs-text-secondary)]">{text.empty_hint}</p>
@@ -103,7 +111,7 @@ export function AssistantTurns({
 }
 
 /** One turn's result: the card, answer, notice, choice or proposal it stands for. */
-export function TurnResult({
+function TurnResult({
   result,
   language,
   origin,

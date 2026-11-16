@@ -1,21 +1,19 @@
 "use client";
 
-import type { Ref } from "react";
+import { useEffect, type RefObject } from "react";
 import { ArrowUp } from "lucide-react";
 import { PANEL } from "@/lib/assistant-copy";
 import type { AssistantConversation } from "@/lib/assistant-conversation";
 import { typedMessage } from "@/lib/assistant-view";
+import { headerButton, sendLook } from "./looks";
 
-const sendLook =
-  "inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-2 rounded-[var(--fs-radius-round)] bg-[var(--fs-primary)] text-sm font-medium text-[color:var(--fs-on-primary)] transition-colors duration-150 hover:bg-[var(--fs-primary-hover)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] active:scale-[0.97] disabled:cursor-not-allowed disabled:bg-[var(--fs-disabled-bg)] disabled:text-[color:var(--fs-disabled-text)] pointer-coarse:h-11";
-/** The small outlined button the dock header and the retry row share. */
-export const headerButton =
-  "inline-flex min-h-9 items-center rounded-[var(--fs-radius-round)] border border-[color:var(--fs-border-control)] px-2.5 text-[13px] font-medium text-[color:var(--fs-text-secondary)] transition-colors duration-150 hover:bg-[var(--fs-surface-blue)] hover:text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11";
+/** The tallest the message box grows, in px: about six lines. Matches its `max-h-[9.5rem]`. */
+const MAX_INPUT_PX = 152;
 
 /**
  * The message form of the shared conversation: label, textarea, send, and the retry row after a
  * failed send. It sets no width; the caller gives it a box, an id for the textarea, and a ref to
- * it (for focus and for growing the box with what is typed).
+ * it (for focus). The box grows with what is typed and shrinks back after a send.
  */
 export function AssistantComposer({
   conversation,
@@ -24,7 +22,7 @@ export function AssistantComposer({
 }: {
   conversation: AssistantConversation;
   inputId: string;
-  inputRef: Ref<HTMLTextAreaElement>;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const {
     loaded,
@@ -41,6 +39,15 @@ export function AssistantComposer({
     dismissRetry,
   } = conversation;
   const text = PANEL[language];
+
+  // The message box grows with what is typed (up to about six lines) and shrinks back after a send.
+  useEffect(() => {
+    const box = inputRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, MAX_INPUT_PX)}px`;
+  }, [body, inputRef]);
+
   return (
     <form
       className="space-y-2 border-t border-[color:var(--fs-border)] px-4 py-3"

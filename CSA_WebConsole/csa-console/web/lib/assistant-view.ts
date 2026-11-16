@@ -107,6 +107,11 @@ export function tabForPath(
   return TABS.find((tab) => tab === key) ?? null;
 }
 
+/** The dock hides on Overview, which is itself the assistant page; it shows on every other path. */
+export function dockHidden(pathname: string, me: Me, packages: PackageState[]): boolean {
+  return tabForPath(pathname, me, packages) === "overview";
+}
+
 /** Each tab's sidebar label (lib/navigation.ts), for a tab this user cannot open. */
 const TAB_NAMES: Record<TabKey, string> = {
   overview: "Overview",

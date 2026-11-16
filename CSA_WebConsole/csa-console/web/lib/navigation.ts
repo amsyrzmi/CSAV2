@@ -156,7 +156,7 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
   };
   const to = (path: string) => consoleHref(admin, path);
   const entries: Array<NavLink & { show?: boolean }> = [
-    // Overview is the assistant home: the sandbox chat lives there (/chat redirects to it).
+    // Overview is the assistant page; the customer preview is on Services (/chat redirects there).
     { key: "overview", label: "Overview", href: admin ? "/" : "/portal" },
     { key: "services", label: "Services", href: to("services") },
     { key: "hr", label: "People & HR", href: to("hr") },

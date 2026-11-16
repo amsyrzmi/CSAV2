@@ -25,6 +25,9 @@ const en = {
     "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you confirm it.",
   retry_same: "Retry same request",
   start_new: "Start a new request",
+  // The Overview page: its headline and the starting ideas under an empty thread.
+  overview_headline: "How can I help today?",
+  ideas_label: "Ideas to start with",
   // Order card labels.
   order_source: "Source",
   order_tracking: "Tracking",
@@ -147,6 +150,8 @@ const ms: Record<PanelKey, string> = {
     "Tanya tentang tab ini, cari rakan sekerja, atau sediakan satu tindakan. Tiada apa-apa yang berubah sehingga anda mengesahkannya.",
   retry_same: "Cuba semula permintaan yang sama",
   start_new: "Mulakan permintaan baharu",
+  overview_headline: "Apa yang boleh saya bantu hari ini?",
+  ideas_label: "Idea untuk bermula",
   order_source: "Sumber",
   order_tracking: "No. penjejakan",
   order_carrier: "Kurier",
