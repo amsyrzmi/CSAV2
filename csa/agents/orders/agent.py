@@ -4,6 +4,10 @@ A write's facts (the draft, confirm and cancel) carry a Malay text (`Fact.text_m
 English: an order written in the same turn as a payment answer goes out word for word, in the
 turn's language. Reads (status, products) are never sent that way and stay English only; the
 composer reads `text` alone.
+
+The product detail answer (one product) also carries that product's picture when the company has
+one (`product_picture`, captioned with its name only); a search, an availability read, a draft and
+every other answer never ask for one.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from uuid import UUID
 import psycopg
 import structlog
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from csa.agents.base import AgentContext, SideEffects
 from csa.agents.ecommerce.agent import MarketplaceReader
@@ -30,6 +34,7 @@ from csa.contracts.facts import (
     AgentResult,
     AgentResultData,
     Fact,
+    PictureRef,
     ResultMeta,
     Ui,
     UiConfirmation,
@@ -143,13 +148,14 @@ class OrderAgent:
         ui: Ui | None = None,
         *,
         duplicate: bool | None = None,
+        picture: PictureRef | None = None,
     ) -> AgentResult:
         return AgentResult(
             ok=True,
             status="ok",
             task_id=ctx.idempotency_key,
             agent=self.name,
-            data=AgentResultData(facts=facts, ui=ui or Ui()),
+            data=AgentResultData(facts=facts, ui=ui or Ui(), picture=picture),
             meta=ResultMeta(trace_id=ctx.trace_id, latency_ms=0, was_duplicate=duplicate),
         )
 
@@ -273,7 +279,7 @@ class OrderAgent:
     async def _detail(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
         async with tx(ctx.pool, str(ctx.client_id)) as conn:
             row = await db.q.fetch_one(
-                "orders/get_product.sql", (ctx.client_id, inp.sku), conn=conn
+                "orders/get_product.sql", {"client_id": ctx.client_id, "sku": inp.sku}, conn=conn
             )
         if row is None:
             return self._error(ctx, "product_not_found", "not_found", f"{inp.sku} not found")
@@ -283,7 +289,8 @@ class OrderAgent:
         )
         if row["description"]:
             text += f". {row['description']}"
-        return self._ok(ctx, [self._fact(f"product_{row['sku']}", text)])
+        picture = product_picture(row.get("id"), row["name"], row.get("has_picture"))
+        return self._ok(ctx, [self._fact(f"product_{row['sku']}", text)], picture=picture)
 
     async def _create_draft(self, ctx: AgentContext, inp: OrderInput, channel: str) -> AgentResult:
         wanted: dict[str, int] = defaultdict(int)
@@ -611,6 +618,21 @@ class OrderAgent:
                 )
             ],
         )
+
+
+def product_picture(product_id: object, name: object, has_picture: object) -> PictureRef | None:
+    """The product's picture for the detail answer, captioned with its name only (no price, stock
+    or SKU); None when the company has no picture for it (`has_picture` from get_product.sql).
+
+    An id or name a picture could not carry (blank, or over the contract's length) also gives None:
+    a picture never fails the reply, which then goes as text alone.
+    """
+    if not has_picture or product_id is None or not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        return PictureRef(kind="product", subject_key=str(product_id), caption=name)
+    except ValidationError:
+        return None
 
 
 def _need_conversation(ctx: AgentContext) -> UUID:

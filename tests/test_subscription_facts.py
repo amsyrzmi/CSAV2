@@ -24,11 +24,12 @@ from csa.agents.staged.subscription_facts import (
     SignupField,
     SignupKind,
     plan_facts,
+    plan_picture,
     request_fact,
     signup_fact,
     subscription_facts,
 )
-from csa.contracts.facts import Fact
+from csa.contracts.facts import Fact, PictureRef
 
 ROOT = Path(__file__).resolve().parents[1]
 ZONE = "Asia/Kuala_Lumpur"
@@ -675,3 +676,33 @@ def test_a_malay_failure_leaves_the_english_fact_whole(monkeypatch: Any) -> None
     ]
     assert {e["error_type"] for e in failed} == {"KeyError"}
     assert {e["log_level"] for e in failed} == {"warning"}
+
+
+# --- plan pictures (pictures, task 14) ----------------------------------------------------------
+
+
+def test_plan_picture_is_captioned_with_the_plan_name_only() -> None:
+    assert plan_picture("besar", "Plan Besar", True) == PictureRef(
+        kind="plan", subject_key="besar", caption="Plan Besar"
+    )
+    # No picture stored (or the plan archived, for the subscription reads): none asked for.
+    assert plan_picture("besar", "Plan Besar", False) is None
+    assert plan_picture("besar", "Plan Besar", None) is None
+    # A plan row that is gone, or values a picture cannot carry, give none instead of failing.
+    assert plan_picture("gone", None, True) is None
+    assert plan_picture("", "Plan Besar", True) is None
+    assert plan_picture("x" * 129, "Plan Besar", True) is None
+    assert plan_picture("besar", "  ", True) is None
+    assert plan_picture("besar", "x" * 1025, True) is None
+
+
+def test_the_plan_reads_return_the_picture_column() -> None:
+    """Each plan read returns the column `plan_picture` is fed from."""
+    reads = {
+        "subscription_plan.sql": "has_picture",
+        "subscription_list.sql": "plan_has_picture",
+        "subscription_get.sql": "plan_has_picture",
+    }
+    for name, column in reads.items():
+        sql = (ROOT / "db/sql/agents" / name).read_text()
+        assert f"AS {column}" in sql, name

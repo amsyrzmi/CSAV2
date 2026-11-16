@@ -20,6 +20,7 @@ from csa.agents.tickets import agent as tickets
 from csa.agents.tickets.agent import TicketAgent
 from csa.contracts.callbacks import CallbackCodec, PendingActionStore
 from csa.contracts.envelope import Callback
+from csa.contracts.facts import PictureRef
 from csa.contracts.plan import Task
 from csa.contracts.state import Context
 from csa.core import db
@@ -690,3 +691,118 @@ async def test_staff_approval_requires_known_target(world: World) -> None:
     assert (
         world.q("SELECT status FROM orders WHERE id=%s", order_id)[0][0] == "pending_confirmation"
     )
+
+
+# --- product pictures (pictures, task 15) -------------------------------------------------------
+
+
+def _product_id(world: World, sku: str) -> str:
+    return str(
+        world.q("SELECT id FROM products WHERE client_id=%s AND sku=%s", world.client_id, sku)[0][0]
+    )
+
+
+def _picture(
+    world: World, subject_key: str, *, client: uuid.UUID | None = None, kind: str = "product"
+) -> None:
+    """A stored picture (metadata only: the reply never reads the bytes)."""
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO media_assets (client_id, kind, subject_key, media_type, byte_size, width,"
+            " height, sha256, source) VALUES (%s, %s, %s, 'image/png', 1000, 800, 800,"
+            " repeat('a', 64), 'upload')",
+            (client or world.client_id, kind, subject_key),
+        )
+
+
+async def _detail(world: World, sku: str, key: str) -> Any:
+    return await world.runner.execute(
+        Task(task_id="d", agent="order_agent", input={"action": "product_detail", "sku": sku}),
+        world.ctx(key),
+    )
+
+
+async def test_product_detail_asks_for_its_picture(world: World) -> None:
+    product_id = _product_id(world, "A1")
+    _picture(world, product_id)
+    detail = await _detail(world, "A1", "pic1")
+    assert detail.ok
+    # The text is unchanged; the picture is the product's, captioned with its name only.
+    assert [(f.id, f.text) for f in detail.data.facts] == [
+        ("product_A1", "Product A1 (A1): MYR 10.00, 5 unit available")
+    ]
+    assert detail.picture == PictureRef(
+        kind="product", subject_key=product_id, caption="Product A1"
+    )
+
+
+async def test_product_without_a_picture_asks_for_none(world: World) -> None:
+    other_client = uuid.uuid4()
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO clients (id, slug, name, platform_version) VALUES (%s,%s,%s,%s)",
+            (other_client, f"o-{other_client}", "Synthetic Other", "lg05"),
+        )
+    # Not this product's picture: another company's under the same key, and a plan's picture
+    # whose key happens to be the same text.
+    b2 = _product_id(world, "B2")
+    _picture(world, b2, client=other_client)
+    _picture(world, b2, kind="plan")
+    detail = await _detail(world, "B2", "nopic1")
+    assert detail.ok
+    assert [f.text for f in detail.data.facts] == ["Product B2 (B2): MYR 4.50, 100 unit available"]
+    assert detail.picture is None
+    # An archived product is not offered: no answer about it, and no picture.
+    a1 = _product_id(world, "A1")
+    _picture(world, a1)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE products SET is_active = false WHERE id = %s", (a1,))
+    archived = await _detail(world, "A1", "nopic2")
+    assert archived.error is not None and archived.error.code == "product_not_found"
+    assert archived.picture is None
+    # A name a caption cannot carry: the reply goes as text alone, never an error.
+    long_name = "Synthetic " + "x" * 1100
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO products (client_id, sku, name, price, stock_qty) "
+            "VALUES (%s, 'C3', %s, '1.00', 1)",
+            (world.client_id, long_name),
+        )
+    _picture(world, _product_id(world, "C3"))
+    long = await _detail(world, "C3", "nopic3")
+    assert long.ok and long.data.facts[0].text.startswith(long_name)
+    assert long.picture is None
+
+
+async def test_search_availability_and_draft_never_ask_for_a_picture(world: World) -> None:
+    for sku in ("A1", "B2"):
+        _picture(world, _product_id(world, sku))
+    search = await world.runner.execute(
+        Task(task_id="q", agent="order_agent", input={"action": "search_products", "query": "A1"}),
+        world.ctx("np-search"),
+    )
+    # A search that finds one product is still a search.
+    assert [f.id for f in search.data.facts] == ["product_A1"] and search.picture is None
+    availability = await world.runner.execute(
+        Task(
+            task_id="av",
+            agent="order_agent",
+            input={"action": "product_availability", "query": "A1"},
+        ),
+        world.ctx("np-av"),
+    )
+    assert availability.ok and len(availability.data.facts) == 1
+    assert availability.picture is None
+    draft = await world.draft("np-draft", [{"sku": "A1", "qty": 1}])
+    assert draft.ok and draft.picture is None
+    conf = draft.data.ui.confirmation
+    status = await world.runner.execute(
+        Task(task_id="s", agent="order_agent", input={"action": "status"}), world.ctx("np-st")
+    )
+    assert status.ok and status.picture is None
+    confirmed = await world.tap(conf.accept.action_id, "confirm", conf.order_id)
+    assert confirmed.ok and confirmed.picture is None
+    other = await world.draft("np-draft2", [{"sku": "B2", "qty": 1}])
+    other_conf = other.data.ui.confirmation
+    cancelled = await world.tap(other_conf.reject.action_id, "cancel", other_conf.order_id)
+    assert cancelled.ok and cancelled.picture is None
