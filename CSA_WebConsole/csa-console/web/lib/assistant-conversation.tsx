@@ -85,7 +85,13 @@ export interface AssistantConversation {
 
 const ConversationContext = createContext<AssistantConversation | null>(null);
 
-/** The conversation for the company in view, or null where the assistant is not offered. */
+/**
+ * The conversation for the company in view, or null. Null is NOT a stable "assistant off"
+ * signal: it also means "not ready yet" during the server render and the first client render
+ * of every page load, and for one pre-paint render on every company switch. Read it as "not
+ * ready or not offered": keep any loading branch ahead of an assistant-or-home choice, and
+ * hang no effects off the null branch.
+ */
 export function useAssistantConversation(): AssistantConversation | null {
   return useContext(ConversationContext);
 }
@@ -121,6 +127,8 @@ type Publish = Dispatch<SetStateAction<AssistantConversation | null>>;
  * Mounted once in the shell around the page and the dock. The conversation itself lives in a
  * keyed sibling of the page, so a change of company discards it (withdrawing its open cards)
  * without remounting the page; it hands each new state up to this provider's context.
+ * Until the company is known and that state has arrived, the context holds null (see
+ * useAssistantConversation): null means not ready or not offered, never only "off".
  */
 export function AssistantProvider({
   me,
@@ -133,6 +141,9 @@ export function AssistantProvider({
 }) {
   const [tenant, setTenant] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AssistantConversation | null>(null);
+  // Null while the company is unknown (server render, first client render), while the new
+  // company's state has not been published yet (one pre-paint render on a switch), or when
+  // the assistant is not offered.
   const value = tenant !== null && conversation?.tenant === tenant ? conversation : null;
   return (
     <>
@@ -158,6 +169,9 @@ function TenantBridge({ me, onTenant }: { me: Me; onTenant: (tenant: string | nu
 }
 
 // Memoised: the provider re-renders on every published state and must not re-render this.
+// The no-deps publish effect below only avoids an infinite render loop because of this memo
+// and because every prop is stable (state setter, shell props): an inline prop added later
+// (a new object or function each render) would loop.
 const Conversation = memo(function Conversation({
   tenant,
   me,
@@ -417,6 +431,8 @@ const Conversation = memo(function Conversation({
   };
 
   // Every render hands the provider the current state (before paint, so views never lag).
+  // No deps on purpose; safe only while Conversation is memoised with stable props (see above),
+  // otherwise publish -> provider render -> Conversation render -> publish loops forever.
   useLayoutEffect(() => {
     publish(conversation);
   });
