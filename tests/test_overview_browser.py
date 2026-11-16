@@ -202,6 +202,8 @@ class Api:
         self.warnings = warnings or []
         self.packages_fail = False
         self.packages_delay = 0.0
+        # When set, workspace turn reads wait for it: the thread list answers, the turns later.
+        self.turns_gate: asyncio.Event | None = None
         self.review = review
         self.threads: list[dict[str, Any]] = []
         self.turns: dict[str, list[dict[str, Any]]] = {}
@@ -314,6 +316,8 @@ class Api:
             self.bodies.append((path, request.post_data_json or {}))
             data = created
         elif workspace_turns and request.method == "GET":
+            if self.turns_gate is not None:
+                await self.turns_gate.wait()
             data = {"items": self.workspace_turns.get(workspace_turns[1], []), "next_cursor": None}
         elif workspace_turns and request.method == "POST":
             body = request.post_data_json
@@ -480,6 +484,7 @@ async def open_overview(
     theme: str = "cobalt",
     rail: str = "collapsed",
     watch: bool = False,
+    init_script: str | None = None,
 ) -> AsyncIterator[Page]:
     """A fresh signed-in browser on `path`; fails on unexpected calls, page or console errors."""
     console.upstream.me = me or make_me("tenant_staff")
@@ -499,6 +504,8 @@ async def open_overview(
             )
             if watch:
                 await context.add_init_script(f"({WATCH_BODIES})()")
+            if init_script:
+                await context.add_init_script(init_script)
             page = await context.new_page()
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.on(
@@ -711,8 +718,10 @@ async def test_overview_platform_admin_without_tenant_asks_to_choose(console: Co
         assert not [p for _, p in api.requests if p.startswith(("chat/", "inbox/", "services"))]
         # Nor on a page that has the dock for everyone else: still no company, so no dock.
         await page.goto(f"{console.base}/services")
-        await expect(page.get_by_test_id("services-tenant")).to_be_visible()
-        await page.wait_for_timeout(800)
+        services_tenant = page.get_by_test_id("services-tenant")
+        await expect(services_tenant).to_be_visible()
+        # The tenant list has been read, so the page's effects have run before the checks below.
+        await expect(services_tenant.locator("option").first).to_have_text("Select a tenant")
         await expect(page.get_by_test_id("assistant-open")).to_have_count(0)
         await expect(page.get_by_test_id("assistant-panel")).to_have_count(0)
         assert api.workspace() == [], api.requests
@@ -787,6 +796,64 @@ async def test_a_platform_admin_switching_companies_follows_the_choice(console: 
         assert await page.evaluate("window.__overviewBodies") == {"home": 0, "assistant": 3}
         # Nothing was ever written: switching only reads.
         assert api.workspace("POST") == []
+
+
+# Counts every insertion of the starting ideas and of the empty hint (argument), so a state
+# that shows for one render and is replaced before the next check is still seen.
+WATCH_EMPTY_STATE = """(hint) => {
+    const seen = { ideas: 0, hint: 0 };
+    window.__emptyState = seen;
+    const ideas = '[data-testid="overview-ideas"]';
+    const count = (node) => {
+        if (!(node instanceof Element)) return;
+        seen.ideas += (node.matches(ideas) ? 1 : 0) + node.querySelectorAll(ideas).length;
+        if ((node.textContent || "").includes(hint)) seen.hint += 1;
+    };
+    new MutationObserver((records) => {
+        for (const record of records) record.addedNodes.forEach(count);
+    }).observe(document, { childList: true, subtree: true });
+}"""
+
+
+async def test_a_stored_thread_shows_no_empty_state_before_its_turns_arrive(
+    console: Console,
+) -> None:
+    # The thread list answers first and the turns later. Until the turns are in, the page offers
+    # neither the starting ideas nor the empty hint, and Enter does not start a second thread.
+    api = Api(turns=2)
+    api.turns_gate = asyncio.Event()
+    me = make_me("tenant_staff", assistant=True)
+    watch = f"({WATCH_EMPTY_STATE})({json.dumps(EMPTY_HINT)})"
+    turns_path = f"workspace/conversations/{THREAD_MEMBER}/turns"
+    async with open_overview(console, api, "/portal", me=me, init_script=watch) as page:
+        try:
+            await expect(assistant_page(page)).to_be_visible()
+            await requested(page, api, turns_path)  # held at the gate
+            await composer(page).fill(ANSWER_ASK)
+            await composer(page).press("Enter")
+            await expect(send_button(page)).to_be_disabled()
+            await page.wait_for_timeout(500)
+            assert api.workspace("POST") == [], api.requests
+            await expect(page.get_by_test_id("overview-ideas")).to_have_count(0)
+            await expect(page.get_by_text(EMPTY_HINT)).to_have_count(0)
+        finally:
+            api.turns_gate.set()
+        await expect(page.get_by_test_id("assistant-turn")).to_have_count(2)
+        await expect(page.get_by_text("Answer 2", exact=True)).to_be_visible()
+        assert await page.evaluate("window.__emptyState") == {"ideas": 0, "hint": 0}
+        # Now Enter sends, into the stored thread: one turn and no new thread.
+        await expect(composer(page)).to_have_value(ANSWER_ASK)
+        await composer(page).press("Enter")
+        await expect(page.get_by_text(ANSWER)).to_be_visible()
+        posted = [tail.split("?")[0] for _, tail in api.workspace("POST")]
+        assert posted == [turns_path], api.requests
+    # A company with no thread reads no turns, so its ideas and hint show as soon as it lists.
+    api = Api()
+    api.turns_gate = asyncio.Event()
+    async with open_overview(console, api, "/portal", me=me, init_script=watch) as page:
+        await expect(page.get_by_test_id("overview-ideas")).to_be_visible()
+        await expect(page.get_by_text(EMPTY_HINT)).to_be_visible()
+        assert not [t for _, t in api.workspace("GET") if "/turns" in t], api.requests
 
 
 async def test_a_navigate_result_moves_to_the_tab_and_the_dock_there_continues_the_thread(

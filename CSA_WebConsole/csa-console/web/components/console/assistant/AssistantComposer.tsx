@@ -53,7 +53,8 @@ export function AssistantComposer({
       className="space-y-2 border-t border-[color:var(--fs-border)] px-4 py-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim()) ask(typedMessage(body, turns, origins), true);
+        // Until the stored thread is known a send would start a new one and hide it.
+        if (loaded && body.trim()) ask(typedMessage(body, turns, origins), true);
       }}
     >
       <label htmlFor={inputId} className="block text-xs font-medium text-[color:var(--fs-text-secondary)]">
@@ -74,7 +75,8 @@ export function AssistantComposer({
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                if (body.trim()) ask(typedMessage(body, turns, origins), true);
+                // The Send button's `loaded` rule, for Enter too.
+                if (loaded && body.trim()) ask(typedMessage(body, turns, origins), true);
               }
             }}
           />

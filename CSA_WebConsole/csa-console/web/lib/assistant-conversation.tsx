@@ -58,6 +58,11 @@ export interface AssistantConversation {
   tenant: string;
   me: Me;
   packages: PackageState[];
+  /**
+   * The thread list has answered and, when a thread exists, its first turns read has finished
+   * (or failed): only then does an empty `turns` mean an empty thread. Views show the empty
+   * state and starting ideas, and accept a send, only once this is true.
+   */
   loaded: boolean;
   /** First load of the thread and its turns; calling it again does nothing. */
   ensureLoaded(): void;
@@ -189,8 +194,11 @@ const Conversation = memo(function Conversation({
   const pathTab = tabForPath(pathname, me, packages);
   const context = effectiveContext(published, pathTab);
   const [wanted, setWanted] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const [listed, setListed] = useState(false);
   const [threadId, setThreadId] = useState("");
+  // The thread whose turns have been read once (or whose read failed); a new thread is empty.
+  const [readThread, setReadThread] = useState("");
+  const loaded = listed && (threadId === "" || readThread === threadId);
   const [turns, setTurns] = useState<WorkspaceTurn[]>([]);
   const [outcomes, setOutcomes] = useState<Record<string, ProposalOut>>({});
   // What this console sent, by request key: stored bodies come back with addresses redacted.
@@ -221,31 +229,35 @@ const Conversation = memo(function Conversation({
   const ensureLoaded = useCallback(() => setWanted(true), []);
 
   useEffect(() => {
-    if (!wanted || loaded) return;
+    if (!wanted || listed) return;
     const controller = new AbortController();
     listWorkspaceThreads(tenant, controller.signal)
       .then((result) => {
         if (controller.signal.aborted) return;
         setThreadId((current) => current || (result.items[0]?.id ?? ""));
-        setLoaded(true);
+        setListed(true);
       })
       .catch((cause: Error) => {
         if (controller.signal.aborted) return;
         setError(cause.message);
-        setLoaded(true);
+        setListed(true);
       });
     return () => controller.abort();
-  }, [wanted, loaded, tenant]);
+  }, [wanted, listed, tenant]);
 
   useEffect(() => {
     if (!threadId) return;
     const controller = new AbortController();
     listWorkspaceTurns(tenant, threadId, controller.signal)
       .then((result) => {
-        if (!controller.signal.aborted) setTurns((current) => mergeTurns(current, result.items));
+        if (controller.signal.aborted) return;
+        setTurns((current) => mergeTurns(current, result.items));
+        setReadThread(threadId);
       })
       .catch((cause: Error) => {
-        if (!controller.signal.aborted) setError(cause.message);
+        if (controller.signal.aborted) return;
+        setError(cause.message);
+        setReadThread(threadId);
       });
     return () => controller.abort();
   }, [tenant, threadId]);
@@ -311,6 +323,8 @@ const Conversation = memo(function Conversation({
       let thread = threadId;
       if (!thread) {
         thread = (await createWorkspaceThread(tenant, attempt.threadKey, controller.signal)).id;
+        // Just created, so it holds no turns yet: nothing to wait for before counting it read.
+        setReadThread(thread);
         setThreadId(thread);
       }
       const turn = await createWorkspaceTurn(
