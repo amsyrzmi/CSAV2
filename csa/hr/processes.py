@@ -130,7 +130,9 @@ def _rules(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _warnings(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{**w, "code": _WARNINGS[w["code"]]} for w in found]
+    # An unknown code (a later migration's) passes through without its prefix instead of failing;
+    # tests/test_hr_process_models.py makes sure every code the migrations write is listed.
+    return [{**w, "code": _WARNINGS.get(w["code"], w["code"].removeprefix("hr_"))} for w in found]
 
 
 class HrProcesses:

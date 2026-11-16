@@ -17,7 +17,15 @@ from datetime import date
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, StrictBool, StrictInt
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationInfo,
+    field_validator,
+)
 
 from csa.hr.models import HrModel, Version
 from csa.hr.people_types import EmploymentType
@@ -30,6 +38,7 @@ __all__ = [
     "AutoCheck",
     "NoMatchingTemplate",
     "OwnerRole",
+    "ProcessEventAction",
     "PersonProcess",
     "PersonProcesses",
     "ProcessCancelReceipt",
@@ -58,6 +67,7 @@ __all__ = [
     "TemplateSummary",
     "TemplateUpdate",
     "TemplateWarning",
+    "TemplateWarningCode",
 ]
 
 ProcessKind = Literal["onboarding", "offboarding", "custom"]
@@ -77,6 +87,38 @@ AutoCheck = Literal[
 TaskStatus = Literal["todo", "awaiting_approval", "done", "rejected", "skipped"]
 ProcessStatus = Literal["active", "completed", "cancelled"]
 ProcessView = Literal["hr", "manager", "self", "assignee"]
+# The event actions and template warning codes the migrations write today. The output models take
+# any short string, so an action a later migration adds never breaks a read;
+# tests/test_hr_process_models.py fails until it is listed here (and its detail keys below).
+ProcessEventAction = Literal[
+    "process.started",
+    "process.cancelled",
+    "process.completed",
+    "task.created",
+    "task.completed",
+    "task.skipped",
+    "task.reassigned",
+    "task.date_changed",
+]
+TemplateWarningCode = Literal["step_after_last_day"]
+_MULTILINE = frozenset({"description_en", "description_ms"})
+
+
+class _StepText(HrModel):
+    """HrModel's control-character rule, except that a step's descriptions may hold line breaks
+    (line feeds). Every other control character, a tab or a lone carriage return included, is still
+    refused."""
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def reject_controls(  # pyright: ignore[reportIncompatibleMethodOverride]
+        cls, value: object, info: ValidationInfo
+    ) -> object:
+        if isinstance(value, str):
+            text = value.replace("\n", "") if info.field_name in _MULTILINE else value
+            if any(ord(c) < 32 or ord(c) == 127 for c in text):
+                raise ValueError("control characters forbidden")
+        return value
 
 
 # ---- Templates: input -------------------------------------------------------------------------
@@ -92,7 +134,7 @@ class TemplateRules(HrModel):
     region: Region | None = None
 
 
-class TemplateStep(HrModel):
+class TemplateStep(_StepText):
     """One step; its ordinal is its position in `steps`. A `person` step names `owner_employee_id`
     (an active person of this company); no other role may."""
 
@@ -108,6 +150,12 @@ class TemplateStep(HrModel):
     approval_by: ApprovalBy | None = None
     auto_check: AutoCheck | None = None
     reference_note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("description_en", "description_ms", mode="before")
+    @classmethod
+    def unix_line_breaks(cls, value: object) -> object:
+        """A browser textarea may send CRLF line breaks; they are stored as LF."""
+        return value.replace("\r\n", "\n") if isinstance(value, str) else value
 
 
 class TemplateCreate(HrModel):
@@ -137,10 +185,11 @@ class TemplateDeactivate(HrModel):
 
 
 class TemplateWarning(HrModel):
-    """`step_after_last_day`: a step of the leaver in an offboarding template is due after the last
-    day; it will be due on the last day instead (spec 5.7.7)."""
+    """`code` is one of `TemplateWarningCode`: `step_after_last_day`, a step of the leaver in an
+    offboarding template is due after the last day; it will be due on the last day instead (spec
+    5.7.7). A code a later migration adds comes through unchanged rather than failing the read."""
 
-    code: Literal["step_after_last_day"]
+    code: str = Field(min_length=1, max_length=80)
     ordinal: int
 
 
@@ -171,7 +220,7 @@ class TemplateList(HrModel):
     items: list[TemplateSummary] = Field(max_length=500)
 
 
-class TemplateStepOut(HrModel):
+class TemplateStepOut(_StepText):
     ordinal: int
     title_en: str
     title_ms: str | None
@@ -258,6 +307,10 @@ class ProcessPage(HrModel):
 
 
 class AnchorDates(HrModel):
+    """The dates a process counts from. A date a later migration adds is dropped, not an error."""
+
+    model_config = ConfigDict(extra="ignore")
+
     start_date: date | None = None
     last_day: date | None = None
     probation_end: date | None = None
@@ -288,7 +341,7 @@ class ProcessHeader(HrModel):
     started_by: UUID | None = None
 
 
-class ProcessTask(HrModel):
+class ProcessTask(_StepText):
     """A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks
     (and every task for HR) add the description, anchor, approval, check, completion time, note and
     version. HR alone gets the assignee id, the offset and override, and who completed and approved
@@ -322,7 +375,10 @@ class ProcessTask(HrModel):
 
 
 class ProcessEventDetail(HrModel):
-    """The detail of an event; which keys appear depends on the action (0632)."""
+    """The detail of an event; which keys appear depends on the action (0632). A key a later
+    migration adds is passed through as it is stored, so a new event never breaks a read."""
+
+    model_config = ConfigDict(extra="allow")
 
     reason: str | None = None
     kind: ProcessKind | None = None
@@ -345,16 +401,8 @@ class ProcessEvent(HrModel):
     event_id: UUID
     at: AwareDatetime
     actor: UUID | None  # null: the system
-    action: Literal[
-        "process.started",
-        "process.cancelled",
-        "process.completed",
-        "task.created",
-        "task.completed",
-        "task.skipped",
-        "task.reassigned",
-        "task.date_changed",
-    ]
+    # One of ProcessEventAction today; any short string, so a later action never fails the read.
+    action: str = Field(min_length=1, max_length=80)
     task_id: UUID | None
     detail: ProcessEventDetail
 

@@ -399,8 +399,9 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
 characters (compared trimmed and case-insensitive). The most specific matching active template
 wins, then the oldest; a template with no rule is the default. `steps` holds 1 to 40 steps, numbered
 by position: `title_en` 1-160 characters, `title_ms` at most 160, `description_en` and
-`description_ms` at most 2000, `reference_note` at most 500 (text is trimmed; an empty string is
-stored as `null`); `owner_role` `hr`, `manager`, `employee` (the person the process is about) or
+`description_ms` at most 2000 and the only fields that may hold line breaks (`\n`; a `\r\n` is
+stored as `\n`; a tab or any other control character is 422 as everywhere in HR),
+`reference_note` at most 500 (text is trimmed; an empty string is stored as `null`); `owner_role` `hr`, `manager`, `employee` (the person the process is about) or
 `person` (then `owner_employee_id`, an active person of this company, and only then);
 `anchor` `start_date` or `probation_end` for onboarding, `last_day` for offboarding, any for custom;
 `due_offset_days` an integer from -365 to 365; `required` (default `true`); `approval_by` `hr`,
@@ -408,8 +409,9 @@ stored as `null`); `owner_role` `hr`, `manager`, `employee` (the person the proc
 `document_uploaded:<contract|identity|certificate|other>` or `null`. `conflicts` lists the other
 active templates of the same kind that may tie with this one for some person (they may; runtime
 picks the oldest and never errors); `warnings` holds `{code: "step_after_last_day", ordinal}` for a
-step of the leaver due after the last day (it will be due on the last day). Running processes keep
-the steps they were started with.
+step of the leaver due after the last day (it will be due on the last day); a client should show
+an unknown `code` generically, since later releases may add codes. Running processes keep the steps
+they were started with.
 
 **Processes:**
 
@@ -444,7 +446,9 @@ the steps they were started with.
     `task.created`, `task.completed`, `task.skipped`, `task.reassigned` or `task.date_changed`;
     `detail` holds the keys that action writes (`reason`, `kind`, `template_id`,
     `template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback`, `clamped`,
-    `anchor`, `old`, `new`, `from`, `to`, `auto_check`).
+    `anchor`, `old`, `new`, `from`, `to`, `auto_check`). Later releases add actions and keys (the
+    task actions of PR 2): `action` is typed as a string of at most 80 characters and unknown
+    `detail` keys pass through, so a client should show an unknown action generically.
 - `POST /processes` `ProcessStart` `{employee_id, kind, template_id?}` (HR team) starts a custom
   process (`template_id` required) or an onboarding or offboarding of an existing person
   (`template_id` optional: the matching template; a still-active process of the same kind is

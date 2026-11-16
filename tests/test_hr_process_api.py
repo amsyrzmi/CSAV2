@@ -158,6 +158,15 @@ async def without_key(
     return await world.browsers[who].request(method, path, json=body, headers=headers)
 
 
+async def without_csrf(
+    world: HrWorld, who: str, method: str, path: str, body: Any
+) -> httpx.Response:
+    """A request with an Idempotency-Key and no X-CSRF-Token header at all."""
+    await world.call(who, "GET", f"{HR}/context")  # opens the signed-in browser
+    headers = {"Origin": ORIGIN, "Idempotency-Key": str(uuid4())}
+    return await world.browsers[who].request(method, path, json=body, headers=headers)
+
+
 # ---- Templates --------------------------------------------------------------------------------
 
 
@@ -675,10 +684,11 @@ async def test_every_route_requires_csrf_and_idempotency_where_it_writes(world: 
     ]
     before = await counts(world)
     for method, path, body in writes:
-        no_csrf = await world.call(
+        wrong_csrf = await world.call(
             "owner", method, path, body, headers={"X-CSRF-Token": "synthetic-wrong"}
         )
-        assert no_csrf.status_code == 403, (path, no_csrf.text)
+        problem(wrong_csrf, 403, "invalid csrf token")
+        problem(await without_csrf(world, "owner", method, path, body), 403, "invalid csrf token")
         no_key = await without_key(world, "owner", method, path, body)
         assert (no_key.status_code, no_key.json()["detail"]) == (422, "invalid_hr_input"), path
         problem(await world.call("reader", method, path, body), 403, "read_only_session")
@@ -686,9 +696,17 @@ async def test_every_route_requires_csrf_and_idempotency_where_it_writes(world: 
     got = await get_ok(world, "owner", f"{TEMPLATES}/{template}")
     assert (got["version"], got["is_active"]) == (1, True)
     assert (await get_ok(world, "owner", f"{PROCESSES}/{process}"))["process"]["status"] == "active"
-    # The reads need no CSRF proof.
-    for path in (TEMPLATES, f"{TEMPLATES}/{template}", PROCESSES, f"{PROCESSES}/{process}"):
+    # The reads need no CSRF proof: a wrong one or none at all.
+    for path in (
+        TEMPLATES,
+        f"{TEMPLATES}/{template}",
+        PROCESSES,
+        f"{PROCESSES}/{process}",
+        f"{HR}/people/{world.employees['staff']}/processes",
+    ):
         response = await world.call("owner", "GET", path, headers={"X-CSRF-Token": "x"})
+        assert response.status_code == 200, path
+        response = await without_csrf(world, "owner", "GET", path, None)
         assert response.status_code == 200, path
 
 
@@ -947,3 +965,32 @@ async def test_responses_never_carry_database_text(
         404,
         "resource_unavailable",
     )
+
+
+async def test_step_descriptions_keep_line_breaks_through_template_and_process(
+    world: HrWorld,
+) -> None:
+    text = "Bring:\n- the identity card\n- a bank statement"
+    steps = [
+        step(title_en="Documents", description_en=text, description_ms="Bawa:\r\n- kad pengenalan")
+    ]
+    template = (await post_template(world, steps=steps))["template_id"]
+    got = await get_ok(world, "owner", f"{TEMPLATES}/{template}")
+    assert (got["steps"][0]["description_en"], got["steps"][0]["description_ms"]) == (
+        text,
+        "Bawa:\n- kad pengenalan",
+    )
+    process = (await start(world, world.employees["staff"]))["process_id"]
+    detail = await get_ok(world, "owner", f"{PROCESSES}/{process}")
+    assert detail["tasks"][0]["description_en"] == text
+    before = await counts(world)
+    for bad in ("tab\there", "nul\u0000here", "lone\rreturn"):
+        response = await world.call(
+            "owner", "POST", TEMPLATES, template_body(steps=[step(description_en=bad)])
+        )
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_hr_input")
+    response = await world.call(
+        "owner", "POST", TEMPLATES, template_body(steps=[step(title_en="two\nlines")])
+    )
+    assert response.status_code == 422
+    assert await counts(world) == before
