@@ -27,3 +27,11 @@ test("section is always preview, whatever the old link said", () => {
     "/services?client_id=t&section=preview");
   assert.equal(previewHref("/services", { section: ["a", "b"] }), "/services?section=preview");
 });
+
+test("the company must be one non-blank value, as the old chat redirect required", () => {
+  assert.equal(previewHref("/services", { client_id: ["one", "two"] }), "/services?section=preview");
+  assert.equal(previewHref("/services", { client_id: "  " }), "/services?section=preview");
+  assert.equal(previewHref("/services", { client_id: " t-1 " }), "/services?client_id=t-1&section=preview");
+  assert.equal(previewHref("/services", { client_id: "//evil.example" }),
+    "/services?client_id=%2F%2Fevil.example&section=preview");
+});

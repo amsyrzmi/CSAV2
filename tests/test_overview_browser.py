@@ -180,6 +180,9 @@ class Api:
             if self.packages_delay:
                 await asyncio.sleep(self.packages_delay)
             data = {"packages": self.packages_for(tail)}
+        elif path == "services" and request.method == "GET":
+            # The chat links redirect to Services; an empty list is enough to land there.
+            data = []
         elif path == "inbox/conversations" and request.method == "GET":
             if self.review is None:
                 await self.fail(route)
@@ -534,30 +537,34 @@ async def test_strip_is_absent_when_both_reads_fail(console: Console) -> None:
         assert api.paths("inbox/conversations") == []
 
 
-async def test_chat_routes_redirect_to_overview_with_client_id(console: Console) -> None:
+async def test_chat_routes_redirect_to_the_services_preview_with_client_id(
+    console: Console,
+) -> None:
     api = Api()
     async with open_overview(console, api, "/chat", me=make_me("platform_admin")) as page:
-        await page.wait_for_url(f"{console.base}/")
+        await page.wait_for_url(f"{console.base}/services?section=preview")
         await page.goto(f"{console.base}/chat?client_id=tenant-b")
-        await page.wait_for_url(f"{console.base}/?client_id=tenant-b")
+        await page.wait_for_url(f"{console.base}/services?client_id=tenant-b&section=preview")
         await expect(page.get_by_label("Tenant", exact=True)).to_have_value("tenant-b")
     api = Api()
     async with open_overview(console, api, "/portal/chat") as page:
-        await page.wait_for_url(f"{console.base}/portal")
+        await page.wait_for_url(f"{console.base}/portal/services?section=preview")
         await page.goto(f"{console.base}/portal/chat?client_id={TENANT}")
-        await page.wait_for_url(f"{console.base}/portal?client_id={TENANT}")
-        await expect(composer(page)).to_be_visible()
+        await page.wait_for_url(
+            f"{console.base}/portal/services?client_id={TENANT}&section=preview"
+        )
+        await expect(page.get_by_role("heading", name="Services", level=1)).to_be_visible()
 
 
 @pytest.mark.parametrize(
     ("query", "target"),
     [
         # Encoded by the redirect, never concatenated: the value stays one parameter.
-        ("client_id=a%26b%3Dc", "?client_id=a%26b%3Dc"),
+        ("client_id=a%26b%3Dc", "client_id=a%26b%3Dc&"),
         # A repeated parameter is ambiguous, so it is dropped rather than guessed.
         ("client_id=one&client_id=two", ""),
         # A protocol-relative look-alike stays on this origin as an encoded value.
-        ("client_id=//evil.example", "?client_id=%2F%2Fevil.example"),
+        ("client_id=//evil.example", "client_id=%2F%2Fevil.example&"),
         ("client_id=%20%20", ""),
     ],
 )
@@ -566,9 +573,9 @@ async def test_chat_redirect_keeps_awkward_client_ids_inert(
 ) -> None:
     api = Api()
     async with open_overview(console, api, "/chat", me=make_me("platform_admin")) as page:
-        await page.wait_for_url(f"{console.base}/")
+        await page.wait_for_url(f"{console.base}/services?section=preview")
         await page.goto(f"{console.base}/chat?{query}")
-        await page.wait_for_url(f"{console.base}/{target}")
+        await page.wait_for_url(f"{console.base}/services?{target}section=preview")
         assert page.url.startswith(console.base + "/")
         assert "evil" not in page.url.split("?")[0]
 
