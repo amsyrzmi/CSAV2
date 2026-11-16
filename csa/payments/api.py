@@ -5,9 +5,9 @@ paid, void, reject claim) are for platform admins, tenant admins and tenant staf
 methods are changed by platform and tenant admins only. `read_only` members get 403 on every
 route, reads included. Refusals are `{"detail": "<code>"}`. The services audit every write
 themselves (`payments.invoice.paid`, `payments.invoice.voided`, `payments.invoice.claim_rejected`,
-`payments.settings.updated`, `payments.method.created`, `payments.method.updated`). A QR
-method's picture is uploaded and removed by admins (`media.picture.set`,
-`media.picture.removed`).
+`payments.settings.updated`, `payments.method.created`, `payments.method.updated`,
+`payments.method.deleted`). A QR method's picture is uploaded and removed by admins
+(`media.picture.set`, `media.picture.removed`), and goes with its method when that is deleted.
 """
 
 from __future__ import annotations
@@ -153,6 +153,20 @@ def build_payments_router() -> APIRouter:
         actor = admin(request, client_id)
         async with tx(request.app.state.pool, str(client_id)) as conn:
             return await settings.update_method(conn, client_id, actor, method_id, payload)
+
+    @router.delete("/methods/{method_id}", status_code=204)
+    async def delete_method(
+        request: Request, method_id: UUID, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> Response:
+        """Delete a method and its QR picture (404 `method_not_found`, 409 `last_active_method`).
+
+        Admins only, refused before anything is read. Invoices and payments keep `method_kind`
+        only, so they are unchanged.
+        """
+        actor = admin(request, client_id)
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            await settings.delete_method(conn, client_id, actor, method_id)
+        return Response(status_code=204)
 
     @router.put(
         "/methods/{method_id}/picture",

@@ -391,6 +391,28 @@ export function upsertMethod(methods: PaymentMethod[], saved: PaymentMethod): Pa
     : [...methods, saved];
 }
 
+/** The list without the method `id` (deleted, or found gone); the list given is unchanged. */
+export function removeMethod(methods: PaymentMethod[], id: string): PaymentMethod[] {
+  return methods.filter((method) => method.id !== id);
+}
+
+/** The delete confirmation's question. */
+export function deleteMethodQuestion(method: Pick<PaymentMethod, "label">): string {
+  return `Delete ${method.label}?`;
+}
+
+/**
+ * What deleting does, in plain sentences: customers stop seeing it, a DuitNow method's QR picture
+ * goes too (a bank transfer or cash method never has one), and turning it off keeps it instead.
+ */
+export function deleteMethodSentences(method: Pick<PaymentMethod, "kind">): string[] {
+  return [
+    "Customers stop seeing this method.",
+    ...(method.kind === "qr" ? ["Its QR picture, if it has one, is removed too."] : []),
+    "Turn it off instead to keep it for later.",
+  ];
+}
+
 /** The add or edit form as typed. Only the fields of its kind are sent. */
 export interface MethodDraft {
   kind: MethodKind;

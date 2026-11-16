@@ -9,9 +9,12 @@ import { consoleHref } from "@/lib/navigation";
 import { usePublishContext } from "@/lib/page-context";
 import {
   createMethod,
+  deleteMethod,
+  deleteMethodMessage,
   getInvoice,
   getSettings,
   isNoAccess,
+  isMethodNotFound,
   isNoActiveMethod,
   isRefusal,
   isVersionConflict,
@@ -48,6 +51,8 @@ import {
   claimSectionTitle,
   checkMethod,
   customerLabel,
+  deleteMethodQuestion,
+  deleteMethodSentences,
   draftPreview,
   emptyMethodDraft,
   filterChips,
@@ -81,6 +86,7 @@ import {
   upsertMethod,
   rejectBody,
   REJECT_CLAIM_CONSEQUENCE,
+  removeMethod,
   voidBody,
   type InvoiceList,
   type MethodDraft,
@@ -90,8 +96,10 @@ import {
   type SettingsDraft,
   type SettingsErrors,
 } from "@/lib/payments-view";
+import { pictureFailure, putPicture } from "@/lib/pictures";
 import { formatDateTime, formatDay } from "@/lib/subscriptions-api";
 import { StatusChips } from "./kit";
+import PictureChooser from "./PictureChooser";
 import PictureField from "./PictureField";
 import { action, field, Heading, Notice, secondary } from "./ui";
 
@@ -734,10 +742,20 @@ function SettingsView({ tenantId, admin, onRefused }: {
   const [settings, setSettings] = useState<PaymentSettings | null>(null);
   const [methods, setMethods] = useState<PaymentMethod[] | null>(null);
   const [error, setError] = useState("");
+  // Every load, save, delete and reread of the methods takes the next number; a read's answer is
+  // shown only while its number is still the latest, so an answer read before a later save or
+  // delete (a deleted method still in it, an older version) never replaces what that change showed.
+  const methodsSeq = useRef(0);
   useEffect(() => {
     let live = true;
+    const seq = ++methodsSeq.current;
     Promise.all([getSettings(tenantId), listMethods(tenantId)])
-      .then(([read, list]) => { if (live) { setSettings(read); setMethods(list); setError(""); } })
+      .then(([read, list]) => {
+        if (!live) return;
+        setSettings(read);
+        if (methodsSeq.current === seq) setMethods(list);
+        setError("");
+      })
       .catch((cause) => { if (live) { setError(paymentMessage(cause)); onRefused(cause); } });
     return () => { live = false; };
   }, [tenantId, onRefused]);
@@ -748,16 +766,33 @@ function SettingsView({ tenantId, admin, onRefused }: {
     return read;
   }, [tenantId]);
   const rereadMethods = useCallback(async () => {
+    const seq = ++methodsSeq.current;
     const list = await listMethods(tenantId);
-    setMethods(list);
+    if (methodsSeq.current === seq) setMethods(list);
     return list;
   }, [tenantId]);
   // The saved method shows at once; the reread then brings anything else that changed. If the
   // reread fails, the list keeps the saved method, so it still matches "Added." or "Saved.".
   const methodSaved = useCallback((saved: PaymentMethod) => {
+    methodsSeq.current += 1;
     setMethods((current) => upsertMethod(current ?? [], saved));
-    listMethods(tenantId).then(setMethods).catch(() => undefined);
-  }, [tenantId]);
+    rereadMethods().catch(() => undefined);
+  }, [rereadMethods]);
+  // A deleted method (or one someone else deleted first) leaves the list at once, so the settings
+  // see it gone too; the reread then brings anything else that changed.
+  const methodRemoved = useCallback((id: string) => {
+    methodsSeq.current += 1;
+    setMethods((current) => removeMethod(current ?? [], id));
+    rereadMethods().catch(() => undefined);
+  }, [rereadMethods]);
+  // A QR picture saved or removed on its own: only that method's picture changes (a gone method
+  // stays gone, and no older copy of the method is written back), then the list is read again.
+  // It may arrive after the method's form has closed: the server kept the picture all the same.
+  const pictureSaved = useCallback((id: string, picture: PaymentMethod["picture"]) => {
+    methodsSeq.current += 1;
+    setMethods((current) => current && current.map((row) => (row.id === id ? { ...row, picture } : row)));
+    rereadMethods().catch(() => undefined);
+  }, [rereadMethods]);
   if (error) return <Notice error>{error}</Notice>;
   if (!settings || !methods) return <Notice>Loading the payment settings…</Notice>;
   return (
@@ -767,7 +802,7 @@ function SettingsView({ tenantId, admin, onRefused }: {
           onConflict={rereadSettings} />
         : <SettingsSummary settings={settings} />}
       <Methods tenantId={tenantId} admin={admin} methods={methods} onSaved={methodSaved}
-        onConflict={rereadMethods} />
+        onRemoved={methodRemoved} onPicture={pictureSaved} onConflict={rereadMethods} />
     </>
   );
 }
@@ -939,26 +974,63 @@ function SettingsForm({ tenantId, settings, methods, onSaved, onConflict }: {
   );
 }
 
-function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
+function Methods({ tenantId, admin, methods, onSaved, onRemoved, onPicture, onConflict }: {
   tenantId: string | null; admin: boolean; methods: PaymentMethod[];
-  onSaved: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod[]>;
+  onSaved: (method: PaymentMethod) => void; onRemoved: (id: string) => void;
+  onPicture: (id: string, picture: PaymentMethod["picture"]) => void;
+  onConflict: () => Promise<PaymentMethod[]>;
 }) {
   // "new", a method id being edited, or null.
   const [editing, setEditing] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  // What the edit form opened by a half-finished add starts by saying.
+  const [formNotice, setFormNotice] = useState("");
   const titleId = useId();
-  const done = (saved: PaymentMethod, text: string) => {
-    setEditing(null);
+  // The form open now, for answers that arrive after the admin moved on to another form.
+  const editingRef = useRef(editing);
+  useEffect(() => { editingRef.current = editing; }, [editing]);
+  // After a delete closes its form, focus goes to "Add a method" rather than the page.
+  const addRef = useRef<HTMLButtonElement>(null);
+  const focusAdd = useRef(false);
+  useEffect(() => {
+    if (!focusAdd.current) return;
+    focusAdd.current = false;
+    addRef.current?.focus();
+  });
+  // A late answer closes only its own form, never one the admin has opened since.
+  const close = (key: string) => setEditing((current) => (current === key ? null : current));
+  const done = (key: string, saved: PaymentMethod, text: string) => {
+    close(key);
     setNotice(text);
+    setFormNotice("");
     onSaved(saved);
+  };
+  const removed = (id: string, text: string) => {
+    if (editingRef.current === id) focusAdd.current = true;
+    close(id);
+    setNotice(text);
+    onRemoved(id);
+  };
+  // The method was created but its picture was refused: it is in the list, and its edit form opens
+  // saying so, with the picture field there for a retry. If the admin has opened another form
+  // meanwhile, that form stays and the sentence shows above the list instead.
+  const addedWithoutPicture = (created: PaymentMethod, text: string) => {
+    onSaved(created);
+    if (editingRef.current === "new") {
+      setNotice("");
+      setFormNotice(text);
+    } else {
+      setNotice(text);
+    }
+    setEditing((current) => (current === "new" ? created.id : current));
   };
   return (
     <section aria-labelledby={titleId} data-testid="payment-methods" className={card}>
       <h2 id={titleId} className={`${sectionTitle} mb-1`}>Payment methods</h2>
       <p className={`${helpText} mb-4`}>
         How customers are told to pay. Each method shows the line customers read. Customers are shown only the
-        first four active bank transfer and DuitNow methods in this list. A method can be turned off but not
-        deleted.</p>
+        first four active bank transfer and DuitNow methods in this list. A method can be turned off to keep it
+        for later, or deleted.</p>
       {notice && <div className="mb-4"><Notice testId="methods-notice">{notice}</Notice></div>}
       {methods.length === 0 && editing !== "new" && (
         <p className="mb-4 text-sm text-ink-600" data-testid="methods-empty">No payment methods yet.</p>
@@ -967,9 +1039,9 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
         {methods.map((method) => (
           <li key={method.id} data-testid="payment-method" className="rounded-md border border-ink-200 p-3 text-sm">
             {editing === method.id ? (
-              <MethodForm tenantId={tenantId} method={method} onCancel={() => setEditing(null)}
-                onDone={(saved) => done(saved, "Saved.")} onPicture={onSaved} onConflict={async () => (await onConflict()).find(
-                  (row) => row.id === method.id) ?? null} />
+              <MethodForm tenantId={tenantId} method={method} notice={formNotice} onCancel={() => setEditing(null)}
+                onDone={(saved) => done(method.id, saved, "Saved.")} onPicture={onPicture} onDeleted={removed}
+                onConflict={async () => (await onConflict()).find((row) => row.id === method.id) ?? null} />
             ) : (
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -993,7 +1065,7 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
                 {admin && (
                   <button type="button" className={secondary} data-testid="method-edit"
                     aria-label={`Edit ${method.label}`}
-                    onClick={() => { setEditing(method.id); setNotice(""); }}>Edit</button>
+                    onClick={() => { setEditing(method.id); setNotice(""); setFormNotice(""); }}>Edit</button>
                 )}
               </div>
             )}
@@ -1003,10 +1075,11 @@ function Methods({ tenantId, admin, methods, onSaved, onConflict }: {
       {admin && (editing === "new" ? (
         <div className="mt-4">
           <MethodForm tenantId={tenantId} method={null} onCancel={() => setEditing(null)}
-            onDone={(saved) => done(saved, "Added.")} onConflict={async () => null} />
+            onDone={(saved) => done("new", saved, "Added.")} onAddedWithoutPicture={addedWithoutPicture}
+            onConflict={async () => null} />
         </div>
       ) : (
-        <button type="button" className={`${secondary} mt-4`} data-testid="method-add"
+        <button ref={addRef} type="button" className={`${secondary} mt-4`} data-testid="method-add"
           onClick={() => { setEditing("new"); setNotice(""); }}>Add a method</button>
       ))}
     </section>
@@ -1021,11 +1094,27 @@ const FIELD_LABELS: Record<Exclude<MethodField, "instructions">, string> = {
   duitnow_id: "DuitNow ID",
 };
 
-function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict }: {
-  tenantId: string | null; method: PaymentMethod | null; onCancel: () => void;
+const QR_HINT = "Upload the QR at 800 pixels or more so it still scans";
+const DELETE_HELP = "Save or cancel your changes before deleting this method.";
+
+function MethodForm({
+  tenantId, method, notice = "", onCancel, onDone, onPicture, onAddedWithoutPicture, onDeleted, onConflict,
+}: {
+  tenantId: string | null; method: PaymentMethod | null;
+  /** A sentence the form starts by showing (the add that could not save its picture). */
+  notice?: string;
+  onCancel: () => void;
   onDone: (method: PaymentMethod) => void;
-  /** Told the method with its new picture, which is saved on its own (not by Save); the form stays open. */
-  onPicture?: (method: PaymentMethod) => void; onConflict: () => Promise<PaymentMethod | null>;
+  /**
+   * Told the method's new picture (null after a removal), which is saved on its own (not by Save);
+   * the form stays open. It can arrive after this form has closed.
+   */
+  onPicture?: (id: string, picture: PaymentMethod["picture"]) => void;
+  /** Add form: the method was created but its chosen picture was refused, said in `text`. */
+  onAddedWithoutPicture?: (method: PaymentMethod, text: string) => void;
+  /** Edit form: the method is gone (deleted here, or by someone else first), said in `text`. */
+  onDeleted?: (id: string, text: string) => void;
+  onConflict: () => Promise<PaymentMethod | null>;
 }) {
   // The method as last read: a version conflict replaces it with the latest.
   const [base, setBase] = useState(method);
@@ -1033,14 +1122,41 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
   const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [formNotice, setFormNotice] = useState(notice);
+  // Add form, DuitNow only: the QR picture to upload once the method is created.
+  const [pictureFile, setPictureFile] = useState<File | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // The edit form's picture upload or removal is running: Delete waits for it.
+  const [pictureBusy, setPictureBusy] = useState(false);
   const kindRef = useRef<HTMLSelectElement>(null);
   const labelRef = useRef<HTMLInputElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const confirmOpened = useRef(false);
   const formId = useId();
   // A new method starts at its kind; an edit at its label.
   useEffect(() => { (kindRef.current ?? labelRef.current)?.focus(); }, []);
+  // The confirmation opens on Keep (so Enter or a second click does not delete); closing it
+  // returns focus to Delete.
+  useEffect(() => {
+    if (confirming) {
+      confirmOpened.current = true;
+      keepRef.current?.focus();
+    } else if (confirmOpened.current) {
+      confirmOpened.current = false;
+      deleteRef.current?.focus();
+    }
+  }, [confirming]);
   const errors: MethodErrors = shown ? checkMethod(draft) : {};
   const changes = base ? methodChanges(draft, base) : null;
-  const change = (next: Partial<MethodDraft>) => setDraft((current) => ({ ...current, ...next }));
+  const unsaved = changes !== null;
+  const change = (next: Partial<MethodDraft>) => {
+    setDraft((current) => ({ ...current, ...next }));
+    // A picture belongs to a DuitNow method only; an edit makes an open delete confirmation stale.
+    if (next.kind && next.kind !== "qr") setPictureFile(null);
+    setConfirming(false);
+  };
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -1054,7 +1170,19 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
         onDone(await updateMethod(tenantId, base.id, changes));
       } else {
         const body = newMethodBody(draft);
-        if (body) onDone(await createMethod(tenantId, body));
+        if (!body) return;
+        const created = await createMethod(tenantId, body);
+        if (created.kind !== "qr" || !pictureFile) { onDone(created); return; }
+        // The method exists now: a refused picture must not read as if nothing was saved.
+        let picture;
+        try {
+          picture = await putPicture(methodPicturePath(tenantId, created.id), pictureFile);
+        } catch (cause) {
+          onAddedWithoutPicture?.(created,
+            `The method was added, but the picture could not be saved: ${pictureFailure(cause)}`);
+          return;
+        }
+        onDone({ ...created, picture });
       }
     } catch (cause) {
       if (base && isVersionConflict(cause)) {
@@ -1070,6 +1198,21 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
       }
     } finally {
       setBusy(false);
+    }
+  }
+  async function remove() {
+    if (!base || deleting) return;
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteMethod(tenantId, base.id);
+      onDeleted?.(base.id, "Deleted.");
+    } catch (cause) {
+      // Someone else deleted it first: the row goes and the list is read again.
+      if (isMethodNotFound(cause)) { onDeleted?.(base.id, "This method was already deleted."); return; }
+      setError(deleteMethodMessage(cause));
+      setConfirming(false);
+      setDeleting(false);
     }
   }
   // No method field (the instructions box included) has a maxLength: a pasted label, name, number or
@@ -1090,6 +1233,7 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
   return (
     <form className="space-y-3" data-testid="method-form" onSubmit={(event) => void save(event)} noValidate>
       <h3 className="font-semibold">{base ? `Edit ${base.label}` : "Add a payment method"}</h3>
+      {formNotice && <Notice warning testId="method-form-notice">{formNotice}</Notice>}
       {!base ? (
         <label className="block text-sm">Kind
           <select ref={kindRef} className={field} data-testid="method-kind" value={draft.kind}
@@ -1120,12 +1264,16 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
       {base && base.kind === "qr" && (
         <PictureField tenantId={tenantId} testId="method-picture" label="QR picture"
           subject={base.label} path={methodPicturePath(tenantId, base.id)}
-          picture={base.picture ?? null} hint="Upload the QR at 800 pixels or more so it still scans"
+          picture={base.picture ?? null} hint={QR_HINT} onBusy={setPictureBusy}
           onChanged={(picture) => {
-            const next = { ...base, picture };
-            setBase(next);
-            onPicture?.(next);
+            setBase((current) => current && { ...current, picture });
+            setFormNotice("");
+            onPicture?.(base.id, picture);
           }} />
+      )}
+      {!base && draft.kind === "qr" && (
+        <PictureChooser testId="method-new-picture" label="QR picture (optional)" hint={QR_HINT}
+          file={pictureFile} onChange={setPictureFile} disabled={busy} />
       )}
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" className="size-4 accent-brand-600" data-testid="method-active" checked={draft.is_active}
@@ -1137,10 +1285,35 @@ function MethodForm({ tenantId, method, onCancel, onDone, onPicture, onConflict 
         <span data-testid="method-form-preview">{draftPreview(draft)}</span>
       </p>
       <div className="flex flex-wrap gap-2">
-        <button className={action} disabled={busy || (base !== null && changes === null)} data-testid="method-save">
+        <button className={action} disabled={busy || deleting || (base !== null && !unsaved)} data-testid="method-save">
           {busy ? "Saving…" : base ? "Save" : "Add method"}</button>
-        <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>
+        <button type="button" className={secondary} disabled={busy || deleting} onClick={onCancel}>Cancel</button>
       </div>
+      {base && onDeleted && (
+        <div className="space-y-2 border-t border-[color:var(--fs-border)] pt-3">
+          <button ref={deleteRef} type="button" className={secondary} data-testid="method-delete"
+            disabled={unsaved || busy || deleting || confirming || pictureBusy} title={unsaved ? DELETE_HELP : undefined}
+            aria-describedby={unsaved ? `${formId}-delete-help` : undefined}
+            onClick={() => { setConfirming(true); setError(""); setFormNotice(""); }}>Delete method</button>
+          {unsaved && <p id={`${formId}-delete-help`} className={helpText} data-testid="method-delete-help">
+            {DELETE_HELP}</p>}
+          {confirming && (
+            <div role="group" aria-labelledby={`${formId}-delete-question`} data-testid="method-delete-confirm-step"
+              className="space-y-2 rounded-md border border-ink-200 p-3">
+              <p id={`${formId}-delete-question`} data-testid="method-delete-question" className="text-sm font-medium">
+                {deleteMethodQuestion(base)}</p>
+              <p className="text-sm text-ink-700">{deleteMethodSentences(base).join(" ")}</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={action} disabled={deleting || pictureBusy}
+                  data-testid="method-delete-confirm"
+                  onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete method"}</button>
+                <button ref={keepRef} type="button" className={secondary} disabled={deleting}
+                  data-testid="method-delete-cancel" onClick={() => setConfirming(false)}>Keep method</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {error && <Notice error testId="method-error">{error}</Notice>}
     </form>
   );
