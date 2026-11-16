@@ -1392,7 +1392,8 @@ async def test_switching_company_ends_the_conversation_and_withdraws_its_card(
         # A company chooser rewrites `?client_id=` in place (router.replace); no reload, so
         # only the console itself can withdraw the card.
         cancel_route = re.compile(rf"/workspace/proposals/{RESET_PROPOSAL}/cancel")
-        async with page.expect_request(cancel_route, timeout=WAIT):
+        # The response, not the request: the stub records the call before it answers.
+        async with page.expect_response(cancel_route, timeout=WAIT):
             await page.evaluate(
                 "(url) => window.history.replaceState(null, '', url)",
                 f"/inbox?client_id={OTHER_TENANT}",
