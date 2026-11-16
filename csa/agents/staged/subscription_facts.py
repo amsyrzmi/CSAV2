@@ -30,6 +30,7 @@ from functools import partial
 from typing import Any, Literal
 
 import structlog
+from pydantic import ValidationError
 
 from csa.agents.facts import day, money
 from csa.contracts.facts import Fact, PictureRef
@@ -480,6 +481,9 @@ def plan_picture(code: object, name: object, has_picture: object) -> PictureRef 
     """
     if not has_picture or not isinstance(code, str) or not isinstance(name, str):
         return None
-    if not 1 <= len(code) <= 128 or not name.strip() or len(name) > 1024:
+    if not name.strip():
         return None
-    return PictureRef(kind="plan", subject_key=code, caption=name)
+    try:
+        return PictureRef(kind="plan", subject_key=code, caption=name)
+    except ValidationError:
+        return None

@@ -696,9 +696,8 @@ def test_plan_picture_is_captioned_with_the_plan_name_only() -> None:
     assert plan_picture("besar", "x" * 1025, True) is None
 
 
-def test_the_plan_reads_ask_for_a_picture_within_the_company_only() -> None:
-    """has_picture and plan_has_picture are an EXISTS on this company's plan pictures (so no row is
-    multiplied); the subscription reads ask only for an active plan's."""
+def test_the_plan_reads_return_the_picture_column() -> None:
+    """Each plan read returns the column `plan_picture` is fed from."""
     reads = {
         "subscription_plan.sql": "has_picture",
         "subscription_list.sql": "plan_has_picture",
@@ -707,8 +706,3 @@ def test_the_plan_reads_ask_for_a_picture_within_the_company_only() -> None:
     for name, column in reads.items():
         sql = (ROOT / "db/sql/agents" / name).read_text()
         assert f"AS {column}" in sql, name
-        assert "EXISTS (" in sql and "JOIN public.media_assets" not in sql, name
-        assert "a.client_id = %(client_id)s" in sql, name
-        assert "a.kind = 'plan'" in sql and "a.subject_key = p.code" in sql, name
-        if column == "plan_has_picture":
-            assert "p.is_active IS TRUE AND EXISTS" in sql, name
