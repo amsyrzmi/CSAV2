@@ -81,6 +81,26 @@ Reserved ranges (client growth program, 2026-10-27):
 
 - `0611`: the staff assistant's page-key check also allows `payments` and `connections` (the Overview
   assistant change added both tabs; same read-then-rebuild method as 0540).
+- `0630`-`0649`: HR processes. 0630 adds the process tables (`hr_process_templates`,
+  `hr_process_template_rules`, `hr_process_template_steps`, `hr_processes`, `hr_process_tasks`,
+  `hr_process_events`; tenant isolated, no grant to any application role, read and written only through
+  definer functions from 0631; the event log is immutable) and `hr_employees.probation_end`. 0631 adds
+  the template write path `hr_template_apply` (create, update, deactivate; HR owner or `people.manage`,
+  receipt in `hr_operations`, one `console_audit` row per change, tie conflicts and late leaver steps
+  returned as warnings), the reads `hr_template_rows` and `hr_template_get`, and the internal
+  `hr_process_match` (most specific active template of the kind, then the oldest).
+  0632 adds the trigger `hr_process_on_employee` on `hr_employees` (onboarding on add or rehire,
+  offboarding on leave, cancel on undo, due dates follow `start_date`, `last_day` and `probation_end`,
+  manager tasks follow the manager, the leaver's tasks closed when the leaver finishes; it runs in the
+  writer's transaction), `hr_process_settle` (the completion rule), and the HR entry points
+  `hr_process_start_apply`, `hr_process_cancel_apply` and `hr_probation_set`.
+  0633 adds the reads `hr_process_rows` (filters, keyset paging newest first), `hr_process_get`,
+  `hr_task_rows_mine` (own tasks, plus the HR pool for the HR team) and `hr_person_processes` (anchor
+  dates and "no matching template" per kind, counted within the current employment); the HR team
+  sees everything, a manager the processes of direct reports without notes, actors or events, the
+  person their own onboarding and offboarding with progress and only their own tasks (not custom
+  processes about them), an assignee only their own tasks. It also adds the indexes
+  `hr_processes_by_start` and `hr_employees_by_manager`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

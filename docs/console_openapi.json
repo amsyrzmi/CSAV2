@@ -1391,6 +1391,49 @@
         "title": "AgentUsageOut",
         "type": "object"
       },
+      "AnchorDates": {
+        "description": "The dates a process counts from. A date a later migration adds is dropped, not an error.",
+        "properties": {
+          "last_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day"
+          },
+          "probation_end": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probation End"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          }
+        },
+        "title": "AnchorDates",
+        "type": "object"
+      },
       "AnswerResult": {
         "additionalProperties": false,
         "properties": {
@@ -11353,6 +11396,25 @@
         "title": "NavigateResult",
         "type": "object"
       },
+      "NoMatchingTemplate": {
+        "additionalProperties": false,
+        "properties": {
+          "offboarding": {
+            "title": "Offboarding",
+            "type": "boolean"
+          },
+          "onboarding": {
+            "title": "Onboarding",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "onboarding",
+          "offboarding"
+        ],
+        "title": "NoMatchingTemplate",
+        "type": "object"
+      },
       "NoSummary": {
         "additionalProperties": false,
         "description": "No summary has been made for the item yet.",
@@ -13017,6 +13079,189 @@
         "title": "PersonOut",
         "type": "object"
       },
+      "PersonProbationSet": {
+        "additionalProperties": false,
+        "description": "Set or clear the end of a person's probation (`null` clears it). Open process tasks counted\nfrom it move with it (0632). The key must be sent: there is no default.",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "operation": {
+            "const": "person.probation_set",
+            "title": "Operation",
+            "type": "string"
+          },
+          "probation_end": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probation End"
+          }
+        },
+        "required": [
+          "operation",
+          "employee_id",
+          "expected_version",
+          "probation_end"
+        ],
+        "title": "PersonProbationSet",
+        "type": "object"
+      },
+      "PersonProcess": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "next_task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProcessNextTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "process_id": {
+            "format": "uuid",
+            "title": "Process Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tasks_done": {
+            "title": "Tasks Done",
+            "type": "integer"
+          },
+          "tasks_total": {
+            "title": "Tasks Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "process_id",
+          "kind",
+          "name",
+          "status",
+          "started_at",
+          "closed_at",
+          "tasks_total",
+          "tasks_done",
+          "next_task"
+        ],
+        "title": "PersonProcess",
+        "type": "object"
+      },
+      "PersonProcesses": {
+        "additionalProperties": false,
+        "description": "A person's processes, newest first. `anchor_dates`: HR and the person.\n`no_matching_template`: HR only.",
+        "properties": {
+          "anchor_dates": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorDates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "no_matching_template": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoMatchingTemplate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processes": {
+            "items": {
+              "$ref": "#/components/schemas/PersonProcess"
+            },
+            "title": "Processes",
+            "type": "array"
+          },
+          "view": {
+            "enum": [
+              "hr",
+              "manager",
+              "self"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "employee_id",
+          "processes"
+        ],
+        "title": "PersonProcesses",
+        "type": "object"
+      },
       "PersonProfile": {
         "additionalProperties": false,
         "properties": {
@@ -14002,6 +14247,963 @@
           "enabled"
         ],
         "title": "PrivateAccessSave",
+        "type": "object"
+      },
+      "ProcessCancelReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "operation": {
+            "const": "process.cancel",
+            "title": "Operation",
+            "type": "string"
+          },
+          "process_id": {
+            "format": "uuid",
+            "title": "Process Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "saved",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "process_id",
+          "status",
+          "duplicate"
+        ],
+        "title": "ProcessCancelReceipt",
+        "type": "object"
+      },
+      "ProcessDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ProcessEvent"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events"
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessHeader"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/ProcessTask"
+            },
+            "maxItems": 40,
+            "title": "Tasks",
+            "type": "array"
+          },
+          "view": {
+            "enum": [
+              "hr",
+              "manager",
+              "self",
+              "assignee"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "process",
+          "tasks"
+        ],
+        "title": "ProcessDetail",
+        "type": "object"
+      },
+      "ProcessEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/ProcessEventDetail"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "required": [
+          "event_id",
+          "at",
+          "actor",
+          "action",
+          "task_id",
+          "detail"
+        ],
+        "title": "ProcessEvent",
+        "type": "object"
+      },
+      "ProcessEventDetail": {
+        "additionalProperties": true,
+        "description": "The detail of an event; which keys appear depends on the action (0632). Events are immutable,\nso a stored value that a typed field refused would break the read for good: every value is\nreturned exactly as it is stored (any JSON value, not trimmed, no control-character rule), and a\nkey a later migration adds is passed through the same way. What 0632 writes today: `reason`\n(a code such as `superseded`, `person_left`, `no_manager`), `kind`, `template_id`,\n`template_version`, `owner_role`, `assignee_employee_id`, `due_on`, `fallback` (`hr_pool`),\n`clamped`, `anchor`, `old` and `new` (dates), `from` and `to` (employee ids or null),\n`auto_check`.",
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "assignee_employee_id": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "auto_check": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "clamped": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "due_on": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "from": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "new": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "old": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "owner_role": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "template_id": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "template_version": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "to": {
+            "$ref": "#/components/schemas/JsonValue"
+          }
+        },
+        "title": "ProcessEventDetail",
+        "type": "object"
+      },
+      "ProcessHeader": {
+        "additionalProperties": false,
+        "description": "Everyone who may see the process gets the first five fields. `started_at` and `closed_at`:\nHR, manager and person. `employee_id`, `tasks_total` and `tasks_done`: HR and manager.\n`required_total`, `required_done` and `open_tasks`: the person. The template, anchor dates and\nwho started it: HR only.",
+        "properties": {
+          "anchor_dates": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorDates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee Id"
+          },
+          "employee_name": {
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "open_tasks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Tasks"
+          },
+          "process_id": {
+            "format": "uuid",
+            "title": "Process Id",
+            "type": "string"
+          },
+          "required_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Done"
+          },
+          "required_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Total"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "started_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started By"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tasks_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks Done"
+          },
+          "tasks_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks Total"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "template_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Version"
+          }
+        },
+        "required": [
+          "process_id",
+          "kind",
+          "name",
+          "status",
+          "employee_name"
+        ],
+        "title": "ProcessHeader",
+        "type": "object"
+      },
+      "ProcessNextTask": {
+        "additionalProperties": false,
+        "properties": {
+          "due_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due On"
+          },
+          "title_en": {
+            "title": "Title En",
+            "type": "string"
+          },
+          "title_ms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Ms"
+          }
+        },
+        "required": [
+          "title_en",
+          "title_ms",
+          "due_on"
+        ],
+        "title": "ProcessNextTask",
+        "type": "object"
+      },
+      "ProcessPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProcessRow"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ProcessPage",
+        "type": "object"
+      },
+      "ProcessRow": {
+        "additionalProperties": false,
+        "description": "One process in the list. For the person, `next_due_on` and `overdue` count only their own\ntasks.",
+        "properties": {
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "employee_name": {
+            "title": "Employee Name",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "next_due_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due On"
+          },
+          "overdue": {
+            "title": "Overdue",
+            "type": "boolean"
+          },
+          "process_id": {
+            "format": "uuid",
+            "title": "Process Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tasks_done": {
+            "title": "Tasks Done",
+            "type": "integer"
+          },
+          "tasks_total": {
+            "title": "Tasks Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "process_id",
+          "employee_id",
+          "employee_name",
+          "department_id",
+          "kind",
+          "name",
+          "status",
+          "started_at",
+          "closed_at",
+          "tasks_total",
+          "tasks_done",
+          "next_due_on",
+          "overdue"
+        ],
+        "title": "ProcessRow",
+        "type": "object"
+      },
+      "ProcessStart": {
+        "additionalProperties": false,
+        "description": "Start a process by hand: a custom one (`template_id` required) or an onboarding or\noffboarding of an existing person (`template_id` optional: the matching template).",
+        "properties": {
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          }
+        },
+        "required": [
+          "employee_id",
+          "kind"
+        ],
+        "title": "ProcessStart",
+        "type": "object"
+      },
+      "ProcessStartReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "employee_id": {
+            "format": "uuid",
+            "title": "Employee Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation": {
+            "const": "process.start",
+            "title": "Operation",
+            "type": "string"
+          },
+          "process_id": {
+            "format": "uuid",
+            "title": "Process Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "saved",
+            "title": "Status",
+            "type": "string"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          }
+        },
+        "required": [
+          "operation",
+          "process_id",
+          "employee_id",
+          "kind",
+          "template_id",
+          "status",
+          "duplicate"
+        ],
+        "title": "ProcessStartReceipt",
+        "type": "object"
+      },
+      "ProcessTask": {
+        "additionalProperties": false,
+        "description": "A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks\n(and every task for HR) add the description, anchor, approval, check, reference note (copied\nfrom the step when the process started), completion time, note and version. HR alone gets\nthe assignee id, the offset and override, and who completed and approved it.",
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "start_date",
+                  "last_day",
+                  "probation_end"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor"
+          },
+          "approval_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "hr",
+                  "manager"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval By"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "assignee_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Employee Id"
+          },
+          "assignee_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Name"
+          },
+          "auto_check": {
+            "anyOf": [
+              {
+                "enum": [
+                  "account_linked",
+                  "personal_details_complete",
+                  "access_removed",
+                  "document_uploaded:contract",
+                  "document_uploaded:identity",
+                  "document_uploaded:certificate",
+                  "document_uploaded:other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Check"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "completed_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed By"
+          },
+          "description_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description En"
+          },
+          "description_ms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Ms"
+          },
+          "due_offset_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Offset Days"
+          },
+          "due_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due On"
+          },
+          "due_overridden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Overridden"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "overdue": {
+            "title": "Overdue",
+            "type": "boolean"
+          },
+          "owner_role": {
+            "enum": [
+              "hr",
+              "manager",
+              "employee",
+              "person"
+            ],
+            "title": "Owner Role",
+            "type": "string"
+          },
+          "reference_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Note"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "todo",
+              "awaiting_approval",
+              "done",
+              "rejected",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "title_en": {
+            "title": "Title En",
+            "type": "string"
+          },
+          "title_ms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Ms"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "task_id",
+          "ordinal",
+          "title_en",
+          "title_ms",
+          "owner_role",
+          "assignee_name",
+          "due_on",
+          "status",
+          "required",
+          "overdue",
+          "mine"
+        ],
+        "title": "ProcessTask",
         "type": "object"
       },
       "Processing": {
@@ -16825,6 +18027,729 @@
           "hooks_ready"
         ],
         "title": "TelegramStatus",
+        "type": "object"
+      },
+      "TemplateCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateRules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateStep"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "steps"
+        ],
+        "title": "TemplateCreate",
+        "type": "object"
+      },
+      "TemplateDeactivate": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "TemplateDeactivate",
+        "type": "object"
+      },
+      "TemplateList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateSummary"
+            },
+            "maxItems": 500,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TemplateList",
+        "type": "object"
+      },
+      "TemplateOut": {
+        "additionalProperties": false,
+        "properties": {
+          "conflicts": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/TemplateRules"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateStepOut"
+            },
+            "maxItems": 40,
+            "title": "Steps",
+            "type": "array"
+          },
+          "template_id": {
+            "format": "uuid",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "template_id",
+          "kind",
+          "name",
+          "version",
+          "is_active",
+          "created_at",
+          "updated_at",
+          "rules",
+          "steps",
+          "conflicts",
+          "warnings"
+        ],
+        "title": "TemplateOut",
+        "type": "object"
+      },
+      "TemplateReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "conflicts": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "operation": {
+            "enum": [
+              "template.create",
+              "template.update",
+              "template.deactivate"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "status": {
+            "const": "saved",
+            "title": "Status",
+            "type": "string"
+          },
+          "template_id": {
+            "format": "uuid",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "template_id",
+          "version",
+          "conflicts",
+          "warnings",
+          "status",
+          "duplicate"
+        ],
+        "title": "TemplateReceipt",
+        "type": "object"
+      },
+      "TemplateRules": {
+        "additionalProperties": false,
+        "description": "Who a template applies to; every rule left `null` matches everyone. Text is trimmed and an\nempty string counts as no rule (as the database stores it).",
+        "properties": {
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
+          "employment_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full_time",
+                  "part_time",
+                  "contract",
+                  "intern"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employment Type"
+          },
+          "legal_entity_reference": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Entity Reference"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "enum": [
+                  "peninsular_labuan",
+                  "sabah",
+                  "sarawak"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "title": "TemplateRules",
+        "type": "object"
+      },
+      "TemplateStep": {
+        "additionalProperties": false,
+        "description": "One step; its ordinal is its position in `steps`. A `person` step names `owner_employee_id`\n(an active person of this company); no other role may.",
+        "properties": {
+          "anchor": {
+            "enum": [
+              "start_date",
+              "last_day",
+              "probation_end"
+            ],
+            "title": "Anchor",
+            "type": "string"
+          },
+          "approval_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "hr",
+                  "manager"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval By"
+          },
+          "auto_check": {
+            "anyOf": [
+              {
+                "enum": [
+                  "account_linked",
+                  "personal_details_complete",
+                  "access_removed",
+                  "document_uploaded:contract",
+                  "document_uploaded:identity",
+                  "document_uploaded:certificate",
+                  "document_uploaded:other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Check"
+          },
+          "description_en": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description En"
+          },
+          "description_ms": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Ms"
+          },
+          "due_offset_days": {
+            "maximum": 365.0,
+            "minimum": -365.0,
+            "title": "Due Offset Days",
+            "type": "integer"
+          },
+          "owner_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Employee Id"
+          },
+          "owner_role": {
+            "enum": [
+              "hr",
+              "manager",
+              "employee",
+              "person"
+            ],
+            "title": "Owner Role",
+            "type": "string"
+          },
+          "reference_note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Note"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "title_en": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title En",
+            "type": "string"
+          },
+          "title_ms": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Ms"
+          }
+        },
+        "required": [
+          "title_en",
+          "owner_role",
+          "anchor",
+          "due_offset_days"
+        ],
+        "title": "TemplateStep",
+        "type": "object"
+      },
+      "TemplateStepOut": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "enum": [
+              "start_date",
+              "last_day",
+              "probation_end"
+            ],
+            "title": "Anchor",
+            "type": "string"
+          },
+          "approval_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "hr",
+                  "manager"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval By"
+          },
+          "auto_check": {
+            "anyOf": [
+              {
+                "enum": [
+                  "account_linked",
+                  "personal_details_complete",
+                  "access_removed",
+                  "document_uploaded:contract",
+                  "document_uploaded:identity",
+                  "document_uploaded:certificate",
+                  "document_uploaded:other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Check"
+          },
+          "description_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description En"
+          },
+          "description_ms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Ms"
+          },
+          "due_offset_days": {
+            "title": "Due Offset Days",
+            "type": "integer"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "owner_employee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Employee Id"
+          },
+          "owner_role": {
+            "enum": [
+              "hr",
+              "manager",
+              "employee",
+              "person"
+            ],
+            "title": "Owner Role",
+            "type": "string"
+          },
+          "reference_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Note"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "title_en": {
+            "title": "Title En",
+            "type": "string"
+          },
+          "title_ms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Ms"
+          }
+        },
+        "required": [
+          "ordinal",
+          "title_en",
+          "title_ms",
+          "description_en",
+          "description_ms",
+          "owner_role",
+          "owner_employee_id",
+          "anchor",
+          "due_offset_days",
+          "required",
+          "approval_by",
+          "auto_check",
+          "reference_note"
+        ],
+        "title": "TemplateStepOut",
+        "type": "object"
+      },
+      "TemplateSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/TemplateRules"
+          },
+          "step_count": {
+            "title": "Step Count",
+            "type": "integer"
+          },
+          "template_id": {
+            "format": "uuid",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "kind",
+          "name",
+          "version",
+          "is_active",
+          "rules",
+          "step_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TemplateSummary",
+        "type": "object"
+      },
+      "TemplateUpdate": {
+        "additionalProperties": false,
+        "description": "Replaces the name, rules and steps (version + 1; the kind never changes). `rules` has no\ndefault on purpose: a client that forgets it gets a 422 instead of silently clearing the rules;\nsend `null` to make the template the company default. `is_active` `null` keeps it.",
+        "properties": {
+          "expected_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateRules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateStep"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_version",
+          "name",
+          "rules",
+          "steps"
+        ],
+        "title": "TemplateUpdate",
+        "type": "object"
+      },
+      "TemplateWarning": {
+        "additionalProperties": false,
+        "description": "`code` is one of `TemplateWarningCode`: `step_after_last_day`, a step of the leaver in an\noffboarding template is due after the last day; it will be due on the last day instead (spec\n5.7.7). A code a later migration adds comes through unchanged rather than failing the read.",
+        "properties": {
+          "code": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "ordinal"
+        ],
+        "title": "TemplateWarning",
         "type": "object"
       },
       "ThreadDetail": {
@@ -29274,6 +31199,7 @@
                     "person.add": "#/components/schemas/PersonAdd",
                     "person.leave": "#/components/schemas/PersonLeave",
                     "person.leave_undo": "#/components/schemas/PersonLeaveUndo",
+                    "person.probation_set": "#/components/schemas/PersonProbationSet",
                     "person.rehire": "#/components/schemas/PersonRehire",
                     "person.update": "#/components/schemas/PersonUpdate",
                     "personal.save": "#/components/schemas/PersonalSave",
@@ -29352,6 +31278,9 @@
                   },
                   {
                     "$ref": "#/components/schemas/PersonRehire"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PersonProbationSet"
                   },
                   {
                     "$ref": "#/components/schemas/DepartmentSave"
@@ -30059,6 +31988,66 @@
         ]
       }
     },
+    "/console/v1/hr/people/{employee_id}/processes": {
+      "get": {
+        "operationId": "person_processes_console_v1_hr_people__employee_id__processes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "employee_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Employee Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonProcesses"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Person Processes",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/private/{area}/{resource_id}": {
       "get": {
         "operationId": "private_record_console_v1_hr_private__area___resource_id__get",
@@ -30132,6 +32121,375 @@
         ]
       }
     },
+    "/console/v1/hr/processes": {
+      "get": {
+        "operationId": "processes_console_v1_hr_processes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "onboarding",
+                    "offboarding",
+                    "custom"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "completed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overdue"
+            }
+          },
+          {
+            "in": "query",
+            "name": "department",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Department"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Processes",
+        "tags": [
+          "HR"
+        ]
+      },
+      "post": {
+        "operationId": "start_process_console_v1_hr_processes_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessStartReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Process",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/processes/{process_id}": {
+      "get": {
+        "operationId": "process_console_v1_hr_processes__process_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "process_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Process Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Process",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/processes/{process_id}/cancel": {
+      "post": {
+        "operationId": "cancel_process_console_v1_hr_processes__process_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "process_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Process Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessCancelReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Process",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
     "/console/v1/hr/records/{area}": {
       "get": {
         "operationId": "records_console_v1_hr_records__area__get",
@@ -30200,6 +32558,342 @@
           }
         },
         "summary": "Records",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/templates": {
+      "get": {
+        "operationId": "templates_console_v1_hr_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Templates",
+        "tags": [
+          "HR"
+        ]
+      },
+      "post": {
+        "operationId": "create_template_console_v1_hr_templates_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Template",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/templates/{template_id}": {
+      "get": {
+        "operationId": "template_console_v1_hr_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Template Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Template",
+        "tags": [
+          "HR"
+        ]
+      },
+      "put": {
+        "operationId": "update_template_console_v1_hr_templates__template_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Template Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Template",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/templates/{template_id}/deactivate": {
+      "post": {
+        "operationId": "deactivate_template_console_v1_hr_templates__template_id__deactivate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Template Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateDeactivate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Template",
         "tags": [
           "HR"
         ]
