@@ -160,6 +160,122 @@ async def test_send_message_exposes_rate_limit_without_response_secrets() -> Non
     assert error.value.retry_after_seconds == 7
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("media_type", "filename"),
+    [("image/jpeg", "picture.jpg"), ("image/png", "picture.png")],
+)
+async def test_send_photo_posts_multipart_send_photo(media_type: str, filename: str) -> None:
+    requests: list[httpx.Request] = []
+    data = b"\x89PNG-or-jpeg-bytes\x00\xff"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 91}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        receipt = await TelegramAdapter.send_photo(
+            "12345:test-token",
+            chat_id="12345",
+            data=data,
+            media_type=media_type,
+            caption="Nasi lemak RM8",
+            http_client=client,
+        )
+
+    assert receipt.message_id == 91
+    assert receipt.status_code == 200
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.method == "POST"
+    assert request.url.path.endswith("/sendPhoto")
+    assert request.headers["content-type"].startswith("multipart/form-data")
+    body = request.read()
+    assert b'name="chat_id"' in body
+    assert b"\r\n\r\n12345\r\n" in body
+    assert b'name="caption"' in body
+    assert b"Nasi lemak RM8" in body
+    assert f'name="photo"; filename="{filename}"'.encode() in body
+    assert f"Content-Type: {media_type}".encode() in body
+    assert data in body
+
+
+@pytest.mark.asyncio
+async def test_send_photo_maps_rate_limit_and_rejections() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("x-case") == "limit":
+            return httpx.Response(
+                429, json={"ok": False, "error_code": 429, "parameters": {"retry_after": 3}}
+            )
+        return httpx.Response(400, json={"ok": False, "error_code": 400, "description": "bad"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        client.headers["x-case"] = "limit"
+        with pytest.raises(TelegramDeliveryError) as limited:
+            await TelegramAdapter.send_photo(
+                "12345:test-token",
+                chat_id="12345",
+                data=b"x",
+                media_type="image/jpeg",
+                caption="c",
+                http_client=client,
+            )
+        client.headers["x-case"] = "bad"
+        with pytest.raises(TelegramDeliveryError) as rejected:
+            await TelegramAdapter.send_photo(
+                "12345:test-token",
+                chat_id="12345",
+                data=b"x",
+                media_type="image/jpeg",
+                caption="c" * 1025,
+                http_client=client,
+            )
+
+    assert limited.value.error_code == "telegram_rate_limited"
+    assert limited.value.status_code == 429
+    assert limited.value.retry_after_seconds == 3
+    assert rejected.value.error_code == "telegram_http_400"
+    assert rejected.value.status_code == 400
+    for error in (limited.value, rejected.value):
+        assert "test-token" not in str(error)
+        assert "test-token" not in repr(error.__dict__)
+
+
+@pytest.mark.asyncio
+async def test_send_photo_maps_transport_failures_and_bad_bodies() -> None:
+    def timeout(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow https://api.telegram.org/bot12345:test-token/sendPhoto")
+
+    def broken(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    def not_json(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>")
+
+    def not_ok(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False})
+
+    expected = {
+        timeout: "telegram_timeout",
+        broken: "telegram_transport_error",
+        not_json: "telegram_invalid_response",
+        not_ok: "telegram_api_rejected",
+    }
+    for handler, code in expected.items():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(TelegramDeliveryError) as error:
+                await TelegramAdapter.send_photo(
+                    "12345:test-token",
+                    chat_id="12345",
+                    data=b"x",
+                    media_type="image/png",
+                    caption="c",
+                    http_client=client,
+                )
+        assert error.value.error_code == code
+        assert "test-token" not in str(error.value)
+
+
 def test_staff_callback_is_allowed_from_group_chat_but_customer_callback_is_not() -> None:
     from csa.contracts.callbacks import StaffCallbackCodec
 
