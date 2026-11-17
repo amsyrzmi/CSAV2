@@ -2,11 +2,12 @@
 import { useEffect } from "react";
 import { hrHref, type HrRoute } from "@/lib/hr-paths";
 import SectionNav from "../kit/SectionNav";
-import { Panel } from "../ui";
 import type { HrTabProps } from "./HrShell";
 import { ProcessDetail } from "./ProcessDetail";
 import { ProcessList } from "./ProcessList";
 import { forgetStartArrival } from "./StartProcessForm";
+import { forgetCopiedDraft, forgetTemplateArrival, TemplateEditor } from "./TemplateEditor";
+import { TemplateList } from "./TemplateList";
 
 export type ProcessesRoute = Extract<HrRoute, { tab: "processes" }>;
 
@@ -22,6 +23,11 @@ export function ProcessesTab({ route, tenant, readonly, platform, userId }: HrTa
   // StrictMode replays one on mount and would drop the move before the new process loads.
   const open = route.view === "detail" ? route.processId : null;
   useEffect(() => { forgetStartArrival(open); }, [open]);
+  // A copied draft belongs to the new template's page, a save message to the template it saved.
+  const openTemplate = route.view === "template" ? route.templateId : null;
+  useEffect(() => { forgetTemplateArrival(openTemplate); }, [openTemplate]);
+  const creating = route.view === "new-template";
+  useEffect(() => { if (!creating) forgetCopiedDraft(); }, [creating]);
   return <div data-testid="hr-processes" className="space-y-5">
     <SectionNav label="Process pages" testId="hr-process-views" current={templates ? "templates" : "list"} items={[
       { key: "list", label: "Processes", href: href({ tab: "processes", view: "list" }), testId: "hr-process-view-list" },
@@ -31,9 +37,10 @@ export function ProcessesTab({ route, tenant, readonly, platform, userId }: HrTa
     {route.view === "list" && <ProcessList tenant={tenant} readonly={readonly} platform={platform} />}
     {route.view === "detail" && <ProcessDetail key={route.processId} tenant={tenant} processId={route.processId}
       readonly={readonly} userId={userId} />}
-    {/* Task 5 replaces this placeholder */}
-    {templates && <Panel title="Templates">
-      <p data-testid="hr-templates-placeholder" className="text-sm">Templates are set up in the next step.</p>
-    </Panel>}
+    {route.view === "templates" && <TemplateList tenant={tenant} readonly={readonly} platform={platform} />}
+    {route.view === "template" && <TemplateEditor key={route.templateId} tenant={tenant} templateId={route.templateId}
+      readonly={readonly} platform={platform} />}
+    {route.view === "new-template" && <TemplateEditor key="new" tenant={tenant} templateId={null} readonly={readonly}
+      platform={platform} />}
   </div>;
 }

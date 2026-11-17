@@ -8,9 +8,11 @@ answer it), and records any process path it has no route for as unexpected, so a
 fails the test.
 
 Extension point: `ROUTES`. Task 4 added the processes list, detail, start, cancel and close, the
-template summaries and the HR-only task actions; Tasks 5-6 add the template editor's routes and a
-person's processes by registering a handler in this module with `@route("GET", r"hr/processes")`;
-the handler gets the world, the `Call` and the path match and returns `(status, body)`. A new path
+template summaries and the HR-only task actions; Task 5 the template editor's routes (read, create,
+update, deactivate, preview: `ProcessWorld.people` are the active people a preview counts); Task 6
+adds a person's processes. A route is a handler registered in this module with
+`@route("GET", r"hr/processes")`; it gets the world, the `Call` and the path match and returns
+`(status, body)`. A new path
 family whose prefix is not in `PREFIXES` is still delegated while a registered pattern matches it.
 
 All data is synthetic (the repository is public).
@@ -32,6 +34,13 @@ OPEN = ("todo", "awaiting_approval", "rejected")
 KINDS = ("onboarding", "offboarding", "custom")
 PROCESS_STATUSES = ("active", "completed", "cancelled")
 ANCHOR = {"onboarding": "start_date", "offboarding": "last_day", "custom": "start_date"}
+# The dates a template step of each kind may count from (0631).
+ANCHORS = {
+    "onboarding": ("start_date", "probation_end"),
+    "offboarding": ("last_day",),
+    "custom": ("start_date", "last_day", "probation_end"),
+}
+RULE_KEYS = ("department_id", "employment_type", "legal_entity_reference", "region")
 DEFAULT_LIMIT = 50
 NOTE_MAX = 2000
 REASON_MAX = 500
@@ -140,7 +149,8 @@ class Process:
 
 @dataclass
 class Template:
-    """A template as the start form's picker reads it; `steps` are the step titles it copies."""
+    """A template: `steps` are the step titles a start copies; `details` the editor's full steps
+    (`TemplateStepOut` without the ordinal), made from the titles when not set."""
 
     template_id: str
     kind: str
@@ -148,6 +158,12 @@ class Template:
     version: int = 1
     is_active: bool = True
     steps: tuple[str, ...] = ("First step",)
+    rules: dict[str, Any] = field(default_factory=dict)
+    details: list[dict[str, Any]] | None = None
+    created_at: str = "2026-10-01T02:00:00Z"
+
+    def rule_fields(self) -> dict[str, Any]:
+        return {key: self.rules.get(key) for key in RULE_KEYS}
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -156,11 +172,32 @@ class Template:
             "name": self.name,
             "version": self.version,
             "is_active": self.is_active,
-            "rules": {},
+            "rules": self.rule_fields(),
             "step_count": len(self.steps),
-            "created_at": "2026-10-01T02:00:00Z",
-            "updated_at": "2026-10-01T02:00:00Z",
+            "created_at": self.created_at,
+            "updated_at": self.created_at,
         }
+
+    def step_rows(self) -> list[dict[str, Any]]:
+        if self.details is not None:
+            return self.details
+        return [
+            {
+                "title_en": title,
+                "title_ms": None,
+                "description_en": None,
+                "description_ms": None,
+                "owner_role": "hr",
+                "owner_employee_id": None,
+                "anchor": ANCHOR[self.kind],
+                "due_offset_days": 0,
+                "required": True,
+                "approval_by": None,
+                "auto_check": None,
+                "reference_note": None,
+            }
+            for title in self.steps
+        ]
 
 
 @dataclass
@@ -183,6 +220,8 @@ class ProcessWorld:
     # Answers to give instead of the route's, by "METHOD path": each call takes the first
     # `(status, code)` off its list (a 500 makes a write uncertain, a 409 refuses it).
     failures: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
+    # The active people a template preview counts: employee id and the four rule fields each.
+    people: list[dict[str, Any]] = field(default_factory=list)
 
     def handles(self, path: str) -> bool:
         return path.startswith(PREFIXES) or any(p.fullmatch(path) for _, p, _ in ROUTES)
@@ -378,6 +417,40 @@ class ProcessWorld:
             "approved_by": None,
             "approved_at": None,
         }
+
+    # ---- Templates ----
+
+    def template(self, template_id: str) -> Template | None:
+        return next((t for t in self.templates if t.template_id == template_id), None)
+
+    def ties(self, kind: str, rules: dict[str, Any]) -> list[Template]:
+        """0636 `hr_template_ties`: the active templates of the kind (onboarding or offboarding)
+        with as many set rules and no rule set on both sides with different values; oldest
+        first. The template being edited is among them when its own rules are given."""
+        if kind not in ("onboarding", "offboarding"):
+            return []
+        mine = _tie_rules(rules)
+        count = sum(value is not None for value in mine)
+        found = []
+        for other in self.templates:
+            theirs = _tie_rules(other.rules)
+            if (
+                other.kind == kind
+                and other.is_active
+                and sum(value is not None for value in theirs) == count
+                and all(a is None or b is None or a == b for a, b in zip(mine, theirs, strict=True))
+            ):
+                found.append(other)
+        return sorted(found, key=lambda t: (t.created_at, t.template_id))
+
+    def touch_template(self, template_id: str, **changes: Any) -> Template:
+        """Someone else saved the template: its version moves on (and any field in `changes`)."""
+        template = self.template(template_id)
+        assert template, template_id
+        for name, value in changes.items():
+            setattr(template, name, value)
+        template.version += 1
+        return template
 
     # ---- Seed data ----
 
@@ -1040,3 +1113,264 @@ def template_list(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
         return 404, {"detail": "resource_unavailable"}
     items = sorted(world.templates, key=lambda t: (t.kind, t.name))
     return 200, {"items": [t.summary() for t in items]}
+
+
+# ---- Routes: the template editor (Task 5) ----
+
+TEMPLATE_STEP_FIELDS = {
+    "title_en",
+    "title_ms",
+    "description_en",
+    "description_ms",
+    "owner_role",
+    "owner_employee_id",
+    "anchor",
+    "due_offset_days",
+    "required",
+    "approval_by",
+    "auto_check",
+    "reference_note",
+}
+OWNER_ROLES = ("hr", "manager", "employee", "person")
+AUTO_CHECKS = (
+    "account_linked",
+    "personal_details_complete",
+    "access_removed",
+    "document_uploaded:contract",
+    "document_uploaded:identity",
+    "document_uploaded:certificate",
+    "document_uploaded:other",
+)
+
+
+def _tie_rules(rules: dict[str, Any] | None) -> tuple[str | None, ...]:
+    """The four rules as the tie rule compares them: trimmed, empty is none, entity lowered."""
+    values = []
+    for key in RULE_KEYS:
+        value = (rules or {}).get(key)
+        text = value.strip() if isinstance(value, str) and value.strip() else None
+        values.append(text.lower() if text and key == "legal_entity_reference" else text)
+    return tuple(values)
+
+
+def _text(value: Any, limit: int, *, required: bool = False) -> bool:
+    if value is None:
+        return not required
+    return isinstance(value, str) and (not required or bool(value.strip())) and len(value) <= limit
+
+
+def _rules_problem(rules: Any) -> str | None:
+    if rules is None:
+        return None
+    if not isinstance(rules, dict) or not set(rules) <= set(RULE_KEYS):
+        return "rules shape"
+    if rules.get("department_id") not in (None, *DEPARTMENT.values()):
+        return "unknown department"
+    if rules.get("employment_type") not in (None, "full_time", "part_time", "contract", "intern"):
+        return "employment type"
+    if rules.get("region") not in (None, "peninsular_labuan", "sabah", "sarawak"):
+        return "region"
+    if not _text(rules.get("legal_entity_reference"), 200):
+        return "legal entity"
+    return None
+
+
+def _step_problem(world: ProcessWorld, kind: str, step: Any) -> str | None:
+    """Why a template step is one the console must never send (its own checks catch these)."""
+    if not isinstance(step, dict) or not set(step) <= TEMPLATE_STEP_FIELDS:
+        return "step shape"
+    checks = {
+        "title_en": _text(step.get("title_en"), 160, required=True),
+        "title_ms": _text(step.get("title_ms"), 160),
+        "description_en": _text(step.get("description_en"), 2000),
+        "description_ms": _text(step.get("description_ms"), 2000),
+        "reference_note": _text(step.get("reference_note"), 500),
+        "owner_role": step.get("owner_role") in OWNER_ROLES,
+        "anchor": step.get("anchor") in ANCHORS[kind],
+        "due_offset_days": type(step.get("due_offset_days")) is int
+        and -365 <= step["due_offset_days"] <= 365,
+        "required": type(step.get("required", True)) is bool,
+        "approval_by": step.get("approval_by") in (None, "hr", "manager"),
+        "auto_check": step.get("auto_check") in (None, *AUTO_CHECKS),
+        "owner_employee_id": (step.get("owner_employee_id") in world.members)
+        if step.get("owner_role") == "person"
+        else step.get("owner_employee_id") is None,
+    }
+    bad = [name for name, ok in checks.items() if not ok]
+    return f"step fields {bad}" if bad else None
+
+
+def _template_problem(world: ProcessWorld, kind: str, body: dict[str, Any]) -> str | None:
+    name = body.get("name")
+    if not (isinstance(name, str) and name.strip() == name and 1 <= len(name) <= 120):
+        return "name"
+    if problem := _rules_problem(body.get("rules")):
+        return problem
+    steps = body.get("steps")
+    if not (isinstance(steps, list) and 1 <= len(steps) <= 40):
+        return "step count"
+    for step in steps:
+        if problem := _step_problem(world, kind, step):
+            return problem
+    return None
+
+
+def _template_receipt(world: ProcessWorld, template: Template, operation: str) -> dict[str, Any]:
+    """A save's receipt: the other templates it may tie with, and a warning for each step of
+    the leaver due after the last day (0631 `step_after_last_day`)."""
+    warnings = [
+        {"code": "step_after_last_day", "ordinal": ordinal}
+        for ordinal, step in enumerate(template.step_rows(), start=1)
+        if template.kind == "offboarding"
+        and step["owner_role"] == "employee"
+        and step["anchor"] == "last_day"
+        and step["due_offset_days"] > 0
+    ]
+    return {
+        "operation": operation,
+        "template_id": template.template_id,
+        "version": template.version,
+        "conflicts": _conflicts(world, template),
+        "warnings": warnings,
+        "status": "saved",
+        "duplicate": False,
+    }
+
+
+def _conflicts(world: ProcessWorld, template: Template) -> list[str]:
+    if not template.is_active:
+        return []
+    return [
+        other.template_id
+        for other in world.ties(template.kind, template.rules)
+        if other.template_id != template.template_id
+    ]
+
+
+def _apply(template: Template, body: dict[str, Any]) -> None:
+    template.name = body["name"]
+    template.rules = {k: v for k, v in (body["rules"] or {}).items() if v is not None}
+    template.details = [
+        {key: step.get(key) for key in TEMPLATE_STEP_FIELDS}
+        | {"required": step.get("required", True)}
+        for step in body["steps"]
+    ]
+    template.steps = tuple(step["title_en"] for step in body["steps"])
+
+
+@route("GET", r"hr/templates/(?P<template_id>[0-9a-f-]{36})")
+def template_detail(world: ProcessWorld, call: Call, match: re.Match[str]) -> Answer:
+    template = world.template(match["template_id"])
+    if call.caller not in world.hr_team or template is None:
+        return 404, {"detail": "resource_unavailable"}
+    return 200, {
+        "template_id": template.template_id,
+        "kind": template.kind,
+        "name": template.name,
+        "version": template.version,
+        "is_active": template.is_active,
+        "created_at": template.created_at,
+        "updated_at": template.created_at,
+        "rules": template.rule_fields(),
+        "steps": [
+            {"ordinal": ordinal} | step
+            for ordinal, step in enumerate(template.step_rows(), start=1)
+        ],
+        "conflicts": _conflicts(world, template),
+        "warnings": [],
+    }
+
+
+@route("POST", r"hr/templates")
+def template_create(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
+    body = call.body
+    if call.caller not in world.hr_team:
+        return 404, {"detail": "resource_unavailable"}
+    if not (
+        isinstance(body, dict)
+        and set(body) == {"kind", "name", "rules", "steps"}
+        and body["kind"] in KINDS
+    ):
+        world.refuse_unexpected(call, "bad template create body")
+        return 422, {"detail": "invalid_hr_input"}
+    if problem := _template_problem(world, body["kind"], body):
+        world.refuse_unexpected(call, problem)
+        return 422, {"detail": "invalid_hr_input"}
+    template = Template(
+        f"66666666-6666-4666-8666-{201 + len(world.templates):012d}",
+        body["kind"],
+        body["name"],
+        created_at=f"2026-11-{10 + len(world.templates):02d}T02:00:00Z",
+    )
+    _apply(template, body)
+    world.templates.append(template)
+    return 201, _template_receipt(world, template, "template.create")
+
+
+@route("PUT", r"hr/templates/(?P<template_id>[0-9a-f-]{36})")
+def template_update(world: ProcessWorld, call: Call, match: re.Match[str]) -> Answer:
+    body = call.body
+    template = world.template(match["template_id"])
+    if call.caller not in world.hr_team or template is None:
+        return 404, {"detail": "resource_unavailable"}
+    wanted = {"expected_version", "name", "rules", "steps"}
+    if not (isinstance(body, dict) and wanted <= set(body) <= wanted | {"is_active"}):
+        # `rules` has no default on purpose: the API answers 422 without it.
+        world.refuse_unexpected(call, "bad template update body")
+        return 422, {"detail": "invalid_hr_input"}
+    if problem := _template_problem(world, template.kind, body):
+        world.refuse_unexpected(call, problem)
+        return 422, {"detail": "invalid_hr_input"}
+    if body["expected_version"] != template.version:
+        return 409, {"detail": "template_changed"}
+    _apply(template, body)
+    if body.get("is_active") is not None:
+        template.is_active = body["is_active"]
+    template.version += 1
+    return 200, _template_receipt(world, template, "template.update")
+
+
+@route("POST", r"hr/templates/(?P<template_id>[0-9a-f-]{36})/deactivate")
+def template_deactivate(world: ProcessWorld, call: Call, match: re.Match[str]) -> Answer:
+    body = call.body
+    template = world.template(match["template_id"])
+    if call.caller not in world.hr_team or template is None:
+        return 404, {"detail": "resource_unavailable"}
+    if not (isinstance(body, dict) and set(body) == {"expected_version"}):
+        world.refuse_unexpected(call, "bad deactivate body")
+        return 422, {"detail": "invalid_hr_input"}
+    if body["expected_version"] != template.version:
+        return 409, {"detail": "template_changed"}
+    template.is_active = False
+    template.version += 1
+    return 200, _template_receipt(world, template, "template.deactivate")
+
+
+@route("POST", r"hr/templates/preview")
+def template_preview(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
+    body = call.body
+    if call.caller not in world.hr_team:
+        return 404, {"detail": "resource_unavailable"}
+    if not (
+        isinstance(body, dict)
+        and set(body) == {"kind", "rules"}
+        and body["kind"] in KINDS
+        and _rules_problem(body["rules"]) is None
+    ):
+        world.refuse_unexpected(call, "bad preview body")
+        return 422, {"detail": "invalid_hr_input"}
+    rules = _tie_rules(body["rules"])
+    matching = [
+        person
+        for person in world.people
+        if all(
+            wanted is None or wanted == have
+            for wanted, have in zip(rules, _tie_rules(person), strict=True)
+        )
+    ]
+    ties = world.ties(body["kind"], body["rules"] or {})
+    return 200, {
+        "matching": len(matching),
+        "ties": [{"template_id": t.template_id, "name": t.name} for t in ties],
+        "total_active": len(world.people),
+    }

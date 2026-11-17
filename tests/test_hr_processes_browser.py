@@ -457,8 +457,8 @@ async def test_hr_sees_the_list_filters_it_and_switches_to_templates(site: Site)
             await expect(views.get_by_role("link", name="Templates")).to_have_attribute(
                 "aria-current", "page"
             )
-            await expect(page.get_by_test_id("hr-templates-placeholder")).to_have_text(
-                "Templates are set up in the next step."
+            await expect(page.get_by_test_id("hr-template-list")).to_contain_text(
+                "Warehouse onboarding", timeout=WAIT
             )
             await views.get_by_role("link", name="Processes").click()
             await page.wait_for_url(f"{site.base}{LIST}")
