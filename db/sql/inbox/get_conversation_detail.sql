@@ -4,6 +4,9 @@ SELECT c.id, c.channel, c.status, c.owned_by, c.ai_muted_until, c.inbox_version,
        c.opened_at,
        (c.owned_by = 'human_support' AND
         (c.ai_muted_until IS NULL OR c.ai_muted_until > now())) IS TRUE AS human_muted,
+       c.queue_status, c.queue_reason, c.topic, c.priority, c.assignee_user_id AS assignee_id,
+       c.claimed_at, c.needs_staff_since, c.due_at, c.snoozed_until, c.last_customer_at,
+       c.last_staff_reply_at,
        k.full_name, k.phone, k.telegram_username, k.contact_kind AS kind, kn.known,
        lm.body AS last_body, lm.created_at AS last_at, pa.n AS pending_approvals,
        hn.note AS handoff_note, hn.created_at AS handoff_note_at

@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 from pydantic import Field, model_validator
 
 from csa.approval.service import (
@@ -31,10 +32,24 @@ from csa.console.inbox_contact import (
     parse_search,
     preview_text,
 )
+from csa.console.inbox_cursor import QueueOrder
+from csa.console.inbox_cursor import decode as decode_cursor
+from csa.console.inbox_queue_list import (
+    WAITING_OVER_MAX,
+    InboxQueueCounts,
+    QueueFilter,
+    QueuePriority,
+    QueueReason,
+    QueueState,
+    QueueTopic,
+    fetch_counts,
+    fetch_page,
+)
 from csa.console.inbox_settings import (
     InboxAssignee,
     InboxSettingsIn,
     InboxSettingsOut,
+    assignee_names,
     company_assignees,
     get_settings,
     put_settings,
@@ -63,6 +78,10 @@ class InboxHandoffNote(Contract):
 
 
 class InboxConversation(Contract):
+    """A customer conversation. Action receipts persist this shape: the queue fields are ids,
+    states and times only, never a name (the list and detail add names in `InboxConversationView`).
+    The queue fields have defaults so receipts stored before they existed still replay."""
+
     id: UUID
     channel: Literal["telegram", "whatsapp"]
     status: str
@@ -71,16 +90,42 @@ class InboxConversation(Contract):
     human_muted: bool
     inbox_version: int
     opened_at: datetime
+    queue_status: QueueState = "bot"
+    queue_reason: QueueReason | None = None
+    topic: QueueTopic | None = None
+    priority: QueuePriority = "normal"
+    assignee_id: UUID | None = None
+    claimed_at: datetime | None = None
+    needs_staff_since: datetime | None = None
+    due_at: datetime | None = None
+    snoozed_until: datetime | None = None
+    last_customer_at: datetime | None = None
+    last_staff_reply_at: datetime | None = None
     contact: InboxContact | None = None
     last_message: InboxLastMessage | None = None
     pending_approvals: int = 0
     handoff_note: InboxHandoffNote | None = None
 
 
+class InboxAssigneeRef(Contract):
+    """Who holds a queue item. The name is cosmetic: null when it cannot be read."""
+
+    id: UUID
+    display_name: str | None
+
+
+class InboxConversationView(InboxConversation):
+    """A list row or the detail read: the conversation and who holds it, by name. Never stored."""
+
+    assignee: InboxAssigneeRef | None = None
+
+
 class InboxConversationPage(Contract):
-    items: list[InboxConversation]
-    next_cursor: UUID | None
+    items: list[InboxConversationView]
+    # Opaque: pass it back as `before` with the same filters and order.
+    next_cursor: str | None
     needs_review_count: int = 0
+    counts: InboxQueueCounts
 
 
 class InboxPicture(Contract):
@@ -204,7 +249,24 @@ def inbox_admin(request: Request) -> ConsoleActor:
     return actor
 
 
-def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> InboxConversation:
+_QUEUE_FIELDS = (
+    "queue_status",
+    "queue_reason",
+    "topic",
+    "priority",
+    "assignee_id",
+    "claimed_at",
+    "needs_staff_since",
+    "due_at",
+    "snoozed_until",
+    "last_customer_at",
+    "last_staff_reply_at",
+)
+
+
+def conversation_from_row(
+    row: dict[str, Any], *, full_phone: bool = False
+) -> InboxConversationView:
     """Build the API shape from an inbox row; the full phone only when `full_phone` is set."""
     phone = row["phone"]
     contact = InboxContact(
@@ -225,20 +287,51 @@ def conversation_from_row(row: dict[str, Any], *, full_phone: bool = False) -> I
         if row.get("handoff_note") is not None
         else None
     )
-    return InboxConversation(
-        id=row["id"],
-        channel=row["channel"],
-        status=row["status"],
-        owned_by=row["owned_by"],
-        ai_muted_until=row["ai_muted_until"],
-        human_muted=row["human_muted"],
-        inbox_version=row["inbox_version"],
-        opened_at=row["opened_at"],
-        contact=contact,
-        last_message=last,
-        pending_approvals=row["pending_approvals"],
-        handoff_note=note,
+    return InboxConversationView.model_validate(
+        {
+            "id": row["id"],
+            "channel": row["channel"],
+            "status": row["status"],
+            "owned_by": row["owned_by"],
+            "ai_muted_until": row["ai_muted_until"],
+            "human_muted": row["human_muted"],
+            "inbox_version": row["inbox_version"],
+            "opened_at": row["opened_at"],
+            **{name: row[name] for name in _QUEUE_FIELDS},
+            "contact": contact,
+            "last_message": last,
+            "pending_approvals": row["pending_approvals"],
+            "handoff_note": note,
+        }
     )
+
+
+def _identity_pool(request: Request) -> AsyncConnectionPool | None:
+    identity = getattr(request.app.state, "identity_service", None)
+    return identity.pool if isinstance(identity, IdentityService) else None
+
+
+async def named(
+    identity_pool: AsyncConnectionPool | None,
+    client_id: UUID,
+    items: list[InboxConversationView],
+) -> list[InboxConversationView]:
+    """The items with `assignee` filled in from one identity read for all of them."""
+    names = await assignee_names(
+        identity_pool, client_id, {i.assignee_id for i in items if i.assignee_id}
+    )
+    return [
+        item.model_copy(
+            update={
+                "assignee": InboxAssigneeRef(
+                    id=item.assignee_id, display_name=names.get(item.assignee_id)
+                )
+                if item.assignee_id
+                else None
+            }
+        )
+        for item in items
+    ]
 
 
 async def conversation(
@@ -261,7 +354,7 @@ async def conversation(
 
 async def conversation_detail(
     conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID
-) -> InboxConversation:
+) -> InboxConversationView:
     """The single-conversation read: contact with the full phone, last message and count."""
     row = await db.q.fetch_one(
         "inbox/get_conversation_detail.sql",
@@ -385,42 +478,80 @@ def build_inbox_router() -> APIRouter:
     async def list_conversations(
         request: Request,
         client_id: Annotated[UUID, Depends(tenant)],
-        before: UUID | None = None,
+        actor: Annotated[ConsoleActor, Depends(inbox_actor)],
+        before: Annotated[str | None, Query(max_length=200)] = None,
         limit: Annotated[int, Query(ge=1, le=50)] = 20,
         channel: Literal["telegram", "whatsapp"] | None = None,
         needs_review: bool = False,
         sender: Literal["known", "new"] | None = None,
         q: Annotated[str | None, Query(max_length=64)] = None,
+        state: Annotated[list[QueueState] | None, Query()] = None,
+        assignee: Literal["me", "none"] | UUID | None = None,
+        priority_min: QueuePriority | None = None,
+        reason: Annotated[list[QueueReason] | None, Query()] = None,
+        topic: Annotated[list[QueueTopic] | None, Query()] = None,
+        overdue: bool = False,
+        waiting_over: Annotated[int | None, Query(ge=1, le=WAITING_OVER_MAX)] = None,
+        order: QueueOrder | None = None,
     ) -> InboxConversationPage:
+        """The work queue: every filter combines with AND; `before` is the `next_cursor` of the
+        previous page (a bare conversation id is still read as an activity cursor)."""
         # The search text is personal data: it is parsed here and never logged or audited.
         try:
             search = parse_search(q)
         except ValueError:
             raise HTTPException(422, "search needs at least two characters") from None
+        flt = QueueFilter(
+            state=state or [],
+            assignee=assignee,
+            priority_min=priority_min,
+            reason=reason or [],
+            topic=topic or [],
+            overdue=overdue,
+            waiting_over=waiting_over,
+            channel=channel,
+            needs_review=needs_review,
+            sender=sender,
+            q=q,
+            order=order,
+        )
+        try:
+            cursor = decode_cursor(before, flt.effective_order()) if before else None
+        except ValueError:
+            raise HTTPException(422, "invalid cursor") from None
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            rows = await db.q.fetch_all(
-                "inbox/list_conversations.sql",
-                {
-                    "client_id": client_id,
-                    "channel": channel,
-                    "needs_review": needs_review,
-                    "sender": sender,
-                    "like": search.like if search else None,
-                    "digits": search.digits if search else None,
-                    "before": before,
-                    "limit": limit + 1,
-                },
-                conn=conn,
+            rows, next_cursor = await fetch_page(
+                conn,
+                flt,
+                client_id=client_id,
+                user_id=actor.user_id,
+                search=search,
+                cursor=cursor,
+                limit=limit,
             )
             counted = await db.q.fetch_one(
                 "inbox/count_needs_review.sql", {"client_id": client_id}, conn=conn
             )
-        items = [conversation_from_row(row) for row in rows[:limit]]
+            counts = await fetch_counts(conn, client_id, actor.user_id)
+        items = await named(
+            _identity_pool(request), client_id, [conversation_from_row(row) for row in rows]
+        )
         return InboxConversationPage(
             items=items,
-            next_cursor=items[-1].id if len(rows) > limit else None,
+            next_cursor=next_cursor,
             needs_review_count=counted["n"] if counted else 0,
+            counts=counts,
         )
+
+    @router.get("/queue/counts", response_model=InboxQueueCounts)
+    async def queue_counts(
+        request: Request,
+        client_id: Annotated[UUID, Depends(tenant)],
+        actor: Annotated[ConsoleActor, Depends(inbox_actor)],
+    ) -> InboxQueueCounts:
+        """The queue tabs' counts; `mine` is the person asking."""
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await fetch_counts(conn, client_id, actor.user_id)
 
     @router.get("/settings", response_model=InboxSettingsOut)
     async def inbox_settings(
@@ -447,19 +578,18 @@ def build_inbox_router() -> APIRouter:
         request: Request, client_id: Annotated[UUID, Depends(tenant)]
     ) -> list[InboxAssignee]:
         """Enabled administrators and staff of the company, by display name; no addresses."""
-        identity = getattr(request.app.state, "identity_service", None)
-        return await company_assignees(
-            identity.pool if isinstance(identity, IdentityService) else None, client_id
-        )
+        return await company_assignees(_identity_pool(request), client_id)
 
-    @router.get("/conversations/{conversation_id}", response_model=InboxConversation)
+    @router.get("/conversations/{conversation_id}", response_model=InboxConversationView)
     async def get_conversation(
         request: Request,
         conversation_id: UUID,
         client_id: Annotated[UUID, Depends(tenant)],
-    ) -> InboxConversation:
+    ) -> InboxConversationView:
         async with tx(request.app.state.pool, str(client_id)) as conn:
-            return await conversation_detail(conn, client_id, conversation_id)
+            item = await conversation_detail(conn, client_id, conversation_id)
+        [shown] = await named(_identity_pool(request), client_id, [item])
+        return shown
 
     @router.get("/conversations/{conversation_id}/messages", response_model=InboxMessagePage)
     async def messages(

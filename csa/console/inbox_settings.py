@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import structlog
 from fastapi import HTTPException
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
@@ -21,6 +22,8 @@ from csa.console.kb_uploads import audit
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.inbox_queue.settings import InboxSettings
+
+logger = structlog.get_logger(__name__)
 
 # The ranges are those of csa.inbox_queue.settings.InboxSettings and the 0621 checks
 # (tests/test_inbox_queue_api.py compares them with the model).
@@ -101,3 +104,32 @@ async def company_assignees(
     async with tx(identity_pool, str(client_id)) as conn:
         rows = await db.q.fetch_all("inbox/assignees.sql", {"client_id": client_id}, conn=conn)
     return [InboxAssignee.model_validate(row) for row in rows]
+
+
+async def assignee_names(
+    identity_pool: AsyncConnectionPool | None, client_id: UUID, user_ids: set[UUID]
+) -> dict[UUID, str]:
+    """Display names of the people holding queue items, for the list and detail reads.
+
+    Cosmetic only, never used to validate anything: without the identity pool, when its read
+    fails, or for a person it cannot see (another company's user) there is no name, and the
+    row shows ``display_name: null`` instead of failing. A member whose membership or account
+    was switched off is still named. The failure is logged without names or ids of people.
+    """
+    if not user_ids or identity_pool is None:
+        return {}
+    try:
+        async with tx(identity_pool, str(client_id)) as conn:
+            rows = await db.q.fetch_all(
+                "inbox/assignee_names.sql",
+                {"client_id": client_id, "user_ids": sorted(user_ids, key=str)},
+                conn=conn,
+            )
+    except Exception as failure:
+        logger.warning(
+            "inbox_assignee_names_unavailable",
+            client_id=str(client_id),
+            outcome=type(failure).__name__,
+        )
+        return {}
+    return {row["user_id"]: row["display_name"] for row in rows}

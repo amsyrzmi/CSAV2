@@ -23,7 +23,7 @@
 --   below for every company; safe to call again (it only changes a row whose values differ, and a row
 --   that moved out of 'bot' is not looked at). It never touches conversations of other channels
 --   than telegram and whatsapp (the sandbox) or console chat conversations, as the Inbox list
---   (db/sql/inbox/list_conversations.sql) excludes them: those keep queue_status 'bot' for good.
+--   (db/sql/inbox/list_queue_*.sql) excludes them: those keep queue_status 'bot' for good.
 -- Backfill rules (one CASE each below):
 --   needs_staff when, within the last 30 days, the conversation has an open escalation (reason
 --   'escalation', since = the oldest such escalation's created_at, priority = the highest of its

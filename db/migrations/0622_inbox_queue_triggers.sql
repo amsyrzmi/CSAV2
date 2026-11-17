@@ -5,7 +5,7 @@
 --     p_actor DEFAULT NULL, p_claim_for DEFAULT NULL) RETURNS boolean: the only code path that puts
 --     a conversation in needs_staff. A no-op returning false for a conversation outside the queue
 --     (channel other than telegram or whatsapp, the sandbox; a console chat thread or participant,
---     as db/sql/inbox/list_conversations.sql excludes them) and for one the caller cannot see.
+--     as db/sql/inbox/list_queue_*.sql excludes them) and for one the caller cannot see.
 --     Not yet needs_staff: it becomes needs_staff with a fresh clock (needs_staff_since = now()),
 --     the given reason and priority, snoozed_until and resolved_at cleared.
 --     Already needs_staff: the clock is kept, the reason only moves up (escalation > held_reply >

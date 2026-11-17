@@ -337,6 +337,13 @@ async def seed(
         await w.q(
             "UPDATE messages SET created_at=%s WHERE conversation_id=%s", message_at, conversation
         )
+    # The list orders by last_activity_at, which the message trigger keeps (0622) and the backfill
+    # sets from the newest message, else opened_at; a backdated seed sets it the same way.
+    activity = message_at if messages else opened_at
+    if activity is not None:
+        await w.q(
+            "UPDATE conversations SET last_activity_at=%s WHERE id=%s", activity, conversation
+        )
     return envelope, str(conversation)
 
 
@@ -872,6 +879,11 @@ async def test_list_orders_by_last_message_with_stable_cursor(sessions: SessionW
     # A new message on the oldest conversation moves it first.
     await w.q(
         "UPDATE messages SET created_at=%s WHERE conversation_id=%s",
+        now - timedelta(minutes=1),
+        oldest,
+    )
+    await w.q(
+        "UPDATE conversations SET last_activity_at=%s WHERE id=%s",
         now - timedelta(minutes=1),
         oldest,
     )

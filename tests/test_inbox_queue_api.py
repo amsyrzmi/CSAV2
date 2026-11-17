@@ -1,17 +1,24 @@
 """The inbox queue's API surface (plan 1a, tasks 6 to 9): the snooze wake job, the company's inbox
-settings and the list of people a conversation can be assigned to (disposable database, synthetic
-data). Tasks 7 to 9 add their routes' tests to this file.
+settings, the list of people a conversation can be assigned to, and the queue list with its
+filters, orders, cursor and counts (disposable database, synthetic data). Tasks 8 and 9 add their
+routes' tests to this file.
 """
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import UUID
+from typing import Any, cast
+from urllib.parse import urlencode
+from uuid import UUID, uuid4
 
 import pytest
-from csa.console.inbox_settings import InboxSettingsIn, company_assignees
+from csa.console.inbox_cursor import decode as decode_cursor
+from csa.console.inbox_queue_list import LIST_QUERIES, QueueFilter, list_params
+from csa.console.inbox_settings import InboxSettingsIn, assignee_names, company_assignees
 from csa.core import db
+from csa.core.db import DB_SQL_DIR
 from csa.core.tenancy import tx
 from csa.inbox_queue.settings import InboxSettings
 from csa.jobs.clock import FakeClock
@@ -454,3 +461,716 @@ async def test_the_assignee_helper_serves_the_validation_in_tasks_7_and_8(
     with pytest.raises(HTTPException) as unavailable:
         await company_assignees(None, UUID(w.tenants[0]))
     assert unavailable.value.status_code == 503
+
+
+# --- the queue list, filters, orders, cursor and counts (task 7) ---------------------------------
+
+QUEUE_FILES = ("activity", "waiting", "due", "priority")
+RANK = {"low": 1, "normal": 2, "high": 3, "urgent": 4}
+
+
+def list_path(w: SessionWorld, query: str = "", tenant: int = 0) -> str:
+    return f"/console/v1/inbox/conversations?client_id={w.tenants[tenant]}{query}"
+
+
+def counts_path(w: SessionWorld, tenant: int = 0) -> str:
+    return f"/console/v1/inbox/queue/counts?client_id={w.tenants[tenant]}"
+
+
+@dataclass
+class Item:
+    """One seeded conversation and the queue values the tests sort and count by."""
+
+    id: str
+    state: str = "bot"
+    assignee: str | None = None
+    due: datetime | None = None
+    since: datetime | None = None
+    priority: str = "normal"
+    activity: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+async def _item(
+    w: SessionWorld,
+    tenant: int = 0,
+    *,
+    state: str = "bot",
+    reason: str | None = None,
+    topic: str | None = None,
+    priority: str = "normal",
+    assignee: str | None = None,
+    since: datetime | None = None,
+    due: datetime | None = None,
+    snoozed_until: datetime | None = None,
+    activity: datetime | None = None,
+    channel: str = "telegram",
+    name: str = "Synthetic Customer",
+    phone: str | None = None,
+    username: str | None = None,
+    email: str | None = None,
+    contact: UUID | None = None,
+) -> Item:
+    """A conversation in the given queue state, written as the owner (synthetic values only)."""
+    if state == "needs_staff":
+        reason = reason or "escalation"
+        since = since or datetime.now(UTC) - timedelta(minutes=5)
+        due = due or since + timedelta(minutes=240)
+    client = UUID(w.tenants[tenant])
+    if contact is None:
+        contact = uuid4()
+        await w.q(
+            "INSERT INTO contacts (id, client_id, full_name, phone, telegram_username, email)"
+            " VALUES (%s, %s, %s, %s, %s, %s)",
+            contact,
+            client,
+            name,
+            phone,
+            username,
+            email,
+        )
+    conversation = uuid4()
+    at = activity or datetime.now(UTC)
+    await w.q(
+        "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread,"
+        " last_activity_at, queue_status, queue_reason, topic, priority, assignee_user_id,"
+        " claimed_at, needs_staff_since, due_at, snoozed_until, resolved_at)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+        " CASE WHEN %s::uuid IS NULL THEN NULL ELSE now() END, %s, %s, %s,"
+        " CASE WHEN %s = 'resolved' THEN now() END)",
+        conversation,
+        client,
+        contact,
+        channel,
+        f"thread-{conversation}",
+        at,
+        state,
+        reason,
+        topic,
+        priority,
+        assignee,
+        assignee,
+        since,
+        due,
+        snoozed_until,
+        state,
+    )
+    return Item(str(conversation), state, assignee, due, since, priority, at)
+
+
+async def _page(w: SessionWorld, query: str = "", *, client: Any = None) -> dict[str, Any]:
+    response = await (client or w.admin).get(list_path(w, query))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _walk(w: SessionWorld, query: str = "", *, limit: int = 2) -> list[str]:
+    """Every page of the list through the cursor; the ids in the order the pages gave them."""
+    ids: list[str] = []
+    cursor = ""
+    for _ in range(100):
+        page = await _page(w, f"&limit={limit}{query}{cursor}")
+        ids.extend(item["id"] for item in page["items"])
+        if page["next_cursor"] is None:
+            assert len(ids) == len(set(ids)), "a row was visited twice"
+            return ids
+        assert isinstance(page["next_cursor"], str)
+        cursor = "&" + urlencode({"before": page["next_cursor"]})
+    raise AssertionError("pagination did not end")
+
+
+async def _ids(w: SessionWorld, query: str = "") -> set[str]:
+    return set(await _walk(w, query, limit=50))
+
+
+async def _member_id(w: SessionWorld, name: str) -> str:
+    return (await _signed_in(w, name))[1]
+
+
+async def _signed_in(w: SessionWorld, name: str) -> tuple[Any, str]:
+    """A tenant staff member with this display name, and their signed-in browser."""
+    client, me = await w.member()
+    await w.q("UPDATE console_users SET display_name = %s WHERE id = %s", name, me["user"]["id"])
+    return client, str(me["user"]["id"])
+
+
+async def _queue_world(w: SessionWorld) -> tuple[dict[str, Item], str, Any]:
+    """One conversation per state and the variations the filters pick out."""
+    now = datetime.now(UTC)
+    staff_client, staff = await _signed_in(w, "Kay Synthetic")
+    items = {
+        "overdue_mine": await _item(
+            w,
+            state="needs_staff",
+            reason="escalation",
+            priority="urgent",
+            topic="complaint",
+            assignee=w.admin_id,
+            since=now - timedelta(minutes=120),
+            due=now - timedelta(minutes=105),
+        ),
+        "fresh": await _item(
+            w,
+            state="needs_staff",
+            reason="held_reply",
+            priority="normal",
+            topic="question",
+            since=now - timedelta(minutes=10),
+            due=now + timedelta(minutes=230),
+        ),
+        "whatsapp": await _item(
+            w,
+            state="needs_staff",
+            reason="customer_message",
+            priority="high",
+            topic="payment",
+            channel="whatsapp",
+            since=now - timedelta(minutes=60),
+            due=now + timedelta(minutes=1),
+        ),
+        "waiting": await _item(
+            w, state="waiting_customer", priority="high", topic="purchase", assignee=staff
+        ),
+        "snoozed": await _item(
+            w, state="snoozed", priority="low", snoozed_until=now + timedelta(hours=2)
+        ),
+        "resolved": await _item(w, state="resolved"),
+        "bot": await _item(w),
+    }
+    return items, staff, staff_client
+
+
+def _names(items: dict[str, Item], ids: set[str]) -> set[str]:
+    by_id = {item.id: name for name, item in items.items()}
+    return {by_id[i] for i in ids}
+
+
+async def test_each_queue_filter_alone_and_combined(sessions: SessionWorld) -> None:
+    w = sessions
+    items, staff, _ = await _queue_world(w)
+    everything = set(items)
+    cases: dict[str, set[str]] = {
+        "": everything,
+        "&state=needs_staff": {"overdue_mine", "fresh", "whatsapp"},
+        "&state=needs_staff&state=waiting_customer": {
+            "overdue_mine",
+            "fresh",
+            "whatsapp",
+            "waiting",
+        },
+        "&state=bot": {"bot"},
+        "&state=resolved": {"resolved"},
+        "&state=snoozed": {"snoozed"},
+        "&state=waiting_customer": {"waiting"},
+        "&assignee=me": {"overdue_mine"},
+        "&assignee=none": {"fresh", "whatsapp", "snoozed", "resolved", "bot"},
+        f"&assignee={staff}": {"waiting"},
+        f"&assignee={uuid4()}": set(),
+        "&priority_min=low": everything,
+        "&priority_min=high": {"overdue_mine", "whatsapp", "waiting"},
+        "&priority_min=urgent": {"overdue_mine"},
+        "&reason=escalation&reason=held_reply": {"overdue_mine", "fresh"},
+        "&reason=manual": set(),
+        "&topic=complaint&topic=purchase": {"overdue_mine", "waiting"},
+        "&overdue=true": {"overdue_mine"},
+        "&overdue=false": everything,
+        "&waiting_over=30": {"overdue_mine", "whatsapp"},
+        "&waiting_over=90": {"overdue_mine"},
+        "&waiting_over=525600": set(),
+        "&channel=whatsapp": {"whatsapp"},
+        "&channel=telegram": everything - {"whatsapp"},
+        # Two at a time.
+        "&state=needs_staff&assignee=none": {"fresh", "whatsapp"},
+        "&state=needs_staff&priority_min=high": {"overdue_mine", "whatsapp"},
+        "&priority_min=high&channel=telegram": {"overdue_mine", "waiting"},
+        "&overdue=true&assignee=none": set(),
+        "&topic=payment&waiting_over=30": {"whatsapp"},
+        "&state=waiting_customer&state=snoozed&priority_min=normal": {"waiting"},
+    }
+    for query, expected in cases.items():
+        assert _names(items, await _ids(w, query)) == expected, query
+
+
+BAD_QUERIES = (
+    "&state=open",
+    "&assignee=someone",
+    "&assignee=",
+    "&priority_min=highest",
+    "&reason=whim",
+    "&topic=weather",
+    "&overdue=perhaps",
+    "&waiting_over=0",
+    "&waiting_over=525601",
+    "&order=random",
+    "&limit=0",
+    "&limit=51",
+    "&channel=web",
+    "&q=a",
+)
+
+
+async def test_a_bad_filter_value_is_422(sessions: SessionWorld) -> None:
+    w = sessions
+    for query in BAD_QUERIES:
+        assert (await w.admin.get(list_path(w, query))).status_code == 422, query
+
+
+async def test_search_sender_and_needs_review_keep_their_rules(sessions: SessionWorld) -> None:
+    w = sessions
+    named = await _item(w, state="needs_staff", name="Nur Aisyah", phone="0125550148")
+    handle = await _item(w, name="Someone Else", username="aisyah_r")
+    intl = await _item(w, name="Intl Format", phone="+60 12-888 0099")
+    known = await _item(w, name="Known Buyer", email="buyer@example.test", state="needs_staff")
+    reviewed = await _item(w, name="Held Reply", state="needs_staff", reason="held_reply")
+    await w.q(
+        "INSERT INTO approvals (client_id, conversation_id, trace_id, draft, reason, status,"
+        " expires_at) VALUES (%s, %s, %s, 'synthetic draft', 'synthetic', 'pending',"
+        " now() + interval '1 hour')",
+        UUID(w.tenants[0]),
+        UUID(reviewed.id),
+        uuid4(),
+    )
+
+    async def found(query: str) -> set[str]:
+        return await _ids(w, query)
+
+    for q in ("aisyah", "AISYAH", "@Aisyah"):
+        assert await found("&" + urlencode({"q": q})) == {named.id, handle.id}, q
+    assert await found("&" + urlencode({"q": "@aisyah_r"})) == {handle.id}
+    for q in ("0125550148", "60125550148", "+60 12-555 0148", "125550148"):
+        assert await found("&" + urlencode({"q": q})) == {named.id}, q
+    for q in ("0128880099", "+60128880099", "128880099"):
+        assert await found("&" + urlencode({"q": q})) == {intl.id}, q
+    # A short number is a contains match only: "60" is not read as the country code.
+    assert await found("&q=60") == {intl.id}
+    assert await found("&q=012") == {named.id, intl.id}
+    assert await found("&" + urlencode({"q": "h_r"})) == {handle.id}
+    assert await found("&" + urlencode({"q": "h%r"})) == set()
+    assert await found("&sender=known") == {known.id}
+    assert known.id not in await found("&sender=new")
+    assert await found("&needs_review=true") == {reviewed.id}
+    # Combined with a queue filter.
+    assert await found("&q=aisyah&state=needs_staff") == {named.id}
+    assert await found("&sender=known&state=bot") == set()
+    assert await found("&needs_review=true&reason=escalation") == set()
+
+
+def _ordered(items: list[Item], order: str) -> list[str]:
+    def due_key(item: Item) -> tuple[bool, datetime, UUID]:
+        moment = item.due or datetime.max.replace(tzinfo=UTC)
+        return (item.due is None, moment, UUID(item.id))
+
+    if order == "activity":
+        return [i.id for i in sorted(items, key=lambda i: (i.activity, UUID(i.id)), reverse=True)]
+    if order == "due":
+        return [i.id for i in sorted(items, key=due_key)]
+    if order == "waiting":
+        far = datetime.max.replace(tzinfo=UTC)
+        return [
+            i.id for i in sorted(items, key=lambda i: (i.since is None, i.since or far, UUID(i.id)))
+        ]
+    return [i.id for i in sorted(items, key=lambda i: (-RANK[i.priority], *due_key(i)))]
+
+
+async def _tied_items(w: SessionWorld) -> list[Item]:
+    """Rows sharing every sort value in pairs, and rows with no due or since time."""
+    now = datetime.now(UTC).replace(microsecond=123456)
+    a, b = now - timedelta(hours=3), now - timedelta(hours=1)
+    rows: list[Item] = []
+    for since, due, priority, activity in (
+        (a, b, "high", a),
+        (a, b, "high", a),
+        (a, now, "urgent", b),
+        (b, now, "high", b),
+        (b, now + timedelta(hours=1), "normal", now),
+    ):
+        rows.append(
+            await _item(
+                w,
+                state="needs_staff",
+                since=since,
+                due=due,
+                priority=priority,
+                activity=activity,
+            )
+        )
+    for priority, activity in (("high", a), ("high", a), ("low", now)):
+        rows.append(await _item(w, state="waiting_customer", priority=priority, activity=activity))
+    return rows
+
+
+@pytest.mark.parametrize("order", ["activity", "due", "waiting", "priority"])
+async def test_each_order_pages_every_row_once_through_ties(
+    sessions: SessionWorld, order: str
+) -> None:
+    w = sessions
+    rows = await _tied_items(w)
+    expected = _ordered(rows, order)
+    assert await _walk(w, f"&order={order}", limit=50) == expected
+    assert await _walk(w, f"&order={order}", limit=2) == expected
+    assert await _walk(w, f"&order={order}", limit=1) == expected
+    # The queue tab alone: only the rows that need us, every one of them carrying both times.
+    needs = [r for r in rows if r.state == "needs_staff"]
+    assert await _walk(w, f"&order={order}&state=needs_staff", limit=2) == _ordered(needs, order)
+
+
+async def test_the_default_order_is_due_for_needs_staff_and_activity_otherwise(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    rows = await _tied_items(w)
+    needs = [r for r in rows if r.state == "needs_staff"]
+    assert await _walk(w, "&state=needs_staff") == _ordered(needs, "due")
+    assert await _walk(w) == _ordered(rows, "activity")
+    waiting = [r for r in rows if r.state == "waiting_customer"]
+    assert await _walk(w, "&state=waiting_customer") == _ordered(waiting, "activity")
+    both = "&state=needs_staff&state=waiting_customer"
+    assert await _walk(w, both) == _ordered(rows, "activity")
+
+
+async def test_a_cursor_from_another_order_or_a_malformed_one_is_422(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    await _tied_items(w)
+    page = await _page(w, "&limit=1&order=due")
+    assert page["next_cursor"]
+    other = await w.admin.get(
+        list_path(w, "&order=activity&" + urlencode({"before": page["next_cursor"]}))
+    )
+    assert other.status_code == 422
+    for bad in ("garbage", "!!!", "x" * 300, "YWN0aXZpdHl8eHx5"):
+        response = await w.admin.get(list_path(w, "&" + urlencode({"before": bad})))
+        assert response.status_code == 422, bad
+
+
+async def test_a_bare_conversation_id_still_pages_the_activity_order(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    now = datetime.now(UTC)
+    rows = [await _item(w, activity=now - timedelta(minutes=n)) for n in range(4)]
+    expected = _ordered(rows, "activity")
+    after_first = await _page(w, f"&before={expected[0]}")
+    assert [i["id"] for i in after_first["items"]] == expected[1:]
+    legacy_due = await w.admin.get(list_path(w, f"&order=due&before={expected[0]}"))
+    assert legacy_due.status_code == 422
+    # An id that is not one of this company's conversations gives an empty page, as before.
+    assert (await _page(w, f"&before={uuid4()}"))["items"] == []
+    foreign = await _item(w, 1)
+    assert (await _page(w, f"&before={foreign.id}"))["items"] == []
+
+
+async def _sandbox_and_staff_chat(w: SessionWorld) -> set[str]:
+    """A sandbox conversation and two console chat ones, all forced into needs_staff."""
+    now = datetime.now(UTC)
+    web = await _item(w, state="needs_staff", channel="web")
+    created = await w.mutate(
+        w.admin,
+        f"/console/v1/chat/conversations?client_id={w.tenants[0]}",
+        {"request_key": str(uuid4())},
+    )
+    assert created.status_code in {200, 201}, created.text
+    thread = created.json()["id"]
+    await w.q(
+        "UPDATE conversations SET channel = 'telegram', queue_status = 'needs_staff',"
+        " queue_reason = 'manual', needs_staff_since = %s, due_at = %s,"
+        " assignee_user_id = %s WHERE id = %s",
+        now - timedelta(hours=2),
+        now - timedelta(hours=1),
+        UUID(w.admin_id),
+        UUID(thread),
+    )
+    [participant] = await w.q(
+        "SELECT contact_id FROM console_chat_participants WHERE client_id = %s",
+        UUID(w.tenants[0]),
+    )
+    staff_contact = await _item(
+        w,
+        state="needs_staff",
+        contact=participant["contact_id"],
+        assignee=w.admin_id,
+        since=now - timedelta(hours=3),
+        due=now - timedelta(hours=2),
+    )
+    return {web.id, thread, staff_contact.id}
+
+
+def _brute_counts(items: list[Item], me: str) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    needs = [i for i in items if i.state == "needs_staff"]
+    return {
+        "needs_us": len(needs),
+        "mine": sum(
+            1 for i in items if i.assignee == me and i.state in {"needs_staff", "waiting_customer"}
+        ),
+        "unassigned": sum(1 for i in needs if i.assignee is None),
+        "overdue": sum(1 for i in needs if i.due is not None and i.due < now),
+        "waiting_customer": sum(1 for i in items if i.state == "waiting_customer"),
+        "snoozed": sum(1 for i in items if i.state == "snoozed"),
+        "oldest_waiting_at": min((i.since for i in needs if i.since), default=None),
+    }
+
+
+def _parsed(counts: dict[str, Any]) -> dict[str, Any]:
+    at = counts["oldest_waiting_at"]
+    return {**counts, "oldest_waiting_at": datetime.fromisoformat(at) if at else None}
+
+
+async def test_counts_match_a_brute_force_count_and_skip_excluded_rows(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    empty = await w.admin.get(counts_path(w))
+    assert empty.status_code == 200, empty.text
+    assert empty.json() == {
+        "needs_us": 0,
+        "mine": 0,
+        "unassigned": 0,
+        "overdue": 0,
+        "waiting_customer": 0,
+        "snoozed": 0,
+        "oldest_waiting_at": None,
+    }
+    items, staff, staff_client = await _queue_world(w)
+    extra = [
+        await _item(w, state="waiting_customer", assignee=w.admin_id),
+        await _item(w, state="needs_staff", assignee=staff),
+        await _item(
+            w,
+            state="needs_staff",
+            since=datetime.now(UTC) - timedelta(days=2),
+            due=datetime.now(UTC) - timedelta(days=1),
+        ),
+    ]
+    excluded = await _sandbox_and_staff_chat(w)
+    foreign = await _item(w, 1, state="needs_staff", since=datetime.now(UTC) - timedelta(days=9))
+    seeded = [*items.values(), *extra]
+    expected = _brute_counts(seeded, w.admin_id)
+    counts = (await w.admin.get(counts_path(w))).json()
+    assert _parsed(counts) == expected
+    page = await _page(w)
+    assert page["counts"] == counts
+    assert set(await _walk(w, limit=50)) == {i.id for i in seeded}
+    assert not excluded & set(await _walk(w, "&state=needs_staff", limit=50))
+    assert foreign.id not in set(await _walk(w, limit=50))
+    # Another member's "mine" is their own.
+    staff_counts = _brute_counts(seeded, staff)
+    assert _parsed((await staff_client.get(counts_path(w))).json()) == staff_counts
+    # The needs-review count keeps its definition: live pending approvals only.
+    assert page["needs_review_count"] == 0
+    await w.q(
+        "INSERT INTO approvals (client_id, conversation_id, trace_id, draft, reason, status,"
+        " expires_at) VALUES (%s, %s, %s, 'synthetic draft', 'synthetic', 'pending',"
+        " now() + interval '1 hour')",
+        UUID(w.tenants[0]),
+        UUID(items["bot"].id),
+        uuid4(),
+    )
+    assert (await _page(w, "&state=resolved"))["needs_review_count"] == 1
+
+
+async def test_another_company_never_sees_the_queue_and_read_only_is_403(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    mine = await _item(w, state="needs_staff")
+    theirs = await _item(w, 1, state="needs_staff", assignee=None)
+    foreign, _ = await w.member(tenant=w.tenants[1])
+    own = await foreign.get(list_path(w, tenant=1))
+    assert [i["id"] for i in own.json()["items"]] == [theirs.id]
+    assert own.json()["counts"]["needs_us"] == 1
+    assert (await foreign.get(list_path(w))).status_code == 403
+    assert (await foreign.get(counts_path(w))).status_code == 403
+    assert [i["id"] for i in (await _page(w))["items"]] == [mine.id]
+    reader, _ = await w.member(role="read_only")
+    assert (await reader.get(list_path(w))).status_code == 403
+    assert (await reader.get(counts_path(w))).status_code == 403
+    staff, _ = await w.member()
+    assert (await staff.get(counts_path(w))).status_code == 200
+    assert (await w.admin.get("/console/v1/inbox/queue/counts")).status_code == 400
+
+
+async def test_rows_carry_the_queue_fields_and_the_assignee_name(sessions: SessionWorld) -> None:
+    w = sessions
+    staff = await _member_id(w, "Lia Synthetic")
+    now = datetime.now(UTC)
+    held = await _item(
+        w,
+        state="needs_staff",
+        reason="held_reply",
+        topic="booking",
+        priority="high",
+        assignee=staff,
+        since=now - timedelta(minutes=20),
+        due=now + timedelta(minutes=40),
+    )
+    free = await _item(w)
+    by_id = {i["id"]: i for i in (await _page(w))["items"]}
+    row = by_id[held.id]
+    assert row["queue_status"] == "needs_staff" and row["queue_reason"] == "held_reply"
+    assert row["topic"] == "booking" and row["priority"] == "high"
+    assert row["assignee_id"] == staff and row["claimed_at"]
+    assert datetime.fromisoformat(row["needs_staff_since"]) == held.since
+    assert datetime.fromisoformat(row["due_at"]) == held.due
+    assert row["snoozed_until"] is None
+    assert row["assignee"] == {"id": staff, "display_name": "Lia Synthetic"}
+    assert by_id[free.id]["assignee"] is None and by_id[free.id]["queue_status"] == "bot"
+    detail = await w.admin.get(
+        f"/console/v1/inbox/conversations/{held.id}?client_id={w.tenants[0]}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["assignee"] == {"id": staff, "display_name": "Lia Synthetic"}
+    assert detail.json()["due_at"] == row["due_at"]
+    # A member whose membership was switched off still shows by name on the items they hold.
+    await w.q("UPDATE console_memberships SET is_enabled = false WHERE user_id = %s", UUID(staff))
+    again = {i["id"]: i for i in (await _page(w))["items"]}
+    assert again[held.id]["assignee"] == {"id": staff, "display_name": "Lia Synthetic"}
+
+
+async def test_assignee_names_are_cosmetic_and_never_fail_the_read(sessions: SessionWorld) -> None:
+    w = sessions
+    staff = await _member_id(w, "Mo Synthetic")
+    client = UUID(w.tenants[0])
+    pool = w.app.state.identity_service.pool
+    assert await assignee_names(pool, client, {UUID(staff)}) == {UUID(staff): "Mo Synthetic"}
+    assert await assignee_names(pool, client, set()) == {}
+    assert await assignee_names(None, client, {UUID(staff)}) == {}
+
+    class Broken:
+        def connection(self) -> Any:
+            raise RuntimeError("synthetic-identity-outage")
+
+    assert await assignee_names(cast(Any, Broken()), client, {UUID(staff)}) == {}
+    # A user of another company only is not named.
+    other = await _named(w, "Ned Synthetic", tenant=1)
+    assert await assignee_names(pool, client, {UUID(other)}) == {}
+
+
+async def test_a_takeover_receipt_carries_the_queue_ids_and_no_name(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    item = await _item(w, name="Nur Receipt")
+    key = str(uuid4())
+    taken = await w.mutate(
+        w.admin,
+        f"/console/v1/inbox/conversations/{item.id}/takeover?client_id={w.tenants[0]}",
+        {"request_key": key, "expected_version": 0},
+    )
+    assert taken.status_code == 200, taken.text
+    result = taken.json()["conversation"]
+    assert result["queue_status"] == "needs_staff" and result["queue_reason"] == "manual"
+    assert result["assignee_id"] == w.admin_id and result["claimed_at"]
+    assert result["due_at"] and result["needs_staff_since"]
+    assert "assignee" not in result
+    assert "Synthetic Admin" not in taken.text
+    [receipt] = await w.q(
+        "SELECT result FROM console_inbox_actions WHERE client_id = %s AND request_key = %s",
+        UUID(w.tenants[0]),
+        UUID(key),
+    )
+    stored = receipt["result"]["conversation"]
+    assert stored["assignee_id"] == w.admin_id and stored["queue_status"] == "needs_staff"
+    assert "assignee" not in stored
+    text = json.dumps(receipt["result"])
+    assert "Synthetic Admin" not in text and "Nur Receipt" not in text
+    # The list names the holder.
+    [row] = (await _page(w))["items"]
+    assert row["assignee"] == {"id": w.admin_id, "display_name": "Synthetic Admin"}
+
+
+def _filter_block(order: str) -> str:
+    text = (DB_SQL_DIR / "inbox" / f"list_queue_{order}.sql").read_text(encoding="utf-8")
+    start, end = "-- queue filter: begin", "-- queue filter: end"
+    assert text.count(start) == 1 and text.count(end) == 1, order
+    return text[text.index(start) : text.index(end)]
+
+
+async def test_the_four_list_queries_share_one_filter_block() -> None:
+    blocks = {order: _filter_block(order) for order in QUEUE_FILES}
+    first = blocks["activity"]
+    assert "console_chat_threads" in first and "console_chat_participants" in first
+    assert "c.channel IN ('telegram', 'whatsapp')" in first
+    for order, block in blocks.items():
+        assert block == first, order
+    assert not (DB_SQL_DIR / "inbox" / "list_conversations.sql").exists()
+
+
+async def _plan(w: SessionWorld, path: str, params: dict[str, Any]) -> str:
+    """The plan of a list or counts query as the app role, sorts and sequential scans priced out.
+
+    A plan that still sorts or scans has no index that serves the query.
+    """
+    async with tx(w.pool, w.tenants[0]) as conn:
+        await conn.execute("SET LOCAL enable_seqscan = off")
+        await conn.execute("SET LOCAL enable_sort = off")
+        cursor = await conn.execute(cast(Any, "EXPLAIN (COSTS OFF) " + db.q.load(path)), params)
+        return "\n".join(row["QUERY PLAN"] for row in await cursor.fetchall())
+
+
+TABS: list[tuple[str, dict[str, Any], str]] = [
+    ("all", {}, "conversations_activity_idx"),
+    ("needs us", {"state": ["needs_staff"]}, "conversations_queue_due_idx"),
+    (
+        "unassigned",
+        {"state": ["needs_staff"], "assignee": "none"},
+        "conversations_queue_due_idx",
+    ),
+    ("overdue", {"state": ["needs_staff"], "overdue": True}, "conversations_queue_due_idx"),
+    (
+        "mine",
+        {"state": ["needs_staff", "waiting_customer"], "assignee": "me", "order": "due"},
+        "conversations_queue_mine_idx",
+    ),
+    (
+        "waiting",
+        {"state": ["needs_staff"], "order": "waiting"},
+        "conversations_queue_since_idx",
+    ),
+    ("resolved", {"state": ["resolved"]}, "conversations_activity_idx"),
+]
+
+
+async def test_each_tab_reads_its_index_without_a_sort(sessions: SessionWorld) -> None:
+    w = sessions
+    await _tied_items(w)
+    for label, query, index in TABS:
+        await _tab_plan(w, label, query, index)
+
+
+async def _tab_plan(w: SessionWorld, label: str, query: dict[str, Any], index: str) -> None:
+    flt = QueueFilter.model_validate(query)
+    order = flt.effective_order()
+    for cursor in (None, "next"):
+        after = None
+        if cursor:
+            first = await _page(w, "&limit=1&" + urlencode({**query, "order": order}, doseq=True))
+            after = decode_cursor(first["next_cursor"], order) if first["next_cursor"] else None
+        params = list_params(
+            flt,
+            client_id=UUID(w.tenants[0]),
+            user_id=UUID(w.admin_id),
+            search=None,
+            cursor=after,
+            limit=21,
+        )
+        plan = await _plan(w, LIST_QUERIES[order], params)
+        assert index in plan, (label, plan)
+        assert "Sort" not in plan, (label, plan)
+        if after is not None and order in {"activity", "due", "waiting"}:
+            # The cursor is an index condition (a seek), not a filter over the skipped rows.
+            assert "Index Cond" in plan and "ROW(" in plan, (label, plan)
+
+
+async def test_the_counts_read_the_partial_indexes(sessions: SessionWorld) -> None:
+    w = sessions
+    await _queue_world(w)
+    plan = await _plan(
+        w, "inbox/queue_counts.sql", {"client_id": UUID(w.tenants[0]), "user_id": UUID(w.admin_id)}
+    )
+    # Either needs_staff partial index serves that branch (both hold only needs_staff rows).
+    assert "conversations_queue_due_idx" in plan or "conversations_queue_since_idx" in plan, plan
+    for index in ("conversations_queue_waiting_idx", "conversations_queue_snoozed_idx"):
+        assert index in plan, plan
+    assert "Seq Scan on conversations" not in plan, plan
+    assert "conversations_activity_idx" not in plan, plan
