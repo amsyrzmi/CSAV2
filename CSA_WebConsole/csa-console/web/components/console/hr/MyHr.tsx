@@ -6,8 +6,10 @@ import { hrHref } from "@/lib/hr-paths";
 import { emptyText, myBalanceLines, myTrainingLines, PEOPLE_COPY } from "@/lib/hr-people";
 import { peopleClient, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
+import type { OpenTasks } from "@/lib/hr-process-view";
 import { action, Notice, Panel } from "../ui";
 import { DocumentsSection } from "./DocumentsSection";
+import { MyReminders } from "./HomeReminders";
 import { MyTasks } from "./MyTasks";
 import { PersonalSection } from "./PersonalSection";
 import { PersonProcesses } from "./PersonProcesses";
@@ -32,7 +34,7 @@ function useRead<T>(load: (() => Promise<T>) | null): Read<T> {
 }
 
 /**
- * Home for staff without HR duties: My tasks, their own profile, their onboarding or offboarding, personal details
+ * Home for staff without HR duties: My tasks and their reminders, their own profile, their onboarding or offboarding, personal details
  * (contact fields only), documents (read-only), leave balances and training requests.
  */
 export function MyHr({ tenant, context, readonly, platform }: {
@@ -48,12 +50,15 @@ export function MyHr({ tenant, context, readonly, platform }: {
   const training = useRead<Training[]>(useMemo(() => own && canTrain ? async () => (await client.training()).items : null,
     [client, own, canTrain]));
   const canRequest = !readonly && context.actions.includes("training.draft");
+  // The open steps My tasks holds: a reminder of any other step is done.
+  const [openTasks, setOpenTasks] = useState<OpenTasks | null>(null);
 
   if (!own) return <Panel title="My profile"><p className="text-sm">{emptyText("unlinked")}</p></Panel>;
   const balanceLines = balances && "items" in balances ? myBalanceLines(balances.items, own) : [];
   const trainingLines = training && "items" in training ? myTrainingLines(training.items, own) : [];
   return <div className="space-y-5">
-    <MyTasks tenant={tenant} readonly={readonly} />
+    <MyTasks tenant={tenant} readonly={readonly} onOpenTasks={setOpenTasks} />
+    <MyReminders client={client} open={openTasks} readonly={readonly} />
     <Panel title="My profile">
       {!profile ? <Notice>Loading your profile…</Notice>
         : "items" in profile ? <PersonOverview person={profile.items} />

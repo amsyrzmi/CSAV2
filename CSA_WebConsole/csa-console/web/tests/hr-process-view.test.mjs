@@ -12,7 +12,7 @@ function moduleUrl(source) {
 const read = (name) => readFile(new URL(name, import.meta.url), "utf8");
 const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
 const {
-  dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText,
+  dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText, reminderLabel,
   processKindLabel, eventText, eventLines, groupHistory, isDateText, replaceQuestion,
   reminderLayout, reminderDue, markingText, hasActiveOffboarding, anchorDateRows, noTemplateText, REHIRE_QUESTION,
 } = await import(
@@ -120,6 +120,14 @@ test("groupReminders keeps an unknown kind under a generic label after the known
   assert.deepEqual(groups.map((group) => [group.kind, group.label]), [
     ["task_due_soon", "Due soon"], ["later_kind", "Other reminders"],
   ]);
+});
+
+test("reminderLabel names a row's kind in words and never prints the code", () => {
+  assert.equal(reminderLabel("workflow_review"), "Requests to review");
+  assert.equal(reminderLabel("training_review"), "Training to review");
+  assert.equal(reminderLabel("interview_upcoming"), "Upcoming interviews");
+  assert.equal(reminderLabel("task_overdue"), "Overdue");
+  assert.equal(reminderLabel("later_kind"), "Reminder");
 });
 
 test("autoCheckText says what the automatic check looks for, to the assignee or about the person", () => {

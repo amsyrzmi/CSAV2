@@ -392,7 +392,10 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
 - `POST /templates/{template_id}/deactivate` `{expected_version}` returns `TemplateReceipt`
   (`version` + 1).
 - `POST /templates/preview` `TemplatePreviewRequest` `{kind, rules?}` (migration 0636) returns
-  `TemplatePreview` `{matching, ties, total_active}` for the template editor's draft: `matching` is
+  `TemplatePreview` `{matching, ties, total_active}` for the template editor's draft. Only the HR
+  team (the HR owner or a Manage people holder) may call it; anyone else (staff, a manager, a
+  tenant admin without HR duties) gets 404 `resource_unavailable`, and a read-only session 403.
+  `matching` is
   the number of active people the rules apply to now (each set rule must hold, compared as a
   template's rules are matched to a person below), `ties` lists `{template_id, name}` of the active
   templates of the kind one person could match as well (the same rule as `conflicts`; never for

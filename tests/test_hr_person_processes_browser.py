@@ -30,7 +30,7 @@ from tests.hr_process_world import (
     kuala_lumpur_today,
 )
 from tests.test_hr_access_browser import EMPLOYEE, HR_PACKAGE, MANAGER, OWNER, SECTIONS, STAFF
-from tests.test_hr_my_tasks_browser import MEMBERS, READ_ONLY_EMPLOYEE, TasksWorld
+from tests.test_hr_my_tasks_browser import MEMBERS, READ_ONLY, READ_ONLY_EMPLOYEE, TasksWorld
 from tests.test_services_browser import TENANT, WAIT, make_me
 from tests.test_services_redesign_browser import Site, with_browser
 from tests.test_team_browser import THEMES, overflow
@@ -68,7 +68,14 @@ def date_text(iso: str) -> str:
 
 
 def reminder(
-    key: str, kind: str, task: str, subject: str | None, due: str | None, *, read: bool = False
+    key: str,
+    kind: str,
+    task: str,
+    subject: str | None,
+    due: str | None,
+    *,
+    read: bool = False,
+    recipient: str = OWNER,
 ) -> dict[str, Any]:
     return {
         "id": NOTE[key],
@@ -78,7 +85,7 @@ def reminder(
         "read_at": "2026-11-11T01:00:00Z" if read else None,
         "due_on": due,
         "subject": subject,
-        "recipient": OWNER,
+        "recipient": recipient,
     }
 
 
@@ -639,14 +646,144 @@ async def test_home_reminders_show_their_line_grouped_and_link_to_my_tasks(site:
             await expect(stale.get_by_role("button")).to_have_count(0)
             text = await block.inner_text()
             assert not UUID_TEXT.search(text) and "task_" not in text, text
-            # An older kind reads as it always did.
+            # An older kind reads as its kind in words, never the code or the id.
             old = reminder_row(page, "6")
-            await expect(old).to_contain_text(f"workflow review · {OLD_RESOURCE}")
+            await expect(old).to_contain_text("Requests to review")
             await expect(old.get_by_role("button", name="Mark read")).to_be_visible()
+            every = await page.get_by_test_id("hr-reminders").inner_text()
+            assert OLD_RESOURCE not in every and not UUID_TEXT.search(every), every
+            assert "workflow" not in every and "_" not in every, every
             # The link goes to My tasks on the same page.
             await reminder_row(page, "3").get_by_role("link").click()
             await expect(page).to_have_url(re.compile(r"#hr-my-tasks$"))
             await expect(page.get_by_test_id("hr-my-tasks")).to_be_in_viewport()
+
+    await with_browser(body)
+
+
+def my_reminders(page: Page) -> Locator:
+    return page.get_by_test_id("hr-my-reminders")
+
+
+def lina_reminders() -> list[dict[str, Any]]:
+    """Lina's own reminders (two open steps, one no longer open, an older kind) and one of
+    Hana's that never reaches her."""
+    return [
+        reminder(
+            "1",
+            "task_overdue",
+            TASK["handbook"],
+            "Overdue: Read the safety handbook",
+            day(-3),
+            recipient=STAFF,
+        ),
+        reminder(
+            "2",
+            "task_due",
+            TASK["details"],
+            "Due today: Fill in your personal details",
+            day(0),
+            recipient=STAFF,
+        ),
+        reminder(
+            "3",
+            "task_overdue",
+            STALE_TASK,
+            "Overdue: Book the welcome lunch",
+            day(-3),
+            recipient=STAFF,
+        ),
+        reminder("4", "interview_upcoming", OLD_RESOURCE, None, None, recipient=STAFF),
+        reminder("5", "task_due_soon", TASK["laptop"], "Due soon: Return the laptop", day(1)),
+    ]
+
+
+async def test_staff_without_hr_duties_see_their_reminders_on_my_hr(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = PersonWorld()
+        world.processes.notifications = lina_reminders()
+        async with person_page(
+            browser, site, world, HOME, caller=STAFF, ready=my_reminders
+        ) as page:
+            panel = my_reminders(page)
+            await expect(panel.get_by_role("heading", name="My reminders")).to_be_visible()
+            # Under My tasks on My HR.
+            above = await page.get_by_test_id("hr-my-tasks").evaluate(
+                "(tasks) => !!(tasks.compareDocumentPosition("
+                "document.querySelector('[data-testid=hr-my-reminders]')) & 4)"
+            )
+            assert above
+            overdue = reminder_row(page, "1")
+            await expect(overdue).to_contain_text("Overdue: Read the safety handbook")
+            await expect(overdue).to_contain_text("Overdue by 3 days")
+            await expect(overdue.get_by_role("link")).to_have_attribute("href", "#hr-my-tasks")
+            await expect(reminder_row(page, "2")).to_contain_text(
+                "Due today: Fill in your personal details"
+            )
+            # The step that is no longer hers to do: Done, nothing to act on.
+            stale = reminder_row(page, "3")
+            await expect(stale).to_contain_text("Overdue: Book the welcome lunch")
+            await expect(stale).to_contain_text("Done")
+            await expect(stale.get_by_role("link")).to_have_count(0)
+            await expect(stale.get_by_role("button")).to_have_count(0)
+            await expect(reminder_row(page, "4")).to_contain_text("Upcoming interviews")
+            # Someone else's reminder never shows.
+            await expect(reminder_row(page, "5")).to_have_count(0)
+            text = await panel.inner_text()
+            assert not UUID_TEXT.search(text) and "_" not in text, text
+            # She marks her own reminder read.
+            await reminder_row(page, "2").get_by_role("button", name="Mark read").click()
+            notice = page.get_by_test_id("hr-reminders-outcome")
+            await expect(notice).to_have_text("Marked as read.")
+            assert world.processes.notification_reads == [NOTE["2"]]
+            [call] = world.operations("notification.read")
+            assert_operation(call, {"operation": "notification.read", "notification_id": NOTE["2"]})
+            await expect(reminder_row(page, "2").get_by_role("button")).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_my_hr_reminders_are_read_only_for_a_read_only_session(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = PersonWorld()
+        world.processes.notifications = [
+            reminder(
+                "1",
+                "task_due_soon",
+                TASK["laptop"],
+                "Due soon: Return the laptop",
+                day(1),
+                recipient=READ_ONLY,
+            ),
+        ]
+        async with person_page(
+            browser, site, world, HOME, caller=READ_ONLY, role="read_only", ready=my_reminders
+        ) as page:
+            row = reminder_row(page, "1")
+            await expect(row).to_contain_text("Due soon: Return the laptop")
+            await expect(row.get_by_role("button", name="Mark read")).to_be_disabled()
+            await expect(page.get_by_role("button", name="Mark all read")).to_have_count(0)
+            assert world.operations("notification.read") == []
+
+    await with_browser(body)
+
+
+async def test_no_reminders_panel_on_my_hr_without_reminders(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = PersonWorld()
+        async with person_page(
+            browser,
+            site,
+            world,
+            HOME,
+            caller=STAFF,
+            ready=lambda p: p.get_by_test_id("hr-my-tasks"),
+        ) as page:
+            reads = lambda: [  # noqa: E731
+                c for c in world.calls if c["path"] == "hr/records/notifications"
+            ]
+            await until(lambda: len(reads()) > 0)
+            await expect(my_reminders(page)).to_have_count(0)
 
     await with_browser(body)
 

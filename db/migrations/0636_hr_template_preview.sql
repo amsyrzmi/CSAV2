@@ -72,6 +72,8 @@ END $$;
 -- 0631 hr_template_conflicts' tie rule, for any rule set: the active templates of the kind
 -- (onboarding or offboarding; custom templates are picked by hand) with as many set rules, and no
 -- rule set on both sides with different values. Stored rules are trimmed already.
+-- The console keeps a copy of this rule: templateTies in web/lib/hr-template-form.ts (delete it
+-- when TemplateSummary gains conflicts); change both together.
 CREATE OR REPLACE FUNCTION public.hr_template_ties(p_client uuid, p_kind text, p_department uuid,
     p_type text, p_entity text, p_region text)
 RETURNS TABLE(template_id uuid, name text, created_at timestamptz)
@@ -147,7 +149,7 @@ BEGIN
    WHERE e.client_id=p_client AND e.is_active));
 END $$;
 
--- 0632, with the replace check before the start.
+-- 0632, with the replace check: the active process is read before the start, raised after it.
 CREATE OR REPLACE FUNCTION public.hr_process_start_apply(p_client uuid, p_key uuid, p_fingerprint text,
     p_body jsonb)
 RETURNS jsonb

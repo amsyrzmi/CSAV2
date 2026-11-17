@@ -1,12 +1,13 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { hrClient } from "@/lib/hr-api";
+import { isDenied } from "@/lib/hr-pickers";
 import { processSaveError } from "@/lib/hr-process-copy";
 import {
-  markingText, processToday, reminderDue, reminderLayout, type HomeReminder, type OpenTasks,
+  markingText, processToday, reminderDue, reminderLabel, reminderLayout, type HomeReminder, type OpenTasks,
 } from "@/lib/hr-process-view";
 import StatusLabel from "../fs/StatusLabel";
-import { secondary, Notice } from "../ui";
+import { secondary, Notice, Panel } from "../ui";
 import { NOTICE_FOCUS } from "./TaskActions";
 
 const row = "flex flex-wrap items-start justify-between gap-3 border-b border-ink-200 py-3 text-sm";
@@ -17,8 +18,8 @@ const ANNOUNCE_EVERY = 5;
 /**
  * Home's reminders. A task reminder shows its line and when the step is due, links to My tasks
  * on this page and, grouped by kind with a count once there are more than a few; one whose step
- * My tasks no longer holds is a quiet Done line with nothing to do. Every other kind reads as it
- * always did. Mark read marks one; Mark all read marks the unread ones in screen order, one
+ * My tasks no longer holds is a quiet Done line with nothing to do. Every other kind reads as its
+ * kind in words (never the code or the id). Mark read marks one; Mark all read marks the unread ones in screen order, one
  * request at a time, and stops at the first that fails. Read-only members cannot mark (as before).
  */
 export function HomeReminders({ client, reminders, open, readonly, busy, reload }: {
@@ -79,7 +80,7 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
     </li>;
   };
 
-  return <div className="space-y-4">
+  return <div data-testid="hr-reminders" className="space-y-4">
     {!readonly && unread.length > 0 && <button type="button" className={secondary} disabled={locked}
       onClick={() => void mark(unread, false)}>Mark all read</button>}
     {/* Mounted empty, so the first text is announced; the visible progress line is not live. */}
@@ -105,8 +106,44 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
     </div>}
     {layout.other.length > 0 && <div className="space-y-3">{layout.other.map(item =>
       <div key={item.id} data-testid={`hr-reminder-${item.id}`} className="flex flex-wrap justify-between gap-3 border-b border-ink-200 py-3 text-sm">
-        <span id={`hr-reminder-text-${item.id}`}>{item.kind.replaceAll("_", " ")} · {item.resource_id}</span>
+        <span id={`hr-reminder-text-${item.id}`}>{reminderLabel(item.kind)}</span>
         {markRead(item, `hr-reminder-text-${item.id}`)}
       </div>)}</div>}
   </div>;
+}
+
+type ReminderRead = { items: HomeReminder[] } | { hidden: true } | { failed: true } | null;
+
+/**
+ * My HR's reminders (staff without HR duties): the viewer's own rows, under My tasks. Hidden while
+ * loading, when there are none and when the read is not served (404); Refresh reminders rereads.
+ */
+export function MyReminders({ client, open, readonly }: {
+  client: ReturnType<typeof hrClient>; open: OpenTasks | null; readonly: boolean;
+}) {
+  const [read, setRead] = useState<ReminderRead>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    setRead({ items: (await client.records<HomeReminder>("notifications")).items });
+  }, [client]);
+  useEffect(() => {
+    let active = true;
+    client.records<HomeReminder>("notifications")
+      .then(page => { if (active) setRead({ items: page.items }); })
+      .catch(cause => { if (active) setRead(isDenied(cause) ? { hidden: true } : { failed: true }); });
+    return () => { active = false; };
+  }, [client]);
+  async function refresh() {
+    setBusy(true);
+    try { await load(); }
+    catch (cause) { setRead(isDenied(cause) ? { hidden: true } : { failed: true }); }
+    finally { setBusy(false); }
+  }
+
+  if (!read || "hidden" in read || ("items" in read && read.items.length === 0)) return null;
+  return <div data-testid="hr-my-reminders"><Panel title="My reminders">
+    <button type="button" className={`${secondary} mb-4`} disabled={busy} onClick={() => void refresh()}>Refresh reminders</button>
+    {"failed" in read ? <Notice error>We could not load your reminders. Choose Refresh reminders to try again.</Notice>
+      : <HomeReminders client={client} reminders={read.items} open={open} readonly={readonly} busy={busy} reload={load} />}
+  </Panel></div>;
 }

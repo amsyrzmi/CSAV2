@@ -12,12 +12,12 @@ Tick each row, write what you saw in **Result**, and stop at the first row that 
   this on production.
 - Sign in to the staging console as the HR owner of the staging test company. Rows 4 and 11 also
   need a second browser profile (or a private window) signed in as a staff member of the same
-  company. Row 11 needs a read-only member, which the owner sets on the Team page.
+  company. Row 4 needs a second person who can approve (see row 4). Row 11 needs a read-only
+  member, which the owner sets on the Team page, linked to a person record.
 - Reminders come from the background worker, which runs every 15 minutes. After the step that
   creates a task, wait up to 15 minutes before you look for its reminder (rows 5 and 8).
-- Report anything that does not match to the engineer who rolled staging out. Give the row
-  number, what you did, what you saw, and a screenshot with no real data in it. Row 14 is not
-  part of this list.
+- Report issues to the person running this build session. Give the row number, what you did,
+  what you saw, and a screenshot with no real data in it.
 
 ## The rows
 
@@ -42,7 +42,9 @@ Result: ____________________
 ### 2. Add a synthetic person with a start date
 
 Do: open **People**, then **Add person**. Use the name `Test Person Alpha`, a made-up work email
-on a staging test domain, a manager (a synthetic staff member), and a start date of today.
+on a staging test domain, a manager, and a start date of today. The manager must be a synthetic
+staff member **whose person record is linked to a console account** (Team page); otherwise the
+manager step goes to the HR team instead, and step 2 of row 4 cannot be done.
 
 You should see: the person is added and opens on their profile.
 
@@ -53,13 +55,31 @@ Result: ____________________
 Do: open **Processes**. The list opens on **In progress**. Open the new process.
 
 You should see: Test Person Alpha's onboarding is in the list with "0 of 3 steps". Its page shows
-the template name, the status, the three steps in order with their owners, and due dates 2, 5 and
-7 days after the start date (so, today plus 2, 5 and 7 days, written like "29 Nov 2026"). History
-(collapsed) shows the process starting.
+the template name, the status and the start date (written like "17 Nov 2026") in the header, then
+the three steps in order with their owners and their due dates in words: "Due in 2 days", "Due in
+5 days" and "Due in 7 days" (a step shows its date, "Due on 19 Nov 2026", only once it is done or
+skipped). History (collapsed) shows the process starting.
 
 Result: ____________________
 
 ### 4. Complete, approve and send back
+
+**Send back and Approve need a second person.** They are offered (in **My tasks**, not on the
+process page) only to an approver who did not complete the step: the manager for a step approved
+by the manager, and for a step approved by the HR team (the person step here) a member of the HR
+team other than the one who completed it. Set it up one of two ways:
+
+- Link a console account to Test Person Alpha (Team page), so the person completes their own step
+  and you, the HR owner, approve it; or
+- Complete it for them as HR (**Mark done for them**) and approve it as a different HR team member
+  (a second person with Manage people).
+
+If you are the only HR team member (no other enabled, not read-only member is an HR owner or holds
+Manage people) and you use **Mark done for them**, you are the one who completed the step, and the
+console still offers you **Approve** and **Send back**: the approval is recorded in History as
+"Approved without a second person: no one else in HR could approve it". If someone else in the
+company has Manage people, the HR member who used **Mark done for them** sees no **Approve** and no
+**Send back** for that step; the other HR team member does.
 
 Do:
 
@@ -68,11 +88,11 @@ Do:
 2. Sign in as the manager (second browser profile) and mark the manager step done.
 3. For the person step: if Test Person Alpha has a console account, sign in as them and press
    **Mark done**; if not, as HR press **Mark done for them**. The step now waits for approval.
-4. As HR, press **Send back** on that step. A reason is required: type `Please attach the
-   signed form`. Press the button.
-5. Sign in as the person (or, without a console account, read the step on the process page as
-   HR). Mark the step done again.
-6. As HR, press **Approve**.
+4. As the approver (see above), press **Send back** on that step in **My tasks**. A reason is
+   required: type `Please attach the signed form`. Press the button.
+5. Sign in as the person (or, without a console account, mark it done for them again as HR). Mark
+   the step done again.
+6. As the approver, press **Approve** in **My tasks**.
 
 You should see: after step 1 the HR row disappears from My tasks and the process shows "1 of 3
 steps"; after step 4 the step shows as sent back, and the person sees the line "Sent back:
@@ -84,13 +104,19 @@ Result: ____________________
 ### 5. Reminders on Home, grouped and readable
 
 Do: create a second synthetic process, or reuse a step that is due soon. After the next worker
-round (up to 15 minutes), open Home as the person or the HR owner who owns an open step.
+round (up to 15 minutes), open Home as the person or the HR owner who owns an open step. The HR
+team sees the reminders in the **Local HR reminders** panel; staff without HR duties see them on
+**My HR**, in **My reminders** under **My tasks**. A reminder goes to the person who owns the step
+when they have a console account that is enabled and not read-only; otherwise it goes to the HR
+team.
 
-You should see: reminder lines with a readable subject (the step and the person) and a due date
-in words, not a code. When there are more than three, they are grouped under headings such as
-Overdue, Due today, Due soon and New tasks, each with a count. Click one: you land on My tasks.
-Press **Mark all read**: a progress line shows ("Marking 3 of 12..."), the reminders become read,
-and the unread count falls. A reminder for a step that is already done shows "Done" with no link.
+You should see: reminder lines with a readable subject (the step and the person) and a due date in
+words, not a code. Older reminders (requests or training to review, upcoming interviews) read as
+words such as "Requests to review", never a code or an id. When there are more than three, they are
+grouped under headings such as Overdue, Due today, Due soon and New tasks, each with a count. Click
+one: you land on My tasks. Press **Mark all read**: a progress line shows ("Marking 3 of 12..."),
+the reminders become read, and the unread count falls. A reminder for a step that is already done
+shows "Done" with no link.
 
 Result: ____________________
 
@@ -108,10 +134,11 @@ Result: ____________________
 
 ### 7. Mark leaving, see the offboarding, undo it
 
-Do: first create a minimal `Synthetic offboarding` template (kind **Offboarding**, one HR step,
-days **0** counted from **Last day**) the same way as row 1. Then open Test Person Alpha's
-profile and press **Mark as leaving**, choose a last day (today), a reason, and who their reports
-move to. Open **Processes**. Then go back to the profile and press **Undo leaving**.
+Do: first create a minimal `Synthetic offboarding` template (kind **Offboarding**, one HR step, days
+**0** counted from **Last day**) the same way as row 1. Then open Test Person Alpha's profile and
+press **Mark as leaving**, choose a last day (today) and a reason (if the person has reports, also
+who their reports move to). Open **Processes**. Then go back to the profile and press **Undo
+leaving**.
 
 You should see: an offboarding process for the person in the Processes list while they are
 leaving; after **Undo leaving** it shows as Cancelled (change the status filter to **Any status**
@@ -150,17 +177,19 @@ onboarding A` and save. In window B change the name to `Synthetic onboarding B` 
 **Save**.
 
 You should see: window B does not lose what you typed. It shows that someone else changed the
-template, with **Keep my changes** and **Show their version**. **Show their version** loads the
-name from window A. **Keep my changes** keeps `B` in the form with the sentence that saving now
-replaces their version; saving then works. **Copy as new** opens a new template with "Copy of ..."
-and your steps.
+template, with **Keep my changes** and **Show their version**. **Show their version** first asks
+"Discard your changes?"; **Discard my changes** then loads the name from window A. **Keep my
+changes** keeps `B` in the form with the sentence that saving now replaces their version; saving
+then works. **Copy as new** opens a new template with "Copy of ..." and your steps.
 
 Result: ____________________
 
 ### 11. A read-only member sees tasks without buttons
 
-Do: sign in as a staff member whose access on the Team page is **Read-only** and who has an open
-step (or ask the owner to reassign one to them). Open Home or **My HR**.
+Do: sign in as a staff member whose access on the Team page is **Read-only**, whose console
+account is linked to a person record, and who has an open step (or, as the HR owner, reassign one
+to them from the process page first: a step can only be reassigned to a person record). Open Home
+or **My HR**.
 
 You should see: the member's tasks are listed with their titles and due dates, and there are no
 **Mark done**, **Approve**, **Send back** or **Add note** buttons. Any Processes or template page
@@ -197,7 +226,3 @@ You should see: nothing scrolls sideways on any of them; lists change from table
 step fields in the editor stack one under another; buttons are tappable and none is cut off.
 
 Result: ____________________
-
-### 14. Jev
-
-Not part of this list: Jev is checked separately.

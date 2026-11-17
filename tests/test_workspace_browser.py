@@ -479,7 +479,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         elif path == f"hr/people/{ALI_B}/processes":
             # My HR's onboarding and offboarding section: none, so it stays hidden.
             data = ALI_PROCESSES
-        elif path == "hr/records/balances":
+        elif path in {"hr/records/balances", "hr/records/notifications"}:
+            # My HR also reads the member's own reminders (none, so the panel stays hidden).
             data = {"items": []}
         elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
             data = email_draft()
@@ -1177,6 +1178,7 @@ HR_PAGES: dict[str, Any] = {
     "hr/training-requests": EMPTY_PAGE,
     "hr/tasks/mine": EMPTY_PAGE,
     "hr/records/balances": {"items": []},
+    "hr/records/notifications": {"items": []},
     f"hr/people/{ALI_B}/documents": {"items": []},
     f"hr/people/{ALI_B}/processes": ALI_PROCESSES,
     f"hr/people/{ALI_B}": {

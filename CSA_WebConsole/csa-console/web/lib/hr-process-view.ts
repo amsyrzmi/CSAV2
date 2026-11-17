@@ -266,6 +266,11 @@ const REMINDER_KINDS: [kind: string, label: string][] = [
 ];
 export interface ReminderGroup<T> { kind: string; label: string; count: number; items: T[] }
 
+/** A reminder row's kind in words, for a row without its own line (the older kinds): never the code. */
+export function reminderLabel(kind: string): string {
+  return REMINDER_KINDS.find(([known]) => known === kind)?.[1] ?? "Reminder";
+}
+
 /** Home reminder rows grouped by kind, with a count each. Rows keep their order inside a group. */
 export function groupReminders<T extends { kind: string }>(items: readonly T[]): ReminderGroup<T>[] {
   const groups = new Map<string, ReminderGroup<T>>();
