@@ -110,6 +110,13 @@ Reserved ranges (client growth program, 2026-10-27):
   changes three 0632 functions: a person step whose named owner has left starts in the HR pool, a
   leaver's own onboarding and custom processes are cancelled, and a leaver's open steps in other
   people's processes go to the HR pool instead of being skipped.
+  0635 adds the task reminders: `hr_notifications_kind_check` also allows `task_assigned`,
+  `task_due_soon`, `task_due` and `task_overdue` (read from the live list, as 0611),
+  `hr_notifications.due_on` and `subject` (the plain line), `hr_tasks_due` (the reminders due on a
+  day, every tenant for the worker or the session's own: the assignee's console account, else one
+  row per HR team member), `hr_task_reminder_put` (the system's idempotent writer, called only by
+  `csa.hr.reminders.emit`) and the internal `hr_task_reminder_user`; `hr_task_rows_mine` (same
+  columns) also lists, for the HR team, the steps of a person whose reminders go to the HR pool.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the

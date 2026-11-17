@@ -290,7 +290,8 @@ def test_my_tasks_and_the_task_receipts_are_what_the_latest_migration_returns() 
     hr_task_rows_mine's columns or hr_task_apply's result fails here, not as a 500 on a read."""
     text = process_migrations()
     *_, columns = re.findall(
-        r"CREATE FUNCTION public\.hr_task_rows_mine\(.*?RETURNS TABLE\((.*?)\)\s*LANGUAGE",
+        r"CREATE (?:OR REPLACE )?FUNCTION public\.hr_task_rows_mine\("
+        r".*?RETURNS TABLE\((.*?)\)\s*LANGUAGE",
         text,
         re.S,
     )

@@ -499,8 +499,10 @@ task_status, version, process_status, status: "saved", duplicate}` (`process_sta
 breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
 
 - `GET /tasks/mine?status=&limit=&after=` returns `MyTaskPage` `{items, next_cursor}`: the caller's
-  own steps, the HR pool for the HR team (`pool: true`: no assignee) and the steps waiting for the
-  caller's approval (`needs_my_approval: true`), soonest due first (no due date last), keyset by
+  own steps, the HR pool for the HR team (`pool: true`: no assignee), for the HR team also the steps
+  of a person whose reminders go to the HR pool (no console account, a disabled membership or a
+  read-only member; `pool: false`, migration 0635) and the steps waiting for the caller's approval
+  (`needs_my_approval: true`), soonest due first (no due date last), keyset by
   `next_cursor` (pass it as `after`) while more remain. `status` is a task status (`todo`,
   `awaiting_approval`, `done`, `rejected`, `skipped`); without it, the open ones (not done or
   skipped). `limit` is 1-200 (default 50). Each `MyTask` has every field, always present:
@@ -510,11 +512,13 @@ breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
   `reference_note`, `status`, `note` (the shared note), `version`, `overdue`, `pool`,
   `needs_my_approval`, `sent_back_reason` (why the approver sent it back, for the assignee and HR;
   `null` once completed again). On a row the caller only approves (a manager's approval of a
-  report's step), the descriptions, `reference_note`, `note` and `sent_back_reason` are `null`. A
-  caller with nothing to do gets an empty page.
+  report's step), the descriptions, `reference_note`, `note` and `sent_back_reason` are `null` by
+  design (present, never filled in for that viewer: the console shows nothing there). A caller with
+  nothing to do gets an empty page.
 - `POST /tasks/{task_id}/complete` `TaskComplete` `{expected_version, note?}` (the assignee or the
   HR team): `done`, or `awaiting_approval` for a step with an approver. A `note` (at most 2000
-  characters) replaces the shared note; absent or `null` keeps it. A step with an automatic check
+  characters) replaces the shared note; absent, `null` or `""` keeps it (unlike `/note`, where `""`
+  clears it). A step with an automatic check
   completes only when the check holds (409 `check_not_met`; HR may skip it); `access_removed` is 409
   `task_system_only`; a step waiting for approval is 409 `task_awaiting_approval`.
 - `POST /tasks/{task_id}/approve` `TaskApprove` `{expected_version}` (the approver): `done`. Not
@@ -538,6 +542,21 @@ breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
   HR's event log. It returns `ProcessCloseReceipt` `{operation: "process.close_anyway", process_id,
   process_status: "completed", status: "saved", duplicate}`; a closed process is 409
   `process_closed`.
+
+Request bodies: `complete` and `note` take up to 32768 bytes (a 2000-character note sent escaped as
+JSON is larger than 8192); every other task write keeps 8192 (413 `hr_request_too_large`). There is
+no `GET /tasks/{task_id}` (spec 5.6): My tasks and `GET /processes/{process_id}` carry every step a
+caller may see.
+
+**Reminders (migration 0635).** The worker writes task reminders to the recipient's Home
+notifications (`GET /records/notifications`, `NotificationRecord`), console only. New `kind` values:
+`task_assigned` (once per assignee, or when the step enters the HR pool), `task_due_soon` (1-2 days
+before), `task_due` (on the day) and `task_overdue` (each of the 3 days after, then weekly). For
+these, `resource_id` is the step's `task_id`, `due_on` the step's due date when written and
+`subject` the plain line ("Due today: <step title>"); the earlier kinds return `due_on` and
+`subject` as `null`. The recipient is the assignee's console account, or every HR team member when
+the step is in the HR pool or its assignee cannot get reminders; each one points at a step the
+recipient sees in My tasks. `notification.read` marks one read as for every kind.
 
 **Problem codes** (`detail` of the response; the console shows the sentence). Every refusal the
 database functions raise maps to one of these (`csa.hr.processes.REFUSALS` and `PROBLEMS`); any

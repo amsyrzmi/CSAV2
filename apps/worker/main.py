@@ -36,6 +36,7 @@ from csa.graph.coordinator import CoordinatorRuntime, build_runtime, process_tur
 from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
+from csa.hr.reminders import hr_tasks_round
 from csa.jobs.runner import JobRunner, build_default_registry, jobs_loop
 from csa.marketplace.processor import (
     SYNC_POLL_SECONDS,
@@ -593,6 +594,22 @@ def register_hr_leavers_task(
     return asyncio.create_task(_hr_leavers_loop(app_pool, interval_seconds))
 
 
+async def _hr_tasks_loop(app_pool: AsyncConnectionPool, interval_seconds: int) -> None:
+    while True:
+        try:
+            await hr_tasks_round(app_pool)
+        except Exception as exc:
+            logger.warning("hr_tasks_round_failed", error_type=type(exc).__name__)
+        await asyncio.sleep(interval_seconds)
+
+
+def register_hr_tasks_task(
+    app_pool: AsyncConnectionPool, *, interval_seconds: int = 900
+) -> asyncio.Task[None]:
+    """Register the periodic HR task reminders (csa.hr.reminders, every 15 minutes by default)."""
+    return asyncio.create_task(_hr_tasks_loop(app_pool, interval_seconds))
+
+
 class _Closable(Protocol):
     async def close(self) -> None: ...
 
@@ -808,8 +825,9 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         ),
     )
     hr_leavers = register_hr_leavers_task(app_pool)
+    hr_tasks = register_hr_tasks_task(app_pool)
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
-    background = [jobs_task, retention, hr_leavers]
+    background = [jobs_task, retention, hr_leavers, hr_tasks]
     if settings.KB_INGEST_ENABLED:
         assert kb_store is not None
         kb_processor = KbIngestProcessor(

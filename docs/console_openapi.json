@@ -11711,11 +11711,24 @@
       },
       "NotificationRecord": {
         "additionalProperties": false,
+        "description": "One Home reminder. The task kinds (0635) carry the step as resource_id, the plain line in\nsubject and the step's due date; the earlier kinds have neither.",
         "properties": {
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "due_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due On"
           },
           "id": {
             "format": "uuid",
@@ -11726,7 +11739,11 @@
             "enum": [
               "workflow_review",
               "training_review",
-              "interview_upcoming"
+              "interview_upcoming",
+              "task_assigned",
+              "task_due_soon",
+              "task_due",
+              "task_overdue"
             ],
             "title": "Kind",
             "type": "string"
@@ -11747,6 +11764,18 @@
             "format": "uuid",
             "title": "Resource Id",
             "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
           }
         },
         "required": [
