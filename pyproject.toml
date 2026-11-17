@@ -61,7 +61,7 @@ reportMissingImports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "slow: builds Docker images or a packaged frontend; `make test` skips these, CI runs them",
+    "slow: builds Docker images or a packaged frontend, or seeds a large data set; `make test` skips these, CI runs them",
 ]
 
 [tool.importlinter]
