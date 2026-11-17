@@ -112,6 +112,42 @@ export type ConversationPage = Page<Conversation> & {
   as_of: string;
 };
 
+/** The seven single-item queue actions; the bulk route takes the same names. */
+export type QueueActionName = "claim" | "unclaim" | "assign" | "snooze" | "resolve" | "priority" | "topic";
+/**
+ * What an action needs beyond the item. `assigneeName` is for the notice only and is never sent.
+ * A field the action does not take is ignored by the body builders.
+ */
+export type QueueFields = {
+  assignee_id?: string;
+  assigneeName?: string | null;
+  until?: string;
+  priority?: Priority;
+  topic?: Topic;
+};
+/** `applied` when something changed, `already_handled` when nothing did. */
+export type QueueActionResult = { outcome: "applied" | "already_handled"; conversation: Conversation };
+export type BulkResult = { id: string; outcome: BulkOutcome };
+export type BulkResponse = { results: BulkResult[] };
+/** A person a conversation can be assigned to (no address is ever sent). */
+export type InboxAssignee = { id: string; display_name: string; role: "tenant_admin" | "tenant_staff" };
+/** The company's response targets and reminder knobs, `version` 0 until a first save. */
+export type InboxSettings = {
+  target_urgent_min: number;
+  target_high_min: number;
+  target_normal_min: number;
+  target_low_min: number;
+  repeat_minutes: number;
+  max_repeats: number;
+  follow_up_hours: number;
+  stale_claim_hours: number;
+  handback_prompt_hours: number;
+  version: number;
+};
+export type InboxSettingsValues = Omit<InboxSettings, "version">;
+/** A saved view as read back; `filters` carries the API's keys (see `viewToFilters`). */
+export type SavedView = { id: string; name: string; filters: Record<string, unknown>; created_at: string };
+
 export type ChannelFilter = "" | "whatsapp" | "telegram";
 export type SenderFilter = "" | "known" | "new";
 
@@ -187,4 +223,84 @@ export function listTime(at: string, now: number): string {
   ) return "Yesterday";
   const label = `${time.getDate()} ${MONTHS[time.getMonth()]}`;
   return time.getFullYear() === today.getFullYear() ? label : `${label} ${time.getFullYear()}`;
+}
+
+// ---- queue routes ----
+
+/** The tenant query as a suffix: empty stays empty, so no stray question mark. */
+function withQuery(path: string, query: string): string {
+  return query ? `${path}?${query}` : path;
+}
+
+/** `base` is the conversation's own path, `/console/v1/inbox/conversations/{id}`. */
+export function queueActionPath(base: string, action: QueueActionName, query: string): string {
+  return withQuery(`${base}/queue/${action}`, query);
+}
+
+export function bulkPath(query: string): string {
+  return withQuery(`${INBOX}/bulk`, query);
+}
+
+export function assigneesPath(query: string): string {
+  return withQuery(`${INBOX}/assignees`, query);
+}
+
+export function settingsPath(query: string): string {
+  return withQuery(`${INBOX}/settings`, query);
+}
+
+export function viewsPath(query: string, id?: string): string {
+  return withQuery(id === undefined ? `${INBOX}/views` : `${INBOX}/views/${encodeURIComponent(id)}`, query);
+}
+
+/** The one field an action takes, under the API's names; nothing for claim, unclaim and resolve. */
+function actionField(action: QueueActionName, fields: QueueFields): Record<string, unknown> {
+  switch (action) {
+    case "assign": return fields.assignee_id === undefined ? {} : { assignee_id: fields.assignee_id };
+    case "snooze": return fields.until === undefined ? {} : { until: fields.until };
+    case "priority": return fields.priority === undefined ? {} : { priority: fields.priority };
+    case "topic": return fields.topic === undefined ? {} : { topic: fields.topic };
+    default: return {};
+  }
+}
+
+/**
+ * The body of one action: the key, the version the person read and the action's field. Snooze and
+ * resolve also say when the customer last wrote, so the server can refuse a stale decision.
+ */
+export function queueActionBody(
+  action: QueueActionName,
+  item: Pick<Conversation, "inbox_version" | "last_customer_at">,
+  fields: QueueFields,
+  key: string = crypto.randomUUID(),
+): Record<string, unknown> {
+  const seen = action === "snooze" || action === "resolve"
+    ? { seen_customer_at: item.last_customer_at ?? null }
+    : {};
+  return { request_key: key, expected_version: item.inbox_version, ...actionField(action, fields), ...seen };
+}
+
+/** `seenAt` is the list's `as_of`: the server refuses an item whose customer wrote after it. */
+export function bulkBody(
+  action: QueueActionName,
+  ids: string[],
+  fields: QueueFields,
+  seenAt: string,
+  key: string = crypto.randomUUID(),
+): Record<string, unknown> {
+  return { request_key: key, action, ids, seen_at: seenAt, ...actionField(action, fields) };
+}
+
+/**
+ * The code of a coded refusal, `{"detail": {"code": "..."}}`, read from an error that carries the
+ * decoded body (ApiError.body). A plain-text detail, a list or no body gives null, so a stale-version
+ * 409 (plain text) is told apart from `held_reply_pending` and `customer_wrote`.
+ */
+export function errorCode(cause: unknown): string | null {
+  if (typeof cause !== "object" || cause === null || !("body" in cause)) return null;
+  const body = cause.body;
+  if (typeof body !== "object" || body === null || !("detail" in body)) return null;
+  const detail = body.detail;
+  if (typeof detail !== "object" || detail === null || !("code" in detail)) return null;
+  return typeof detail.code === "string" ? detail.code : null;
 }

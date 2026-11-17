@@ -11,9 +11,11 @@ import type {
   ChannelFilter,
   Conversation,
   Priority,
+  QueueActionName,
   QueueCounts,
   QueueState,
   Reason,
+  SavedView,
   SenderFilter,
   Topic,
 } from "@/lib/inbox-api";
@@ -447,4 +449,175 @@ export function activeFilterChips(filters: QueueFilters, tab: QueueTabId): { key
     chips.push({ key: "waiting_over", label: `Waiting longer than ${duration(filters.waitingOver * 60_000)}` });
   }
   return chips;
+}
+
+// ---- saved views ----
+
+/** A view's filters under the API's keys. Only what is set is present; the search is never part of it. */
+export type ViewFilters = {
+  state?: QueueState[];
+  assignee?: string;
+  priority_min?: Priority;
+  reason?: Reason[];
+  topic?: Topic[];
+  overdue?: boolean;
+  waiting_over?: number;
+  channel?: "telegram" | "whatsapp";
+  sender?: "known" | "new";
+  order?: QueueOrder;
+};
+
+/** What to save for the current screen: the filters and the order, nothing else (no search, cursor or limit). */
+export function filtersToView(filters: QueueFilters, order: QueueOrder): ViewFilters {
+  const view: ViewFilters = {};
+  if (filters.state.length) view.state = [...filters.state];
+  if (filters.assignee) view.assignee = filters.assignee;
+  if (filters.priorityMin) view.priority_min = filters.priorityMin;
+  if (filters.reason.length) view.reason = [...filters.reason];
+  if (filters.topic.length) view.topic = [...filters.topic];
+  if (filters.overdue) view.overdue = true;
+  if (filters.waitingOver !== null) view.waiting_over = filters.waitingOver;
+  if (filters.channel) view.channel = filters.channel;
+  if (filters.sender) view.sender = filters.sender;
+  view.order = order;
+  return view;
+}
+
+const STATE_VALUES: readonly string[] = ["bot", "needs_staff", "waiting_customer", "snoozed", "resolved"];
+const REASON_VALUES: readonly string[] = ["escalation", "held_reply", "customer_message", "manual"];
+const TOPIC_VALUES: readonly string[] = [
+  "purchase", "question", "complaint", "payment", "booking", "subscription", "other",
+];
+const PRIORITY_VALUES: readonly string[] = ["low", "normal", "high", "urgent"];
+const ORDER_VALUES: readonly string[] = ["activity", "waiting", "due", "priority"];
+
+/** The list of values when every one is a known value, else null. */
+function knownList<T extends string>(value: unknown, known: readonly string[]): T[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.every((v) => typeof v === "string" && known.includes(v)) ? (value as T[]) : null;
+}
+
+export type ViewRead = { supported: true; filters: QueueFilters; order: QueueOrder } | { supported: false };
+
+/**
+ * A stored view as this screen's filters and order. Absent keys, nulls, empty lists and false mean
+ * not set. A key or a value this screen does not know (or the search, a cursor or a limit) makes
+ * the view `supported: false`, so the screen can show it disabled instead of guessing.
+ */
+export function viewToFilters(view: Pick<SavedView, "filters">): ViewRead {
+  const raw: unknown = view.filters;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { supported: false };
+  const stored = raw as Record<string, unknown>;
+  const filters = tabFilters("all");
+  let order: QueueOrder | null = null;
+  for (const [key, value] of Object.entries(stored)) {
+    if (value === null || value === undefined) continue;
+    switch (key) {
+      case "state": {
+        const list = knownList<QueueState>(value, STATE_VALUES);
+        if (!list) return { supported: false };
+        filters.state = list;
+        break;
+      }
+      case "reason": {
+        const list = knownList<Reason>(value, REASON_VALUES);
+        if (!list) return { supported: false };
+        filters.reason = list;
+        break;
+      }
+      case "topic": {
+        const list = knownList<Topic>(value, TOPIC_VALUES);
+        if (!list) return { supported: false };
+        filters.topic = list;
+        break;
+      }
+      case "assignee":
+        if (typeof value !== "string" || !value) return { supported: false };
+        filters.assignee = value;
+        break;
+      case "priority_min":
+        if (typeof value !== "string" || !PRIORITY_VALUES.includes(value)) return { supported: false };
+        filters.priorityMin = value as Priority;
+        break;
+      case "overdue":
+        if (typeof value !== "boolean") return { supported: false };
+        filters.overdue = value;
+        break;
+      case "waiting_over":
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return { supported: false };
+        filters.waitingOver = value;
+        break;
+      case "channel":
+        if (value !== "telegram" && value !== "whatsapp") return { supported: false };
+        filters.channel = value;
+        break;
+      case "sender":
+        if (value !== "known" && value !== "new") return { supported: false };
+        filters.sender = value;
+        break;
+      case "order":
+        if (typeof value !== "string" || !ORDER_VALUES.includes(value)) return { supported: false };
+        order = value as QueueOrder;
+        break;
+      default:
+        return { supported: false };
+    }
+  }
+  // The server's own default: due-first when every row in scope needs staff, newest activity otherwise.
+  const onlyNeedsStaff = (filters.state.length === 1 && filters.state[0] === "needs_staff")
+    || filters.overdue || filters.waitingOver !== null;
+  return { supported: true, filters, order: order ?? (onlyNeedsStaff ? "due" : "activity") };
+}
+
+// ---- notices and the other error sentences ----
+
+/** "Wed 09:00" in company time for an ISO time, or "" when it cannot be read. */
+function timeText(at: string | null | undefined): string {
+  const ms = parseTime(at ?? null);
+  return ms === null ? "" : weekdayTime(ms);
+}
+
+/** The plain notice after a queue action (single item). `already_handled` means nothing changed. */
+export function queueActionNotice(
+  action: QueueActionName,
+  outcome: "applied" | "already_handled",
+  detail: { until?: string | null; priority?: Priority; topic?: Topic; assigneeName?: string | null },
+): string {
+  if (outcome === "already_handled") return "Already up to date.";
+  switch (action) {
+    case "claim": return "You took this conversation.";
+    case "unclaim": return "Gave up this item.";
+    case "resolve": return "Resolved. The assistant has this conversation again.";
+    case "priority": return detail.priority ? `Priority set to ${PRIORITY_LABELS[detail.priority]}.` : "Priority changed.";
+    case "topic": return detail.topic ? `Topic set to ${TOPIC_LABELS[detail.topic]}.` : "Topic changed.";
+    case "assign": return detail.assigneeName ? `Assigned to ${detail.assigneeName}.` : "Assigned.";
+    case "snooze": {
+      const when = timeText(detail.until);
+      return when ? `Snoozed until ${when}.` : "Snoozed.";
+    }
+  }
+}
+
+/** A plain sentence for a failed saved-view change. `code` is the server's plain-text detail. */
+export function viewErrorText(status: number | null, code: string | null, fallback: string): string {
+  if (status === null) return actionErrorText(null, null, fallback);
+  if (status === 409 && code !== null) {
+    if (code.startsWith("you can keep at most")) return "You can keep at most 20 saved views. Delete one first.";
+    if (code.includes("already have a saved view")) return "You already have a view with that name.";
+  }
+  if (status === 422) return "That name or filter is not allowed.";
+  if (status === 403) return "You do not have permission to do that.";
+  if (status === 404) return "That view is not available any more. The list is refreshed.";
+  return fallback;
+}
+
+/** A plain sentence for a failed settings save. A version conflict means the settings were reloaded. */
+export function settingsErrorText(status: number | null, code: string | null, fallback: string): string {
+  if (status === null) return actionErrorText(null, null, fallback);
+  if (status === 409 && code === "version_conflict") {
+    return "These settings changed while you were editing. They are reloaded: check them and save again.";
+  }
+  if (status === 403) return "You do not have permission to do that.";
+  if (status === 422) return "One of these values is out of range. Check them and save again.";
+  return fallback;
 }

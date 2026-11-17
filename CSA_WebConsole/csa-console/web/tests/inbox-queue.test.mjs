@@ -503,3 +503,116 @@ test("activeFilterChips skips what the tab already says", () => {
     { key: "assignee:none", label: "Unassigned" },
   ]);
 });
+
+// ---- saved views: filters <-> view ----
+
+const { filtersToView, viewToFilters, queueActionNotice, viewErrorText, settingsErrorText } = queue;
+
+test("filters become the API's view keys and leave out what is not set", () => {
+  assert.deepEqual(filtersToView(tabFilters("needs_us"), "due"), { state: ["needs_staff"], order: "due" });
+  const view = filtersToView({
+    state: ["needs_staff", "waiting_customer"], assignee: "me", priorityMin: "high",
+    reason: ["escalation"], topic: ["payment", "booking"], channel: "whatsapp", sender: "new",
+    overdue: true, waitingOver: 90,
+  }, "priority");
+  assert.deepEqual(view, {
+    state: ["needs_staff", "waiting_customer"], assignee: "me", priority_min: "high",
+    reason: ["escalation"], topic: ["payment", "booking"], overdue: true, waiting_over: 90,
+    channel: "whatsapp", sender: "new", order: "priority",
+  });
+  assert.deepEqual(filtersToView(tabFilters("all"), "activity"), { order: "activity" });
+});
+
+test("a view is never given the search text, a cursor or a limit", () => {
+  const view = filtersToView({ ...tabFilters("all"), q: "ali", before: "x", limit: 5 }, "activity");
+  assert.deepEqual(Object.keys(view).sort(), ["order"]);
+});
+
+test("a view reads back into the filters and order it was saved from", () => {
+  for (const id of ["needs_us", "mine", "unassigned", "overdue", "waiting", "snoozed", "resolved", "all"]) {
+    const t = tab(id);
+    const back = viewToFilters({ id: "v", name: "n", created_at: "x", filters: filtersToView(tabFilters(id), t.order) });
+    assert.equal(back.supported, true, id);
+    assert.deepEqual(back.filters, tabFilters(id), id);
+    assert.equal(back.order, t.order, id);
+  }
+  const full = {
+    state: ["needs_staff"], assignee: "11111111-1111-1111-1111-111111111111", priorityMin: "urgent",
+    reason: ["manual", "held_reply"], topic: ["complaint"], channel: "telegram", sender: "known",
+    overdue: true, waitingOver: 30,
+  };
+  const back = viewToFilters({ id: "v", name: "n", created_at: "x", filters: filtersToView(full, "priority") });
+  assert.deepEqual(back, { supported: true, filters: full, order: "priority" });
+});
+
+test("a stored view in the server's full shape reads back, nulls and empty lists meaning not set", () => {
+  const back = viewToFilters({ id: "v", name: "n", created_at: "x", filters: {
+    state: ["snoozed"], assignee: null, priority_min: null, reason: [], topic: [], overdue: false,
+    waiting_over: null, channel: null, sender: null, order: null,
+  } });
+  assert.deepEqual(back, { supported: true, filters: tabFilters("snoozed"), order: "activity" });
+});
+
+test("with no stored order the view opens in the order the server would use", () => {
+  const mk = (filters) => viewToFilters({ id: "v", name: "n", created_at: "x", filters });
+  assert.equal(mk({ state: ["needs_staff"] }).order, "due");
+  assert.equal(mk({ overdue: true }).order, "due");
+  assert.equal(mk({ waiting_over: 5 }).order, "due");
+  assert.equal(mk({ state: ["needs_staff", "snoozed"] }).order, "activity");
+  assert.equal(mk({}).order, "activity");
+});
+
+test("a view with a key or a value this screen does not know is marked unsupported", () => {
+  const mk = (filters) => viewToFilters({ id: "v", name: "n", created_at: "x", filters });
+  assert.deepEqual(mk({ state: ["needs_staff"], colour: "red" }), { supported: false });
+  assert.deepEqual(mk({ q: "ali" }), { supported: false });
+  assert.deepEqual(mk({ before: "abc" }), { supported: false });
+  assert.deepEqual(mk({ limit: 10 }), { supported: false });
+  assert.deepEqual(mk({ state: ["archived"] }), { supported: false });
+  assert.deepEqual(mk({ order: "random" }), { supported: false });
+  assert.deepEqual(mk({ waiting_over: "soon" }), { supported: false });
+  assert.deepEqual(mk({ overdue: "yes" }), { supported: false });
+  assert.deepEqual(mk(null), { supported: false });
+});
+
+// ---- notices and error sentences ----
+
+test("each applied action says what happened, and already_handled says nothing changed", () => {
+  const n = (action, outcome, detail = {}) => queueActionNotice(action, outcome, detail);
+  assert.equal(n("claim", "applied"), "You took this conversation.");
+  assert.equal(n("unclaim", "applied"), "Gave up this item.");
+  assert.equal(n("resolve", "applied"), "Resolved. The assistant has this conversation again.");
+  assert.equal(n("priority", "applied", { priority: "urgent" }), "Priority set to Urgent.");
+  assert.equal(n("topic", "applied", { topic: "payment" }), "Topic set to Payment.");
+  assert.equal(n("assign", "applied", { assigneeName: "Aina Demo" }), "Assigned to Aina Demo.");
+  assert.equal(n("assign", "applied", {}), "Assigned.");
+  // 2026-11-18T01:00:00Z is Wednesday 09:00 in +08:00.
+  assert.equal(n("snooze", "applied", { until: "2026-11-18T01:00:00Z" }), "Snoozed until Wed 09:00.");
+  assert.equal(n("snooze", "applied", {}), "Snoozed.");
+  for (const action of ["claim", "unclaim", "assign", "snooze", "resolve", "priority", "topic"]) {
+    assert.equal(n(action, "already_handled"), "Already up to date.");
+  }
+});
+
+test("saved-view errors are plain sentences and never a raw code", () => {
+  const fallback = "Could not save the view.";
+  assert.equal(viewErrorText(409, "you can keep at most 20 saved views", fallback),
+    "You can keep at most 20 saved views. Delete one first.");
+  assert.equal(viewErrorText(409, "you already have a saved view with this name", fallback),
+    "You already have a view with that name.");
+  assert.equal(viewErrorText(422, "Request failed (422)", fallback), "That name or filter is not allowed.");
+  assert.equal(viewErrorText(403, "Request failed (403)", fallback), "You do not have permission to do that.");
+  assert.equal(viewErrorText(null, null, fallback), actionErrorText(null, null, fallback));
+  assert.equal(viewErrorText(500, "x", fallback), fallback);
+  assert.equal(viewErrorText(409, "something else", fallback), fallback);
+});
+
+test("a settings error is a plain sentence, a version conflict says the settings were reloaded", () => {
+  const fallback = "Could not save.";
+  assert.equal(settingsErrorText(409, "version_conflict", fallback),
+    "These settings changed while you were editing. They are reloaded: check them and save again.");
+  assert.equal(settingsErrorText(403, "x", fallback), "You do not have permission to do that.");
+  assert.equal(settingsErrorText(422, "x", fallback), "One of these values is out of range. Check them and save again.");
+  assert.equal(settingsErrorText(null, null, fallback), actionErrorText(null, null, fallback));
+  assert.equal(settingsErrorText(500, "x", fallback), fallback);
+});
