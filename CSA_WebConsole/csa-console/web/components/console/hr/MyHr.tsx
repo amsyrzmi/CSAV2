@@ -8,6 +8,7 @@ import { peopleClient, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
 import { action, Notice, Panel } from "../ui";
 import { DocumentsSection } from "./DocumentsSection";
+import { MyTasks } from "./MyTasks";
 import { PersonalSection } from "./PersonalSection";
 import { PersonOverview } from "./PersonProfile";
 
@@ -28,7 +29,7 @@ function useRead<T>(load: (() => Promise<T>) | null): Read<T> {
 }
 
 /**
- * Home for staff without HR duties: their own profile, personal details (contact fields only), documents
+ * Home for staff without HR duties: My tasks, their own profile, personal details (contact fields only), documents
  * (read-only), leave balances and training requests.
  */
 export function MyHr({ tenant, context, readonly, platform }: {
@@ -49,6 +50,7 @@ export function MyHr({ tenant, context, readonly, platform }: {
   const balanceLines = balances && "items" in balances ? myBalanceLines(balances.items, own) : [];
   const trainingLines = training && "items" in training ? myTrainingLines(training.items, own) : [];
   return <div className="space-y-5">
+    <MyTasks tenant={tenant} readonly={readonly} />
     <Panel title="My profile">
       {!profile ? <Notice>Loading your profile…</Notice>
         : "items" in profile ? <PersonOverview person={profile.items} />

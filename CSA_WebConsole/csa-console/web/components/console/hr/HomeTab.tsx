@@ -10,6 +10,7 @@ import GetStarted, { useNoPeopleYet } from "../hr-guide/GetStarted";
 import { secondary, Notice, Panel } from "../ui";
 import type { HrTabProps } from "./HrShell";
 import { MyHr } from "./MyHr";
+import { MyTasks } from "./MyTasks";
 import { useHrRunner, useHrSave } from "./useHrRunner";
 
 type Reminder = { id: string; kind: string; resource_id: string; read_at: string | null };
@@ -17,8 +18,8 @@ type Reminder = { id: string; kind: string; resource_id: string; read_at: string
 const MAINTENANCE_MS = 300000;
 
 /**
- * Home. Staff with HR duties get "Needs you today", quick actions and the reminders; everyone else
- * gets My HR. The workspace dock is the only assistant.
+ * Home. Staff with HR duties get "Needs you today", quick actions, My tasks and the reminders;
+ * everyone else gets My HR, which starts with My tasks. The workspace dock is the only assistant.
  */
 export function HomeTab(props: HrTabProps) {
   const { tenant, context, readonly, platform } = props;
@@ -84,6 +85,7 @@ function HrHomePage({ tenant, context, readonly, platform, admin, refreshContext
             : <ul className="space-y-2 text-sm">{items.map(item => <li key={item.key}>
               <Link className="underline" href={href(item.href)}>{item.label}</Link></li>)}</ul>}
     </Panel>
+    <MyTasks tenant={tenant} readonly={readonly} />
     {message && <Notice>{message}</Notice>}{error && <Notice error>{error}. Check saved records before retrying an uncertain write.</Notice>}
     <Panel title="Local HR reminders"><p className="mb-4 text-sm">{maintains && "Maintenance runs every five minutes while this page is open. "}Reminders are deduplicated daily; expired candidate content is erased. No external messages are sent.</p>
       <button className={secondary} disabled={busy || readonly} onClick={() => void run(async () => { if (maintains) await client.operation({ operation: "automation.run" }); await load(); })}>Refresh reminders</button>

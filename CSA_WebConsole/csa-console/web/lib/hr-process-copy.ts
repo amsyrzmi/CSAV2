@@ -78,7 +78,7 @@ export function processErrorText(code: string): string {
 /** What the writes name in "Choose <button> again". */
 export type ProcessAction =
   | "start" | "cancel" | "close" | "save" | "deactivate"
-  | "complete" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note";
+  | "complete" | "check" | "complete-for" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note";
 const BUTTON: Record<ProcessAction, string> = {
   start: "Start process",
   cancel: "Cancel process",
@@ -86,6 +86,9 @@ const BUTTON: Record<ProcessAction, string> = {
   save: "Save",
   deactivate: "Deactivate",
   complete: "Mark done",
+  // A `complete` from an automatic-check step, and from HR on someone's behalf.
+  check: "Check now",
+  "complete-for": "Mark done for them",
   approve: "Approve",
   "send-back": "Send back",
   skip: "Skip",

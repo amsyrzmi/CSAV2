@@ -314,6 +314,9 @@ test("a failed write: a 4xx gets the refusal sentence, a 5xx or network error th
   assert.match(processSaveError(null, "close"), /Choose Close anyway again/);
   assert.match(processSaveError(null, "save"), /Choose Save again/);
   assert.match(processSaveError(null, "send-back"), /Choose Send back again/);
+  // My tasks names the button the person chose: an automatic check, or a step done on someone's behalf.
+  assert.match(processSaveError(null, "check"), /Choose Check now again/);
+  assert.match(processSaveError(null, "complete-for"), /Choose Mark done for them again/);
 });
 
 test("a failed read: a known refusal says so, anything else is a plain retry", () => {
@@ -326,7 +329,8 @@ test("a failed read: a known refusal says so, anything else is a plain retry", (
 });
 
 test("no fallback, uncertain or load sentence tells the person to reload", () => {
-  const actions = ["start", "cancel", "close", "save", "deactivate", "complete", "approve", "send-back", "skip", "reschedule", "reassign", "note"];
+  const actions = ["start", "cancel", "close", "save", "deactivate", "complete", "check", "complete-for", "approve", "send-back",
+    "skip", "reschedule", "reassign", "note"];
   const sentences = [PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR, processLoadError(null),
     ...actions.map((action) => processSaveError(null, action)), ...actions.map((action) => processSaveError(refused(500, "x"), action))];
   for (const sentence of sentences) {

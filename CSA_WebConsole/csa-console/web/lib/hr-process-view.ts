@@ -1,5 +1,5 @@
 import { dateText } from "./hr-people";
-import type { Anchor, OwnerRole, ProcessStatus, TaskStatus } from "./hr-process-api";
+import type { Anchor, AutoCheck, OwnerRole, ProcessKind, ProcessStatus, TaskStatus } from "./hr-process-api";
 
 /** Pure words for processes and tasks: due dates, statuses, offsets and progress. */
 
@@ -62,6 +62,33 @@ const OWNER_ROLE: Record<OwnerRole, string> = {
 };
 export function ownerRoleLabel(role: OwnerRole | (string & {})): string {
   return Object.hasOwn(OWNER_ROLE, role) ? OWNER_ROLE[role as OwnerRole] : "Unknown";
+}
+
+const KIND: Record<ProcessKind, string> = { onboarding: "Onboarding", offboarding: "Offboarding", custom: "Custom process" };
+/** A process kind in words, for a process without a template name. */
+export function processKindLabel(kind: ProcessKind | (string & {})): string {
+  return Object.hasOwn(KIND, kind) ? KIND[kind as ProcessKind] : "Process";
+}
+
+/** What each automatic check looks for: [said to the assignee, said about the person]. */
+const AUTO_CHECK: Record<Exclude<AutoCheck, "access_removed">, [mine: string, theirs: string]> = {
+  account_linked: ["your console account is linked", "the person's console account is linked"],
+  personal_details_complete: ["your personal details are filled in", "the person's personal details are filled in"],
+  "document_uploaded:contract": ["a contract is uploaded", "a contract is uploaded"],
+  "document_uploaded:identity": ["an identity document is uploaded", "an identity document is uploaded"],
+  "document_uploaded:certificate": ["a certificate is uploaded", "a certificate is uploaded"],
+  "document_uploaded:other": ["a document is uploaded", "a document is uploaded"],
+};
+/**
+ * The hint on a step with an automatic check, to its assignee (`mine`) or to someone acting on it.
+ * `access_removed` is done by the system alone; a check a later release adds stays a plain sentence.
+ */
+export function autoCheckText(check: AutoCheck | (string & {}), mine: boolean): string {
+  if (check === "access_removed")
+    return `Done by the system when ${mine ? "your" : "the person's"} access is removed.`;
+  if (!Object.hasOwn(AUTO_CHECK, check)) return "Checked automatically.";
+  const [own, theirs] = AUTO_CHECK[check as keyof typeof AUTO_CHECK];
+  return `Checked automatically: ${mine ? own : theirs}.`;
 }
 
 const ANCHOR: Record<Anchor, string> = {

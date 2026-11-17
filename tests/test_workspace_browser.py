@@ -430,7 +430,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "workflows": [],
                 "hr_duties": False,
             }
-        elif path == "hr/training-requests":
+        elif path in {"hr/training-requests", "hr/tasks/mine"}:
+            # My HR also lists the member's process steps (none here).
             data = EMPTY_PAGE
         elif path == f"hr/people/{ALI_B}":
             # HR Home for a member without HR duties shows their own profile and balances.
@@ -1164,6 +1165,7 @@ EMPTY_HINT = (
 # What People & HR loads for a member without HR duties (the same bodies `exercise` answers).
 HR_PAGES: dict[str, Any] = {
     "hr/training-requests": EMPTY_PAGE,
+    "hr/tasks/mine": EMPTY_PAGE,
     "hr/records/balances": {"items": []},
     f"hr/people/{ALI_B}/documents": {"items": []},
     f"hr/people/{ALI_B}": {

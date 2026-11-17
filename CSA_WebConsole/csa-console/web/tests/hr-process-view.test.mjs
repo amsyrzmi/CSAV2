@@ -11,7 +11,10 @@ function moduleUrl(source) {
 }
 const read = (name) => readFile(new URL(name, import.meta.url), "utf8");
 const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
-const { dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders } = await import(
+const {
+  dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText,
+  processKindLabel,
+} = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
 const TODAY = "2026-11-17";
@@ -116,4 +119,27 @@ test("groupReminders keeps an unknown kind under a generic label after the known
   assert.deepEqual(groups.map((group) => [group.kind, group.label]), [
     ["task_due_soon", "Due soon"], ["later_kind", "Other reminders"],
   ]);
+});
+
+test("autoCheckText says what the automatic check looks for, to the assignee or about the person", () => {
+  assert.equal(autoCheckText("personal_details_complete", true), "Checked automatically: your personal details are filled in.");
+  assert.equal(autoCheckText("personal_details_complete", false),
+    "Checked automatically: the person's personal details are filled in.");
+  assert.equal(autoCheckText("account_linked", true), "Checked automatically: your console account is linked.");
+  assert.equal(autoCheckText("account_linked", false), "Checked automatically: the person's console account is linked.");
+  assert.equal(autoCheckText("document_uploaded:contract", true), "Checked automatically: a contract is uploaded.");
+  assert.equal(autoCheckText("document_uploaded:identity", false), "Checked automatically: an identity document is uploaded.");
+  assert.equal(autoCheckText("document_uploaded:certificate", true), "Checked automatically: a certificate is uploaded.");
+  assert.equal(autoCheckText("document_uploaded:other", true), "Checked automatically: a document is uploaded.");
+  assert.equal(autoCheckText("access_removed", true), "Done by the system when your access is removed.");
+  assert.equal(autoCheckText("access_removed", false), "Done by the system when the person's access is removed.");
+  // A check a later release adds still reads as a sentence, never the code.
+  assert.equal(autoCheckText("later_check", true), "Checked automatically.");
+});
+
+test("processKindLabel names a process without a template name", () => {
+  assert.equal(processKindLabel("onboarding"), "Onboarding");
+  assert.equal(processKindLabel("offboarding"), "Offboarding");
+  assert.equal(processKindLabel("custom"), "Custom process");
+  assert.equal(processKindLabel("later_kind"), "Process");
 });
