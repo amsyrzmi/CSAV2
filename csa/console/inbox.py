@@ -35,6 +35,7 @@ from csa.console.services import package_gate
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.inbox_queue import transitions as queue
 from csa.media.attachments import image_asset_id
 from csa.staff.ownership import lock_conversation
 from csa.workspace.registry import ProposalError
@@ -529,26 +530,34 @@ def build_inbox_router() -> APIRouter:
                     conn=conn,
                 )
                 result.message_id, result.queued = message["id"], True
-            else:
-                if (
-                    action == "takeover" and current.human_muted and current.ai_muted_until is None
-                ) or (action == "release" and not current.human_muted):
+                await queue.replied(conn, client_id, conversation_id, user_id=actor.user_id)
+            elif action == "release":
+                # The release columns when a person holds the chat, then the queue, escalation and
+                # ticket; an AI-owned chat whose queue item still changed is a real change too.
+                if not await queue.hand_back(
+                    conn, client_id, conversation_id, actor_user_id=actor.user_id
+                ):
                     result.outcome = "already_handled"
-                else:
-                    await db.q.execute(
-                        "inbox/set_owner.sql",
-                        (
-                            "human_support" if action == "takeover" else "ai",
-                            "escalated" if action == "takeover" else "open",
-                            client_id,
-                            conversation_id,
-                        ),
-                        conn=conn,
-                    )
-                    if action == "takeover":
-                        await db.q.execute(
-                            "inbox/suppress_pending.sql", (client_id, conversation_id), conn=conn
-                        )
+            elif current.human_muted and current.ai_muted_until is None:
+                result.outcome = "already_handled"
+            else:
+                await db.q.execute(
+                    "inbox/set_owner.sql",
+                    ("human_support", "escalated", client_id, conversation_id),
+                    conn=conn,
+                )
+                await db.q.execute(
+                    "inbox/suppress_pending.sql", (client_id, conversation_id), conn=conn
+                )
+                await queue.enter(
+                    conn,
+                    client_id,
+                    conversation_id,
+                    reason="manual",
+                    priority="normal",
+                    actor_user_id=actor.user_id,
+                    claim_for=actor.user_id,
+                )
             result.conversation = await conversation(conn, client_id, conversation_id)
             await record(
                 conn,

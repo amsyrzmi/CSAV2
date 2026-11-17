@@ -23,6 +23,7 @@ from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.inbox_queue import transitions as queue
 
 logger = structlog.get_logger(__name__)
 
@@ -198,5 +199,13 @@ async def _resume_conversation(
             (action["conversation_id"], client_id),
             conn=conn,
         )
+        if released is not None:
+            # The chat is the AI's again: the hand back leaves the queue and closes the
+            # escalation and its ticket. A conversation outside the queue has none of that.
+            try:
+                await queue.hand_back(conn, client_id, released["id"], actor_user_id=None)
+            except queue.QueueError as exc:
+                if exc.code != "not_in_queue":
+                    raise
         await db.q.fetch_one("staff/use_action_by_id.sql", (client_id, action["id"]), conn=conn)
     return "AI resumed." if released else "Conversation was already released."
