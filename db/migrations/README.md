@@ -101,6 +101,27 @@ Reserved ranges (client growth program, 2026-10-27):
   person their own onboarding and offboarding with progress and only their own tasks (not custom
   processes about them), an assignee only their own tasks. It also adds the indexes
   `hr_processes_by_start` and `hr_employees_by_manager`.
+  0634 adds `hr_task_apply` (complete, skip, approve, send back, note, reschedule, reassign, close
+  anyway; the tenant's HR operations lock first, receipt in `hr_operations`, one event per action with
+  the real actor; approvals by the HR team or the person's manager, never by the person who completed
+  the step except the HR owner with no one else, flagged; a manager approves only when they can act,
+  else the HR team; an HR member never approves a step of a process about themself, with the same
+  exception; automatic checks on complete), the internal `hr_task_reminder_user` (who can act for a
+  person: enabled, not read-only membership and enabled account; also 0635's reminder rule),
+  `hr_process_tasks.assignee_overridden` (HR's reassignment survives a manager change) and
+  `sent_back_reason`, and `hr_task_rows_mine` again with `needs_my_approval`, `sent_back_reason`,
+  `mine`, `assignee_name` and `done_by_hr` (dropped and made again for the new columns). It
+  changes three 0632 functions: a person step whose named owner has left starts in the HR pool, a
+  leaver's own onboarding and custom processes are cancelled, and a leaver's open steps in other
+  people's processes go to the HR pool instead of being skipped.
+  0635 adds the task reminders: `hr_notifications_kind_check` also allows `task_assigned`,
+  `task_due_soon`, `task_due` and `task_overdue` (read from the live list, as 0611),
+  `hr_notifications.due_on` and `subject` (the plain line), `hr_tasks_due` (the reminders due on a
+  day, every tenant for the worker or the session's own: the assignee's console account, else one
+  row per HR team member; at most 5000), `hr_tasks_due_tenants` (the worker's tenant list, without
+  that cap), the internal uncapped `hr_tasks_due_all` both are built on, and `hr_task_reminder_put`
+  (the system's idempotent writer, called only by `csa.hr.reminders.emit`); `hr_task_rows_mine`
+  (same columns) also lists, for the HR team, the steps of a person whose reminders go to the HR pool.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
@@ -108,6 +129,11 @@ current list with `pg_get_constraintdef` and add to it, as 0531 does. A fixed li
 numbered below 0531 is repaired by 0531 on a fresh database, but on a database already past 0531
 that migration runs after 0531 is stamped and removes `booking_action`, with nothing failing until
 the first booking card. `tests/test_bookings_bot_schema.py` scans the migrations for this.
+
+Likewise, a migration that rebuilds `hr_notifications_kind_check` must read the live list with
+`pg_get_constraintdef` and add to it (the 0611 and 0635 method), never a fixed list: an Inbox-lane
+migration numbered 0620-0629 that merges after 0635 runs after it (the migrator fills gaps), and a
+fixed list would fail on the task reminder rows or drop the `task_*` kinds.
 
 Whoever merges a migration raises `EXPECTED_SCHEMA_VERSION` to the highest
 merged version. Lanes never reference each other's tables.

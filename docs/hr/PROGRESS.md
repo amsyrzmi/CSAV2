@@ -39,6 +39,13 @@ The browser scenario `test_hr_owner_personal_documents_and_leaving` in
 [`test_hr_access_browser.py`](../../tests/test_hr_access_browser.py) covers Personal, Documents,
 Mark as leaving and Undo.
 
+## HR processes (2026-11-16)
+
+Onboarding, offboarding and custom processes (migrations `0630`-`0635`, PR 1 merged, PR 2 on
+`feat/hr-processes-2`): templates, processes started from person changes, task actions and approvals,
+the task routes and, from `0635`, task reminders written by the worker's `hr_tasks_round` (every 900
+seconds) to Home's notifications. The full entries are the top entries of [../PROGRESS.md](../PROGRESS.md).
+
 ## HR chat retired (project 1b)
 
 The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace

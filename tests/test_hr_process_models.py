@@ -16,9 +16,12 @@ from uuid import uuid4
 import pytest
 from csa.hr.process_models import (
     AnchorDates,
+    MyTask,
+    ProcessCloseReceipt,
     ProcessEventAction,
     ProcessEventDetail,
     ProcessTask,
+    TaskReceipt,
     TemplateStep,
     TemplateStepOut,
     TemplateWarningCode,
@@ -119,14 +122,14 @@ def test_every_event_action_detail_key_warning_and_anchor_date_is_modelled() -> 
 def test_the_guard_fails_for_a_new_action_key_or_warning() -> None:
     synthetic = """
     INSERT INTO public.hr_process_events(client_id,process_id,task_id,actor,action,detail)
-    VALUES(p_client,pid,tid,p_actor,'task.approved',
-     jsonb_build_object('approver',a,'reason',r) || jsonb_build_object('second_person',false));
+    VALUES(p_client,pid,tid,p_actor,'task.escalated',
+     jsonb_build_object('escalated_to',a,'reason',r) || jsonb_build_object('second_person',false));
     SELECT jsonb_build_object('code','hr_template_step_without_owner','ordinal',s.ordinal);
     SELECT jsonb_build_object('start_date',e.start_date,'contract_end',e.contract_end);
     """
     assert missing(synthetic) == {
-        "actions": {"task.approved"},
-        "detail": {"approver", "second_person"},
+        "actions": {"task.escalated"},
+        "detail": {"escalated_to", "second_person"},
         "warnings": {"hr_template_step_without_owner"},
         "anchor_dates": {"contract_end"},
     }
@@ -149,12 +152,12 @@ def test_reads_tolerate_what_a_later_migration_adds() -> None:
             "event_id": str(uuid4()),
             "at": "2026-11-16T00:00:00+08:00",
             "actor": None,
-            "action": "task.approved",
+            "action": "task.escalated",
             "task_id": None,
             "detail": {"reason": "ok", "second_person": False},
         }
     )
-    assert event.action == "task.approved"
+    assert event.action == "task.escalated"
     assert event.detail.model_dump(by_alias=True, exclude_unset=True) == {
         "reason": "ok",
         "second_person": False,
@@ -257,6 +260,12 @@ def test_event_detail_returns_every_stored_value_as_it_is() -> None:
         "assignee_employee_id": 7,
         "due_on": "soon",
         "clamped": "yes",
+        "remark": "  wrong form,\nsee me  ",
+        "sent_back": "yes",
+        "awaiting_approval": 1,
+        "on_behalf": None,
+        "approver": "board",
+        "approved_without_second_person": "true",
         "note": "tab\there",
     }
     assert set(detail) - {"note"} == detail_names()
@@ -274,3 +283,53 @@ def test_event_detail_returns_every_stored_value_as_it_is() -> None:
     assert event.model_dump(mode="json", by_alias=True)["detail"]["reason"] == (
         "  sent back:\nthe form is unsigned  "
     )
+
+
+def test_my_tasks_and_the_task_receipts_are_what_the_latest_migration_returns() -> None:
+    """MyTask, TaskReceipt and ProcessCloseReceipt forbid unknown keys: a migration that changes
+    hr_task_rows_mine's columns or hr_task_apply's result fails here, not as a 500 on a read."""
+    text = process_migrations()
+    *_, columns = re.findall(
+        r"CREATE (?:OR REPLACE )?FUNCTION public\.hr_task_rows_mine\("
+        r".*?RETURNS TABLE\((.*?)\)\s*LANGUAGE",
+        text,
+        re.S,
+    )
+    assert {c.split()[0] for c in columns.split(",")} == set(MyTask.model_fields)
+    *_, apply = text.split("CREATE OR REPLACE FUNCTION public.hr_task_apply(")
+    results = [keys(a) for a in build_objects(apply) if "'status'" in a[::2]]
+    assert set(TaskReceipt.model_fields) in results
+    assert set(ProcessCloseReceipt.model_fields) in results
+
+
+def _my_task(**over: object) -> dict[str, object]:
+    return {
+        **dict.fromkeys(MyTask.model_fields),
+        "task_id": str(uuid4()),
+        "process_id": str(uuid4()),
+        "process_kind": "custom",
+        "employee_name": "Synthetic",
+        "ordinal": 1,
+        "title_en": "Synthetic",
+        "owner_role": "hr",
+        "required": True,
+        "status": "todo",
+        "version": 1,
+        "overdue": False,
+        "pool": True,
+        "needs_my_approval": False,
+        "mine": False,
+        **over,
+    }
+
+
+@pytest.mark.parametrize("field", ["description_en", "description_ms", "note", "sent_back_reason"])
+def test_a_my_tasks_row_keeps_line_breaks_and_refuses_other_controls(field: str) -> None:
+    text = "Synthetic: line one\nline two"
+    assert getattr(MyTask.model_validate(_my_task(**{field: text})), field) == text
+    for bad in ("tab\there", "nul\x00here", "lone\rreturn"):
+        with pytest.raises(ValidationError):
+            MyTask.model_validate(_my_task(**{field: bad}))
+    for single in ("title_en", "reference_note"):
+        with pytest.raises(ValidationError):
+            MyTask.model_validate(_my_task(**{single: "two\nlines"}))

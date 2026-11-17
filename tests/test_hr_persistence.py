@@ -1052,6 +1052,15 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
         "/console/v1/hr/processes/{process_id}",
         "/console/v1/hr/processes/{process_id}/cancel",
         "/console/v1/hr/people/{employee_id}/processes",
+        "/console/v1/hr/processes/{process_id}/close",
+        "/console/v1/hr/tasks/mine",
+        "/console/v1/hr/tasks/{task_id}/complete",
+        "/console/v1/hr/tasks/{task_id}/skip",
+        "/console/v1/hr/tasks/{task_id}/approve",
+        "/console/v1/hr/tasks/{task_id}/send-back",
+        "/console/v1/hr/tasks/{task_id}/note",
+        "/console/v1/hr/tasks/{task_id}/reschedule",
+        "/console/v1/hr/tasks/{task_id}/reassign",
     }
     assert schema["components"]["schemas"]["TrainingDraftInput"]["additionalProperties"] is False
 

@@ -83,9 +83,12 @@ TASK_OWN = TASK_BASE | {
     "completed_at",
     "note",
     "version",
+    "sent_back_reason",
+    "done_by_hr",
 }
 TASK_HR = TASK_OWN | {
     "assignee_employee_id",
+    "assignee_overridden",
     "due_offset_days",
     "due_overridden",
     "completed_by",
@@ -915,7 +918,7 @@ async def test_manager_person_and_assignee_views_omit_hidden_fields(world: HrWor
 
 def _raised_codes() -> set[str]:
     found: set[str] = set()
-    for number in ("0631", "0632", "0633"):
+    for number in ("0631", "0632", "0633", "0634"):
         [path] = MIGRATIONS.glob(f"{number}_*.sql")
         found |= set(re.findall(r"RAISE EXCEPTION '([a-z_]+)'", path.read_text()))
     return found
