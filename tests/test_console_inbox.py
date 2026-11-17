@@ -337,6 +337,13 @@ async def seed(
         await w.q(
             "UPDATE messages SET created_at=%s WHERE conversation_id=%s", message_at, conversation
         )
+    # The list orders by last_activity_at, which the message trigger keeps (0622) and the backfill
+    # sets from the newest message, else opened_at; a backdated seed sets it the same way.
+    activity = message_at if messages else opened_at
+    if activity is not None:
+        await w.q(
+            "UPDATE conversations SET last_activity_at=%s WHERE id=%s", activity, conversation
+        )
     return envelope, str(conversation)
 
 
@@ -518,19 +525,21 @@ async def test_takeover_replay_stale_turns_release_and_human_reply(sessions: Ses
     first = await w.mutate(w.admin, reply_url, reply)
     assert first.status_code == 202 and first.json()["queued"], first.text
     assert (await w.mutate(w.admin, reply_url, reply)).json() == first.json()
+    # A person's reply moves the queue item, so it raises the version (1 -> 2).
+    assert first.json()["conversation"]["inbox_version"] == 2
     reply["body"] = "Changed"
     assert (await w.mutate(w.admin, reply_url, reply)).status_code == 409
     assert (
         await w.mutate(
             w.admin,
             path(w, f"/conversations/{conversation}/release"),
-            {"request_key": str(uuid4()), "expected_version": 0},
+            {"request_key": str(uuid4()), "expected_version": 1},
         )
     ).status_code == 409
     released = await w.mutate(
         w.admin,
         path(w, f"/conversations/{conversation}/release"),
-        {"request_key": str(uuid4()), "expected_version": 1},
+        {"request_key": str(uuid4()), "expected_version": 2},
     )
     assert released.status_code == 200 and not released.json()["conversation"]["human_muted"]
     await PostgresTurnDependencies(w.pool).fail_safe(env, context, "synthetic-error")
@@ -872,6 +881,11 @@ async def test_list_orders_by_last_message_with_stable_cursor(sessions: SessionW
     # A new message on the oldest conversation moves it first.
     await w.q(
         "UPDATE messages SET created_at=%s WHERE conversation_id=%s",
+        now - timedelta(minutes=1),
+        oldest,
+    )
+    await w.q(
+        "UPDATE conversations SET last_activity_at=%s WHERE id=%s",
         now - timedelta(minutes=1),
         oldest,
     )

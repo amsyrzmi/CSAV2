@@ -21,6 +21,7 @@ from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
 from csa.decide.grounding import ungrounded
+from csa.inbox_queue import transitions as queue
 from csa.notify.notifier import notify
 from csa.staff.ownership import automation_allowed, lock_conversation, replies_off
 from csa.turn.texts import followup_text, resolve_language
@@ -86,6 +87,9 @@ async def hold_reply(
     )
     if row is None:
         raise RuntimeError("approval_not_created")
+    if row["status"] == "pending":
+        # A replay after the decision must not bring the item back to the queue.
+        await queue.enter(conn, client_id, conversation_id, reason="held_reply")
     await notify(
         conn,
         client_id=client_id,
@@ -99,6 +103,17 @@ async def hold_reply(
         dedupe_key=f"reply:{trace_id}",
     )
     return int(row["id"])
+
+
+def _console_user(actor: str) -> UUID | None:
+    """The console user of an actor ``console_user:<uuid>``; None for any other actor."""
+    kind, _, value = actor.partition(":")
+    if kind != "console_user":
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
 
 
 class ReplyDecisionResult(BaseModel):
@@ -286,6 +301,9 @@ async def _settle(
     )
     if decided is None:
         return False
+    if outcome in {"rejected", "expired"}:
+        # The customer got no answer; decided before any follow-up, and whether or not one is sent.
+        await queue.held_reply_closed(conn, client_id, approval["conversation_id"])
     await db.q.execute(
         "approval/insert_audit.sql",
         (
@@ -332,6 +350,9 @@ async def _settle(
         return False
     if outcome in {"approved", "edited"}:
         await db.q.execute("staff/set_reviewed.sql", (client_id, message["id"]), conn=conn)
+        await queue.replied(
+            conn, client_id, approval["conversation_id"], user_id=_console_user(actor)
+        )
     ui = approval["ui"] if send_draft else {}
     if ui.get("confirmation") or ui.get("options"):
         await db.q.fetch_one(

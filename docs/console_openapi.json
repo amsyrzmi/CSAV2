@@ -4086,6 +4086,161 @@
         "title": "BookingWalkInIn",
         "type": "object"
       },
+      "BulkAction": {
+        "additionalProperties": false,
+        "description": "One action on up to 50 conversations. `seen_at` is when the client read the list:\nresolve and snooze refuse an item whose customer wrote after it (`customer_wrote`).",
+        "properties": {
+          "action": {
+            "enum": [
+              "claim",
+              "unclaim",
+              "assign",
+              "snooze",
+              "resolve",
+              "priority",
+              "topic"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Ids",
+            "type": "array"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high",
+                  "urgent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "seen_at": {
+            "format": "date-time",
+            "title": "Seen At",
+            "type": "string"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "enum": [
+                  "purchase",
+                  "question",
+                  "complaint",
+                  "payment",
+                  "booking",
+                  "subscription",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "request_key",
+          "action",
+          "ids",
+          "seen_at"
+        ],
+        "title": "BulkAction",
+        "type": "object"
+      },
+      "BulkItemResult": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "already_handled",
+              "held_reply_pending",
+              "customer_wrote",
+              "not_found",
+              "not_in_queue",
+              "not_allowed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome"
+        ],
+        "title": "BulkItemResult",
+        "type": "object"
+      },
+      "BulkResult": {
+        "additionalProperties": false,
+        "description": "Per item, in the request's order. Also the bulk request's stored receipt.",
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BulkItemResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "BulkResult",
+        "type": "object"
+      },
       "BusinessListing": {
         "additionalProperties": false,
         "properties": {
@@ -7873,6 +8028,64 @@
         "title": "InboxApprovalPage",
         "type": "object"
       },
+      "InboxAssignee": {
+        "additionalProperties": false,
+        "description": "A person a conversation can be assigned to. No address is ever sent.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "tenant_admin",
+              "tenant_staff"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "role"
+        ],
+        "title": "InboxAssignee",
+        "type": "object"
+      },
+      "InboxAssigneeRef": {
+        "additionalProperties": false,
+        "description": "Who holds a queue item. The name is cosmetic: null when it cannot be read.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "InboxAssigneeRef",
+        "type": "object"
+      },
       "InboxContact": {
         "additionalProperties": false,
         "properties": {
@@ -7941,6 +8154,7 @@
       },
       "InboxConversation": {
         "additionalProperties": false,
+        "description": "A customer conversation. Action receipts persist this shape: the queue fields are ids,\nstates and times only, never a name (the list and detail add names in `InboxConversationView`).\nThe queue fields have defaults so receipts stored before they existed still replay.",
         "properties": {
           "ai_muted_until": {
             "anyOf": [
@@ -7954,6 +8168,18 @@
             ],
             "title": "Ai Muted Until"
           },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
           "channel": {
             "enum": [
               "telegram",
@@ -7961,6 +8187,18 @@
             ],
             "title": "Channel",
             "type": "string"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
           },
           "contact": {
             "anyOf": [
@@ -7971,6 +8209,18 @@
                 "type": "null"
               }
             ]
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
           },
           "handoff_note": {
             "anyOf": [
@@ -7995,6 +8245,18 @@
             "title": "Inbox Version",
             "type": "integer"
           },
+          "last_customer_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Customer At"
+          },
           "last_message": {
             "anyOf": [
               {
@@ -8004,6 +8266,30 @@
                 "type": "null"
               }
             ]
+          },
+          "last_staff_reply_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Staff Reply At"
+          },
+          "needs_staff_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Staff Since"
           },
           "opened_at": {
             "format": "date-time",
@@ -8026,9 +8312,81 @@
             "title": "Pending Approvals",
             "type": "integer"
           },
+          "priority": {
+            "default": "normal",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "queue_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "escalation",
+                  "held_reply",
+                  "customer_message",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Reason"
+          },
+          "queue_status": {
+            "default": "bot",
+            "enum": [
+              "bot",
+              "needs_staff",
+              "waiting_customer",
+              "snoozed",
+              "resolved"
+            ],
+            "title": "Queue Status",
+            "type": "string"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "enum": [
+                  "purchase",
+                  "question",
+                  "complaint",
+                  "payment",
+                  "booking",
+                  "subscription",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
           }
         },
         "required": [
@@ -8047,9 +8405,17 @@
       "InboxConversationPage": {
         "additionalProperties": false,
         "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/InboxQueueCounts"
+          },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/InboxConversation"
+              "$ref": "#/components/schemas/InboxConversationView"
             },
             "title": "Items",
             "type": "array"
@@ -8062,7 +8428,6 @@
           "next_cursor": {
             "anyOf": [
               {
-                "format": "uuid",
                 "type": "string"
               },
               {
@@ -8074,9 +8439,429 @@
         },
         "required": [
           "items",
-          "next_cursor"
+          "next_cursor",
+          "counts",
+          "as_of"
         ],
         "title": "InboxConversationPage",
+        "type": "object"
+      },
+      "InboxConversationView": {
+        "additionalProperties": false,
+        "description": "A list row or the detail read: the conversation and who holds it, by name. Never stored.",
+        "properties": {
+          "ai_muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Muted Until"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxAssigneeRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assignee_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Id"
+          },
+          "channel": {
+            "enum": [
+              "telegram",
+              "whatsapp"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxContact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "handoff_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxHandoffNote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "human_muted": {
+            "title": "Human Muted",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "inbox_version": {
+            "title": "Inbox Version",
+            "type": "integer"
+          },
+          "last_customer_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Customer At"
+          },
+          "last_message": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxLastMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_staff_reply_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Staff Reply At"
+          },
+          "needs_staff_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Staff Since"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "owned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owned By"
+          },
+          "pending_approvals": {
+            "default": 0,
+            "title": "Pending Approvals",
+            "type": "integer"
+          },
+          "priority": {
+            "default": "normal",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "queue_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "escalation",
+                  "held_reply",
+                  "customer_message",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Reason"
+          },
+          "queue_status": {
+            "default": "bot",
+            "enum": [
+              "bot",
+              "needs_staff",
+              "waiting_customer",
+              "snoozed",
+              "resolved"
+            ],
+            "title": "Queue Status",
+            "type": "string"
+          },
+          "snoozed_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snoozed Until"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "enum": [
+                  "purchase",
+                  "question",
+                  "complaint",
+                  "payment",
+                  "booking",
+                  "subscription",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "status",
+          "owned_by",
+          "ai_muted_until",
+          "human_muted",
+          "inbox_version",
+          "opened_at"
+        ],
+        "title": "InboxConversationView",
+        "type": "object"
+      },
+      "InboxFilters": {
+        "additionalProperties": false,
+        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first\nwhen every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "enum": [
+                  "me",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
+          "channel": {
+            "anyOf": [
+              {
+                "enum": [
+                  "telegram",
+                  "whatsapp"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "activity",
+                  "waiting",
+                  "due",
+                  "priority"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "overdue": {
+            "default": false,
+            "title": "Overdue",
+            "type": "boolean"
+          },
+          "priority_min": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high",
+                  "urgent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Min"
+          },
+          "reason": {
+            "default": [],
+            "items": {
+              "enum": [
+                "escalation",
+                "held_reply",
+                "customer_message",
+                "manual"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Reason",
+            "type": "array"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "enum": [
+                  "known",
+                  "new"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender"
+          },
+          "state": {
+            "default": [],
+            "items": {
+              "enum": [
+                "bot",
+                "needs_staff",
+                "waiting_customer",
+                "snoozed",
+                "resolved"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "State",
+            "type": "array"
+          },
+          "topic": {
+            "default": [],
+            "items": {
+              "enum": [
+                "purchase",
+                "question",
+                "complaint",
+                "payment",
+                "booking",
+                "subscription",
+                "other"
+              ],
+              "type": "string"
+            },
+            "maxItems": 7,
+            "title": "Topic",
+            "type": "array"
+          },
+          "waiting_over": {
+            "anyOf": [
+              {
+                "maximum": 525600.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Over"
+          }
+        },
+        "title": "InboxFilters",
         "type": "object"
       },
       "InboxHandoffNote": {
@@ -8276,6 +9061,59 @@
         "title": "InboxPicture",
         "type": "object"
       },
+      "InboxQueueCounts": {
+        "additionalProperties": false,
+        "description": "The queue tabs' counts for the company; `mine` is the person asking.",
+        "properties": {
+          "mine": {
+            "title": "Mine",
+            "type": "integer"
+          },
+          "needs_us": {
+            "title": "Needs Us",
+            "type": "integer"
+          },
+          "oldest_waiting_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Waiting At"
+          },
+          "overdue": {
+            "title": "Overdue",
+            "type": "integer"
+          },
+          "snoozed": {
+            "title": "Snoozed",
+            "type": "integer"
+          },
+          "unassigned": {
+            "title": "Unassigned",
+            "type": "integer"
+          },
+          "waiting_customer": {
+            "title": "Waiting Customer",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "needs_us",
+          "mine",
+          "unassigned",
+          "overdue",
+          "waiting_customer",
+          "snoozed",
+          "oldest_waiting_at"
+        ],
+        "title": "InboxQueueCounts",
+        "type": "object"
+      },
       "InboxResult": {
         "additionalProperties": false,
         "properties": {
@@ -8338,6 +9176,247 @@
           }
         },
         "title": "InboxResult",
+        "type": "object"
+      },
+      "InboxSavedView": {
+        "additionalProperties": false,
+        "description": "A saved view as the person reads it back.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/InboxFilters"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "filters",
+          "created_at"
+        ],
+        "title": "InboxSavedView",
+        "type": "object"
+      },
+      "InboxSavedViewChange": {
+        "additionalProperties": false,
+        "description": "A rename, a replacement of the filters, or both; at least one of the two.",
+        "properties": {
+          "filters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxFilters"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "InboxSavedViewChange",
+        "type": "object"
+      },
+      "InboxSavedViewIn": {
+        "additionalProperties": false,
+        "description": "A new view: a name (1 to 60 characters once trimmed) and the filters to keep.",
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/InboxFilters"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "filters"
+        ],
+        "title": "InboxSavedViewIn",
+        "type": "object"
+      },
+      "InboxSettingsIn": {
+        "additionalProperties": false,
+        "description": "Every setting, replaced as a whole. `version` is the one read: 0 while nothing has been\nsaved, then the number the last save returned. 0 turns the last three settings off.",
+        "properties": {
+          "follow_up_hours": {
+            "maximum": 720.0,
+            "minimum": 0.0,
+            "title": "Follow Up Hours",
+            "type": "integer"
+          },
+          "handback_prompt_hours": {
+            "maximum": 720.0,
+            "minimum": 0.0,
+            "title": "Handback Prompt Hours",
+            "type": "integer"
+          },
+          "max_repeats": {
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Max Repeats",
+            "type": "integer"
+          },
+          "repeat_minutes": {
+            "maximum": 1440.0,
+            "minimum": 15.0,
+            "title": "Repeat Minutes",
+            "type": "integer"
+          },
+          "stale_claim_hours": {
+            "maximum": 168.0,
+            "minimum": 0.0,
+            "title": "Stale Claim Hours",
+            "type": "integer"
+          },
+          "target_high_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target High Min",
+            "type": "integer"
+          },
+          "target_low_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Low Min",
+            "type": "integer"
+          },
+          "target_normal_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Normal Min",
+            "type": "integer"
+          },
+          "target_urgent_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Urgent Min",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_urgent_min",
+          "target_high_min",
+          "target_normal_min",
+          "target_low_min",
+          "repeat_minutes",
+          "max_repeats",
+          "follow_up_hours",
+          "stale_claim_hours",
+          "handback_prompt_hours",
+          "version"
+        ],
+        "title": "InboxSettingsIn",
+        "type": "object"
+      },
+      "InboxSettingsOut": {
+        "additionalProperties": false,
+        "description": "The settings as stored, or the defaults with `version` 0 while none are saved.",
+        "properties": {
+          "follow_up_hours": {
+            "maximum": 720.0,
+            "minimum": 0.0,
+            "title": "Follow Up Hours",
+            "type": "integer"
+          },
+          "handback_prompt_hours": {
+            "maximum": 720.0,
+            "minimum": 0.0,
+            "title": "Handback Prompt Hours",
+            "type": "integer"
+          },
+          "max_repeats": {
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Max Repeats",
+            "type": "integer"
+          },
+          "repeat_minutes": {
+            "maximum": 1440.0,
+            "minimum": 15.0,
+            "title": "Repeat Minutes",
+            "type": "integer"
+          },
+          "stale_claim_hours": {
+            "maximum": 168.0,
+            "minimum": 0.0,
+            "title": "Stale Claim Hours",
+            "type": "integer"
+          },
+          "target_high_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target High Min",
+            "type": "integer"
+          },
+          "target_low_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Low Min",
+            "type": "integer"
+          },
+          "target_normal_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Normal Min",
+            "type": "integer"
+          },
+          "target_urgent_min": {
+            "maximum": 10080.0,
+            "minimum": 5.0,
+            "title": "Target Urgent Min",
+            "type": "integer"
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_urgent_min",
+          "target_high_min",
+          "target_normal_min",
+          "target_low_min",
+          "repeat_minutes",
+          "max_repeats",
+          "follow_up_hours",
+          "stale_claim_hours",
+          "handback_prompt_hours",
+          "version"
+        ],
+        "title": "InboxSettingsOut",
         "type": "object"
       },
       "InterviewArrange": {
@@ -15950,6 +17029,194 @@
           "proposal"
         ],
         "title": "ProposalResult",
+        "type": "object"
+      },
+      "QueueAssign": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee_id": {
+            "format": "uuid",
+            "title": "Assignee Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version",
+          "assignee_id"
+        ],
+        "title": "QueueAssign",
+        "type": "object"
+      },
+      "QueueClaim": {
+        "additionalProperties": false,
+        "description": "Claim the item, or release the claim.",
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version"
+        ],
+        "title": "QueueClaim",
+        "type": "object"
+      },
+      "QueuePrioritySet": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Priority",
+            "type": "string"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version",
+          "priority"
+        ],
+        "title": "QueuePrioritySet",
+        "type": "object"
+      },
+      "QueueResolve": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "seen_customer_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seen Customer At"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version"
+        ],
+        "title": "QueueResolve",
+        "type": "object"
+      },
+      "QueueSnooze": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "seen_customer_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seen Customer At"
+          },
+          "until": {
+            "format": "date-time",
+            "title": "Until",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version",
+          "until"
+        ],
+        "title": "QueueSnooze",
+        "type": "object"
+      },
+      "QueueTopicSet": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "request_key": {
+            "format": "uuid",
+            "title": "Request Key",
+            "type": "string"
+          },
+          "topic": {
+            "enum": [
+              "purchase",
+              "question",
+              "complaint",
+              "payment",
+              "booking",
+              "subscription",
+              "other"
+            ],
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_key",
+          "expected_version",
+          "topic"
+        ],
+        "title": "QueueTopicSet",
         "type": "object"
       },
       "QueuedTurn": {
@@ -35093,8 +36360,153 @@
         "summary": "Decide"
       }
     },
+    "/console/v1/inbox/assignees": {
+      "get": {
+        "description": "Enabled administrators and staff of the company, by display name; no addresses.",
+        "operationId": "assignees_console_v1_inbox_assignees_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InboxAssignee"
+                  },
+                  "title": "Response Assignees Console V1 Inbox Assignees Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assignees"
+      }
+    },
+    "/console/v1/inbox/bulk": {
+      "post": {
+        "description": "One action on 1 to 50 distinct conversations; 200 with an outcome per item, in the\nrequest's order. Replayable per `request_key`; assign is for administrators only.\n`not_allowed` marks an item whose claim tenant staff may not release or take over.",
+        "operationId": "bulk_console_v1_inbox_bulk_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bulk"
+      }
+    },
     "/console/v1/inbox/conversations": {
       "get": {
+        "description": "The work queue: every filter combines with AND; `before` is the `next_cursor` of the\nprevious page (a bare conversation id is still read as an activity cursor).",
         "operationId": "list_conversations_console_v1_inbox_conversations_get",
         "parameters": [
           {
@@ -35104,7 +36516,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "format": "uuid",
+                  "maxLength": 200,
                   "type": "string"
                 },
                 {
@@ -35191,6 +36603,181 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "bot",
+                      "needs_staff",
+                      "waiting_customer",
+                      "snoozed",
+                      "resolved"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "assignee",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "me",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Assignee"
+            }
+          },
+          {
+            "in": "query",
+            "name": "priority_min",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "low",
+                    "normal",
+                    "high",
+                    "urgent"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Priority Min"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "escalation",
+                      "held_reply",
+                      "customer_message",
+                      "manual"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          {
+            "in": "query",
+            "name": "topic",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "purchase",
+                      "question",
+                      "complaint",
+                      "payment",
+                      "booking",
+                      "subscription",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Topic"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overdue",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Overdue",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "waiting_over",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 525600,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Waiting Over"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "activity",
+                    "waiting",
+                    "due",
+                    "priority"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Order"
             }
           },
           {
@@ -35307,7 +36894,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InboxConversation"
+                  "$ref": "#/components/schemas/InboxConversationView"
                 }
               }
             },
@@ -35428,6 +37015,601 @@
           }
         },
         "summary": "Messages"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/assign": {
+      "post": {
+        "description": "Give the item to an enabled admin or staff member (422 otherwise). Administrators\nonly (403 for tenant staff); 503 when the member directory is unavailable. A replay of\nan applied assign returns its stored receipt without reading the directory.",
+        "operationId": "queue_assign_console_v1_inbox_conversations__conversation_id__queue_assign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueAssign"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Assign"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/claim": {
+      "post": {
+        "description": "Take the item. Taking over someone else's claim is for administrators (403 for\ntenant staff; the event records the previous holder); claiming an unclaimed item or one's\nown again is open to every member.",
+        "operationId": "queue_claim_console_v1_inbox_conversations__conversation_id__queue_claim_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Claim"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/priority": {
+      "post": {
+        "description": "Set the priority; a waiting item's due time follows from its clock.",
+        "operationId": "queue_priority_console_v1_inbox_conversations__conversation_id__queue_priority_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueuePrioritySet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Priority"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/resolve": {
+      "post": {
+        "description": "End the item and hand the conversation back to the bot. 409 `held_reply_pending`\nwhile a held reply waits; 409 `customer_wrote` when the customer wrote after\n`seen_customer_at`.",
+        "operationId": "queue_resolve_console_v1_inbox_conversations__conversation_id__queue_resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueResolve"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Resolve"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/snooze": {
+      "post": {
+        "description": "Hide the item until `until` (future, at most 60 days ahead: 422 `until_in_past` or\n`until_too_far`). 409 `held_reply_pending` or `customer_wrote` as for resolve.",
+        "operationId": "queue_snooze_console_v1_inbox_conversations__conversation_id__queue_snooze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueSnooze"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Snooze"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/topic": {
+      "post": {
+        "description": "Set the topic.",
+        "operationId": "queue_topic_console_v1_inbox_conversations__conversation_id__queue_topic_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueTopicSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Topic"
+      }
+    },
+    "/console/v1/inbox/conversations/{conversation_id}/queue/unclaim": {
+      "post": {
+        "description": "Release the claim. Tenant staff release only their own (403 otherwise).",
+        "operationId": "queue_unclaim_console_v1_inbox_conversations__conversation_id__queue_unclaim_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Unclaim"
       }
     },
     "/console/v1/inbox/conversations/{conversation_id}/release": {
@@ -35680,6 +37862,502 @@
           }
         },
         "summary": "Takeover"
+      }
+    },
+    "/console/v1/inbox/queue/counts": {
+      "get": {
+        "description": "The queue tabs' counts; `mine` is the person asking.",
+        "operationId": "queue_counts_console_v1_inbox_queue_counts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxQueueCounts"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Queue Counts"
+      }
+    },
+    "/console/v1/inbox/settings": {
+      "get": {
+        "description": "Response targets and reminder knobs; the defaults with version 0 until a first save.",
+        "operationId": "inbox_settings_console_v1_inbox_settings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inbox Settings"
+      },
+      "put": {
+        "description": "Replace every setting; 409 `version_conflict` when `version` is not the one stored.\nItems already waiting keep their due time; only later arrivals use the new targets.",
+        "operationId": "replace_inbox_settings_console_v1_inbox_settings_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Inbox Settings"
+      }
+    },
+    "/console/v1/inbox/views": {
+      "get": {
+        "description": "The asking person's saved views in this company, newest first.",
+        "operationId": "saved_views_console_v1_inbox_views_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InboxSavedView"
+                  },
+                  "title": "Response Saved Views Console V1 Inbox Views Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Saved Views"
+      },
+      "post": {
+        "description": "Save the filters under a name; 409 for a name the person already uses (ignoring\ncase) or when they already have 20 views.",
+        "operationId": "create_saved_view_console_v1_inbox_views_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxSavedViewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxSavedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Saved View"
+      }
+    },
+    "/console/v1/inbox/views/{view_id}": {
+      "delete": {
+        "description": "Delete one of the asking person's views.",
+        "operationId": "delete_saved_view_console_v1_inbox_views__view_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Saved View"
+      },
+      "put": {
+        "description": "Rename the view, replace its filters, or both; the create's name rule applies.",
+        "operationId": "change_saved_view_console_v1_inbox_views__view_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxSavedViewChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxSavedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Saved View"
       }
     },
     "/console/v1/invites/accept": {

@@ -1,0 +1,270 @@
+-- Customer Inbox refinement, part 1a: the queue state on public.conversations (design
+--   docs/superpowers/specs/2026-11-16-inbox-refinement-design.md, sections 5.1, 5.2 and 6.5).
+-- What it adds:
+--   queue_status      text NOT NULL DEFAULT 'bot': bot, needs_staff, waiting_customer, snoozed, resolved.
+--   queue_reason      why the item needs a person: escalation, held_reply, customer_message, manual.
+--   topic             purchase, question, complaint, payment, booking, subscription, other (backfill
+--                     leaves it NULL; the code that enters the queue sets it).
+--   priority          text NOT NULL DEFAULT 'normal': low, normal, high, urgent.
+--   assignee_user_id  the console user holding the item (foreign key to console_users), claimed_at.
+--   needs_staff_since, due_at, snoozed_until, resolved_at, last_customer_at, last_staff_reply_at.
+--   last_activity_at  timestamptz NOT NULL DEFAULT now(): last message time, else opened_at.
+--   One check per enum column and conversations_needs_staff_complete_ck: a needs_staff row always has
+--   queue_reason, needs_staff_since and due_at. Every constraint is added NOT VALID, then validated
+--   after the backfill.
+--   Indexes (design 6.5): last activity; due time, since time and the two staff-clock lists as partial
+--   indexes (so the bot and resolved rows, the large majority, never enter them); the snooze and
+--   waiting-on-customer lists; the Waiting on customer and Snoozed tabs in activity order, one
+--   index per state (their default order: without them the planner sorts a partial index or
+--   filter-scans every row of the company).
+--   No index for the contact search: the app role reads contacts under row security and the ILIKE
+--   operators are not leakproof, so the planner could not use a trigram index for it. Search is a
+--   bounded per-company scan on the client_id index (design 6.5).
+--   public.inbox_queue_backfill(p_client uuid DEFAULT NULL) RETURNS integer: sets the new columns from
+--   the existing messages, escalations and approvals for conversations still in the default queue
+--   state (queue_status 'bot', no reason, no claim) and returns how many it changed. Called once
+--   below for every company; safe to call again (it only changes a row whose values differ, and a row
+--   that moved out of 'bot' is not looked at). Migration only: no role but the owner may run it,
+--   and nothing may call or schedule it. It never touches conversations of other channels
+--   than telegram and whatsapp (the sandbox) or console chat conversations, as the Inbox list
+--   (db/sql/inbox/list_queue_*.sql) excludes them: those keep queue_status 'bot' for good.
+-- Backfill rules (one CASE each below):
+--   An escalation counts when it is 'open', at most 30 days old and no person's reply came after it.
+--   (Nothing writes escalations.status before this project, so every old escalation is still
+--   'open': the status alone says nothing.)
+--   needs_staff, reason 'escalation', when the conversation is held now (status 'escalated' or
+--   owned by a person) and has a counted escalation: since = the oldest counted escalation's
+--   created_at, priority = the highest of the counted escalations. An AI-owned conversation with
+--   status 'open' was released or its mute ended: it stays 'bot' (reachable in All).
+--   Else needs_staff, reason 'held_reply', for a live pending approval at most 30 days old
+--   (since = its created_at).
+--   Else needs_staff, reason 'customer_message', for a human-owned conversation whose newest
+--   message is inbound and at most 30 days old (since = that message's time).
+--   Reason precedence: escalation, held_reply, customer_message; their priority is 'normal'.
+--   waiting_customer when a person owns the conversation, the newest message is a person's reply
+--   and that reply is at most 30 days old.
+--   Everything else stays 'bot', including older escalations and threads waiting longer than
+--   30 days (a later customer message brings such a person-owned thread into the queue: 0622).
+--   due_at = needs_staff_since + 240 minutes for every priority. This is a placeholder: the company
+--   response targets (inbox_settings, 0621) do not exist yet and 240 minutes is the 'normal' default.
+--   The rollout job of the reminder work gives these items a fresh clock.
+-- last_staff_reply_at is the newest outbound message by a person (author 'human_support') or an
+--   approved or edited held reply (send_authority 'reviewed'); last_customer_at the newest message by
+--   the contact.
+-- Backfill timing: it reads three tables and rewrites the conversations still in the default state,
+--   once, at migration time. The ADD COLUMN with now() as default is a fast default (no table
+--   rewrite). Indexes are built without CONCURRENTLY, as the migration rules require. The runner
+--   applies the file in one transaction, so the lock taken by the ALTER TABLE covers the backfill,
+--   the validations and the index builds.
+-- Safe to run twice: ADD COLUMN IF NOT EXISTS, constraints added only when missing, CREATE INDEX IF
+--   NOT EXISTS, CREATE OR REPLACE FUNCTION, and the backfill finds nothing left to change.
+-- Rollback: DROP FUNCTION public.inbox_queue_backfill(uuid); drop the new indexes by name:
+--     conversations_activity_idx, conversations_queue_due_idx, conversations_queue_mine_idx,
+--     conversations_queue_since_idx, conversations_queue_snoozed_idx,
+--     conversations_queue_waiting_idx, conversations_queue_snoozed_activity_idx,
+--     conversations_queue_waiting_activity_idx;
+--   ALTER TABLE public.conversations DROP COLUMN for each column above (the constraints go with
+--   them); then delete the schema_migrations row for 0620, or the runner thinks it is still applied.
+
+ALTER TABLE public.conversations
+    ADD COLUMN IF NOT EXISTS queue_status text NOT NULL DEFAULT 'bot',
+    ADD COLUMN IF NOT EXISTS queue_reason text,
+    ADD COLUMN IF NOT EXISTS topic text,
+    ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'normal',
+    ADD COLUMN IF NOT EXISTS assignee_user_id uuid,
+    ADD COLUMN IF NOT EXISTS claimed_at timestamptz,
+    ADD COLUMN IF NOT EXISTS needs_staff_since timestamptz,
+    ADD COLUMN IF NOT EXISTS due_at timestamptz,
+    ADD COLUMN IF NOT EXISTS snoozed_until timestamptz,
+    ADD COLUMN IF NOT EXISTS resolved_at timestamptz,
+    ADD COLUMN IF NOT EXISTS last_activity_at timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS last_customer_at timestamptz,
+    ADD COLUMN IF NOT EXISTS last_staff_reply_at timestamptz;
+
+DO $$
+DECLARE
+  c record;
+BEGIN
+  FOR c IN
+    SELECT * FROM (VALUES
+      ('conversations_queue_status_check',
+       'CHECK (queue_status IN (''bot'', ''needs_staff'', ''waiting_customer'', ''snoozed'', ''resolved''))'),
+      ('conversations_queue_reason_check',
+       'CHECK (queue_reason IN (''escalation'', ''held_reply'', ''customer_message'', ''manual''))'),
+      ('conversations_topic_check',
+       'CHECK (topic IN (''purchase'', ''question'', ''complaint'', ''payment'', ''booking'','
+       ' ''subscription'', ''other''))'),
+      ('conversations_priority_check',
+       'CHECK (priority IN (''low'', ''normal'', ''high'', ''urgent''))'),
+      ('conversations_needs_staff_complete_ck',
+       'CHECK (queue_status <> ''needs_staff'''
+       ' OR (queue_reason IS NOT NULL AND needs_staff_since IS NOT NULL AND due_at IS NOT NULL))'),
+      ('conversations_assignee_user_id_fkey',
+       'FOREIGN KEY (assignee_user_id) REFERENCES public.console_users (id)')
+    ) AS v(name, def)
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_constraint
+       WHERE conrelid = 'public.conversations'::regclass AND conname = c.name
+    ) THEN
+      EXECUTE format('ALTER TABLE public.conversations ADD CONSTRAINT %I %s NOT VALID', c.name, c.def);
+    END IF;
+  END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.inbox_queue_backfill(p_client uuid DEFAULT NULL)
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  changed integer;
+BEGIN
+  WITH facts AS (
+    SELECT c.id,
+           c.opened_at,
+           (c.owned_by = 'human_support') AS human_owned,
+           (c.status = 'escalated' OR c.owned_by = 'human_support') AS held,
+           (c.channel IN ('telegram', 'whatsapp')
+             AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
+             AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
+                              WHERE p.contact_id = c.contact_id)) AS in_queue_scope,
+           lm.created_at AS newest_at,
+           (lm.direction = 'inbound') AS newest_is_inbound,
+           (lm.direction = 'outbound'
+             AND (lm.author = 'human_support' OR lm.send_authority = 'reviewed')) AS newest_is_staff,
+           lc.at AS last_customer_at,
+           ls.at AS last_staff_reply_at,
+           esc.since AS escalation_since,
+           esc.priority AS escalation_priority,
+           ap.since AS approval_since
+      FROM public.conversations c
+      LEFT JOIN LATERAL (
+        SELECT m.created_at, m.direction, m.author, m.send_authority
+          FROM public.messages m
+         WHERE m.client_id = c.client_id AND m.conversation_id = c.id
+         ORDER BY m.created_at DESC, m.id DESC
+         LIMIT 1
+      ) lm ON true
+      CROSS JOIN LATERAL (
+        SELECT max(m.created_at) AS at
+          FROM public.messages m
+         WHERE m.client_id = c.client_id AND m.conversation_id = c.id
+           AND m.direction = 'inbound' AND m.author = 'contact'
+      ) lc
+      CROSS JOIN LATERAL (
+        SELECT max(m.created_at) AS at
+          FROM public.messages m
+         WHERE m.client_id = c.client_id AND m.conversation_id = c.id
+           AND m.direction = 'outbound'
+           AND (m.author = 'human_support' OR m.send_authority = 'reviewed')
+      ) ls
+      -- The counted escalations: open, at most 30 days old, no person's reply after them.
+      CROSS JOIN LATERAL (
+        SELECT min(e.created_at) AS since,
+               (array_agg(e.priority ORDER BY CASE e.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3
+                                                              WHEN 'normal' THEN 2 ELSE 1 END DESC))[1]
+                 AS priority
+          FROM public.escalations e
+         WHERE e.client_id = c.client_id AND e.conversation_id = c.id AND e.status = 'open'
+           AND e.created_at >= now() - interval '30 days'
+           AND (ls.at IS NULL OR e.created_at > ls.at)
+      ) esc
+      CROSS JOIN LATERAL (
+        SELECT min(a.created_at) AS since
+          FROM public.approvals a
+         WHERE a.client_id = c.client_id AND a.conversation_id = c.id
+           AND a.status = 'pending' AND a.expires_at > now()
+           AND a.created_at >= now() - interval '30 days'
+      ) ap
+     WHERE c.queue_status = 'bot' AND c.queue_reason IS NULL AND c.claimed_at IS NULL
+       AND (p_client IS NULL OR c.client_id = p_client)
+  ), decided AS (
+    SELECT f.*,
+           CASE WHEN f.in_queue_scope AND f.held AND f.escalation_since IS NOT NULL THEN 'escalation'
+                WHEN f.in_queue_scope AND f.approval_since IS NOT NULL THEN 'held_reply'
+                WHEN f.in_queue_scope AND f.human_owned AND f.newest_is_inbound
+                     AND f.newest_at >= now() - interval '30 days' THEN 'customer_message'
+           END AS reason
+      FROM facts f
+  ), planned AS (
+    SELECT d.id,
+           coalesce(d.newest_at, d.opened_at) AS last_activity_at,
+           d.last_customer_at,
+           d.last_staff_reply_at,
+           d.reason,
+           CASE d.reason WHEN 'escalation' THEN d.escalation_since
+                         WHEN 'held_reply' THEN d.approval_since
+                         WHEN 'customer_message' THEN d.newest_at
+           END AS since,
+           CASE WHEN d.reason IS NOT NULL THEN 'needs_staff'
+                WHEN d.in_queue_scope AND d.human_owned AND d.newest_is_staff
+                     AND d.last_staff_reply_at >= now() - interval '30 days' THEN 'waiting_customer'
+                ELSE 'bot'
+           END AS status,
+           CASE WHEN d.reason = 'escalation' THEN d.escalation_priority
+                WHEN d.reason IS NOT NULL THEN 'normal'
+           END AS priority
+      FROM decided d
+  )
+  UPDATE public.conversations c
+     SET last_activity_at = p.last_activity_at,
+         last_customer_at = p.last_customer_at,
+         last_staff_reply_at = p.last_staff_reply_at,
+         queue_status = p.status,
+         queue_reason = p.reason,
+         needs_staff_since = p.since,
+         -- Placeholder: 240 minutes (the 'normal' target) for every priority; see the header.
+         due_at = p.since + interval '240 minutes',
+         priority = coalesce(p.priority, c.priority)
+    FROM planned p
+   WHERE c.id = p.id
+     AND (p.status <> 'bot'
+          OR c.last_activity_at IS DISTINCT FROM p.last_activity_at
+          OR c.last_customer_at IS DISTINCT FROM p.last_customer_at
+          OR c.last_staff_reply_at IS DISTINCT FROM p.last_staff_reply_at);
+  GET DIAGNOSTICS changed = ROW_COUNT;
+  RETURN changed;
+END $$;
+
+-- Migration only: do not call or schedule it. Only the owner (this migration) runs it.
+REVOKE ALL ON FUNCTION public.inbox_queue_backfill(uuid) FROM PUBLIC, csa_app, csa_ro, csa_identity;
+
+SELECT public.inbox_queue_backfill();
+
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_queue_status_check;
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_queue_reason_check;
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_topic_check;
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_priority_check;
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_needs_staff_complete_ck;
+ALTER TABLE public.conversations VALIDATE CONSTRAINT conversations_assignee_user_id_fkey;
+
+CREATE INDEX IF NOT EXISTS conversations_activity_idx
+    ON public.conversations (client_id, last_activity_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS conversations_queue_due_idx
+    ON public.conversations (client_id, due_at, id)
+    WHERE queue_status = 'needs_staff';
+CREATE INDEX IF NOT EXISTS conversations_queue_mine_idx
+    ON public.conversations (client_id, assignee_user_id, due_at, id)
+    WHERE queue_status IN ('needs_staff', 'waiting_customer') AND assignee_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS conversations_queue_since_idx
+    ON public.conversations (client_id, needs_staff_since, id)
+    WHERE queue_status = 'needs_staff';
+-- The snooze wake job reads the snoozed rows by wake time.
+CREATE INDEX IF NOT EXISTS conversations_queue_snoozed_idx
+    ON public.conversations (client_id, snoozed_until)
+    WHERE queue_status = 'snoozed';
+-- The follow-up reminders read the waiting rows by the time staff last replied.
+CREATE INDEX IF NOT EXISTS conversations_queue_waiting_idx
+    ON public.conversations (client_id, last_staff_reply_at)
+    WHERE queue_status = 'waiting_customer';
+-- The Snoozed and Waiting on customer tabs list newest activity first (their default order). One
+-- index per state, holding the same rows as the state's index above. Each is about 1.5 times the
+-- size of that index (the extra uuid key), but a page read along it stops at the LIMIT and needs no
+-- Sort, so the planner prefers it to reading the state's index and sorting (one index for both
+-- states was larger still, and the planner chose between the two by sample).
+CREATE INDEX IF NOT EXISTS conversations_queue_snoozed_activity_idx
+    ON public.conversations (client_id, last_activity_at DESC, id DESC)
+    WHERE queue_status = 'snoozed';
+CREATE INDEX IF NOT EXISTS conversations_queue_waiting_activity_idx
+    ON public.conversations (client_id, last_activity_at DESC, id DESC)
+    WHERE queue_status = 'waiting_customer';
