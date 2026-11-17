@@ -46,6 +46,11 @@ Onboarding, offboarding and custom processes (migrations `0630`-`0635`, PR 1 mer
 the task routes and, from `0635`, task reminders written by the worker's `hr_tasks_round` (every 900
 seconds) to Home's notifications. The full entries are the top entries of [../PROGRESS.md](../PROGRESS.md).
 
+The console part (My tasks, the Processes tab, the template editor, the person's process section
+and Home reminders; migration `0636`) is the top entry of [../PROGRESS.md](../PROGRESS.md), "HR
+processes console (PR 3)". The owner's staging checks are in
+[PROCESSES_RETEST.md](./PROCESSES_RETEST.md).
+
 ## HR chat retired (project 1b)
 
 The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace
