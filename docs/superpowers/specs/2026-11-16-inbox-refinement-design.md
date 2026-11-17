@@ -661,10 +661,10 @@ failed counts request shows "–" and never zero.
 The notification bell and the notification centre (PR 2), the targets page (PR 3), internal notes,
 customer timelines, and any change to the thread's message rendering, takeover flow or held-reply cards.
 
-## 13. What is left to the builder
+## 15. What is left to the builder
 
 Exact column and index names and the mapping table from escalation reasons to topics; the keyset cursor
 encoding; the wording of notification messages in English and Malay (plain words per
-`docs/CONSOLE_VOICE.md`); the layout of the queue, the bell and the settings page within the existing
-console design tokens; the choice between `pg_trgm` and the documented fallback once availability is
+`docs/CONSOLE_VOICE.md`); the settings page layout and the bell within the existing console design tokens (the queue
+screen itself is specified in section 14); the choice between `pg_trgm` and the documented fallback once availability is
 confirmed.
