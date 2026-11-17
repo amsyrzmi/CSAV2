@@ -1,5 +1,5 @@
 import { dateText } from "./hr-people";
-import type { Anchor, AutoCheck, OwnerRole, ProcessKind, ProcessStatus, TaskStatus } from "./hr-process-api";
+import type { Anchor, AnchorDates, AutoCheck, OwnerRole, ProcessKind, ProcessStatus, TaskStatus } from "./hr-process-api";
 
 /** Pure words for processes and tasks: due dates, statuses, offsets and progress. */
 
@@ -281,4 +281,82 @@ export function groupReminders<T extends { kind: string }>(items: readonly T[]):
     return index === -1 ? REMINDER_KINDS.length : index;
   };
   return [...groups.values()].sort((a, b) => rank(a.kind) - rank(b.kind));
+}
+
+/** The task reminder kinds (0635): each carries `subject` and `due_on`, and its `resource_id` is the step. */
+const TASK_REMINDERS: ReadonlySet<string> = new Set(["task_assigned", "task_due_soon", "task_due", "task_overdue"]);
+/** More task reminders than this are shown in groups with a count. */
+const GROUP_AFTER = 3;
+
+/** A Home notification row (`GET /records/notifications`). The earlier kinds have no `subject` or `due_on`. */
+export interface HomeReminder {
+  id: string;
+  kind: string;
+  resource_id: string;
+  read_at: string | null;
+  subject?: string | null;
+  due_on?: string | null;
+}
+/** The open steps My tasks holds on the page: `complete` when it read every page. */
+export interface OpenTasks { ids: ReadonlySet<string>; complete: boolean }
+export interface ReminderLayout<T> {
+  /** Task reminders whose step is still open (or may be), grouped by kind. */
+  groups: ReminderGroup<T>[];
+  /** Show the groups with their headings: more than a few reminders. */
+  grouped: boolean;
+  /** Task reminders whose step is no longer in My tasks: history, never an action. */
+  done: T[];
+  /** Every other row, shown as before. */
+  other: T[];
+  /** Every row in screen order: the groups, Done, then the others. */
+  order: T[];
+}
+
+/**
+ * Home's reminder rows. A task reminder is done only when My tasks read every page and does not
+ * hold its step; while My tasks is loading, failed or partly read it stays actionable. A task
+ * reminder without its line is kept with the other kinds (shown as before).
+ */
+export function reminderLayout<T extends HomeReminder>(items: readonly T[], open: OpenTasks | null): ReminderLayout<T> {
+  const task = items.filter((item) => TASK_REMINDERS.has(item.kind) && item.subject);
+  const finished = (item: T) => open !== null && open.complete && !open.ids.has(item.resource_id);
+  const live = task.filter((item) => !finished(item));
+  const done = task.filter(finished);
+  const other = items.filter((item) => !task.includes(item));
+  const groups = groupReminders(live);
+  return {
+    groups, grouped: live.length > GROUP_AFTER, done, other,
+    order: [...groups.flatMap((group) => group.items), ...done, ...other],
+  };
+}
+
+/** When a reminder's step is due, from `today`; null without a date. */
+export function reminderDue(reminder: { due_on?: string | null }, today: string): string | null {
+  return reminder.due_on ? dueText({ due_on: reminder.due_on, status: "todo" }, today) : null;
+}
+
+/** Progress of Mark all read. */
+export function markingText(done: number, total: number): string {
+  return `Marking ${done} of ${total}\u2026`;
+}
+
+/** Rehire cancels an offboarding still in progress: the form asks first when there is one. */
+export function hasActiveOffboarding(processes: readonly { kind: string; status: string }[]): boolean {
+  return processes.some((item) => item.kind === "offboarding" && item.status === "active");
+}
+export const REHIRE_QUESTION =
+  "Rehiring cancels the open offboarding and skips its remaining steps (for example final pay checks). Continue?";
+
+const ANCHOR_ROWS = [["start_date", "Start date"], ["last_day", "Last day"], ["probation_end", "Probation end"]] as const;
+/** The dates a person's processes count from, those that are set, in words. */
+export function anchorDateRows(dates: AnchorDates | null | undefined): [label: string, value: string][] {
+  return ANCHOR_ROWS.flatMap(([key, label]) => {
+    const value = dates?.[key];
+    return value ? [[label, dateText(value)] as [string, string]] : [];
+  });
+}
+
+/** HR's notice when no template of the kind matches the person. */
+export function noTemplateText(kind: "onboarding" | "offboarding"): string {
+  return `No ${kind} template matches this person.`;
 }

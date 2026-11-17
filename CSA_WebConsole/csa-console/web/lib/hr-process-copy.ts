@@ -78,7 +78,8 @@ export function processErrorText(code: string): string {
 /** What the writes name in "Choose <button> again". */
 export type ProcessAction =
   | "start" | "cancel" | "close" | "save" | "deactivate"
-  | "complete" | "check" | "complete-for" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note";
+  | "complete" | "check" | "complete-for" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note"
+  | "clear" | "mark-read" | "mark-all-read";
 const BUTTON: Record<ProcessAction, string> = {
   start: "Start process",
   cancel: "Cancel process",
@@ -95,6 +96,10 @@ const BUTTON: Record<ProcessAction, string> = {
   reschedule: "Reschedule",
   reassign: "Reassign",
   note: "Save note",
+  // The probation end on a person's profile (Save is "save"), and Home's reminders.
+  clear: "Clear",
+  "mark-read": "Mark read",
+  "mark-all-read": "Mark all read",
 };
 
 /** An `ApiError`, or anything: a definite answer is a 4xx with a code. */

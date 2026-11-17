@@ -10,8 +10,11 @@ import { action, Notice, Panel } from "../ui";
 import { DocumentsSection } from "./DocumentsSection";
 import { MyTasks } from "./MyTasks";
 import { PersonalSection } from "./PersonalSection";
+import { PersonProcesses } from "./PersonProcesses";
 import { PersonOverview } from "./PersonProfile";
 
+/** My HR changes nothing the person section reads. */
+const noReload = async () => {};
 type Balance = { employee_id: string; year: number; leave_type: string; remaining: string; days: string };
 /** `null` while loading; `hidden` when the read is not for this viewer (404). */
 type Read<T> = { items: T } | { hidden: true } | { failed: true } | null;
@@ -29,8 +32,8 @@ function useRead<T>(load: (() => Promise<T>) | null): Read<T> {
 }
 
 /**
- * Home for staff without HR duties: My tasks, their own profile, personal details (contact fields only), documents
- * (read-only), leave balances and training requests.
+ * Home for staff without HR duties: My tasks, their own profile, their onboarding or offboarding, personal details
+ * (contact fields only), documents (read-only), leave balances and training requests.
  */
 export function MyHr({ tenant, context, readonly, platform }: {
   tenant: string; context: HrContext; readonly: boolean; platform: boolean;
@@ -57,6 +60,8 @@ export function MyHr({ tenant, context, readonly, platform }: {
           : "hidden" in profile ? <p className="text-sm">{PEOPLE_COPY.profileUnavailable}</p>
             : <Notice error>We could not load your profile. Reload the page and try again.</Notice>}
     </Panel>
+    <PersonProcesses tenant={tenant} employeeId={own} version={null} readonly={readonly} platform={platform}
+      onChanged={noReload} />
     <PersonalSection tenant={tenant} employeeId={own} readonly={readonly} title="My personal details" />
     <DocumentsSection tenant={tenant} employeeId={own} canManage={false} title="My documents" />
     {!(balances && "hidden" in balances) && <Panel title="My leave balances">

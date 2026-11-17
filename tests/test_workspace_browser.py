@@ -476,6 +476,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             }
         elif path == f"hr/people/{ALI_B}/documents":
             data = {"items": []}
+        elif path == f"hr/people/{ALI_B}/processes":
+            # My HR's onboarding and offboarding section: none, so it stays hidden.
+            data = ALI_PROCESSES
         elif path == "hr/records/balances":
             data = {"items": []}
         elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
@@ -1162,12 +1165,20 @@ EMPTY_HINT = (
     "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you "
     "confirm it."
 )
+# A person's own view of their processes (`GET /hr/people/{id}/processes`): none.
+ALI_PROCESSES: dict[str, Any] = {
+    "view": "self",
+    "employee_id": str(ALI_B),
+    "processes": [],
+    "anchor_dates": {"start_date": None, "last_day": None, "probation_end": None},
+}
 # What People & HR loads for a member without HR duties (the same bodies `exercise` answers).
 HR_PAGES: dict[str, Any] = {
     "hr/training-requests": EMPTY_PAGE,
     "hr/tasks/mine": EMPTY_PAGE,
     "hr/records/balances": {"items": []},
     f"hr/people/{ALI_B}/documents": {"items": []},
+    f"hr/people/{ALI_B}/processes": ALI_PROCESSES,
     f"hr/people/{ALI_B}": {
         "person": {
             "employee_id": str(ALI_B),

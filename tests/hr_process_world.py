@@ -10,10 +10,12 @@ fails the test.
 Extension point: `ROUTES`. Task 4 added the processes list, detail, start, cancel and close, the
 template summaries and the HR-only task actions; Task 5 the template editor's routes (read, create,
 update, deactivate, preview: `ProcessWorld.people` are the active people a preview counts); Task 6
-adds a person's processes. A route is a handler registered in this module with
-`@route("GET", r"hr/processes")`; it gets the world, the `Call` and the path match and returns
-`(status, body)`. A new path
-family whose prefix is not in `PREFIXES` is still delegated while a registered pattern matches it.
+a person's processes (`ProcessWorld.persons`), the probation end and rehire operations, and Home's
+notifications (`ProcessWorld.notifications`, with `notification.read`). A route is a handler
+registered in this module with `@route("GET", r"hr/processes")`; it gets the world, the `Call` and
+the path match and returns `(status, body)`, or None for a call it leaves to the old routes (an
+operation it does not own on the shared `hr/operations` path). A new path family whose prefix is
+not in `PREFIXES` is still delegated while a registered pattern matches it.
 
 All data is synthetic (the repository is public).
 """
@@ -70,7 +72,7 @@ class Call:
 
 
 Answer = tuple[int, Any]
-Handler = Callable[["ProcessWorld", Call, re.Match[str]], Answer]
+Handler = Callable[["ProcessWorld", Call, re.Match[str]], Answer | None]
 # Every route is registered in THIS module, never from another test module: the registry is global
 # to the pytest process, so a route added elsewhere would answer (or not) depending on import order
 # and could turn a call that should be unexpected into an answered one.
@@ -201,6 +203,26 @@ class Template:
 
 
 @dataclass
+class PersonFacts:
+    """What the person routes need about someone: their people `version` (the one the profile
+    shows), status, the console user of their manager and the dates their processes count from."""
+
+    version: int
+    status: str = "active"
+    manager: str | None = None
+    start_date: str | None = None
+    last_day: str | None = None
+    probation_end: str | None = None
+
+    def anchor_dates(self) -> dict[str, str | None]:
+        return {
+            "start_date": self.start_date,
+            "last_day": self.last_day,
+            "probation_end": self.probation_end,
+        }
+
+
+@dataclass
 class ProcessWorld:
     """The process side of the synthetic company. Empty by default: My tasks says so."""
 
@@ -222,6 +244,15 @@ class ProcessWorld:
     failures: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     # The active people a template preview counts: employee id and the four rule fields each.
     people: list[dict[str, Any]] = field(default_factory=list)
+    # The people whose processes the person route reads, by employee id; also the people the
+    # probation end and rehire operations answer for (any other person falls through).
+    persons: dict[str, PersonFacts] = field(default_factory=dict)
+    # Home notification rows (`NotificationRecord` plus the `recipient` console user).
+    notifications: list[dict[str, Any]] = field(default_factory=list)
+    # Each `notification.read` that reached the stub, in order: the notification id.
+    notification_reads: list[str] = field(default_factory=list)
+    # A refusal or error to give, once, to a `notification.read` of that notification id.
+    read_failures: dict[str, tuple[int, str]] = field(default_factory=dict)
 
     def handles(self, path: str) -> bool:
         return path.startswith(PREFIXES) or any(p.fullmatch(path) for _, p, _ in ROUTES)
@@ -239,7 +270,10 @@ class ProcessWorld:
         for wanted, pattern, handler in ROUTES:
             match = pattern.fullmatch(path)
             if match and wanted == method:
-                return handler(self, call, match)
+                answered = handler(self, call, match)
+                if answered is not None or path.startswith(PREFIXES):
+                    return answered or self.refuse_unexpected(call, "route declined")
+                return None
         return self.refuse_unexpected(call, "no route")
 
     def refuse_unexpected(self, call: Call, why: str) -> Answer:
@@ -1381,3 +1415,155 @@ def template_preview(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answe
         "ties": [{"template_id": t.template_id, "name": t.name} for t in ties],
         "total_active": len(world.people),
     }
+
+
+# ---- Routes: a person's processes, probation, rehire and Home notifications (Task 6) ----
+
+
+def _next_step(world: ProcessWorld, process: Process, mine: str | None) -> dict[str, Any] | None:
+    """The next open step (soonest due, no date last); `mine` keeps the steps of that user."""
+    steps = [
+        s
+        for s in world.steps_of(process.process_id)
+        if s.status in OPEN and (mine is None or world.is_assignee(s, mine))
+    ]
+    if not steps:
+        return None
+    step = min(steps, key=lambda s: (s.due_on is None, s.due_on or "", s.ordinal))
+    return {"title_en": step.title_en, "title_ms": step.title_ms, "due_on": step.due_on}
+
+
+@route("GET", r"hr/people/(?P<employee_id>[0-9a-f-]{36})/processes")
+def person_processes(world: ProcessWorld, call: Call, match: re.Match[str]) -> Answer:
+    if set(call.params) != {"client_id"}:
+        return _bad_query(world, call, "a person's processes take no filter")
+    employee = match["employee_id"]
+    member, facts = world.members.get(employee), world.persons.get(employee)
+    if member is None or facts is None:
+        return 404, {"detail": "resource_unavailable"}
+    view = (
+        "hr"
+        if call.caller in world.hr_team
+        else "self"
+        if member.user_id == call.caller
+        else "manager"
+        if facts.manager == call.caller
+        else None
+    )
+    if view is None:
+        return 404, {"detail": "resource_unavailable"}
+    chosen = [
+        p
+        for p in world.processes
+        if p.about.employee_id == employee and (view != "self" or p.kind != "custom")
+    ]
+    chosen.sort(key=lambda p: (p.started_at, p.process_id), reverse=True)
+    rows = []
+    for process in chosen:
+        row = world.process_row(process)
+        rows.append(
+            {key: row[key] for key in ("process_id", "kind", "name", "status", "started_at")}
+            | {
+                "closed_at": process.closed_at,
+                "tasks_total": row["tasks_total"],
+                "tasks_done": row["tasks_done"],
+                "next_task": _next_step(world, process, call.caller if view == "self" else None),
+            }
+        )
+    body: dict[str, Any] = {"view": view, "employee_id": employee, "processes": rows}
+    if view in ("hr", "self"):
+        body["anchor_dates"] = facts.anchor_dates()
+    if view == "hr":
+        body["no_matching_template"] = {
+            kind: not any(p.kind == kind for p in chosen)
+            and not any(t.kind == kind and t.is_active for t in world.templates)
+            for kind in ("onboarding", "offboarding")
+        }
+    return 200, body
+
+
+def _operation_receipt(operation: str, resource_id: str, version: int) -> Answer:
+    return 200, {
+        "operation": operation,
+        "resource_id": resource_id,
+        "version": version,
+        "status": "ok",
+        "duplicate": False,
+    }
+
+
+@route("POST", r"hr/operations")
+def operations(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer | None:
+    """`notification.read` of a seeded notification, and `person.probation_set` and
+    `person.rehire` of a person in `persons`; anything else is the old routes' (None)."""
+    body = call.body if isinstance(call.body, dict) else {}
+    operation = body.get("operation")
+    if operation == "notification.read":
+        return _notification_read(world, call, body)
+    facts = world.persons.get(body.get("employee_id") or "")
+    if operation not in ("person.probation_set", "person.rehire") or facts is None:
+        return None
+    fields = {"operation", "employee_id", "expected_version"}
+    fields |= {"probation_end"} if operation == "person.probation_set" else {"start_date"}
+    if set(body) != fields or not isinstance(body["expected_version"], int):
+        world.refuse_unexpected(call, f"bad {operation} body")
+        return 422, {"detail": "invalid_hr_input"}
+    if call.caller not in world.hr_team:
+        return 404, {"detail": "resource_unavailable"}
+    if body["expected_version"] != facts.version:
+        return 409, {"detail": "person_changed"}
+    employee = body["employee_id"]
+    if operation == "person.probation_set":
+        end = body["probation_end"]
+        if end is not None and not (isinstance(end, str) and _is_date(end)):
+            return 409, {"detail": "probation_end_invalid"}
+        facts.probation_end = end
+    else:
+        if facts.status != "left":
+            return 409, {"detail": "not_left"}
+        if not (isinstance(body["start_date"], str) and _is_date(body["start_date"])):
+            world.refuse_unexpected(call, "bad start date")
+            return 422, {"detail": "invalid_hr_input"}
+        facts.status, facts.start_date, facts.last_day = "active", body["start_date"], None
+        for process in world.processes:
+            if process.about.employee_id == employee and process.status == "active":
+                world.end(
+                    process,
+                    "cancelled",
+                    call.caller,
+                    "process.cancelled",
+                    "process_cancelled",
+                    reason="rehired",
+                )
+    facts.version += 1
+    return _operation_receipt(operation, employee, facts.version)
+
+
+def _notification_read(world: ProcessWorld, call: Call, body: dict[str, Any]) -> Answer | None:
+    wanted = body.get("notification_id")
+    row = next((n for n in world.notifications if n["id"] == wanted), None)
+    if row is None:
+        return None
+    world.notification_reads.append(row["id"])
+    if set(body) != {"operation", "notification_id"}:
+        world.refuse_unexpected(call, "bad notification.read body")
+        return 422, {"detail": "invalid_hr_input"}
+    if planned := world.read_failures.pop(row["id"], None):
+        status, code = planned
+        return status, {"detail": code}
+    if row["recipient"] != call.caller:
+        return 404, {"detail": "resource_unavailable"}
+    row["read_at"] = row["read_at"] or datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+    return _operation_receipt("notification.read", row["id"], 1)
+
+
+@route("GET", r"hr/records/notifications")
+def notifications(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
+    if set(call.params) != {"client_id"}:
+        return _bad_query(world, call, "notifications take no filter")
+    rows = [
+        {key: value for key, value in row.items() if key != "recipient"}
+        for row in world.notifications
+        if row["recipient"] == call.caller
+    ]
+    return 200, {"items": rows}

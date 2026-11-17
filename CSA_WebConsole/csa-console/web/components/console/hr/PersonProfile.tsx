@@ -17,6 +17,7 @@ import { action, secondary, Notice, Panel } from "../ui";
 import { DocumentsSection } from "./DocumentsSection";
 import { LeavingForm, RehireForm, UndoLeaving } from "./LeavingForm";
 import { PersonalSection } from "./PersonalSection";
+import { PersonProcesses } from "./PersonProcesses";
 import { PersonForm } from "./PersonForm";
 import { MemberSelect, useMemberOptions } from "./Pickers";
 import { peopleWriteError } from "./refusal";
@@ -36,7 +37,9 @@ export function PersonOverview({ person }: { person: Person }) {
 /**
  * A person's profile: Overview for everyone who may see them, plus Personal, Documents, Access and
  * History where the server lists them (HR viewers, and the person themself for Personal). Editors
- * get Edit; only the HR owner gets the access page link and account linking.
+ * get Edit; only the HR owner gets the access page link and account linking. Overview also holds
+ * the onboarding and offboarding section for the viewers its own read serves (HR, the manager,
+ * the person): it is not one of the server's sections.
  */
 export function PersonProfile({ tenant, context, readonly, platform, employeeId }: {
   tenant: string; context: HrContext; readonly: boolean; platform: boolean; employeeId: string;
@@ -85,7 +88,7 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
 
   const summary = leavingSummary(person);
   const done = (text: string) => { setLeaving(null); setMessage(text); void reload(); };
-  const overview = <Panel title={person.display_name}>
+  const overview = <><Panel title={person.display_name}>
     <PersonOverview person={person} />
     {summary && <p className="mt-4 text-sm font-medium">{summary}</p>}
     <div className="mt-5 flex flex-wrap gap-2">
@@ -98,7 +101,9 @@ export function PersonProfile({ tenant, context, readonly, platform, employeeId 
     </div>
     {canUndoLeaving(profile, readonly) && <UndoLeaving key={person.version ?? 0} tenant={tenant} person={person}
       onDone={done} onReload={() => void reload()} />}
-  </Panel>;
+  </Panel>
+  <PersonProcesses tenant={tenant} employeeId={person.employee_id} version={person.version} readonly={readonly}
+    platform={platform} onChanged={reload} /></>;
 
   return <div className="space-y-5">
     {back}

@@ -313,6 +313,9 @@ test("a failed write: a 4xx gets the refusal sentence, a 5xx or network error th
   }
   assert.match(processSaveError(null, "close"), /Choose Close anyway again/);
   assert.match(processSaveError(null, "save"), /Choose Save again/);
+  assert.match(processSaveError(null, "clear"), /Choose Clear again/);
+  assert.match(processSaveError(null, "mark-read"), /Choose Mark read again/);
+  assert.match(processSaveError(null, "mark-all-read"), /Choose Mark all read again/);
   assert.match(processSaveError(null, "send-back"), /Choose Send back again/);
   // My tasks names the button the person chose: an automatic check, or a step done on someone's behalf.
   assert.match(processSaveError(null, "check"), /Choose Check now again/);

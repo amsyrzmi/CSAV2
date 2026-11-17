@@ -14,6 +14,7 @@ const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
 const {
   dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText,
   processKindLabel, eventText, eventLines, groupHistory, isDateText, replaceQuestion,
+  reminderLayout, reminderDue, markingText, hasActiveOffboarding, anchorDateRows, noTemplateText, REHIRE_QUESTION,
 } = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
@@ -265,4 +266,82 @@ test("replaceQuestion asks before replacing an active onboarding or offboarding"
   assert.equal(replaceQuestion("onboarding", "Lina Wong"), "There is already an active onboarding for Lina Wong. Replace it?");
   assert.equal(replaceQuestion("offboarding", "Hana Yusof"), "There is already an active offboarding for Hana Yusof. Replace it?");
   assert.equal(replaceQuestion("custom", null), "There is already an active process for this person. Replace it?");
+});
+
+const note = (id, kind, resource_id, extra = {}) => ({
+  id, kind, resource_id, read_at: null, subject: `Line ${id}`, due_on: "2026-11-18", ...extra,
+});
+
+test("reminderLayout groups the open task reminders, moves finished ones to Done and keeps other kinds apart", () => {
+  const rows = [
+    note("a", "task_assigned", "t1"), note("b", "workflow_review", "w1", { subject: null, due_on: null }),
+    note("c", "task_overdue", "t2"), note("d", "task_due", "gone"), note("e", "task_assigned", "t3"),
+    note("f", "task_due_soon", "t1"),
+  ];
+  const layout = reminderLayout(rows, { ids: new Set(["t1", "t2", "t3"]), complete: true });
+  assert.deepEqual(layout.groups.map((group) => [group.kind, group.count, group.items.map((item) => item.id)]), [
+    ["task_overdue", 1, ["c"]], ["task_due_soon", 1, ["f"]], ["task_assigned", 2, ["a", "e"]],
+  ]);
+  assert.equal(layout.grouped, true);
+  assert.deepEqual(layout.done.map((item) => item.id), ["d"]);
+  assert.deepEqual(layout.other.map((item) => item.id), ["b"]);
+  // Screen order: the groups, then Done, then the other kinds.
+  assert.deepEqual(layout.order.map((item) => item.id), ["c", "f", "a", "e", "d", "b"]);
+});
+
+test("reminderLayout lists a few reminders without groups", () => {
+  const layout = reminderLayout([note("a", "task_due", "t1"), note("b", "task_assigned", "t2")],
+    { ids: new Set(["t1", "t2"]), complete: true });
+  assert.equal(layout.grouped, false);
+  assert.deepEqual(layout.order.map((item) => item.id), ["a", "b"]);
+});
+
+test("reminderLayout never calls a reminder done while My tasks is unknown or only partly loaded", () => {
+  const rows = [note("a", "task_due", "elsewhere")];
+  assert.deepEqual(reminderLayout(rows, null).done, []);
+  assert.deepEqual(reminderLayout(rows, { ids: new Set(), complete: false }).done, []);
+  assert.deepEqual(reminderLayout(rows, { ids: new Set(), complete: true }).done.map((item) => item.id), ["a"]);
+});
+
+test("reminderLayout keeps a task reminder without its line with the other kinds", () => {
+  const layout = reminderLayout([note("a", "task_due", "t1", { subject: null })], { ids: new Set(["t1"]), complete: true });
+  assert.deepEqual(layout.groups, []);
+  assert.deepEqual(layout.other.map((item) => item.id), ["a"]);
+});
+
+test("reminderDue says when the step is due, or nothing without a date", () => {
+  assert.equal(reminderDue({ due_on: "2026-11-17" }, TODAY), "Due today");
+  assert.equal(reminderDue({ due_on: "2026-11-15" }, TODAY), "Overdue by 2 days");
+  assert.equal(reminderDue({ due_on: null }, TODAY), null);
+  assert.equal(reminderDue({}, TODAY), null);
+});
+
+test("markingText counts the reminders marked so far", () => {
+  assert.equal(markingText(3, 12), "Marking 3 of 12\u2026");
+});
+
+test("hasActiveOffboarding is true only for an offboarding still in progress", () => {
+  const row = (kind, status) => ({ kind, status });
+  assert.equal(hasActiveOffboarding([row("offboarding", "active")]), true);
+  assert.equal(hasActiveOffboarding([row("offboarding", "completed"), row("onboarding", "active")]), false);
+  assert.equal(hasActiveOffboarding([row("offboarding", "cancelled"), row("custom", "active")]), false);
+  assert.equal(hasActiveOffboarding([]), false);
+});
+
+test("anchorDateRows lists the set dates in words", () => {
+  assert.deepEqual(anchorDateRows({ start_date: "2026-11-02", last_day: null, probation_end: "2027-02-02" }), [
+    ["Start date", "2 Nov 2026"], ["Probation end", "2 Feb 2027"],
+  ]);
+  assert.deepEqual(anchorDateRows(null), []);
+  assert.deepEqual(anchorDateRows({}), []);
+});
+
+test("noTemplateText names the kind", () => {
+  assert.equal(noTemplateText("onboarding"), "No onboarding template matches this person.");
+  assert.equal(noTemplateText("offboarding"), "No offboarding template matches this person.");
+});
+
+test("REHIRE_QUESTION says what rehiring does to the open offboarding", () => {
+  assert.equal(REHIRE_QUESTION,
+    "Rehiring cancels the open offboarding and skips its remaining steps (for example final pay checks). Continue?");
 });

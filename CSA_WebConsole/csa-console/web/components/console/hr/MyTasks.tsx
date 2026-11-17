@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { processClient, type MyTask, type TaskStatus } from "@/lib/hr-process-api";
 import { processLoadError } from "@/lib/hr-process-copy";
-import { autoCheckText, dueText, processKindLabel, processToday, statusLabel } from "@/lib/hr-process-view";
+import { autoCheckText, dueText, processKindLabel, processToday, statusLabel, type OpenTasks } from "@/lib/hr-process-view";
 import { isDenied } from "@/lib/hr-pickers";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
 import { secondary, Notice, Panel } from "../ui";
@@ -23,9 +23,12 @@ type List = { items: MyTask[]; next: string | null } | { hidden: true } | { fail
  * My tasks: the caller's open process steps, the steps waiting for their approval and, for the HR
  * team, the HR pool and the steps of people who cannot get their reminders. A field the API
  * withholds from this viewer is `null` and shows nothing. Read-only members see the list without
- * any button.
+ * any button. `onOpenTasks` hears which open steps the list holds (null while it has none to give),
+ * so Home can tell a reminder whose step is done. The panel is the `#hr-my-tasks` anchor.
  */
-export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolean }) {
+export function MyTasks({ tenant, readonly, onOpenTasks }: {
+  tenant: string; readonly: boolean; onOpenTasks?: (open: OpenTasks | null) => void;
+}) {
   // Memoised: the client holds the Idempotency-Key of an uncertain write until it succeeds.
   const client = useMemo(() => processClient(tenant), [tenant]);
   const runner = useHrRunner();
@@ -63,6 +66,10 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
       .finally(() => { if (active) setReloading(false); });
     return () => { active = false; };
   }, [client, reads]);
+  useEffect(() => {
+    onOpenTasks?.(list && "items" in list
+      ? { ids: new Set(list.items.map(task => task.task_id)), complete: list.next === null } : null);
+  }, [list, onOpenTasks]);
   const reload = useCallback(() => {
     generation.current += 1;
     setReloading(true);
@@ -92,7 +99,7 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
   const today = processToday();
   const actions = (task: MyTask, describedBy: string) => readonly ? null
     : <TaskActions task={task} writes={writes} disabled={reloading} describedBy={describedBy} />;
-  return <div ref={panel} data-testid="hr-my-tasks" aria-busy={runner.busy || reloading}><Panel title="My tasks">
+  return <div ref={panel} id="hr-my-tasks" data-testid="hr-my-tasks" aria-busy={runner.busy || reloading}><Panel title="My tasks">
     <div className="space-y-3">
       {(outcome?.message || outcome?.error) && <div ref={notices} tabIndex={-1} data-testid="hr-my-tasks-outcome"
         className={`space-y-3 ${NOTICE_FOCUS}`}>
