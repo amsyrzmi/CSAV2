@@ -29,6 +29,7 @@ from playwright.async_api import Page, async_playwright, expect
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
+    TENANT,
     WAIT,
     WEB,
     Upstream,
@@ -50,6 +51,20 @@ WIDTHS = (320, 390, 768, 1024, 1440)
 # The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
 ME_ID = "22222222-2222-4222-8222-222222222222"
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
+QUEUE_FIELDS = {
+    "queue_status",
+    "queue_reason",
+    "topic",
+    "priority",
+    "assignee_id",
+    "assignee",
+    "claimed_at",
+    "needs_staff_since",
+    "due_at",
+    "snoozed_until",
+    "last_customer_at",
+    "last_staff_reply_at",
+}
 
 
 def ago(minutes: int) -> str:
@@ -222,6 +237,23 @@ class Inbox:
     # What the picture route answers (200 = a synthetic PNG, else that status) and was asked.
     picture_status: int = 200
     picture_requests: list[str] = field(default_factory=list)
+    # Queue actions the page sent ({"id", "action", "body", "query", "at"}). Answers are scripted
+    # per action and used in order: (status, json) or "abort" (no answer at all); with none left the
+    # stub applies the action to the row. `queue_delay` holds every answer back that long.
+    queue_calls: list[dict[str, Any]] = field(default_factory=list)
+    queue_script: dict[str, list[Any]] = field(default_factory=dict)
+    queue_delay: float = 0.0
+    # Takeover and release calls ({"id", "action", "body"}), and when each conversation was read.
+    handoffs: list[dict[str, Any]] = field(default_factory=list)
+    detail_reads: list[float] = field(default_factory=list)
+    # Rows sent as an older server sent them, without any queue field (list and detail).
+    bare: set[str] = field(default_factory=set)
+    # The companies a platform administrator picks from.
+    clients: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"id": TENANT, "slug": "synthetic", "name": "Synthetic Tenant", "status": "active"}
+        ]
+    )
 
     def queue_counts(self) -> dict[str, Any] | None:
         """The tab counts, from the rows (as the server counts them) unless a test set them."""
@@ -287,7 +319,47 @@ class Inbox:
         phone = FULL_PHONE if identifier == UNNAMED else None
         note = self.notes.get(identifier)
         extra = {"handoff_note": note} if note else {}
-        return {**row, "contact": {**row["contact"], "phone": phone}, **extra}
+        return self.served({**row, "contact": {**row["contact"], "phone": phone}, **extra})
+
+    def served(self, item: dict[str, Any]) -> dict[str, Any]:
+        """A row as sent: without its queue fields when the test plays an older server."""
+        if item["id"] not in self.bare:
+            return item
+        return {key: value for key, value in item.items() if key not in QUEUE_FIELDS}
+
+    def apply_queue(self, identifier: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A queue action as the server applies it, close enough for the screen's tests."""
+        row = next(item for item in self.items if item["id"] == identifier)
+        cleared = {
+            "queue_reason": None,
+            "assignee_id": None,
+            "assignee": None,
+            "needs_staff_since": None,
+            "due_at": None,
+            "snoozed_until": None,
+        }
+        if action == "claim":
+            row.update(assignee_id=ME_ID, assignee={"id": ME_ID, "display_name": "Synthetic User"})
+        elif action == "unclaim":
+            row.update(assignee_id=None, assignee=None)
+        elif action == "assign":
+            person = next((p for p in self.assignees if p["id"] == body["assignee_id"]), None)
+            name = person["display_name"] if person else None
+            row.update(
+                assignee_id=body["assignee_id"],
+                assignee={"id": body["assignee_id"], "display_name": name},
+            )
+        elif action == "resolve":
+            row.update(queue_status="resolved", **cleared)
+        elif action == "snooze":
+            claim = {"assignee_id": row["assignee_id"], "assignee": row["assignee"]}
+            row.update(
+                queue_status="snoozed", **{**cleared, **claim, "snoozed_until": body["until"]}
+            )
+        elif action in ("priority", "topic"):
+            row[action] = body[action]
+        row["inbox_version"] += 1
+        return {"outcome": "applied", "conversation": self.detail(identifier)}
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
@@ -328,7 +400,7 @@ class Inbox:
                 status, data = 500, {"detail": "synthetic outage"}
             else:
                 data = {
-                    "items": items,
+                    "items": [self.served(item) for item in items],
                     "next_cursor": None,
                     "needs_review_count": self.needs_review_count,
                     "counts": self.queue_counts(),
@@ -340,6 +412,43 @@ class Inbox:
                 data = self.assignees
             else:
                 status, data = self.assignees_status, {"detail": "synthetic directory outage"}
+        elif path == "admin/clients" and request.method == "GET":
+            data = self.clients
+        elif path.startswith("inbox/conversations/") and "/queue/" in path:
+            identifier, action = path.split("/")[2], path.split("/")[4]
+            body = request.post_data_json or {}
+            self.queue_calls.append(
+                {
+                    "id": identifier,
+                    "action": action,
+                    "body": body,
+                    "query": query,
+                    "at": time.monotonic(),
+                }
+            )
+            await asyncio.sleep(self.queue_delay)
+            script = self.queue_script.get(action) or []
+            answer = script.pop(0) if script else None
+            if answer == "abort":
+                await request_route.abort("failed")
+                return
+            if answer is None:
+                data = self.apply_queue(identifier, action, body)
+            else:
+                status, data = answer
+        elif path.startswith("inbox/conversations/") and path.endswith(("/takeover", "/release")):
+            identifier, action = path.split("/")[2], path.split("/")[3]
+            self.handoffs.append(
+                {"id": identifier, "action": action, "body": request.post_data_json or {}}
+            )
+            taken = action == "takeover"
+            for item in self.items:
+                if item["id"] == identifier:
+                    item.update(
+                        human_muted=taken, owned_by="human" if taken else None, ai_muted_until=None
+                    )
+                    item["inbox_version"] = item.get("inbox_version", 1) + 1
+            data = {"outcome": "applied", "queued": False, "warnings": [], "status": None}
         elif path.startswith("inbox/conversations/") and path.endswith("/reply"):
             await asyncio.sleep(self.reply_delay)
             self.replies.append((request.post_data_json or {}).get("body", ""))
@@ -348,6 +457,7 @@ class Inbox:
         elif path.startswith("inbox/conversations/") and path.endswith("/messages"):
             data = {"items": self.thread(path.split("/")[2]), "next_cursor": None}
         elif path.startswith("inbox/conversations/"):
+            self.detail_reads.append(time.monotonic())
             data = self.detail(path.split("/")[2])
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
@@ -461,6 +571,7 @@ async def inbox_page(
     role: str = "tenant_admin",
     reduced_motion: bool = False,
     theme: str = "cobalt",
+    path: str = "/portal/inbox",
 ) -> AsyncIterator[Page]:
     """A logged-in page on the inbox, answered by `state`; checks for stray calls on exit."""
     shell.upstream.me = make_me(role)
@@ -484,7 +595,7 @@ async def inbox_page(
         page.on("pageerror", lambda error: errors.append(str(error)))
         try:
             await page.route("**/console/v1/**", state.route)
-            await page.goto(f"{shell.base}/portal/inbox")
+            await page.goto(f"{shell.base}{path}")
             yield page
             assert not errors, errors
             assert not state.unexpected, state.unexpected

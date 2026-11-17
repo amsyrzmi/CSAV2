@@ -5,10 +5,15 @@ import {
   type BulkResponse, type BulkResult, type Conversation, type QueueActionName, type QueueActionResult,
   type QueueFields,
 } from "@/lib/inbox-api";
-import { actionErrorText, bulkSummary, queueActionNotice } from "@/lib/inbox-queue";
+import { bulkSummary, queueActionNotice, queueFailureText } from "@/lib/inbox-queue";
 import type { InboxActions } from "./useInboxActions";
 
-/** What `run` and `bulk` settle with. They never throw; the plain sentence is in `actions.error`. */
+/**
+ * What `run` and `bulk` settle with. They never throw. After a request the plain sentence is in
+ * `actions.notice` (done) or `actions.error` (refused or uncertain). While `actions.blocked` (a request
+ * in flight, or an uncertain one kept for Retry) nothing is sent and nothing is said (`code: "busy"`),
+ * so callers disable their queue controls then.
+ */
 export type QueueRun = {
   ok: boolean;
   outcome?: QueueActionResult["outcome"];
@@ -21,14 +26,11 @@ const NOT_SENT: QueueRun = { ok: false, code: "busy" };
 
 /**
  * A request that may have been applied is kept (network failure, timeout, 5xx): Retry sends the same
- * request key again. A definitive refusal (4xx) is dropped. Either way the polled reads refresh.
+ * request key again, and the sentence says so. A definitive refusal (4xx) is dropped. Either way the
+ * polled reads refresh.
  */
-function failure(cause: unknown, status: number | null): string {
-  const message = status === null || status >= 500
-    ? "Something went wrong. Retry sends the same request again, so it cannot be done twice."
-    : "That could not be done. Refreshed: look again before acting.";
-  return actionErrorText(status, errorCode(cause), message);
-}
+const failureFor = (action: QueueActionName) =>
+  (cause: unknown, status: number | null): string => queueFailureText(action, status, errorCode(cause));
 
 /**
  * The queue's write paths over the Inbox's shared plumbing (`actions`): the busy flag, the notice and
@@ -47,9 +49,9 @@ export function useQueueActions(query: string, actions: InboxActions) {
         return queueActionNotice(action, outcome, {
           until: conversation?.snoozed_until ?? fields.until, priority: fields.priority, topic: fields.topic,
           assigneeName: fields.assigneeName,
-        });
+        }, Date.now());
       },
-      failure,
+      failure: failureFor(action),
     });
     if (done.ok) return { ok: true, outcome: (done.result as QueueActionResult).outcome };
     return { ok: false, code: errorCode(done.cause) ?? undefined };
@@ -64,7 +66,7 @@ export function useQueueActions(query: string, actions: InboxActions) {
       path: bulkPath(query),
       payload: bulkBody(action, ids, fields, seenAt),
       notice: (result) => bulkSummary((result as BulkResponse).results).text,
-      failure,
+      failure: failureFor(action),
     });
     if (done.ok) return { ok: true, results: (done.result as BulkResponse).results };
     return { ok: false, code: errorCode(done.cause) ?? undefined };

@@ -630,7 +630,7 @@ test("a view with a key or a value this screen does not know is marked unsupport
 // ---- notices and error sentences ----
 
 test("each applied action says what happened, and already_handled says nothing changed", () => {
-  const n = (action, outcome, detail = {}) => queueActionNotice(action, outcome, detail);
+  const n = (action, outcome, detail = {}) => queueActionNotice(action, outcome, detail, NOW);
   assert.equal(n("claim", "applied"), "You took this conversation.");
   assert.equal(n("unclaim", "applied"), "Gave up this item.");
   assert.equal(n("resolve", "applied"), "Resolved. The assistant has this conversation again.");
@@ -641,6 +641,8 @@ test("each applied action says what happened, and already_handled says nothing c
   // 2026-11-18T01:00:00Z is Wednesday 09:00 in +08:00.
   assert.equal(n("snooze", "applied", { until: "2026-11-18T01:00:00Z" }), "Snoozed until Wed 09:00.");
   assert.equal(n("snooze", "applied", {}), "Snoozed.");
+  // More than six days ahead the date is part of it (2026-11-25T01:00:00Z is Wed 25 Nov, 09:00).
+  assert.equal(n("snooze", "applied", { until: "2026-11-25T01:00:00Z" }), "Snoozed until Wed 25 Nov 09:00.");
   for (const action of ["claim", "unclaim", "assign", "snooze", "resolve", "priority", "topic"]) {
     assert.equal(n(action, "already_handled"), "Already up to date.");
   }
@@ -761,4 +763,118 @@ test("rowMeta and the row helpers tolerate a row with no queue fields at all", (
   });
   assert.equal(isUnread(bare), false);
   assert.equal(rowClock(bare, "needs_us", NOW).kind, "last");
+});
+
+// ---- the thread: snooze time, banner, failures, custom time, the actions offered ----
+
+test("snoozeUntilText: weekday and time up to six days ahead, the date beyond", () => {
+  const { snoozeUntilText } = queue;
+  // NOW is Tue 17 Nov 12:00 in +08:00.
+  assert.equal(snoozeUntilText("2026-11-18T01:00:00Z", NOW), "Wed 09:00");
+  assert.equal(snoozeUntilText(ahead(6 * 24 * HOUR), NOW), "Mon 12:00");
+  assert.equal(snoozeUntilText(ahead(6 * 24 * HOUR + MIN), NOW), "Mon 23 Nov 12:01");
+  assert.equal(snoozeUntilText("2026-12-31T16:30:00Z", NOW), "Fri 1 Jan 00:30");
+  assert.equal(snoozeUntilText(null, NOW), "");
+  assert.equal(snoozeUntilText("not a time", NOW), "");
+});
+
+test("the row's snooze label and the snooze notice use the same words", () => {
+  const until = "2026-11-25T01:00:00Z";
+  const label = rowMeta(item({ queue_status: "snoozed", queue_reason: null, snoozed_until: until }), NOW, me);
+  assert.equal(label.state.text, "Snoozed until Wed 25 Nov 09:00");
+  assert.equal(queueActionNotice("snooze", "applied", { until }, NOW), "Snoozed until Wed 25 Nov 09:00.");
+});
+
+test("waitBannerText: how long it has waited and when it is due, from the server's times", () => {
+  const { waitBannerText } = queue;
+  const banner = (over) => waitBannerText(item(over), NOW);
+  assert.equal(banner({ needs_staff_since: ago(200 * MIN), due_at: ago(HOUR) }), "Waiting on us for 3h 20m, due 1h ago");
+  assert.equal(banner({ needs_staff_since: ago(20 * MIN), due_at: ahead(40 * MIN) }), "Waiting on us for 20m, due in 40m");
+  assert.equal(banner({ needs_staff_since: ago(30_000), due_at: ahead(30_000) }), "Waiting on us for under 1m, due in under 1m");
+  assert.equal(banner({ needs_staff_since: ago(HOUR), due_at: ago(30_000) }), "Waiting on us for 1h, due just now");
+  assert.equal(banner({ needs_staff_since: ago(HOUR), due_at: null }), "Waiting on us for 1h");
+  assert.equal(banner({ needs_staff_since: null }), "");
+  assert.equal(banner({ queue_status: "waiting_customer", queue_reason: null }), "");
+});
+
+test("assignedText: someone else's claim, with or without a name; nothing for mine or unclaimed", () => {
+  const { assignedText } = queue;
+  assert.equal(assignedText(item({ assignee_id: "u-2", assignee: { id: "u-2", display_name: "Aina Demo" } }), me),
+    "Assigned to Aina Demo");
+  assert.equal(assignedText(item({ assignee_id: "u-2", assignee: { id: "u-2", display_name: null } }), me),
+    "Assigned to someone outside the team list");
+  assert.equal(assignedText(item({ assignee_id: "u-2", assignee: null }), me), "Assigned to someone outside the team list");
+  assert.equal(assignedText(item({ assignee_id: "u-me" }), me), "");
+  assert.equal(assignedText(item(), me), "");
+  assert.equal(assignedText({ id: "c9" }, me), "");
+});
+
+test("queueFailureText: an unanswered or 5xx request is uncertain; the team sentence is for assign only", () => {
+  const { queueFailureText } = queue;
+  const uncertain = "Could not confirm that. Retry sends the same request again.";
+  assert.equal(queueFailureText("resolve", null, null), uncertain);
+  assert.equal(queueFailureText("claim", 500, null), uncertain);
+  assert.equal(queueFailureText("topic", 503, null), uncertain);
+  assert.equal(queueFailureText("assign", 503, null), "The team list is unavailable right now. Try again in a moment.");
+  assert.equal(queueFailureText("assign", 502, null), uncertain);
+  assert.equal(queueFailureText("resolve", 409, "held_reply_pending"), "A held reply needs a decision first.");
+  assert.equal(queueFailureText("claim", 409, null), "This conversation changed. Refreshed, so look again before acting.");
+  assert.equal(queueFailureText("claim", 403, null), "You do not have permission to do that.");
+  assert.equal(queueFailureText("assign", 422, null), "That could not be done. Refreshed: look again before acting.");
+});
+
+test("customSnoozeUntil reads the field in +08:00 and says in words what is wrong", () => {
+  const { customSnoozeUntil } = queue;
+  // NOW is 2026-11-17 12:00 in +08:00.
+  assert.deepEqual(customSnoozeUntil("2026-11-18T09:30", NOW), { until: "2026-11-18T09:30:00+08:00" });
+  assert.deepEqual(customSnoozeUntil("2026-11-18T09:30:15", NOW), { until: "2026-11-18T09:30:00+08:00" });
+  assert.deepEqual(customSnoozeUntil("2026-11-17T12:00", NOW), { error: "Pick a time in the future." });
+  assert.deepEqual(customSnoozeUntil("2026-11-16T09:00", NOW), { error: "Pick a time in the future." });
+  // 60 days ahead is allowed, a minute more is not.
+  assert.deepEqual(customSnoozeUntil("2027-01-16T12:00", NOW), { until: "2027-01-16T12:00:00+08:00" });
+  assert.deepEqual(customSnoozeUntil("2027-01-16T12:01", NOW), { error: "Pick a time within the next 60 days." });
+  assert.deepEqual(customSnoozeUntil("", NOW), { error: "Pick a date and time." });
+  assert.deepEqual(customSnoozeUntil("tomorrow", NOW), { error: "Pick a date and time." });
+});
+
+test("threadActions: what the header offers per item and role", () => {
+  const { threadActions } = queue;
+  const staff = { userId: "u-me", role: "tenant_staff" };
+  const admin = { userId: "u-me", role: "tenant_admin" };
+  const platform = { userId: "u-me", role: "platform_admin" };
+  const other = { assignee_id: "u-2", assignee: { id: "u-2", display_name: "Aina Demo" } };
+  // The assistant has it, or an older server sent no queue fields: the old Take over block.
+  assert.equal(threadActions(item({ queue_status: "bot", queue_reason: null }), admin), null);
+  assert.equal(threadActions({ id: "c9", human_muted: false }, admin), null);
+
+  const open = threadActions(item(), staff);
+  assert.deepEqual(open, {
+    primary: { kind: "take_it" }, snooze: true, assign: false, unclaim: false, priority: true, topic: true,
+    takeOver: true, handBack: true,
+  });
+  assert.equal(threadActions(item(), admin).assign, true);
+  assert.equal(threadActions(item(), platform).assign, true);
+
+  // Someone else holds it: staff may resolve but neither take it nor give it up; admins may both.
+  const theirs = threadActions(item(other), staff);
+  assert.deepEqual([theirs.primary, theirs.unclaim, theirs.assign], [{ kind: "resolve" }, false, false]);
+  const taken = threadActions(item(other), admin);
+  assert.deepEqual([taken.primary, taken.unclaim, taken.assign], [{ kind: "take_from", name: "Aina" }, true, true]);
+  assert.equal(threadActions(item({ assignee_id: "u-me" }), staff).unclaim, true);
+
+  // A person already holds the chat: no Take over, Hand back stays.
+  const muted = threadActions(item({ human_muted: true }), staff);
+  assert.deepEqual([muted.takeOver, muted.handBack], [false, true]);
+
+  for (const state of ["waiting_customer", "snoozed"]) {
+    const entry = threadActions(item({ queue_status: state, queue_reason: null }), admin);
+    assert.deepEqual([entry.primary.kind, entry.snooze, entry.assign], ["resolve", true, true], state);
+  }
+  // Resolved: nothing to resolve, snooze or assign; priority and topic stay; Hand back only if a person holds it.
+  const resolved = threadActions(item({ queue_status: "resolved", queue_reason: null }), admin);
+  assert.deepEqual(resolved, {
+    primary: { kind: "none" }, snooze: false, assign: false, unclaim: false, priority: true, topic: true,
+    takeOver: true, handBack: false,
+  });
+  assert.equal(threadActions(item({ queue_status: "resolved", queue_reason: null, human_muted: true }), admin).handBack, true);
 });

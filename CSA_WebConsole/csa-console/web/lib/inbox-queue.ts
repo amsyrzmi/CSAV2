@@ -256,6 +256,22 @@ function weekdayTime(ms: number): string {
   return `${WEEKDAYS[f.weekday]} ${pad(f.hour)}:${pad(f.minute)}`;
 }
 
+const DAY_MS = 24 * 3_600_000;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * When a snooze ends, in company time: "Thu 09:00", or "Wed 25 Nov 09:00" when it is more than six
+ * days after `now` (a weekday alone would then be ambiguous). "" for a missing or unreadable time.
+ * The row's label and the snooze notice both use it.
+ */
+export function snoozeUntilText(until: string | null | undefined, now: number): string {
+  const ms = parseTime(until ?? null);
+  if (ms === null) return "";
+  if (ms - now <= 6 * DAY_MS) return weekdayTime(ms);
+  const f = companyFields(ms);
+  return `${WEEKDAYS[f.weekday]} ${f.day} ${MONTHS[f.month]} ${pad(f.hour)}:${pad(f.minute)}`;
+}
+
 /** Later today (+3 h), Tomorrow 09:00 and Next Monday 09:00 (strictly after today), all in +08:00. */
 export function snoozePresets(now: Date): { label: string; until: string }[] {
   const t = now.getTime();
@@ -299,8 +315,8 @@ export function rowMeta(item: Conversation, now: number, me: { userId: string | 
       state = { tone: "neutral", text: "Waiting on customer" };
       break;
     case "snoozed": {
-      const until = parseTime(item.snoozed_until);
-      state = { tone: "info", text: until === null ? "Snoozed" : `Snoozed until ${weekdayTime(until)}` };
+      const until = snoozeUntilText(item.snoozed_until, now);
+      state = { tone: "info", text: until ? `Snoozed until ${until}` : "Snoozed" };
       break;
     }
     case "resolved":
@@ -331,7 +347,6 @@ export function rowMeta(item: Conversation, now: number, me: { userId: string | 
 
 /** The tabs whose rows show how long each item has waited on us instead of the last message time. */
 const WAIT_TABS: readonly QueueTabId[] = ["needs_us", "mine", "unassigned", "overdue"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "17 Nov 2026, 09:50" in company time, or "" for an unreadable time. */
 export function companyDateTime(at: string | null | undefined): string {
@@ -409,6 +424,92 @@ export function primaryAction(
   }
 }
 
+/** What the thread header offers for a queued item; null for the assistant's chats and rows from an older server. */
+export type ThreadActions = {
+  primary: PrimaryAction;
+  snooze: boolean;
+  /** Assign to…: administrators only. */
+  assign: boolean;
+  /** Give up this item: the holder, or an administrator. */
+  unclaim: boolean;
+  priority: boolean;
+  topic: boolean;
+  /** Take over the chat, so a person can reply (the assistant still answers it). */
+  takeOver: boolean;
+  /** Hand back to the assistant (the release route, after a confirmation). */
+  handBack: boolean;
+};
+
+const OPEN_STATES: readonly QueueState[] = ["needs_staff", "waiting_customer", "snoozed"];
+
+/**
+ * The thread header's actions (design 14.4). The assistant's chats (`bot`) and rows without queue
+ * fields keep the old Take over / Hand back block, so this is null for them.
+ */
+export function threadActions(
+  item: Conversation,
+  me: { userId: string | null; role: ConsoleRole | null },
+): ThreadActions | null {
+  const state = item.queue_status;
+  if (typeof state !== "string" || state === "bot") return null;
+  const admin = me.role === "tenant_admin" || me.role === "platform_admin";
+  const open = OPEN_STATES.includes(state);
+  const held = !!item.assignee_id;
+  return {
+    primary: primaryAction(item, me),
+    snooze: open,
+    assign: admin && open,
+    unclaim: held && (admin || (me.userId !== null && item.assignee_id === me.userId)),
+    priority: true,
+    topic: true,
+    takeOver: !item.human_muted,
+    handBack: open || item.human_muted,
+  };
+}
+
+/** "Waiting on us for 3h 20m, due 1h ago" for a needs-us item, from the server's times; "" otherwise. */
+export function waitBannerText(
+  item: Pick<Conversation, "queue_status" | "needs_staff_since" | "due_at">,
+  now: number,
+): string {
+  if (item.queue_status !== "needs_staff") return "";
+  const wait = waitText(item.needs_staff_since ?? null, now);
+  if (!wait) return "";
+  const head = `Waiting on us for ${wait === "just now" ? "under 1m" : wait}`;
+  const due = parseTime(item.due_at ?? null);
+  if (due === null) return head;
+  const diff = due - now;
+  const tail = diff > 0
+    ? diff < 60_000 ? "due in under 1m" : `due in ${duration(diff)}`
+    : -diff < 60_000 ? "due just now" : `due ${duration(-diff)} ago`;
+  return `${head}, ${tail}`;
+}
+
+/** "Assigned to Aina Demo" when someone else holds the item, named or not; "" when nobody or I do. */
+export function assignedText(
+  item: Partial<Pick<Conversation, "assignee_id" | "assignee">>,
+  me: { userId: string | null },
+): string {
+  if (!item.assignee_id || item.assignee_id === me.userId) return "";
+  return `Assigned to ${item.assignee?.display_name || "someone outside the team list"}`;
+}
+
+const LOCAL_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/;
+
+/**
+ * A `datetime-local` value read as company time (+08:00), to the minute, as the snooze `until`; or
+ * what is wrong with it in words (the server's own window: in the future, at most 60 days ahead).
+ */
+export function customSnoozeUntil(value: string, now: number): { until: string } | { error: string } {
+  const m = LOCAL_TIME.exec(value.trim());
+  const until = m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+08:00` : "";
+  const ms = until ? Date.parse(until) : Number.NaN;
+  if (Number.isNaN(ms)) return { error: "Pick a date and time." };
+  if (ms <= now) return { error: "Pick a time in the future." };
+  if (ms > now + 60 * DAY_MS) return { error: "Pick a time within the next 60 days." };
+  return { until };
+}
+
 // ---- errors and bulk results ----
 
 /** A plain sentence for a failed queue action. Never shows a raw code; `fallback` covers the rest. */
@@ -427,6 +528,20 @@ export function actionErrorText(status: number | null, code: string | null, fall
   }
   if (status === 503) return "The team list is unavailable right now. Try again in a moment.";
   return fallback;
+}
+
+/** A queue request whose outcome is unknown; it is kept, so Retry sends the same key. */
+export const UNCERTAIN_TEXT = "Could not confirm that. Retry sends the same request again.";
+
+/**
+ * The sentence for a failed queue action (one item or bulk). No answer, or a 5xx, may have been
+ * applied, so it is the uncertain sentence (the request is kept for Retry); a 503 is the team list
+ * only for `assign`, whose directory read it is. Everything else is `actionErrorText`.
+ */
+export function queueFailureText(action: QueueActionName, status: number | null, code: string | null): string {
+  if (status === null) return UNCERTAIN_TEXT;
+  if (status >= 500 && !(status === 503 && action === "assign")) return UNCERTAIN_TEXT;
+  return actionErrorText(status, code, "That could not be done. Refreshed: look again before acting.");
 }
 
 const NOT_DONE: [Exclude<BulkOutcome, "done" | "already_handled">, string][] = [
@@ -646,17 +761,15 @@ export function viewToFilters(view: Pick<SavedView, "filters">): ViewRead {
 
 // ---- notices and the other error sentences ----
 
-/** "Wed 09:00" in company time for an ISO time, or "" when it cannot be read. */
-function timeText(at: string | null | undefined): string {
-  const ms = parseTime(at ?? null);
-  return ms === null ? "" : weekdayTime(ms);
-}
-
-/** The plain notice after a queue action (single item). `already_handled` means nothing changed. */
+/**
+ * The plain notice after a queue action (single item). `already_handled` means nothing changed.
+ * `now` places the snooze time ("Wed 09:00", with the date when more than six days ahead).
+ */
 export function queueActionNotice(
   action: QueueActionName,
   outcome: "applied" | "already_handled",
   detail: { until?: string | null; priority?: Priority; topic?: Topic; assigneeName?: string | null },
+  now: number,
 ): string {
   if (outcome === "already_handled") return "Already up to date.";
   switch (action) {
@@ -667,7 +780,7 @@ export function queueActionNotice(
     case "topic": return detail.topic ? `Topic set to ${TOPIC_LABELS[detail.topic]}.` : "Topic changed.";
     case "assign": return detail.assigneeName ? `Assigned to ${detail.assigneeName}.` : "Assigned.";
     case "snooze": {
-      const when = timeText(detail.until);
+      const when = snoozeUntilText(detail.until, now);
       return when ? `Snoozed until ${when}.` : "Snoozed.";
     }
   }

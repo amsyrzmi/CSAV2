@@ -4,22 +4,29 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import { ArrowDown, ArrowLeft } from "lucide-react";
 import CustomerAvatar from "@/components/console/fs/CustomerAvatar";
 import { Skeleton } from "@/components/console/fs/Skeleton";
+import StatusLabel from "@/components/console/fs/StatusLabel";
 import { action, field, Notice, secondary } from "@/components/console/ui";
 import { rowTitle } from "@/lib/customer-identity";
+import type { ConsoleRole } from "@/lib/identity-contracts";
 import type { Approval, Conversation, Message } from "@/lib/inbox-api";
-import { dateTime, handoffNoteLine, nearBottom, newMessagesText, threadItems, unseenCount } from "@/lib/inbox-thread";
+import { dueLabel, rowMeta } from "@/lib/inbox-queue";
+import { handoffNoteLine, nearBottom, newMessagesText, threadItems, unseenCount } from "@/lib/inbox-thread";
 import { ChannelBadge, contactOf } from "./ConversationList";
 import { MessageItem } from "./MessageItem";
+import { QueueBanner } from "./QueueBanner";
 import { ReviewCard } from "./ReviewCard";
+import { ThreadActions } from "./ThreadActions";
 import type { InboxActions, Pending } from "./useInboxActions";
 
 const timeOf = (at: string | undefined) => (at ? new Date(at).getTime() || 0 : 0);
 
 export function Thread({
   id, row, current, detailError, messages, onOlder, pending, now, motion, query, actions,
-  feedback, onBack, onDetails, detailsRef, logRef,
+  feedback, onBack, onDetails, detailsRef, logRef, me,
 }: {
   id: string; row: Conversation | undefined; current: Conversation | null; detailError: string;
+  /** The signed-in person: the real user id (platform admins too) and the role, for the queue actions. */
+  me: { userId: string | null; role: ConsoleRole | null };
   messages: {
     items: Message[]; loaded: boolean; error: string; status: number | null; next_cursor: string | number | null;
   };
@@ -32,6 +39,9 @@ export function Thread({
   const title = rowTitle(contact);
   const muted = current?.human_muted ?? null;
   const noteLine = handoffNoteLine(current?.handoff_note);
+  // The state and due labels as the row has them, from the polled read.
+  const meta = current && now ? rowMeta(current, now, me) : null;
+  const due = meta ? dueLabel(meta.due) : null;
   const base = `/console/v1/inbox/conversations/${id}`;
   const [text, setText] = useState("");
   // The reply is queued only after a second, explicit step; Cancel is where focus starts.
@@ -129,6 +139,7 @@ export function Thread({
   }
 
   return <section aria-labelledby={`thread-${id}-title`} data-testid="inbox-thread"
+    data-conversation={id} data-loaded={current ? "true" : "false"}
     className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
     <header className={`flex flex-col gap-2 border-b border-[color:var(--fs-border)] px-3 py-2.5 ${motion
       ? "transition-[background-color,box-shadow] duration-200 ease-(--fs-ease-out)" : ""} ${muted
@@ -147,26 +158,18 @@ export function Thread({
             <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-700">
               {shown && <ChannelBadge channel={shown.channel} testId="inbox-thread-channel" />}
               <span>{muted === null ? "Checking who is replying" : muted ? "Staff has taken over" : "The assistant is handling this"}</span>
+              {meta?.state && <StatusLabel tone={meta.state.tone}>{meta.state.text}</StatusLabel>}
+              {due && <StatusLabel tone={due.tone}>{due.text}</StatusLabel>}
             </p>
             {/* Model text shaped by a customer's message: a plain text child, never markup or a link. */}
             {noteLine && <p data-testid="inbox-handoff-note" className="mt-1 break-words text-xs text-ink-700">{noteLine}</p>}
           </div>
         </div>
       </div>
-      {current && <div className="flex flex-wrap items-center gap-2">
-        {current.human_muted && current.ai_muted_until && <>
-          <p className="w-full text-xs text-ink-700">The assistant is paused until {dateTime(current.ai_muted_until)}.
-            Take over indefinitely to keep it paused until you release it.</p>
-          <button type="button" className={secondary} disabled={blocked || !!detailError}
-            onClick={() => void act("takeover")}>Take over indefinitely</button>
-        </>}
-        <button type="button" className={secondary} disabled={blocked || !!detailError}
-          onClick={() => {
-            if (!current.human_muted || window.confirm("Let the assistant reply again? It won't answer messages that came in while you were handling this chat."))
-              void act(current.human_muted ? "release" : "takeover");
-          }}>{current.human_muted ? "Hand back to assistant" : "Take over"}</button>
-      </div>}
+      {current && <ThreadActions item={current} me={me} query={query} actions={actions} disabled={!!detailError}
+        onTakeover={() => void act("takeover")} onRelease={() => void act("release")} />}
     </header>
+    {current && <QueueBanner item={current} now={now} me={me} />}
     {(detailError || messages.error) && <div className="border-b border-[color:var(--fs-border)] p-3">
       {/* A refusal (403) carries the server's plain words; retrying will not change it. */}
       <Notice error>{messages.status === 403 && messages.error ? messages.error

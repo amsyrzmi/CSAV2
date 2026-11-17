@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -31,6 +31,7 @@ from tests.test_inbox_redesign_browser import (
     inbox_page,
     on_top,
     open_filters,
+    open_thread,
     page_width,
     row,
     rows_loaded,
@@ -952,3 +953,680 @@ async def test_the_clock_is_the_servers_wait_in_queue_tabs_and_the_last_message_
         await expect(clock).to_have_attribute("title", "Last message 17 Nov 2026, 09:57")
         await tab(page, "needs_us").click()
         await expect(clock).to_have_text("2h 10m")
+
+
+# ---- the thread header: one primary action, Snooze, More, the dialogs and the banner -----------
+
+OTHER_ROW = "a0000000-0000-4000-8000-000000000008"
+KL = timezone(timedelta(hours=8))
+UNCERTAIN = "Could not confirm that. Retry sends the same request again."
+
+
+def other_row() -> dict[str, Any]:
+    """Needs us, held by Aina (another member of the team)."""
+    return conversation(
+        OTHER_ROW,
+        "telegram",
+        name="Hana Yusof",
+        known=True,
+        preview="Any update on my refund?",
+        minutes=4,
+        queue_status="needs_staff",
+        queue_reason="escalation",
+        assignee_id=AINA,
+        assignee_name="Aina Demo",
+        needs_staff_since=at(-60),
+        due_at=at(60),
+    )
+
+
+def action_inbox(**changes: Any) -> Inbox:
+    state = queue_inbox(**changes)
+    state.items.append(other_row())
+    return state
+
+
+def primary(page: Page) -> Any:
+    return page.get_by_test_id("inbox-primary-action")
+
+
+def header(page: Page) -> Any:
+    return page.get_by_test_id("inbox-thread").locator("header")
+
+
+async def open_item(page: Page, identifier: str) -> None:
+    """Open a row from the All tab and wait for its detail read (the actions need its version)."""
+    if await row(page, identifier).count() == 0:
+        await tab(page, "all").click()
+    await open_thread(page, identifier)
+    loaded = page.locator(
+        f'[data-testid="inbox-thread"][data-conversation="{identifier}"][data-loaded="true"]'
+    )
+    await expect(loaded).to_have_count(1, timeout=WAIT)
+
+
+async def menu_items(page: Page, trigger: str) -> list[str]:
+    await page.get_by_test_id(trigger).click()
+    menu = page.get_by_role("menu")
+    await expect(menu).to_be_visible()
+    names = [name.strip() for name in await menu.get_by_role("menuitem").all_inner_texts()]
+    await page.keyboard.press("Escape")
+    await expect(menu).to_have_count(0)
+    return names
+
+
+def row_of(state: Inbox, identifier: str) -> dict[str, Any]:
+    return next(item for item in state.items if item["id"] == identifier)
+
+
+async def test_each_item_gets_its_one_primary_action_and_sends_the_right_body(
+    shell: Shell,
+) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await tab(page, "all").click()
+        await rows_loaded(page, 8)
+        expected = {
+            UNNAMED: "Take it",
+            WAITING_ROW: "Take it",
+            NAMED: "Resolve",
+            NEWCOMER: "Resolve",
+            LONG: "Resolve",
+            OTHER_ROW: "Take it from Aina",
+            BOT_ROW: "Take over",
+        }
+        for identifier, text in expected.items():
+            await open_item(page, identifier)
+            await expect(primary(page)).to_have_text(text)
+            await expect(primary(page)).to_have_count(1)
+        # Resolved: nothing to do first, so no primary action at all.
+        await open_item(page, RESOLVED_ROW)
+        await expect(primary(page)).to_have_count(0)
+        # The assistant has this one: Take over as before, and no queue menus.
+        await open_item(page, BOT_ROW)
+        await expect(page.get_by_test_id("inbox-snooze-menu")).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-more-menu")).to_have_count(0)
+
+        # Take it claims with the version that was read, and nothing else.
+        await open_item(page, UNNAMED)
+        await expect(header(page).get_by_text("Needs us", exact=True)).to_be_visible()
+        await expect(header(page).get_by_text(re.compile(r"^Overdue \d+m$"))).to_be_visible()
+        # The request is held back so the controls can be seen disabled while it is in flight.
+        state.queue_delay = 1.0
+        await primary(page).click()
+        for test_id in ("inbox-primary-action", "inbox-snooze-menu", "inbox-more-menu"):
+            await expect(page.get_by_test_id(test_id)).to_be_disabled()
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        state.queue_delay = 0.0
+        call = state.queue_calls[-1]
+        assert (call["id"], call["action"]) == (UNNAMED, "claim"), call
+        assert set(call["body"]) == {"request_key", "expected_version"}, call
+        assert call["body"]["expected_version"] == 1, call
+        # Refreshed: the item is now mine, so the primary action is Resolve.
+        await expect(primary(page)).to_have_text("Resolve", timeout=WAIT)
+        await expect(primary(page)).to_be_enabled()
+
+        # Resolve says when the customer last wrote, as the loaded item had it.
+        await open_item(page, NAMED)
+        seen = row_of(state, NAMED)["last_customer_at"]
+        await primary(page).click()
+        await expect(
+            page.get_by_text("Resolved. The assistant has this conversation again.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        call = state.queue_calls[-1]
+        assert (call["id"], call["action"]) == (NAMED, "resolve"), call
+        assert call["body"]["seen_customer_at"] == seen, call
+        assert call["body"]["expected_version"] == 1, call
+        await expect(primary(page)).to_have_count(0, timeout=WAIT)
+
+        # An administrator takes someone else's item with a claim too.
+        await open_item(page, OTHER_ROW)
+        await primary(page).click()
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        assert (state.queue_calls[-1]["id"], state.queue_calls[-1]["action"]) == (
+            OTHER_ROW,
+            "claim",
+        )
+
+        # Take over on the assistant's chat is the existing route, unchanged.
+        await open_item(page, BOT_ROW)
+        await primary(page).click()
+        await eventually(lambda: len(state.handoffs) == 1)
+        assert state.handoffs[0]["action"] == "takeover", state.handoffs
+        assert state.handoffs[0]["body"]["expected_version"] == 1, state.handoffs
+
+
+async def test_staff_never_see_assign_or_take_from_and_admins_do(shell: Shell) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state, role="tenant_staff") as page:
+        await rows_loaded(page, 4)
+        await open_item(page, OTHER_ROW)
+        # Staff may still resolve someone else's item; they are told who has it.
+        await expect(primary(page)).to_have_text("Resolve")
+        await expect(page.get_by_text("Take it from", exact=False)).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-queue-banner")).to_contain_text(
+            "Assigned to Aina Demo"
+        )
+        items = await menu_items(page, "inbox-more-menu")
+        assert "Assign to…" not in items and "Give up this item" not in items, items
+        assert {"Set priority…", "Set topic…"} <= set(items), items
+        # Their own item: they may give it up, still never assign.
+        await open_item(page, NAMED)
+        items = await menu_items(page, "inbox-more-menu")
+        assert "Give up this item" in items and "Assign to…" not in items, items
+        await page.get_by_test_id("inbox-more-menu").click()
+        await page.get_by_role("menuitem", name="Give up this item").click()
+        await expect(page.get_by_text("Gave up this item.", exact=True)).to_be_visible(timeout=WAIT)
+        assert state.queue_calls[-1]["action"] == "unclaim", state.queue_calls
+    state = action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, OTHER_ROW)
+        await expect(primary(page)).to_have_text("Take it from Aina")
+        items = await menu_items(page, "inbox-more-menu")
+        assert {"Assign to…", "Give up this item", "Set priority…", "Set topic…"} <= set(items), (
+            items
+        )
+
+
+async def test_platform_admin_on_a_company_can_assign(shell: Shell) -> None:
+    # A platform administrator is not a member, so the team list never names them.
+    team = [
+        {"id": AINA, "display_name": "Aina Demo", "role": "tenant_staff"},
+        {
+            "id": "33333333-3333-4333-8333-333333333332",
+            "display_name": "Bakar Demo",
+            "role": "tenant_admin",
+        },
+    ]
+    state = action_inbox(assignees=team)
+    async with inbox_page(shell, state, role="platform_admin", path="/inbox") as page:
+        await page.get_by_label("Tenant").select_option(redesign.TENANT)
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        await page.get_by_test_id("inbox-more-menu").click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(dialog).to_be_visible()
+        await dialog.get_by_role("radio", name="Aina Demo").check()
+        await dialog.get_by_role("button", name="Assign", exact=True).click()
+        await expect(page.get_by_text("Assigned to Aina Demo.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        call = state.queue_calls[-1]
+        assert call["action"] == "assign" and call["body"]["assignee_id"] == AINA, call
+        assert f"client_id={redesign.TENANT}" in call["query"], call
+
+
+async def test_snooze_presets_send_an_aware_until_and_the_menu_works_by_keyboard(
+    shell: Shell,
+) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        trigger = page.get_by_test_id("inbox-snooze-menu")
+        await trigger.click()
+        menu = page.get_by_role("menu", name="Snooze")
+        await expect(menu).to_be_visible()
+        items = menu.get_by_role("menuitem")
+        assert [text.strip() for text in await items.all_inner_texts()] == [
+            "Later today",
+            "Tomorrow 09:00",
+            "Next Monday 09:00",
+            "Pick a time…",
+        ]
+        # Focus moves in; the arrows, Home and End move it and wrap round.
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(1)).to_be_focused()
+        await page.keyboard.press("End")
+        await expect(items.nth(3)).to_be_focused()
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowUp")
+        await expect(items.nth(3)).to_be_focused()
+        await page.keyboard.press("Home")
+        await expect(items.nth(0)).to_be_focused()
+        # Escape closes it and puts focus back on its button; J does not move the list meanwhile.
+        await page.keyboard.press("j")
+        await expect(row(page, NAMED)).to_have_attribute("aria-current", "true")
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
+        await expect(trigger).to_be_focused()
+        await expect(page.get_by_test_id("inbox-thread")).to_be_visible()
+        # A click elsewhere closes it too.
+        await trigger.click()
+        await expect(menu).to_be_visible()
+        await page.get_by_role("log").click()
+        await expect(menu).to_have_count(0)
+
+        await trigger.click()
+        await menu.get_by_role("menuitem", name="Tomorrow 09:00").click()
+        await expect(page.get_by_text(re.compile(r"^Snoozed until \w{3} 09:00\.$"))).to_be_visible(
+            timeout=WAIT
+        )
+        call = state.queue_calls[-1]
+        assert call["action"] == "snooze", call
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT09:00:00\+08:00", call["body"]["until"]), call
+        until = datetime.fromisoformat(call["body"]["until"])
+        assert until > datetime.now(UTC), call
+        assert call["body"]["seen_customer_at"] == row_of(state, NAMED)["last_customer_at"], call
+        # Refreshed: the item is snoozed now, and its header says until when.
+        await expect(header(page).get_by_text(re.compile(r"^Snoozed until "))).to_be_visible(
+            timeout=WAIT
+        )
+
+
+async def test_pick_a_time_checks_the_time_in_words_and_sends_the_picked_time(
+    shell: Shell,
+) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        trigger = page.get_by_test_id("inbox-snooze-menu")
+        await trigger.click()
+        await page.get_by_role("menuitem", name="Pick a time…").click()
+        dialog = page.get_by_test_id("inbox-snooze-custom")
+        await expect(dialog).to_be_visible()
+        field_ = dialog.get_by_label("Snooze until")
+        await expect(field_).to_have_attribute("type", "datetime-local")
+        inside = await dialog.evaluate("el => el.contains(document.activeElement)")
+        assert inside, "focus stayed outside the dialog"
+        now = datetime.now(KL)
+        send = dialog.get_by_role("button", name="Snooze", exact=True)
+        await field_.fill((now - timedelta(days=1)).strftime("%Y-%m-%dT09:00"))
+        await send.click()
+        await expect(dialog.get_by_text("Pick a time in the future.", exact=True)).to_be_visible()
+        await field_.fill((now + timedelta(days=61)).strftime("%Y-%m-%dT09:00"))
+        await send.click()
+        await expect(
+            dialog.get_by_text("Pick a time within the next 60 days.", exact=True)
+        ).to_be_visible()
+        assert state.queue_calls == []
+        # Escape closes it and focus goes back to the Snooze button.
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_be_hidden()
+        await expect(trigger).to_be_focused()
+
+        await trigger.click()
+        await page.get_by_role("menuitem", name="Pick a time…").click()
+        picked = (now + timedelta(days=2)).strftime("%Y-%m-%dT10:30")
+        await dialog.get_by_label("Snooze until").fill(picked)
+        await dialog.get_by_role("button", name="Snooze", exact=True).click()
+        await expect(dialog).to_be_hidden()
+        await expect(page.get_by_text(re.compile(r"^Snoozed until \w{3} 10:30\.$"))).to_be_visible(
+            timeout=WAIT
+        )
+        call = state.queue_calls[-1]
+        assert call["action"] == "snooze" and call["body"]["until"] == f"{picked}:00+08:00", call
+
+
+async def refused(page: Page, state: Inbox, sentence: str) -> None:
+    """The sentence shows once, and the item is read again at once (not at the next poll)."""
+    await expect(page.get_by_text(sentence, exact=True)).to_have_count(1, timeout=WAIT)
+    sent = state.queue_calls[-1]["at"]
+    await eventually(lambda: any(sent < read < sent + 1.5 for read in state.detail_reads), 3)
+
+
+async def test_each_refusal_ends_in_a_plain_sentence_and_a_refresh(shell: Shell) -> None:
+    state = action_inbox()
+    state.queue_script = {
+        "resolve": [
+            (409, {"detail": {"code": "held_reply_pending"}}),
+            (409, {"detail": {"code": "customer_wrote"}}),
+        ],
+        "claim": [
+            (409, {"detail": "conversation changed; refresh before acting"}),
+            (403, {"detail": "only an administrator can take over someone else's claim"}),
+        ],
+        "priority": [(404, {"detail": "conversation not found"})],
+        "assign": [(503, {"detail": "member directory unavailable"})],
+        "topic": [(503, {"detail": "synthetic outage"})],
+    }
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        await primary(page).click()
+        await refused(page, state, "A held reply needs a decision first.")
+        await primary(page).click()
+        await refused(page, state, "The customer wrote after you opened this. Reload to see it.")
+        await expect(page.get_by_text("A held reply needs a decision first.")).to_have_count(0)
+
+        await open_item(page, UNNAMED)
+        await primary(page).click()
+        await refused(
+            page, state, "This conversation changed. Refreshed, so look again before acting."
+        )
+        await primary(page).click()
+        await refused(page, state, "You do not have permission to do that.")
+
+        more = page.get_by_test_id("inbox-more-menu")
+        await more.click()
+        await page.get_by_role("menuitem", name="Set priority…").click()
+        dialog = page.get_by_test_id("inbox-priority-dialog")
+        await dialog.get_by_role("radio", name="Urgent").check()
+        await dialog.get_by_role("button", name="Save priority").click()
+        await refused(page, state, "This conversation is not available any more.")
+        # None of these is kept for a retry: they were refused.
+        await expect(page.get_by_role("button", name="Retry the same action")).to_have_count(0)
+
+        # A 503 from assign is the team list; it may not have been applied, so Retry is offered.
+        await more.click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        assign = page.get_by_test_id("inbox-assign-dialog")
+        await assign.get_by_role("radio", name="Aina Demo").check()
+        await assign.get_by_role("button", name="Assign", exact=True).click()
+        await refused(page, state, "The team list is unavailable right now. Try again in a moment.")
+        retry = page.get_by_role("button", name="Retry the same action")
+        await expect(retry).to_be_visible()
+        # A kept request owns its key: every queue control waits for it.
+        for test_id in ("inbox-primary-action", "inbox-snooze-menu", "inbox-more-menu"):
+            await expect(page.get_by_test_id(test_id)).to_be_disabled()
+        await retry.click()
+        await expect(page.get_by_text("Assigned to Aina Demo.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        first, second = state.queue_calls[-2:]
+        assert first["body"] == second["body"], (first, second)
+
+        # A 503 from anything else is the uncertain sentence, not the team list.
+        await more.click()
+        await page.get_by_role("menuitem", name="Set topic…").click()
+        topic = page.get_by_test_id("inbox-topic-dialog")
+        await topic.get_by_role("radio", name="Payment").check()
+        await topic.get_by_role("button", name="Save topic").click()
+        await refused(page, state, UNCERTAIN)
+        await page.get_by_role("button", name="Retry the same action").click()
+        await expect(page.get_by_text("Topic set to Payment.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+
+
+async def test_a_network_failure_is_uncertain_and_retry_sends_the_same_request(
+    shell: Shell,
+) -> None:
+    state = action_inbox()
+    state.queue_script = {"claim": ["abort"]}
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        await primary(page).click()
+        await refused(page, state, UNCERTAIN)
+        await expect(page.get_by_text(re.compile("Nothing was changed"))).to_have_count(0)
+        retry = page.get_by_role("button", name="Retry the same action")
+        await expect(primary(page)).to_be_disabled()
+        await retry.click()
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        first, second = state.queue_calls[-2:]
+        assert first["body"]["request_key"] == second["body"]["request_key"], (first, second)
+        assert first["body"] == second["body"]
+
+
+async def test_set_priority_and_topic_send_their_body_and_dialogs_close_on_escape(
+    shell: Shell,
+) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        more = page.get_by_test_id("inbox-more-menu")
+        await more.click()
+        await page.get_by_role("menuitem", name="Set priority…").click()
+        dialog = page.get_by_test_id("inbox-priority-dialog")
+        await expect(dialog).to_be_visible()
+        radios = dialog.get_by_role("radio")
+        await expect(radios).to_have_count(4)
+        # The current priority is chosen to begin with.
+        await expect(dialog.get_by_role("radio", name="High")).to_be_checked()
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_be_hidden()
+        await expect(more).to_be_focused()
+        assert state.queue_calls == []
+
+        await more.click()
+        await page.get_by_role("menuitem", name="Set priority…").click()
+        await dialog.get_by_role("radio", name="Urgent").check()
+        await dialog.get_by_role("button", name="Save priority").click()
+        await expect(page.get_by_text("Priority set to Urgent.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        call = state.queue_calls[-1]
+        assert call["action"] == "priority" and call["body"]["priority"] == "urgent", call
+        assert "seen_customer_at" not in call["body"], call
+
+        await more.click()
+        await page.get_by_role("menuitem", name="Set topic…").click()
+        topic = page.get_by_test_id("inbox-topic-dialog")
+        await expect(topic.get_by_role("radio")).to_have_count(7)
+        await page.keyboard.press("Escape")
+        await expect(topic).to_be_hidden()
+        await expect(more).to_be_focused()
+        await more.click()
+        await page.get_by_role("menuitem", name="Set topic…").click()
+        await topic.get_by_role("radio", name="Complaint").check()
+        await topic.get_by_role("button", name="Save topic").click()
+        await expect(page.get_by_text("Topic set to Complaint.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        call = state.queue_calls[-1]
+        assert call["action"] == "topic" and call["body"]["topic"] == "complaint", call
+
+        # The More menu moves by arrow keys and closes on Escape like Snooze.
+        await more.click()
+        items = page.get_by_role("menu", name="More actions").get_by_role("menuitem")
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(1)).to_be_focused()
+        await page.keyboard.press("Escape")
+        await expect(items).to_have_count(0)
+        await expect(more).to_be_focused()
+
+
+async def test_assign_lists_the_team_never_an_empty_list_and_retries(shell: Shell) -> None:
+    state = action_inbox(assignees_status=500)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        assert state.assignee_calls == 0
+        more = page.get_by_test_id("inbox-more-menu")
+        await more.click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(dialog.get_by_text("Could not load the team.")).to_be_visible(timeout=WAIT)
+        await expect(dialog.get_by_role("radio")).to_have_count(0)
+        await expect(dialog.get_by_role("button", name="Assign", exact=True)).to_be_disabled()
+        state.assignees_status = 200
+        await dialog.get_by_role("button", name="Try again").click()
+        person = dialog.get_by_role("radio", name="Aina Demo")
+        await expect(person).to_be_visible(timeout=WAIT)
+        await expect(dialog.get_by_text("Could not load the team.")).to_have_count(0)
+        await person.check()
+        await dialog.get_by_role("button", name="Assign", exact=True).click()
+        await expect(page.get_by_text("Assigned to Aina Demo.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        assert state.queue_calls[-1]["body"]["assignee_id"] == AINA
+        # Escape and Cancel return focus to More.
+        await more.click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        await expect(dialog).to_be_visible()
+        await dialog.get_by_role("button", name="Cancel").click()
+        await expect(dialog).to_be_hidden()
+        await expect(more).to_be_focused()
+    state = action_inbox(assignees_status=503)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        await page.get_by_test_id("inbox-more-menu").click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(
+            dialog.get_by_text("The team list is unavailable right now. Try again in a moment.")
+        ).to_be_visible(timeout=WAIT)
+        await expect(dialog.get_by_role("radio")).to_have_count(0)
+        await expect(dialog.get_by_role("button", name="Assign", exact=True)).to_be_disabled()
+        await page.keyboard.press("Escape")
+        await expect(page.get_by_test_id("inbox-more-menu")).to_be_focused()
+
+
+def banner_rows() -> list[dict[str, Any]]:
+    overdue = conversation(
+        CLOCK_ROW,
+        "telegram",
+        name="Nadia Ismail",
+        known=True,
+        preview="Where is my parcel?",
+        minutes=3,
+        queue_status="needs_staff",
+        queue_reason="escalation",
+        assignee_id=AINA,
+        assignee_name="Aina Demo",
+        needs_staff_since=fixed(-200),
+        due_at=fixed(-60),
+    )
+    soon = conversation(
+        QUIET_ROW,
+        "whatsapp",
+        name="Omar Hakim",
+        known=True,
+        preview="Hello?",
+        minutes=8,
+        queue_status="needs_staff",
+        queue_reason="customer_message",
+        assignee_id=AINA,
+        assignee_name=None,
+        needs_staff_since=fixed(-20),
+        due_at=fixed(40),
+    )
+    mine = conversation(
+        NAMED,
+        "telegram",
+        name="Aisyah Rahman",
+        known=True,
+        preview="Thanks",
+        minutes=9,
+        queue_status="waiting_customer",
+        assignee_id=ME_ID,
+        assignee_name="Synthetic User",
+    )
+    return [overdue, soon, mine]
+
+
+async def test_the_banner_says_how_long_it_has_waited_and_who_has_it(shell: Shell) -> None:
+    state = Inbox(items=banner_rows())
+    async with inbox_page(shell, state) as page:
+        await page.context.clock.set_fixed_time(NOW)
+        await page.reload()
+        await rows_loaded(page, 3)
+        await open_item(page, CLOCK_ROW)
+        banner = page.get_by_test_id("inbox-queue-banner")
+        await expect(banner).to_contain_text("Waiting on us for 3h 20m, due 1h ago")
+        await expect(banner).to_contain_text("Assigned to Aina Demo")
+        await expect(header(page).get_by_text("Overdue 1h", exact=True)).to_be_visible()
+        await open_item(page, QUIET_ROW)
+        await expect(banner).to_contain_text("Waiting on us for 20m, due in 40m")
+        await expect(banner).to_contain_text("Assigned to someone outside the team list")
+        # Mine and waiting on the customer: nothing to add.
+        await open_item(page, NAMED)
+        await expect(header(page).get_by_text("Waiting on customer", exact=True)).to_be_visible()
+        await expect(banner).to_have_count(0)
+
+
+async def test_take_over_hand_back_and_older_rows_still_work(shell: Shell) -> None:
+    # An older server: this row has no queue fields at all.
+    state = Inbox(bare={LONG})
+    # The escalation paused the assistant for a while: Take over indefinitely is offered.
+    row_of(state, NAMED).update(human_muted=True, owned_by="human", ai_muted_until=at(600))
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page)
+        await open_thread(page, LONG)
+        await expect(primary(page)).to_have_text("Take over")
+        await expect(page.get_by_test_id("inbox-snooze-menu")).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-more-menu")).to_have_count(0)
+
+        await open_thread(page, NEWCOMER)
+        await expect(primary(page)).to_have_text("Hand back to assistant")
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await primary(page).click()
+        await asyncio.sleep(0.5)
+        assert state.handoffs == []
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await primary(page).click()
+        await eventually(lambda: len(state.handoffs) == 1)
+        assert state.handoffs[0]["action"] == "release", state.handoffs
+
+        await open_thread(page, NAMED)
+        await page.get_by_role("button", name="Take over indefinitely").click()
+        await eventually(lambda: len(state.handoffs) == 2)
+        assert state.handoffs[1]["action"] == "takeover", state.handoffs
+
+
+async def test_hand_back_from_a_queued_item_asks_first(shell: Shell) -> None:
+    state = action_inbox()
+    row_of(state, NAMED).update(human_muted=True, owned_by="human")
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        more = page.get_by_test_id("inbox-more-menu")
+        items = await menu_items(page, "inbox-more-menu")
+        assert "Take over the chat" not in items and "Hand back to the assistant" in items, items
+        await more.click()
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        await page.get_by_role("menuitem", name="Hand back to the assistant").click()
+        await asyncio.sleep(0.5)
+        assert state.handoffs == []
+        await more.click()
+        page.once("dialog", lambda dialog: asyncio.ensure_future(dialog.accept()))
+        await page.get_by_role("menuitem", name="Hand back to the assistant").click()
+        await eventually(lambda: len(state.handoffs) == 1)
+        assert state.handoffs[0]["action"] == "release", state.handoffs
+        # A held-reply item the assistant still answers: Take over is in More so staff can reply.
+        await open_item(page, WAITING_ROW)
+        items = await menu_items(page, "inbox-more-menu")
+        assert "Take over the chat" in items, items
+
+
+@pytest.mark.parametrize("width", (320, 390))
+async def test_the_thread_header_fits_small_screens(shell: Shell, width: int) -> None:
+    state = action_inbox()
+    async with inbox_page(shell, state, width=width) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, OTHER_ROW)
+        await expect(primary(page)).to_have_text("Take it from Aina")
+        for test_id in ("inbox-primary-action", "inbox-snooze-menu", "inbox-more-menu"):
+            control = page.get_by_test_id(test_id)
+            box = await control.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (test_id, box)
+            assert box["height"] >= 40, (test_id, box)
+        primary_box = await primary(page).bounding_box()
+        snooze_box = await page.get_by_test_id("inbox-snooze-menu").bounding_box()
+        assert primary_box and snooze_box
+        # The primary action comes first in reading order.
+        assert (primary_box["y"], primary_box["x"]) <= (snooze_box["y"], snooze_box["x"])
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], measured
+        for test_id in ("inbox-more-menu", "inbox-snooze-menu"):
+            await page.get_by_test_id(test_id).click()
+            menu = page.get_by_role("menu")
+            box = await menu.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (test_id, box)
+            for item in await menu.get_by_role("menuitem").all():
+                assert await on_top(item), test_id
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], (test_id, measured)
+            await page.keyboard.press("Escape")
+        await page.get_by_test_id("inbox-more-menu").click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(dialog.get_by_role("radio", name="Aina Demo")).to_be_visible(timeout=WAIT)
+        box = await dialog.bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, box

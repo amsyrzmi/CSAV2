@@ -165,6 +165,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     keyHandler.current = (event) => {
+      // A control that handled the key itself (a menu, the reply question) marks it: leave it alone.
+      if (event.defaultPrevented) return;
       const dialogOpen = slideOpen || document.querySelector("dialog[open]") !== null;
       const shortcut = shortcutFor({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
@@ -231,7 +233,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         threadClass={`${PANE} ${threadOpen ? "flex h-[calc(100dvh-1.5rem)] md:h-auto" : "hidden md:flex"}`}
         cardClass="card hidden min-h-0 min-w-0 overflow-y-auto min-[68.75rem]:block"
         feedback={<Feedback actions={actions} framed />} onBack={back}
-        onDetails={() => setDetailsOpen(true)} onCloseDetails={() => setDetailsOpen(false)} detailsRef={detailsRef} />
+        onDetails={() => setDetailsOpen(true)} onCloseDetails={() => setDetailsOpen(false)} detailsRef={detailsRef}
+        me={{ userId: me.user.id, role: me.role }} />
         : <>
           <div className={`${PANE} hidden items-center justify-center p-6 text-center text-sm text-ink-700 md:flex`}>
             Select a conversation to read it.</div>
