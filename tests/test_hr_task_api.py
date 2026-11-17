@@ -16,6 +16,8 @@ import httpx
 import psycopg
 import pytest
 from csa.hr import processes as process_service
+from csa.hr.policy import HrPolicyError
+from csa.hr.process_models import ProcessClose, TaskComplete
 
 from tests.conftest import requires_docker
 from tests.test_hr_people import make_other_tenant_owner, make_people_manager
@@ -38,7 +40,7 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 
 TASKS = f"{HR}/tasks"
 MINE = f"{TASKS}/mine"
-# Every column of 0634's hr_task_rows_mine, as a My tasks row carries it.
+# Every column of hr_task_rows_mine (0634, 0635), as a My tasks row carries it.
 ROW = {
     "task_id",
     "process_id",
@@ -63,6 +65,9 @@ ROW = {
     "pool",
     "needs_my_approval",
     "sent_back_reason",
+    "mine",
+    "assignee_name",
+    "done_by_hr",
 }
 
 
@@ -624,6 +629,9 @@ async def test_my_tasks_for_each_viewer(world: HrWorld) -> None:
         "pool": False,
         "needs_my_approval": False,
         "sent_back_reason": None,
+        "mine": True,
+        "assignee_name": None,  # the HR team's only
+        "done_by_hr": False,
     }
     # The manager: only the step waiting for their approval, flagged, without the assignee's text.
     [approval] = (await mine(world, "manager"))["items"]
@@ -633,11 +641,14 @@ async def test_my_tasks_for_each_viewer(world: HrWorld) -> None:
         True,
         "awaiting_approval",
     )
-    for withheld in ("description_en", "description_ms", "reference_note", "note"):
+    for withheld in ("description_en", "description_ms", "reference_note", "note", "done_by_hr"):
         assert approval[withheld] is None, withheld
+    assert (approval["mine"], approval["assignee_name"]) == (False, None)
     # The HR team: the pool; the person's own steps are not theirs.
     by_owner = (await mine(world, "owner"))["items"]
-    assert [(r["task_id"], r["pool"]) for r in by_owner] == [(desk, True)]
+    assert [(r["task_id"], r["pool"], r["mine"], r["assignee_name"]) for r in by_owner] == [
+        (desk, True, False, None)
+    ]
     # Nobody else.
     for who in ("outsider", "admin", "reader", "operator"):
         assert (await mine(world, who)) == {"items": [], "next_cursor": None}, who
@@ -754,3 +765,37 @@ async def test_note_and_complete_take_a_long_escaped_note_other_task_writes_keep
     problem(skipped, 413, "hr_request_too_large")
     too_long = await raw("staff", f"{TASKS}/{task}/note", {"note": "\U0001f600" * 3000})
     problem(too_long, 413, "hr_request_too_large")
+
+
+async def test_an_assistant_or_capability_session_cannot_act_on_a_task(world: HrWorld) -> None:
+    """Task 7 minor 2: the task writes (team=False in HrProcesses._write) keep the human-only
+    gate of every HR write: an assistant or capability session is refused before the database,
+    and nothing changes. My tasks is a read and, like every HR read, has no such gate."""
+    staff = world.employees["staff"]
+    process = await custom_process(
+        world, staff, step(title_en="Synthetic step", owner_role="employee")
+    )
+    task, body = await at(world, process, 1)
+    before = await state(world)
+    service = process_service.HrProcesses(world.service)
+    for who in ("staff", "owner"):
+        proof = world.proof(who)
+        for session in (
+            proof.model_copy(update={"assistant": True}),
+            proof.model_copy(update={"capability": "hr_assistant"}),
+        ):
+            with pytest.raises(HrPolicyError) as refused:
+                await service.task_action(
+                    session,
+                    "task.complete",
+                    UUID(task),
+                    TaskComplete(expected_version=body["expected_version"]),
+                    uuid4(),
+                )
+            assert refused.value.code == "human_operation_required"
+            with pytest.raises(HrPolicyError) as closed:
+                await service.close(
+                    session, UUID(process), ProcessClose(note="Synthetic: close"), uuid4()
+                )
+            assert closed.value.code == "human_operation_required"
+    assert await state(world) == before

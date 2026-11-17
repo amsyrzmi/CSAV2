@@ -15,11 +15,13 @@ import json
 import re
 import typing
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, LiteralString
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from csa.core.db import q
 from csa.core.tenancy import tx
 from csa.hr import reminders
 from csa.hr.operation_records import NotificationRecord
@@ -108,6 +110,13 @@ def kinds_check(definition: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", definition))
 
 
+async def set_role(world: HrWorld, user: str, role: str) -> None:
+    await world.q(
+        "UPDATE console_memberships SET role=%s WHERE user_id=%s AND client_id=%s",
+        (role, world.users[user], world.tenant),
+    )
+
+
 # ---- The migration -----------------------------------------------------------------------------
 
 
@@ -151,19 +160,56 @@ async def snapshot(world: HrWorld) -> list[Any]:
     functions = await world.q(
         "SELECT p.oid::regprocedure::text AS f, pg_get_functiondef(p.oid) AS d,"
         " p.proacl::text AS acl"
-        " FROM pg_proc p WHERE p.proname IN ('hr_tasks_due','hr_task_reminder_put',"
-        "'hr_task_reminder_user','hr_task_rows_mine') ORDER BY 1"
+        " FROM pg_proc p WHERE p.proname IN ('hr_tasks_due','hr_tasks_due_all',"
+        "'hr_tasks_due_tenants','hr_task_reminder_put','hr_task_reminder_user',"
+        "'hr_task_rows_mine') ORDER BY 1"
     )
     return [constraints, columns, functions]
 
 
 async def test_rerun_of_0635_changes_nothing(world: HrWorld) -> None:
     before = await snapshot(world)
-    assert len(before[2]) == 4
+    assert len(before[2]) == 6
     [path] = [p for v, p in migrate.discover_migrations() if v == "0635"]
     async with world.owner_pool.connection() as conn:
         await conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
     assert await snapshot(world) == before
+
+
+async def test_a_kind_0635_does_not_know_survives_the_rebuild(world: HrWorld) -> None:
+    """The live-list method: a kind added by a later migration (an Inbox-lane one merged after
+    0635, gap-filled by the migrator) is kept when 0635 rebuilds the constraint. Run in a
+    transaction that is rolled back, so the shared schema is untouched."""
+    [path] = [p for v, p in migrate.discover_migrations() if v == "0635"]
+    later = ["workflow_review", "training_review", "interview_upcoming", "synthetic_inbox_kind"]
+    # task_due is missing, so 0635 must rebuild; NOT VALID keeps the existing task_due rows.
+    listed = ", ".join(f"'{k}'" for k in [*later, "task_assigned", "task_due_soon", "task_overdue"])
+    async with world.owner_pool.connection() as conn:
+        async with conn.transaction(force_rollback=True):
+            await conn.execute(
+                "ALTER TABLE public.hr_notifications DROP CONSTRAINT hr_notifications_kind_check"
+            )
+            await conn.execute(
+                "ALTER TABLE public.hr_notifications ADD CONSTRAINT hr_notifications_kind_check"
+                f" CHECK (kind IN ({listed})) NOT VALID"  # type: ignore[arg-type]
+            )
+            await conn.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+            async with conn.cursor(row_factory=dict_row) as cursor:
+                await cursor.execute(
+                    "SELECT pg_get_constraintdef(oid) AS d, convalidated FROM pg_constraint"
+                    " WHERE conrelid='public.hr_notifications'::regclass"
+                    " AND conname='hr_notifications_kind_check'"
+                )
+                [rebuilt] = await cursor.fetchall()
+    assert kinds_check(rebuilt["d"]) == EARLIER_KINDS | TASK_KINDS | {"synthetic_inbox_kind"}
+    assert rebuilt["convalidated"] is True
+    # Rolled back: the live constraint is the migrated one again.
+    [row] = await world.q(
+        "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint"
+        " WHERE conrelid='public.hr_notifications'::regclass"
+        " AND conname='hr_notifications_kind_check'"
+    )
+    assert kinds_check(row["d"]) == EARLIER_KINDS | TASK_KINDS
 
 
 async def test_functions_are_pinned_definers_and_only_the_entry_points_are_granted(
@@ -171,7 +217,9 @@ async def test_functions_are_pinned_definers_and_only_the_entry_points_are_grant
 ) -> None:
     for signature, public in (
         ("hr_tasks_due(uuid,date)", True),
+        ("hr_tasks_due_tenants(date)", True),
         ("hr_task_reminder_put(uuid,uuid,text,uuid,text,date,text)", True),
+        ("hr_tasks_due_all(uuid,date)", False),
         ("hr_task_reminder_user(uuid,uuid)", False),
     ):
         [row] = await world.q(
@@ -347,6 +395,92 @@ async def test_done_or_cancelled_tasks_get_no_reminder(world: HrWorld) -> None:
     await round_on(world, D)
     assert {r["resource_id"] for r in await reminder_rows(world)} == {ids[2]}
     assert not {gone, shut, ids[0], ids[1]} & {r["resource_id"] for r in await reminder_rows(world)}
+
+
+async def test_a_read_only_member_gets_no_reminders(world: HrWorld) -> None:
+    """Task 8 deviation 3: read-only members cannot act, so they get no reminders, neither as
+    the assignee (the HR pool gets them and sees the step) nor as the HR owner."""
+    await make_people_manager(world)
+    _, own = await one_task(world, world.employees["staff"], owner_role="employee")
+    _, pooled = await one_task(world, world.employees["staff"], owner_role="hr")
+    await set_role(world, "staff", "read_only")
+    await set_role(world, "owner", "read_only")
+    await round_on(world, D)
+    assert {r["subject_id"] for r in await reminder_rows(world)} == {world.users["operator"]}
+    for task in (own, pooled):
+        assert await sent(world, "operator", task) == ["task_assigned", "task_due"]
+    seen = {r["task_id"]: r for r in await mine(world, "operator")}
+    assert {own, pooled} <= set(seen)
+    assert (seen[own]["pool"], seen[own]["mine"], seen[own]["assignee_name"]) == (
+        False,
+        False,
+        "Synthetic Staff",
+    )
+
+
+async def test_a_disabled_account_gets_no_reminders(world: HrWorld) -> None:
+    _, own = await one_task(world, world.employees["staff"], owner_role="employee")
+    await world.q("UPDATE console_users SET is_enabled=false WHERE id=%s", (world.users["staff"],))
+    await round_on(world, D)
+    assert await sent(world, "staff") == []
+    assert await sent(world, "owner", own) == ["task_assigned", "task_due"]
+
+
+async def test_a_new_due_date_starts_a_fresh_cadence(world: HrWorld) -> None:
+    _, task = await one_task(world, world.employees["staff"], owner_role="employee")
+    await round_on(world, D - timedelta(days=5))
+    await round_on(world, D)
+    later = D + timedelta(days=3)
+    await set_due(world, task, later)  # rescheduled: no overdue for the old date
+    for offset in (1, 2, 3, 3):
+        await round_on(world, D + timedelta(days=offset))
+    assert await sent(world, "staff", task) == [
+        "task_assigned",
+        "task_due",
+        "task_due_soon",
+        "task_due",
+    ]
+    keys = [r["reminder_key"] for r in await reminder_rows(world) if r["kind"] == "task_due"]
+    assert len(keys) == 2 and f"due:{D}" in keys[0] and f"due:{later}" in keys[1]
+
+
+async def test_the_worker_tenant_list_is_not_cut_by_the_due_cap(world: HrWorld) -> None:
+    """Task 8 review M1: the worker's tenant list comes from hr_tasks_due_tenants (uncapped
+    DISTINCT, ids only), never from the 5000-row hr_tasks_due. A real >5000-row tenant is too
+    heavy for a test, so the cap is simulated with LIMIT 1 on the same uncapped set."""
+    sql_text = Path(migrate.__file__).resolve().parents[1] / "db/sql/hr/tasks_due_tenants.sql"
+    text = sql_text.read_text(encoding="utf-8")
+    assert "hr_tasks_due_tenants(" in text and "hr_tasks_due(" not in text
+    definitions = {
+        r["f"]: r["d"]
+        for r in await world.q(
+            "SELECT p.proname AS f, pg_get_functiondef(p.oid) AS d FROM pg_proc p"
+            " WHERE p.proname IN ('hr_tasks_due','hr_tasks_due_all','hr_tasks_due_tenants')"
+        )
+    }
+    assert "LIMIT 5000" in definitions["hr_tasks_due"]
+    for name in ("hr_tasks_due_all", "hr_tasks_due_tenants"):
+        assert "LIMIT" not in definitions[name].upper(), name
+    assert "title" not in definitions["hr_tasks_due_tenants"]
+
+    await other_tenant_task(world)
+    await one_task(world, world.employees["staff"], owner_role="employee")
+    capped = {
+        r["client_id"]
+        for r in await world.q(
+            "SELECT client_id FROM (SELECT * FROM public.hr_tasks_due_all(NULL,%s)"
+            " ORDER BY client_id, task_id, kind, recipient_id LIMIT 1) d",
+            (D,),
+        )
+    }
+    async with world.service.pool.connection() as conn:
+        async with conn.transaction():
+            listed = await q.fetch_all("hr/tasks_due_tenants.sql", (D,), conn=conn)
+    ids = [r["client_id"] for r in listed]
+    assert all(set(r) == {"client_id"} for r in listed)
+    assert ids == sorted(ids) and len(ids) == len(set(ids))
+    assert {world.tenant, world.other_tenant} <= set(ids)
+    assert len(capped) == 1 and len(ids) > len(capped)
 
 
 # ---- emit --------------------------------------------------------------------------------------

@@ -360,7 +360,7 @@ areas and HR owner row for the tenant are deleted, its membership is disabled an
 revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
 Each step happens once, whoever runs it.
 
-### Process templates, processes and tasks (HR processes PRs 1-2, migrations 0630-0634)
+### Process templates, processes and tasks (HR processes PRs 1-2, migrations 0630-0635)
 
 A company keeps templates of ordered steps for onboarding, offboarding and custom processes.
 Adding or rehiring a person starts an onboarding from the matching template, marking them as
@@ -421,6 +421,8 @@ they were started with.
   skipped), `next_due_on`, `overdue`), newest first, and `next_cursor` (pass it as `after`) while
   more remain. `limit` is 1-200 (default 50); `status` is `active`, `completed` or `cancelled`;
   `overdue=true` keeps processes with an open task due before today (Asia/Kuala_Lumpur);
+  `overdue=false`, like leaving it out, means no filter (it does not keep only processes that are
+  on time);
   `department` is the person's department; `owner` an employee with a task in the process. The HR
   team sees every process, a manager the processes of their direct reports, the person their own
   onboarding and offboarding (`next_due_on` and `overdue` then count only their own tasks); anyone
@@ -440,10 +442,12 @@ they were started with.
     The caller's own tasks, and every task for `hr`, add `description_en`, `description_ms`,
     `anchor`, `approval_by`, `auto_check`, `reference_note`, `completed_at`, `note`, `version`,
     `sent_back_reason` (why the approver sent the step back, for the assignee; `null` once it is
-    completed again; may hold line breaks). `reference_note` is the step's reference, copied when the process started, so a later
+    completed again; may hold line breaks), `done_by_hr` (`true` when someone other than the named
+    assignee completed it, which only the HR team may: the console shows "done by HR"). `reference_note` is the step's reference, copied when the process started, so a later
     template edit does not change it. The descriptions and `note` may hold line breaks (`\n`):
     when the person leaves, "person left" is added to a skipped task's note on a new line. `hr`
-    alone adds `assignee_employee_id`, `due_offset_days`, `due_overridden`, `completed_by`,
+    alone adds `assignee_employee_id`, `assignee_overridden` (`true` once HR reassigned the step by
+    hand; a manager change then leaves it), `due_offset_days`, `due_overridden`, `completed_by`,
     `approved_by`, `approved_at`. A task with no assignee is in the HR pool.
   - `events` (`hr` only): `{event_id, at, actor, action, task_id, detail}`; `actor` `null` is the
     system; `action` is `process.started`, `process.cancelled`, `process.completed`,
@@ -484,7 +488,8 @@ returns the usual `OperationReceipt` with the person's new `version`; a stale ve
 **Tasks** (migration 0634, `hr_task_apply` and `hr_task_rows_mine`). Who may act is decided by
 the database: the assignee (the person a step is assigned to, through their linked account), the
 approver of a step waiting for approval (the person's manager when the step says so and the manager
-is active and linked, else the HR team) and the HR team (the HR owner and Manage people holders: any
+is active, linked and able to act: an enabled membership that is not read-only and an enabled
+account; else the HR team) and the HR team (the HR owner and Manage people holders: any
 step, on anyone's behalf; the event log names who really did it). A read-only member's writes are
 refused by the session (403 `read_only_session`) even when they are linked to an assignee, so the
 console shows a read-only member their My tasks without the action buttons. Someone with no part in
@@ -511,9 +516,13 @@ breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
   `description_ms`, `owner_role`, `due_on`, `required`, `approval_by`, `auto_check`,
   `reference_note`, `status`, `note` (the shared note), `version`, `overdue`, `pool`,
   `needs_my_approval`, `sent_back_reason` (why the approver sent it back, for the assignee and HR;
-  `null` once completed again). On a row the caller only approves (a manager's approval of a
-  report's step), the descriptions, `reference_note`, `note` and `sent_back_reason` are `null` by
-  design (present, never filled in for that viewer: the console shows nothing there). A caller with
+  `null` once completed again), `mine` (`true` when the caller is the step's assignee: an HR
+  member's own step, as opposed to one listed on someone's behalf or in the pool),
+  `assignee_name` (the assignee's name, for the HR team only; `null` for a pool step and for
+  everyone else) and `done_by_hr` (as in the process detail). On a row the caller only approves
+  (a manager's approval of a report's step), the descriptions, `reference_note`, `note`,
+  `sent_back_reason` and `done_by_hr` are `null` by design (present, never filled in for that
+  viewer: the console shows nothing there). A caller with
   nothing to do gets an empty page.
 - `POST /tasks/{task_id}/complete` `TaskComplete` `{expected_version, note?}` (the assignee or the
   HR team): `done`, or `awaiting_approval` for a step with an approver. A `note` (at most 2000
@@ -523,8 +532,9 @@ breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
   `task_system_only`; a step waiting for approval is 409 `task_awaiting_approval`.
 - `POST /tasks/{task_id}/approve` `TaskApprove` `{expected_version}` (the approver): `done`. Not
   waiting is 409 `task_not_awaiting_approval`; someone else 409 `task_not_approver`; the person who
-  completed it 409 `task_self_approval`, except the HR owner when nobody else is in the HR team
-  (recorded as `approved_without_second_person`).
+  completed it 409 `task_self_approval`; an HR team member approving a step of a process about
+  themself 409 `task_own_process` (they may send it back). The HR owner may still approve in both
+  cases when nobody else in the HR team can act (recorded as `approved_without_second_person`).
 - `POST /tasks/{task_id}/send-back` `TaskReason` `{expected_version, reason}` (the approver): back to
   `todo`, the `reason` (1-500 characters) shown to the assignee as `sent_back_reason`; the note is
   kept. A step of a person who has left is skipped instead.
@@ -602,6 +612,7 @@ other database error is 503 `hr_database_unavailable`, with no database text. Th
 | `task_awaiting_approval` | 409 | This step is waiting for approval. |
 | `task_not_awaiting_approval` | 409 | This step is not waiting for approval. |
 | `task_self_approval` | 409 | Someone other than the person who completed this step must approve it. |
+| `task_own_process` | 409 | Someone else in HR must approve a step of a process about you. |
 | `check_not_met` | 409 | The automatic check for this step is not met yet. |
 | `task_system_only` | 409 | The system completes this step when the person's access is removed. |
 | `task_reason_invalid` | 409 | Give a reason of 1 to 500 characters. |

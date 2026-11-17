@@ -84,9 +84,11 @@ TASK_OWN = TASK_BASE | {
     "note",
     "version",
     "sent_back_reason",
+    "done_by_hr",
 }
 TASK_HR = TASK_OWN | {
     "assignee_employee_id",
+    "assignee_overridden",
     "due_offset_days",
     "due_overridden",
     "completed_by",

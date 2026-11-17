@@ -35,12 +35,15 @@
 --     task.approve {task_id, expected_version}: the task must be awaiting_approval
 --       (hr_task_not_awaiting_approval). The approver (hr_task_approver): approval_by hr is the
 --       HR team; approval_by manager is the person's manager when active and linked (0632
---       hr_process_manager_of), and falls back to the HR team when no manager resolves, when the
---       step is the manager's own (owner_role manager: the manager of the same person can never
---       approve it) or when the manager completed it. Anyone else: hr_task_not_approver. The
---       person who completed it cannot approve (hr_task_self_approval), except the HR owner when
---       no other HR team member (enabled membership, not read-only) exists (spec 5.7.2). Done,
---       approved_by and approved_at set. Event task.approved {approver: hr | manager, and
+--       hr_process_manager_of) and able to act (hr_task_reminder_user below: an enabled, not
+--       read-only membership and an enabled account), and falls back to the HR team when no such
+--       manager resolves, when the step is the manager's own (owner_role manager: the manager of
+--       the same person can never approve it) or when the manager completed it. Anyone else:
+--       hr_task_not_approver. The person who completed it cannot approve
+--       (hr_task_self_approval), and an HR team member cannot approve a step of a process about
+--       themself (hr_task_own_process; they may send it back), except the HR owner when no other
+--       HR team member (enabled membership, not read-only, enabled account) exists (spec 5.7.2).
+--       Done, approved_by and approved_at set. Event task.approved {approver: hr | manager, and
 --       approved_without_second_person: true for that exception}.
 --     task.send_back {task_id, expected_version, reason}: the approver (the completer included).
 --       Back to todo, completed_by and completed_at cleared, sent_back_reason set to the reason
@@ -72,22 +75,28 @@
 --     unknown operation: hr_operation_unsupported. Result {operation, task_id, process_id,
 --     task_status, version, process_status, status: saved, duplicate} ({operation, process_id,
 --     process_status, status, duplicate} for close anyway). EXECUTE to csa_app only.
---   public.hr_task_rows_mine (0633) is dropped and made again with one more column,
+--   public.hr_task_rows_mine (0633) is dropped and made again with more columns:
 --     needs_my_approval: the tasks awaiting approval the caller may approve now are listed too
 --     (the HR team: approver hr, which includes manager approval with no manager resolved; the
 --     manager: approver manager of their report), true on those rows. A manager who is neither
 --     the assignee nor HR gets neither the note nor the descriptions and reference note of such a
---     row (0633's manager view withholds them), only title, status, due date and the rest. A
---     last column sent_back_reason goes to the assignee and the HR team. Every other column, the
---     visibility of the other rows and the order (soonest due first, keyset by task id) are
---     unchanged.
+--     row (0633's manager view withholds them), only title, status, due date and the rest.
+--     sent_back_reason goes to the assignee and the HR team. mine: the caller's linked employee
+--     is the assignee (an HR member tells their own steps from those listed on someone's
+--     behalf). assignee_name: the assignee's display name, for the HR team only (null for a pool
+--     task and for anyone else). done_by_hr: the step was completed by someone other than its
+--     named assignee (only the HR team may), for the assignee and the HR team (null on a
+--     manager's approval row). Every other column, the visibility of the other rows and the
+--     order (soonest due first, keyset by task id) are unchanged.
 --   Changed from 0632 (CREATE OR REPLACE, the rest of each body unchanged):
 --     hr_process_start: a person step whose named owner is no longer active, and an employee step
 --       of a process for a person who is not active (a custom process may be started for someone
 --       who has left), go to the HR pool, event task.created detail {fallback: hr_pool, reason:
 --       person_inactive}.
 --   Changed from 0633 (CREATE OR REPLACE, the rest of the body unchanged): hr_process_get adds
---     sent_back_reason to the own task shape (the caller's own tasks, and every task for HR).
+--     sent_back_reason and done_by_hr (as in My tasks: "done by HR", spec section 12) to the own
+--     task shape (the caller's own tasks, and every task for HR), and assignee_overridden (HR
+--     reassigned it by hand) to HR's shape.
 --     hr_process_reassign_manager: skips tasks HR reassigned by hand (assignee_overridden).
 --     hr_process_person_left: when a person leaves, (1) their own active onboarding and custom
 --       processes are cancelled (process.cancelled {reason: person_left}; open tasks skipped as
@@ -100,15 +109,20 @@
 --       process is real work that HR reassigns or skips, never skipped silently (spec section
 --       2), (5) access_removed and the settles as before.
 --   Internal helpers, no grant to any application role: hr_task_check (an automatic check),
+--     hr_task_reminder_user(p_client, p_employee) (the console user who can act for that person:
+--     the active person's linked account, when its membership in this company is enabled and not
+--     read-only and the account itself is enabled; NULL otherwise. The approver rule here, and
+--     0635's reminders and HR's My tasks, use it, so "can act" means one thing),
 --     hr_task_approver (who approves a task), hr_task_approval_right (what the caller may do with
---     an awaiting task: manager, hr, hr_completer (may send back, not approve), hr_sole_owner).
+--     an awaiting task: manager, hr, hr_completer (the completer: may send back, not approve),
+--     hr_subject (the process is about the caller: may send back, not approve), hr_sole_owner).
 -- Pre-check: 0630-0633 applied. ALTER TABLE ADD COLUMN with a constant default is a catalog change
 --   (no rewrite) with a brief lock on hr_process_tasks. Safe to run twice (IF NOT EXISTS, CREATE OR
 --   REPLACE, DROP FUNCTION IF EXISTS before the new hr_task_rows_mine).
 -- Rollback (as the database owner, after the application no longer calls them):
 --   DROP FUNCTION public.hr_task_apply(uuid,uuid,text,jsonb);
 --   DROP FUNCTION public.hr_task_approval_right(uuid,uuid); DROP FUNCTION public.hr_task_approver(uuid,uuid);
---   DROP FUNCTION public.hr_task_check(uuid,uuid,text);
+--   DROP FUNCTION public.hr_task_check(uuid,uuid,text); DROP FUNCTION public.hr_task_reminder_user(uuid,uuid);
 --   re-run the hr_task_rows_mine part of 0633 after DROP FUNCTION public.hr_task_rows_mine(uuid,text,integer,uuid),
 --   the hr_process_get part of 0633, and the hr_process_start, hr_process_reassign_manager and
 --   hr_process_person_left parts of 0632; ALTER TABLE public.hr_process_tasks DROP COLUMN
@@ -325,11 +339,26 @@ BEGIN
  RETURN false;
 END $$;
 
+-- The console user who can act for p_employee (and gets the reminders of their steps, 0635); NULL:
+-- nobody can (no account, a disabled membership or account, a read-only member), so the HR team
+-- does.
+CREATE OR REPLACE FUNCTION public.hr_task_reminder_user(p_client uuid, p_employee uuid)
+RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+ SELECT a.user_id FROM public.hr_employee_accounts a
+ JOIN public.hr_employees e ON e.client_id=a.client_id AND e.id=a.employee_id AND e.is_active
+ JOIN public.console_memberships m ON m.client_id=a.client_id AND m.user_id=a.user_id
+  AND m.is_enabled AND m.role<>'read_only'
+ JOIN public.console_users u ON u.id=a.user_id AND u.is_enabled
+ WHERE a.client_id=p_client AND a.employee_id=p_employee;
+$$;
+
 -- Who approves a task: approver 'manager' (manager = the person's manager employee) or 'hr' (the
 -- HR team); NULL for a task without approval_by. The manager approves only when they resolve
--- (active and linked, 0632 hr_process_manager_of), the step is not the manager's own and they did
--- not complete it themself: a manager step approved by the manager would need the same person
--- twice, so it falls to the HR team.
+-- (active and linked, 0632 hr_process_manager_of) and can act (hr_task_reminder_user: a read-only
+-- or disabled manager could never approve, and the step would wait for good), the step is not the
+-- manager's own and they did not complete it themself: a manager step approved by the manager
+-- would need the same person twice, so it falls to the HR team.
 CREATE OR REPLACE FUNCTION public.hr_task_approver(p_client uuid, p_task uuid,
     OUT approver text, OUT manager uuid)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
@@ -343,21 +372,24 @@ BEGIN
  approver:='hr';
  IF k.approval_by='manager' AND k.owner_role<>'manager' THEN
   SELECT m.assignee INTO boss FROM public.hr_process_manager_of(p_client,k.employee_id) m;
-  IF boss IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.hr_employee_accounts a
-                                     WHERE a.client_id=p_client AND a.employee_id=boss
-                                      AND a.user_id=k.completed_by) THEN
+  IF boss IS NOT NULL AND public.hr_task_reminder_user(p_client,boss) IS NOT NULL
+     AND NOT EXISTS(SELECT 1 FROM public.hr_employee_accounts a
+                    WHERE a.client_id=p_client AND a.employee_id=boss
+                     AND a.user_id=k.completed_by) THEN
    approver:='manager'; manager:=boss;
   END IF;
  END IF;
 END $$;
 
 -- What the caller may do with a task awaiting approval: 'manager' or 'hr' (approve or send back),
--- 'hr_completer' (the HR approver who completed it: send back only), 'hr_sole_owner' (the HR
--- owner who completed it with no other HR team member: may approve, spec 5.7.2), NULL (nothing).
+-- 'hr_completer' (the HR approver who completed it: send back only), 'hr_subject' (the HR
+-- approver the process is about: send back only, owner question 2), 'hr_sole_owner' (the HR
+-- owner who completed it, or whose process it is, with no other HR team member: may approve, spec
+-- 5.7.2), NULL (nothing).
 CREATE OR REPLACE FUNCTION public.hr_task_approval_right(p_client uuid, p_task uuid) RETURNS text
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE me uuid:=nullif(current_setting('app.hr_user_id',true),'')::uuid; who record; a record;
- done_by uuid;
+ done_by uuid; about uuid;
 BEGIN
  SELECT * INTO who FROM public.hr_process_caller(p_client) c;
  SELECT * INTO a FROM public.hr_task_approver(p_client,p_task) r;
@@ -366,11 +398,13 @@ BEGIN
   RETURN CASE WHEN who.employee=a.manager THEN 'manager' END;
  END IF;
  IF NOT who.team THEN RETURN NULL; END IF;
- SELECT t.completed_by INTO done_by FROM public.hr_process_tasks t
+ SELECT t.completed_by, x.employee_id INTO done_by, about FROM public.hr_process_tasks t
+  JOIN public.hr_processes x ON x.client_id=t.client_id AND x.id=t.process_id
   WHERE t.client_id=p_client AND t.id=p_task;
- IF done_by IS DISTINCT FROM me THEN RETURN 'hr'; END IF;
+ IF done_by IS DISTINCT FROM me AND about IS DISTINCT FROM who.employee THEN RETURN 'hr'; END IF;
  IF public.hr_is_owner(p_client) AND NOT EXISTS(
    SELECT 1 FROM public.console_memberships m
+   JOIN public.console_users u ON u.id=m.user_id AND u.is_enabled
    WHERE m.client_id=p_client AND m.user_id<>me AND m.is_enabled AND m.role<>'read_only'
     AND (EXISTS(SELECT 1 FROM public.hr_client_owners o
                 WHERE o.client_id=p_client AND o.user_id=m.user_id)
@@ -379,7 +413,7 @@ BEGIN
                     AND g.action='people.manage' AND g.scope='hr_operator'))) THEN
   RETURN 'hr_sole_owner';
  END IF;
- RETURN 'hr_completer';
+ RETURN CASE WHEN done_by=me THEN 'hr_completer' ELSE 'hr_subject' END;
 END $$;
 
 CREATE OR REPLACE FUNCTION public.hr_task_apply(p_client uuid, p_key uuid, p_fingerprint text,
@@ -511,6 +545,7 @@ BEGIN
            ELSE '{}'::jsonb END);
  ELSIF op='task.approve' THEN
   IF right_='hr_completer' THEN RAISE EXCEPTION 'hr_task_self_approval' USING ERRCODE='23514'; END IF;
+  IF right_='hr_subject' THEN RAISE EXCEPTION 'hr_task_own_process' USING ERRCODE='23514'; END IF;
   UPDATE public.hr_process_tasks t SET status='done', approved_by=actor, approved_at=clock_timestamp(),
    version=t.version+1
   WHERE t.client_id=p_client AND t.id=k.id;
@@ -592,8 +627,9 @@ BEGIN
  RETURN result;
 END $$;
 
--- 0633, with the send-back reason in the own task shape (the caller's own tasks, every task for
--- HR); a manager's view of other people's tasks (the base shape) does not get it.
+-- 0633, with the send-back reason and "done by HR" in the own task shape (the caller's own
+-- tasks, every task for HR), and HR's hand reassignment in HR's shape; a manager's view of other
+-- people's tasks (the base shape) gets neither.
 CREATE OR REPLACE FUNCTION public.hr_process_get(p_client uuid, p_process uuid) RETURNS jsonb
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
@@ -658,13 +694,20 @@ BEGIN
        'overdue',coalesce(p.status='active' AND x.status NOT IN ('done','skipped')
                           AND x.due_on<today,false),
        'mine',coalesce(x.assignee_employee_id=who.employee,false)) AS base) b
+    -- done_by_hr: completed by someone other than the named assignee (only the HR team may, spec
+    -- section 12: the person sees "done by HR").
     CROSS JOIN LATERAL (
      SELECT b.base||jsonb_build_object('description_en',x.description_en,
       'description_ms',x.description_ms,'anchor',x.anchor,'approval_by',x.approval_by,
       'auto_check',x.auto_check,'reference_note',x.reference_note,'completed_at',x.completed_at,
-      'note',x.note,'version',x.version,'sent_back_reason',x.sent_back_reason) AS own) own
+      'note',x.note,'version',x.version,'sent_back_reason',x.sent_back_reason,
+      'done_by_hr',x.assignee_employee_id IS NOT NULL AND x.completed_by IS NOT NULL
+       AND NOT EXISTS(SELECT 1 FROM public.hr_employee_accounts c
+                      WHERE c.client_id=x.client_id AND c.employee_id=x.assignee_employee_id
+                       AND c.user_id=x.completed_by)) AS own) own
     CROSS JOIN LATERAL (
      SELECT jsonb_build_object('assignee_employee_id',x.assignee_employee_id,
+      'assignee_overridden',x.assignee_overridden,
       'due_offset_days',x.due_offset_days,'due_overridden',x.due_overridden,
       'completed_by',x.completed_by,'approved_by',x.approved_by,'approved_at',x.approved_at)
       AS hr_only) hr_only
@@ -679,8 +722,9 @@ BEGIN
  RETURN result;
 END $$;
 
--- 0633's My tasks, plus the tasks awaiting the caller's approval (needs_my_approval) and the
--- send-back reason. A new result column cannot be added by CREATE OR REPLACE.
+-- 0633's My tasks, plus the tasks awaiting the caller's approval (needs_my_approval), the
+-- send-back reason, whose step it is (mine, assignee_name) and "done by HR". A new result column
+-- cannot be added by CREATE OR REPLACE.
 DROP FUNCTION IF EXISTS public.hr_task_rows_mine(uuid,text,integer,uuid);
 CREATE FUNCTION public.hr_task_rows_mine(p_client uuid, p_status text, p_limit integer,
     p_after uuid)
@@ -688,7 +732,8 @@ RETURNS TABLE(task_id uuid, process_id uuid, process_kind text, process_name tex
     employee_name text, ordinal integer, title_en text, title_ms text, description_en text,
     description_ms text, owner_role text, due_on date, required boolean, approval_by text,
     auto_check text, reference_note text, status text, note text, version integer, overdue boolean,
-    pool boolean, needs_my_approval boolean, sent_back_reason text)
+    pool boolean, needs_my_approval boolean, sent_back_reason text, mine boolean,
+    assignee_name text, done_by_hr boolean)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
  who record; today date:=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date; after_due date;
@@ -716,7 +761,14 @@ BEGIN
   x.assignee_employee_id IS NULL,
   x.status='awaiting_approval'
    AND coalesce(public.hr_task_approval_right(p_client,x.id) IN ('hr','manager','hr_sole_owner'),false),
-  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.sent_back_reason END
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.sent_back_reason END,
+  coalesce(x.assignee_employee_id=who.employee,false),
+  CASE WHEN who.team THEN a.display_name END,
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN
+   x.assignee_employee_id IS NOT NULL AND x.completed_by IS NOT NULL
+   AND NOT EXISTS(SELECT 1 FROM public.hr_employee_accounts c
+                  WHERE c.client_id=x.client_id AND c.employee_id=x.assignee_employee_id
+                   AND c.user_id=x.completed_by) END
  -- Branches instead of an OR: who.team is a constant of the query, so for anyone outside the
  -- HR team the pool branch is a one-time false filter and never reads the unassigned tasks.
  FROM (SELECT y.* FROM public.hr_process_tasks y
@@ -730,6 +782,7 @@ BEGIN
         AND public.hr_task_approval_right(p_client,y.id) IN ('hr','manager','hr_sole_owner')) x
  JOIN public.hr_processes p ON p.client_id=x.client_id AND p.id=x.process_id
  JOIN public.hr_employees e ON e.client_id=p.client_id AND e.id=p.employee_id
+ LEFT JOIN public.hr_employees a ON a.client_id=x.client_id AND a.id=x.assignee_employee_id
  LEFT JOIN public.hr_process_templates t ON t.client_id=p.client_id AND t.id=p.template_id
  WHERE CASE WHEN p_status IS NULL THEN x.status NOT IN ('done','skipped') ELSE x.status=p_status END
   AND (p_after IS NULL OR (coalesce(x.due_on,'infinity'::date),x.id)>(after_due,p_after))
@@ -742,6 +795,7 @@ DO $$ DECLARE f regprocedure; BEGIN
   'public.hr_process_reassign_manager(uuid,uuid,uuid)'::regprocedure,
   'public.hr_process_person_left(uuid,uuid,uuid)'::regprocedure,
   'public.hr_task_check(uuid,uuid,text)'::regprocedure,
+  'public.hr_task_reminder_user(uuid,uuid)'::regprocedure,
   'public.hr_task_approver(uuid,uuid)'::regprocedure,
   'public.hr_task_approval_right(uuid,uuid)'::regprocedure] LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_app,csa_ro,csa_identity,csa_hr_maintenance',f);

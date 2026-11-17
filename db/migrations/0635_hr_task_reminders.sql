@@ -8,11 +8,13 @@
 --   public.hr_notifications.due_on date NULL (the task's due date when the reminder was written) and
 --     subject text NULL (1-200 characters: the plain line Home shows, "Due today: <step title>").
 --     Both stay NULL for the earlier kinds. resource_id carries the task id for the task kinds.
---   public.hr_task_reminder_user(p_client, p_employee): the console user who gets the reminders of
---     a step assigned to that person: the active person's linked account, when its membership in
---     this company is enabled and not read-only and the account itself is enabled. NULL otherwise
---     (no account, a disabled leaver membership, a read-only member): the HR pool gets them.
---     Internal, no grant to any application role.
+--   Who gets the reminders of a step assigned to a person: 0634's hr_task_reminder_user (the
+--     active person's linked account, when its membership in this company is enabled and not
+--     read-only and the account itself is enabled). NULL (no account, a disabled leaver
+--     membership, a read-only member): the HR pool gets them. The same rule decides whether a
+--     manager approves (0634 hr_task_approver).
+--   public.hr_tasks_due_all(p_client, p_on): internal (no grant to any application role), every
+--     reminder due and not written yet, uncapped; the two reads below are built on it.
 --   public.hr_tasks_due(p_client DEFAULT NULL, p_on DEFAULT NULL): the reminders due on p_on
 --     (default today in Asia/Kuala_Lumpur, as hr_leavers_due) and not written yet, at most 5000:
 --     (client_id, task_id, recipient_id, kind, reminder_key, due_on, title). Only open steps
@@ -28,6 +30,11 @@
 --     tenant's: a session with app.client_id set sees only that tenant, whatever p_client it
 --     passes. title (the step's English title) only in a session with app.client_id set, NULL in
 --     the worker's every-tenant read. EXECUTE to csa_app only.
+--   public.hr_tasks_due_tenants(p_on DEFAULT NULL): the companies with at least one reminder due,
+--     without the 5000 cap (the worker's tenant list: a company with more than 5000 pending
+--     reminders, or one that fails every round, never hides the companies after it); ids only, no
+--     step data. A session with app.client_id set sees only its own company. EXECUTE to csa_app
+--     only.
 --   public.hr_task_reminder_put(p_client, p_recipient, p_kind, p_task, p_key, p_due_on, p_subject):
 --     writes one reminder, true when written, false when (company, recipient, key) is already
 --     there. The system only: p_client must be app.client_id (else hr_reminder_unavailable) and no
@@ -39,7 +46,8 @@
 --   Changed from 0634 (CREATE OR REPLACE, same columns, grants kept): hr_task_rows_mine also lists,
 --     for the HR team, the steps assigned to a person whose reminders go to the HR pool
 --     (hr_task_reminder_user is NULL: no console account, a disabled membership, read-only), with
---     pool false. So every reminder points at a step its recipient sees in My tasks.
+--     pool false, mine false and the person's name in assignee_name. So every reminder points at
+--     a step its recipient sees in My tasks, and HR can tell it from their own steps.
 -- No new table, role or policy. The worker's round (csa.hr.reminders.hr_tasks_round) runs every
 --   900 s; "overdue" stays derived (due_on before today), nothing is marked on the task.
 -- Pre-check: 0634 applied; hr_notifications_kind_check exists and is a plain list of quoted values
@@ -47,8 +55,9 @@
 --   differently. ADD COLUMN without a default is a catalog change. Safe to run twice.
 -- Rollback (as the database owner, after the application no longer calls them):
 --   DROP FUNCTION public.hr_task_reminder_put(uuid,uuid,text,uuid,text,date,text);
---   DROP FUNCTION public.hr_tasks_due(uuid,date);
---   re-run the hr_task_rows_mine part of 0634, then DROP FUNCTION public.hr_task_reminder_user(uuid,uuid);
+--   DROP FUNCTION public.hr_tasks_due_tenants(date); DROP FUNCTION public.hr_tasks_due(uuid,date);
+--   DROP FUNCTION public.hr_tasks_due_all(uuid,date);
+--   re-run the hr_task_rows_mine part of 0634;
 --   DELETE FROM public.hr_notifications WHERE kind LIKE 'task\_%';
 --   ALTER TABLE public.hr_notifications DROP COLUMN due_on, DROP COLUMN subject;
 --   drop hr_notifications_kind_check and add it again with the list it held before (read it with
@@ -93,19 +102,9 @@ ALTER TABLE public.hr_notifications ADD COLUMN IF NOT EXISTS due_on date;
 ALTER TABLE public.hr_notifications ADD COLUMN IF NOT EXISTS subject text
  CHECK(char_length(subject) BETWEEN 1 AND 200);
 
--- Who gets the reminders of a step assigned to p_employee; NULL: the HR pool does.
-CREATE OR REPLACE FUNCTION public.hr_task_reminder_user(p_client uuid, p_employee uuid)
-RETURNS uuid
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
- SELECT a.user_id FROM public.hr_employee_accounts a
- JOIN public.hr_employees e ON e.client_id=a.client_id AND e.id=a.employee_id AND e.is_active
- JOIN public.console_memberships m ON m.client_id=a.client_id AND m.user_id=a.user_id
-  AND m.is_enabled AND m.role<>'read_only'
- JOIN public.console_users u ON u.id=a.user_id AND u.is_enabled
- WHERE a.client_id=p_client AND a.employee_id=p_employee;
-$$;
-
-CREATE OR REPLACE FUNCTION public.hr_tasks_due(p_client uuid DEFAULT NULL, p_on date DEFAULT NULL)
+-- Every reminder due on p_on and not written yet, uncapped (internal). hr_task_reminder_user is
+-- 0634's.
+CREATE OR REPLACE FUNCTION public.hr_tasks_due_all(p_client uuid, p_on date)
 RETURNS TABLE(client_id uuid, task_id uuid, recipient_id uuid, kind text, reminder_key text,
     due_on date, title text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
@@ -155,9 +154,24 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp A
   SELECT t.user_id FROM team t WHERE r.direct IS NULL AND t.client_id=r.client_id) who
  WHERE NOT EXISTS(SELECT 1 FROM public.hr_notifications n
                   WHERE n.client_id=r.client_id AND n.subject_id=who.user_id
-                   AND n.reminder_key='task:'||r.id||':'||r.bucket||':'||who.user_id)
- ORDER BY r.client_id, r.id, r.kind, who.user_id
+                   AND n.reminder_key='task:'||r.id||':'||r.bucket||':'||who.user_id);
+$$;
+
+CREATE OR REPLACE FUNCTION public.hr_tasks_due(p_client uuid DEFAULT NULL, p_on date DEFAULT NULL)
+RETURNS TABLE(client_id uuid, task_id uuid, recipient_id uuid, kind text, reminder_key text,
+    due_on date, title text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+ SELECT d.client_id, d.task_id, d.recipient_id, d.kind, d.reminder_key, d.due_on, d.title
+ FROM public.hr_tasks_due_all(p_client,p_on) d
+ ORDER BY d.client_id, d.task_id, d.kind, d.recipient_id
  LIMIT 5000;
+$$;
+
+-- The worker's tenant list: not cut by hr_tasks_due's cap (Task 8 review M1), ids only.
+CREATE OR REPLACE FUNCTION public.hr_tasks_due_tenants(p_on date DEFAULT NULL)
+RETURNS TABLE(client_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+ SELECT DISTINCT d.client_id FROM public.hr_tasks_due_all(NULL,p_on) d ORDER BY d.client_id;
 $$;
 
 CREATE OR REPLACE FUNCTION public.hr_task_reminder_put(p_client uuid, p_recipient uuid, p_kind text,
@@ -196,7 +210,8 @@ RETURNS TABLE(task_id uuid, process_id uuid, process_kind text, process_name tex
     employee_name text, ordinal integer, title_en text, title_ms text, description_en text,
     description_ms text, owner_role text, due_on date, required boolean, approval_by text,
     auto_check text, reference_note text, status text, note text, version integer, overdue boolean,
-    pool boolean, needs_my_approval boolean, sent_back_reason text)
+    pool boolean, needs_my_approval boolean, sent_back_reason text, mine boolean,
+    assignee_name text, done_by_hr boolean)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
  who record; today date:=(now() AT TIME ZONE 'Asia/Kuala_Lumpur')::date; after_due date;
@@ -224,7 +239,14 @@ BEGIN
   x.assignee_employee_id IS NULL,
   x.status='awaiting_approval'
    AND coalesce(public.hr_task_approval_right(p_client,x.id) IN ('hr','manager','hr_sole_owner'),false),
-  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.sent_back_reason END
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN x.sent_back_reason END,
+  coalesce(x.assignee_employee_id=who.employee,false),
+  CASE WHEN who.team THEN a.display_name END,
+  CASE WHEN who.team OR x.assignee_employee_id=who.employee THEN
+   x.assignee_employee_id IS NOT NULL AND x.completed_by IS NOT NULL
+   AND NOT EXISTS(SELECT 1 FROM public.hr_employee_accounts c
+                  WHERE c.client_id=x.client_id AND c.employee_id=x.assignee_employee_id
+                   AND c.user_id=x.completed_by) END
  -- Branches instead of an OR: who.team is a constant of the query, so for anyone outside the
  -- HR team the pool branches are one-time false filters and never read the other tasks.
  FROM (SELECT y.* FROM public.hr_process_tasks y
@@ -243,6 +265,7 @@ BEGIN
         AND public.hr_task_approval_right(p_client,y.id) IN ('hr','manager','hr_sole_owner')) x
  JOIN public.hr_processes p ON p.client_id=x.client_id AND p.id=x.process_id
  JOIN public.hr_employees e ON e.client_id=p.client_id AND e.id=p.employee_id
+ LEFT JOIN public.hr_employees a ON a.client_id=x.client_id AND a.id=x.assignee_employee_id
  LEFT JOIN public.hr_process_templates t ON t.client_id=p.client_id AND t.id=p.template_id
  WHERE CASE WHEN p_status IS NULL THEN x.status NOT IN ('done','skipped') ELSE x.status=p_status END
   AND (p_after IS NULL OR (coalesce(x.due_on,'infinity'::date),x.id)>(after_due,p_after))
@@ -251,9 +274,10 @@ BEGIN
 END $$;
 
 DO $$ DECLARE f regprocedure; BEGIN
- EXECUTE 'REVOKE ALL ON FUNCTION public.hr_task_reminder_user(uuid,uuid)'
+ EXECUTE 'REVOKE ALL ON FUNCTION public.hr_tasks_due_all(uuid,date)'
   ' FROM PUBLIC,csa_app,csa_ro,csa_identity,csa_hr_maintenance';
  FOREACH f IN ARRAY ARRAY['public.hr_tasks_due(uuid,date)'::regprocedure,
+  'public.hr_tasks_due_tenants(date)'::regprocedure,
   'public.hr_task_reminder_put(uuid,uuid,text,uuid,text,date,text)'::regprocedure,
   'public.hr_task_rows_mine(uuid,text,integer,uuid)'::regprocedure] LOOP
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,csa_ro,csa_identity,csa_hr_maintenance',f);

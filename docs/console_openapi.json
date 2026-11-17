@@ -11325,7 +11325,7 @@
       },
       "MyTask": {
         "additionalProperties": false,
-        "description": "One row of My tasks: the caller's own steps, the HR pool for the HR team (`pool`), and the\nsteps waiting for the caller's approval (`needs_my_approval`). Every field is always present.\nOn a row the caller only approves (a manager's approval of a report's step) the\ndescriptions, `reference_note`, `note` and `sent_back_reason` are withheld as `null`; the\ndescriptions, `note` and `sent_back_reason` may hold line breaks.\ntests/test_hr_process_models.py checks that these are the columns of the latest migration's\n`hr_task_rows_mine`.",
+        "description": "One row of My tasks: the caller's own steps (`mine`), the HR pool for the HR team (`pool`),\nfor the HR team the steps of people who cannot get their reminders (`mine` false, named in\n`assignee_name`), and the steps waiting for the caller's approval (`needs_my_approval`).\nEvery field is always present. `assignee_name` is the HR team's only (`null` for a pool step\nand for anyone else). On a row the caller only approves (a manager's approval of a report's\nstep) the descriptions, `reference_note`, `note`, `sent_back_reason` and `done_by_hr` are\nwithheld as `null`; the descriptions, `note` and `sent_back_reason` may hold line breaks.\ntests/test_hr_process_models.py checks that these are the columns of the latest migration's\n`hr_task_rows_mine`.",
         "properties": {
           "approval_by": {
             "anyOf": [
@@ -11341,6 +11341,17 @@
               }
             ],
             "title": "Approval By"
+          },
+          "assignee_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Name"
           },
           "auto_check": {
             "anyOf": [
@@ -11384,6 +11395,17 @@
             ],
             "title": "Description Ms"
           },
+          "done_by_hr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done By Hr"
+          },
           "due_on": {
             "anyOf": [
               {
@@ -11399,6 +11421,10 @@
           "employee_name": {
             "title": "Employee Name",
             "type": "string"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
           },
           "needs_my_approval": {
             "title": "Needs My Approval",
@@ -11549,7 +11575,10 @@
           "overdue",
           "pool",
           "needs_my_approval",
-          "sent_back_reason"
+          "sent_back_reason",
+          "mine",
+          "assignee_name",
+          "done_by_hr"
         ],
         "title": "MyTask",
         "type": "object"
@@ -15284,7 +15313,7 @@
       },
       "ProcessTask": {
         "additionalProperties": false,
-        "description": "A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks\n(and every task for HR) add the description, anchor, approval, check, reference note (copied\nfrom the step when the process started), completion time, note, version and the send-back\nreason (why the approver sent it back; cleared when it is completed again). HR alone gets\nthe assignee id, the offset and override, and who completed and approved it.",
+        "description": "A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks\n(and every task for HR) add the description, anchor, approval, check, reference note (copied\nfrom the step when the process started), completion time, note, version, the send-back\nreason (why the approver sent it back; cleared when it is completed again) and `done_by_hr`\n(completed by someone other than the named assignee: only the HR team may, spec section 12).\nHR alone gets the assignee id, `assignee_overridden` (HR reassigned it by hand), the offset\nand override, and who completed and approved it.",
         "properties": {
           "anchor": {
             "anyOf": [
@@ -15364,6 +15393,17 @@
             ],
             "title": "Assignee Name"
           },
+          "assignee_overridden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee Overridden"
+          },
           "auto_check": {
             "anyOf": [
               {
@@ -15429,6 +15469,17 @@
               }
             ],
             "title": "Description Ms"
+          },
+          "done_by_hr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done By Hr"
           },
           "due_offset_days": {
             "anyOf": [

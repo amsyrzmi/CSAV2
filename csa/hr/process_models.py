@@ -374,9 +374,11 @@ class ProcessHeader(HrModel):
 class ProcessTask(_StepText):
     """A task as the caller may see it. Everyone: the first eleven fields. The caller's own tasks
     (and every task for HR) add the description, anchor, approval, check, reference note (copied
-    from the step when the process started), completion time, note, version and the send-back
-    reason (why the approver sent it back; cleared when it is completed again). HR alone gets
-    the assignee id, the offset and override, and who completed and approved it."""
+    from the step when the process started), completion time, note, version, the send-back
+    reason (why the approver sent it back; cleared when it is completed again) and `done_by_hr`
+    (completed by someone other than the named assignee: only the HR team may, spec section 12).
+    HR alone gets the assignee id, `assignee_overridden` (HR reassigned it by hand), the offset
+    and override, and who completed and approved it."""
 
     task_id: UUID
     ordinal: int
@@ -399,7 +401,9 @@ class ProcessTask(_StepText):
     note: str | None = None
     version: Version | None = None
     sent_back_reason: str | None = None
+    done_by_hr: bool | None = None
     assignee_employee_id: UUID | None = None
+    assignee_overridden: bool | None = None
     due_offset_days: int | None = None
     due_overridden: bool | None = None
     completed_by: UUID | None = None
@@ -584,11 +588,13 @@ class ProcessCloseReceipt(HrModel):
 
 
 class MyTask(_StepText):
-    """One row of My tasks: the caller's own steps, the HR pool for the HR team (`pool`), and the
-    steps waiting for the caller's approval (`needs_my_approval`). Every field is always present.
-    On a row the caller only approves (a manager's approval of a report's step) the
-    descriptions, `reference_note`, `note` and `sent_back_reason` are withheld as `null`; the
-    descriptions, `note` and `sent_back_reason` may hold line breaks.
+    """One row of My tasks: the caller's own steps (`mine`), the HR pool for the HR team (`pool`),
+    for the HR team the steps of people who cannot get their reminders (`mine` false, named in
+    `assignee_name`), and the steps waiting for the caller's approval (`needs_my_approval`).
+    Every field is always present. `assignee_name` is the HR team's only (`null` for a pool step
+    and for anyone else). On a row the caller only approves (a manager's approval of a report's
+    step) the descriptions, `reference_note`, `note`, `sent_back_reason` and `done_by_hr` are
+    withheld as `null`; the descriptions, `note` and `sent_back_reason` may hold line breaks.
     tests/test_hr_process_models.py checks that these are the columns of the latest migration's
     `hr_task_rows_mine`."""
 
@@ -615,6 +621,9 @@ class MyTask(_StepText):
     pool: bool
     needs_my_approval: bool
     sent_back_reason: str | None
+    mine: bool  # the caller is the assignee
+    assignee_name: str | None
+    done_by_hr: bool | None  # completed by someone other than the named assignee
 
 
 class MyTaskPage(HrModel):

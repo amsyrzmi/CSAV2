@@ -318,6 +318,7 @@ def _my_task(**over: object) -> dict[str, object]:
         "overdue": False,
         "pool": True,
         "needs_my_approval": False,
+        "mine": False,
         **over,
     }
 

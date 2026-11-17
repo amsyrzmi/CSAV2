@@ -51,6 +51,7 @@ TASK_SQL: LiteralString = "SELECT public.hr_task_apply(%s,%s,%s,%s) AS result"
 REFUSED = (psycopg.errors.CheckViolation, psycopg.errors.InsufficientPrivilege)
 INTERNAL_FUNCTIONS = (
     "hr_task_check(uuid,uuid,text)",
+    "hr_task_reminder_user(uuid,uuid)",
     "hr_task_approver(uuid,uuid)",
     "hr_task_approval_right(uuid,uuid)",
 )
@@ -830,7 +831,13 @@ async def test_my_tasks_lists_tasks_awaiting_my_approval(world: HrWorld) -> None
 
     by_manager = await mine(world, "manager")
     assert flags(by_manager) == {"Bank details": True}
-    assert set(by_manager[0]) == MINE_COLUMNS | {"needs_my_approval", "sent_back_reason"}
+    assert set(by_manager[0]) == MINE_COLUMNS | {
+        "needs_my_approval",
+        "sent_back_reason",
+        "mine",
+        "assignee_name",
+        "done_by_hr",
+    }
     assert by_manager[0]["note"] is None  # a manager who only approves gets no note
     assert by_manager[0]["status"] == "awaiting_approval"
     # The owner completed Payroll (a pool task, listed), so it is not theirs to approve.
@@ -1218,3 +1225,166 @@ async def test_a_caller_whose_employee_is_no_longer_active_gets_nothing(world: H
     )
     assert await mine(world, "staff") == []
     assert (await task(world, pid, 1))["version"] == body["expected_version"]
+
+
+# ---- PR 2 final review fix wave ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cannot_act", ["read_only", "membership_disabled", "user_disabled"])
+async def test_a_manager_who_cannot_act_leaves_the_approval_to_hr(
+    world: HrWorld, cannot_act: str
+) -> None:
+    """Final review I1: a linked, active manager who cannot act (read-only, disabled membership
+    or account) is not the approver; the HR team approves and sees it in My tasks."""
+    staff = world.employees["staff"]
+    pid = await custom(
+        world,
+        staff,
+        step(title_en="Bank details", owner_role="employee", approval_by="manager"),
+    )
+    await act(world, "staff", "task.complete", **await versioned_task(world, pid, 1))
+    manager = world.users["manager"]
+    if cannot_act == "read_only":
+        await world.q(
+            "UPDATE console_memberships SET role='read_only' WHERE user_id=%s AND client_id=%s",
+            (manager, world.tenant),
+        )
+    elif cannot_act == "membership_disabled":
+        await world.q(
+            "UPDATE console_memberships SET is_enabled=false WHERE user_id=%s AND client_id=%s",
+            (manager, world.tenant),
+        )
+    else:
+        await world.q("UPDATE console_users SET is_enabled=false WHERE id=%s", (manager,))
+    body = await versioned_task(world, pid, 1)
+
+    def flags(rows: list[dict[str, Any]]) -> dict[str, bool]:
+        return {r["title_en"]: r["needs_my_approval"] for r in rows}
+
+    assert flags(await mine(world, "owner")) == {"Bank details": True}
+    # The manager is no longer the approver (their session would be refused anyway).
+    [approver] = await world.q(
+        "SELECT * FROM public.hr_task_approver(%s,%s)", (world.tenant, body["task_id"])
+    )
+    assert approver == {"approver": "hr", "manager": None}
+    approved = await act(world, "owner", "task.approve", **body)
+    assert (approved["task_status"], approved["process_status"]) == ("done", "completed")
+    assert event(await events(world, pid), "task.approved", 1)["detail"] == {"approver": "hr"}
+
+
+async def test_a_disabled_hr_account_does_not_block_the_sole_owner_exception(
+    world: HrWorld,
+) -> None:
+    """Final review I1: the "other HR team member" of the sole-owner exception needs an enabled
+    account too, as for reminders."""
+    pid = await custom(
+        world, world.employees["staff"], step(title_en="Check the contract", approval_by="hr")
+    )
+    await make_people_manager(world)
+    await act(world, "owner", "task.complete", **await versioned_task(world, pid, 1))
+    body = await versioned_task(world, pid, 1)
+    await refused(world, "hr_task_self_approval", "owner", "task.approve", **body)
+    await world.q(
+        "UPDATE console_users SET is_enabled=false WHERE id=%s", (world.users["operator"],)
+    )
+    await act(world, "owner", "task.approve", **body)
+    assert event(await events(world, pid), "task.approved", 1)["detail"] == {
+        "approver": "hr",
+        "approved_without_second_person": True,
+    }
+
+
+async def test_hr_cannot_approve_a_step_in_a_process_about_themself(world: HrWorld) -> None:
+    """Owner question 2 (default accepted): an HR team member may send back, not approve, a step
+    of a process about themself; the HR owner alone keeps the sole-owner exception."""
+    owner = world.employees["owner"]
+    pid = await custom(
+        world,
+        owner,
+        step(title_en="Sign the policy", owner_role="employee", approval_by="hr"),
+        step(title_en="Payroll", approval_by="hr"),
+    )
+    # Alone in the HR team, the owner approves their own step (flagged, as before).
+    await act(world, "owner", "task.complete", **await versioned_task(world, pid, 1))
+    await act(world, "owner", "task.approve", **await versioned_task(world, pid, 1))
+    assert event(await events(world, pid), "task.approved", 1)["detail"] == {
+        "approver": "hr",
+        "approved_without_second_person": True,
+    }
+    # With a second HR member, a step that member completed is not the owner's to approve.
+    await make_people_manager(world)
+    await act(world, "operator", "task.complete", **await versioned_task(world, pid, 2))
+    body = await versioned_task(world, pid, 2)
+    await refused(world, "hr_task_own_process", "owner", "task.approve", **body)
+    assert {r["title_en"]: r["needs_my_approval"] for r in await mine(world, "owner")} == {
+        "Payroll": False
+    }
+    back = await act(world, "owner", "task.send_back", **body, reason="Synthetic: redo")
+    assert back["task_status"] == "todo"
+
+
+async def test_my_tasks_tells_my_own_steps_from_those_on_someones_behalf(world: HrWorld) -> None:
+    """Final review I2: `mine` and `assignee_name` (HR only) on every My tasks row."""
+    staff, owner = world.employees["staff"], world.employees["owner"]
+    person = await insert_employee(world)  # no console account: HR sees their steps
+    await custom(
+        world,
+        person,
+        step(title_en="Sign the IT policy", owner_role="employee"),
+        step(title_en="Welcome lunch", owner_role="person", owner_employee_id=str(owner)),
+        step(title_en="Buddy chat", owner_role="person", owner_employee_id=str(staff)),
+        step(title_en="Order a desk"),
+    )
+
+    def shape(rows: list[dict[str, Any]]) -> dict[str, tuple[Any, ...]]:
+        return {r["title_en"]: (r["mine"], r["pool"], r["assignee_name"]) for r in rows}
+
+    assert shape(await mine(world, "owner")) == {
+        "Sign the IT policy": (False, False, "Synthetic Direct"),  # on the person's behalf
+        "Welcome lunch": (True, False, "Synthetic Staff"),  # the owner's own step
+        "Order a desk": (False, True, None),  # the HR pool
+    }
+    # Anyone else sees only their own steps, mine true and no names.
+    assert shape(await mine(world, "staff")) == {"Buddy chat": (True, False, None)}
+
+
+async def test_done_by_hr_and_hand_reassignment_in_the_task_shapes(world: HrWorld) -> None:
+    """Spec section 12: the person sees "done by HR"; HR sees which steps it reassigned by hand."""
+    staff = world.employees["staff"]
+    pid = await custom(
+        world,
+        staff,
+        step(title_en="Fill in details", owner_role="employee"),
+        step(title_en="Sign the handbook", owner_role="employee"),
+        step(title_en="Order a desk"),
+    )
+    await act(world, "staff", "task.complete", **await versioned_task(world, pid, 1))
+    await act(world, "owner", "task.complete", **await versioned_task(world, pid, 2))
+    await act(
+        world,
+        "owner",
+        "task.reassign",
+        **await versioned_task(world, pid, 3),
+        assignee_employee_id=staff,
+    )
+    done = {r["title_en"]: r["done_by_hr"] for r in await mine(world, "staff", status="done")}
+    assert done == {"Fill in details": False, "Sign the handbook": True}
+    seen = await get_process(world, "staff", pid)
+    assert seen is not None
+    assert {t["title_en"]: t["done_by_hr"] for t in seen["tasks"]} == {
+        "Fill in details": False,
+        "Sign the handbook": True,
+        "Order a desk": False,
+    }
+    assert not any("assignee_overridden" in t for t in seen["tasks"])
+    hr = await get_process(world, "owner", pid)
+    assert hr is not None
+    assert {t["title_en"]: t["assignee_overridden"] for t in hr["tasks"]} == {
+        "Fill in details": False,
+        "Sign the handbook": False,
+        "Order a desk": True,
+    }
+    # The manager's view of a report's steps (the base shape) carries neither.
+    managed = await get_process(world, "manager", pid)
+    assert managed is not None
+    assert not any({"done_by_hr", "assignee_overridden"} & set(t) for t in managed["tasks"])
