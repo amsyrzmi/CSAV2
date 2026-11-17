@@ -8,7 +8,7 @@ console do, so row security and grants are part of every check.
 
 from __future__ import annotations
 
-import threading
+import re
 import typing
 import uuid
 from dataclasses import dataclass
@@ -394,65 +394,59 @@ def test_a_customer_writing_to_a_bot_owned_item_returns_it_to_the_bot(
     assert len(_events(migrated_dsn, s)) == 1
 
 
-@pytest.mark.parametrize("owned_by", ["ai", "human_support"])
+@pytest.mark.parametrize("owned_by", ["ai", None, "human_support"])
 def test_bot_and_needs_staff_items_get_no_hand_back_row(
-    migrated_dsn: str, app_dsn: str, owned_by: str
+    migrated_dsn: str, app_dsn: str, owned_by: str | None
 ) -> None:
     c = _company(migrated_dsn)
-    bot = _seed(migrated_dsn, c, owned_by=owned_by)
     queued = _seed(migrated_dsn, c, owned_by=owned_by, **_needs_staff("held_reply"))
-    for seeded in (bot, queued):
+    seeds = [queued]
+    if owned_by != "human_support":
+        seeds.append(_seed(migrated_dsn, c, owned_by=owned_by))
+    for seeded in seeds:
+        before = _queue(_state(migrated_dsn, seeded))
         _inbound(app_dsn, seeded)
         _inbound(app_dsn, seeded)
         assert _events(migrated_dsn, seeded) == []
-    assert _state(migrated_dsn, bot)["queue_status"] == "bot"
+        assert _queue(_state(migrated_dsn, seeded)) == before
     assert _state(migrated_dsn, queued)["queue_status"] == "needs_staff"
 
 
-def test_a_state_change_that_lands_while_the_message_waits_is_seen(
+def test_a_customer_writing_to_a_person_owned_bot_item_needs_staff(
     migrated_dsn: str, app_dsn: str
 ) -> None:
-    """The trigger reads the state without a lock: when another transaction moves the item while
-    the message insert waits for the row, the trigger reads again and records the real old state.
-    """
-    s = _seed(migrated_dsn, _company(migrated_dsn), owned_by="ai")
-    mover = _app(app_dsn, s.client_id)
-    mover.execute(
-        "UPDATE conversations SET queue_status = 'resolved', resolved_at = now() WHERE id = %s",
-        (s.conversation_id,),
+    """A person owns the conversation and the bot is silent: the message needs a person."""
+    c = _company(migrated_dsn)
+    s = _seed(migrated_dsn, c, owned_by="human_support", priority="high")
+    started = datetime.now(UTC)
+    with _app(app_dsn, s.client_id) as conn:
+        before = _updates(conn)
+        conn.execute(
+            db.q.load("worker/insert_message.sql"), _inbound_params(s, str(uuid.uuid4()))
+        ).fetchone()
+        assert _updates(conn) - before == 2
+        conn.commit()
+    row = _state(migrated_dsn, s)
+    assert (row["queue_status"], row["queue_reason"], row["priority"]) == (
+        "needs_staff",
+        "customer_message",
+        "high",
     )
-    with _app(app_dsn, s.client_id) as writer:
-        # The writer's trigger has read 'bot'; its UPDATE waits for the mover's row lock.
-        writer.execute("SET lock_timeout = '20s'")
-        done = threading.Event()
-        failure: list[BaseException] = []
-
-        def insert() -> None:
-            try:
-                writer.execute(
-                    db.q.load("worker/insert_message.sql"),
-                    _inbound_params(s, str(uuid.uuid4())),
-                ).fetchone()
-                writer.commit()
-            except BaseException as exc:  # pragma: no cover - reported below
-                failure.append(exc)
-            finally:
-                done.set()
-
-        worker = threading.Thread(target=insert)
-        worker.start()
-        assert not done.wait(1.0), "the insert should wait for the mover's lock"
-        mover.commit()
-        mover.close()
-        worker.join(30)
-    assert failure == []
-    assert _state(migrated_dsn, s)["queue_status"] == "bot"
+    assert started <= row["needs_staff_since"] <= row["newest"]
+    assert row["due_at"] - row["needs_staff_since"] == timedelta(minutes=60)
+    assert row["inbox_version"] == 0
     [event] = _events(migrated_dsn, s)
-    assert (event["action"], event["from_status"], event["to_status"]) == (
-        "handed_back",
-        "resolved",
+    assert (event["action"], event["from_status"], event["to_status"], event["actor_user_id"]) == (
+        "entered",
         "bot",
+        "needs_staff",
+        None,
     )
+    assert event["details"] == {"reason": "customer_message", "priority": "high"}
+    # The next message finds it already needing staff: nothing more.
+    _inbound(app_dsn, s)
+    assert len(_events(migrated_dsn, s)) == 1
+    assert _state(migrated_dsn, s)["needs_staff_since"] == row["needs_staff_since"]
 
 
 def test_a_live_held_reply_keeps_a_bot_owned_item_in_the_queue(
@@ -499,13 +493,14 @@ def test_outbound_messages_change_the_activity_time_only(
     if state == "bot":
         _inbound(app_dsn, s)
     before = _state(migrated_dsn, s)
+    events = _events(migrated_dsn, s)
     _outbound(app_dsn, s, kind)
     after = _state(migrated_dsn, s)
     assert _queue(after) == _queue(before)
     assert after["last_customer_at"] == before["last_customer_at"]
     assert after["last_activity_at"] == after["newest"]
     assert after["last_activity_at"] > before["last_activity_at"]
-    assert _events(migrated_dsn, s) == []
+    assert _events(migrated_dsn, s) == events
 
 
 def test_an_older_message_never_moves_the_activity_time_backwards(
@@ -794,6 +789,66 @@ def test_a_claim_is_taken_only_when_the_item_is_unclaimed(migrated_dsn: str, app
     assert _state(migrated_dsn, open_item)["assignee_user_id"] == uuid.UUID(actor)
     [event] = _events(migrated_dsn, open_item)
     assert (event["action"], event["details"]["assignee_user_id"]) == ("claimed", actor)
+
+
+def test_the_due_time_moves_only_on_entry_or_a_priority_rise(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    actor = _user(migrated_dsn)
+    s = _seed(migrated_dsn, c, **_needs_staff("customer_message", "normal", minutes_ago=30))
+    before = _state(migrated_dsn, s)
+    # The company's targets change after the item entered.
+    _settings(migrated_dsn, c, target_normal_min=30, target_high_min=20, target_urgent_min=10)
+    assert _enter(app_dsn, s, "manual", "normal")
+    assert _events(migrated_dsn, s)[-1]["action"] == "reason_changed"
+    assert _state(migrated_dsn, s)["due_at"] == before["due_at"]
+    assert _enter(app_dsn, s, "customer_message", "low", actor=actor, claim_for=actor)
+    assert _events(migrated_dsn, s)[-1]["action"] == "claimed"
+    assert _state(migrated_dsn, s)["due_at"] == before["due_at"]
+    # A priority rise takes the company's target for the new priority, from the same clock.
+    assert _enter(app_dsn, s, "manual", "high")
+    row = _state(migrated_dsn, s)
+    assert row["needs_staff_since"] == before["needs_staff_since"]
+    assert row["due_at"] == before["needs_staff_since"] + timedelta(minutes=20)
+    # A fresh entry takes the company's target too.
+    fresh = _seed(migrated_dsn, c)
+    assert _enter(app_dsn, fresh, "manual", "urgent")
+    row = _state(migrated_dsn, fresh)
+    assert row["due_at"] - row["needs_staff_since"] == timedelta(minutes=10)
+
+
+def _check_values(conn: DictConnection, table: str, name: str) -> list[str]:
+    [row] = conn.execute(
+        "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint"
+        " WHERE conrelid = %s::regclass AND conname = %s",
+        (table, name),
+    )
+    return re.findall(r"'([a-z_]+)'::text", row["d"])
+
+
+def test_the_enter_lists_match_the_check_constraints(migrated_dsn: str) -> None:
+    """inbox_queue_enter repeats the reason and priority lists; a value added to one list only
+    would make every escalation insert (the turn fail-safe included) raise."""
+    with _owner(migrated_dsn) as conn:
+        [fn] = conn.execute(
+            "SELECT pg_get_functiondef('public.inbox_queue_enter(uuid, uuid, text, text, uuid,"
+            " uuid)'::regprocedure) AS d"
+        )
+        reasons = _check_values(conn, "public.conversations", "conversations_queue_reason_check")
+        priorities = _check_values(conn, "public.conversations", "conversations_priority_check")
+        escalation_priorities = _check_values(
+            conn, "public.escalations", "escalations_priority_check"
+        )
+
+    def array(name: str) -> list[str]:
+        match = re.search(name + r" constant text\[\] := ARRAY\[([^\]]*)\]", fn["d"])
+        assert match is not None, name
+        return re.findall(r"'([a-z_]+)'", match.group(1))
+
+    assert sorted(array("reasons")) == sorted(reasons)
+    assert sorted(array("priorities")) == sorted(priorities) == sorted(escalation_priorities)
+    assert len(reasons) == 4 and len(priorities) == 4
 
 
 def test_enter_refuses_an_unknown_reason_or_priority(migrated_dsn: str, app_dsn: str) -> None:

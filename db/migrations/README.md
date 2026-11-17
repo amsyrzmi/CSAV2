@@ -125,7 +125,9 @@ Reserved ranges (client growth program, 2026-10-27):
 
 - `0620`–`0629`: Customer Inbox refinement. 0620 adds the queue columns on `conversations`, their
   checks, the activity and partial indexes the queue tabs and counts read, and the backfill function
-  `inbox_queue_backfill`; 0621 adds the tenant tables
+  `inbox_queue_backfill` (migration only: no role but the owner may run it); it builds no trigram
+  index (the app role reads `contacts` under row security, where `ILIKE` cannot use one, so contact
+  search is a bounded per-company scan); 0621 adds the tenant tables
   `inbox_settings`, `inbox_queue_events` (append-only for `csa_app`) and `inbox_saved_views`; 0622
   adds `inbox_queue_enter` (the only way into `needs_staff`) and the message and escalation triggers
   that keep the queue state (one conversation update per message, never `inbox_version`); later

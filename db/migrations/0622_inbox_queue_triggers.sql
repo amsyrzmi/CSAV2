@@ -11,7 +11,10 @@
 --     Already needs_staff: the clock is kept, the reason only moves up (escalation > held_reply >
 --     manual > customer_message) and the priority only up (low < normal < high < urgent).
 --     due_at = needs_staff_since + the company's response target for the resulting priority
---     (inbox_settings, else the 0621 column defaults). p_claim_for claims an unclaimed item.
+--     (inbox_settings, else the 0621 column defaults), computed on entry and when the priority
+--     rises; a change of reason or claim alone keeps the due time. p_claim_for claims an
+--     unclaimed item. The reason and priority lists repeat the CHECK constraints of 0620 and
+--     escalations_priority_check (tests/test_inbox_queue_triggers.py keeps them equal).
 --     One inbox_queue_events row per change: entered, reason_changed (reason or priority moved), or
 --     claimed (only the claim moved); its client_id and conversation_id come from the conversation
 --     row itself. When nothing would change, nothing is written and it returns false.
@@ -23,7 +26,9 @@
 --     resolved returns to needs_staff (reason customer_message, its current priority) when a person
 --     owns the conversation or a live held reply is pending, else to bot (claim, clock, due time,
 --     reason, snooze and resolve times cleared; one inbox_queue_events row 'handed_back' with no
---     actor and details {"cause": "customer_message"}). needs_staff and bot items keep their state.
+--     actor and details {"cause": "customer_message"}). A bot item enters needs_staff the same way
+--     when a person owns the conversation (the bot is silent, so the message needs a person); a
+--     bot item the AI owns stays bot. needs_staff items keep their state.
 --     Outbound messages (bot replies, notices, a person's reply, an approved held reply) never
 --     change the queue state: the code that knows who answered does that (plan task 4).
 --   Trigger inbox_queue_after_escalation, AFTER INSERT ON escalations WHEN conversation_id IS NOT
@@ -31,13 +36,14 @@
 --     writers (the escalation agent, the turn fail-safe, approval expiry); an insert skipped by their
 --     ON CONFLICT DO NOTHING fires nothing.
 -- Cost and locks: a message costs one UPDATE of its conversation row (the return to bot is part of
---   that same statement; a customer's message also reads the row first, without a lock); only a
---   return to needs_staff adds the inbox_queue_enter call. The worker
---   and the console already lock or update that row in the same transaction (lock_conversation.sql,
---   automation_allowed.sql, increment_turn_count.sql), and the insert itself holds a key-share lock
---   on it through the foreign key, so the trigger takes no lock on a row the transaction would not
---   take anyway. The functions run with the caller's rights (no SECURITY DEFINER): row security
---   keeps a company's trigger and calls inside its own rows.
+--   that same statement); only an entry into needs_staff adds the inbox_queue_enter call. A
+--   customer's message first reads the row with SELECT ... FOR NO KEY UPDATE, the lock the UPDATE
+--   takes anyway, so the old state the event row needs is exact and no retry is needed. An
+--   outbound message runs the UPDATE alone. The trigger never takes a lock the UPDATE would not
+--   take: the worker and the console lock or update that row in the same transaction already
+--   (lock_conversation.sql, automation_allowed.sql, increment_turn_count.sql). The functions run
+--   with the caller's rights (no SECURITY DEFINER): row security keeps a company's trigger and
+--   calls inside its own rows.
 -- Pre-check: 0620 (queue columns) and 0621 (inbox_settings, inbox_queue_events) applied.
 -- Safe to run twice: CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS then CREATE TRIGGER, grants
 --   revoked and given again.
@@ -65,6 +71,7 @@ DECLARE
   v_reason text;
   v_priority text;
   v_since timestamptz;
+  v_due timestamptz;
   v_target integer;
   v_assignee uuid;
   v_claimed_at timestamptz;
@@ -80,8 +87,8 @@ BEGIN
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 
-  SELECT c.queue_status, c.queue_reason, c.priority, c.needs_staff_since, c.assignee_user_id,
-         c.claimed_at
+  SELECT c.queue_status, c.queue_reason, c.priority, c.needs_staff_since, c.due_at,
+         c.assignee_user_id, c.claimed_at
     INTO cur
     FROM public.conversations c
    WHERE c.client_id = p_client AND c.id = p_conversation
@@ -121,19 +128,25 @@ BEGIN
     RETURN false;
   END IF;
 
-  -- The company's response target for the priority. Without a settings row the defaults are the
-  -- 0621 column defaults (target_urgent_min 15, target_high_min 60, target_normal_min 240,
-  -- target_low_min 1440); tests/test_inbox_queue_triggers.py checks the two stay equal.
-  SELECT CASE v_priority WHEN 'urgent' THEN s.target_urgent_min
-                         WHEN 'high' THEN s.target_high_min
-                         WHEN 'normal' THEN s.target_normal_min
-                         ELSE s.target_low_min END
-    INTO v_target
-    FROM public.inbox_settings s
-   WHERE s.client_id = p_client;
-  IF NOT FOUND THEN
-    v_target := CASE v_priority WHEN 'urgent' THEN 15 WHEN 'high' THEN 60
-                                WHEN 'normal' THEN 240 ELSE 1440 END;
+  IF cur.queue_status = 'needs_staff' AND v_priority = cur.priority THEN
+    -- Only the reason or the claim moved: the due time stays.
+    v_due := cur.due_at;
+  ELSE
+    -- The company's response target for the priority. Without a settings row the defaults are
+    -- the 0621 column defaults (target_urgent_min 15, target_high_min 60, target_normal_min 240,
+    -- target_low_min 1440); tests/test_inbox_queue_triggers.py checks the two stay equal.
+    SELECT CASE v_priority WHEN 'urgent' THEN s.target_urgent_min
+                           WHEN 'high' THEN s.target_high_min
+                           WHEN 'normal' THEN s.target_normal_min
+                           ELSE s.target_low_min END
+      INTO v_target
+      FROM public.inbox_settings s
+     WHERE s.client_id = p_client;
+    IF NOT FOUND THEN
+      v_target := CASE v_priority WHEN 'urgent' THEN 15 WHEN 'high' THEN 60
+                                  WHEN 'normal' THEN 240 ELSE 1440 END;
+    END IF;
+    v_due := v_since + v_target * interval '1 minute';
   END IF;
 
   -- Ids and enums only (design: details never hold names or text).
@@ -154,7 +167,7 @@ BEGIN
            queue_reason = v_reason,
            priority = v_priority,
            needs_staff_since = v_since,
-           due_at = v_since + v_target * interval '1 minute',
+           due_at = v_due,
            assignee_user_id = v_assignee,
            claimed_at = v_claimed_at,
            snoozed_until = NULL,
@@ -174,13 +187,14 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  v_old text;
-  v_owned text;
-  v_to_bot boolean;
   v_client uuid;
   v_id uuid;
+  v_old text;
+  v_owned text;
   v_priority text;
-  v_attempt integer := 0;
+  v_in_queue boolean;
+  v_to_bot boolean := false;
+  v_enter boolean := false;
 BEGIN
   IF NEW.direction <> 'inbound' OR NEW.author <> 'contact' THEN
     UPDATE public.conversations c
@@ -189,60 +203,49 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  -- One UPDATE: the times, and the return to bot of a waiting, snoozed or resolved item that no
-  -- person owns and that has no live held reply. The state is read without a lock and the UPDATE
-  -- only applies while queue_status and owned_by still hold what was read (re-checked on the
-  -- newest row version when another transaction changed it meanwhile); otherwise it reads again.
-  -- So the old state, which the event row needs, is exact without an extra row lock.
-  LOOP
-    v_attempt := v_attempt + 1;
-    IF v_attempt > 5 THEN
-      RAISE EXCEPTION 'inbox_queue_on_message: conversation % keeps changing', NEW.conversation_id
-        USING ERRCODE = 'lock_not_available';
-    END IF;
-    SELECT c.queue_status, c.owned_by,
-           c.queue_status IN ('waiting_customer', 'snoozed', 'resolved')
-             AND c.owned_by IS DISTINCT FROM 'human_support'
-             AND NOT EXISTS (
-               SELECT 1 FROM public.approvals a
-                WHERE a.client_id = c.client_id AND a.conversation_id = c.id
-                  AND a.status = 'pending' AND a.expires_at > now())
-             AND c.channel IN ('telegram', 'whatsapp')
-             AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
-             AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
-                              WHERE p.contact_id = c.contact_id)
-      INTO v_old, v_owned, v_to_bot
-      FROM public.conversations c
-     WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id;
-    IF NOT FOUND THEN
-      RETURN NULL;
-    END IF;
+  -- Lock first: the UPDATE below takes this row lock anyway, and holding it from the read on makes
+  -- the old state (which decides the transition and goes into the event row) exact.
+  SELECT c.client_id, c.id, c.queue_status, c.owned_by, c.priority,
+         c.channel IN ('telegram', 'whatsapp')
+           AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
+           AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
+                            WHERE p.contact_id = c.contact_id)
+    INTO v_client, v_id, v_old, v_owned, v_priority, v_in_queue
+    FROM public.conversations c
+   WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
+     FOR NO KEY UPDATE OF c;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
 
-    IF v_to_bot THEN
-      UPDATE public.conversations c
-         SET last_activity_at = greatest(c.last_activity_at, NEW.created_at),
-             last_customer_at = greatest(c.last_customer_at, NEW.created_at),
-             queue_status = 'bot',
-             queue_reason = NULL,
-             assignee_user_id = NULL,
-             claimed_at = NULL,
-             needs_staff_since = NULL,
-             due_at = NULL,
-             snoozed_until = NULL,
-             resolved_at = NULL
-       WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
-         AND c.queue_status = v_old AND c.owned_by IS NOT DISTINCT FROM v_owned
-      RETURNING c.client_id, c.id, c.priority INTO v_client, v_id, v_priority;
-    ELSE
-      UPDATE public.conversations c
-         SET last_activity_at = greatest(c.last_activity_at, NEW.created_at),
-             last_customer_at = greatest(c.last_customer_at, NEW.created_at)
-       WHERE c.client_id = NEW.client_id AND c.id = NEW.conversation_id
-         AND c.queue_status = v_old AND c.owned_by IS NOT DISTINCT FROM v_owned
-      RETURNING c.client_id, c.id, c.priority INTO v_client, v_id, v_priority;
+  IF v_in_queue THEN
+    IF v_old = 'bot' THEN
+      -- A person owns the conversation, so the bot stays silent: the message needs a person.
+      v_enter := v_owned IS NOT DISTINCT FROM 'human_support';
+    ELSIF v_old IN ('waiting_customer', 'snoozed', 'resolved') THEN
+      v_enter := v_owned IS NOT DISTINCT FROM 'human_support'
+                 OR EXISTS (
+                   SELECT 1 FROM public.approvals a
+                    WHERE a.client_id = v_client AND a.conversation_id = v_id
+                      AND a.status = 'pending' AND a.expires_at > now());
+      v_to_bot := NOT v_enter;
     END IF;
-    EXIT WHEN FOUND;
-  END LOOP;
+  END IF;
+
+  -- One UPDATE: the times, and the return to bot of a waiting, snoozed or resolved item that no
+  -- person owns and that has no live held reply.
+  UPDATE public.conversations c
+     SET last_activity_at = greatest(c.last_activity_at, NEW.created_at),
+         last_customer_at = greatest(c.last_customer_at, NEW.created_at),
+         queue_status = CASE WHEN v_to_bot THEN 'bot' ELSE c.queue_status END,
+         queue_reason = CASE WHEN v_to_bot THEN NULL ELSE c.queue_reason END,
+         assignee_user_id = CASE WHEN v_to_bot THEN NULL ELSE c.assignee_user_id END,
+         claimed_at = CASE WHEN v_to_bot THEN NULL ELSE c.claimed_at END,
+         needs_staff_since = CASE WHEN v_to_bot THEN NULL ELSE c.needs_staff_since END,
+         due_at = CASE WHEN v_to_bot THEN NULL ELSE c.due_at END,
+         snoozed_until = CASE WHEN v_to_bot THEN NULL ELSE c.snoozed_until END,
+         resolved_at = CASE WHEN v_to_bot THEN NULL ELSE c.resolved_at END
+   WHERE c.client_id = v_client AND c.id = v_id;
 
   IF v_to_bot THEN
     -- The bot has the conversation again: recorded like a hand back, by no person.
@@ -250,9 +253,7 @@ BEGIN
         (client_id, conversation_id, actor_user_id, action, from_status, to_status, details)
     VALUES (v_client, v_id, NULL, 'handed_back', v_old, 'bot',
             jsonb_build_object('cause', 'customer_message'));
-  ELSIF v_old IN ('waiting_customer', 'snoozed', 'resolved') THEN
-    -- A person owns it or a held reply is live (or it is outside the queue, where
-    -- inbox_queue_enter does nothing).
+  ELSIF v_enter THEN
     PERFORM public.inbox_queue_enter(v_client, v_id, 'customer_message', v_priority);
   END IF;
   RETURN NULL;

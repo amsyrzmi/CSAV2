@@ -16,24 +16,35 @@
 --   indexes (so the bot and resolved rows, the large majority, never enter them); the snooze and
 --   waiting-on-customer lists; the Waiting on customer and Snoozed tabs in activity order, one
 --   index per state (their default order: without them the planner sorts a partial index or
---   filter-scans every row of the company); GIN trigram indexes on the contact name, @username and phone digits
---   (pg_trgm is installed by the baseline; the btree on phone_digits from 0581 does not serve a
---   contains match).
+--   filter-scans every row of the company).
+--   No index for the contact search: the app role reads contacts under row security and the ILIKE
+--   operators are not leakproof, so the planner could not use a trigram index for it. Search is a
+--   bounded per-company scan on the client_id index (design 6.5).
 --   public.inbox_queue_backfill(p_client uuid DEFAULT NULL) RETURNS integer: sets the new columns from
 --   the existing messages, escalations and approvals for conversations still in the default queue
 --   state (queue_status 'bot', no reason, no claim) and returns how many it changed. Called once
 --   below for every company; safe to call again (it only changes a row whose values differ, and a row
---   that moved out of 'bot' is not looked at). It never touches conversations of other channels
+--   that moved out of 'bot' is not looked at). Migration only: no role but the owner may run it,
+--   and nothing may call or schedule it. It never touches conversations of other channels
 --   than telegram and whatsapp (the sandbox) or console chat conversations, as the Inbox list
 --   (db/sql/inbox/list_queue_*.sql) excludes them: those keep queue_status 'bot' for good.
 -- Backfill rules (one CASE each below):
---   needs_staff when, within the last 30 days, the conversation has an open escalation (reason
---   'escalation', since = the oldest such escalation's created_at, priority = the highest of its
---   open escalations), else a live pending approval (reason 'held_reply', since = its created_at),
---   else a human-owned conversation whose newest message is inbound (reason 'customer_message',
---   since = that message's time). Reason precedence: escalation, held_reply, customer_message.
---   waiting_customer when a person owns the conversation and the newest message is a person's reply.
---   Everything else, including an escalation older than 30 days, stays 'bot'.
+--   An escalation counts when it is 'open', at most 30 days old and no person's reply came after it.
+--   (Nothing writes escalations.status before this project, so every old escalation is still
+--   'open': the status alone says nothing.)
+--   needs_staff, reason 'escalation', when the conversation is held now (status 'escalated' or
+--   owned by a person) and has a counted escalation: since = the oldest counted escalation's
+--   created_at, priority = the highest of the counted escalations. An AI-owned conversation with
+--   status 'open' was released or its mute ended: it stays 'bot' (reachable in All).
+--   Else needs_staff, reason 'held_reply', for a live pending approval at most 30 days old
+--   (since = its created_at).
+--   Else needs_staff, reason 'customer_message', for a human-owned conversation whose newest
+--   message is inbound and at most 30 days old (since = that message's time).
+--   Reason precedence: escalation, held_reply, customer_message; their priority is 'normal'.
+--   waiting_customer when a person owns the conversation, the newest message is a person's reply
+--   and that reply is at most 30 days old.
+--   Everything else stays 'bot', including older escalations and threads waiting longer than
+--   30 days (a later customer message brings such a person-owned thread into the queue: 0622).
 --   due_at = needs_staff_since + 240 minutes for every priority. This is a placeholder: the company
 --   response targets (inbox_settings, 0621) do not exist yet and 240 minutes is the 'normal' default.
 --   The rollout job of the reminder work gives these items a fresh clock.
@@ -42,15 +53,16 @@
 --   the contact.
 -- Backfill timing: it reads three tables and rewrites the conversations still in the default state,
 --   once, at migration time. The ADD COLUMN with now() as default is a fast default (no table
---   rewrite). Indexes are built without CONCURRENTLY, as the migration rules require.
+--   rewrite). Indexes are built without CONCURRENTLY, as the migration rules require. The runner
+--   applies the file in one transaction, so the lock taken by the ALTER TABLE covers the backfill,
+--   the validations and the index builds.
 -- Safe to run twice: ADD COLUMN IF NOT EXISTS, constraints added only when missing, CREATE INDEX IF
 --   NOT EXISTS, CREATE OR REPLACE FUNCTION, and the backfill finds nothing left to change.
--- Rollback: DROP FUNCTION public.inbox_queue_backfill(uuid); drop the new indexes by name
---   (conversations_activity_idx, conversations_queue_due_idx, conversations_queue_mine_idx,
---   conversations_queue_since_idx, conversations_queue_snoozed_idx, conversations_queue_waiting_idx,
---   conversations_queue_snoozed_activity_idx, conversations_queue_waiting_activity_idx,
---   contacts_full_name_trgm_idx,
---   contacts_telegram_username_trgm_idx, contacts_phone_digits_trgm_idx);
+-- Rollback: DROP FUNCTION public.inbox_queue_backfill(uuid); drop the new indexes by name:
+--     conversations_activity_idx, conversations_queue_due_idx, conversations_queue_mine_idx,
+--     conversations_queue_since_idx, conversations_queue_snoozed_idx,
+--     conversations_queue_waiting_idx, conversations_queue_snoozed_activity_idx,
+--     conversations_queue_waiting_activity_idx;
 --   ALTER TABLE public.conversations DROP COLUMN for each column above (the constraints go with
 --   them); then delete the schema_migrations row for 0620, or the runner thinks it is still applied.
 
@@ -111,6 +123,7 @@ BEGIN
     SELECT c.id,
            c.opened_at,
            (c.owned_by = 'human_support') AS human_owned,
+           (c.status = 'escalated' OR c.owned_by = 'human_support') AS held,
            (c.channel IN ('telegram', 'whatsapp')
              AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
              AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
@@ -145,13 +158,16 @@ BEGIN
            AND m.direction = 'outbound'
            AND (m.author = 'human_support' OR m.send_authority = 'reviewed')
       ) ls
+      -- The counted escalations: open, at most 30 days old, no person's reply after them.
       CROSS JOIN LATERAL (
-        SELECT min(e.created_at) FILTER (WHERE e.created_at >= now() - interval '30 days') AS since,
+        SELECT min(e.created_at) AS since,
                (array_agg(e.priority ORDER BY CASE e.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3
                                                               WHEN 'normal' THEN 2 ELSE 1 END DESC))[1]
                  AS priority
           FROM public.escalations e
          WHERE e.client_id = c.client_id AND e.conversation_id = c.id AND e.status = 'open'
+           AND e.created_at >= now() - interval '30 days'
+           AND (ls.at IS NULL OR e.created_at > ls.at)
       ) esc
       CROSS JOIN LATERAL (
         SELECT min(a.created_at) AS since
@@ -164,7 +180,7 @@ BEGIN
        AND (p_client IS NULL OR c.client_id = p_client)
   ), decided AS (
     SELECT f.*,
-           CASE WHEN f.in_queue_scope AND f.escalation_since IS NOT NULL THEN 'escalation'
+           CASE WHEN f.in_queue_scope AND f.held AND f.escalation_since IS NOT NULL THEN 'escalation'
                 WHEN f.in_queue_scope AND f.approval_since IS NOT NULL THEN 'held_reply'
                 WHEN f.in_queue_scope AND f.human_owned AND f.newest_is_inbound
                      AND f.newest_at >= now() - interval '30 days' THEN 'customer_message'
@@ -181,11 +197,13 @@ BEGIN
                          WHEN 'customer_message' THEN d.newest_at
            END AS since,
            CASE WHEN d.reason IS NOT NULL THEN 'needs_staff'
-                WHEN d.in_queue_scope AND d.human_owned AND d.newest_is_staff THEN 'waiting_customer'
+                WHEN d.in_queue_scope AND d.human_owned AND d.newest_is_staff
+                     AND d.last_staff_reply_at >= now() - interval '30 days' THEN 'waiting_customer'
                 ELSE 'bot'
            END AS status,
-           CASE WHEN d.reason IS NOT NULL THEN coalesce(d.escalation_priority, 'normal') END
-             AS priority
+           CASE WHEN d.reason = 'escalation' THEN d.escalation_priority
+                WHEN d.reason IS NOT NULL THEN 'normal'
+           END AS priority
       FROM decided d
   )
   UPDATE public.conversations c
@@ -207,6 +225,9 @@ BEGIN
   GET DIAGNOSTICS changed = ROW_COUNT;
   RETURN changed;
 END $$;
+
+-- Migration only: do not call or schedule it. Only the owner (this migration) runs it.
+REVOKE ALL ON FUNCTION public.inbox_queue_backfill(uuid) FROM PUBLIC, csa_app, csa_ro, csa_identity;
 
 SELECT public.inbox_queue_backfill();
 
@@ -237,19 +258,13 @@ CREATE INDEX IF NOT EXISTS conversations_queue_waiting_idx
     ON public.conversations (client_id, last_staff_reply_at)
     WHERE queue_status = 'waiting_customer';
 -- The Snoozed and Waiting on customer tabs list newest activity first (their default order). One
--- index per state, each exactly as small as the state's index above, so the ordered scan always
--- costs less than reading that index and sorting it (one index for both states was larger and the
--- planner chose between the two by sample).
+-- index per state, holding the same rows as the state's index above. Each is about 1.5 times the
+-- size of that index (the extra uuid key), but a page read along it stops at the LIMIT and needs no
+-- Sort, so the planner prefers it to reading the state's index and sorting (one index for both
+-- states was larger still, and the planner chose between the two by sample).
 CREATE INDEX IF NOT EXISTS conversations_queue_snoozed_activity_idx
     ON public.conversations (client_id, last_activity_at DESC, id DESC)
     WHERE queue_status = 'snoozed';
 CREATE INDEX IF NOT EXISTS conversations_queue_waiting_activity_idx
     ON public.conversations (client_id, last_activity_at DESC, id DESC)
     WHERE queue_status = 'waiting_customer';
-
-CREATE INDEX IF NOT EXISTS contacts_full_name_trgm_idx
-    ON public.contacts USING gin (full_name public.gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS contacts_telegram_username_trgm_idx
-    ON public.contacts USING gin (telegram_username public.gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS contacts_phone_digits_trgm_idx
-    ON public.contacts USING gin (phone_digits public.gin_trgm_ops);

@@ -15,7 +15,7 @@ from psycopg import errors
 from scripts import migrate
 
 from tests.conftest import requires_docker
-from tests.test_bookings_schema import DictConnection, _owner
+from tests.test_bookings_schema import DictConnection, _app, _owner
 from tests.test_training_schema import _company
 
 pytestmark = requires_docker
@@ -52,8 +52,10 @@ def _seed(
     *,
     channel: str = "telegram",
     owned_by: str | None = None,
+    status: str = "open",
     messages: tuple[tuple[str, str, str, int], ...] = (),
     escalation: tuple[str, int] | None = None,
+    more_escalations: tuple[tuple[str, int], ...] = (),
     approval: tuple[str, int, int] | None = None,
     opened_ago: int = 40 * DAY,
 ) -> Seeded:
@@ -70,8 +72,8 @@ def _seed(
         )
         conn.execute(
             "INSERT INTO conversations (id, client_id, contact_id, channel, channel_thread,"
-            " owned_by, opened_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, now() - make_interval(secs => %s))",
+            " owned_by, status, opened_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, now() - make_interval(secs => %s))",
             (
                 conversation_id,
                 client_id,
@@ -79,6 +81,7 @@ def _seed(
                 channel,
                 f"thread-{conversation_id}",
                 owned_by,
+                status,
                 opened_ago,
             ),
         )
@@ -98,8 +101,7 @@ def _seed(
                     ago,
                 ),
             )
-        if escalation is not None:
-            priority, ago = escalation
+        for priority, ago in (*((escalation,) if escalation else ()), *more_escalations):
             conn.execute(
                 "INSERT INTO escalations (client_id, trace_id, conversation_id, contact_id,"
                 " reason, priority, status, created_at)"
@@ -142,6 +144,25 @@ def _row(dsn: str, conversation_id: str) -> dict[str, Any]:
         ).fetchone()
     assert row is not None
     return row
+
+
+def _escalation_times(dsn: str, conversation_id: str) -> list[Any]:
+    """The conversation's escalation times, oldest first."""
+    with _owner(dsn) as conn:
+        rows = conn.execute(
+            "SELECT created_at FROM escalations WHERE conversation_id = %s ORDER BY created_at",
+            (conversation_id,),
+        ).fetchall()
+    return [r["created_at"] for r in rows]
+
+
+def _approval_time(dsn: str, conversation_id: str) -> Any:
+    with _owner(dsn) as conn:
+        row = conn.execute(
+            "SELECT created_at FROM approvals WHERE conversation_id = %s", (conversation_id,)
+        ).fetchone()
+    assert row is not None
+    return row["created_at"]
 
 
 def _backfill(dsn: str, client_id: str | None = None) -> int:
@@ -366,11 +387,17 @@ def test_queue_indexes_exist_with_their_predicates(migrated_dsn: str) -> None:
     assert "WHERE (queue_status = 'waiting_customer'::text)" in replied
 
 
-def test_trigram_indexes_exist_on_the_contact_search_columns(migrated_dsn: str) -> None:
+def test_no_trigram_index_is_built_for_the_contact_search(migrated_dsn: str) -> None:
+    # The app role reads contacts under row security and the ILIKE operators are not
+    # leakproof, so it could never use one: search is a bounded per-company scan.
     defs = _index_definitions(migrated_dsn)
-    for column in ("full_name", "telegram_username", "phone_digits"):
-        definition = _find(defs, "ON public.contacts", "USING gin", f"({column} ")
-        assert "gin_trgm_ops" in definition
+    for name in (
+        "contacts_full_name_trgm_idx",
+        "contacts_telegram_username_trgm_idx",
+        "contacts_phone_digits_trgm_idx",
+    ):
+        assert name not in defs
+    assert [d for d in defs.values() if "gin_trgm_ops" in d] == []
 
 
 def test_an_ordinary_bot_conversation_stays_bot_with_its_newest_message_time(
@@ -432,18 +459,18 @@ def test_an_escalated_open_conversation_needs_staff_with_the_escalation_priority
 def test_the_highest_priority_of_several_open_escalations_wins(migrated_dsn: str) -> None:
     client_id = _company(migrated_dsn)
     seeded = _seed(
-        migrated_dsn, client_id, messages=(_customer(DAY),), escalation=("normal", 3 * DAY)
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(DAY),),
+        escalation=("normal", 3 * DAY),
+        more_escalations=(("high", DAY),),
     )
-    with _owner(migrated_dsn) as conn:
-        conn.execute(
-            "INSERT INTO escalations (client_id, trace_id, conversation_id, contact_id, reason,"
-            " priority, status, created_at) VALUES (%s, %s, %s, %s, 'synthetic', 'high', 'open',"
-            " now() - interval '1 day')",
-            (client_id, str(uuid.uuid4()), seeded.conversation_id, seeded.contact_id),
-        )
     _backfill(migrated_dsn)
     row = _row(migrated_dsn, seeded.conversation_id)
     assert (row["queue_status"], row["priority"]) == ("needs_staff", "high")
+    oldest, _ = _escalation_times(migrated_dsn, seeded.conversation_id)
+    assert row["needs_staff_since"] == oldest
 
 
 def test_a_human_owned_conversation_with_an_inbound_newest_message_needs_staff(
@@ -521,8 +548,13 @@ def test_the_reason_precedence_is_escalation_then_held_reply_then_customer_messa
         approval=("pending", 2 * 3600, 3600),
     )
     _backfill(migrated_dsn)
-    assert _row(migrated_dsn, everything.conversation_id)["queue_reason"] == "escalation"
-    assert _row(migrated_dsn, held_and_owned.conversation_id)["queue_reason"] == "held_reply"
+    row = _row(migrated_dsn, everything.conversation_id)
+    assert row["queue_reason"] == "escalation"
+    assert row["priority"] == "high"
+    assert [row["needs_staff_since"]] == _escalation_times(migrated_dsn, everything.conversation_id)
+    row = _row(migrated_dsn, held_and_owned.conversation_id)
+    assert row["queue_reason"] == "held_reply"
+    assert row["needs_staff_since"] == _approval_time(migrated_dsn, held_and_owned.conversation_id)
 
 
 def test_a_human_owned_conversation_whose_newest_message_is_a_human_reply_waits(
@@ -572,6 +604,7 @@ def test_an_escalation_older_than_thirty_days_stays_bot(migrated_dsn: str) -> No
     seeded = _seed(
         migrated_dsn,
         client_id,
+        owned_by="human_support",
         messages=(_customer(32 * DAY),),
         escalation=("urgent", 31 * DAY),
         opened_ago=35 * DAY,
@@ -579,6 +612,7 @@ def test_an_escalation_older_than_thirty_days_stays_bot(migrated_dsn: str) -> No
     inside = _seed(
         migrated_dsn,
         client_id,
+        owned_by="human_support",
         messages=(_customer(29 * DAY),),
         escalation=("urgent", 29 * DAY),
         opened_ago=35 * DAY,
@@ -586,6 +620,161 @@ def test_an_escalation_older_than_thirty_days_stays_bot(migrated_dsn: str) -> No
     _backfill(migrated_dsn)
     assert _row(migrated_dsn, seeded.conversation_id)["queue_status"] == "bot"
     assert _row(migrated_dsn, inside.conversation_id)["queue_status"] == "needs_staff"
+
+
+def test_an_escalation_answered_by_a_person_is_not_needs_staff(migrated_dsn: str) -> None:
+    client_id = _company(migrated_dsn)
+    owned = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        status="escalated",
+        messages=(_customer(3 * 3600), _human(3600)),
+        escalation=("urgent", 2 * 3600),
+    )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, owned.conversation_id)
+    assert row["queue_status"] == "waiting_customer"
+    assert row["queue_reason"] is None
+    assert row["priority"] == "normal"
+
+
+def test_an_escalated_conversation_the_ai_owns_again_is_bot(migrated_dsn: str) -> None:
+    # Released (or its mute expired): status open, the AI owns it. Nothing tells the two apart
+    # in the data, so it stays reachable in All instead of filling Needs us.
+    client_id = _company(migrated_dsn)
+    released = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="ai",
+        messages=(_customer(3 * 3600), _bot(3 * 3600 - 5)),
+        escalation=("urgent", 3 * 3600),
+    )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, released.conversation_id)
+    assert row["queue_status"] == "bot"
+    assert row["queue_reason"] is None
+    assert row["priority"] == "normal"
+
+
+def test_a_held_unanswered_escalation_needs_staff(migrated_dsn: str) -> None:
+    # Held by the escalation mute (status escalated) without a person owning it.
+    client_id = _company(migrated_dsn)
+    held = _seed(
+        migrated_dsn,
+        client_id,
+        status="escalated",
+        messages=(_customer(3 * 3600), _bot(3 * 3600 - 5)),
+        escalation=("high", 3 * 3600),
+    )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, held.conversation_id)
+    assert (row["queue_status"], row["queue_reason"], row["priority"]) == (
+        "needs_staff",
+        "escalation",
+        "high",
+    )
+    assert [row["needs_staff_since"]] == _escalation_times(migrated_dsn, held.conversation_id)
+
+
+def test_waiting_on_the_customer_for_over_thirty_days_is_bot(migrated_dsn: str) -> None:
+    client_id = _company(migrated_dsn)
+    old = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(32 * DAY), _human(31 * DAY)),
+        opened_ago=35 * DAY,
+    )
+    recent = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(30 * DAY), _human(29 * DAY)),
+        opened_ago=35 * DAY,
+    )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, old.conversation_id)
+    assert row["queue_status"] == "bot"
+    assert row["last_staff_reply_at"] == row["newest"]
+    assert _row(migrated_dsn, recent.conversation_id)["queue_status"] == "waiting_customer"
+
+
+def test_the_priority_ignores_an_escalation_older_than_thirty_days(migrated_dsn: str) -> None:
+    client_id = _company(migrated_dsn)
+    seeded = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(DAY),),
+        escalation=("urgent", 40 * DAY),
+        more_escalations=(("normal", DAY),),
+        opened_ago=45 * DAY,
+    )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, seeded.conversation_id)
+    assert (row["queue_status"], row["queue_reason"], row["priority"]) == (
+        "needs_staff",
+        "escalation",
+        "normal",
+    )
+    _, recent = _escalation_times(migrated_dsn, seeded.conversation_id)
+    assert row["needs_staff_since"] == recent
+
+
+def test_a_console_chat_thread_alone_keeps_a_conversation_bot(migrated_dsn: str) -> None:
+    # The thread row points at the conversation, but the conversation's own contact is no
+    # participant: only the thread exclusion can keep it out.
+    client_id = _company(migrated_dsn)
+    seeded = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(3600),),
+        escalation=("high", 3600),
+    )
+    stand_in = _seed(migrated_dsn, client_id)
+    user, endpoint, credential = (str(uuid.uuid4()) for _ in range(3))
+    with _owner(migrated_dsn) as conn:
+        conn.execute(
+            "INSERT INTO console_users (id, email, display_name) VALUES (%s, %s, 'Synthetic')",
+            (user, f"{user}@example.test"),
+        )
+        conn.execute(
+            "INSERT INTO channel_credentials (id, client_id, channel) VALUES (%s, %s, 'webhook')",
+            (credential, client_id),
+        )
+        conn.execute(
+            "INSERT INTO webhook_endpoints (id, client_id, public_id, credential_id)"
+            " VALUES (%s, %s, %s, %s)",
+            (endpoint, client_id, f"endpoint-{uuid.uuid4().hex}", credential),
+        )
+        conn.execute(
+            "INSERT INTO console_chat_participants (client_id, user_id, contact_id, endpoint_id)"
+            " VALUES (%s, %s, %s, %s)",
+            (client_id, user, stand_in.contact_id, endpoint),
+        )
+        conn.execute(
+            "INSERT INTO console_chat_threads (id, client_id, user_id, contact_id, endpoint_id,"
+            " request_key) VALUES (%s, %s, %s, %s, %s, %s)",
+            (seeded.conversation_id, client_id, user, stand_in.contact_id, endpoint, uuid.uuid4()),
+        )
+    _backfill(migrated_dsn)
+    row = _row(migrated_dsn, seeded.conversation_id)
+    assert (row["queue_status"], row["queue_reason"]) == ("bot", None)
+
+
+def test_the_app_role_cannot_run_the_backfill(migrated_dsn: str, app_dsn: str) -> None:
+    client_id = _company(migrated_dsn)
+    with _owner(migrated_dsn) as conn:
+        rights = conn.execute(
+            "SELECT has_function_privilege(r, 'public.inbox_queue_backfill(uuid)', 'EXECUTE') AS x"
+            " FROM unnest(ARRAY['csa_app', 'csa_ro', 'csa_identity']) AS r"
+        ).fetchall()
+    assert [r["x"] for r in rights] == [False, False, False]
+    with _app(app_dsn, client_id) as conn:
+        with pytest.raises(errors.InsufficientPrivilege):
+            conn.execute("SELECT public.inbox_queue_backfill(%s::uuid)", (client_id,))
 
 
 def test_sandbox_and_console_chat_conversations_stay_bot(migrated_dsn: str) -> None:
@@ -598,9 +787,19 @@ def test_sandbox_and_console_chat_conversations_stay_bot(migrated_dsn: str) -> N
         messages=(_customer(3600),),
         escalation=("high", 3600),
     )
-    thread = _seed(migrated_dsn, client_id, messages=(_customer(3600),), escalation=("high", 3600))
+    thread = _seed(
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(3600),),
+        escalation=("high", 3600),
+    )
     participant = _seed(
-        migrated_dsn, client_id, messages=(_customer(3600),), escalation=("high", 3600)
+        migrated_dsn,
+        client_id,
+        owned_by="human_support",
+        messages=(_customer(3600),),
+        escalation=("high", 3600),
     )
     endpoint = str(uuid.uuid4())
     user_one, user_two = str(uuid.uuid4()), str(uuid.uuid4())

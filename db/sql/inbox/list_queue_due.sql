@@ -20,9 +20,9 @@
 -- Exclusions: the two NOT EXISTS carry OFFSET 0, an optimisation fence and not a limit. It
 --   keeps them as per-row filters (an index probe each) on the queue index scan; without it the
 --   planner may turn them into hash anti joins, whose output is not ordered, and then sort.
--- Search: a bounded per-company scan of contacts on their client_id index. The trigram
---   indexes (0620) cannot serve it: csa_app reads contacts under row security and the ILIKE and
---   LIKE operators are not leakproof, so the planner cannot use an index on the matched columns.
+-- Search: contact search is a bounded per-company scan of contacts on their client_id index.
+--   No index on the matched columns is built: csa_app reads contacts under row security and the
+--   ILIKE and LIKE operators are not leakproof, so the planner could not use one.
 SELECT p.id, p.channel, p.status, p.owned_by, p.ai_muted_until, p.inbox_version, p.opened_at,
        p.human_muted, p.queue_status, p.queue_reason, p.topic, p.priority, p.assignee_id,
        p.claimed_at, p.needs_staff_since, p.due_at, p.snoozed_until, p.last_customer_at,
