@@ -676,3 +676,89 @@ test("a failed assignee read is unavailable for 503 only; every other failure is
     assert.deepEqual(assigneesFailure(status), { unavailable: false, failed: true }, String(status));
   }
 });
+
+// ---- the row: clock, unread emphasis and the due label ----
+
+test("rowClock is the wait in the four queue tabs and the last message time elsewhere, with the absolute time in +08:00", () => {
+  const { rowClock } = queue;
+  // NOW is 12:00 in +08:00; the clock started 2 h 10 m ago, the last message 3 minutes ago.
+  const row = item({
+    needs_staff_since: ago(2 * HOUR + 10 * MIN),
+    last_message: { preview: "Hello", at: ago(3 * MIN) },
+  });
+  for (const id of ["needs_us", "mine", "unassigned", "overdue"]) {
+    assert.deepEqual(rowClock(row, id, NOW), {
+      kind: "wait", text: "2h 10m", title: "Waiting since 17 Nov 2026, 09:50",
+    }, id);
+  }
+  for (const id of ["waiting", "snoozed", "resolved", "all"]) {
+    assert.deepEqual(rowClock(row, id, NOW), {
+      kind: "last", at: ago(3 * MIN), title: "Last message 17 Nov 2026, 11:57",
+    }, id);
+  }
+});
+
+test("rowClock falls back to the last message (or the opening time) when there is no wait clock", () => {
+  const { rowClock } = queue;
+  // A waiting-on-customer item in Mine has no needs_staff_since.
+  const waiting = item({
+    queue_status: "waiting_customer", needs_staff_since: null,
+    last_message: { preview: "Thanks", at: "2026-11-16T15:59:00Z" },
+  });
+  assert.deepEqual(rowClock(waiting, "mine", NOW), {
+    kind: "last", at: "2026-11-16T15:59:00Z", title: "Last message 16 Nov 2026, 23:59",
+  });
+  // A row from an older server has no queue fields at all.
+  const bare = { ...item({ last_message: null }), needs_staff_since: undefined };
+  assert.deepEqual(rowClock(bare, "needs_us", NOW), {
+    kind: "last", at: ago(5 * HOUR), title: "Last message 17 Nov 2026, 07:00",
+  });
+  // An unreadable time keeps the clock but gives no title.
+  assert.deepEqual(rowClock(item({ last_message: { preview: "", at: "nope" } }), "all", NOW), {
+    kind: "last", at: "nope", title: "",
+  });
+});
+
+test("isUnread: the customer wrote last and nobody has answered", () => {
+  const { isUnread } = queue;
+  assert.equal(isUnread(item({ last_customer_at: ago(HOUR), last_staff_reply_at: null })), true);
+  assert.equal(isUnread(item({ last_customer_at: ago(HOUR), last_staff_reply_at: ago(2 * HOUR) })), true);
+  assert.equal(isUnread(item({ last_customer_at: ago(2 * HOUR), last_staff_reply_at: ago(HOUR) })), false);
+  assert.equal(isUnread(item({ last_customer_at: ago(HOUR), last_staff_reply_at: ago(HOUR) })), false);
+  assert.equal(isUnread(item({ last_customer_at: null, last_staff_reply_at: null })), false);
+  assert.equal(isUnread(item({ last_customer_at: null, last_staff_reply_at: ago(HOUR) })), false);
+  // Rows without the queue fields (older servers, other screens' stubs) are never emphasised.
+  assert.equal(isUnread({ ...item(), last_customer_at: undefined, last_staff_reply_at: undefined }), false);
+  assert.equal(isUnread(item({ last_customer_at: "nope", last_staff_reply_at: null })), false);
+});
+
+test("dueLabel: neutral minutes, Due soon in the last quarter, Overdue in words in the error tone", () => {
+  const { dueLabel } = queue;
+  const due = (over) => dueLabel(rowMeta(item(over), NOW, me).due);
+  assert.deepEqual(due({ needs_staff_since: ago(HOUR), due_at: ahead(30 * MIN) }), {
+    tone: "neutral", text: "Due in 30m",
+  });
+  assert.deepEqual(due({ needs_staff_since: ago(HOUR), due_at: ahead(10 * MIN) }), {
+    tone: "attention", text: "Due soon",
+  });
+  assert.deepEqual(due({ needs_staff_since: ago(3 * HOUR), due_at: ago(HOUR) }), {
+    tone: "error", text: "Overdue 1h",
+  });
+  assert.equal(dueLabel(null), null);
+  // Not a needs_staff row: rowMeta has no due part, so there is no label.
+  assert.equal(due({ queue_status: "waiting_customer", queue_reason: null }), null);
+});
+
+test("rowMeta and the row helpers tolerate a row with no queue fields at all", () => {
+  const { rowClock, isUnread } = queue;
+  const bare = {
+    id: "c9", channel: "whatsapp", status: "open", owned_by: null, ai_muted_until: null,
+    human_muted: false, inbox_version: 1, opened_at: ago(HOUR), contact: null,
+    last_message: { preview: "Hi", at: ago(MIN) }, pending_approvals: 0,
+  };
+  assert.deepEqual(rowMeta(bare, NOW, me), {
+    state: null, due: null, priority: null, reason: null, assignee: null,
+  });
+  assert.equal(isUnread(bare), false);
+  assert.equal(rowClock(bare, "needs_us", NOW).kind, "last");
+});

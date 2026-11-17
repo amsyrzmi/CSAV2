@@ -745,3 +745,210 @@ async def test_desktop_bar_and_composer_fit_one_screen(shell: Shell) -> None:
         assert await on_top(send)
         # The tabs are still usable from there.
         assert await on_top(tab(page, "all"))
+
+
+# ---- the three-line row ------------------------------------------------------------------------
+
+# Every row of `queue_rows()` and the parts of its meta line, by `data-row-part`: exactly these
+# parts and no others. A value is a pattern the part's text must match in full.
+ROW_PARTS: dict[str, dict[str, str]] = {
+    # Needs us, escalated, high, mine, a known customer: no sender pill.
+    NAMED: {
+        "state": "Needs us",
+        "due": r"Due in (19|20)m",
+        "priority": "High",
+        "reason": "Escalated",
+        "assignee": "SUAssigned to You",
+        "channel": "Telegram",
+    },
+    # Overdue: the word and the time, never colour alone; a new sender keeps the dashed label.
+    UNNAMED: {
+        "state": "Needs us",
+        "due": r"Overdue (30|31)m",
+        "reason": "Customer wrote",
+        "sender": "New sender",
+        "channel": "WhatsApp",
+    },
+    # A held reply keeps its review marker, so the reason does not say "Held reply" twice.
+    WAITING_ROW: {
+        "review": "Needs review",
+        "state": "Needs us",
+        "due": r"Due in (49|50)m",
+        "sender": "New sender",
+        "channel": "Telegram",
+    },
+    NEWCOMER: {
+        "state": "Waiting on customer",
+        "assignee": "SUAssigned to You",
+        "sender": "New sender",
+        "channel": "Telegram",
+    },
+    LONG: {
+        "state": r"Snoozed until (Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d\d:\d\d",
+        "channel": "WhatsApp",
+    },
+    RESOLVED_ROW: {"state": "Resolved", "sender": "New sender", "channel": "Telegram"},
+    # The assistant has it: no state label at all.
+    BOT_ROW: {"sender": "New sender", "channel": "WhatsApp"},
+}
+PARTS_JS = """el => Object.fromEntries([...el.querySelectorAll('[data-row-part]')].map(part => [
+    part.dataset.rowPart,
+    {
+        text: part.textContent.trim(),
+        tone: part.querySelector('[data-tone]')?.dataset.tone ?? null,
+        dashed: [part, ...part.querySelectorAll('*')]
+            .some(e => getComputedStyle(e).outlineStyle === 'dashed'),
+        icons: part.querySelectorAll('svg').length,
+    },
+]))"""
+
+
+async def row_parts(page: Page, identifier: str) -> dict[str, dict[str, Any]]:
+    """The meta line of a row: each part's text, StatusLabel tone, dashed edge and icons."""
+    return await row(page, identifier).locator("xpath=..").evaluate(PARTS_JS)
+
+
+async def test_rows_show_only_the_labels_that_apply(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tab(page, "all").click()
+        await rows_loaded(page, 7)
+        for identifier, expected in ROW_PARTS.items():
+            found = await row_parts(page, identifier)
+            assert set(found) == set(expected), (identifier, found)
+            for part, pattern in expected.items():
+                assert re.fullmatch(pattern, found[part]["text"]), (identifier, part, found[part])
+        named, unnamed = await row_parts(page, NAMED), await row_parts(page, UNNAMED)
+        # Tones carry the meaning alongside the words.
+        assert named["state"]["tone"] == "attention", named
+        assert named["due"]["tone"] == "neutral", named
+        assert unnamed["due"]["tone"] == "error", unnamed
+        assert (await row_parts(page, LONG))["state"]["tone"] == "info"
+        assert (await row_parts(page, RESOLVED_ROW))["state"]["tone"] == "success"
+        assert (await row_parts(page, NEWCOMER))["state"]["tone"] == "neutral"
+        # Priority is an icon plus the word; a new sender's label is dashed; the review marker
+        # keeps its bell.
+        assert named["priority"]["icons"] == 1, named
+        assert unnamed["sender"]["dashed"], unnamed
+        assert not any(part["dashed"] for part in named.values()), named
+        assert (await row_parts(page, WAITING_ROW))["review"]["icons"] == 1
+        # The channel is a small icon with its name for assistive technology.
+        for identifier, channel in ((NAMED, "Telegram"), (UNNAMED, "WhatsApp")):
+            icon = row(page, identifier).get_by_role("img", name=channel, exact=True)
+            await expect(icon).to_have_count(1)
+            await expect(icon).to_have_attribute("data-testid", "inbox-channel-badge")
+        # The owner words moved out of the row: the state and the assignee say it.
+        listing = page.get_by_role("list", name="Conversations")
+        await expect(listing.get_by_text("Staff has taken over")).to_have_count(0)
+        # No selection checkboxes until bulk selection is wired up.
+        await expect(listing.get_by_role("checkbox")).to_have_count(0)
+
+        # At 320 the rows wrap their meta line instead of pushing the page sideways.
+        await page.set_viewport_size({"width": 320, "height": 844})
+        await asyncio.sleep(0.3)
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], measured
+        container = await listing.bounding_box()
+        assert container
+        for identifier in ROW_PARTS:
+            box = await row(page, identifier).bounding_box()
+            assert box and box["x"] + box["width"] <= container["x"] + container["width"] + 0.5, (
+                identifier,
+                box,
+                container,
+            )
+
+
+# A fixed browser clock, so the wait and the times are exact: 10:00 on 17 Nov 2026 in +08:00.
+NOW = datetime(2026, 11, 17, 2, 0, tzinfo=UTC)
+CLOCK_ROW = "a0000000-0000-4000-8000-000000000101"
+QUIET_ROW = "a0000000-0000-4000-8000-000000000102"
+
+
+def fixed(minutes: int) -> str:
+    return (NOW + timedelta(minutes=minutes)).isoformat()
+
+
+def clock_rows() -> list[dict[str, Any]]:
+    waiting = conversation(
+        CLOCK_ROW,
+        "telegram",
+        name="Nadia Ismail",
+        known=True,
+        preview="Where is my parcel?",
+        minutes=3,
+        queue_status="needs_staff",
+        queue_reason="escalation",
+        priority="urgent",
+        # Claimed by someone the member directory cannot name: still shown as claimed.
+        assignee_id=AINA,
+        assignee_name=None,
+        needs_staff_since=fixed(-130),
+        due_at=fixed(5),
+    )
+    quiet = conversation(
+        QUIET_ROW,
+        "whatsapp",
+        name="Omar Hakim",
+        known=True,
+        preview="Thank you!",
+        minutes=8,
+    )
+    waiting.update(
+        opened_at=fixed(-200),
+        last_message={"preview": "Where is my parcel?", "at": fixed(-3)},
+        last_customer_at=fixed(-3),
+        last_staff_reply_at=None,
+    )
+    # Staff answered after the customer's last message: no emphasis.
+    quiet.update(
+        opened_at=fixed(-300),
+        last_message={"preview": "Thank you!", "at": fixed(-8)},
+        last_customer_at=fixed(-20),
+        last_staff_reply_at=fixed(-8),
+    )
+    return [waiting, quiet]
+
+
+async def test_the_clock_is_the_servers_wait_in_queue_tabs_and_the_last_message_elsewhere(
+    shell: Shell,
+) -> None:
+    state = Inbox(items=clock_rows())
+    async with inbox_page(shell, state) as page:
+        await page.context.clock.set_fixed_time(NOW)
+        await page.reload()
+        await rows_loaded(page, 2)
+        clock = row(page, CLOCK_ROW).get_by_test_id("inbox-row-time")
+        quiet = row(page, QUIET_ROW).get_by_test_id("inbox-row-time")
+        # Needs us: how long it has waited since the server's needs_staff_since, not page open.
+        await expect(clock).to_have_text("2h 10m")
+        await expect(clock).to_have_attribute("title", "Waiting since 17 Nov 2026, 07:50")
+        # A row with no wait clock shows its last message time even here.
+        await expect(quiet).to_have_text("8 min")
+        await expect(quiet).to_have_attribute("title", "Last message 17 Nov 2026, 09:52")
+        numerals = await clock.evaluate("el => getComputedStyle(el).fontVariantNumeric")
+        assert "tabular-nums" in numerals, numerals
+
+        found = await row_parts(page, CLOCK_ROW)
+        assert set(found) == {"state", "due", "priority", "reason", "assignee", "channel"}, found
+        # The last quarter of the window reads "Due soon", in the attention tone.
+        assert found["due"]["text"] == "Due soon" and found["due"]["tone"] == "attention", found
+        assert found["priority"]["text"] == "Urgent" and found["priority"]["icons"] == 1, found
+        assert found["assignee"]["text"] == "?Assigned to Someone", found
+        assert set(await row_parts(page, QUIET_ROW)) == {"channel"}
+
+        # The newest message is the customer's and unanswered: a heavier name, nothing else.
+        async def weight(identifier: str) -> str:
+            name = row(page, identifier).locator("span.truncate").first
+            return await name.evaluate("el => getComputedStyle(el).fontWeight")
+
+        assert await weight(CLOCK_ROW) == "700"
+        assert await weight(QUIET_ROW) == "600"
+
+        # Every other tab shows the last message time.
+        await tab(page, "all").click()
+        await expect(clock).to_have_text("3 min")
+        await expect(clock).to_have_attribute("title", "Last message 17 Nov 2026, 09:57")
+        await tab(page, "needs_us").click()
+        await expect(clock).to_have_text("2h 10m")

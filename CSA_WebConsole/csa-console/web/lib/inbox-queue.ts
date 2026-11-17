@@ -329,6 +329,54 @@ export function rowMeta(item: Conversation, now: number, me: { userId: string | 
   return { state, due, priority, reason, assignee };
 }
 
+/** The tabs whose rows show how long each item has waited on us instead of the last message time. */
+const WAIT_TABS: readonly QueueTabId[] = ["needs_us", "mine", "unassigned", "overdue"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "17 Nov 2026, 09:50" in company time, or "" for an unreadable time. */
+export function companyDateTime(at: string | null | undefined): string {
+  const ms = parseTime(at ?? null);
+  if (ms === null) return "";
+  const f = companyFields(ms);
+  return `${f.day} ${MONTHS[f.month]} ${f.year}, ${pad(f.hour)}:${pad(f.minute)}`;
+}
+
+/**
+ * A row's clock. In the queue tabs it is the wait since the server's `needs_staff_since` (never
+ * the time the page opened); elsewhere, and for a row without a wait clock (a waiting-on-customer
+ * item in Mine, or a row from an older server), it is the last message time, which the caller
+ * words with `listTime`. The title is the absolute time in company time.
+ */
+export function rowClock(
+  item: Pick<Conversation, "needs_staff_since" | "last_message" | "opened_at">,
+  tab: QueueTabId,
+  now: number,
+): { kind: "wait"; text: string; title: string } | { kind: "last"; at: string; title: string } {
+  const since = item.needs_staff_since ?? null;
+  if (WAIT_TABS.includes(tab) && parseTime(since) !== null) {
+    return { kind: "wait", text: waitText(since, now), title: `Waiting since ${companyDateTime(since)}` };
+  }
+  const at = item.last_message?.at ?? item.opened_at;
+  const absolute = companyDateTime(at);
+  return { kind: "last", at, title: absolute ? `Last message ${absolute}` : "" };
+}
+
+/** The newest message is the customer's and nobody has answered it. False when either time is unknown or unreadable. */
+export function isUnread(item: Pick<Conversation, "last_customer_at" | "last_staff_reply_at">): boolean {
+  const customer = parseTime(item.last_customer_at ?? null);
+  if (customer === null) return false;
+  const staff = parseTime(item.last_staff_reply_at ?? null);
+  return staff === null || customer > staff;
+}
+
+/** The due part of a row in words and a tone: minutes (neutral), "Due soon" (attention) or "Overdue 1h" (error). */
+export function dueLabel(due: RowMeta["due"]): { tone: StatusTone; text: string } | null {
+  if (!due) return null;
+  if (due.state === "overdue") return { tone: "error", text: due.text };
+  if (due.state === "soon") return { tone: "attention", text: "Due soon" };
+  return { tone: "neutral", text: due.text };
+}
+
 export type PrimaryAction = {
   kind: "take_over" | "take_it" | "take_from" | "resolve" | "none";
   name?: string;

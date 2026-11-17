@@ -1188,9 +1188,14 @@ async def test_rows_show_preview_time_and_review_marker(shell: Shell) -> None:
         marker = named.get_by_test_id("inbox-row-review")
         await expect(marker).to_have_text("Needs review")
         await expect(marker.locator("svg")).to_have_count(1)
-        # Existing row words are still there.
-        await expect(named).to_contain_text("Customer")
-        await expect(named.get_by_test_id("inbox-channel-badge")).to_have_text("Telegram")
+        # A known customer has no sender pill any more (it was on every row); a new sender keeps
+        # the dashed "New sender" label. The channel is an icon named for assistive technology.
+        await expect(named).not_to_contain_text("Customer")
+        await expect(row(page, NEWCOMER)).to_contain_text("New sender")
+        badge = named.get_by_test_id("inbox-channel-badge")
+        await expect(badge).to_have_text("Telegram")
+        await expect(badge).to_have_role("img")
+        await expect(badge).to_have_accessible_name("Telegram")
 
 
 async def on_top(button: Any) -> bool:

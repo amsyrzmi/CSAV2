@@ -213,6 +213,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     <div className="grid min-w-0 gap-3 md:h-[min(46rem,max(20rem,calc(100dvh_-_var(--inbox-bar-h,7rem)_-_3rem)))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
+          tab={tab} meId={me.user.id}
           status={{
             loaded: conversations.loaded, error: conversations.error, forbidden: refused,
             refusal: conversations.packageInactive ? conversations.error : null,
