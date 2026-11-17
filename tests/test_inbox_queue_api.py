@@ -1274,7 +1274,9 @@ async def test_the_counts_read_the_partial_indexes(sessions: SessionWorld) -> No
     )
     # Either needs_staff partial index serves that branch (both hold only needs_staff rows).
     assert "conversations_queue_due_idx" in plan or "conversations_queue_since_idx" in plan, plan
-    for index in ("conversations_queue_waiting_idx", "conversations_queue_snoozed_idx"):
-        assert index in plan, plan
+    # Each other branch reads one of its state's two partial indexes (both hold that state only).
+    for state in ("waiting", "snoozed"):
+        names = (f"conversations_queue_{state}_idx", f"conversations_queue_{state}_activity_idx")
+        assert any(name in plan for name in names), plan
     assert "Seq Scan on conversations" not in plan, plan
     assert "conversations_activity_idx" not in plan, plan

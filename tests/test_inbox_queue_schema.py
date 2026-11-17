@@ -344,10 +344,15 @@ def test_queue_indexes_exist_with_their_predicates(migrated_dsn: str) -> None:
     activity = defs["conversations_activity_idx"]
     assert on in activity and "(client_id, last_activity_at DESC, id DESC)" in activity
     assert "WHERE" not in activity
-    # The Waiting on customer and Snoozed tabs in their default (activity) order.
-    parked = defs["conversations_queue_activity_idx"]
-    assert on in parked and "(client_id, last_activity_at DESC, id DESC)" in parked
-    assert "WHERE (queue_status = ANY (ARRAY['waiting_customer'::text, 'snoozed'::text]))" in parked
+    # The Snoozed and Waiting on customer tabs in their default (activity) order, one per state.
+    for name, state in (
+        ("conversations_queue_snoozed_activity_idx", "snoozed"),
+        ("conversations_queue_waiting_activity_idx", "waiting_customer"),
+    ):
+        tab = defs[name]
+        assert on in tab and "(client_id, last_activity_at DESC, id DESC)" in tab, name
+        assert f"WHERE (queue_status = '{state}'::text)" in tab, name
+    assert "conversations_queue_activity_idx" not in defs
     due = _find(defs, on, "(client_id, due_at, id)")
     assert "WHERE (queue_status = 'needs_staff'::text)" in due
     mine = _find(defs, on, "(client_id, assignee_user_id, due_at, id)")

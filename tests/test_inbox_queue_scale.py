@@ -347,13 +347,13 @@ TABS: tuple[Tab, ...] = (
     Tab(
         "waiting on customer",
         {"state": ["waiting_customer"]},
-        "conversations_queue_activity_idx",
+        "conversations_queue_waiting_activity_idx",
         lambda w, b: _by_activity(_rows(b, lambda r: r["queue_status"] == "waiting_customer")),
     ),
     Tab(
         "snoozed",
         {"state": ["snoozed"]},
-        "conversations_queue_activity_idx",
+        "conversations_queue_snoozed_activity_idx",
         lambda w, b: _by_activity(_rows(b, lambda r: r["queue_status"] == "snoozed")),
     ),
     Tab(
@@ -729,7 +729,10 @@ async def test_counts_equal_a_brute_force_count_and_read_the_partial_indexes(
     nodes = list(_nodes(plan))
     used = {n.get("Index Name") for n in nodes}
     assert used & NEEDS_STAFF_INDEXES, _summary(plan)
-    assert {"conversations_queue_waiting_idx", "conversations_queue_snoozed_idx"} <= used
+    # Each other branch reads one of its state's two partial indexes (both hold that state only).
+    for state in ("waiting", "snoozed"):
+        names = {f"conversations_queue_{state}_idx", f"conversations_queue_{state}_activity_idx"}
+        assert used & names, _summary(plan)
     assert "conversations_activity_idx" not in used
     assert not [n for n in nodes if n["Node Type"] == "Seq Scan" and _on_conversations(n)]
     assert not [n for n in nodes if "Sort" in n["Node Type"]], _summary(plan)

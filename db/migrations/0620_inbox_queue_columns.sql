@@ -14,9 +14,9 @@
 --   after the backfill.
 --   Indexes (design 6.5): last activity; due time, since time and the two staff-clock lists as partial
 --   indexes (so the bot and resolved rows, the large majority, never enter them); the snooze and
---   waiting-on-customer lists; the Waiting on customer and Snoozed tabs in activity order (their
---   default order: without it the planner sorts a partial index or filter-scans every row of the
---   company); GIN trigram indexes on the contact name, @username and phone digits
+--   waiting-on-customer lists; the Waiting on customer and Snoozed tabs in activity order, one
+--   index per state (their default order: without them the planner sorts a partial index or
+--   filter-scans every row of the company); GIN trigram indexes on the contact name, @username and phone digits
 --   (pg_trgm is installed by the baseline; the btree on phone_digits from 0581 does not serve a
 --   contains match).
 --   public.inbox_queue_backfill(p_client uuid DEFAULT NULL) RETURNS integer: sets the new columns from
@@ -48,7 +48,8 @@
 -- Rollback: DROP FUNCTION public.inbox_queue_backfill(uuid); drop the new indexes by name
 --   (conversations_activity_idx, conversations_queue_due_idx, conversations_queue_mine_idx,
 --   conversations_queue_since_idx, conversations_queue_snoozed_idx, conversations_queue_waiting_idx,
---   conversations_queue_activity_idx, contacts_full_name_trgm_idx,
+--   conversations_queue_snoozed_activity_idx, conversations_queue_waiting_activity_idx,
+--   contacts_full_name_trgm_idx,
 --   contacts_telegram_username_trgm_idx, contacts_phone_digits_trgm_idx);
 --   ALTER TABLE public.conversations DROP COLUMN for each column above (the constraints go with
 --   them); then delete the schema_migrations row for 0620, or the runner thinks it is still applied.
@@ -227,18 +228,24 @@ CREATE INDEX IF NOT EXISTS conversations_queue_mine_idx
 CREATE INDEX IF NOT EXISTS conversations_queue_since_idx
     ON public.conversations (client_id, needs_staff_since, id)
     WHERE queue_status = 'needs_staff';
+-- The snooze wake job reads the snoozed rows by wake time.
 CREATE INDEX IF NOT EXISTS conversations_queue_snoozed_idx
     ON public.conversations (client_id, snoozed_until)
     WHERE queue_status = 'snoozed';
+-- The follow-up reminders read the waiting rows by the time staff last replied.
 CREATE INDEX IF NOT EXISTS conversations_queue_waiting_idx
     ON public.conversations (client_id, last_staff_reply_at)
     WHERE queue_status = 'waiting_customer';
--- The Waiting on customer and Snoozed tabs list newest activity first (their default order). Their
--- rows are few, so neither the whole-company activity index nor their own partial indexes above
--- (reply time, wake time) serve that order without a sort or a long filtered scan.
-CREATE INDEX IF NOT EXISTS conversations_queue_activity_idx
+-- The Snoozed and Waiting on customer tabs list newest activity first (their default order). One
+-- index per state, each exactly as small as the state's index above, so the ordered scan always
+-- costs less than reading that index and sorting it (one index for both states was larger and the
+-- planner chose between the two by sample).
+CREATE INDEX IF NOT EXISTS conversations_queue_snoozed_activity_idx
     ON public.conversations (client_id, last_activity_at DESC, id DESC)
-    WHERE queue_status IN ('waiting_customer', 'snoozed');
+    WHERE queue_status = 'snoozed';
+CREATE INDEX IF NOT EXISTS conversations_queue_waiting_activity_idx
+    ON public.conversations (client_id, last_activity_at DESC, id DESC)
+    WHERE queue_status = 'waiting_customer';
 
 CREATE INDEX IF NOT EXISTS contacts_full_name_trgm_idx
     ON public.contacts USING gin (full_name public.gin_trgm_ops);
