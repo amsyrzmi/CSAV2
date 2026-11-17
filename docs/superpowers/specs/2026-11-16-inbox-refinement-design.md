@@ -129,7 +129,8 @@ customer writes
    customer, a one-line last message, reason, topic, priority, how long it has waited and the
    assignee.
 3. **Claim or assign.** Any member can claim an unclaimed item ("take it"). A first human reply claims
-   an unclaimed item automatically. Tenant admins can assign to any enabled member.
+   an unclaimed item automatically. Tenant admins can assign to any enabled member and take over
+   someone else's claim; tenant staff cannot (403 on the claim route, `not_allowed` in bulk).
 4. **Act.** Reply (after takeover, as today), decide a held reply, change priority or topic, add a
    reason.
 5. **Resolve, snooze, reopen.** Resolve ends the item as `resolved` and hands the conversation back to the bot
@@ -153,10 +154,10 @@ customer writes
 | | Tenant staff | Tenant admin / platform admin | Read-only |
 |---|---|---|---|
 | See every conversation and the queue | yes | yes | no (403, as today) |
-| Claim or release own claim | yes | yes | no |
+| Claim an unclaimed item (or one's own again), release own claim | yes | yes | no |
 | Assign to another member, take over someone's claim | no | yes | no |
 | Resolve, snooze, set priority and topic, bulk actions | yes | yes | no |
-| Acting on an item claimed by someone else | allowed, shows who holds it and records an event | allowed | no |
+| Acting on an item claimed by someone else (reply, resolve, snooze, priority, topic) | allowed, shows who holds it and records an event; the claim does not change | allowed | no |
 | Read inbox settings | yes | yes | no |
 | Change inbox settings and notification targets | no | yes | no |
 
@@ -191,23 +192,24 @@ action, from and to state, details. It feeds the item's history line, audit and 
 What a message row says cannot decide who answered, so the trigger only records facts and the code
 that knows who acted makes every other transition.
 
-- **Trigger on `messages` (inbound only, `AFTER INSERT`).** It updates `last_activity_at` on every
+- **Trigger on `messages` (`AFTER INSERT`).** It updates `last_activity_at` on every
   message and, for `author = 'contact'`, `last_customer_at`, and applies the one inbound transition
-  below. It does not bump `inbox_version` (a bump per inbound message would make every staff reply fail
+  below (it locks the conversation row first, the lock its update takes anyway, so the old state is
+  exact without a retry). It does not bump `inbox_version` (a bump per inbound message would make every staff reply fail
   with 409). Cost: one more `UPDATE` of the conversation per message; the worker already updates
   `turn_count` there. Conversations of other channels (the sandbox `web` channel) and console chat
   conversations stay `bot` forever; the trigger checks the channel and the console chat tables.
 - **Transitions in a new `csa/inbox_queue` module**, called by the code that knows the
   actor and the cause (migration 0622 holds `inbox_queue_enter`, the one way into `needs_staff`, which
-  the module and the triggers share). Each writes an `inbox_queue_events` row; staff actions also bump
-  `inbox_version`:
+  the module and the triggers share). Each writes an `inbox_queue_events` row; staff actions and a
+  person's reply (including an approved or edited held reply) also bump `inbox_version`:
 
 | Cause | Called from | Result |
 |---|---|---|
 | bot escalation | trigger on `escalations` (`AFTER INSERT`; replaces an explicit call, so the escalation agent, the turn fail-safe and approval expiry are all covered) | `needs_staff`, reason `escalation`, priority from the escalation |
 | held reply created | approval creation | `needs_staff`, reason `held_reply` |
 | takeover of a bot conversation | `/takeover` route | `needs_staff`, reason `manual`, claimed by the actor |
-| person's reply | `/reply` route | `waiting_customer`; claims for the author if unclaimed; sets `last_staff_reply_at` |
+| person's reply | `/reply` route | `waiting_customer`; claims for the author if unclaimed; sets `last_staff_reply_at`; bumps `inbox_version` |
 | held reply approved or edited | approval settle | `waiting_customer`; sets `last_staff_reply_at`; claims for the decider when the decider is a console user |
 | held reply rejected or expired | approval settle | stays `needs_staff`, reason `customer_message` (the customer got no answer) |
 | hand back | `/release` route, staff-chat "Resume AI" | `bot`, claim cleared, escalation and its ticket closed |
@@ -225,7 +227,9 @@ answer; staff can resolve it (accepted).
 
 Inbound transition (the trigger): when the item is `waiting_customer`, `snoozed` or `resolved`, it
 becomes `needs_staff` with reason `customer_message` and a fresh clock if a person owns the
-conversation or a live held reply is pending, and `bot` otherwise. When it returns to `bot` the trigger
+conversation or a live held reply is pending, and `bot` otherwise. A `bot` item whose conversation a
+person owns becomes `needs_staff` the same way (the bot is silent while a person owns it, so the
+message needs a person); a `bot` item the AI owns stays `bot`. When it returns to `bot` the trigger
 clears the claim, clock and due time and records a `handed_back` event with a NULL actor and
 `{"cause": "customer_message"}` (readers treat a NULL actor as a system event, not a person's hand
 back). An item already `needs_staff` keeps its reason and clock.
@@ -233,12 +237,18 @@ back). An item already `needs_staff` keeps its reason and clock.
 The decision of a held reply made outside the Inbox (Telegram staff-chat buttons, the staff assistant's
 cards) goes through the same approval settle code, so it applies the same rows above.
 
-Migration backfill (one statement per rule): `last_*` from the newest message; conversations that are
-escalated and open, human-owned with an inbound newest message, or holding a live pending approval, and
-whose triggering event is within the last 30 days, become `needs_staff` (`needs_staff_since` from the
-open escalation, pending approval or newest customer message); human-owned conversations whose newest
-message is from staff become `waiting_customer`; everything else, including older unhandled
-escalations, is `bot`. No reminders are scheduled by the backfill itself (see 7.3).
+Migration backfill (one statement per rule): `last_*` from the newest message. Nothing before 0620
+writes `escalations.status`, so every old escalation is still `open`: an escalation counts only when
+the conversation is held now (status `escalated` or owned by a person), the escalation is within the
+last 30 days and no person's reply came after it. Conversations with a counted escalation, a live
+pending approval, or human-owned with an inbound newest message, each within the last 30 days, become
+`needs_staff` (`needs_staff_since` from the oldest counted escalation, the pending approval or the
+newest customer message; priority from the counted escalations only). Human-owned conversations whose
+newest message is a person's reply within the last 30 days become `waiting_customer`. Everything else
+is `bot`, including AI-owned conversations with old escalations (released or mute-expired; the data
+cannot tell the two apart, and they stay reachable in All) and threads waiting longer than 30 days (a
+later customer message brings a person-owned one into the queue through the trigger). No reminders
+are scheduled by the backfill itself (see 7.3).
 
 ### 5.3 Settings per company (`inbox_settings`, 0621; ships in PR 1 because `due_at` needs it)
 
@@ -344,7 +354,8 @@ carries no per-item version: a bulk action applies to what each item is now, and
 resolve and snooze notice a customer who wrote since. Each item runs in its own savepoint, in ascending
 id order (the lock order of the snooze job), so a refused item does not fail the batch. The response lists a
 per-item outcome in the request's order: `done`, `already_handled`, `held_reply_pending`,
-`customer_wrote`, `not_found`, `not_in_queue`, `not_allowed` (staff releasing another person's claim).
+`customer_wrote`, `not_found`, `not_in_queue`, `not_allowed` (staff releasing or taking over another
+person's claim).
 Any other error aborts the whole request, as does staff trying to assign (403) or a snooze time outside
 the window. Bulk reply is not offered.
 
@@ -356,7 +367,9 @@ may be at most 60 days ahead), 404 for a missing or excluded conversation, and p
 403 and 422 for the role and assignee rules (a 503 when `assign` cannot read the member directory).
 `assign` checks the assignee against the company's enabled admins and staff, read from the identity
 database on its own connection (the app role cannot read the member tables): `GET /inbox/assignees`
-does the same read. A platform admin can claim and act but cannot be assigned, as they are not a
+does the same read. A replay of an applied `assign` returns its stored receipt first, without that
+read. The list response carries `as_of` (the server's read time), which the client sends back as the
+bulk `seen_at`. A platform admin can claim and act but cannot be assigned, as they are not a
 member.
 
 ## 7. Reminders and notifications

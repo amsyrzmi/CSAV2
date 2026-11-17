@@ -8405,6 +8405,11 @@
       "InboxConversationPage": {
         "additionalProperties": false,
         "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
           "counts": {
             "$ref": "#/components/schemas/InboxQueueCounts"
           },
@@ -8435,7 +8440,8 @@
         "required": [
           "items",
           "next_cursor",
-          "counts"
+          "counts",
+          "as_of"
         ],
         "title": "InboxConversationPage",
         "type": "object"
@@ -8702,7 +8708,7 @@
       },
       "InboxFilters": {
         "additionalProperties": false,
-        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`assignee` is ``me`` (the person asking), ``none`` (no assignee) or a user id (any id is\naccepted: one that holds nothing matches nothing). `overdue` and `waiting_over` imply\n``needs_staff``. Without `order` the list is due-first when every row in scope needs staff\n(`needs_staff_only`), newest activity first otherwise. `order=priority` sorts the rows in\nscope (no index holds the rank), so it is allowed only where they are the needs_staff rows.",
+        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first\nwhen every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
         "properties": {
           "assignee": {
             "anyOf": [
@@ -8788,6 +8794,7 @@
               ],
               "type": "string"
             },
+            "maxItems": 4,
             "title": "Reason",
             "type": "array"
           },
@@ -8818,6 +8825,7 @@
               ],
               "type": "string"
             },
+            "maxItems": 5,
             "title": "State",
             "type": "array"
           },
@@ -8835,6 +8843,7 @@
               ],
               "type": "string"
             },
+            "maxItems": 7,
             "title": "Topic",
             "type": "array"
           },
@@ -36422,7 +36431,7 @@
     },
     "/console/v1/inbox/bulk": {
       "post": {
-        "description": "One action on 1 to 50 distinct conversations; 200 with an outcome per item, in the\nrequest's order. Replayable per `request_key`; assign is for administrators only.",
+        "description": "One action on 1 to 50 distinct conversations; 200 with an outcome per item, in the\nrequest's order. Replayable per `request_key`; assign is for administrators only.\n`not_allowed` marks an item whose claim tenant staff may not release or take over.",
         "operationId": "bulk_console_v1_inbox_bulk_post",
         "parameters": [
           {
@@ -37010,7 +37019,7 @@
     },
     "/console/v1/inbox/conversations/{conversation_id}/queue/assign": {
       "post": {
-        "description": "Give the item to an enabled admin or staff member (422 otherwise). Administrators\nonly (403 for tenant staff); 503 when the member directory is unavailable.",
+        "description": "Give the item to an enabled admin or staff member (422 otherwise). Administrators\nonly (403 for tenant staff); 503 when the member directory is unavailable. A replay of\nan applied assign returns its stored receipt without reading the directory.",
         "operationId": "queue_assign_console_v1_inbox_conversations__conversation_id__queue_assign_post",
         "parameters": [
           {
@@ -37095,7 +37104,7 @@
     },
     "/console/v1/inbox/conversations/{conversation_id}/queue/claim": {
       "post": {
-        "description": "Take the item; allowed over another holder (the event records them).",
+        "description": "Take the item. Taking over someone else's claim is for administrators (403 for\ntenant staff; the event records the previous holder); claiming an unclaimed item or one's\nown again is open to every member.",
         "operationId": "queue_claim_console_v1_inbox_conversations__conversation_id__queue_claim_post",
         "parameters": [
           {

@@ -859,7 +859,7 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 | `GET /approvals` | `before=bigint`, `conversation_id=UUID`, `include_handled=false`, `limit=1..50` | Pending reply approvals; optionally settled history |
 | `POST /conversations/{id}/takeover` | `{request_key: UUID, expected_version: int}` | Audited indefinite human ownership; a bot conversation becomes a `manual` queue item claimed by the caller |
 | `POST /conversations/{id}/release` | Same | Audited AI ownership (the queue "hand back": the item returns to `bot`, its escalation and ticket close); old turns stay suppressed |
-| `POST /conversations/{id}/reply` | Same plus `body` (1–2000 chars) | 202 structured receipt with `message_id`, `queued:true`; the queue item moves to waiting on the customer |
+| `POST /conversations/{id}/reply` | Same plus `body` (1–2000 chars) | 202 structured receipt with `message_id`, `queued:true`; the queue item moves to waiting on the customer and `inbox_version` rises by one |
 | `POST /approvals/{id}/decide` | `{request_key: UUID, decision: approve/reject/edit, text?: string}` | Structured applied/already_handled/expired result, status, queue flag and warnings |
 
 Mutations enforce Origin/CSRF and reject extra fields; JSON is capped at 32 KiB.
@@ -1066,7 +1066,9 @@ List filters, all applied on the server across every page and combined with `cha
   match on digits only when the text holds two or more digits, so `012 555`,
   `0125550148` and `+60125550148` agree. Message bodies are never searched. The text is
   personal data: it is not written to the audit log, and the gateway's access log drops
-  query strings on `/console/` paths.
+  query strings on `/console/` paths. No index serves it (no trigram index: the app role reads
+  contacts under row security, where `ILIKE` cannot use one); it is a bounded per-company scan
+  (see Known limits under [Inbox work queue](#inbox-work-queue)).
 
 Without `order` (and without a `needs_staff` state filter, `overdue` or `waiting_over`) the
 order is last activity, newest first: the time of the latest message, or `opened_at` when there are
@@ -1109,7 +1111,8 @@ What moves an item, in plain words:
   escalation agent, the turn fail-safe and approval expiry are all covered); a reply is held for
   review; a person takes over a bot conversation (reason `manual`, claimed by that person); the
   customer writes on a `waiting_customer`, `snoozed` or `resolved` item while a person owns the
-  conversation or a held reply is live; a snooze ends. An item already in `needs_staff` keeps its
+  conversation or a held reply is live, or on a `bot` item while a person owns the conversation
+  (the assistant stays silent there, so the message needs a person); a snooze ends. An item already in `needs_staff` keeps its
   clock; its reason and priority only move up (`escalation`, then `held_reply`, `manual`,
   `customer_message`; `low` to `urgent`).
 - **Leaves `needs_staff`.** A person replies, or a held reply is approved or edited
@@ -1131,7 +1134,21 @@ What moves an item, in plain words:
   replies never change the state.
 
 Every change writes an append-only history row (who, from, to, ids and enums only; no names or
-message text). Staff actions raise `inbox_version` once when they change something.
+message text). Staff actions, a person's reply and an approved or edited held reply raise
+`inbox_version` once when they change something, so a person who read the item before someone
+else's reply gets 409 on their next action and refreshes. Customer messages, escalations, held
+replies being created or closed and the snooze job never raise it (a raise per customer message
+would make every staff action fail with 409).
+
+**At rollout.** Migration 0620 sets the queue state of existing conversations once, from their data:
+an escalation counts only when the conversation is held now (status `escalated` or owned by a person),
+the escalation is at most 30 days old and no person replied after it (then `needs_staff`, reason
+`escalation`, priority the highest of the counted escalations); else a live held reply at most 30 days
+old (`held_reply`); else a person-owned conversation whose newest message is the customer's, at most
+30 days old (`customer_message`). A person-owned conversation whose newest message is a person's reply
+at most 30 days old is `waiting_customer`. Everything else is `bot`, including conversations the
+assistant owns again after an escalation (released, or the mute ended): they stay reachable in All.
+Backfilled items get a due time 240 minutes after their clock, whatever the priority.
 
 **List filters and order.** `GET /inbox/conversations` keeps `before`, `limit`, `channel`,
 `needs_review`, `sender` and `q` and adds these query parameters, all combined with AND (a repeated
@@ -1152,7 +1169,8 @@ parameter, as `state=needs_staff&state=snoozed`, is OR within itself):
 | `q` | contact search, as before |
 | `order` | `activity`, `waiting`, `due`, `priority` |
 
-Any other value is 422. The fixed tabs of the design are filter sets: Needs us is
+Any other value is 422. A repeatable parameter holds each value once (repeats are dropped) and at
+most as many values as it has (5 states, 4 reasons, 7 topics); more is 422. The fixed tabs of the design are filter sets: Needs us is
 `state=needs_staff`, Mine is `assignee=me` with `state=needs_staff&state=waiting_customer`, Unassigned
 is `state=needs_staff&assignee=none`, Overdue is `overdue=true`, Waiting on customer, Snoozed and
 Resolved are their `state`, All sends none.
@@ -1174,6 +1192,10 @@ cursor, is 422 `invalid cursor`). A bare conversation id, which older clients se
 as an activity cursor (`activity` order only); an id that is not one of the company's conversations
 gives an empty page. Both the list and the counts run with per-run query plans so the partial
 indexes keep serving them.
+
+**Read time.** The list response carries `as_of`, the server's time of the read (UTC, the database
+transaction's start). A client sends it back as the bulk route's `seen_at`, so resolve and snooze
+notice a customer who wrote after the list was read; the bulk route accepts any timezone-aware time.
 
 **Row fields.** List rows and the detail read carry the queue fields above plus
 `assignee: {id, display_name} | null`. The display name comes from the company's member directory and
@@ -1223,7 +1245,7 @@ changing an item's priority recomputes that item's due time from its clock). Eac
 
 | Action | Extra field | Effect |
 |---|---|---|
-| `claim` | none | The caller holds the item. Allowed over another holder (the history records the previous one) |
+| `claim` | none | The caller holds the item. Claiming an unclaimed item, or one's own again, is open to every member; taking over someone else's claim is for administrators (tenant staff get 403; the history records the previous holder) |
 | `unclaim` | none | Releases the claim only. Tenant staff release only their own (403 otherwise); administrators any |
 | `assign` | `assignee_id` | Gives the item to an enabled administrator or staff member of the company. Administrators only |
 | `snooze` | `until` (timezone-aware), `seen_customer_at` (optional) | Hides the item until `until`; the claim stays |
@@ -1236,7 +1258,7 @@ when nothing did (claiming what you hold, resolving a `resolved` item, setting t
 `conversation` is the item after the action. Errors:
 
 - 409 `conversation changed; refresh before acting` when `expected_version` is stale (checked before
-  the holder rule, so a stale staff `unclaim` is 409, not 403); 409 when a `request_key` was used with
+  the holder rules, so a stale staff `claim` or `unclaim` is 409, not 403); 409 when a `request_key` was used with
   another body.
 - 409 `{"code": "held_reply_pending"}` (resolve or snooze while a held reply waits: decide it first)
   and 409 `{"code": "customer_wrote"}` (the customer wrote after `seen_customer_at`; `null` skips the
@@ -1244,15 +1266,17 @@ when nothing did (claiming what you hold, resolving a `resolved` item, setting t
 - 422 `{"code": "until_in_past"}` or `{"code": "until_too_far"}` (`until` must be in the future and at
   most 60 days ahead); 422 `assignee is not an enabled member of this company`.
 - 403 for read-only members (every route), for tenant staff assigning (`assigning needs an
-  administrator`) and for a staff `unclaim` of someone else's claim. The plain-string 403 and 422
+  administrator`), for a staff `unclaim` of someone else's claim and for a staff `claim` of an item
+  someone else holds (`only an administrator can take over someone else's claim`). The plain-string 403 and 422
   details here are `{"detail": "<text>"}`; the coded ones are `{"detail": {"code": ...}}`.
 - 404 for a conversation of another company or one outside the queue (sandbox, console chat); 503
   `member directory unavailable` when `assign` cannot read the directory.
 
 Idempotency. The same `request_key` and body replays the stored receipt (also after a lost
 acknowledgement); the same key with another body is 409. The key is per person and company.
-Exception: `assign` checks the assignee first, so replaying an applied `assign` after the assignee was
-disabled answers 422 (or 503 while the directory is down) instead of the receipt.
+`assign` refuses tenant staff (403) first, then looks up the stored receipt: a replay of an applied
+`assign` returns its receipt even when the assignee was disabled since or the member directory is down.
+Only a new request checks the assignee (422, or 503 while the directory is down).
 
 The existing routes keep their paths and now maintain the queue: `takeover` of a bot conversation
 makes a `manual` item claimed by the caller; `reply` moves the item to `waiting_customer` and claims
@@ -1270,11 +1294,13 @@ action's field is required for `assign` (`assignee_id`), `snooze` (`until`), `pr
 and rejected for the others (422). There is no per-item version. The result is `{results: [{id,
 outcome}]}` in the request's order, and the status is 200 even when items are refused. Outcomes:
 `done`, `already_handled`, `held_reply_pending`, `customer_wrote`, `not_found` (another company's or
-a missing id), `not_in_queue`, `not_allowed` (a staff `unclaim` of someone else's claim). Each item
+a missing id), `not_in_queue`, `not_allowed` (a staff `unclaim` of someone else's claim, or a staff
+`claim` of an item someone else holds). Each item
 runs in its own savepoint, so a refused item leaves the others alone; items are processed in
 ascending id order. Any other failure aborts the whole request. `assign` by tenant staff is a
 whole-request 403 (and 422 or 503 as for one item) before anything runs; `until` outside the window is
-a whole-request 422. The same `request_key` and body replays the stored results; another body is 409.
+a whole-request 422. The same `request_key` and body replays the stored results (for `assign` also
+when the assignee was disabled since or the directory is down); another body is 409.
 Audited once as `inbox.queue_bulk` with the counts per outcome.
 
 **Saved views.** A view is a person's named filter set, private to them in one company (another
@@ -1285,8 +1311,8 @@ filters or both; `DELETE /inbox/views/{id}` is 204. `name` is 1 to 60 characters
 per person ignoring case (409 otherwise); a person keeps at most 20 (409 `you can keep at most 20 saved
 views`). `filters` accepts `state`, `assignee`, `priority_min`, `reason`, `topic`, `overdue`,
 `waiting_over`, `channel`, `sender` and `order`, validated by the list's own rules (including the
-`order=priority` restriction, 422); it never holds the search text, a cursor or a limit. Create, rename
-and delete are audited by id only. Read-only members get 403.
+`order=priority` restriction and the list bounds, 422); it never holds the search text, a cursor or a
+limit. A POST or PUT body over 32 KiB is 413. Create, rename and delete are audited by id only. Read-only members get 403.
 
 **The snooze job.** `inbox_snooze_wake` runs every minute for each company and returns snoozed items
 whose `snoozed_until` has passed (up to 100 per run) to `needs_staff`: a fresh clock, `due_at` from the
@@ -1298,17 +1324,23 @@ version change). No reminder or notification goes out yet.
 and machine principals get 403 on all of them, and the Customer Support package must not be
 inactive (a suspended package keeps the Inbox reachable). A platform admin must select a company
 (`client_id`, otherwise 400), can claim, resolve and the rest, and can assign, but cannot be assigned
-(not a member). Tenant staff can claim, release their own claim, snooze, resolve, set priority and topic
-and keep views, and may claim an item someone else holds (the history records it); assigning, releasing
-someone else's claim and changing settings are for administrators.
+(not a member). Tenant staff can claim an unclaimed item, release their own claim, reply, snooze,
+resolve, set priority and topic and keep views, also on an item someone else holds (the claim stays; a
+first reply claims only an unclaimed item); assigning, taking over or releasing someone else's claim
+and changing settings are for administrators.
 
-**Known limits.** Contact search (`q`) is a bounded per-company scan: the company's conversations are
-read along the activity index until a page fills, which at 50,000 conversations takes up to about
+**Known limits.** Contact search (`q`) is a bounded per-company scan (no trigram index: the app role
+could not use one under row security): the company's conversations are read along the activity index
+until a page fills, which at 50,000 conversations takes up to about
 0.5 s when few rows match (the typed search should be debounced). `sender` is computed per scanned
 row. The Mine tab's later pages re-read the person's own rows (bounded by them). `order=due` and
 `order=waiting` outside the Needs us tabs sort the company's rows in scope. Reminders and
 notifications (overdue, follow-up, stale claim) arrive in a later change; the settings that drive
-them are stored already.
+them are stored already. A `waiting_customer` item never leaves on its own: it stays until the
+customer writes or a person acts (the follow-up reminders of a later change will point at it). The
+operations script `db/sql/ops/expire_stuck_approvals.sql` settles approvals without the queue code,
+so after such a run a `held_reply` item can keep that reason with no pending reply; a person resolves
+it or changes it by acting (see `docs/INBOX_RETEST.md`, Operations).
 
 ## Workspace assistant
 
