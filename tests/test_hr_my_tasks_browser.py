@@ -152,6 +152,11 @@ def dialog(page: Page) -> Locator:
     return page.get_by_test_id("hr-task-dialog")
 
 
+def outcome(page: Page) -> Locator:
+    """The saved or refused message; focus lands here when the row button is gone after a write."""
+    return page.get_by_test_id("hr-my-tasks-outcome")
+
+
 @asynccontextmanager
 async def tasks_page(
     browser: Any,
@@ -254,6 +259,8 @@ async def test_assignee_marks_a_step_done_with_a_note_and_adds_a_note(site: Site
             await expect(dialog(page)).to_have_count(0, timeout=WAIT)
             await expect(sign).to_contain_text("Waiting for approval", timeout=WAIT)
             await expect(page.get_by_test_id("hr-my-tasks-notice")).to_contain_text("Marked done")
+            # Its button is gone after the reload, so focus is on the message, never the page body.
+            await expect(outcome(page)).to_be_focused()
             (complete,) = world.task_posts("complete")
             assert_write(
                 complete,
@@ -274,6 +281,8 @@ async def test_assignee_marks_a_step_done_with_a_note_and_adds_a_note(site: Site
             )
             (noted,) = world.task_posts("note")
             assert_write(noted, "note", "kit", {"note": "Size M boots and L gloves."})
+            # The row and its button are still there: focus goes back to it.
+            await expect(row(page, "kit").get_by_role("button", name="Add note")).to_be_focused()
 
     await with_browser(body)
 
@@ -301,6 +310,7 @@ async def test_automatic_check_says_when_it_is_not_met(site: Site) -> None:
             await details.get_by_role("button", name="Check now").click()
             await expect(details).to_have_count(0, timeout=WAIT)
             await expect(page.get_by_test_id("hr-my-tasks-error")).to_have_count(0)
+            await expect(outcome(page)).to_be_focused()
 
     await with_browser(body)
 
@@ -338,6 +348,7 @@ async def test_manager_approves_once_and_sends_back_with_a_reason(site: Site) ->
             (approve,) = world.task_posts("approve")
             assert_write(approve, "approve", "kit", {"expected_version": 2})
             await expect(page.get_by_test_id("hr-my-tasks-notice")).to_have_text("Approved.")
+            await expect(outcome(page)).to_be_focused()
 
             # Send back needs a reason of 1 to 500 characters.
             await badge.get_by_role("button", name="Send back").click()
@@ -362,6 +373,7 @@ async def test_manager_approves_once_and_sends_back_with_a_reason(site: Site) ->
                 {"expected_version": 2, "reason": "The badge photo is missing."},
             )
             await expect(panel.get_by_text(EMPTY)).to_be_visible(timeout=WAIT)
+            await expect(outcome(page)).to_be_focused()
             assert len(world.task_posts()) == 2
 
     await with_browser(body)
@@ -411,9 +423,12 @@ async def test_hr_owner_marks_a_step_done_for_a_member_on_home(site: Site) -> No
             # Lina's own steps are hers, not HR's.
             await expect(row(page, "sign")).to_have_count(0)
 
-            await laptop.get_by_role("button", name="Mark done for them").click()
+            for_them = laptop.get_by_role("button", name="Mark done for them")
+            await expect(for_them).to_have_accessible_description("Return the laptop")
+            await for_them.click()
             await dialog(page).get_by_role("button", name="Mark done for them").click()
             await expect(laptop).to_have_count(0, timeout=WAIT)
+            await expect(outcome(page)).to_be_focused()
             (complete,) = world.task_posts("complete")
             assert_write(complete, "complete", "laptop", {"expected_version": 1})
 
@@ -448,6 +463,8 @@ async def test_a_stale_step_shows_the_sentence_and_reloads(site: Site) -> None:
             )
             await expect(dialog(page)).to_have_count(0)
             await expect(sign).to_contain_text("No date yet", timeout=WAIT)
+            # The step is still open after the reload: focus is back on its Mark done.
+            await expect(sign.get_by_role("button", name="Mark done")).to_be_focused()
             (stale,) = world.task_posts("complete")
             # The list was read again after the refusal.
             posted = next(i for i, call in enumerate(world.calls) if call is stale)
@@ -458,6 +475,8 @@ async def test_a_stale_step_shows_the_sentence_and_reloads(site: Site) -> None:
             await sign.get_by_role("button", name="Mark done").click()
             await dialog(page).get_by_role("button", name="Mark done").click()
             await expect(sign).to_contain_text("Waiting for approval", timeout=WAIT)
+            await expect(outcome(page)).to_be_focused()
+            await expect(page.get_by_test_id("hr-my-tasks-error")).to_have_count(0)
             assert world.task_posts("complete")[-1]["body"] == {"expected_version": moved}
             assert world.task_posts("complete")[-1]["key"] != stale["key"]
 
@@ -481,6 +500,19 @@ async def test_load_more_follows_the_cursor(site: Site) -> None:
             cursors = [c["params"].get("after") for c in world.task_reads()]
             assert [c for c in cursors if c] == [TASK["details"], TASK["badge"]], cursors
             assert set(cursors[: cursors.index(TASK["details"])]) == {None}, cursors
+
+            # A write on the third page re-reads all three pages: the list does not fold back.
+            reads = len(world.task_reads())
+            await row(page, "kit").get_by_role("button", name="Add note").click()
+            await dialog(page).get_by_label("Note").fill("Size M boots, collected.")
+            await dialog(page).get_by_role("button", name="Save note").click()
+            await expect(row(page, "kit")).to_contain_text(
+                "Note: Size M boots, collected.", timeout=WAIT
+            )
+            await expect(rows).to_have_count(5)
+            await expect(more).to_have_count(0)
+            again = [c["params"].get("after") for c in world.task_reads()[reads:]]
+            assert again == [None, TASK["details"], TASK["badge"]], again
 
     await with_browser(body)
 
@@ -584,5 +616,52 @@ async def test_keyboard_reaches_the_actions_and_dialogs_keep_focus(site: Site) -
             await dialog(page).get_by_role("button", name="Cancel").click()
             await expect(dialog(page)).to_have_count(0)
             await expect(note).to_be_focused()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("width", (390, 1280))
+async def test_row_buttons_are_described_by_their_step(site: Site, width: int) -> None:
+    async def body(browser: Any) -> None:
+        world = TasksWorld()
+        async with tasks_page(browser, site, world, STAFF, width=width) as page:
+            place = card if width < 768 else row
+            sign, handbook, kit = place(page, "sign"), place(page, "handbook"), place(page, "kit")
+            await expect(sign).to_be_visible(timeout=WAIT)
+            # Two rows' "Mark done" buttons share a name but not a description.
+            for step, title in (
+                (sign, "Sign the employment contract"),
+                (handbook, "Read the safety handbook"),
+            ):
+                for label in ("Mark done", "Add note"):
+                    button = step.get_by_role("button", name=label, exact=True)
+                    await expect(button).to_have_accessible_description(title)
+            await expect(kit.get_by_role("button", name="Add note")).to_have_accessible_description(
+                "Pick up the safety kit"
+            )
+            check = place(page, "details").get_by_role("button", name="Check now")
+            await expect(check).to_have_accessible_description("Fill in your personal details")
+            # Each layout has its own ids, so the hidden one never doubles an id.
+            ids = await page.evaluate(
+                "() => [...document.querySelectorAll('[id^=hr-task-]')].map((el) => el.id)"
+            )
+            assert len(ids) == len(set(ids)) == 10, ids
+
+    await with_browser(body)
+
+
+async def test_approver_buttons_are_described_by_their_step(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TasksWorld()
+        async with tasks_page(browser, site, world, MANAGER) as page:
+            kit, badge = row(page, "kit"), row(page, "badge")
+            await expect(kit).to_be_visible(timeout=WAIT)
+            for step, title in (
+                (kit, "Pick up the safety kit"),
+                (badge, "Collect your building badge"),
+            ):
+                for label in ("Approve", "Send back"):
+                    button = step.get_by_role("button", name=label)
+                    await expect(button).to_have_accessible_description(title)
 
     await with_browser(body)

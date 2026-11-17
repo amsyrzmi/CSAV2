@@ -7,14 +7,18 @@ import { action as primary, field, secondary, Notice } from "../ui";
 import type { HrRunner } from "./useHrRunner";
 
 export type ProcessClient = ReturnType<typeof processClient>;
-/** What a task write came to: the list shows `message` or `error`, and reloads when `reload`. */
-export interface TaskOutcome { message?: string; error?: string; reload: boolean }
+/**
+ * What a task write came to: the list shows `message` or `error`, and reloads when `reload`. `opener` is
+ * the row button the person chose: the list gives focus back to it after the reload when it is still
+ * there (else to the message), so focus never falls to the page body.
+ */
+export interface TaskOutcome { message?: string; error?: string; reload: boolean; opener?: HTMLElement | null }
 
 const NOTE_MAX = 2000;
 const REASON_MAX = 500;
 /** Refusals that mean the list is out of date: show the sentence and read the list again. */
 const OUTDATED = new Set(["task_changed", "task_closed", "resource_unavailable", "task_awaiting_approval",
-  "task_not_awaiting_approval"]);
+  "task_not_awaiting_approval", "task_not_approver"]);
 
 function outdated(failure: unknown): boolean {
   if (typeof failure !== "object" || failure === null) return false;
@@ -31,31 +35,34 @@ function savedText(action: TaskAction, receipt: TaskReceipt): string {
   return "Saved.";
 }
 
-/** One open dialog: the step, what it asks for and the button it stands for. */
-type Ask =
-  | { task: MyTask; kind: "complete"; label: "Mark done" | "Mark done for them"; button: ProcessAction }
-  | { task: MyTask; kind: "note" }
-  | { task: MyTask; kind: "send-back" };
+/** One open dialog: the step, the row button that opened it, what it asks for and the button it stands for. */
+type Ask = { task: MyTask; opener: HTMLElement } & (
+  | { kind: "complete"; label: "Mark done" | "Mark done for them"; button: ProcessAction }
+  | { kind: "note" }
+  | { kind: "send-back" });
 
 /**
  * The task writes of one list: every write goes through the shared `runner` (one at a time, so a
  * double click sends one request) with the step's `version`; the client keeps the Idempotency-Key of
  * an uncertain write, so the same button with the same text is safe to choose again. A refusal that
  * means the list is stale closes the dialog and asks for a reload. One dialog serves the whole list.
+ * `onOutcome(null)` says a write has started (the list clears the last message).
  */
-export function useTaskWrites(client: ProcessClient, runner: HrRunner, onOutcome: (outcome: TaskOutcome) => void) {
+export function useTaskWrites(client: ProcessClient, runner: HrRunner,
+  onOutcome: (outcome: TaskOutcome | null) => void) {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [dialogError, setDialogError] = useState("");
   const { run, busy } = runner;
   const send = useCallback(<A extends TaskAction>(task: MyTask, name: A, body: TaskBodies[A], button: ProcessAction,
-    inDialog: boolean) => run(async () => {
+    opener: HTMLElement, inDialog: boolean) => run(async () => {
+    onOutcome(null);
     try {
       const receipt = await client.taskAction(task.task_id, name, body);
       setAsk(null);
-      onOutcome({ message: savedText(name, receipt), reload: true });
+      onOutcome({ message: savedText(name, receipt), reload: true, opener });
     } catch (cause) {
       const text = processSaveError(cause, button);
-      if (outdated(cause)) { setAsk(null); onOutcome({ error: text, reload: true }); }
+      if (outdated(cause)) { setAsk(null); onOutcome({ error: text, reload: true, opener }); }
       else if (inDialog) setDialogError(text);
       else onOutcome({ error: text, reload: false });
     }
@@ -66,31 +73,38 @@ export function useTaskWrites(client: ProcessClient, runner: HrRunner, onOutcome
 }
 export type TaskWrites = ReturnType<typeof useTaskWrites>;
 
-/** The buttons of one My tasks row; nothing when the viewer has nothing to do on it. */
-export function TaskActions({ task, writes, disabled }: { task: MyTask; writes: TaskWrites; disabled: boolean }) {
+/**
+ * The buttons of one My tasks row; nothing when the viewer has nothing to do on it. Each button is
+ * described by the row's title (`describedBy`, an element id), so "Mark done" says which step.
+ */
+export function TaskActions({ task, writes, disabled, describedBy }: {
+  task: MyTask; writes: TaskWrites; disabled: boolean; describedBy: string;
+}) {
   const { send, show } = writes;
   const busy = disabled || writes.busy;
   const open = task.status === "todo" || task.status === "rejected";
   const expected = { expected_version: task.version };
-  const buttons: { label: string; run: () => void }[] = [];
+  const buttons: { label: string; run: (opener: HTMLElement) => void }[] = [];
   if (task.needs_my_approval && task.status === "awaiting_approval") {
-    buttons.push({ label: "Approve", run: () => void send(task, "approve", expected, "approve", false) });
-    buttons.push({ label: "Send back", run: () => show({ task, kind: "send-back" }) });
+    buttons.push({ label: "Approve", run: opener => void send(task, "approve", expected, "approve", opener, false) });
+    buttons.push({ label: "Send back", run: opener => show({ task, opener, kind: "send-back" }) });
   } else if (open && task.auto_check === "access_removed") {
     // The system completes it when the person's access is removed; the hint says so.
   } else if (open && task.auto_check !== null) {
-    buttons.push({ label: "Check now", run: () => void send(task, "complete", expected, "check", false) });
+    buttons.push({ label: "Check now", run: opener => void send(task, "complete", expected, "check", opener, false) });
   } else if (open && task.mine) {
-    buttons.push({ label: "Mark done", run: () => show({ task, kind: "complete", label: "Mark done", button: "complete" }) });
+    buttons.push({ label: "Mark done",
+      run: opener => show({ task, opener, kind: "complete", label: "Mark done", button: "complete" }) });
   } else if (open) {
     const label = task.pool ? "Mark done" : "Mark done for them";
-    buttons.push({ label, run: () => show({ task, kind: "complete", label, button: task.pool ? "complete" : "complete-for" }) });
+    buttons.push({ label,
+      run: opener => show({ task, opener, kind: "complete", label, button: task.pool ? "complete" : "complete-for" }) });
   }
-  if (task.mine) buttons.push({ label: "Add note", run: () => show({ task, kind: "note" }) });
+  if (task.mine) buttons.push({ label: "Add note", run: opener => show({ task, opener, kind: "note" }) });
   if (buttons.length === 0) return null;
   return <div className="flex flex-wrap gap-2">
-    {buttons.map(item => <button key={item.label} type="button" className={secondary} disabled={busy} onClick={item.run}>
-      {item.label}</button>)}
+    {buttons.map(item => <button key={item.label} type="button" className={secondary} disabled={busy}
+      aria-describedby={describedBy} onClick={event => item.run(event.currentTarget)}>{item.label}</button>)}
   </div>;
 }
 
@@ -101,7 +115,7 @@ export function TaskActions({ task, writes, disabled }: { task: MyTask; writes: 
 export function TaskDialog({ writes }: { writes: TaskWrites }) {
   const { ask, dialogError, busy, send, close } = writes;
   if (!ask) return null;
-  const { task } = ask;
+  const { task, opener } = ask;
   const expected = task.version;
   return <Dialog open onClose={close} testId="hr-task-dialog"
     title={ask.kind === "complete" ? ask.label : ask.kind === "note" ? "Add note" : "Send back"}>
@@ -111,15 +125,15 @@ export function TaskDialog({ writes }: { writes: TaskWrites }) {
         tooLong={processErrorText("task_note_invalid")} submit={ask.label} busy={busy} error={dialogError}
         onCancel={close}
         onSubmit={note => void send(task, "complete", note ? { expected_version: expected, note } : { expected_version: expected },
-          ask.button, true)} />}
+          ask.button, opener, true)} />}
       {ask.kind === "note" && <TextForm label="Note" hint="Your HR team sees this note." initial={task.note ?? ""}
         required={false} max={NOTE_MAX} tooLong={processErrorText("task_note_invalid")} submit="Save note"
         busy={busy} error={dialogError} onCancel={close}
-        onSubmit={note => void send(task, "note", { note: note || null }, "note", true)} />}
+        onSubmit={note => void send(task, "note", { note: note || null }, "note", opener, true)} />}
       {ask.kind === "send-back" && <TextForm label="Reason" hint="The person sees this reason with the step."
         initial="" required max={REASON_MAX} tooLong={processErrorText("task_reason_invalid")} submit="Send back"
         busy={busy} error={dialogError} onCancel={close}
-        onSubmit={reason => void send(task, "send-back", { expected_version: expected, reason }, "send-back", true)} />}
+        onSubmit={reason => void send(task, "send-back", { expected_version: expected, reason }, "send-back", opener, true)} />}
     </div>
   </Dialog>;
 }

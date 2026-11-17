@@ -8,9 +8,9 @@ answer it), and records any process path it has no route for as unexpected, so a
 fails the test.
 
 Extension point: `ROUTES`. Tasks 4-6 add the processes list and detail, the templates and a
-person's processes by registering a handler with `@route("GET", r"hr/processes")`; the handler
-gets the world, the `Call` and the path match and returns `(status, body)`. A new path family
-whose prefix is not in `PREFIXES` is still delegated as long as a registered pattern matches it.
+person's processes by registering a handler in this module with `@route("GET", r"hr/processes")`;
+the handler gets the world, the `Call` and the path match and returns `(status, body)`. A new path
+family whose prefix is not in `PREFIXES` is still delegated while a registered pattern matches it.
 
 All data is synthetic (the repository is public).
 """
@@ -58,6 +58,9 @@ class Call:
 
 Answer = tuple[int, Any]
 Handler = Callable[["ProcessWorld", Call, re.Match[str]], Answer]
+# Every route is registered in THIS module, never from another test module: the registry is global
+# to the pytest process, so a route added elsewhere would answer (or not) depending on import order
+# and could turn a call that should be unexpected into an answered one.
 ROUTES: list[tuple[str, re.Pattern[str], Handler]] = []
 
 

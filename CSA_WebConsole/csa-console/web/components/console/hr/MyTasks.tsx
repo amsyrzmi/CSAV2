@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { processClient, type MyTask, type TaskStatus } from "@/lib/hr-process-api";
 import { processLoadError } from "@/lib/hr-process-copy";
 import { autoCheckText, dueText, processKindLabel, processToday, statusLabel } from "@/lib/hr-process-view";
@@ -33,34 +33,80 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
   const [reloading, setReloading] = useState(false);
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null);
   const [more, setMore] = useState({ busy: false, error: "" });
+  // How many pages the list holds: a reload reads as many again from the first, so a write on a later page
+  // does not fold the list back to page 1.
+  const pages = useRef(1);
+  // Bumped by every reload: a Load more that started before it is dropped (its rows carry old versions).
+  const generation = useRef(0);
+  // After a write's reload, focus goes back to the row button (or the message, or the heading).
+  const refocus = useRef<{ opener: HTMLElement | null } | null>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const notices = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let active = true;
-    client.myTasks()
-      .then(page => { if (active) setList({ items: page.items, next: page.next_cursor }); })
+    const wanted = pages.current;
+    (async () => {
+      const items: MyTask[] = [];
+      let next: string | null = null;
+      let read = 0;
+      do {
+        const page = await client.myTasks(undefined, next ?? undefined);
+        items.push(...page.items);
+        next = page.next_cursor;
+        read += 1;
+      } while (next && read < wanted);
+      return { items, next, read };
+    })()
+      .then(({ items, next, read }) => { if (active) { pages.current = read; setList({ items, next }); } })
       .catch(cause => { if (active) setList(isDenied(cause) ? { hidden: true } : { failed: processLoadError(cause) }); })
       .finally(() => { if (active) setReloading(false); });
     return () => { active = false; };
   }, [client, reads]);
-  const reload = useCallback(() => { setReloading(true); setReads(count => count + 1); }, []);
-  const onOutcome = useCallback((next: TaskOutcome) => { setOutcome(next); if (next.reload) reload(); }, [reload]);
+  useEffect(() => {
+    if (reloading || !refocus.current) return;
+    const { opener } = refocus.current;
+    refocus.current = null;
+    const usable = opener && opener.isConnected && !(opener instanceof HTMLButtonElement && opener.disabled)
+      && opener.getClientRects().length > 0;
+    if (usable) { opener.focus(); return; }
+    if (notices.current) { notices.current.focus(); return; }
+    const heading = panel.current?.querySelector("h2");
+    if (heading) { heading.tabIndex = -1; heading.focus(); }
+  }, [reloading]);
+  const reload = useCallback(() => {
+    generation.current += 1;
+    setReloading(true);
+    setReads(count => count + 1);
+  }, []);
+  const onOutcome = useCallback((next: TaskOutcome | null) => {
+    setOutcome(next);
+    if (next?.reload) { refocus.current = { opener: next.opener ?? null }; reload(); }
+  }, [reload]);
   const writes = useTaskWrites(client, runner, onOutcome);
   const loadMore = async (items: MyTask[], after: string) => {
+    const started = generation.current;
     setMore({ busy: true, error: "" });
     try {
       const page = await client.myTasks(undefined, after);
-      setList({ items: [...items, ...page.items], next: page.next_cursor });
+      if (started === generation.current) {
+        pages.current += 1;
+        setList({ items: [...items, ...page.items], next: page.next_cursor });
+      }
       setMore({ busy: false, error: "" });
-    } catch (cause) { setMore({ busy: false, error: processLoadError(cause) }); }
+    } catch (cause) { setMore({ busy: false, error: started === generation.current ? processLoadError(cause) : "" }); }
   };
 
   if (list && "hidden" in list) return null;
   const today = processToday();
-  const actions = (task: MyTask) => readonly ? null
-    : <TaskActions task={task} writes={writes} disabled={reloading} />;
-  return <div data-testid="hr-my-tasks" aria-busy={runner.busy || reloading}><Panel title="My tasks">
+  const actions = (task: MyTask, describedBy: string) => readonly ? null
+    : <TaskActions task={task} writes={writes} disabled={reloading} describedBy={describedBy} />;
+  return <div ref={panel} data-testid="hr-my-tasks" aria-busy={runner.busy || reloading}><Panel title="My tasks">
     <div className="space-y-3">
-      {outcome?.message && <Notice testId="hr-my-tasks-notice">{outcome.message}</Notice>}
-      {outcome?.error && <Notice error testId="hr-my-tasks-error">{outcome.error}</Notice>}
+      {(outcome?.message || outcome?.error) && <div ref={notices} tabIndex={-1} data-testid="hr-my-tasks-outcome"
+        className="space-y-3 rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">
+        {outcome.message && <Notice testId="hr-my-tasks-notice">{outcome.message}</Notice>}
+        {outcome.error && <Notice error testId="hr-my-tasks-error">{outcome.error}</Notice>}
+      </div>}
       {!list ? <Notice>Loading your tasks…</Notice>
         : "failed" in list ? <>
           <Notice error>{list.failed}</Notice>
@@ -73,16 +119,16 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
                   <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
                 <tbody>{list.items.map(task => <tr key={task.task_id} data-testid={`hr-task-row-${task.task_id}`}
                   className="border-t border-ink-200 align-top">
-                  <td className="p-2"><TaskText task={task} /></td>
+                  <td className="p-2"><TaskText task={task} titleId={`hr-task-title-${task.task_id}`} /></td>
                   <td className="p-2 [overflow-wrap:anywhere]"><ProcessText task={task} /></td>
                   <td className="p-2"><Due task={task} today={today} /></td>
                   <td className="p-2"><StatusLabel tone={tone(task.status)}>{statusLabel(task.status)}</StatusLabel></td>
-                  {!readonly && <td className="p-2">{actions(task)}</td>}
+                  {!readonly && <td className="p-2">{actions(task, `hr-task-title-${task.task_id}`)}</td>}
                 </tr>)}</tbody>
               </table>
               <ul data-testid="hr-my-tasks-cards" className="space-y-3 md:hidden">{list.items.map(task =>
                 <li key={task.task_id} data-testid={`hr-task-card-${task.task_id}`} className={card}>
-                  <TaskText task={task} />
+                  <TaskText task={task} titleId={`hr-task-card-title-${task.task_id}`} />
                   <dl className="mt-2 space-y-1 text-sm">
                     <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Process</dt>
                       <dd className="min-w-0 text-right [overflow-wrap:anywhere]"><ProcessText task={task} /></dd></div>
@@ -91,10 +137,10 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
                     <div className="flex items-center justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Status</dt>
                       <dd><StatusLabel tone={tone(task.status)}>{statusLabel(task.status)}</StatusLabel></dd></div>
                   </dl>
-                  {!readonly && <div className="mt-3">{actions(task)}</div>}
+                  {!readonly && <div className="mt-3">{actions(task, `hr-task-card-title-${task.task_id}`)}</div>}
                 </li>)}</ul></div>
               {more.error && <Notice error>{more.error}</Notice>}
-              {list.next && <button type="button" className={secondary} disabled={more.busy}
+              {list.next && <button type="button" className={secondary} disabled={more.busy || reloading}
                 onClick={() => void loadMore(list.items, list.next as string)}>{more.busy ? "Loading…" : "Load more"}</button>}
             </>}
     </div>
@@ -103,12 +149,12 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
 }
 
 /** The step: English title, the Malay line, and whichever texts this viewer may see. */
-function TaskText({ task }: { task: MyTask }) {
+function TaskText({ task, titleId }: { task: MyTask; titleId: string }) {
   const line = "mt-1 whitespace-pre-line text-sm [overflow-wrap:anywhere]";
   const who = task.mine || task.needs_my_approval ? null : task.pool ? "HR team"
     : task.assignee_name ? `For ${task.assignee_name}` : null;
   return <div className="min-w-0">
-    <p className="font-medium [overflow-wrap:anywhere]">{task.title_en}</p>
+    <p id={titleId} className="font-medium [overflow-wrap:anywhere]">{task.title_en}</p>
     {task.title_ms && <p lang="ms" className="text-sm text-[color:var(--fs-text-secondary)] [overflow-wrap:anywhere]">{task.title_ms}</p>}
     {who && <p className="mt-1 text-sm font-medium">{who}</p>}
     {task.description_en && <p className={line}>{task.description_en}</p>}
