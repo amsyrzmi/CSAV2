@@ -1,0 +1,450 @@
+/**
+ * The Inbox work queue as the screen sees it: tabs and their server filters, the list query, the
+ * wording for waits, due times and rows, the primary action for an item and the plain sentences for
+ * action errors and bulk results. Pure: types only are imported, so node tests load this file directly.
+ * Times are shown in the company timezone, a fixed +08:00 (Asia/Kuala_Lumpur).
+ */
+import type { StatusTone } from "@/components/console/fs/StatusLabel";
+import type { ConsoleRole } from "@/lib/identity-contracts";
+import type {
+  BulkOutcome,
+  ChannelFilter,
+  Conversation,
+  Priority,
+  QueueCounts,
+  QueueState,
+  Reason,
+  SenderFilter,
+  Topic,
+} from "@/lib/inbox-api";
+
+export type QueueTabId =
+  | "needs_us"
+  | "mine"
+  | "unassigned"
+  | "overdue"
+  | "waiting"
+  | "snoozed"
+  | "resolved"
+  | "all";
+export type QueueOrder = "activity" | "waiting" | "due" | "priority";
+
+export interface QueueFilters {
+  state: QueueState[];
+  /** "" (anyone), "me", "none" or a user id. */
+  assignee: "" | "me" | "none" | string;
+  priorityMin: "" | Priority;
+  reason: Reason[];
+  topic: Topic[];
+  channel: ChannelFilter;
+  sender: SenderFilter;
+  overdue: boolean;
+  /** Minutes a `needs_staff` item has waited at least. */
+  waitingOver: number | null;
+}
+
+export interface QueueTab {
+  id: QueueTabId;
+  label: string;
+  testId: string;
+  filters: Partial<QueueFilters>;
+  order: QueueOrder;
+  count: keyof QueueCounts | null;
+}
+
+const INBOX_CONVERSATIONS = "/console/v1/inbox/conversations";
+
+/** Each tab is a filter set plus the order it opens with; the screen always sends the order. */
+export const TABS: readonly QueueTab[] = [
+  {
+    id: "needs_us", label: "Needs us", testId: "inbox-tab-needs_us",
+    filters: { state: ["needs_staff"] }, order: "due", count: "needs_us",
+  },
+  {
+    id: "mine", label: "Mine", testId: "inbox-tab-mine",
+    filters: { assignee: "me", state: ["needs_staff", "waiting_customer"] }, order: "due", count: "mine",
+  },
+  {
+    id: "unassigned", label: "Unassigned", testId: "inbox-tab-unassigned",
+    filters: { state: ["needs_staff"], assignee: "none" }, order: "due", count: "unassigned",
+  },
+  {
+    id: "overdue", label: "Overdue", testId: "inbox-tab-overdue",
+    filters: { state: ["needs_staff"], overdue: true }, order: "due", count: "overdue",
+  },
+  {
+    id: "waiting", label: "Waiting on customer", testId: "inbox-tab-waiting",
+    filters: { state: ["waiting_customer"] }, order: "activity", count: "waiting_customer",
+  },
+  {
+    id: "snoozed", label: "Snoozed", testId: "inbox-tab-snoozed",
+    filters: { state: ["snoozed"] }, order: "activity", count: "snoozed",
+  },
+  {
+    id: "resolved", label: "Resolved", testId: "inbox-tab-resolved",
+    filters: { state: ["resolved"] }, order: "activity", count: null,
+  },
+  {
+    id: "all", label: "All", testId: "inbox-tab-all",
+    filters: {}, order: "activity", count: null,
+  },
+];
+
+function emptyFilters(): QueueFilters {
+  return {
+    state: [], assignee: "", priorityMin: "", reason: [], topic: [], channel: "", sender: "",
+    overdue: false, waitingOver: null,
+  };
+}
+
+/** The tab's own filters laid over empty ones. Arrays are fresh, so callers can change them. */
+export function tabFilters(tab: QueueTabId): QueueFilters {
+  const own = TABS.find((t) => t.id === tab)?.filters ?? {};
+  const base = emptyFilters();
+  return {
+    ...base,
+    ...own,
+    state: [...(own.state ?? base.state)],
+    reason: [...(own.reason ?? base.reason)],
+    topic: [...(own.topic ?? base.topic)],
+  };
+}
+
+/**
+ * Full path and query for the conversation list. Only set values are sent, the tenant query comes
+ * first and `order` always goes, because the server's default differs by filter (Mine would fall
+ * back to activity). The server answers 422 for a one-character search, so it is never sent.
+ */
+export function queueListQuery(o: {
+  tenantQuery: string;
+  filters: QueueFilters;
+  order: QueueOrder;
+  q: string;
+}): string {
+  const f = o.filters;
+  const enc = encodeURIComponent;
+  const parts: string[] = [];
+  if (o.tenantQuery) parts.push(o.tenantQuery);
+  for (const state of f.state) parts.push(`state=${enc(state)}`);
+  if (f.assignee) parts.push(`assignee=${enc(f.assignee)}`);
+  if (f.priorityMin) parts.push(`priority_min=${enc(f.priorityMin)}`);
+  for (const reason of f.reason) parts.push(`reason=${enc(reason)}`);
+  for (const topic of f.topic) parts.push(`topic=${enc(topic)}`);
+  if (f.channel) parts.push(`channel=${enc(f.channel)}`);
+  if (f.sender) parts.push(`sender=${enc(f.sender)}`);
+  if (f.overdue) parts.push("overdue=true");
+  if (f.waitingOver !== null) parts.push(`waiting_over=${enc(String(f.waitingOver))}`);
+  parts.push(`order=${enc(o.order)}`);
+  const q = o.q.trim();
+  if ([...q].length >= 2) parts.push(`q=${enc(q)}`);
+  return `${INBOX_CONVERSATIONS}?${parts.join("&")}`;
+}
+
+// ---- words ----
+
+export const REASON_LABELS: Record<Reason, string> = {
+  escalation: "Escalated",
+  held_reply: "Held reply",
+  customer_message: "Customer wrote",
+  manual: "Taken over",
+};
+
+export const TOPIC_LABELS: Record<Topic, string> = {
+  purchase: "Purchase",
+  question: "Question",
+  complaint: "Complaint",
+  payment: "Payment",
+  booking: "Booking",
+  subscription: "Subscription",
+  other: "Other",
+};
+
+export const PRIORITY_LABELS: Record<Priority, string> = {
+  low: "Low",
+  normal: "Normal",
+  high: "High",
+  urgent: "Urgent",
+};
+
+/** "35m", "2h 10m", "2h", "3d" from a length in milliseconds (at least one minute). */
+function duration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const rest = minutes % 60;
+    return rest ? `${hours}h ${rest}m` : `${hours}h`;
+  }
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function parseTime(at: string | null): number | null {
+  if (!at) return null;
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** How long an item has waited on us: "just now", "35m", "2h 10m", "3d". Empty without a start time. */
+export function waitText(since: string | null, now: number): string {
+  const start = parseTime(since);
+  if (start === null) return "";
+  const elapsed = now - start;
+  // A start in the future (clock skew) and anything under a minute both read as just now.
+  if (elapsed < 60_000) return "just now";
+  return duration(elapsed);
+}
+
+type Clock = Pick<Conversation, "needs_staff_since" | "due_at">;
+
+/** `soon` is the last quarter of the window from the clock start to the due time. */
+export function dueState(item: Clock, now: number): "none" | "ok" | "soon" | "overdue" {
+  const due = parseTime(item.due_at);
+  const start = parseTime(item.needs_staff_since);
+  if (due === null || start === null) return "none";
+  if (now >= due) return "overdue";
+  return (due - now) * 4 <= due - start ? "soon" : "ok";
+}
+
+/** "Due in 20m", "Overdue 1h". Empty when there is no due time. */
+export function dueText(item: Pick<Conversation, "due_at">, now: number): string {
+  const due = parseTime(item.due_at);
+  if (due === null) return "";
+  const diff = due - now;
+  if (diff > 0) return diff < 60_000 ? "Due in under 1m" : `Due in ${duration(diff)}`;
+  return -diff < 60_000 ? "Overdue just now" : `Overdue ${duration(-diff)}`;
+}
+
+/** "AD" for "Aina Demo", the first letter for one word, "?" for no name. At most two letters. */
+export function initialsOf(name: string | null): string {
+  const words = (name ?? "").split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  return words.slice(0, 2).map((w) => [...w][0]).join("").toUpperCase();
+}
+
+function firstName(name: string | null): string | null {
+  const word = (name ?? "").split(/\s+/).find(Boolean);
+  return word ?? null;
+}
+
+// ---- company time (+08:00) ----
+
+const OFFSET_MS = 8 * 3_600_000;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** The +08:00 calendar fields of an instant, read from a shifted UTC date so no Intl is involved. */
+function companyFields(ms: number) {
+  const d = new Date(ms + OFFSET_MS);
+  return {
+    year: d.getUTCFullYear(), month: d.getUTCMonth(), day: d.getUTCDate(),
+    hour: d.getUTCHours(), minute: d.getUTCMinutes(), weekday: d.getUTCDay(),
+  };
+}
+
+function isoAtCompanyTime(year: number, month: number, day: number, hour: number, minute: number): string {
+  // Date.UTC normalises an overflowing day or month, so adding days across a month end is safe.
+  const d = new Date(Date.UTC(year, month, day, hour, minute));
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+    + `T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:00+08:00`;
+}
+
+/** "Thu 09:00" in company time. */
+function weekdayTime(ms: number): string {
+  const f = companyFields(ms);
+  return `${WEEKDAYS[f.weekday]} ${pad(f.hour)}:${pad(f.minute)}`;
+}
+
+/** Later today (+3 h), Tomorrow 09:00 and Next Monday 09:00 (strictly after today), all in +08:00. */
+export function snoozePresets(now: Date): { label: string; until: string }[] {
+  const t = now.getTime();
+  const later = companyFields(t + 3 * 3_600_000);
+  const today = companyFields(t);
+  const toMonday = (1 - today.weekday + 7) % 7 || 7;
+  return [
+    {
+      label: "Later today",
+      until: isoAtCompanyTime(later.year, later.month, later.day, later.hour, later.minute),
+    },
+    {
+      label: "Tomorrow 09:00",
+      until: isoAtCompanyTime(today.year, today.month, today.day + 1, 9, 0),
+    },
+    {
+      label: "Next Monday 09:00",
+      until: isoAtCompanyTime(today.year, today.month, today.day + toMonday, 9, 0),
+    },
+  ];
+}
+
+// ---- rows ----
+
+export interface RowMeta {
+  state: { tone: StatusTone; text: string } | null;
+  due: { state: "none" | "ok" | "soon" | "overdue"; text: string } | null;
+  priority: { text: "Urgent" | "High" } | null;
+  reason: string | null;
+  assignee: { initials: string; text: string } | null;
+}
+
+/** What a row's meta line shows. Each part is null when it does not apply. */
+export function rowMeta(item: Conversation, now: number, me: { userId: string | null }): RowMeta {
+  let state: RowMeta["state"] = null;
+  switch (item.queue_status) {
+    case "needs_staff":
+      state = { tone: "attention", text: "Needs us" };
+      break;
+    case "waiting_customer":
+      state = { tone: "neutral", text: "Waiting on customer" };
+      break;
+    case "snoozed": {
+      const until = parseTime(item.snoozed_until);
+      state = { tone: "info", text: until === null ? "Snoozed" : `Snoozed until ${weekdayTime(until)}` };
+      break;
+    }
+    case "resolved":
+      state = { tone: "success", text: "Resolved" };
+      break;
+    default:
+      break; // bot rows have no state label
+  }
+
+  const needsUs = item.queue_status === "needs_staff";
+  const dueLabel = needsUs ? dueText(item, now) : "";
+  const due = needsUs && dueLabel ? { state: dueState(item, now), text: dueLabel } : null;
+  const priority = item.priority === "urgent" || item.priority === "high"
+    ? { text: item.priority === "urgent" ? ("Urgent" as const) : ("High" as const) }
+    : null;
+  const reason = needsUs && item.queue_reason ? REASON_LABELS[item.queue_reason] : null;
+
+  let assignee: RowMeta["assignee"] = null;
+  if (item.assignee_id) {
+    const name = item.assignee?.display_name ?? null;
+    assignee = {
+      initials: initialsOf(name),
+      text: me.userId !== null && item.assignee_id === me.userId ? "You" : (firstName(name) ?? "Someone"),
+    };
+  }
+  return { state, due, priority, reason, assignee };
+}
+
+export type PrimaryAction = {
+  kind: "take_over" | "take_it" | "take_from" | "resolve" | "none";
+  name?: string;
+};
+
+/**
+ * The one primary button for an item (design 14.4). Taking someone else's claim is for
+ * administrators; tenant staff may still resolve such an item, but are never offered the take.
+ */
+export function primaryAction(
+  item: Conversation,
+  me: { userId: string | null; role: ConsoleRole | null },
+): PrimaryAction {
+  switch (item.queue_status) {
+    case "bot":
+      return { kind: "take_over" };
+    case "needs_staff": {
+      if (!item.assignee_id) return { kind: "take_it" };
+      if (me.userId !== null && item.assignee_id === me.userId) return { kind: "resolve" };
+      if (me.role === "tenant_admin" || me.role === "platform_admin") {
+        return { kind: "take_from", name: firstName(item.assignee?.display_name ?? null) ?? "someone" };
+      }
+      return { kind: "resolve" };
+    }
+    case "waiting_customer":
+    case "snoozed":
+      return { kind: "resolve" };
+    default:
+      return { kind: "none" };
+  }
+}
+
+// ---- errors and bulk results ----
+
+/** A plain sentence for a failed queue action. Never shows a raw code; `fallback` covers the rest. */
+export function actionErrorText(status: number | null, code: string | null, fallback: string): string {
+  if (status === null) return "Could not reach the server. Nothing was changed that we know of: try again.";
+  if (status === 409) {
+    if (code === null) return "This conversation changed. Refreshed, so look again before acting.";
+    if (code === "held_reply_pending") return "A held reply needs a decision first.";
+    if (code === "customer_wrote") return "The customer wrote after you opened this. Reload to see it.";
+  }
+  if (status === 403) return "You do not have permission to do that.";
+  if (status === 404) return "This conversation is not available any more.";
+  if (status === 422) {
+    if (code === "until_in_past") return "Pick a time in the future.";
+    if (code === "until_too_far") return "Pick a time within the next 60 days.";
+  }
+  if (status === 503) return "The team list is unavailable right now. Try again in a moment.";
+  return fallback;
+}
+
+const NOT_DONE: [Exclude<BulkOutcome, "done" | "already_handled">, string][] = [
+  ["held_reply_pending", "a held reply needs a decision first"],
+  ["customer_wrote", "the customer wrote after you opened the list"],
+  ["not_allowed", "it is assigned to someone else, and only an administrator can change that"],
+  ["not_in_queue", "it is not in the queue any more"],
+  ["not_found", "it is not available any more"],
+];
+
+/** One plain summary for a bulk action, and the ids that were not done (they stay selected). */
+export function bulkSummary(results: { id: string; outcome: BulkOutcome }[]): {
+  text: string;
+  failedIds: string[];
+} {
+  const isDone = (o: BulkOutcome) => o === "done" || o === "already_handled";
+  const done = results.filter((r) => isDone(r.outcome)).length;
+  const failedIds = results.filter((r) => !isDone(r.outcome)).map((r) => r.id);
+  const sentences = [done > 0 ? `${done} done.` : "Nothing was done."];
+  for (const [outcome, reason] of NOT_DONE) {
+    const n = results.filter((r) => r.outcome === outcome).length;
+    if (n > 0) sentences.push(`${n} not done: ${reason}.`);
+  }
+  return { text: sentences.join(" "), failedIds };
+}
+
+// ---- filter chips ----
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** The filters beyond the tab's own ones, in words. The key carries the value, so a chip can be removed. */
+export function activeFilterChips(filters: QueueFilters, tab: QueueTabId): { key: string; label: string }[] {
+  const own = tabFilters(tab);
+  const chips: { key: string; label: string }[] = [];
+  if (filters.assignee && filters.assignee !== own.assignee) {
+    const label = filters.assignee === "me" ? "Assigned to me"
+      : filters.assignee === "none" ? "Unassigned" : "Assigned to someone";
+    chips.push({ key: `assignee:${filters.assignee}`, label });
+  }
+  if (filters.priorityMin && filters.priorityMin !== own.priorityMin) {
+    chips.push({
+      key: "priority",
+      label: filters.priorityMin === "urgent"
+        ? "Priority urgent"
+        : `Priority ${filters.priorityMin} or above`,
+    });
+  }
+  if (!sameList(filters.reason, own.reason)) {
+    for (const reason of filters.reason) {
+      chips.push({ key: `reason:${reason}`, label: `Reason: ${REASON_LABELS[reason]}` });
+    }
+  }
+  if (!sameList(filters.topic, own.topic)) {
+    for (const topic of filters.topic) {
+      chips.push({ key: `topic:${topic}`, label: `Topic: ${TOPIC_LABELS[topic]}` });
+    }
+  }
+  if (filters.channel && filters.channel !== own.channel) {
+    chips.push({ key: "channel", label: `Channel: ${filters.channel === "whatsapp" ? "WhatsApp" : "Telegram"}` });
+  }
+  if (filters.sender && filters.sender !== own.sender) {
+    chips.push({ key: "sender", label: filters.sender === "known" ? "Customers" : "New senders" });
+  }
+  if (filters.overdue && !own.overdue) chips.push({ key: "overdue", label: "Overdue only" });
+  if (filters.waitingOver !== null && filters.waitingOver !== own.waitingOver) {
+    chips.push({ key: "waiting_over", label: `Waiting longer than ${duration(filters.waitingOver * 60_000)}` });
+  }
+  return chips;
+}

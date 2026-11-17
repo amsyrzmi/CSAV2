@@ -15,6 +15,24 @@ export type LastMessage = { preview: string; at: string };
 /** The assistant's note to staff from its handoff; only the single-conversation read carries it. */
 export type HandoffNote = { text: string; at: string };
 
+/** Where an item is in the work queue (`bot` means the assistant has it and it is not in the queue). */
+export type QueueState = "bot" | "needs_staff" | "waiting_customer" | "snoozed" | "resolved";
+export type Priority = "low" | "normal" | "high" | "urgent";
+export type Reason = "escalation" | "held_reply" | "customer_message" | "manual";
+export type Topic = "purchase" | "question" | "complaint" | "payment" | "booking" | "subscription" | "other";
+/** One id's result in a bulk queue action. */
+export type BulkOutcome =
+  | "done"
+  | "already_handled"
+  | "held_reply_pending"
+  | "customer_wrote"
+  | "not_found"
+  | "not_in_queue"
+  | "not_allowed";
+
+/** The assignee as the member directory knows them; the name is null when it cannot be read. */
+export type Assignee = { id: string; display_name: string | null };
+
 export type Conversation = {
   id: string;
   channel: "telegram" | "whatsapp";
@@ -28,6 +46,22 @@ export type Conversation = {
   last_message: LastMessage | null;
   pending_approvals: number;
   handoff_note?: HandoffNote | null;
+  queue_status: QueueState;
+  /** Set only while the item is `needs_staff`. */
+  queue_reason: Reason | null;
+  /** Null until a person sets it. */
+  topic: Topic | null;
+  priority: Priority;
+  /** Set even when `assignee` has no name, so a claimed item always shows as claimed. */
+  assignee_id: string | null;
+  assignee: Assignee | null;
+  claimed_at: string | null;
+  /** The clock: when the item started waiting on a person. Null outside `needs_staff`. */
+  needs_staff_since: string | null;
+  due_at: string | null;
+  snoozed_until: string | null;
+  last_customer_at: string | null;
+  last_staff_reply_at: string | null;
 };
 
 /** The four delivery fields, restated structurally (same shape as DeliveryState in channels-api). */
@@ -60,7 +94,23 @@ export type Approval = {
 };
 
 export type Page<T> = { items: T[]; next_cursor: string | number | null };
-export type ConversationPage = Page<Conversation> & { needs_review_count: number };
+/** The tab counts. `mine` is the asking person's items in `needs_staff` or `waiting_customer`. */
+export type QueueCounts = {
+  needs_us: number;
+  mine: number;
+  unassigned: number;
+  overdue: number;
+  waiting_customer: number;
+  snoozed: number;
+  oldest_waiting_at: string | null;
+};
+export type ConversationPage = Page<Conversation> & {
+  needs_review_count: number;
+  /** Null when the server could not read them; a client shows "–", never 0. */
+  counts: QueueCounts | null;
+  /** The server's time of the read: the bulk route's `seen_at`. */
+  as_of: string;
+};
 
 export type ChannelFilter = "" | "whatsapp" | "telegram";
 export type SenderFilter = "" | "known" | "new";
