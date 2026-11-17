@@ -1810,7 +1810,10 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     "SELECT owned_by,inbox_version,ai_muted_until FROM conversations WHERE id=%s",
                     (conversation,),
                 )
-                assert await cursor.fetchone() == ("ai", 2, None)
+                # Five staff actions each bump the version once: takeover, reply, release,
+                # and the approved and the edited held reply (a person's reply bumps it
+                # since the Inbox queue). The rejected and expired ones send no reply.
+                assert await cursor.fetchone() == ("ai", 5, None)
                 cursor = await owner.execute(
                     "SELECT m.body,m.send_authority,d.status FROM messages m "
                     "JOIN outbound_deliveries d ON d.message_id=m.id "
