@@ -540,7 +540,11 @@ async def test_resolve_is_refused_when_the_customer_wrote_since_the_person_looke
     _inbound(app_dsn, s)
     before, conv = _state(migrated_dsn, s), _conversation(migrated_dsn, s)
     last = before["last_customer_at"]
-    assert before["queue_status"] == "bot" and last is not None
+    # A customer message to a person-owned chat enters the queue (the 0622 trigger).
+    assert (before["queue_status"], before["queue_reason"]) == ("needs_staff", "customer_message")
+    assert last is not None
+    entered = _events(migrated_dsn, s)
+    assert [e["action"] for e in entered] == ["entered"]
     with pytest.raises(QueueError) as refused:
         await _on(
             app_dsn,
@@ -552,7 +556,7 @@ async def test_resolve_is_refused_when_the_customer_wrote_since_the_person_looke
     assert refused.value.code == "customer_wrote"
     assert _state(migrated_dsn, s) == before
     assert _conversation(migrated_dsn, s) == conv
-    assert _events(migrated_dsn, s) == []
+    assert _events(migrated_dsn, s) == entered
 
     await _on(app_dsn, s, queue.resolve, actor_user_id=_uid(user), seen_customer_at=last)
     assert _state(migrated_dsn, s)["queue_status"] == "resolved"

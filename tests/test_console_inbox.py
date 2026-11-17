@@ -525,19 +525,21 @@ async def test_takeover_replay_stale_turns_release_and_human_reply(sessions: Ses
     first = await w.mutate(w.admin, reply_url, reply)
     assert first.status_code == 202 and first.json()["queued"], first.text
     assert (await w.mutate(w.admin, reply_url, reply)).json() == first.json()
+    # A person's reply moves the queue item, so it raises the version (1 -> 2).
+    assert first.json()["conversation"]["inbox_version"] == 2
     reply["body"] = "Changed"
     assert (await w.mutate(w.admin, reply_url, reply)).status_code == 409
     assert (
         await w.mutate(
             w.admin,
             path(w, f"/conversations/{conversation}/release"),
-            {"request_key": str(uuid4()), "expected_version": 0},
+            {"request_key": str(uuid4()), "expected_version": 1},
         )
     ).status_code == 409
     released = await w.mutate(
         w.admin,
         path(w, f"/conversations/{conversation}/release"),
-        {"request_key": str(uuid4()), "expected_version": 1},
+        {"request_key": str(uuid4()), "expected_version": 2},
     )
     assert released.status_code == 200 and not released.json()["conversation"]["human_muted"]
     await PostgresTurnDependencies(w.pool).fail_safe(env, context, "synthetic-error")
