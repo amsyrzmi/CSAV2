@@ -513,6 +513,154 @@ columns are additive and defaulted, so old code keeps working against the new sc
 - Analytics and reporting on response times (the events table keeps the data for it).
 - Read-only member access to the Inbox.
 
+## 14. The queue screen (UI design for plan 1b)
+
+Owner request (2026-11-17): make the Inbox tab look more professional while matching the console theme.
+This section is the design for plan 1b. It uses only what exists: the `--fs-*` tokens (so every theme,
+including Night and Bureau, keeps working), Space Grotesk titles and Inter text, Lucide icons, the
+shared controls in `components/console/ui.tsx`, `StatusLabel` tones, `StatusChips`, `CustomerAvatar`,
+`ListState`, the 40 px controls and 6 px control radius, and `ui-guide/UI_GUIDE.md` (quiet white
+surfaces, thin borders, blue only for selection and interaction, meaning always in words, never in
+colour alone). No new colours, no shadows except overlays, no new fonts.
+
+### 14.1 What changes and why
+
+Today the list pane carries a title, a labelled search box, four chips and a channel select above the
+rows, and every row ends in four pills (held reply, sender, owner, channel). That is noisy for a work
+queue and it has no room for state, age, priority or assignee. The redesign moves navigation to one bar
+above the three panes, makes each row answer "what is this, how long has it waited, who has it", and
+keeps the thread and customer panes as they are.
+
+### 14.2 Layout (desktop at 1100 px and wider)
+
+```
+┌─ Customer inbox ───────────────────────────────────────────────────────────────────────┐
+│ Needs us 12 · Mine 3 · Unassigned 9 · Overdue 2 │ Waiting 18 · Snoozed 4 · Resolved · All│
+│ [🔍 Search name or phone]  [Filters ▾ 2]  [Views ▾]            Sort: Due soonest ▾      │
+│ Filters: Assigned to me ✕  Priority high+ ✕                            Clear filters   │
+├───────────────────────┬───────────────────────────────────────┬────────────────────────┤
+│ ☐ (AM) Aina Demo  2h 10m│ Aina Demo · Telegram     Needs us · Overdue 1h             │ Customer          │
+│   Please cancel my…     │ Assigned to you ▾     [Resolve] [Snooze ▾] [More ▾]        │ details           │
+│   Escalated · High · You│ ─────────────────────────────────────────────────────────  │                   │
+│ ☐ (BK) Ben Sample  20m  │  messages …                                                │                   │
+│   Where is my order?    │                                                            │                   │
+│   Customer wrote · Unass│  [reply box, shown after "Take over"]                      │                   │
+└───────────────────────┴───────────────────────────────────────┴────────────────────────┘
+```
+
+- **Queue bar** (new, above the panes, full width). A tab strip with counts on the left (the first four
+  are the work tabs; the rest sit after a thin divider), search, Filters, Views and Sort on the second
+  line. It replaces the chips, the channel select and the "Conversations" heading in the list pane.
+  Sticky while the list scrolls. The page title stays "Customer inbox".
+- **List pane** is rows only, with the quiet white surface, hairline dividers and the existing blue
+  selected row with the inset bar.
+- **Thread and customer panes** keep their current behaviour and widths; the thread gets the new header
+  of 14.4. The grid is the existing three-pane grid, with the queue bar added on top.
+- **Between 768 and 1100 px:** two panes as today; the tab strip scrolls horizontally inside its own
+  labelled region and Filters opens as a sheet. **Below 768 px:** the queue bar becomes a row of
+  scrollable chips with counts, search is one line, Filters and Views open full-width sheets, and the
+  thread opens full width with Back, as today. At 320 to 390 px nothing scrolls the page sideways.
+
+### 14.3 The conversation row
+
+Three lines, 72 to 80 px, comfortable at 1 or 2 pills, never four:
+
+1. **Name** (semibold) and, right-aligned in tabular numerals, the **clock**: "2h 10m" (time waiting on
+   us) in the Needs us, Mine, Unassigned and Overdue tabs; "last message 14 Nov" in the others. The
+   absolute time is the element's title, in the company timezone (`Asia/Kuala_Lumpur` by default).
+2. **Preview** of the last message, one line.
+3. **Meta line**, left to right, each only when it applies:
+   - **State** as a `StatusLabel`: "Needs us" (attention tone), "Waiting on customer" (neutral),
+     "Snoozed until Thu 09:00" (info), "Resolved" (success). Bot-handled rows show no state label.
+   - **Due**: "Due in 20 m" (neutral), "Due soon" (attention) in the last quarter of the window,
+     "Overdue 1h" (error tone with the words). Only for Needs us rows.
+   - **Priority**: shown only for High and Urgent, as an icon plus the word ("Urgent", "High"), never a
+     colour stripe.
+   - **Reason** in plain words when it is not obvious from the state: "Escalated", "Held reply",
+     "Customer wrote", "Taken over".
+   - **Assignee**: a 20 px initials avatar with "You" or the first name; absent when unclaimed.
+   - **New sender** keeps its dashed neutral label (known customers show nothing: "Customer" on every
+     row was noise). The **channel** becomes a small icon with a text tooltip and a visually hidden
+     name, and the full channel pill stays in the thread header.
+- A **checkbox** appears at the left on hover, on keyboard focus and whenever anything is selected
+  (it is a real `input type=checkbox` with a name like "Select Aina Demo"); touch devices show it in
+  a "Select" mode toggled from the queue bar so rows stay tappable.
+- The unread-style emphasis is a heavier name weight only on rows whose newest message is from the
+  customer and unanswered. No dots, no bold colour.
+
+### 14.4 The thread header and actions
+
+One header row above the messages:
+
+- Left: customer name, channel label, then the **state** and **due** labels as in the row.
+- Right: **one primary action** that depends on the item, then secondary actions:
+  - unclaimed and in the queue: primary "Take it" (claims; a first reply also claims);
+  - claimed by you: primary "Resolve";
+  - claimed by someone else: primary "Take it from {name}" with a one-line notice "Assigned to {name}";
+  - waiting on customer or snoozed: primary "Resolve" with "Reopen" in More;
+  - bot-handled: primary stays the existing "Take over" button.
+  - **Snooze ▾** menu: Later today (+3 h), Tomorrow 09:00, Next Monday 09:00, Pick a time (the existing
+    date and time field patterns).
+  - **More ▾**: Assign to… (admins), Give up this item, Set priority, Set topic, Hand back to the
+    assistant.
+- A **banner** under the header (the existing `Notice` pattern) when it helps: "Waiting on us for 3 h
+  20 m, due 1 h ago", "A held reply needs a decision first" (when resolve is refused), "The customer
+  wrote after you opened this. Reload to see it." (the `customer_wrote` case).
+- Reply, takeover and held-reply cards keep today's behaviour and look.
+
+### 14.5 Filters, views, sort
+
+- **Filters** popover (a sheet below 768 px): Assigned to (anyone, me, unassigned, a person), Priority
+  (any, high and above, urgent), Reason, Topic, Channel, Sender (anyone, customers, new senders),
+  Overdue only, Waiting longer than. Applied filters appear as removable chips under the bar, each
+  with its own accessible "Remove filter" name, plus "Clear filters". The Filters button shows the
+  count of active filters.
+- **Views** menu: the built-in tabs are not repeated here; it lists the person's saved views, "Save
+  this view" (name field, max 60) and "Manage views" (rename, delete). Choosing a view sets tab,
+  filters and sort at once.
+- **Sort** dropdown: Oldest waiting, Due soonest, Newest activity, Priority (Priority is offered only
+  in the Needs us tab, matching the API rule). Each tab opens with its default; the UI always sends
+  `order` explicitly.
+- Counts update after each action and on a gentle poll; the existing nudge animation runs only when a
+  count rises and motion is allowed.
+
+### 14.6 Bulk actions
+
+Selecting rows replaces the queue bar's second line with the **bulk bar**: "3 selected", Claim,
+Assign ▾ (admins only), Snooze ▾, Resolve, Clear. The result is one plain summary line with a list
+of what did not apply and why in words ("2 resolved. 1 has a held reply: decide it first."). Failed
+items stay selected so the person can act on them. The server caps at 50 ids; the UI disables select
+all beyond the loaded page and says so.
+
+### 14.7 States and copy
+
+Empty, loading, partial, failed and forbidden keep the shared `ListState` presentations. New empty
+copy per tab, plain words per `docs/CONSOLE_VOICE.md` and `docs/WRITING_GUIDE.md`: Needs us "Nothing
+needs your team right now", Mine "Nothing is assigned to you", Overdue "Nothing is overdue", Waiting
+"No one is waiting on a customer", Snoozed "Nothing is snoozed", Resolved "No resolved conversations
+yet", with the assistant's resting avatar at 48 px beside the sentence in the Needs us tab only. A
+failed counts request shows "–" and never zero.
+
+### 14.8 Interaction, motion, accessibility
+
+- Keyboard: the existing J and K and Escape stay; added C (claim), E (resolve), S (snooze menu) and `/`
+  (search), active only when focus is not in a field or dialog (reusing `shortcutFor`), with a "?"
+  help dialog listing them. Every action is also a visible button.
+- The tab strip is a `tablist` (arrow keys move, Enter or Space selects, `aria-selected`, each tab
+  named "Needs us, 12"), the list is the controlled panel; menus and sheets are native dialogs or the
+  existing `SlideOver` with focus management and Escape.
+- Motion: row removal and arrival use opacity over 180 ms on `--fs-ease-out`; nothing moves when
+  `useMotionAllowed` is false; selected rows stay stable during refresh.
+- Contrast: all label pairs come from `StatusLabel` tones (already contrast-tested in every theme); a
+  node test lists the new classes against `theme-literals` so no hex or hsl appears.
+- Performance: row components are memoised by id and version, the list is windowed beyond 200 loaded
+  rows, and counts come from the one counts request, never from the loaded rows.
+
+### 14.9 Not in this design
+
+The notification bell and the notification centre (PR 2), the targets page (PR 3), internal notes,
+customer timelines, and any change to the thread's message rendering, takeover flow or held-reply cards.
+
 ## 13. What is left to the builder
 
 Exact column and index names and the mapping table from escalation reasons to topics; the keyset cursor
