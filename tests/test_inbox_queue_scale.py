@@ -53,13 +53,6 @@ LIMIT = 20
 RUNS = 15
 NEEDS_STAFF_INDEXES = frozenset({"conversations_queue_due_idx", "conversations_queue_since_idx"})
 NEIGHBOUR_CONTACTS = 150_000
-# Evidence in task-9-report.md: no 0620 index holds the waiting_customer or snoozed rows in
-# activity order (the default order of those tabs). The planner either filter-scans
-# conversations_activity_idx or reads the tab's partial index (last_staff_reply_at or
-# snoozed_until order) and sorts its rows; which one changes with the statistics, so these two
-# checks are xfail and not strict until 0620 gains the index.
-WAITING_GAP = "0620 has no index serving Waiting on customer in activity order (plan unstable)"
-SNOOZED_GAP = "0620 has no index serving the Snoozed tab in activity order (Sort over its rows)"
 
 
 @dataclass(frozen=True)
@@ -308,7 +301,6 @@ class Tab:
     index: str
     expected: Callable[[World, Rows], list[UUID]]
     sorts: bool = False  # order=priority: a sort of the needs_staff rows only
-    gap: str | None = None  # a known missing index: the plan check is xfail
 
 
 def _rows(b: Rows, keep: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
@@ -355,16 +347,14 @@ TABS: tuple[Tab, ...] = (
     Tab(
         "waiting on customer",
         {"state": ["waiting_customer"]},
-        "conversations_activity_idx",
+        "conversations_queue_activity_idx",
         lambda w, b: _by_activity(_rows(b, lambda r: r["queue_status"] == "waiting_customer")),
-        gap=WAITING_GAP,
     ),
     Tab(
         "snoozed",
         {"state": ["snoozed"]},
-        "conversations_activity_idx",
+        "conversations_queue_activity_idx",
         lambda w, b: _by_activity(_rows(b, lambda r: r["queue_status"] == "snoozed")),
-        gap=SNOOZED_GAP,
     ),
     Tab(
         "resolved",
@@ -426,15 +416,11 @@ async def _explain(conn: Any, path: str, params: dict[str, Any]) -> dict[str, An
     return row["QUERY PLAN"][0]["Plan"]
 
 
-def _check(tab: Tab, plan: dict[str, Any], *, seek: bool, sort_gap: bool = False) -> None:
-    """`sort_gap`: the tab's known missing index (``Tab.gap``) is checked by the xfail test;
-    here only the rest of the plan is."""
+def _check(tab: Tab, plan: dict[str, Any], *, seek: bool) -> None:
     nodes = list(_nodes(plan))
     where = (tab.label, _summary(plan))
     used = {n.get("Index Name") for n in nodes}
     assert not [n for n in nodes if n["Node Type"] == "Seq Scan" and _on_conversations(n)], where
-    if sort_gap:
-        return
     if tab.sorts:
         assert used & NEEDS_STAFF_INDEXES, where
     else:
@@ -476,14 +462,7 @@ async def _page_and_plan(
     return [r["id"] for r in rows], next_cursor, await _explain(conn, path, params)
 
 
-@pytest.mark.parametrize(
-    "tab",
-    [
-        pytest.param(t, marks=pytest.mark.xfail(strict=False, reason=t.gap)) if t.gap else t
-        for t in TABS
-    ],
-    ids=[t.label for t in TABS],
-)
+@pytest.mark.parametrize("tab", TABS, ids=[t.label for t in TABS])
 async def test_each_tab_reads_its_index_without_a_sort_on_both_pages(
     world: World, brute: Rows, app_pool: AsyncConnectionPool, tab: Tab
 ) -> None:
@@ -583,7 +562,7 @@ async def test_prepared_statements_keep_custom_plans_after_many_runs(
                 matching = [s for s in statements if s["custom_plans"] > 0]
                 plan = await _explain_execute(conn, matching[-1], path, params)
                 print(f"\n[{tab.label}] prepared, after {RUNS} runs: {_summary(plan)}")
-                _check(tab, plan, seek=False, sort_gap=tab.gap is not None)
+                _check(tab, plan, seek=False)
             counts = await _prepared(conn, COUNTS_QUERY)
             assert counts and all(s["generic_plans"] == 0 for s in counts), counts
             # For the report only: what a generic plan of the same statements would read.

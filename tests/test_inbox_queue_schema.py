@@ -341,8 +341,13 @@ def _find(defs: dict[str, str], *needles: str) -> str:
 def test_queue_indexes_exist_with_their_predicates(migrated_dsn: str) -> None:
     defs = _index_definitions(migrated_dsn)
     on = "ON public.conversations"
-    activity = _find(defs, on, "(client_id, last_activity_at DESC, id DESC)")
+    activity = defs["conversations_activity_idx"]
+    assert on in activity and "(client_id, last_activity_at DESC, id DESC)" in activity
     assert "WHERE" not in activity
+    # The Waiting on customer and Snoozed tabs in their default (activity) order.
+    parked = defs["conversations_queue_activity_idx"]
+    assert on in parked and "(client_id, last_activity_at DESC, id DESC)" in parked
+    assert "WHERE (queue_status = ANY (ARRAY['waiting_customer'::text, 'snoozed'::text]))" in parked
     due = _find(defs, on, "(client_id, due_at, id)")
     assert "WHERE (queue_status = 'needs_staff'::text)" in due
     mine = _find(defs, on, "(client_id, assignee_user_id, due_at, id)")
