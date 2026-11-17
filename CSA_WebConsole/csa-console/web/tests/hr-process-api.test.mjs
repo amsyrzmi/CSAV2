@@ -15,7 +15,9 @@ const apiUrl = moduleUrl(await read("../lib/api.ts"));
 const hrApiUrl = moduleUrl((await read("../lib/hr-api.ts")).replace('"./api"', JSON.stringify(apiUrl)));
 const { processClient } = await import(moduleUrl((await read("../lib/hr-process-api.ts"))
   .replace('"./api"', JSON.stringify(apiUrl)).replace('"./hr-api"', JSON.stringify(hrApiUrl))));
-const { processErrorText, PROCESS_ERROR_FALLBACK } = await import(moduleUrl(await read("../lib/hr-process-copy.ts")));
+const { processErrorText, processSaveError, processLoadError, PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR } = await import(
+  moduleUrl((await read("../lib/hr-process-copy.ts")).replace('"./api"', JSON.stringify(apiUrl))));
+const { ApiError } = await import(apiUrl);
 
 const TENANT = "a b/1";
 const SUFFIX = "client_id=a%20b%2F1";
@@ -57,17 +59,23 @@ test("reads are GETs under /console/v1/hr with the tenant first and no key", asy
   }
 });
 
-test("ids are path-encoded", async () => {
+test("ids are UUIDs: anything else is rejected before any request", async () => {
   const requests = await capture(async (client) => {
-    await client.template("a/b?c");
-    await client.process("x y");
-    await client.personProcesses("../e");
+    for (const bad of ["..", "x/y", "a/b?c", "x y", "../e", "", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4", `${ID}/cancel`]) {
+      for (const call of [
+        () => client.template(bad), () => client.process(bad), () => client.personProcesses(bad),
+        () => client.updateTemplate(bad, { expected_version: 1, name: "n", rules: null, steps: [] }),
+        () => client.deactivateTemplate(bad, 1), () => client.cancelProcess(bad),
+        () => client.closeProcess(bad, "note"), () => client.taskAction(bad, "approve", { expected_version: 1 }),
+      ]) await assert.rejects(call(), /Not a \w+ id/, bad);
+    }
   });
-  assert.deepEqual(requests.map((request) => request.path), [
-    `${BASE}/templates/a%2Fb%3Fc?${SUFFIX}`,
-    `${BASE}/processes/x%20y?${SUFFIX}`,
-    `${BASE}/people/..%2Fe/processes?${SUFFIX}`,
-  ]);
+  assert.deepEqual(requests, []);
+});
+
+test("a UUID in capitals is accepted and sent as given", async () => {
+  const request = await one((client) => client.process(ID.toUpperCase()));
+  assert.equal(request.path, `${BASE}/processes/${ID.toUpperCase()}?${SUFFIX}`);
 });
 
 test("processes carries only the filters that are set, in a fixed order, then the cursor", async () => {
@@ -262,7 +270,7 @@ test("process_already_active keeps the backend sentence for the dialog to extend
 });
 
 test("the route-level codes the process routes add have sentences too", () => {
-  for (const code of ["read_only_session", "invalid_hr_input", "invalid_hr_query", "hr_request_too_large", "hr_database_unavailable"]) {
+  for (const code of ["read_only_session", "invalid_hr_input", "invalid_hr_query", "hr_request_too_large", "hr_database_unavailable", "hr_retry_required"]) {
     const text = processErrorText(code);
     assert.ok(text.length > 10, code);
     assert.notEqual(text, PROCESS_ERROR_FALLBACK, code);
@@ -270,9 +278,59 @@ test("the route-level codes the process routes add have sentences too", () => {
   }
 });
 
+test("codes the process table lacks fall back to the console-wide sentence before the generic one", () => {
+  for (const code of ["csrf_required", "package_inactive"]) {
+    const text = processErrorText(code);
+    assert.notEqual(text, PROCESS_ERROR_FALLBACK, code);
+    assert.doesNotMatch(text, SNAKE, code);
+  }
+  assert.match(processErrorText("csrf_required"), /session/);
+  assert.equal(processErrorText("hr_retry_required"), "Another change was in progress. Try again.");
+  // The process table wins over the console-wide one.
+  assert.equal(processErrorText("resource_unavailable"), "That item does not exist, or you cannot see it.");
+});
+
 test("an unknown code or one from Object.prototype gets the generic sentence, never the code", () => {
   for (const code of ["brand_new_code", "", "__proto__", "constructor", "toString", "Request failed (500)"]) {
     assert.equal(processErrorText(code), PROCESS_ERROR_FALLBACK, code);
   }
   assert.doesNotMatch(PROCESS_ERROR_FALLBACK, SNAKE);
+});
+
+// ---- Save and load errors ----
+
+const refused = (status, code) => new ApiError(status, code, code);
+
+test("a failed write: a 4xx gets the refusal sentence, a 5xx or network error the uncertain one", () => {
+  assert.equal(processSaveError(refused(409, "task_changed"), "complete"), processErrorText("task_changed"));
+  assert.equal(processSaveError(refused(404, "resource_unavailable"), "approve"), processErrorText("resource_unavailable"));
+  assert.equal(processSaveError(refused(409, "process_already_active"), "start"), processErrorText("process_already_active"));
+  assert.equal(processSaveError(refused(422, "brand_new_code"), "save"), PROCESS_ERROR_FALLBACK);
+  for (const failure of [refused(500, "Request failed (500)"), refused(502, "hr_database_unavailable"), refused(503, "x"),
+    new Error("synthetic lost acknowledgement"), new TypeError("Failed to fetch"), "oops", null, undefined, {}, { status: 409 }]) {
+    const text = processSaveError(failure, "start");
+    assert.equal(text, "We couldn't confirm that. Choose Start process again; it won't be done twice.", String(failure));
+  }
+  assert.match(processSaveError(null, "close"), /Choose Close anyway again/);
+  assert.match(processSaveError(null, "save"), /Choose Save again/);
+  assert.match(processSaveError(null, "send-back"), /Choose Send back again/);
+});
+
+test("a failed read: a known refusal says so, anything else is a plain retry", () => {
+  assert.equal(processLoadError(refused(404, "resource_unavailable")), "That item does not exist, or you cannot see it.");
+  assert.equal(processLoadError(refused(403, "read_only_session")), processErrorText("read_only_session"));
+  assert.equal(processLoadError(refused(400, "brand_new_code")), PROCESS_LOAD_ERROR);
+  for (const failure of [refused(500, "Request failed (500)"), new Error("offline"), null, undefined])
+    assert.equal(processLoadError(failure), PROCESS_LOAD_ERROR);
+  assert.equal(PROCESS_LOAD_ERROR, "We couldn't load this. Try again.");
+});
+
+test("no fallback, uncertain or load sentence tells the person to reload", () => {
+  const actions = ["start", "cancel", "close", "save", "deactivate", "complete", "approve", "send-back", "skip", "reschedule", "reassign", "note"];
+  const sentences = [PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR, processLoadError(null),
+    ...actions.map((action) => processSaveError(null, action)), ...actions.map((action) => processSaveError(refused(500, "x"), action))];
+  for (const sentence of sentences) {
+    assert.doesNotMatch(sentence, /reload|refresh/i, sentence);
+    assert.doesNotMatch(sentence, SNAKE, sentence);
+  }
 });

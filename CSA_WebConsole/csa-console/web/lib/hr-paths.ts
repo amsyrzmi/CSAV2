@@ -8,6 +8,7 @@ export type HrRoute =
   | { tab: "people"; view: "profile"; employeeId: string }
   | { tab: "processes"; view: "list" }
   | { tab: "processes"; view: "templates" }
+  | { tab: "processes"; view: "new-template" }
   | { tab: "processes"; view: "detail"; processId: string }
   | { tab: "processes"; view: "template"; templateId: string }
   | { tab: Exclude<HrTab, "people" | "processes"> };
@@ -37,6 +38,7 @@ function parseProcessesPath(path: string[]): HrRoute | null {
   if (path.length === 1) return { tab: "processes", view: "list" };
   if (path[1] === "templates") {
     if (path.length === 2) return { tab: "processes", view: "templates" };
+    if (path.length === 3 && path[2] === "new") return { tab: "processes", view: "new-template" };
     const templateId = path[2].toLowerCase();
     return path.length === 3 && UUID.test(templateId) ? { tab: "processes", view: "template", templateId } : null;
   }
@@ -63,6 +65,7 @@ function segments(route: HrRoute): string[] {
   if (route.tab === "processes") {
     if (route.view === "list") return ["processes"];
     if (route.view === "templates") return ["processes", "templates"];
+    if (route.view === "new-template") return ["processes", "templates", "new"];
     return route.view === "detail" ? ["processes", route.processId] : ["processes", "templates", route.templateId];
   }
   if (route.tab !== "people") return [route.tab];

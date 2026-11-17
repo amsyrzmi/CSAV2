@@ -5,6 +5,18 @@ import type { Anchor, OwnerRole, ProcessStatus, TaskStatus } from "./hr-process-
 
 const DAY = 86_400_000;
 
+const KUALA_LUMPUR_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kuala_Lumpur", year: "numeric", month: "2-digit", day: "2-digit",
+});
+/**
+ * Today's date as `YYYY-MM-DD` in Kuala Lumpur, the source of `today` for `dueText`: the server decides
+ * `overdue` ("due before today") on that calendar, whatever zone the browser is in.
+ */
+export function processToday(now: Date = new Date()): string {
+  const part = (type: string) => KUALA_LUMPUR_DAY.formatToParts(now).find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 function plural(count: number, one: string): string {
   return `${count} ${one}${count === 1 ? "" : "s"}`;
 }
@@ -15,11 +27,11 @@ function daysBetween(from: string, to: string): number {
 
 /**
  * When a step is due, from `today` (`YYYY-MM-DD`, the viewer's calendar day). A step that is done or
- * skipped is never "overdue": it says when it was due.
+ * skipped is never "overdue": it just says the date. Take `today` from `processToday()`.
  */
 export function dueText(task: { due_on: string | null; status: TaskStatus }, today: string): string {
   if (task.due_on === null) return "No date yet";
-  if (task.status === "done" || task.status === "skipped") return `Was due on ${dateText(task.due_on)}`;
+  if (task.status === "done" || task.status === "skipped") return `Due on ${dateText(task.due_on)}`;
   const days = daysBetween(today, task.due_on);
   if (days === 0) return "Due today";
   if (days === 1) return "Due tomorrow";

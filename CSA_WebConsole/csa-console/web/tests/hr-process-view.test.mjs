@@ -11,7 +11,7 @@ function moduleUrl(source) {
 }
 const read = (name) => readFile(new URL(name, import.meta.url), "utf8");
 const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
-const { dueText, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders } = await import(
+const { dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders } = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
 const TODAY = "2026-11-17";
@@ -38,9 +38,25 @@ test("dueText says there is no date for a null due date", () => {
 });
 
 test("dueText never calls a finished step overdue", () => {
-  assert.equal(dueText(open("2026-11-10", "done"), TODAY), "Was due on 10 Nov 2026");
-  assert.equal(dueText(open("2026-11-25", "skipped"), TODAY), "Was due on 25 Nov 2026");
+  assert.equal(dueText(open("2026-11-10", "done"), TODAY), "Due on 10 Nov 2026");
+  assert.equal(dueText(open("2026-11-25", "skipped"), TODAY), "Due on 25 Nov 2026");
   assert.equal(dueText(open("2026-11-10", "awaiting_approval"), TODAY), "Overdue by 7 days");
+});
+
+test("processToday is the Kuala Lumpur calendar day, not the UTC one", () => {
+  // KL is UTC+8: midnight there is 16:00 UTC the day before.
+  assert.equal(processToday(new Date("2026-11-16T15:59:59Z")), "2026-11-16");
+  assert.equal(processToday(new Date("2026-11-16T16:00:00Z")), "2026-11-17");
+  assert.equal(processToday(new Date("2026-11-16T23:30:00Z")), "2026-11-17");
+  assert.equal(processToday(new Date("2026-12-31T16:00:00Z")), "2027-01-01");
+  assert.equal(processToday(new Date("2028-02-28T16:00:00Z")), "2028-02-29");
+  assert.match(processToday(), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("a step due on the KL day is due today for a viewer whose UTC day is still yesterday", () => {
+  const now = new Date("2026-11-16T23:30:00Z");
+  assert.equal(dueText({ due_on: "2026-11-17", status: "todo" }, processToday(now)), "Due today");
+  assert.equal(dueText({ due_on: "2026-11-16", status: "todo" }, processToday(now)), "Overdue by 1 day");
 });
 
 test("statusLabel names every task and process status and never a raw code", () => {

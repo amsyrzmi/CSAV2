@@ -1,3 +1,5 @@
+import { explainedMessage } from "./api";
+
 /**
  * Plain sentences for the refusal codes of the HR process routes (templates, processes, tasks).
  * The first block is `PROBLEMS` of csa/hr/processes.py, word for word (tests/hr-process-api.test.mjs
@@ -55,12 +57,66 @@ const SENTENCES: Record<string, string> = {
   invalid_hr_query: "That filter is not available. Clear the filters and try again.",
   hr_request_too_large: "That is too much text to save in one go. Shorten it and try again.",
   hr_database_unavailable: "We could not reach the HR records. Wait a minute and try again.",
+  // Nothing was written: two changes met, and one was turned back.
+  hr_retry_required: "Another change was in progress. Try again.",
 };
 
-/** When a save may or may not have landed, or the server sent a code with no sentence here. */
-export const PROCESS_ERROR_FALLBACK = "We could not save that. Reload the page and try again.";
+/** A refusal with no sentence of its own: the server answered, so nothing was saved. */
+export const PROCESS_ERROR_FALLBACK = "We could not save that. Check the details and try again.";
+/** A read that failed for any other reason. */
+export const PROCESS_LOAD_ERROR = "We couldn't load this. Try again.";
 
-/** The sentence for a refusal `code` (`ApiError.code`). An unknown code gets the generic sentence, never the code. */
+/**
+ * The sentence for a refusal `code` (`ApiError.code`): this table, then the console-wide sentences
+ * (`csrf_required`, `package_inactive`, ...), then the generic one. Never the code itself.
+ */
 export function processErrorText(code: string): string {
-  return Object.hasOwn(SENTENCES, code) ? SENTENCES[code] : PROCESS_ERROR_FALLBACK;
+  if (Object.hasOwn(SENTENCES, code)) return SENTENCES[code];
+  return explainedMessage(code) ?? PROCESS_ERROR_FALLBACK;
+}
+
+/** What the writes name in "Choose <button> again". */
+export type ProcessAction =
+  | "start" | "cancel" | "close" | "save" | "deactivate"
+  | "complete" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note";
+const BUTTON: Record<ProcessAction, string> = {
+  start: "Start process",
+  cancel: "Cancel process",
+  close: "Close anyway",
+  save: "Save",
+  deactivate: "Deactivate",
+  complete: "Mark done",
+  approve: "Approve",
+  "send-back": "Send back",
+  skip: "Skip",
+  reschedule: "Reschedule",
+  reassign: "Reassign",
+  note: "Save note",
+};
+
+/** An `ApiError`, or anything: a definite answer is a 4xx with a code. */
+function refusal(failure: unknown): { status: number; code: string } | null {
+  if (typeof failure !== "object" || failure === null) return null;
+  const { status, code } = failure as { status?: unknown; code?: unknown };
+  return typeof status === "number" && status >= 400 && status < 500 && typeof code === "string" ? { status, code } : null;
+}
+
+/**
+ * The sentence for a failed write. A 4xx is a definite answer, so its code picks the sentence. A
+ * network error or a 5xx may have landed: the sentence says choosing the same button again is safe
+ * (the client keeps the Idempotency-Key for the same change), and never says to reload, which would
+ * drop the key and let a second process or note through.
+ */
+export function processSaveError(failure: unknown, action: ProcessAction): string {
+  const definite = refusal(failure);
+  if (definite) return processErrorText(definite.code);
+  return `We couldn't confirm that. Choose ${BUTTON[action]} again; it won't be done twice.`;
+}
+
+/** The sentence for a failed read: a 4xx with a sentence of its own says that, anything else is a plain retry. */
+export function processLoadError(failure: unknown): string {
+  const definite = refusal(failure);
+  if (definite && (Object.hasOwn(SENTENCES, definite.code) || explainedMessage(definite.code) !== undefined))
+    return processErrorText(definite.code);
+  return PROCESS_LOAD_ERROR;
 }

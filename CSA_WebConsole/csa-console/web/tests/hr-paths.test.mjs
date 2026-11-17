@@ -47,6 +47,7 @@ test("parseHrPath accepts the tabs, people views and profile ids only", () => {
 test("parseHrPath accepts the processes routes and rejects malformed ones", () => {
   assert.deepEqual(parseHrPath(["processes"]), { tab: "processes", view: "list" });
   assert.deepEqual(parseHrPath(["processes", "templates"]), { tab: "processes", view: "templates" });
+  assert.deepEqual(parseHrPath(["processes", "templates", "new"]), { tab: "processes", view: "new-template" });
   assert.deepEqual(parseHrPath(["processes", UUID]), { tab: "processes", view: "detail", processId: UUID });
   assert.deepEqual(parseHrPath(["processes", UUID.toUpperCase()]), { tab: "processes", view: "detail", processId: UUID });
   assert.deepEqual(parseHrPath(["processes", "templates", UUID]), { tab: "processes", view: "template", templateId: UUID });
@@ -55,7 +56,8 @@ test("parseHrPath accepts the processes routes and rejects malformed ones", () =
     ["processes", "templates", "nope"], ["processes", "templates", UUID, "x"], ["processes", "templates", "templates"],
     ["processes", "templates", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4"], ["processes", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4dd"],
     ["processes", "__proto__"], ["processes", "constructor"], ["processes", ""], ["processes", "templates", ""],
-    ["processes", UUID, UUID], ["Processes"], ["process"]])
+    ["processes", UUID, UUID], ["Processes"], ["process"], ["processes", "new"], ["processes", "templates", "new", "x"],
+    ["processes", "templates", "NEW"], ["processes", "templates", "new", UUID], ["processes", "new", "templates"]])
     assert.equal(parseHrPath(bad), null, JSON.stringify(bad));
 });
 
@@ -70,6 +72,8 @@ test("hrHref keeps the platform tenant and encodes it", () => {
   assert.equal(hrHref({ tab: "processes", view: "list" }, false, null), "/portal/hr/processes");
   assert.equal(hrHref({ tab: "processes", view: "templates" }, true, "t"), "/hr/processes/templates?client_id=t");
   assert.equal(hrHref({ tab: "processes", view: "detail", processId: UUID }, false, "t"), `/portal/hr/processes/${UUID}`);
+  assert.equal(hrHref({ tab: "processes", view: "new-template" }, false, null), "/portal/hr/processes/templates/new");
+  assert.equal(hrHref({ tab: "processes", view: "new-template" }, true, "t"), "/hr/processes/templates/new?client_id=t");
   assert.equal(hrHref({ tab: "processes", view: "template", templateId: UUID }, true, "t"),
     `/hr/processes/templates/${UUID}?client_id=t`);
 });
@@ -84,6 +88,7 @@ test("every route hrHref builds parses back to the same route", () => {
     { tab: "processes", view: "list" }, { tab: "processes", view: "templates" },
     { tab: "processes", view: "detail", processId: UUID },
     { tab: "processes", view: "template", templateId: UUID },
+    { tab: "processes", view: "new-template" },
   ];
   for (const route of routes) {
     const href = hrHref(route, false, null);
@@ -113,10 +118,11 @@ test("a platform admin keeps the tenant when a legacy link is redirected", () =>
 test("isHrPagePath accepts exactly what parseHrPath accepts under /hr and /portal/hr", () => {
   for (const good of ["/hr", "/portal/hr", "/hr/people", "/portal/hr/people/org-chart", `/portal/hr/people/${UUID}`,
     `/hr/people/${UUID.toUpperCase()}`, "/hr/settings", "/portal/hr/leave", "/hr/processes", "/portal/hr/processes/templates",
-    `/portal/hr/processes/${UUID}`, `/hr/processes/templates/${UUID}`])
+    `/portal/hr/processes/${UUID}`, `/hr/processes/templates/${UUID}`, "/hr/processes/templates/new",
+    "/portal/hr/processes/templates/new"])
     assert.equal(isHrPagePath(good), true, good);
   for (const bad of ["/portal/hrx", "/hrx", "/hr/onboarding", "/portal/hr/people/nope", `/hr/people/${UUID}/x`,
-    "/hr/", "/portal/hr//people", "/hr/processes/nope", `/hr/processes/templates/${UUID}/x`, "/portal/hr/processes/templates/", "/portal", "/", "/hr/__proto__", "/portal/hr/leave/x", "/admin/hr", "hr/people"])
+    "/hr/", "/portal/hr//people", "/hr/processes/nope", `/hr/processes/templates/${UUID}/x`, "/hr/processes/templates/new/x", "/hr/processes/new", "/portal/hr/processes/templates/", "/portal", "/", "/hr/__proto__", "/portal/hr/leave/x", "/admin/hr", "hr/people"])
     assert.equal(isHrPagePath(bad), false, bad);
 });
 

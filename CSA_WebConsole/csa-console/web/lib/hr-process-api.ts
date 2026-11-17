@@ -330,8 +330,17 @@ const TASK_ACTIONS: ReadonlySet<string> = new Set<TaskAction>([
 function path(tenant: string, rest: string, params: Record<string, string | number | undefined> = {}): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== "") query.set(key, String(value));
-  const extra = query.size ? `&${query}` : "";
+  const text = query.toString();
+  const extra = text ? `&${text}` : "";
   return `/console/v1/hr${rest}?client_id=${encodeURIComponent(tenant)}${extra}`;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A template, process, task or person id, checked before it reaches a URL (`..` and `x/y` are never ids). */
+function uuid(value: string, what: string): string {
+  if (!UUID.test(value)) throw new Error(`Not a ${what} id`);
+  return encodeURIComponent(value);
 }
 
 /**
@@ -341,15 +350,14 @@ function path(tenant: string, rest: string, params: Record<string, string | numb
  */
 export function processClient(tenant: string) {
   const { write } = hrWriter(tenant);
-  const id = encodeURIComponent;
   return {
     templates: () => api<TemplateList>(path(tenant, "/templates")),
-    template: (templateId: string) => api<TemplateOut>(path(tenant, `/templates/${id(templateId)}`)),
+    template: async (templateId: string) => api<TemplateOut>(path(tenant, `/templates/${uuid(templateId, "template")}`)),
     createTemplate: (body: TemplateCreate) => write<TemplateReceipt>("/templates", body),
-    updateTemplate: (templateId: string, body: TemplateUpdate) =>
-      write<TemplateReceipt>(`/templates/${id(templateId)}`, body, "PUT"),
-    deactivateTemplate: (templateId: string, expected_version: number) =>
-      write<TemplateReceipt>(`/templates/${id(templateId)}/deactivate`, { expected_version }),
+    updateTemplate: async (templateId: string, body: TemplateUpdate) =>
+      write<TemplateReceipt>(`/templates/${uuid(templateId, "template")}`, body, "PUT"),
+    deactivateTemplate: async (templateId: string, expected_version: number) =>
+      write<TemplateReceipt>(`/templates/${uuid(templateId, "template")}/deactivate`, { expected_version }),
     previewTemplate: (kind: ProcessKind, rules: TemplateRules | null) =>
       api<TemplatePreview>(path(tenant, "/templates/preview"), { method: "POST", body: JSON.stringify({ kind, rules }) }),
     processes: (filters: ProcessFilters, after?: string) => {
@@ -358,16 +366,18 @@ export function processClient(tenant: string) {
         kind, status, overdue: overdue ? "true" : undefined, department, owner, limit, after,
       }));
     },
-    process: (processId: string) => api<ProcessDetail>(path(tenant, `/processes/${id(processId)}`)),
+    process: async (processId: string) => api<ProcessDetail>(path(tenant, `/processes/${uuid(processId, "process")}`)),
     startProcess: (body: ProcessStart) => write<ProcessStartReceipt>("/processes", body),
-    cancelProcess: (processId: string) => write<ProcessCancelReceipt>(`/processes/${id(processId)}/cancel`, undefined),
-    closeProcess: (processId: string, note: string) =>
-      write<ProcessCloseReceipt>(`/processes/${id(processId)}/close`, { note }),
-    personProcesses: (employeeId: string) => api<PersonProcesses>(path(tenant, `/people/${id(employeeId)}/processes`)),
+    cancelProcess: async (processId: string) =>
+      write<ProcessCancelReceipt>(`/processes/${uuid(processId, "process")}/cancel`, undefined),
+    closeProcess: async (processId: string, note: string) =>
+      write<ProcessCloseReceipt>(`/processes/${uuid(processId, "process")}/close`, { note }),
+    personProcesses: async (employeeId: string) =>
+      api<PersonProcesses>(path(tenant, `/people/${uuid(employeeId, "person")}/processes`)),
     myTasks: (status?: TaskStatus, after?: string) => api<MyTaskPage>(path(tenant, "/tasks/mine", { status, after })),
     taskAction: async <A extends TaskAction>(taskId: string, action: A, body: TaskBodies[A]) => {
       if (!TASK_ACTIONS.has(action)) throw new Error(`Unknown task action: ${action}`);
-      return write<TaskReceipt>(`/tasks/${id(taskId)}/${action}`, body);
+      return write<TaskReceipt>(`/tasks/${uuid(taskId, "task")}/${action}`, body);
     },
   };
 }
