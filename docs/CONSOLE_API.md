@@ -360,7 +360,7 @@ areas and HR owner row for the tenant are deleted, its membership is disabled an
 revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
 Each step happens once, whoever runs it.
 
-### Process templates, processes and tasks (HR processes PRs 1-2, migrations 0630-0635)
+### Process templates, processes and tasks (HR processes PRs 1-3, migrations 0630-0636)
 
 A company keeps templates of ordered steps for onboarding, offboarding and custom processes.
 Adding or rehiring a person starts an onboarding from the matching template, marking them as
@@ -391,6 +391,16 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
   A stale version is 409 `template_changed`.
 - `POST /templates/{template_id}/deactivate` `{expected_version}` returns `TemplateReceipt`
   (`version` + 1).
+- `POST /templates/preview` `TemplatePreviewRequest` `{kind, rules?}` (migration 0636) returns
+  `TemplatePreview` `{matching, ties, total_active}` for the template editor's draft: `matching` is
+  the number of active people the rules apply to now (each set rule must hold, compared as a
+  template's rules are matched to a person below), `ties` lists `{template_id, name}` of the active
+  templates of the kind one person could match as well (the same rule as `conflicts`; never for
+  `custom`; oldest first; when editing a saved template, it lists that template too while its
+  stored rules tie: drop its own id), `total_active` the number of active people. It writes
+  nothing: CSRF is required (403 without) but no `Idempotency-Key`; a read-only session is 403
+  `read_only_session` as for any POST. `rules` are validated as for a save (`department_unavailable`
+  for a department of another company; the other rule errors are 422 first).
 
 `kind` is `onboarding`, `offboarding` or `custom`; `name` 1-120 characters. `rules` is
 `{department_id, employment_type, legal_entity_reference, region}`, each `null` for "anyone":
@@ -461,11 +471,17 @@ they were started with.
     change. Later releases add actions and keys (the task actions of PR 2): `action` is typed as a
     string of at most 80 characters and unknown `detail` keys pass through, so a client should show
     an unknown action generically.
-- `POST /processes` `ProcessStart` `{employee_id, kind, template_id?}` (HR team) starts a custom
-  process (`template_id` required) or an onboarding or offboarding of an existing person
-  (`template_id` optional: the matching template; a still-active process of the same kind is
-  cancelled first). It answers 201 `ProcessStartReceipt` `{operation: "process.start", process_id,
-  employee_id, kind, template_id, status: "saved", duplicate}`.
+- `POST /processes` `ProcessStart` `{employee_id, kind, template_id?, replace?}` (HR team) starts a
+  custom process (`template_id` required) or an onboarding or offboarding of an existing person
+  (`template_id` optional: the matching template). When the person already has an active
+  onboarding or offboarding of that kind, the start is 409 `process_already_active` (nothing
+  written; the console asks whether to replace it) unless `replace` is `true` (a boolean, default
+  `false`; migration 0636): the old process is then cancelled first (event `process.cancelled`
+  `{reason: "superseded"}`, its open steps skipped). The other refusals (template, no matching
+  template) come before it. Custom processes may run side by side and never need `replace`. The
+  starts from person changes (add, rehire, leave) never ask. It answers 201 `ProcessStartReceipt`
+  `{operation: "process.start", process_id, employee_id, kind, template_id, status: "saved",
+  duplicate}`.
 - `POST /processes/{process_id}/cancel` (no body; HR team) cancels an active process: its open
   tasks are skipped. It returns `ProcessCancelReceipt` `{operation: "process.cancel", process_id,
   status: "saved", duplicate}`.

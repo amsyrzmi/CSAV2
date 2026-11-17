@@ -15214,7 +15214,7 @@
       },
       "ProcessStart": {
         "additionalProperties": false,
-        "description": "Start a process by hand: a custom one (`template_id` required) or an onboarding or\noffboarding of an existing person (`template_id` optional: the matching template).",
+        "description": "Start a process by hand: a custom one (`template_id` required) or an onboarding or\noffboarding of an existing person (`template_id` optional: the matching template). An active\nonboarding or offboarding of the person is replaced (cancelled) only with `replace` true,\nelse the start is refused (`process_already_active`, 0636).",
         "properties": {
           "employee_id": {
             "format": "uuid",
@@ -15229,6 +15229,11 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "title": "Replace",
+            "type": "boolean"
           },
           "template_id": {
             "anyOf": [
@@ -18840,6 +18845,84 @@
           "warnings"
         ],
         "title": "TemplateOut",
+        "type": "object"
+      },
+      "TemplatePreview": {
+        "additionalProperties": false,
+        "description": "`matching`: the active people the rules apply to now (as a template's rules match a person);\n`ties`: the other active templates of the kind one person could match as well (the conflicts a\nsave reports; none for custom), oldest first; `total_active`: the active people.",
+        "properties": {
+          "matching": {
+            "title": "Matching",
+            "type": "integer"
+          },
+          "ties": {
+            "items": {
+              "$ref": "#/components/schemas/TemplatePreviewTie"
+            },
+            "title": "Ties",
+            "type": "array"
+          },
+          "total_active": {
+            "title": "Total Active",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "matching",
+          "ties",
+          "total_active"
+        ],
+        "title": "TemplatePreview",
+        "type": "object"
+      },
+      "TemplatePreviewRequest": {
+        "additionalProperties": false,
+        "description": "A draft rule set of the template editor (0636 `hr_template_preview`); nothing is written.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding",
+              "custom"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateRules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TemplatePreviewRequest",
+        "type": "object"
+      },
+      "TemplatePreviewTie": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "template_id": {
+            "format": "uuid",
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id",
+          "name"
+        ],
+        "title": "TemplatePreviewTie",
         "type": "object"
       },
       "TemplateReceipt": {
@@ -34067,6 +34150,66 @@
           }
         },
         "summary": "Create Template",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/templates/preview": {
+      "post": {
+        "operationId": "preview_template_console_v1_hr_templates_preview_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplatePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplatePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Template",
         "tags": [
           "HR"
         ]

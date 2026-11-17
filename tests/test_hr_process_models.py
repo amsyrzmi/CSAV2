@@ -22,6 +22,8 @@ from csa.hr.process_models import (
     ProcessEventDetail,
     ProcessTask,
     TaskReceipt,
+    TemplatePreview,
+    TemplatePreviewTie,
     TemplateStep,
     TemplateStepOut,
     TemplateWarningCode,
@@ -300,6 +302,16 @@ def test_my_tasks_and_the_task_receipts_are_what_the_latest_migration_returns() 
     results = [keys(a) for a in build_objects(apply) if "'status'" in a[::2]]
     assert set(TaskReceipt.model_fields) in results
     assert set(ProcessCloseReceipt.model_fields) in results
+
+
+def test_the_template_preview_is_what_the_latest_migration_returns() -> None:
+    """TemplatePreview forbids unknown keys: a migration that changes hr_template_preview's result
+    fails here, not as a 500 on the template editor's preview."""
+    *_, body = process_migrations().split("CREATE OR REPLACE FUNCTION public.hr_template_preview(")
+    body = body.split("END $$;")[0]
+    found = [keys(a) for a in build_objects(body)]
+    assert set(TemplatePreview.model_fields) in found
+    assert set(TemplatePreviewTie.model_fields) in found
 
 
 def _my_task(**over: object) -> dict[str, object]:

@@ -122,6 +122,12 @@ Reserved ranges (client growth program, 2026-10-27):
   that cap), the internal uncapped `hr_tasks_due_all` both are built on, and `hr_task_reminder_put`
   (the system's idempotent writer, called only by `csa.hr.reminders.emit`); `hr_task_rows_mine`
   (same columns) also lists, for the HR team, the steps of a person whose reminders go to the HR pool.
+  0636 adds the template editor's read `hr_template_preview` (how many active people a draft rule set
+  applies to, the active templates it ties with; HR team only) on the internal
+  `hr_template_rules_parse` (0631's rule validation, which `hr_template_write_rules` now calls) and
+  `hr_template_ties` (0631's tie rule, which `hr_template_conflicts` now calls), and changes
+  `hr_process_start_apply`: a manual start meeting an active process of the kind is refused
+  (`hr_process_already_active`) unless the body says `replace: true`.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
