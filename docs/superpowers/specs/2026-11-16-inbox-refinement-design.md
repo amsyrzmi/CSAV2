@@ -1,8 +1,8 @@
 # Customer Inbox refinement: design
 
-Date: 2026-11-16. Owner: Amsyar. Status: draft for owner approval (nothing is built).
+Date: 2026-11-16. Owner: Amsyar. Status: approved 2026-11-16. Plan 1a (the queue backend) is built; plan 1b (the queue screen, section 14) and PRs 2 and 3 are not.
 Branch: `feat/inbox-refinement` (worktree `.claude/worktrees/feat-inbox-refinement`).
-Migrations: 0620 to 0629 only (plan: 0620 to 0622 in PR 1, 0623 to 0625 in PR 2 and 3).
+Migrations: 0620 to 0629 only (PR 1: 0620 to 0622, built in plan 1a; 0623 to 0625 in PR 2 and 3).
 
 ## 1. Intent
 
@@ -132,7 +132,7 @@ customer writes
    an unclaimed item automatically. Tenant admins can assign to any enabled member.
 4. **Act.** Reply (after takeover, as today), decide a held reply, change priority or topic, add a
    reason.
-5. **Resolve, snooze, reopen.** Resolve ends the item and hands the conversation back to the bot
+5. **Resolve, snooze, reopen.** Resolve ends the item as `resolved` and hands the conversation back to the bot
    (a single action, so a taken-over conversation is never left silent). It closes the open escalation
    record and its ticket so a later escalation starts a new one. Resolve is refused while a held reply
    is still pending (decide it first), and when the customer has written since the person loaded the
@@ -140,8 +140,8 @@ customer writes
    notified. A customer message on a snoozed, waiting or resolved item puts it back in NEEDS US when a
    person still owns the conversation or a held reply is pending; otherwise the state returns to `bot`.
 6. **Words.** "Release claim" gives up the assignment only. "Hand back" (the existing `/release` route
-   and the staff-chat "Resume AI" button) returns the conversation to the bot, and counts as resolving
-   the item. The automatic end of an escalation's one-day mute is not a hand-back by a person: the bot
+   and the staff-chat "Resume AI" button) returns the conversation to the bot and ends the item as `bot`
+   (resolve ends it as `resolved`, which the Resolved tab lists; both close the escalation). The automatic end of an escalation's one-day mute is not a hand-back by a person: the bot
    answers again, but the item stays in NEEDS US until a person replies, resolves or snoozes it, so an
    escalation nobody handled never disappears.
 7. **Takeover.** Taking over a bot conversation puts the item in NEEDS US with reason `manual`,
@@ -171,7 +171,7 @@ The assignee picker needs the member list. The existing team route is admin-only
 |---|---|
 | `queue_status` | `bot` (default), `needs_staff`, `waiting_customer`, `snoozed`, `resolved` |
 | `queue_reason` | why it needs us: `escalation`, `held_reply`, `customer_message`, `manual` (a person took the conversation over) |
-| `topic` | `purchase`, `question`, `complaint`, `payment`, `booking`, `subscription`, `other`; set by a fixed mapping from the escalation's reason or the conversation's last intent where one matches, else `other`; staff can change it with one tap |
+| `topic` | `purchase`, `question`, `complaint`, `payment`, `booking`, `subscription`, `other`; NULL until a person sets it with one tap (plan 1a sets none automatically: the mapping from the escalation's reason or the conversation's last intent is left to a later change, see section 15) |
 | `priority` | `low`, `normal`, `high`, `urgent`; from the escalation, else `normal`; staff can raise or lower |
 | `assignee_user_id`, `claimed_at` | console user holding the item (nullable) |
 | `needs_staff_since` | when the item last entered NEEDS US; the "waiting on us" clock |
@@ -197,32 +197,38 @@ that knows who acted makes every other transition.
   with 409). Cost: one more `UPDATE` of the conversation per message; the worker already updates
   `turn_count` there. Conversations of other channels (the sandbox `web` channel) and console chat
   conversations stay `bot` forever; the trigger checks the channel and the console chat tables.
-- **Explicit transitions in a new `csa/inbox_queue` module**, called by the code that knows the
-  actor and the cause. Each writes an `inbox_queue_events` row; staff actions also bump
+- **Transitions in a new `csa/inbox_queue` module**, called by the code that knows the
+  actor and the cause (migration 0622 holds `inbox_queue_enter`, the one way into `needs_staff`, which
+  the module and the triggers share). Each writes an `inbox_queue_events` row; staff actions also bump
   `inbox_version`:
 
 | Cause | Called from | Result |
 |---|---|---|
-| bot escalation | escalation agent | `needs_staff`, reason `escalation`, priority from the escalation |
+| bot escalation | trigger on `escalations` (`AFTER INSERT`; replaces an explicit call, so the escalation agent, the turn fail-safe and approval expiry are all covered) | `needs_staff`, reason `escalation`, priority from the escalation |
 | held reply created | approval creation | `needs_staff`, reason `held_reply` |
 | takeover of a bot conversation | `/takeover` route | `needs_staff`, reason `manual`, claimed by the actor |
 | person's reply | `/reply` route | `waiting_customer`; claims for the author if unclaimed; sets `last_staff_reply_at` |
 | held reply approved or edited | approval settle | `waiting_customer`; sets `last_staff_reply_at`; claims for the decider when the decider is a console user |
 | held reply rejected or expired | approval settle | stays `needs_staff`, reason `customer_message` (the customer got no answer) |
-| hand back | `/release` route, staff-chat "Resume AI" | `bot`, claim cleared, escalation closed |
-| resolve | queue routes, bulk | as hand back; refused while a held reply is pending or the customer wrote since the person loaded the item |
+| hand back | `/release` route, staff-chat "Resume AI" | `bot`, claim cleared, escalation and its ticket closed |
+| resolve | queue routes, bulk | as hand back but ends in `resolved` (with `resolved_at`); refused while a held reply is pending or the customer wrote since the person loaded the item |
 | snooze | queue routes, bulk | `snoozed` with `snoozed_until` |
-| snooze ends | `inbox_snooze_wake` job (every minute, in PR 1) | `needs_staff` with a fresh clock |
+| snooze ends | `inbox_snooze_wake` job (every minute, in PR 1) | `needs_staff` with a fresh clock; reason `customer_message` if the customer wrote after the last staff reply, else `manual`; the claim stays |
 | claim, unclaim, assign, priority, topic | queue routes, bulk | field change plus an event |
 
 Messages that are not a person's answer never change the state: automated payment reminders and
 notices, booking messages, staff-chat order decisions and the bot's own replies. The mute expiry job
-changes `owned_by` and `status` as today and does not touch the queue state.
+changes `owned_by` and `status` as today and does not touch the queue state. Because it runs every five
+minutes, a customer message that arrives after a mute ended but before the job ran still counts as
+written to a conversation a person owns, so it can return an item to `needs_staff` although the bot will
+answer; staff can resolve it (accepted).
 
 Inbound transition (the trigger): when the item is `waiting_customer`, `snoozed` or `resolved`, it
 becomes `needs_staff` with reason `customer_message` and a fresh clock if a person owns the
-conversation or a live held reply is pending, and `bot` otherwise. An item already `needs_staff` keeps
-its reason and clock.
+conversation or a live held reply is pending, and `bot` otherwise. When it returns to `bot` the trigger
+clears the claim, clock and due time and records a `handed_back` event with a NULL actor and
+`{"cause": "customer_message"}` (readers treat a NULL actor as a system event, not a person's hand
+back). An item already `needs_staff` keeps its reason and clock.
 
 The decision of a held reply made outside the Inbox (Telegram staff-chat buttons, the staff assistant's
 cards) goes through the same approval settle code, so it applies the same rows above.
@@ -234,7 +240,7 @@ open escalation, pending approval or newest customer message); human-owned conve
 message is from staff become `waiting_customer`; everything else, including older unhandled
 escalations, is `bot`. No reminders are scheduled by the backfill itself (see 7.3).
 
-### 5.3 Settings per company (`inbox_settings`, 0622; ships in PR 1 because `due_at` needs it)
+### 5.3 Settings per company (`inbox_settings`, 0621; ships in PR 1 because `due_at` needs it)
 
 Same shape as `booking_settings` (client id primary key, `version`, check ranges, `GET` for any
 member, `PUT` for admins, audited in `console_audit`, 409 on a stale version).
@@ -262,7 +268,9 @@ count.
 
 Saved views: a person can save the current filter set under a name (up to 20 each, table
 `inbox_saved_views`, 0621; the filter is stored as JSON validated by the same model as the query
-parameters, private to the person).
+parameters, private to the person). As built: `GET`/`POST /inbox/views` and `PUT`/`DELETE
+/inbox/views/{id}`; a name is 1 to 60 characters and unique per person ignoring case; the filters are
+the list's filters and `order`, never the search text, a cursor or a limit.
 
 ### 6.2 Filter semantics (all combine with AND)
 
@@ -282,10 +290,16 @@ parameters, private to the person).
 
 ### 6.3 Sort and cursor
 
-`order = activity` (newest first; default on All and Resolved), `waiting` (oldest waiting first),
-`due` (soonest due first; default on Needs us, Mine, Unassigned, Overdue), `priority` (highest first,
-then due). The cursor becomes an opaque keyset token (sort value plus id); a bare conversation id from
-older clients is still accepted and treated as an activity cursor.
+`order = activity` (newest first), `waiting` (oldest waiting first), `due` (soonest due first),
+`priority` (highest first, then due). Without `order` the server picks `due` when the `state` filter
+is exactly `needs_staff` or `overdue` or `waiting_over` is set (every row in scope then has a due
+time: Needs us, Unassigned, Overdue), and `activity` otherwise (All, Resolved, Waiting on customer,
+Snoozed and Mine, whose rows include waiting ones with no due time). The clients (the Mine tab, which
+sends `order=due`, and saved views) pass `order` explicitly. `order=priority` is allowed only when
+`state` is exactly `needs_staff` (it sorts the rows in scope, since no index holds the rank); anything
+else is 422. The cursor is an opaque keyset token (order, sort value, id) bound to one order: a cursor
+from another order is 422. A bare conversation id from older clients is still accepted and treated as
+an activity cursor.
 
 ### 6.4 Counts
 
@@ -302,9 +316,15 @@ navigation badge read it. `needs_review_count` stays in the list response for cu
 - `(client_id, needs_staff_since, id) WHERE queue_status = 'needs_staff'` for `waiting`.
 - `(client_id, snoozed_until) WHERE queue_status = 'snoozed'`.
 - `(client_id, last_staff_reply_at) WHERE queue_status = 'waiting_customer'`.
-- Search: `pg_trgm` is already installed, so GIN trigram indexes on contact name, @username and
-  `phone_digits` (the plain btree from 0581 does not serve a contains match). The national-form suffix
-  rule for phones stays in the query.
+- `(client_id, last_activity_at DESC, id DESC)` once per state, partial on `queue_status =
+  'waiting_customer'` and on `'snoozed'`: these two tabs list newest activity first, and without their
+  own index the planner sorts the state's index or scans every row of the company.
+- Search: no index. `pg_trgm` is installed, but the app role reads `contacts` under row security and
+  the `ILIKE` operators are not leakproof, so the planner cannot use a trigram index for it. Search is
+  a bounded per-company scan (the company's conversations along the activity index until a page
+  fills; 257 to 515 ms at 50,000 conversations when few rows match). A later change can drive the
+  search from matched contacts if production shows it slow. The national-form suffix rule for phones
+  stays in the query.
 
 The list query drops the per-row lateral lookups: last message and times come from the row, and the
 pending approvals count is computed for the page of rows returned. The "known sender" check (orders,
@@ -318,10 +338,26 @@ query plan uses its index and returns a page without a sort node.
 
 ### 6.6 Bulk actions
 
-`POST /inbox/bulk` takes up to 50 conversation ids and one action: claim, assign (admin), release
-claim, resolve, snooze, set priority, set topic. Each item runs in its own savepoint with its own
-`inbox_version` check; the response lists per-item outcomes (done, version conflict, not allowed), so
-one stale item does not fail the batch. Outcomes include `held_reply_pending` and `customer_wrote` for resolve and snooze. Bulk reply is not offered.
+`POST /inbox/bulk` takes 1 to 50 distinct conversation ids, one action (claim, assign (admin), release
+claim, resolve, snooze, set priority, set topic) and `seen_at`, the time the client read the list. It
+carries no per-item version: a bulk action applies to what each item is now, and `seen_at` is how
+resolve and snooze notice a customer who wrote since. Each item runs in its own savepoint, in ascending
+id order (the lock order of the snooze job), so a refused item does not fail the batch. The response lists a
+per-item outcome in the request's order: `done`, `already_handled`, `held_reply_pending`,
+`customer_wrote`, `not_found`, `not_in_queue`, `not_allowed` (staff releasing another person's claim).
+Any other error aborts the whole request, as does staff trying to assign (403) or a snooze time outside
+the window. Bulk reply is not offered.
+
+The single-item routes (`POST /inbox/conversations/{id}/queue/{claim,unclaim,assign,snooze,resolve,
+priority,topic}`) take the `request_key` and `expected_version` of the takeover route and answer
+`applied` or `already_handled`. Their refusals: 409 `{"code":"held_reply_pending"}` and
+`{"code":"customer_wrote"}`, 422 `{"code":"until_in_past"}` and `{"code":"until_too_far"}` (a snooze
+may be at most 60 days ahead), 404 for a missing or excluded conversation, and plain-string `detail`
+403 and 422 for the role and assignee rules (a 503 when `assign` cannot read the member directory).
+`assign` checks the assignee against the company's enabled admins and staff, read from the identity
+database on its own connection (the app role cannot read the member tables): `GET /inbox/assignees`
+does the same read. A platform admin can claim and act but cannot be assigned, as they are not a
+member.
 
 ## 7. Reminders and notifications
 
@@ -415,9 +451,11 @@ of HR is not part of this project.
 
 ## 9. Delivery in three pull requests
 
-1. **Queue and flow (migrations 0620 queue columns and indexes, 0621 events and saved views, 0622
-   settings).** Queue columns, the inbound trigger, `csa/inbox_queue` with the explicit transitions
-   wired into the escalation agent, approval creation and settle, the takeover, reply and release
+1. **Queue and flow (migrations 0620 queue columns and indexes, 0621 settings, events and saved views,
+   0622 `inbox_queue_enter` and the message and escalation triggers).** Built in two plans: 1a, the
+   backend (everything below except the screen), and 1b, the Inbox UI. Queue columns, the inbound
+   trigger, the escalation trigger, `csa/inbox_queue` with the transitions
+   wired into approval creation and settle, the takeover, reply and release
    routes, the `inbox_snooze_wake` job, the new list, counts and bulk routes, the indexes, settings, the
    assignee list, and the Inbox UI: tabs with counts, filters, saved views, claim, snooze, resolve,
    priority and topic, bulk selection. No reminders yet.
@@ -457,8 +495,8 @@ columns are additive and defaulted, so old code keeps working against the new sc
 9. *Scale.* With 50,000 conversations for one company and 800 needing staff: every tab returns a page
    with an index scan and no sort node; counts return from the partial indexes; a search by name
    suffix or phone digits returns a page.
-10. *Bulk.* Selecting 30 items and resolving: 29 succeed, one fails with a version conflict and is
-    reported; nothing else changes.
+10. *Bulk.* Selecting 30 items and resolving: 29 succeed, one is refused (it has a held reply pending)
+    and is reported; nothing else changes.
 11. *Roles.* Tenant staff cannot assign to another member (403); a tenant admin can. A read-only
     member gets 403 on every Inbox route. A company's staff never see another company's items (row
     security tests for every new table).
@@ -666,5 +704,4 @@ customer timelines, and any change to the thread's message rendering, takeover f
 Exact column and index names and the mapping table from escalation reasons to topics; the keyset cursor
 encoding; the wording of notification messages in English and Malay (plain words per
 `docs/CONSOLE_VOICE.md`); the settings page layout and the bell within the existing console design tokens (the queue
-screen itself is specified in section 14); the choice between `pg_trgm` and the documented fallback once availability is
-confirmed.
+screen itself is specified in section 14); search is the bounded per-company scan of 6.5 (no trigram index), revisited if production shows it slow.
