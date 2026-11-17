@@ -272,6 +272,35 @@ async def test_an_invalid_name_or_filter_is_422_and_changes_nothing(
     assert fine.status_code == 201, fine.text
 
 
+async def test_filter_lists_are_bounded_and_kept_once_each(sessions: SessionWorld) -> None:
+    w = sessions
+    for filters in (
+        {"state": ["needs_staff"] * 6},
+        {"reason": ["manual"] * 5},
+        {"topic": ["other"] * 8},
+    ):
+        assert (await _create(w, "Too many", filters)).status_code == 422, filters
+    view = await _made(w, "Twice", {"state": ["snoozed", "needs_staff", "snoozed"]})
+    [stored] = await w.q("SELECT filters FROM inbox_saved_views WHERE id = %s", UUID(view))
+    assert stored["filters"]["state"] == ["snoozed", "needs_staff"]
+    replaced = await w.mutate(
+        w.admin, views_path(w, view), {"filters": {"topic": ["other"] * 8}}, method="PUT"
+    )
+    assert replaced.status_code == 422, replaced.text
+    every = ["bot", "needs_staff", "waiting_customer", "snoozed", "resolved"]
+    assert (await _create(w, "Every state", {"state": every})).status_code == 201
+
+
+async def test_a_view_body_over_32_kb_is_413(sessions: SessionWorld) -> None:
+    w = sessions
+    view = await _made(w, "Big")
+    oversized = b" " * 32769
+    for method, url in (("POST", views_path(w)), ("PUT", views_path(w, view))):
+        response = await w.admin.request(method, url, content=oversized, headers=w.headers(w.admin))
+        assert response.status_code == 413, (method, response.text)
+    assert await _names(w) == ["Big"]
+
+
 async def test_the_stored_filter_model_is_the_lists_model() -> None:
     """A stored view holds the list's filters minus the search: the field types are shared."""
     shared = set(InboxFilters.model_fields)

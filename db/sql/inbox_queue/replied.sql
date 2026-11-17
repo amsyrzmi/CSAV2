@@ -1,8 +1,10 @@
 -- A person's reply, or an approved or edited held reply: waiting on the customer. Claims for the
--- author when the item is unclaimed and the author is a console user. No inbox_version bump: the
--- caller's own writes already cover it.
+-- author when the item is unclaimed and the author is a console user. Bumps inbox_version once:
+-- only people reach this (a customer message never does), and a person who loaded the item before
+-- the reply must refresh before acting on it.
 UPDATE public.conversations c
 SET queue_status = 'waiting_customer',
+    inbox_version = c.inbox_version + 1,
     queue_reason = NULL,
     needs_staff_since = NULL,
     due_at = NULL,

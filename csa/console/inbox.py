@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Coroutine
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -126,6 +126,9 @@ class InboxConversationPage(Contract):
     next_cursor: str | None
     needs_review_count: int = 0
     counts: InboxQueueCounts
+    # The server's time of this read (the database transaction's now(), UTC). The client sends it
+    # back as the bulk route's `seen_at`, so resolve and snooze notice a customer who wrote since.
+    as_of: datetime
 
 
 class InboxPicture(Contract):
@@ -205,7 +208,7 @@ class InboxRoute(APIRoute):
         handler = super().get_route_handler()
 
         async def bounded(request: Request) -> Response:
-            if request.method == "POST":
+            if request.method in {"POST", "PUT"}:
                 data = bytearray()
                 async for chunk in request.stream():
                     data.extend(chunk)
@@ -554,6 +557,9 @@ def build_inbox_router() -> APIRouter:
                 "inbox/count_needs_review.sql", {"client_id": client_id}, conn=conn
             )
             counts = await fetch_counts(conn, client_id, actor.user_id)
+            read_at = await db.q.fetch_one("inbox/as_of.sql", conn=conn)
+            if read_at is None:
+                raise RuntimeError("inbox_as_of_missing")
         items = await named(
             _identity_pool(request), client_id, [conversation_from_row(row) for row in rows]
         )
@@ -562,6 +568,7 @@ def build_inbox_router() -> APIRouter:
             next_cursor=next_cursor,
             needs_review_count=counted["n"] if counted else 0,
             counts=counts,
+            as_of=read_at["as_of"].astimezone(UTC),
         )
 
     @router.get("/queue/counts", response_model=InboxQueueCounts)

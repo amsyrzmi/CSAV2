@@ -37,9 +37,10 @@ Rules shared by every function here:
 - Each change writes one ``inbox_queue_events`` row whose client and conversation ids come from
   the conversation row; a call that changes nothing writes nothing.
 - The staff actions (:func:`claim`, :func:`unclaim`, :func:`assign`, :func:`snooze`,
-  :func:`resolve`, :func:`set_priority`, :func:`set_topic`, :func:`hand_back`) bump
-  ``inbox_version`` once. :func:`enter`, :func:`replied`, :func:`held_reply_closed` and
-  :func:`wake_snoozed` do not: they are system moves or the caller's own writes cover them.
+  :func:`resolve`, :func:`set_priority`, :func:`set_topic`, :func:`hand_back`) and a person's
+  answer (:func:`replied`) bump ``inbox_version`` once. :func:`enter`, :func:`held_reply_closed`
+  and :func:`wake_snoozed` do not: they are system moves (a bump there would make the next staff
+  action fail with 409), or the caller's own writes cover them (takeover).
 """
 
 from __future__ import annotations
@@ -328,7 +329,9 @@ async def replied(
     Works from any state, ``bot`` included (a person replied to a taken-over conversation that never
     entered the queue). Sets ``last_staff_reply_at``, clears the reason, clock and due time, claims
     for ``user_id`` when the item is unclaimed and ``user_id`` is a console user. Does nothing for a
-    conversation outside the queue. No version bump (the reply's own writes bump it).
+    conversation outside the queue. Bumps ``inbox_version`` once: only a person's answer reaches
+    it (a customer message never does), so the version cannot be moved by the customer, and a
+    person who read the item before the reply gets 409 instead of resolving over it.
     """
     item = await _locked(conn, client_id, conversation_id)
     if not item["in_queue"]:
@@ -515,8 +518,9 @@ async def claim(
 ) -> None:
     """Take the item.
 
-    Allowed when someone else holds it (the event records the previous holder); a claim by the
-    current holder changes nothing.
+    Replaces another holder (the event records the previous holder): the caller decides who may
+    (the Inbox routes allow it to administrators only). A claim by the current holder changes
+    nothing.
     """
     item = await _staff_item(conn, client_id, conversation_id)
     await _set_assignee(

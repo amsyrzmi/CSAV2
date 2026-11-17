@@ -169,8 +169,8 @@ async def test_enter_then_replied_waits_on_the_customer_and_claims_for_the_autho
     assert row["needs_staff_since"] is None and row["due_at"] is None
     assert row["assignee_user_id"] == _uid(user) and row["claimed_at"] is not None
     assert row["last_staff_reply_at"] is not None
-    # The reply route bumps the version itself; the queue change adds nothing.
-    assert row["inbox_version"] == version
+    # A person's answer bumps the version once (enter, a system move, did not).
+    assert row["inbox_version"] == version + 1
 
     entered, replied = _events(migrated_dsn, s)
     assert entered["action"] == "entered"

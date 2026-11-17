@@ -199,13 +199,17 @@ async def _resume_conversation(
             (action["conversation_id"], client_id),
             conn=conn,
         )
-        if released is not None:
-            # The chat is the AI's again: the hand back leaves the queue and closes the
-            # escalation and its ticket. A conversation outside the queue has none of that.
-            try:
-                await queue.hand_back(conn, client_id, released["id"], actor_user_id=None)
-            except queue.QueueError as exc:
-                if exc.code != "not_in_queue":
-                    raise
+        # The hand back runs whether or not the release matched: after the mute expired the AI
+        # already has the chat, but the item may still need staff and its escalation and ticket
+        # may still be open. Only a conversation outside the queue (sandbox or console chat)
+        # raises not_in_queue here; it has no queue item, escalation state or ticket to end.
+        try:
+            handed_back = await queue.hand_back(
+                conn, client_id, UUID(str(action["conversation_id"])), actor_user_id=None
+            )
+        except queue.QueueError as exc:
+            if exc.code != "not_in_queue":
+                raise
+            handed_back = False
         await db.q.fetch_one("staff/use_action_by_id.sql", (client_id, action["id"]), conn=conn)
-    return "AI resumed." if released else "Conversation was already released."
+    return "AI resumed." if released or handed_back else "Conversation was already released."

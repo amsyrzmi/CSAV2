@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, get_args
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from csa.console.contracts import Contract
 from csa.console.inbox_contact import Search
@@ -45,22 +45,41 @@ COUNTS_QUERY = "inbox/queue_counts.sql"
 PRIORITY_ORDER_RULE = "order=priority is only for the state filter needs_staff alone"
 
 
+def _once_each[T](values: list[T]) -> list[T]:
+    """The values in their first order, each once (a filter list is a set)."""
+    return list(dict.fromkeys(values))
+
+
+# A filter list holds at most as many values as its enum has; repeats are dropped.
+StateList = Annotated[
+    list[QueueState], Field(max_length=len(get_args(QueueState))), AfterValidator(_once_each)
+]
+ReasonList = Annotated[
+    list[QueueReason], Field(max_length=len(get_args(QueueReason))), AfterValidator(_once_each)
+]
+TopicList = Annotated[
+    list[QueueTopic], Field(max_length=len(get_args(QueueTopic))), AfterValidator(_once_each)
+]
+
+
 class InboxFilters(Contract):
     """The list's filters and order, as a saved view stores them (never the search, a cursor
     or a limit). Empty lists, None and False filter nothing.
 
-    `assignee` is ``me`` (the person asking), ``none`` (no assignee) or a user id (any id is
-    accepted: one that holds nothing matches nothing). `overdue` and `waiting_over` imply
-    ``needs_staff``. Without `order` the list is due-first when every row in scope needs staff
-    (`needs_staff_only`), newest activity first otherwise. `order=priority` sorts the rows in
-    scope (no index holds the rank), so it is allowed only where they are the needs_staff rows.
+    `state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many
+    values as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no
+    assignee) or a user id (any id is accepted: one that holds nothing matches nothing).
+    `overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first
+    when every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.
+    `order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only
+    where they are the needs_staff rows.
     """
 
-    state: list[QueueState] = []
+    state: StateList = []
     assignee: Literal["me", "none"] | UUID | None = None
     priority_min: QueuePriority | None = None
-    reason: list[QueueReason] = []
-    topic: list[QueueTopic] = []
+    reason: ReasonList = []
+    topic: TopicList = []
     overdue: bool = False
     waiting_over: Annotated[int, Field(ge=1, le=WAITING_OVER_MAX)] | None = None
     channel: Literal["telegram", "whatsapp"] | None = None

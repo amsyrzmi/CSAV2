@@ -370,9 +370,13 @@ async def test_a_reply_waits_on_the_customer(sessions: SessionWorld) -> None:
     w = sessions
     _, conversation = await seed(w)
     assert (await takeover(w, conversation)).status_code == 200
+    version = (await state(w, conversation))["inbox_version"]
     response = await act(w, conversation, "reply", body="Human synthetic reply")
     assert response.status_code == 202, response.text
     current = await state(w, conversation)
+    # A person's answer moves the queue state, so it bumps the version once.
+    assert current["inbox_version"] == version + 1
+    assert response.json()["conversation"]["inbox_version"] == version + 1
     assert current["queue_status"] == "waiting_customer"
     assert current["last_staff_reply_at"] is not None and current["due_at"] is None
     assert str(current["assignee_user_id"]) == w.admin_id
@@ -380,6 +384,31 @@ async def test_a_reply_waits_on_the_customer(sessions: SessionWorld) -> None:
         ("entered", w.admin_id),
         ("replied", w.admin_id),
     ]
+
+
+async def test_a_resolve_read_before_a_reply_is_409(sessions: SessionWorld) -> None:
+    """Two people read the item at version 7; one replies, the other's resolve is stale."""
+    w = sessions
+    _, conversation = await seed(w)
+    assert (await takeover(w, conversation)).status_code == 200
+    await w.q("UPDATE conversations SET inbox_version = 7 WHERE id = %s", UUID(conversation))
+    replied = await w.mutate(
+        w.admin,
+        path(w, f"/conversations/{conversation}/reply"),
+        {"request_key": str(uuid4()), "expected_version": 7, "body": "Human synthetic reply"},
+    )
+    assert replied.status_code == 202, replied.text
+    assert replied.json()["conversation"]["inbox_version"] == 8
+    before = (await state(w, conversation), await events(w, conversation))
+    resolve = await w.mutate(
+        w.admin,
+        path(w, f"/conversations/{conversation}/queue/resolve"),
+        {"request_key": str(uuid4()), "expected_version": 7},
+    )
+    assert resolve.status_code == 409, resolve.text
+    assert resolve.json()["detail"] == "conversation changed; refresh before acting"
+    assert (await state(w, conversation), await events(w, conversation)) == before
+    assert before[0]["queue_status"] == "waiting_customer"
 
 
 async def test_release_hands_back_and_closes_the_escalation_ticket(
@@ -447,10 +476,8 @@ async def test_release_of_a_bot_item_is_already_handled(sessions: SessionWorld) 
     assert await events(w, conversation) == []
 
 
-async def test_staff_chat_resume_ai_hands_back(sessions: SessionWorld) -> None:
-    w = sessions
-    await replies_on(w)
-    env, conversation = await seed(w)
+async def resume_button(w: SessionWorld, env: Envelope, conversation: str) -> Any:
+    """Escalate through the real agent, then return a tap on the alert's Resume AI button."""
     target = uuid4()
     await w.q(
         "INSERT INTO staff_notification_targets (id, client_id, channel, address, events) "
@@ -481,6 +508,15 @@ async def test_staff_chat_resume_ai_hands_back(sessions: SessionWorld) -> None:
             trace_id=uuid4(),
         )
 
+    return tap
+
+
+async def test_staff_chat_resume_ai_hands_back(sessions: SessionWorld) -> None:
+    w = sessions
+    await replies_on(w)
+    env, conversation = await seed(w)
+    tap = await resume_button(w, env, conversation)
+
     assert await tap() == "AI resumed."
     current = await state(w, conversation)
     assert (current["queue_status"], current["owned_by"], current["status"]) == (
@@ -503,6 +539,59 @@ async def test_staff_chat_resume_ai_hands_back(sessions: SessionWorld) -> None:
         None,
     )
     assert await tap() == "Already handled."
+
+
+async def test_resume_ai_after_the_mute_expired_still_hands_back(sessions: SessionWorld) -> None:
+    """The mute job gave the chat back to the AI but left the item: the button still ends it."""
+    w = sessions
+    await replies_on(w)
+    env, conversation = await seed(w)
+    tap = await resume_button(w, env, conversation)
+    await w.q(
+        "UPDATE conversations SET ai_muted_until = now() - interval '1 minute' WHERE id = %s",
+        UUID(conversation),
+    )
+    async with tx(w.pool, str(env.client_id)) as conn:
+        expired = await db.q.fetch_one(
+            "jobs/mute_expiry.sql", (env.client_id, 100, env.client_id), conn=conn
+        )
+    assert expired is not None and expired["count"] == 1
+    current = await state(w, conversation)
+    assert (current["queue_status"], current["owned_by"], current["status"]) == (
+        "needs_staff",
+        "ai",
+        "open",
+    )
+    assert await tap() == "AI resumed."
+    current = await state(w, conversation)
+    assert (current["queue_status"], current["queue_reason"]) == ("bot", None)
+    assert await escalation_statuses(w, conversation) == ["resolved"]
+    last = (await events(w, conversation))[-1]
+    assert (last["action"], last["to_status"], last["actor_user_id"]) == (
+        "handed_back",
+        "bot",
+        None,
+    )
+
+
+async def test_resume_ai_on_a_sandbox_escalation_releases_it_and_leaves_the_queue(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    await replies_on(w)
+    env, conversation = await seed(w)
+    await w.q("UPDATE conversations SET channel = 'web' WHERE id = %s", UUID(conversation))
+    tap = await resume_button(w, env, conversation)
+    current = await state(w, conversation)
+    assert (current["queue_status"], current["status"]) == ("bot", "escalated")
+    assert await tap() == "AI resumed."
+    current = await state(w, conversation)
+    assert (current["queue_status"], current["owned_by"], current["status"]) == (
+        "bot",
+        "ai",
+        "open",
+    )
+    assert await events(w, conversation) == []
 
 
 # --- writers that need no code: the escalation trigger --------------------------------------------

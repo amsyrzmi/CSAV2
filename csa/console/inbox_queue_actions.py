@@ -4,9 +4,14 @@ conversation, and the same actions on up to 50 conversations at once (design 202
 
 One conversation (``POST /inbox/conversations/{id}/queue/{action}``) follows the takeover route:
 the request key's receipt first, then the conversation lock, then the ``expected_version`` check
-(409), then the transition of :mod:`csa.inbox_queue.transitions`, then the receipt and the audit
-row ``inbox.queue_<action>``. The outcome is ``applied`` when the transition changed the item and
-``already_handled`` when it did not. Every staff transition bumps ``inbox_version`` exactly once
+(409), then the role checks on the claim (403), then the transition of
+:mod:`csa.inbox_queue.transitions`, then the receipt and the audit row ``inbox.queue_<action>``.
+``assign`` refuses tenant staff (403) before anything else, then looks the receipt up in a short
+transaction of its own, so a replay of an applied assign returns the stored receipt even when the
+assignee was disabled since or the member directory is down; only a new request reads the
+directory (422 or 503), and the main transaction checks the receipt again under the key lock.
+The outcome is ``applied`` when the transition changed the item and ``already_handled`` when it
+did not. Every staff transition bumps ``inbox_version`` exactly once
 when it changes something and writes nothing otherwise, and the conversation lock is held from
 the first read to the last, so "changed" is read as "``inbox_version`` moved" for every action.
 
@@ -16,10 +21,12 @@ the job never deadlock), each in its own savepoint on one tenant transaction, so
 leaves the others alone. The refusals a person can act on come back per item; any other error
 aborts the whole request. Results come back in the request's order.
 
-Roles: ``inbox_actor`` (the router's dependency) for everything. Assigning to someone is for a
-tenant admin or a platform admin acting on the company; staff may claim and release their own
-claim. The assignee is checked against the company's enabled admins and staff on the identity pool
-before the tenant transaction opens (``csa_app`` cannot read the directory).
+Roles: ``inbox_actor`` (the router's dependency) for everything. Assigning to someone and taking
+over someone else's claim are for a tenant admin or a platform admin acting on the company; staff
+may claim an unclaimed item (or their own again) and release their own claim, and may reply,
+resolve, snooze and set priority or topic on an item someone else holds (the claim stays). The
+assignee is checked against the company's enabled admins and staff on the identity pool before the
+tenant transaction opens (``csa_app`` cannot read the directory).
 """
 
 from __future__ import annotations
@@ -178,6 +185,19 @@ def _is_admin(actor: ConsoleActor) -> bool:
     return actor.role in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN}
 
 
+def _require_assigner(actor: ConsoleActor) -> None:
+    if not _is_admin(actor):
+        raise HTTPException(403, "assigning needs an administrator")
+
+
+async def _receipt(
+    request: Request, client_id: UUID, actor: ConsoleActor, request_key: UUID, fingerprint: str
+) -> dict[str, Any] | None:
+    """The stored receipt of a request key, read in a short tenant transaction of its own."""
+    async with tx(request.app.state.pool, str(client_id)) as conn:
+        return await stored_receipt(conn, client_id, actor, request_key, fingerprint)
+
+
 async def _check_assignee(
     request: Request, client_id: UUID, actor: ConsoleActor, user: UUID
 ) -> None:
@@ -185,8 +205,7 @@ async def _check_assignee(
 
     Reads the identity pool, so the caller runs it before opening the tenant transaction.
     """
-    if not _is_admin(actor):
-        raise HTTPException(403, "assigning needs an administrator")
+    _require_assigner(actor)
     members = await company_assignees(_directory(request), client_id)
     if user not in {member.id for member in members}:
         raise HTTPException(422, "assignee is not an enabled member of this company")
@@ -228,6 +247,20 @@ def _may_release(actor: ConsoleActor, current: InboxConversation) -> bool:
     """Staff release only their own claim; admins any."""
     holder = current.assignee_id
     return _is_admin(actor) or holder is None or holder == actor.user_id
+
+
+def _may_claim(actor: ConsoleActor, current: InboxConversation) -> bool:
+    """Staff claim an unclaimed item or their own; only admins take over someone else's claim."""
+    holder = current.assignee_id
+    return _is_admin(actor) or holder is None or holder == actor.user_id
+
+
+def _allowed(action: QueueActionName, actor: ConsoleActor, current: InboxConversation) -> bool:
+    if action == "unclaim":
+        return _may_release(actor, current)
+    if action == "claim":
+        return _may_claim(actor, current)
+    return True
 
 
 async def _apply(
@@ -287,14 +320,19 @@ async def _act(
     change: _Change,
 ) -> InboxResult:
     actor = inbox_actor(request)
+    name = f"queue_{change.action}"
+    target = f"{name}:{conversation_id}"
     if change.action == "assign":
         assert change.assignee_id is not None
+        _require_assigner(actor)
+        # A replay of an applied assign is its receipt, whatever the directory says now.
+        fingerprint = request_fingerprint(target, payload)
+        old = await _receipt(request, client_id, actor, payload.request_key, fingerprint)
+        if old is not None:
+            return InboxResult.model_validate(old)
         await _check_assignee(request, client_id, actor, change.assignee_id)
-    name = f"queue_{change.action}"
     async with tx(request.app.state.pool, str(client_id)) as conn:
-        fingerprint, old = await replay(
-            conn, client_id, actor, payload, f"{name}:{conversation_id}"
-        )
+        fingerprint, old = await replay(conn, client_id, actor, payload, target)
         if old is not None:
             return old
         current = await _locked(conn, client_id, conversation_id)
@@ -304,6 +342,8 @@ async def _act(
             raise HTTPException(409, "conversation changed; refresh before acting")
         if change.action == "unclaim" and not _may_release(actor, current):
             raise HTTPException(403, "only the holder or an administrator can release this claim")
+        if change.action == "claim" and not _may_claim(actor, current):
+            raise HTTPException(403, "only an administrator can take over someone else's claim")
         if change.until is not None:
             _check_until(change.until)
         try:
@@ -343,7 +383,7 @@ async def _bulk_item(
             current = await _locked(conn, client_id, conversation_id)
             if current is None:
                 return "not_found"
-            if change.action == "unclaim" and not _may_release(actor, current):
+            if not _allowed(change.action, actor, current):
                 return "not_allowed"
             await _apply(conn, client_id, conversation_id, actor, change)
             after = await _current(conn, client_id, conversation_id)
@@ -356,8 +396,14 @@ async def _bulk_item(
 
 async def _bulk(request: Request, client_id: UUID, payload: BulkAction) -> BulkResult:
     actor = inbox_actor(request)
+    fingerprint = request_fingerprint("queue_bulk", payload)
     if payload.action == "assign":
         assert payload.assignee_id is not None
+        _require_assigner(actor)
+        # A replay of an applied assign is its receipt, whatever the directory says now.
+        old = await _receipt(request, client_id, actor, payload.request_key, fingerprint)
+        if old is not None:
+            return BulkResult.model_validate(old)
         await _check_assignee(request, client_id, actor, payload.assignee_id)
     seen = payload.seen_at if payload.action in {"resolve", "snooze"} else None
     change = _Change(
@@ -368,7 +414,6 @@ async def _bulk(request: Request, client_id: UUID, payload: BulkAction) -> BulkR
         priority=payload.priority,
         topic=payload.topic,
     )
-    fingerprint = request_fingerprint("queue_bulk", payload)
     async with tx(request.app.state.pool, str(client_id)) as conn:
         old = await stored_receipt(conn, client_id, actor, payload.request_key, fingerprint)
         if old is not None:
@@ -425,7 +470,9 @@ def add_queue_action_routes(router: APIRouter) -> None:
         payload: QueueClaim,
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> InboxResult:
-        """Take the item; allowed over another holder (the event records them)."""
+        """Take the item. Taking over someone else's claim is for administrators (403 for
+        tenant staff; the event records the previous holder); claiming an unclaimed item or one's
+        own again is open to every member."""
         return await _act(request, client_id, conversation_id, payload, _Change("claim"))
 
     @router.post("/conversations/{conversation_id}/queue/unclaim", response_model=InboxResult)
@@ -446,7 +493,8 @@ def add_queue_action_routes(router: APIRouter) -> None:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> InboxResult:
         """Give the item to an enabled admin or staff member (422 otherwise). Administrators
-        only (403 for tenant staff); 503 when the member directory is unavailable."""
+        only (403 for tenant staff); 503 when the member directory is unavailable. A replay of
+        an applied assign returns its stored receipt without reading the directory."""
         change = _Change("assign", assignee_id=payload.assignee_id)
         return await _act(request, client_id, conversation_id, payload, change)
 
@@ -504,5 +552,6 @@ def add_queue_action_routes(router: APIRouter) -> None:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> BulkResult:
         """One action on 1 to 50 distinct conversations; 200 with an outcome per item, in the
-        request's order. Replayable per `request_key`; assign is for administrators only."""
+        request's order. Replayable per `request_key`; assign is for administrators only.
+        `not_allowed` marks an item whose claim tenant staff may not release or take over."""
         return await _bulk(request, client_id, payload)

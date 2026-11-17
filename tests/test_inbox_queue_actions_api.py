@@ -255,10 +255,11 @@ async def test_assign_needs_an_administrator_and_an_enabled_member(
     done = await act(w, tenant_admin, item.id, "assign", assignee_id=target)
     assert done.status_code == 200, done.text
     assert str((await state(w, item.id))["assignee_user_id"]) == target
-    # Staff may claim for themselves.
-    claimed = await act(w, staff_client, item.id, "claim")
+    # Staff may claim an unclaimed item for themselves.
+    free = await _item(w, state="needs_staff")
+    claimed = await act(w, staff_client, free.id, "claim")
     assert claimed.status_code == 200, claimed.text
-    assert str((await state(w, item.id))["assignee_user_id"]) == str(me["user"]["id"])
+    assert str((await state(w, free.id))["assignee_user_id"]) == str(me["user"]["id"])
     # Without the member directory the assignee cannot be checked: 503, never 422.
     import csa.console.inbox_queue_actions as actions
 
@@ -288,22 +289,98 @@ async def test_staff_release_only_their_own_claim(sessions: SessionWorld) -> Non
     assert nothing.status_code == 200 and nothing.json()["outcome"] == "already_handled"
 
 
-async def test_a_claim_over_another_holder_records_the_previous_holder(
-    sessions: SessionWorld,
-) -> None:
+async def test_only_administrators_take_over_someone_elses_claim(sessions: SessionWorld) -> None:
     w = sessions
     staff_client, me = await w.member()
+    tenant_admin, admin_me = await w.member(role="tenant_admin")
     holder = await _named(w, "Hana Synthetic")
     item = await _item(w, state="needs_staff", assignee=holder)
-    response = await act(w, staff_client, item.id, "claim")
-    assert response.status_code == 200 and response.json()["outcome"] == "applied"
-    assert str((await state(w, item.id))["assignee_user_id"]) == str(me["user"]["id"])
-    [event] = await events(w, item.id)
-    assert event["action"] == "claimed"
-    assert event["details"] == {
-        "assignee_user_id": str(me["user"]["id"]),
+    before = await snapshot(w, item.id)
+    refused = await act(w, staff_client, item.id, "claim")
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["detail"] == "only an administrator can take over someone else's claim"
+    assert await snapshot(w, item.id) == before
+    # Staff still act on the item someone else holds; the claim stays.
+    changes: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("priority", {"priority": "urgent"}),
+        ("topic", {"topic": "complaint"}),
+    )
+    for action, body in changes:
+        response = await act(w, staff_client, item.id, action, **body)
+        assert response.status_code == 200 and response.json()["outcome"] == "applied", action
+        assert str((await state(w, item.id))["assignee_user_id"]) == holder, action
+    # A tenant admin takes it over; the event records the previous holder.
+    taken = await act(w, tenant_admin, item.id, "claim")
+    assert taken.status_code == 200 and taken.json()["outcome"] == "applied", taken.text
+    assert str((await state(w, item.id))["assignee_user_id"]) == str(admin_me["user"]["id"])
+    claimed = (await events(w, item.id))[-1]
+    assert claimed["action"] == "claimed"
+    assert claimed["details"] == {
+        "assignee_user_id": str(admin_me["user"]["id"]),
         "previous_assignee_user_id": holder,
     }
+    # A platform admin may too.
+    again = await act(w, w.admin, item.id, "claim")
+    assert again.status_code == 200 and again.json()["outcome"] == "applied", again.text
+    assert str((await state(w, item.id))["assignee_user_id"]) == w.admin_id
+    # Staff snooze and resolve items someone else holds.
+    snoozed = await act(w, staff_client, item.id, "snooze", until=soon(hours=2))
+    assert snoozed.status_code == 200 and snoozed.json()["outcome"] == "applied", snoozed.text
+    assert str((await state(w, item.id))["assignee_user_id"]) == w.admin_id
+    other = await _item(w, state="needs_staff", assignee=holder)
+    resolved = await act(w, staff_client, other.id, "resolve")
+    assert resolved.status_code == 200 and resolved.json()["outcome"] == "applied", resolved.text
+    # Claiming an unclaimed item, or one's own again, is fine for staff.
+    free = await _item(w, state="needs_staff")
+    first = await act(w, staff_client, free.id, "claim")
+    assert first.status_code == 200 and first.json()["outcome"] == "applied", first.text
+    assert str((await state(w, free.id))["assignee_user_id"]) == str(me["user"]["id"])
+    own = await act(w, staff_client, free.id, "claim")
+    assert own.status_code == 200 and own.json()["outcome"] == "already_handled", own.text
+
+
+async def test_an_applied_assign_replays_its_receipt_without_the_directory(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    tenant_admin, _ = await w.member(role="tenant_admin")
+    target = await _named(w, "Ola Synthetic")
+    item = await _item(w, state="needs_staff")
+    version = (await state(w, item.id))["inbox_version"]
+    key = str(uuid4())
+    done = await act(
+        w, tenant_admin, item.id, "assign", key=key, version=version, assignee_id=target
+    )
+    assert done.status_code == 200, done.text
+    after = await snapshot(w, item.id)
+    # The assignee is disabled since: the replay still returns the stored receipt.
+    await w.q("UPDATE console_memberships SET is_enabled = false WHERE user_id = %s", target)
+    replay = await act(
+        w, tenant_admin, item.id, "assign", key=key, version=version, assignee_id=target
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == done.json()
+    # A new assign to the disabled member is refused.
+    fresh = await act(w, tenant_admin, item.id, "assign", assignee_id=target)
+    assert fresh.status_code == 422, fresh.text
+    # The directory is down: the replay is still the receipt, a new assign is 503.
+    import csa.console.inbox_queue_actions as actions
+
+    monkeypatch.setattr(actions, "_directory", lambda request: None)
+    replay = await act(
+        w, tenant_admin, item.id, "assign", key=key, version=version, assignee_id=target
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == done.json()
+    fresh = await act(w, tenant_admin, item.id, "assign", assignee_id=target)
+    assert fresh.status_code == 503, fresh.text
+    assert await snapshot(w, item.id) == after
+    # Staff are refused before any receipt is read.
+    staff_client, _ = await w.member()
+    refused = await act(
+        w, staff_client, item.id, "assign", key=key, version=version, assignee_id=target
+    )
+    assert refused.status_code == 403, refused.text
 
 
 async def test_snooze_needs_a_time_in_the_next_sixty_days(sessions: SessionWorld) -> None:
@@ -545,6 +622,66 @@ async def test_bulk_unclaim_by_staff_releases_only_their_own_claims(
     ]
     assert (await state(w, mine))["assignee_user_id"] is None
     assert await snapshot(w, theirs) == before
+
+
+async def test_bulk_claim_by_staff_never_takes_over_a_claim(sessions: SessionWorld) -> None:
+    w = sessions
+    staff_client, me = await w.member()
+    tenant_admin, admin_me = await w.member(role="tenant_admin")
+    other = await _named(w, "Ivy Synthetic")
+    mine = (await _item(w, state="needs_staff", assignee=str(me["user"]["id"]))).id
+    theirs = (await _item(w, state="needs_staff", assignee=other)).id
+    free = (await _item(w, state="needs_staff")).id
+    before = await snapshot(w, theirs)
+    response = await w.mutate(staff_client, bulk_path(w), bulk_body("claim", [mine, theirs, free]))
+    assert response.status_code == 200, response.text
+    assert [r["outcome"] for r in response.json()["results"]] == [
+        "already_handled",
+        "not_allowed",
+        "done",
+    ]
+    assert await snapshot(w, theirs) == before
+    assert str((await state(w, free))["assignee_user_id"]) == str(me["user"]["id"])
+    # Other actions by staff still apply to an item someone else holds.
+    priority = await w.mutate(
+        staff_client, bulk_path(w), bulk_body("priority", [theirs], priority="high")
+    )
+    assert [r["outcome"] for r in priority.json()["results"]] == ["done"]
+    assert str((await state(w, theirs))["assignee_user_id"]) == other
+    # Administrators take it over.
+    taken = await w.mutate(tenant_admin, bulk_path(w), bulk_body("claim", [theirs]))
+    assert [r["outcome"] for r in taken.json()["results"]] == ["done"]
+    assert str((await state(w, theirs))["assignee_user_id"]) == str(admin_me["user"]["id"])
+    again = await w.mutate(w.admin, bulk_path(w), bulk_body("claim", [theirs]))
+    assert [r["outcome"] for r in again.json()["results"]] == ["done"]
+    assert str((await state(w, theirs))["assignee_user_id"]) == w.admin_id
+
+
+async def test_an_applied_bulk_assign_replays_its_receipt_without_the_directory(
+    sessions: SessionWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = sessions
+    target = await _named(w, "Pia Synthetic")
+    ids = [(await _item(w, state="needs_staff")).id for _ in range(2)]
+    body = bulk_body("assign", ids, assignee_id=target)
+    done = await w.mutate(w.admin, bulk_path(w), body)
+    assert done.status_code == 200, done.text
+    after = [await snapshot(w, i) for i in ids]
+    await w.q("UPDATE console_memberships SET is_enabled = false WHERE user_id = %s", target)
+    replay = await w.mutate(w.admin, bulk_path(w), body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == done.json()
+    fresh = await w.mutate(w.admin, bulk_path(w), bulk_body("assign", ids, assignee_id=target))
+    assert fresh.status_code == 422, fresh.text
+    import csa.console.inbox_queue_actions as actions
+
+    monkeypatch.setattr(actions, "_directory", lambda request: None)
+    replay = await w.mutate(w.admin, bulk_path(w), body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == done.json()
+    fresh = await w.mutate(w.admin, bulk_path(w), bulk_body("assign", ids, assignee_id=target))
+    assert fresh.status_code == 503, fresh.text
+    assert [await snapshot(w, i) for i in ids] == after
 
 
 async def test_bulk_assign_needs_an_administrator_and_a_valid_member(

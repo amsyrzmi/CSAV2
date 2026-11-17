@@ -721,6 +721,38 @@ async def test_a_bad_filter_value_is_422(sessions: SessionWorld) -> None:
         assert (await w.admin.get(list_path(w, query))).status_code == 422, query
 
 
+async def test_filter_lists_are_bounded_by_their_value_counts(sessions: SessionWorld) -> None:
+    w = sessions
+    too_long = (
+        "&state=needs_staff" * 6,
+        "&reason=manual" * 5,
+        "&topic=other" * 8,
+    )
+    for query in too_long:
+        assert (await w.admin.get(list_path(w, query))).status_code == 422, query
+    every = (
+        "".join(
+            f"&state={v}" for v in ("bot", "needs_staff", "waiting_customer", "snoozed", "resolved")
+        ),
+        "".join(f"&reason={v}" for v in ("escalation", "held_reply", "customer_message", "manual")),
+        "&topic=other&topic=other&topic=booking",
+    )
+    for query in every:
+        assert (await w.admin.get(list_path(w, query))).status_code == 200, query
+
+
+async def test_the_list_says_when_it_was_read(sessions: SessionWorld) -> None:
+    """`as_of` is the server's time of the read: the client echoes it as the bulk `seen_at`."""
+    w = sessions
+    started = datetime.now(UTC)
+    response = await w.admin.get(list_path(w))
+    assert response.status_code == 200, response.text
+    raw = response.json()["as_of"]
+    as_of = datetime.fromisoformat(raw)
+    assert as_of.utcoffset() == timedelta(0), raw
+    assert started - timedelta(seconds=5) <= as_of <= datetime.now(UTC) + timedelta(seconds=5)
+
+
 async def test_search_sender_and_needs_review_keep_their_rules(sessions: SessionWorld) -> None:
     w = sessions
     named = await _item(w, state="needs_staff", name="Nur Aisyah", phone="0125550148")
