@@ -7,7 +7,7 @@ import { action, Notice } from "@/components/console/ui";
 import type { Me } from "@/lib/identity-contracts";
 import {
   bulkPath, canConnectWhatsApp, type BulkResult, type Conversation, type ConversationPage, type QueueActionName,
-  type QueueCounts, type QueueFields,
+  type QueueCounts, type QueueFields, type SavedView,
 } from "@/lib/inbox-api";
 import {
   activeFilterChips, BULK_LIMIT, BULK_LIMIT_TEXT, bulkFailureLines, bulkSummary, priorityOrderAllowed,
@@ -26,6 +26,7 @@ import { QueueBar } from "./QueueBar";
 import { useInboxActions, type InboxActions } from "./useInboxActions";
 import { usePages } from "./usePages";
 import { useQueueActions } from "./useQueueActions";
+import { ViewsMenu, type ActiveView, type ChosenView } from "./ViewsMenu";
 
 const FIRST_TAB: QueueTabId = "needs_us";
 const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
@@ -80,6 +81,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const [q, setQ] = useState("");
   const [pages, setPages] = useState(1);
   const [selected, setSelected] = useState("");
+  // The saved view the screen was set to; the Views button names it while the filters still match.
+  const [activeView, setActiveView] = useState<ActiveView | null>(null);
   const [threadOpen, setThreadOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [cardHost, setCardHost] = useState<HTMLElement | null>(null);
@@ -254,6 +257,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   // A tab is a filter set and an order; choosing one drops the filters added on top of it.
   function chooseTab(next: QueueTabId) {
     clearSelection();
+    setActiveView(null);
     setTab(next);
     setFilters(tabFilters(next));
     setOrder(tabOrder(next));
@@ -261,6 +265,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   }
   function changeFilters(next: QueueFilters) {
     clearSelection();
+    setActiveView(null);
     setFilters(next);
     // Priority order is only allowed while the state is exactly "needs us".
     if (order === "priority" && !priorityOrderAllowed(next)) setOrder(tabOrder(tab));
@@ -268,6 +273,29 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   }
   function clearFilters() {
     changeFilters(tabFilters(tab));
+  }
+  function changeOrder(next: QueueOrder) {
+    setActiveView(null);
+    setOrder(next);
+    setPages(1);
+  }
+  /** A view-related outcome, said in the notice under the bar (where the Views button is). */
+  function announce(text: string) {
+    actions.announce(text);
+    setBulkFeedback(true);
+    setBulkResult(null);
+  }
+  // A saved view sets the tab, filters and order at once and starts afresh: no search, no selection.
+  function applyView(view: SavedView, choice: ChosenView) {
+    clearSelection();
+    setTab(choice.tab);
+    setFilters(choice.filters);
+    setOrder(choice.order);
+    setSearch("");
+    setQ("");
+    setPages(1);
+    setActiveView({ id: view.id, name: view.name, key: choice.key });
+    announce(`Showing the view “${view.name}”.`);
   }
 
   const servicesHref = tenantId ? `/services?client_id=${encodeURIComponent(tenantId)}` : "/portal/services";
@@ -372,9 +400,14 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         panelId={panelId} search={search} onSearch={setSearch}
         onClearSearch={() => { setSearch(""); setQ(""); setPages(1); }}
         filters={filters} onFilters={changeFilters} order={order}
-        onOrder={(next) => { setOrder(next); setPages(1); }}
+        onOrder={changeOrder}
         chips={chips} onRemoveChip={(key) => changeFilters(withoutChip(filters, tab, key))} onClear={clearFilters}
         query={query} meId={me.user.id}
+        viewsSlot={<ViewsMenu query={query} filters={filters} order={order} active={activeView} onApply={applyView}
+          onSaved={(view, name, key) => {
+            if (view) setActiveView({ id: view.id, name: view.name, key });
+            announce(`Saved the view “${name}”.`);
+          }} />}
         selectSlot={canSelect ? <SelectToggle on={selectMode} toggleRef={selectToggleRef} disabled={actions.blocked}
           onToggle={() => { setSelectMode((value) => !value); setSelectMessage(""); }}
           canSelectAll={items.length > 0} onSelectAll={selectAll} /> : undefined}

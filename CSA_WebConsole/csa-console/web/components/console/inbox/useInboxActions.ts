@@ -107,6 +107,11 @@ export function useInboxActions(query: string, tenantId: string | null) {
       payload: { request_key: crypto.randomUUID(), decision: "edit", text } });
   }
 
+  /** Say what a control outside the request path did (a saved view chosen or saved), in the notice. */
+  function announce(text: string) {
+    setNotice(text);
+  }
+
   /** Forget the last outcome when the reader moves to another conversation. */
   function clearFeedback() {
     setError(""); setNotice(""); setProposal(null);
@@ -115,7 +120,7 @@ export function useInboxActions(query: string, tenantId: string | null) {
   return {
     tenantId, revision, refresh: () => setRevision((value) => value + 1),
     pending, busy, blocked: busy || pending !== null, error, notice, proposal,
-    submit, execute, propose, edit, clearFeedback,
+    submit, execute, propose, edit, clearFeedback, announce,
   };
 }
 

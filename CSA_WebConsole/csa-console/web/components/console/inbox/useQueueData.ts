@@ -64,40 +64,52 @@ export function useAssignees(query: string, enabled: boolean) {
 
 // ---- saved views ----
 
-type ViewsState = { path: string; views: SavedView[] | null; error: string };
+/** The sentence for a failed views read: a refusal says so, anything else asks to try again. */
+export const VIEWS_READ_FAILED = "Could not load your saved views. Try again.";
+
+type ViewsState = { path: string; views: SavedView[] | null; failed: boolean; error: string };
 export type ViewChange = { ok: boolean; error?: string; view?: SavedView };
 
 /**
- * The person's saved views. Each change calls its route, re-reads the list whatever the outcome and
- * says what went wrong in one plain sentence. A failed read keeps the last list and sets `error`.
+ * The person's saved views, read when `enabled` first turns true (never before). A failed read sets
+ * `failed` and `error` (one plain sentence, never the server's words) and keeps the last list; `retry`
+ * clears both and reads again. Each change calls its route, puts its answer in the list at once,
+ * re-reads the list whatever the outcome and says what went wrong in one plain sentence.
  */
-export function useSavedViews(query: string) {
+export function useSavedViews(query: string, enabled = true) {
   const path = viewsPath(query);
   const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<ViewsState>({ path, views: null, error: "" });
-  const current = state.path === path ? state : { path, views: null, error: "" };
+  const [state, setState] = useState<ViewsState>({ path, views: null, failed: false, error: "" });
+  const current: ViewsState = state.path === path ? state : { path, views: null, failed: false, error: "" };
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
     async function load() {
       try {
         const views = await api<SavedView[]>(path, {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
         });
-        if (!controller.signal.aborted) setState({ path, views, error: "" });
+        if (!controller.signal.aborted) setState({ path, views, failed: false, error: "" });
       } catch (cause) {
         if (controller.signal.aborted) return;
+        const { status } = describe(cause);
+        const error = status === 403 ? viewErrorText(403, null, VIEWS_READ_FAILED) : VIEWS_READ_FAILED;
         setState((previous) => ({
-          path, views: previous.path === path ? previous.views : null, error: (cause as Error).message,
+          path, views: previous.path === path ? previous.views : null, failed: true, error,
         }));
       }
     }
     void load();
     return () => controller.abort();
-  }, [path, revision]);
+  }, [enabled, path, revision]);
 
-  async function change(call: () => Promise<SavedView | undefined>): Promise<ViewChange> {
+  async function change(
+    call: () => Promise<SavedView | undefined>, update: (views: SavedView[], view?: SavedView) => SavedView[],
+  ): Promise<ViewChange> {
     try {
       const view = await call();
+      setState((previous) => previous.path === path && previous.views
+        ? { ...previous, views: update(previous.views, view) } : previous);
       setRevision((value) => value + 1);
       return { ok: true, view };
     } catch (cause) {
@@ -111,13 +123,22 @@ export function useSavedViews(query: string) {
       method, body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(READ_TIMEOUT_MS),
     });
+  const swap = (views: SavedView[], view?: SavedView) =>
+    view ? views.map((item) => (item.id === view.id ? view : item)) : views;
 
   return {
-    views: current.views, loaded: current.views !== null, error: current.error,
-    create: (name: string, filters: ViewFilters) => change(() => write(path, "POST", { name, filters })),
-    rename: (id: string, name: string) => change(() => write(viewsPath(query, id), "PUT", { name })),
-    replace: (id: string, filters: ViewFilters) => change(() => write(viewsPath(query, id), "PUT", { filters })),
-    remove: (id: string) => change(() => write(viewsPath(query, id), "DELETE")),
+    views: current.views, loaded: current.views !== null, failed: current.failed, error: current.error,
+    retry: () => {
+      setState({ path, views: current.views, failed: false, error: "" });
+      setRevision((value) => value + 1);
+    },
+    create: (name: string, filters: ViewFilters) => change(
+      () => write(path, "POST", { name, filters }), (views, view) => (view ? [view, ...views] : views)),
+    rename: (id: string, name: string) => change(() => write(viewsPath(query, id), "PUT", { name }), swap),
+    replace: (id: string, filters: ViewFilters) =>
+      change(() => write(viewsPath(query, id), "PUT", { filters }), swap),
+    remove: (id: string) => change(
+      () => write(viewsPath(query, id), "DELETE"), (views) => views.filter((item) => item.id !== id)),
   };
 }
 

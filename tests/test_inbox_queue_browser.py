@@ -35,6 +35,7 @@ from tests.test_inbox_redesign_browser import (
     page_width,
     row,
     rows_loaded,
+    saved_view,
 )
 from tests.test_services_browser import WAIT
 
@@ -2165,3 +2166,635 @@ async def test_select_all_by_keyboard_moves_focus_to_the_count(shell: Shell) -> 
         await expect(bulk_bar(page)).to_contain_text("4 selected")
         await expect(select_all).to_have_count(0)
         await expect(count).to_be_focused()
+
+
+# ---- saved views (Task 7) ----
+
+VIEWS_EMPTY = (
+    "You have no saved views yet. Set up the filters you want, then choose Save this view."
+)
+VIEWS_FAILED = "Could not load your saved views. Try again."
+UNSUPPORTED = "This view uses a filter this screen does not have yet."
+LONG_VIEW = ("Every urgent WhatsApp complaint waiting longer than four hours" * 2)[:60]
+
+
+def views_button(page: Page) -> Any:
+    return page.get_by_test_id("inbox-views-menu")
+
+
+def views_menu(page: Page) -> Any:
+    return page.get_by_role("menu", name="Saved views")
+
+
+def view_calls(state: Inbox, method: str) -> list[dict[str, Any]]:
+    return [call for call in state.view_calls if call["method"] == method]
+
+
+async def open_views(page: Page) -> Any:
+    await views_button(page).click()
+    menu = views_menu(page)
+    await expect(menu).to_be_visible()
+    return menu
+
+
+async def menu_texts(menu: Any) -> list[str]:
+    return [
+        text.strip()
+        for text in await menu.locator("[role^='menuitem']").evaluate_all(
+            "els => els.map(el => el.querySelector('[data-label]')?.textContent ?? el.textContent)"
+        )
+    ]
+
+
+async def test_saving_the_current_view_posts_its_name_and_filters_never_the_search(
+    shell: Shell,
+) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        # Needs us, high and above, sorted by priority, with a search typed in.
+        panel = await open_filters(page)
+        await (
+            panel.get_by_role("group", name="Priority")
+            .get_by_role("radio", name="High and above")
+            .check()
+        )
+        await page.keyboard.press("Escape")
+        await page.get_by_test_id("inbox-queue-sort").select_option("priority")
+        await page.get_by_test_id("inbox-search").fill("Aisyah")
+        await eventually(lambda: "q=Aisyah" in state.list_queries[-1])
+        # Nobody has asked for the views before the menu opens.
+        assert state.view_calls == []
+        button = views_button(page)
+        await expect(button).to_have_accessible_name("Views")
+        await expect(button).to_have_attribute("aria-haspopup", "menu")
+        await expect(page.get_by_test_id("inbox-views-slot").locator(button)).to_have_count(1)
+        menu = await open_views(page)
+        await expect(button).to_have_attribute("aria-expanded", "true")
+        # No views yet: the sentence and Save this view, never Manage views.
+        await expect(menu.get_by_text(VIEWS_EMPTY, exact=True)).to_be_visible(timeout=WAIT)
+        assert await menu_texts(menu) == [VIEWS_EMPTY, "Save this view…"]
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        dialog = page.get_by_role("dialog", name="Save this view")
+        await expect(dialog).to_be_visible()
+        name = dialog.get_by_label("Name", exact=True)
+        await expect(name).to_be_focused()
+        await expect(name).to_have_attribute("maxlength", "60")
+        # A name is required: nothing is sent without one.
+        await name.fill("   ")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(dialog.get_by_text("Enter a name for the view.", exact=True)).to_be_visible()
+        await expect(name).to_have_attribute("aria-invalid", "true")
+        assert view_calls(state, "POST") == []
+        await name.fill("  Urgent first  ")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(dialog).to_be_hidden(timeout=WAIT)
+        posts = view_calls(state, "POST")
+        assert len(posts) == 1, posts
+        body = posts[0]["body"]
+        assert set(body) == {"name", "filters"}, body
+        assert body["name"] == "Urgent first", body
+        assert body["filters"] == {
+            "state": ["needs_staff"],
+            "priority_min": "high",
+            "order": "priority",
+        }, body
+        # Said in words, focus back on the button, which now names the view.
+        await expect(page.get_by_text("Saved the view “Urgent first”.", exact=True)).to_be_visible()
+        await expect(button).to_be_focused()
+        await expect(button).to_have_text("Urgent first")
+        await expect(button).to_have_accessible_name("Views, showing Urgent first")
+        menu = await open_views(page)
+        item = menu.get_by_role("menuitemradio", name="Urgent first")
+        await expect(item).to_have_attribute("aria-checked", "true")
+        assert await menu_texts(menu) == ["Urgent first", "Save this view…", "Manage views…"]
+
+
+async def test_choosing_a_view_sends_its_filters_and_order_and_clears_search_and_select(
+    shell: Shell,
+) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view(
+                    "My high ones",
+                    {
+                        "state": ["needs_staff", "waiting_customer"],
+                        "assignee": "me",
+                        "priority_min": "high",
+                        "order": "activity",
+                    },
+                ),
+                saved_view(
+                    "WhatsApp complaints",
+                    {"topic": ["complaint"], "channel": "whatsapp", "order": "waiting"},
+                ),
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        search = page.get_by_test_id("inbox-search")
+        await search.fill("Aisyah")
+        await eventually(lambda: "q=Aisyah" in state.list_queries[-1])
+        toggle = page.get_by_test_id("inbox-select-mode")
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-pressed", "true")
+        menu = await open_views(page)
+        before = len(state.list_queries)
+        await menu.get_by_role("menuitemradio", name="My high ones").click()
+        await expect(menu).to_have_count(0)
+        # Exactly the view's filters and order; the search and Select mode are gone.
+        assert await settle(state, before) == {
+            "state": ["needs_staff", "waiting_customer"],
+            "assignee": ["me"],
+            "priority_min": ["high"],
+            "order": ["activity"],
+        }
+        await asyncio.sleep(0.4)
+        assert "q=" not in state.list_queries[-1], state.list_queries[-1]
+        await expect(search).to_have_value("")
+        await expect(toggle).to_have_attribute("aria-pressed", "false")
+        # Its tab is Mine (the view holds Mine's own filters), the rest shows as a chip.
+        await expect(tab(page, "mine")).to_have_attribute("aria-selected", "true")
+        chips = page.get_by_test_id("inbox-queue-chips")
+        await expect(
+            chips.get_by_role("button", name="Remove filter: Priority high or above")
+        ).to_be_visible()
+        await expect(page.get_by_test_id("inbox-queue-sort")).to_have_value("activity")
+        await expect(views_button(page)).to_have_text("My high ones")
+        await expect(
+            page.get_by_text("Showing the view “My high ones”.", exact=True)
+        ).to_be_visible()
+
+        menu = await open_views(page)
+        before = len(state.list_queries)
+        await menu.get_by_role("menuitemradio", name="WhatsApp complaints").click()
+        assert await settle(state, before) == {
+            "topic": ["complaint"],
+            "channel": ["whatsapp"],
+            "order": ["waiting"],
+        }
+        await expect(tab(page, "all")).to_have_attribute("aria-selected", "true")
+        await expect(
+            chips.get_by_role("button", name="Remove filter: Topic: Complaint")
+        ).to_be_visible()
+        await expect(
+            chips.get_by_role("button", name="Remove filter: Channel: WhatsApp")
+        ).to_be_visible()
+        await expect(views_button(page)).to_have_text("WhatsApp complaints")
+
+
+async def test_a_view_opens_on_the_most_specific_tab_whose_own_filters_it_holds(
+    shell: Shell,
+) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view("Plain needs us", {"state": ["needs_staff"], "order": "due"}),
+                saved_view(
+                    "Unassigned and late",
+                    {"state": ["needs_staff"], "assignee": "none", "overdue": True, "order": "due"},
+                ),
+                saved_view(
+                    "Overdue by priority",
+                    {
+                        "state": ["needs_staff"],
+                        "overdue": True,
+                        "order": "priority",
+                    },
+                ),
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        chips = page.get_by_test_id("inbox-queue-chips")
+        for name, tab_id, chip_names, order in (
+            ("Unassigned and late", "unassigned", ["Overdue only"], "due"),
+            ("Overdue by priority", "overdue", [], "priority"),
+            ("Plain needs us", "needs_us", [], "due"),
+        ):
+            menu = await open_views(page)
+            await menu.get_by_role("menuitemradio", name=name).click()
+            await expect(tab(page, tab_id)).to_have_attribute("aria-selected", "true")
+            await expect(page.get_by_test_id("inbox-queue-sort")).to_have_value(order)
+            if chip_names:
+                for chip in chip_names:
+                    await expect(
+                        chips.get_by_role("button", name=f"Remove filter: {chip}")
+                    ).to_be_visible()
+                await expect(chips.get_by_role("button", name=re.compile("^Remove"))).to_have_count(
+                    len(chip_names)
+                )
+            else:
+                await expect(chips).to_have_count(0)
+            await expect(views_button(page)).to_have_text(name)
+
+
+async def test_rename_and_delete_call_their_routes_and_say_what_happened(shell: Shell) -> None:
+    morning = saved_view("Morning queue", {"state": ["needs_staff"], "order": "waiting"})
+    complaints = saved_view("Complaints", {"topic": ["complaint"], "order": "activity"})
+    state = queue_inbox(views={ME_ID: [morning, complaints]})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        dialog = page.get_by_role("dialog", name="Manage views")
+        await expect(dialog).to_be_visible()
+        await expect(dialog.get_by_role("listitem")).to_have_count(2)
+
+        # Rename: Escape leaves the name as it was and keeps the dialog open.
+        await dialog.get_by_role("button", name="Rename Morning queue").click()
+        field = dialog.get_by_label("New name for Morning queue")
+        await expect(field).to_be_focused()
+        await expect(field).to_have_value("Morning queue")
+        await page.keyboard.press("Escape")
+        await expect(field).to_have_count(0)
+        await expect(dialog).to_be_visible()
+        await expect(dialog.get_by_role("button", name="Rename Morning queue")).to_be_focused()
+        assert view_calls(state, "PUT") == []
+        # Enter saves.
+        await dialog.get_by_role("button", name="Rename Morning queue").click()
+        await field.fill("Morning")
+        await page.keyboard.press("Enter")
+        await expect(dialog.get_by_text("Renamed to “Morning”.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        puts = view_calls(state, "PUT")
+        assert len(puts) == 1, puts
+        assert puts[0]["path"] == f"inbox/views/{morning['id']}", puts
+        assert puts[0]["body"] == {"name": "Morning"}, puts
+        await expect(
+            dialog.get_by_role("button", name="Rename Morning", exact=True)
+        ).to_be_focused()
+
+        # Delete asks first; Keep it sends nothing.
+        await dialog.get_by_role("button", name="Delete Complaints").click()
+        await expect(dialog.get_by_text("Delete “Complaints”?", exact=True)).to_be_visible()
+        keep = dialog.get_by_role("button", name="Keep it")
+        await expect(keep).to_be_focused()
+        await keep.click()
+        await expect(dialog.get_by_role("button", name="Delete Complaints")).to_be_focused()
+        assert view_calls(state, "DELETE") == []
+        await dialog.get_by_role("button", name="Delete Complaints").click()
+        await dialog.get_by_role("button", name="Yes, delete").click()
+        await expect(
+            dialog.get_by_text("Deleted the view “Complaints”.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        deletes = view_calls(state, "DELETE")
+        assert [call["path"] for call in deletes] == [f"inbox/views/{complaints['id']}"], deletes
+        await expect(dialog.get_by_role("listitem")).to_have_count(1)
+        assert [view["name"] for view in state.views[ME_ID]] == ["Morning"]
+        # Escape closes the dialog and gives focus back to the Views button.
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_be_hidden()
+        await expect(views_button(page)).to_be_focused()
+        menu = await open_views(page)
+        assert await menu_texts(menu) == ["Morning", "Save this view…", "Manage views…"]
+
+
+async def test_a_taken_name_and_the_twenty_view_limit_are_said_in_words(shell: Shell) -> None:
+    views = [saved_view(f"View {n}", {"order": "activity"}, minutes=n) for n in range(1, 21)]
+    state = queue_inbox(views={ME_ID: views})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio")).to_have_count(20, timeout=WAIT)
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        dialog = page.get_by_role("dialog", name="Save this view")
+        name = dialog.get_by_label("Name", exact=True)
+        await name.fill("view 3")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(
+            dialog.get_by_text("You already have a view with that name.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await name.fill("Fresh")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(
+            dialog.get_by_text("You can keep at most 20 saved views. Delete one first.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await expect(name).to_have_value("Fresh")
+        assert len(view_calls(state, "POST")) == 2
+        # Cancel gives focus back to the Views button.
+        await dialog.get_by_role("button", name="Cancel").click()
+        await expect(dialog).to_be_hidden()
+        await expect(views_button(page)).to_be_focused()
+        # A rename to a taken name is refused in words too.
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        manage = page.get_by_role("dialog", name="Manage views")
+        await manage.get_by_role("button", name="Rename View 1", exact=True).click()
+        await manage.get_by_label("New name for View 1", exact=True).fill("VIEW 2")
+        await page.keyboard.press("Enter")
+        await expect(
+            manage.get_by_text("You already have a view with that name.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await manage.get_by_role("button", name="Close").click()
+        await expect(manage).to_be_hidden()
+        await expect(views_button(page)).to_be_focused()
+
+
+async def test_another_persons_views_are_never_shown(shell: Shell) -> None:
+    views = {
+        ME_ID: [saved_view("Admin private", {"order": "activity"})],
+        AINA: [saved_view("Aina queue", {"state": ["needs_staff"], "order": "due"})],
+    }
+    state = queue_inbox(views=views, viewer=AINA)
+    async with inbox_page(shell, state, role="tenant_staff") as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio", name="Aina queue")).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(page.get_by_text("Admin private")).to_have_count(0)
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        dialog = page.get_by_role("dialog", name="Save this view")
+        await dialog.get_by_label("Name", exact=True).fill("Aina second")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(dialog).to_be_hidden(timeout=WAIT)
+    assert [view["name"] for view in views[AINA]] == ["Aina second", "Aina queue"]
+    assert [view["name"] for view in views[ME_ID]] == ["Admin private"]
+
+    state = queue_inbox(views=views)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio", name="Admin private")).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(menu.get_by_role("menuitemradio")).to_have_count(1)
+        await expect(page.get_by_text(re.compile("Aina"))).to_have_count(0)
+
+
+async def test_platform_admin_on_a_company_keeps_views_there(shell: Shell) -> None:
+    state = queue_inbox(views={ME_ID: [saved_view("Company view", {"order": "activity"})]})
+    async with inbox_page(shell, state, role="platform_admin", path="/inbox") as page:
+        await page.get_by_label("Tenant").select_option(redesign.TENANT)
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio", name="Company view")).to_be_visible(
+            timeout=WAIT
+        )
+        assert all(f"client_id={redesign.TENANT}" in call["query"] for call in state.view_calls), (
+            state.view_calls
+        )
+
+
+async def test_a_view_this_screen_cannot_show_is_listed_disabled_with_why(shell: Shell) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view("Telegram only", {"channel": "telegram", "order": "activity"}),
+                saved_view("Held for review", {"needs_review": True}),
+                saved_view("Assistant chats", {"state": ["bot"]}),
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        for name in ("Held for review", "Assistant chats"):
+            item = menu.get_by_role("menuitemradio", name=name)
+            await expect(item).to_have_attribute("aria-disabled", "true", timeout=WAIT)
+            await expect(item).to_have_accessible_description(UNSUPPORTED)
+            await expect(item).to_contain_text(UNSUPPORTED)
+        ok = menu.get_by_role("menuitemradio", name="Telegram only")
+        await expect(ok).not_to_have_attribute("aria-disabled", "true")
+        # Choosing it does nothing: the menu stays open, nothing is asked for.
+        before = len(state.list_queries)
+        # (Forced: Playwright waits for an aria-disabled item to become enabled.)
+        await menu.get_by_role("menuitemradio", name="Held for review").click(force=True)
+        await expect(menu).to_be_visible()
+        await menu.get_by_role("menuitemradio", name="Assistant chats").focus()
+        await page.keyboard.press("Enter")
+        await expect(menu).to_be_visible()
+        await asyncio.sleep(0.5)
+        assert len(state.list_queries) == before
+        await expect(tab(page, "needs_us")).to_have_attribute("aria-selected", "true")
+        await expect(views_button(page)).to_have_text("Views")
+
+
+async def test_views_show_only_a_loading_line_until_read_and_a_failed_read_retries(
+    shell: Shell,
+) -> None:
+    state = queue_inbox(
+        views={ME_ID: [saved_view("Slow view", {"order": "activity"})]},
+        views_delay=1.5,
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        # While loading: one line, never the empty sentence or Save and Manage.
+        items = menu.locator("[role^='menuitem']")
+        await expect(items).to_have_count(1)
+        await expect(items.first).to_have_text("Loading your saved views…")
+        await expect(items.first).to_have_attribute("aria-disabled", "true")
+        await expect(items.first).to_be_focused()
+        await expect(page.get_by_text(VIEWS_EMPTY)).to_have_count(0)
+        await expect(menu.get_by_role("menuitemradio", name="Slow view")).to_be_visible(
+            timeout=WAIT
+        )
+        # Focus stays in the menu when the loading line gives way to the list.
+        assert await menu.evaluate("el => el.contains(document.activeElement)")
+
+    state = queue_inbox(
+        views={ME_ID: [saved_view("Back again", {"order": "activity"})]},
+        views_script={"GET": [(500, {"detail": "synthetic outage"})]},
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(menu.get_by_text(VIEWS_FAILED, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text("synthetic outage")).to_have_count(0)
+        assert await menu_texts(menu) == [VIEWS_FAILED, "Try again"]
+        await menu.get_by_role("menuitem", name="Try again", exact=True).click()
+        # The menu stays open and the list arrives.
+        await expect(menu.get_by_role("menuitemradio", name="Back again")).to_be_visible(
+            timeout=WAIT
+        )
+        assert len(view_calls(state, "GET")) == 2
+
+    state = queue_inbox(views_script={"GET": [(403, {"detail": "forbidden"})]})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await expect(
+            menu.get_by_text("You do not have permission to do that.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+
+
+async def test_the_active_views_name_drops_when_the_tab_filters_or_sort_change(
+    shell: Shell,
+) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view(
+                    "Needs us urgent",
+                    {"state": ["needs_staff"], "priority_min": "urgent", "order": "due"},
+                )
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        button = views_button(page)
+
+        async def choose() -> None:
+            menu = await open_views(page)
+            await menu.get_by_role("menuitemradio", name="Needs us urgent").click()
+            await expect(button).to_have_text("Needs us urgent")
+
+        await choose()
+        # Another filter: the screen no longer is the view.
+        panel = await open_filters(page)
+        await (
+            panel.get_by_role("group", name="Channel").get_by_role("radio", name="Telegram").check()
+        )
+        await page.keyboard.press("Escape")
+        await expect(button).to_have_text("Views")
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio", name="Needs us urgent")).to_have_attribute(
+            "aria-checked", "false"
+        )
+        await page.keyboard.press("Escape")
+        await choose()
+        await page.get_by_test_id("inbox-queue-sort").select_option("activity")
+        await expect(button).to_have_text("Views")
+        await choose()
+        await tab(page, "needs_us").click()
+        await expect(button).to_have_text("Views")
+        await expect(button).to_have_accessible_name("Views")
+
+
+async def test_the_views_menu_works_by_keyboard_and_closes_on_tab_and_outside(
+    shell: Shell,
+) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view("First view", {"order": "activity"}),
+                saved_view("Second view", {"order": "waiting"}),
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        button = views_button(page)
+        await button.focus()
+        await page.keyboard.press("Enter")
+        menu = views_menu(page)
+        await expect(menu.get_by_role("menuitemradio")).to_have_count(2, timeout=WAIT)
+        items = menu.locator("[role^='menuitem']")
+        await expect(items).to_have_count(4)
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(1)).to_be_focused()
+        await page.keyboard.press("End")
+        await expect(items.nth(3)).to_be_focused()
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("ArrowUp")
+        await expect(items.nth(3)).to_be_focused()
+        await page.keyboard.press("Home")
+        await expect(items.nth(0)).to_be_focused()
+        # Escape closes it and gives focus back; the Inbox's own keys stay out of it.
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
+        await expect(button).to_be_focused()
+        await expect(button).to_have_attribute("aria-expanded", "false")
+        # Tab closes it.
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("Tab")
+        await expect(menu).to_have_count(0)
+        # A press outside closes it.
+        await button.click()
+        await expect(menu).to_be_visible()
+        await page.get_by_role("tablist", name="Conversation queues").click(
+            position={"x": 5, "y": 5}
+        )
+        await expect(menu).to_have_count(0)
+        # Enter on an item chooses it; focus is back on the button.
+        await button.click()
+        await expect(items.nth(1)).to_have_count(1)
+        await page.keyboard.press("ArrowDown")
+        await page.keyboard.press("Enter")
+        await expect(menu).to_have_count(0)
+        await expect(button).to_have_text("Second view")
+        await expect(button).to_be_focused()
+        # Every dialog gives focus back to the button: Save (Escape) and Manage (Escape).
+        for item, title in (
+            ("Save this view…", "Save this view"),
+            ("Manage views…", "Manage views"),
+        ):
+            menu = await open_views(page)
+            await menu.get_by_role("menuitem", name=item).click()
+            dialog = page.get_by_role("dialog", name=title)
+            await expect(dialog).to_be_visible()
+            await page.keyboard.press("Escape")
+            await expect(dialog).to_be_hidden()
+            await expect(button).to_be_focused()
+
+
+@pytest.mark.parametrize("width", (320, 390))
+async def test_the_views_menu_and_dialogs_fit_small_screens(shell: Shell, width: int) -> None:
+    state = queue_inbox(
+        views={
+            ME_ID: [
+                saved_view(LONG_VIEW, {"order": "activity"}),
+                saved_view("Odd one", {"needs_review": True}),
+            ]
+        }
+    )
+    async with inbox_page(shell, state, width=width) as page:
+        await rows_loaded(page, 3)
+
+        async def fits(what: str, locator: Any) -> None:
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], (what, measured)
+            box = await locator.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (what, box)
+
+        button = views_button(page)
+        box = await button.bounding_box()
+        assert box and box["height"] >= 40, box
+        menu = await open_views(page)
+        await expect(menu.get_by_role("menuitemradio", name=LONG_VIEW)).to_be_visible(timeout=WAIT)
+        await fits("menu", menu)
+        for item in await menu.locator("[role^='menuitem']").all():
+            item_box = await item.bounding_box()
+            assert item_box and item_box["height"] >= 40, item_box
+        # A chosen long name stays inside the bar.
+        await menu.get_by_role("menuitemradio", name=LONG_VIEW).click()
+        await expect(button).to_have_accessible_name(f"Views, showing {LONG_VIEW}")
+        await fits("button", button)
+        # The tab strip is still the only sticky part of the bar.
+        sticky = await page.get_by_test_id("inbox-queue-bar").evaluate(
+            """bar => [bar, ...bar.querySelectorAll('*')]
+                .filter(el => getComputedStyle(el).position === 'sticky')
+                .map(el => el.getAttribute('aria-label'))"""
+        )
+        assert sticky == ["Conversation queues"], sticky
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        dialog = page.get_by_role("dialog", name="Save this view")
+        await dialog.get_by_label("Name", exact=True).fill(LONG_VIEW)
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(
+            dialog.get_by_text("You already have a view with that name.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await fits("save dialog", dialog)
+        await page.keyboard.press("Escape")
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        manage = page.get_by_role("dialog", name="Manage views")
+        await expect(manage.get_by_role("listitem")).to_have_count(2)
+        await fits("manage dialog", manage)
+        await manage.get_by_role("button", name=f"Rename {LONG_VIEW}").click()
+        await fits("manage rename", manage)
+        await page.keyboard.press("Escape")
+        await manage.get_by_role("button", name=f"Delete {LONG_VIEW}").click()
+        await expect(manage.get_by_role("button", name="Yes, delete")).to_be_visible()
+        await fits("manage delete", manage)

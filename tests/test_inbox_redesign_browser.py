@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -51,6 +52,19 @@ WIDTHS = (320, 390, 768, 1024, 1440)
 # The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
 ME_ID = "22222222-2222-4222-8222-222222222222"
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
+# Every key a saved view's `filters` has when the server sends it back (its model's defaults).
+VIEW_DEFAULTS: dict[str, Any] = {
+    "state": [],
+    "assignee": None,
+    "priority_min": None,
+    "reason": [],
+    "topic": [],
+    "overdue": False,
+    "waiting_over": None,
+    "channel": None,
+    "sender": None,
+    "order": None,
+}
 QUEUE_FIELDS = {
     "queue_status",
     "queue_reason",
@@ -69,6 +83,16 @@ QUEUE_FIELDS = {
 
 def ago(minutes: int) -> str:
     return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+def saved_view(name: str, filters: dict[str, Any], minutes: int = 0) -> dict[str, Any]:
+    """A saved view as stored: `filters` holds only what is set."""
+    return {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "filters": filters,
+        "created_at": ago(minutes),
+    }
 
 
 def conversation(
@@ -256,6 +280,15 @@ class Inbox:
     bulk_script: list[Any] = field(default_factory=list)
     bulk_outcomes: dict[str, str] = field(default_factory=dict)
     as_of: str | None = None
+    # Saved views per person (user id -> views, newest first; `filters` as stored, only what is
+    # set), the signed-in person (`inbox_page` signs this id in), the view calls the page made
+    # ({"method", "path", "body", "query"}), scripted answers per method used in order ((status,
+    # json)), and how long the views read takes.
+    views: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    viewer: str = ME_ID
+    view_calls: list[dict[str, Any]] = field(default_factory=list)
+    views_script: dict[str, list[Any]] = field(default_factory=dict)
+    views_delay: float = 0.0
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -369,6 +402,49 @@ class Inbox:
         row["inbox_version"] += 1
         return {"outcome": "applied", "conversation": self.detail(identifier)}
 
+    async def views_route(self, request: Any, path: str, query: str) -> tuple[int, Any]:
+        """The saved views as the server keeps them: per person, unique names, 20 at most."""
+        method = request.method
+        body = request.post_data_json if method in ("POST", "PUT") else None
+        self.view_calls.append({"method": method, "path": path, "body": body, "query": query})
+        if method == "GET":
+            await asyncio.sleep(self.views_delay)
+        script = self.views_script.get(method) or []
+        if script:
+            return script.pop(0)
+        mine = self.views.setdefault(self.viewer, [])
+
+        def served(view: dict[str, Any]) -> dict[str, Any]:
+            return {**view, "filters": {**VIEW_DEFAULTS, **view["filters"]}}
+
+        def taken(name: str, other_than: str | None = None) -> bool:
+            return any(v["name"].lower() == name.lower() and v["id"] != other_than for v in mine)
+
+        if method == "GET":
+            return 200, [served(view) for view in mine]
+        if method == "POST":
+            name = body["name"].strip()
+            if taken(name):
+                return 409, {"detail": "you already have a saved view with this name"}
+            if len(mine) >= 20:
+                return 409, {"detail": "you can keep at most 20 saved views"}
+            view = saved_view(name, body["filters"])
+            mine.insert(0, view)
+            return 201, served(view)
+        target = next((view for view in mine if view["id"] == path.split("/")[-1]), None)
+        if target is None:
+            return 404, {"detail": "saved view not found"}
+        if method == "PUT":
+            if "name" in body:
+                if taken(body["name"].strip(), target["id"]):
+                    return 409, {"detail": "you already have a saved view with this name"}
+                target["name"] = body["name"].strip()
+            if "filters" in body:
+                target["filters"] = body["filters"]
+            return 200, served(target)
+        mine.remove(target)
+        return 204, None
+
     async def route(self, request_route: Any) -> None:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
@@ -422,6 +498,11 @@ class Inbox:
                 status, data = self.assignees_status, {"detail": "synthetic directory outage"}
         elif path == "admin/clients" and request.method == "GET":
             data = self.clients
+        elif path == "inbox/views" or path.startswith("inbox/views/"):
+            status, data = await self.views_route(request, path, query)
+            if status == 204:
+                await request_route.fulfill(status=204, body="")
+                return
         elif path.startswith("inbox/conversations/") and "/queue/" in path:
             identifier, action = path.split("/")[2], path.split("/")[4]
             body = request.post_data_json or {}
@@ -600,7 +681,11 @@ async def inbox_page(
     path: str = "/portal/inbox",
 ) -> AsyncIterator[Page]:
     """A logged-in page on the inbox, answered by `state`; checks for stray calls on exit."""
-    shell.upstream.me = make_me(role)
+    me = make_me(role)
+    # The signed-in person is the one whose saved views the stub serves.
+    if state.viewer != ME_ID:
+        me["user"] = {**me["user"], "id": state.viewer, "display_name": "Second Member"}
+    shell.upstream.me = me
     shell.upstream.packages = [{"key": "customer_support", "status": "active"}]
     shell.upstream.unexpected.clear()
     async with async_playwright() as playwright:

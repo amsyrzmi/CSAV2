@@ -915,3 +915,56 @@ test("threadActions: what the header offers per item and role", () => {
   });
   assert.equal(threadActions(item({ queue_status: "resolved", queue_reason: null, human_muted: true }), admin).handBack, true);
 });
+
+test("viewKey ignores the order lists were picked in and tells filters and order apart", () => {
+  const { viewKey } = queue;
+  const a = { ...tabFilters("all"), state: ["needs_staff", "waiting_customer"], topic: ["payment", "complaint"] };
+  const b = { ...tabFilters("all"), state: ["waiting_customer", "needs_staff"], topic: ["complaint", "payment"] };
+  assert.equal(viewKey(a, "due"), viewKey(b, "due"));
+  assert.notEqual(viewKey(a, "due"), viewKey(a, "activity"));
+  assert.notEqual(viewKey(a, "due"), viewKey({ ...a, channel: "telegram" }, "due"));
+});
+
+test("viewChoice opens a view on the most specific tab whose own filters it holds", () => {
+  const { viewChoice, viewKey } = queue;
+  const mk = (filters) => viewChoice({ filters });
+  // Each tab's own filters and order come back as that tab, with nothing extra.
+  for (const t of TABS) {
+    const choice = mk(filtersToView(tabFilters(t.id), t.order));
+    assert.equal(choice.supported, true, t.id);
+    assert.equal(choice.tab, t.id, t.id);
+    assert.deepEqual(choice.filters, tabFilters(t.id), t.id);
+    assert.equal(choice.order, t.order, t.id);
+    assert.deepEqual(activeFilterChips(choice.filters, choice.tab), [], t.id);
+  }
+  // Another order keeps the tab; the extra filters are the tab's chips.
+  const urgent = mk({ state: ["needs_staff"], priority_min: "urgent", order: "priority" });
+  assert.deepEqual([urgent.tab, urgent.order], ["needs_us", "priority"]);
+  assert.deepEqual(activeFilterChips(urgent.filters, urgent.tab).map((c) => c.key), ["priority"]);
+  // Mine's state in another order is still Mine, and its query is Mine's own plus the chip.
+  const mine = mk({ state: ["waiting_customer", "needs_staff"], assignee: "me", channel: "telegram" });
+  assert.equal(mine.tab, "mine");
+  assert.deepEqual(mine.filters.state, ["needs_staff", "waiting_customer"]);
+  assert.equal(mine.order, "activity"); // the server's default for that state set
+  // A tie between Unassigned and Overdue goes to the first in tab order.
+  const late = mk({ state: ["needs_staff"], assignee: "none", overdue: true, order: "due" });
+  assert.equal(late.tab, "unassigned");
+  assert.deepEqual(activeFilterChips(late.filters, late.tab).map((c) => c.key), ["overdue"]);
+  // Overdue without a state, or nothing but a topic, is All with chips.
+  assert.equal(mk({ overdue: true }).tab, "all");
+  assert.equal(mk({ topic: ["complaint"], order: "waiting" }).tab, "all");
+  // The key is the key of what the screen shows.
+  assert.equal(late.key, viewKey(late.filters, late.order));
+  // Nothing a tab can show: a state set no tab has, an unknown key, priority outside needs us alone.
+  assert.deepEqual(mk({ state: ["bot"] }), { supported: false });
+  assert.deepEqual(mk({ state: ["needs_staff", "snoozed"] }), { supported: false });
+  assert.deepEqual(mk({ state: ["needs_staff", "waiting_customer"], assignee: "none" }), { supported: false });
+  assert.deepEqual(mk({ needs_review: true }), { supported: false });
+  assert.deepEqual(mk({ state: ["resolved"], order: "priority" }), { supported: false });
+  // The server's full shape (defaults present) reads the same as the stored one.
+  const full = mk({
+    state: ["needs_staff"], assignee: null, priority_min: null, reason: [], topic: [], overdue: false,
+    waiting_over: null, channel: null, sender: null, order: null,
+  });
+  assert.deepEqual([full.tab, full.order], ["needs_us", "due"]);
+});

@@ -6,7 +6,7 @@ import { secondary } from "@/components/console/ui";
 import type { QueueActionName, QueueFields } from "@/lib/inbox-api";
 import { snoozePresets } from "@/lib/inbox-queue";
 import { AssignDialog, SnoozeTimeDialog } from "./QueueDialogs";
-import { Menu, type Entry } from "./ThreadActions";
+import { Menu, type Entry } from "./Menu";
 
 const ring = "focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 /** A quiet text button, as "Clear filters" is in the queue bar. */

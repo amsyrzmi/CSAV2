@@ -1,16 +1,12 @@
 "use client";
 
-import {
-  useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject,
-} from "react";
-import { ChevronDown } from "lucide-react";
-import { useDismiss } from "@/components/console/shell/useDismiss";
+import { useRef, useState } from "react";
 import { action, secondary } from "@/components/console/ui";
 import type { ConsoleRole } from "@/lib/identity-contracts";
 import type { Conversation, QueueActionName, QueueFields } from "@/lib/inbox-api";
 import { snoozePresets, threadActions } from "@/lib/inbox-queue";
 import { dateTime } from "@/lib/inbox-thread";
-import { menuIndex } from "@/lib/shell-state";
+import { Menu, type Entry } from "./Menu";
 import { AssignDialog, PriorityDialog, SnoozeTimeDialog, TopicDialog } from "./QueueDialogs";
 import type { InboxActions } from "./useInboxActions";
 import { useQueueActions } from "./useQueueActions";
@@ -18,109 +14,6 @@ import { useQueueActions } from "./useQueueActions";
 /** The existing hand-back question, word for word. */
 const RELEASE_QUESTION =
   "Let the assistant reply again? It won't answer messages that came in while you were handling this chat.";
-
-export type Entry = { label: string; onSelect: () => void };
-
-const MENU_WIDTH = 240;
-const EDGE = 8;
-const ITEM =
-  "flex min-h-10 w-full items-center rounded-[var(--fs-radius-control)] px-3 text-left text-sm hover:bg-[var(--fs-tile)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:min-h-11";
-
-/**
- * A button and its `role="menu"` popover. Opening (click, or an arrow key on the button) puts focus
- * on the first item; the arrows, Home and End move it and wrap; Escape closes and returns focus to
- * the button, and so does choosing an item (a dialog it opens returns focus there too). A press or
- * focus outside closes it. The popover is `fixed` and placed from the button, kept inside the
- * screen, so the thread's overflow never clips it. Keys it handles are marked handled, so the Inbox's
- * J, K and Escape (Back on a phone) leave them alone.
- */
-export function Menu({ label, menuLabel, testId, disabled, entries, triggerRef }: {
-  label: string; menuLabel: string; testId: string; disabled: boolean; entries: Entry[];
-  triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
-  const [open, setOpen] = useState(false);
-  // A request that starts while it is open (a poll, another control) closes it.
-  if (open && disabled) setOpen(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [place, setPlace] = useState<{ top: number; left: number; width: number } | null>(null);
-  const close = useCallback(() => setOpen(false), []);
-  const dismiss = useDismiss({ open, rootRef, triggerRef, onClose: close });
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    function measure() {
-      const trigger = triggerRef.current;
-      if (!trigger) return;
-      const box = trigger.getBoundingClientRect();
-      const viewport = document.documentElement.clientWidth;
-      const width = Math.min(MENU_WIDTH, viewport - 2 * EDGE);
-      // Right edges line up; moved left or right as far as needed to stay on screen.
-      const left = Math.max(EDGE, Math.min(box.right - width, viewport - EDGE - width));
-      const height = menuRef.current?.offsetHeight ?? 0;
-      const below = box.bottom + 4;
-      const above = box.top - 4 - height;
-      const top = below + height > window.innerHeight - EDGE && above >= EDGE ? above : below;
-      setPlace({ top, left, width });
-    }
-    measure();
-    window.addEventListener("resize", measure);
-    window.addEventListener("scroll", measure, true);
-    return () => {
-      window.removeEventListener("resize", measure);
-      window.removeEventListener("scroll", measure, true);
-    };
-  }, [open, triggerRef]);
-
-  // Focus moves in once the popover is placed: a hidden element cannot take focus.
-  const placed = place !== null;
-  useEffect(() => {
-    if (open && placed) itemRefs.current[0]?.focus({ preventScroll: true });
-  }, [open, placed]);
-
-  // React listens on the document here, so stopping propagation cannot keep a key from the Inbox's
-  // own document listener: a key the menu handles is marked handled (defaultPrevented) instead.
-  function onMenuKey(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Enter" || event.key === " ") return; // the item's own click
-    if (event.key === "Tab") { setOpen(false); return; }
-    event.preventDefault();
-    if (event.key === "Escape") return; // the root's dismiss handler closes and refocuses
-    event.stopPropagation();
-    const at = itemRefs.current.findIndex((item) => item === document.activeElement);
-    const next = menuIndex(event.key, Math.max(at, 0), entries.length);
-    if (next !== null) itemRefs.current[next]?.focus();
-  }
-
-  return <div ref={rootRef} className="relative" onKeyDown={(event) => {
-    if (event.key === "Escape" && open) event.preventDefault();
-    dismiss.onKeyDown(event);
-  }}>
-    <button ref={triggerRef} type="button" className={secondary} data-testid={testId} disabled={disabled}
-      aria-haspopup="menu" aria-expanded={open}
-      onClick={() => setOpen((value) => !value)}
-      onKeyDown={(event) => {
-        if (!open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
-          event.preventDefault();
-          setOpen(true);
-        }
-      }}>
-      {label}<ChevronDown aria-hidden size={16} />
-    </button>
-    {open && <div ref={menuRef} role="menu" aria-label={menuLabel} onKeyDown={onMenuKey}
-      style={place ? { top: place.top, left: place.left, width: place.width }
-        : { top: 0, left: 0, width: MENU_WIDTH, visibility: "hidden" }}
-      className="fixed z-40 rounded-xl border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-1 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]">
-      {entries.map((entry, index) => <button key={entry.label} type="button" role="menuitem" tabIndex={-1}
-        ref={(element) => { itemRefs.current[index] = element; }} className={ITEM}
-        onClick={() => {
-          setOpen(false);
-          triggerRef.current?.focus();
-          entry.onSelect();
-        }}>{entry.label}</button>)}
-    </div>}
-  </div>;
-}
 
 type Dialogs = "assign" | "priority" | "topic" | "snooze" | null;
 

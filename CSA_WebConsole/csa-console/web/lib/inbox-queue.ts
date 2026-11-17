@@ -807,6 +807,56 @@ export function viewToFilters(view: Pick<SavedView, "filters">): ViewRead {
   return { supported: true, filters, order: order ?? (onlyNeedsStaff ? "due" : "activity") };
 }
 
+/**
+ * One text for a filter set and its order, the same whatever order the lists were picked in, so the
+ * screen can tell whether it still shows exactly a view's filters.
+ */
+export function viewKey(filters: QueueFilters, order: QueueOrder): string {
+  const view = filtersToView(filters, order);
+  const sorted = (list: string[] | undefined) => (list ? [...list].sort() : undefined);
+  return JSON.stringify({
+    ...view, state: sorted(view.state), reason: sorted(view.reason), topic: sorted(view.topic),
+  });
+}
+
+export type ViewChoice =
+  | { supported: true; tab: QueueTabId; filters: QueueFilters; order: QueueOrder; key: string }
+  | { supported: false };
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value) => b.includes(value));
+}
+
+/**
+ * What choosing a saved view shows. A view is independent of the tab it was saved from: it opens on
+ * the most specific tab whose own filters it holds (the tab's state exactly, and every other filter
+ * the tab sets), the first in tab order on a tie, so the rest of its filters are that tab's chips.
+ * The state is never a chip, so a view whose state no tab has (the assistant's chats alone, say),
+ * one this screen cannot read (`viewToFilters`), or one with Priority order outside "needs us" alone
+ * is not supported: the menu lists it disabled rather than guess.
+ */
+export function viewChoice(view: Pick<SavedView, "filters">): ViewChoice {
+  const read = viewToFilters(view);
+  if (!read.supported) return { supported: false };
+  const { filters, order } = read;
+  if (order === "priority" && !priorityOrderAllowed(filters)) return { supported: false };
+  let best: QueueTab | null = null;
+  for (const tab of TABS) {
+    const own = tab.filters;
+    if (!sameSet(own.state ?? [], filters.state)) continue;
+    const holds = Object.entries(own).every(([name, value]) => {
+      const mine = filters[name as keyof QueueFilters];
+      return Array.isArray(value) ? Array.isArray(mine) && sameSet(value, mine) : value === mine;
+    });
+    if (!holds) continue;
+    if (best === null || Object.keys(own).length > Object.keys(best.filters).length) best = tab;
+  }
+  if (best === null) return { supported: false };
+  // The tab's own state list, in its own order, so the query is the tab's query plus the chips.
+  const shown = { ...filters, state: tabFilters(best.id).state };
+  return { supported: true, tab: best.id, filters: shown, order, key: viewKey(shown, order) };
+}
+
 // ---- notices and the other error sentences ----
 
 /**
