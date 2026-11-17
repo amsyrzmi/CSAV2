@@ -240,10 +240,17 @@ payroll phase later); statutory closure steps for EPF and tax (HR); exit convers
 Phase 1 writes tasks' reminders as `hr_notifications` rows with new kinds `task_assigned`, `task_due_soon`,
 `task_due`, `task_overdue` (the CHECK is extended by reading the live list, as migration 0531 does) and shows them on
 Home and My tasks. All writing goes through one small module `csa/hr/reminders.py` with one function
-`emit(conn, client_id, event, recipient_employee_id, dedupe_key, due_on, subject)`; when the Inbox session's generic
+`emit(conn, client_id, event, recipient_user_id, dedupe_key, due_on, subject, *, resource_id)` (as built in PR 2:
+the recipient is a console user, because `hr_notifications` is keyed by console user and an HR pool recipient may have
+no employee record; `resource_id` is the task); when the Inbox session's generic
 reminder and notification layer is merged, `emit` forwards to it (so Telegram, email and quiet hours apply) and the
 console list reads from it. Nothing else in the HR code knows about delivery. **If the layer has not merged by build
 time, phase 1 ships with console-only reminders** (owner to confirm, section 10).
+
+Note for the Inbox session: `hr_notifications.subject` is the reminder's text (the plain line Home shows), while
+`subject_id` is the recipient. `hr_tasks_due` leaves out a reminder once its `hr_notifications` row exists; once
+`emit` forwards to the layer instead, sent reminders never drop out of `hr_tasks_due`, so the layer must dedupe by
+(company, recipient, key) itself, or `emit` must keep writing the `hr_notifications` row as the dedupe ledger.
 
 ## 9. Assistant
 
