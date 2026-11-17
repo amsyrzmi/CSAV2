@@ -146,8 +146,10 @@ def test_staging_still_requires_its_eight_keys() -> None:
     assert len(STAGING.required_keys) == 8
     assert STAGING.host_file is None
     flags = sr.load_flags(sr.REPO_ROOT / STAGING.flags_file)
-    # The optional training-video switch may or may not be set in the checked-in file.
-    assert flags.keys() - STAGING.optional_keys == STAGING.required_keys
+    # The optional switches (training video, the Jev key) may or may not be in the checked-in file.
+    optional = STAGING.optional_keys | {"CSA_STAGING_JEV_SECRET"}
+    assert flags.keys() <= STAGING.required_keys | optional
+    assert flags.keys() - optional == STAGING.required_keys
 
 
 def test_production_database_names_match_the_running_instance() -> None:

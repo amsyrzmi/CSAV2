@@ -208,8 +208,10 @@ def test_load_flags_refuses_bad_files(tmp_path: Path, bad: str) -> None:
 
 def test_checked_in_flags_file_loads() -> None:
     flags = sr.load_flags(sr.REPO_ROOT / "deploy" / "staging-rollout.env")
-    # The optional training-video switch may or may not be set in the checked-in file.
-    required = {k: v for k, v in flags.items() if k not in sr.STAGING.optional_keys}
+    # The optional switches (training video, the Jev key) may or may not be in the checked-in file.
+    optional = sr.STAGING.optional_keys | {"CSA_STAGING_JEV_SECRET"}
+    assert flags.keys() <= sr.FLAG_KEYS | optional  # no unknown key
+    required = {k: v for k, v in flags.items() if k not in optional}
     assert set(required) == sr.FLAG_KEYS
     assert required == ALL_FLAGS
 
@@ -1768,7 +1770,7 @@ def test_load_flags_accepts_the_optional_jev_switch_but_does_not_need_it(tmp_pat
     path = tmp_path / "flags.env"
     path.write_text(FLAGS_TEXT + "CSA_STAGING_JEV_SECRET=staging_jev_key\n")
     assert sr.load_flags(path) == {**ALL_FLAGS, "CSA_STAGING_JEV_SECRET": "staging_jev_key"}
-    path.write_text(FLAGS_TEXT)  # the checked-in file has no such line
+    path.write_text(FLAGS_TEXT)  # the switch is optional
     assert "CSA_STAGING_JEV_SECRET" not in sr.load_flags(path)
     twice = ("staging_jev_key", "staging_disabled_jev_key")
     path.write_text(FLAGS_TEXT + "".join(f"CSA_STAGING_JEV_SECRET={v}\n" for v in twice))
@@ -1791,7 +1793,14 @@ def _jev_secret_paths(tmp_path: Path, extra: dict[str, str]) -> tuple[Path, dict
     secret_dir.mkdir(mode=0o700)
     _make_synthetic_secrets(secret_dir)
     (secret_dir / "pipeline").mkdir(mode=0o700, exist_ok=True)
-    flags = sr.load_flags(sr.REPO_ROOT / "deploy" / "staging-rollout.env") | extra
+    # The checked-in file minus any Jev line, so the result does not depend on whether it wires Jev.
+    text = (sr.REPO_ROOT / "deploy" / "staging-rollout.env").read_text(encoding="utf-8")
+    kept = [
+        line for line in text.splitlines(keepends=True) if not line.startswith("CSA_STAGING_JEV_")
+    ]
+    base = tmp_path / "flags.env"
+    base.write_text("".join(kept), encoding="utf-8")
+    flags = sr.load_flags(base) | extra
     env = sr.build_env(
         flags,
         {"python": PYTHON_REF, "frontend": FRONTEND_REF},
