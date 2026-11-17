@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import shutil
 from pathlib import Path
 
 import pytest
 import scripts.staging_rollout as sr
 from scripts.rollout_targets import PROD_TUNING_KEYS, PRODUCTION, STAGING, get_target
 
+from tests.test_production_overlay import _secret_dir
 from tests.test_rollout_gate import FakeDeployments, deployment
-from tests.test_rollout_production import HOST_TEXT
+from tests.test_rollout_production import HOST_REQUIRED, HOST_TEXT
 from tests.test_staging_rollout import (
     DIGEST_A,
     DIGEST_B,
@@ -146,8 +148,10 @@ def test_staging_still_requires_its_eight_keys() -> None:
     assert len(STAGING.required_keys) == 8
     assert STAGING.host_file is None
     flags = sr.load_flags(sr.REPO_ROOT / STAGING.flags_file)
-    # The optional training-video switch may or may not be set in the checked-in file.
-    assert flags.keys() - STAGING.optional_keys == STAGING.required_keys
+    # The optional switches (training video, the Jev key) may or may not be in the checked-in file.
+    optional = STAGING.optional_keys | {"CSA_STAGING_JEV_SECRET"}
+    assert flags.keys() <= STAGING.required_keys | optional
+    assert flags.keys() - optional == STAGING.required_keys
 
 
 def test_production_database_names_match_the_running_instance() -> None:
@@ -187,7 +191,20 @@ def test_groq_url_is_in_no_allow_list() -> None:
 def test_production_env_file_loads() -> None:
     path = sr.REPO_ROOT / PRODUCTION.flags_file
     flags = sr.load_flags(path, PRODUCTION)
-    assert flags.keys() == SIX_SWITCHES | {"CSA_STAGING_TRAINING_VIDEO", "CSA_PROD_S3_TRAINING_KEY"}
+    # Jev runs in shadow on production: Groq decides, Jev's answers are only logged. The customer
+    # classifier default is not set, so it stays on the LLM.
+    jev = {
+        "CSA_STAGING_JEV_SECRET": "staging_jev_key",
+        "CSA_STAGING_ASSISTANT_DECIDER_EMAIL": "shadow",
+        "CSA_STAGING_ASSISTANT_DECIDER_ROUTING": "shadow",
+        "CSA_STAGING_ASSISTANT_DECIDER_INBOUND_INJECTION": "shadow",
+    }
+    assert flags.keys() == (
+        SIX_SWITCHES | {"CSA_STAGING_TRAINING_VIDEO", "CSA_PROD_S3_TRAINING_KEY"} | jev.keys()
+    )
+    assert flags.keys() - jev.keys() <= PRODUCTION.required_keys | PRODUCTION.optional_keys
+    assert {key: flags[key] for key in jev} == jev
+    assert "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT" not in flags
     assert flags == {
         "CSA_STAGING_WORKSPACE_ASSISTANT": "true",
         "CSA_STAGING_GATEWAY_MODEL_SECRET": "staging_model_key",
@@ -197,6 +214,7 @@ def test_production_env_file_loads() -> None:
         "CSA_STAGING_BOOKINGS_GOOGLE_MEET": "true",
         "CSA_STAGING_TRAINING_VIDEO": "true",
         "CSA_PROD_S3_TRAINING_KEY": "prod_s3_training",
+        **jev,
     }
     text = path.read_text(encoding="utf-8")
     assert not any(marker in text for marker in ("http", "://", ".fourstacks"))
@@ -205,18 +223,25 @@ def test_production_env_file_loads() -> None:
 # --- the optional Jev switches, for every target -----------------------------------------------
 
 
-VIDEO_KEYS = ("CSA_STAGING_TRAINING_VIDEO=", "CSA_PROD_S3_TRAINING_KEY=")
+VIDEO_KEYS = (
+    "CSA_STAGING_TRAINING_VIDEO=",
+    "CSA_PROD_S3_TRAINING_KEY=",
+    # The Jev lines too: the checked-in file may wire Jev, and a test adds its own.
+    "CSA_STAGING_JEV_",
+    "CSA_STAGING_ASSISTANT_DECIDER_",
+    "CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT=",
+)
 
 
 def without_video_lines(text: str) -> str:
-    """The switch file minus its training-video lines, so a test can add its own."""
+    """The switch file minus its training-video and Jev lines, so a test can add its own."""
     return "".join(
         line for line in text.splitlines(keepends=True) if not line.startswith(VIDEO_KEYS)
     )
 
 
 def production_flags_with(tmp_path: Path, *lines: str) -> Path:
-    """The real production switch file, without its video lines, plus ``lines``."""
+    """The real production switch file, without its video and Jev lines, plus ``lines``."""
     text = without_video_lines((sr.REPO_ROOT / PRODUCTION.flags_file).read_text(encoding="utf-8"))
     path = tmp_path / "production-rollout.env"
     path.write_text(text + "".join(f"{line}\n" for line in lines), encoding="utf-8")
@@ -280,6 +305,50 @@ def test_production_jev_switch_reaches_compose(tmp_path: Path) -> None:
     env = sr.build_env(flags, images, docker_config=tmp_path / "dc", target=PRODUCTION)
     assert env["CSA_STAGING_JEV_SECRET"] == "staging_jev_key"
     assert env["CSA_STAGING_ASSISTANT_DECIDER_ROUTING"] == "cascade"
+
+
+def _production_secret_paths(tmp_path: Path, *lines: str) -> tuple[Path, dict[str, Path]]:
+    """Secret name to file, as production's plan reads it from the rendered compose config."""
+    secret_dir = _secret_dir(tmp_path)
+    flags = sr.load_flags(production_flags_with(tmp_path, *lines), PRODUCTION)
+    env = sr.build_env(
+        flags,
+        {"python": "p@sha256:aa", "frontend": "f@sha256:bb"},
+        docker_config=tmp_path / "dc",
+        secret_dir=secret_dir,
+        target=PRODUCTION,
+        host_values=HOST_REQUIRED,
+    )
+    env["HOME"] = str(tmp_path)
+    return secret_dir, sr.secret_paths(
+        sr.SubprocessRunner(cwd=sr.REPO_ROOT), env, target=PRODUCTION
+    )
+
+
+def test_production_jev_switch_makes_plan_ask_for_the_real_key_file(tmp_path: Path) -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is unavailable")
+    # Wired, with the key file not written yet: plan stops with the file listed as missing.
+    wired = (
+        "CSA_STAGING_JEV_SECRET=staging_jev_key",
+        "CSA_STAGING_ASSISTANT_DECIDER_EMAIL=shadow",
+    )
+    secret_dir, paths = _production_secret_paths(tmp_path, *wired)
+    assert paths["staging_jev_key"] == secret_dir / "pipeline/staging_jev_key"
+    # On the instance the same name resolves under the production secret directory.
+    assert PRODUCTION.secret_dir / "pipeline/staging_jev_key" == Path(
+        "/srv/csa-prod/secrets/pipeline/staging_jev_key"
+    )
+    assert "staging_disabled_jev_key" not in paths
+    assert "staging_jev_key" in sr.missing_secrets(paths)
+    paths["staging_jev_key"].write_text("SYNTHETIC-ONLY")
+    assert "staging_jev_key" not in sr.missing_secrets(paths)
+    # Unwired, nothing asks for it.
+    other = tmp_path / "unwired"
+    other.mkdir()
+    _, unwired = _production_secret_paths(other)
+    assert "staging_jev_key" not in unwired
+    assert not [name for name in sr.missing_secrets(unwired) if "jev" in name]
 
 
 # --- --target on the command line ---------------------------------------------------------------

@@ -61,7 +61,7 @@ reportMissingImports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "slow: builds Docker images or a packaged frontend; `make test` skips these, CI runs them",
+    "slow: builds Docker images or a packaged frontend, or seeds a large data set; `make test` skips these, CI runs them",
 ]
 
 [tool.importlinter]
@@ -84,6 +84,18 @@ source_modules = [
 forbidden_modules = [
     "langgraph",
     "langgraph_checkpoint",
+]
+
+[[tool.importlinter.contracts]]
+name = "csa.inbox_queue stays below the console, agents, approval and workspace"
+type = "forbidden"
+source_modules = ["csa.inbox_queue"]
+forbidden_modules = [
+    "csa.console",
+    "csa.agents",
+    "csa.approval",
+    "csa.workspace",
+    "csa.staff.callbacks",
 ]
 
 [dependency-groups]

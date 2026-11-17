@@ -23,6 +23,7 @@ from csa.contracts.callbacks import PendingActionStore
 from csa.core import db
 from csa.core.pii import redact
 from csa.core.tenancy import tx
+from csa.inbox_queue import transitions as queue
 
 logger = structlog.get_logger(__name__)
 
@@ -198,5 +199,17 @@ async def _resume_conversation(
             (action["conversation_id"], client_id),
             conn=conn,
         )
+        # The hand back runs whether or not the release matched: after the mute expired the AI
+        # already has the chat, but the item may still need staff and its escalation and ticket
+        # may still be open. Only a conversation outside the queue (sandbox or console chat)
+        # raises not_in_queue here; it has no queue item, escalation state or ticket to end.
+        try:
+            handed_back = await queue.hand_back(
+                conn, client_id, UUID(str(action["conversation_id"])), actor_user_id=None
+            )
+        except queue.QueueError as exc:
+            if exc.code != "not_in_queue":
+                raise
+            handed_back = False
         await db.q.fetch_one("staff/use_action_by_id.sql", (client_id, action["id"]), conn=conn)
-    return "AI resumed." if released else "Conversation was already released."
+    return "AI resumed." if released or handed_back else "Conversation was already released."
