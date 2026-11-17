@@ -283,12 +283,13 @@ class Inbox:
     # Saved views per person (user id -> views, newest first; `filters` as stored, only what is
     # set), the signed-in person (`inbox_page` signs this id in), the view calls the page made
     # ({"method", "path", "body", "query"}), scripted answers per method used in order ((status,
-    # json)), and how long the views read takes.
+    # json)), and how long the views read and each write take.
     views: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     viewer: str = ME_ID
     view_calls: list[dict[str, Any]] = field(default_factory=list)
     views_script: dict[str, list[Any]] = field(default_factory=dict)
     views_delay: float = 0.0
+    views_write_delay: float = 0.0
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -407,8 +408,7 @@ class Inbox:
         method = request.method
         body = request.post_data_json if method in ("POST", "PUT") else None
         self.view_calls.append({"method": method, "path": path, "body": body, "query": query})
-        if method == "GET":
-            await asyncio.sleep(self.views_delay)
+        await asyncio.sleep(self.views_delay if method == "GET" else self.views_write_delay)
         script = self.views_script.get(method) or []
         if script:
             return script.pop(0)

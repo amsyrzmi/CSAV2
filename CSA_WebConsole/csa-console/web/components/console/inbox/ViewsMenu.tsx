@@ -161,6 +161,9 @@ function SaveViewBody({ onCancel, onSave }: { onCancel: () => void; onSave: (nam
  * Rename (an inline field: Enter saves, Escape cancels) and delete (a second "Delete …? Yes, delete /
  * Keep it" step) for each view. Each result is said in a notice at the top of the dialog (the page's
  * own notice is behind the modal dialog), an error next to its view; focus stays on the view's row.
+ * One change at a time: while one is pending, only its own button says so ("Saving…", "Deleting…")
+ * and every control in the list is `aria-disabled` and does nothing, so no other row can open,
+ * close or take over an editor or a confirm step before the answer lands on its own row.
  */
 function ManageViewsBody({ views }: { views: Views }) {
   const list = views.views ?? [];
@@ -169,7 +172,9 @@ function ManageViewsBody({ views }: { views: Views }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [rowError, setRowError] = useState<{ id: string; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<{ id: string; kind: "rename" | "delete" } | null>(null);
+  const locked = pending !== null;
+  const inert = locked || undefined;
   const root = useRef<HTMLDivElement>(null);
   const focusNext = useRef<string | null>(null);
   const firstButton = useRef<HTMLElement | null>(null);
@@ -183,11 +188,13 @@ function ManageViewsBody({ views }: { views: Views }) {
     target?.focus();
   });
   function stopEditing() {
+    if (locked) return;
     if (editing) focusNext.current = `rename-${editing}`;
     setEditing(null);
     setRowError(null);
   }
   function startEditing(view: SavedView) {
+    if (locked) return;
     setConfirming(null);
     setRowError(null);
     setEditing(view.id);
@@ -195,13 +202,13 @@ function ManageViewsBody({ views }: { views: Views }) {
     focusNext.current = "edit";
   }
   async function rename(view: SavedView) {
-    if (busy) return;
+    if (locked) return;
     const name = draft.trim();
     if (!name) { setRowError({ id: view.id, text: NAME_REQUIRED }); return; }
     if (name === view.name) { stopEditing(); return; }
-    setBusy(true);
+    setPending({ id: view.id, kind: "rename" });
     const result = await views.rename(view.id, name);
-    setBusy(false);
+    setPending(null);
     if (!result.ok) {
       setRowError({ id: view.id, text: result.error ?? "Could not save the view. Try again." });
       focusNext.current = "edit";
@@ -213,12 +220,12 @@ function ManageViewsBody({ views }: { views: Views }) {
     focusNext.current = `rename-${view.id}`;
   }
   async function remove(view: SavedView) {
-    if (busy) return;
+    if (locked) return;
     const index = list.findIndex((item) => item.id === view.id);
     const neighbour = list[index + 1] ?? list[index - 1];
-    setBusy(true);
+    setPending({ id: view.id, kind: "delete" });
     const result = await views.remove(view.id);
-    setBusy(false);
+    setPending(null);
     setConfirming(null);
     if (!result.ok) {
       setRowError({ id: view.id, text: result.error ?? "Could not delete the view. Try again." });
@@ -239,12 +246,15 @@ function ManageViewsBody({ views }: { views: Views }) {
           const unsupported = !viewChoice(view).supported;
           const error = rowError?.id === view.id ? rowError.text : "";
           const errorId = `view-error-${view.id}`;
+          const saving = pending?.id === view.id && pending.kind === "rename";
+          const deleting = pending?.id === view.id && pending.kind === "delete";
           let body: ReactNode;
           if (editing === view.id) {
             body = <form noValidate className="flex flex-wrap items-center gap-2"
               onSubmit={(event) => { event.preventDefault(); void rename(view); }}>
               <input data-view-focus="edit"
                 className={`${field} min-w-0 flex-[1_1_12rem]`} value={draft} maxLength={NAME_MAX} autoComplete="off"
+                readOnly={saving}
                 aria-label={`New name for ${view.name}`} aria-invalid={error ? true : undefined}
                 aria-describedby={error ? errorId : undefined}
                 onChange={(event) => { setDraft(event.target.value); setRowError(null); }}
@@ -255,16 +265,17 @@ function ManageViewsBody({ views }: { views: Views }) {
                   event.stopPropagation();
                   stopEditing();
                 }} />
-              <button type="submit" className={action}>{busy ? "Saving…" : "Save name"}</button>
-              <button type="button" className={secondary} onClick={stopEditing}>Cancel</button>
+              <button type="submit" className={action} aria-disabled={inert}>{saving ? "Saving…" : "Save name"}</button>
+              <button type="button" className={secondary} aria-disabled={inert} onClick={stopEditing}>Cancel</button>
             </form>;
           } else if (confirming === view.id) {
             body = <div className="space-y-2">
               <p className="text-sm font-medium [overflow-wrap:anywhere]">{`Delete ${quoted(view.name)}?`}</p>
               <div className="flex flex-wrap gap-2">
-                <button type="button" className={destructive} onClick={() => void remove(view)}>
-                  {busy ? "Deleting…" : "Yes, delete"}</button>
-                <button type="button" className={secondary} data-view-focus="keep" onClick={() => {
+                <button type="button" className={destructive} aria-disabled={inert} onClick={() => void remove(view)}>
+                  {deleting ? "Deleting…" : "Yes, delete"}</button>
+                <button type="button" className={secondary} data-view-focus="keep" aria-disabled={inert} onClick={() => {
+                  if (locked) return;
                   setConfirming(null);
                   focusNext.current = `delete-${view.id}`;
                 }}>Keep it</button>
@@ -278,9 +289,10 @@ function ManageViewsBody({ views }: { views: Views }) {
               </div>
               <button type="button" className={secondary} data-view-focus={`rename-${view.id}`}
                 ref={index === 0 ? (element) => { firstButton.current = element; } : undefined}
-                aria-label={`Rename ${view.name}`} onClick={() => startEditing(view)}>Rename</button>
+                aria-label={`Rename ${view.name}`} aria-disabled={inert} onClick={() => startEditing(view)}>Rename</button>
               <button type="button" className={secondary} data-view-focus={`delete-${view.id}`}
-                aria-label={`Delete ${view.name}`} onClick={() => {
+                aria-label={`Delete ${view.name}`} aria-disabled={inert} onClick={() => {
+                  if (locked) return;
                   setEditing(null);
                   setRowError(null);
                   setConfirming(view.id);

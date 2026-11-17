@@ -2738,6 +2738,96 @@ async def test_the_views_menu_works_by_keyboard_and_closes_on_tab_and_outside(
             await expect(button).to_be_focused()
 
 
+async def test_manage_views_acts_on_one_row_while_a_change_is_pending(shell: Shell) -> None:
+    alpha = saved_view("Alpha", {"order": "activity"})
+    beta = saved_view("Beta", {"order": "waiting"})
+    state = queue_inbox(views={ME_ID: [alpha, beta]}, views_write_delay=1.5)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        dialog = page.get_by_role("dialog", name="Manage views")
+        await dialog.get_by_role("button", name="Rename Alpha", exact=True).click()
+        await dialog.get_by_label("New name for Alpha", exact=True).fill("Alpha two")
+        await page.keyboard.press("Enter")
+        # Pending: only Alpha's own button says so and is inert; Beta's controls are inert too.
+        save = dialog.get_by_role("button", name="Saving…")
+        await expect(save).to_have_attribute("aria-disabled", "true")
+        beta_delete = dialog.get_by_role("button", name="Delete Beta", exact=True)
+        beta_rename = dialog.get_by_role("button", name="Rename Beta", exact=True)
+        for control in (beta_delete, beta_rename):
+            await expect(control).to_have_attribute("aria-disabled", "true")
+        await beta_delete.click(force=True)
+        await expect(dialog.get_by_text("Delete “Beta”?", exact=True)).to_have_count(0)
+        await expect(dialog.get_by_role("button", name="Deleting…")).to_have_count(0)
+        await beta_rename.click(force=True)
+        await expect(dialog.get_by_label("New name for Beta", exact=True)).to_have_count(0)
+        await expect(dialog.get_by_label("New name for Alpha", exact=True)).to_be_visible()
+        # Alpha's answer lands on Alpha; Beta's controls work again afterwards.
+        await expect(dialog.get_by_text("Renamed to “Alpha two”.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        assert [call["body"] for call in view_calls(state, "PUT")] == [{"name": "Alpha two"}]
+        assert view_calls(state, "DELETE") == []
+        await expect(beta_rename).not_to_have_attribute("aria-disabled", "true")
+        await beta_rename.click()
+        beta_field = dialog.get_by_label("New name for Beta", exact=True)
+        await expect(beta_field).to_be_focused()
+        await page.keyboard.press("Escape")
+
+        # A pending delete holds the other rows the same way, and only its own button says so.
+        await dialog.get_by_role("button", name="Delete Beta", exact=True).click()
+        await dialog.get_by_role("button", name="Yes, delete").click()
+        deleting = dialog.get_by_role("button", name="Deleting…")
+        await expect(deleting).to_have_attribute("aria-disabled", "true")
+        alpha_rename = dialog.get_by_role("button", name="Rename Alpha two", exact=True)
+        await expect(alpha_rename).to_have_attribute("aria-disabled", "true")
+        await alpha_rename.click(force=True)
+        await expect(dialog.get_by_label("New name for Alpha two", exact=True)).to_have_count(0)
+        await expect(dialog.get_by_text("Deleted the view “Beta”.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        assert len(view_calls(state, "DELETE")) == 1
+        await expect(alpha_rename).to_be_focused()
+
+
+async def test_a_failed_rename_puts_its_error_and_focus_on_its_own_row(shell: Shell) -> None:
+    alpha = saved_view("Alpha", {"order": "activity"})
+    beta = saved_view("Beta", {"order": "waiting"})
+    state = queue_inbox(
+        views={ME_ID: [alpha, beta]},
+        views_write_delay=1.5,
+        views_script={"PUT": [(409, {"detail": "you already have a saved view with this name"})]},
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        dialog = page.get_by_role("dialog", name="Manage views")
+        await dialog.get_by_role("button", name="Rename Alpha", exact=True).click()
+        alpha_field = dialog.get_by_label("New name for Alpha", exact=True)
+        await alpha_field.fill("beta")
+        await page.keyboard.press("Enter")
+        await expect(dialog.get_by_role("button", name="Saving…")).to_be_visible()
+        # A press on another row while it is pending changes nothing.
+        await dialog.get_by_role("button", name="Rename Beta", exact=True).click(force=True)
+        error = dialog.get_by_text("You already have a view with that name.", exact=True)
+        await expect(error).to_be_visible(timeout=WAIT)
+        # (`has` is looked up inside each item, so it is rooted at the page, not the dialog.)
+        alpha_row = dialog.get_by_role("listitem").filter(
+            has=page.get_by_label("New name for Alpha", exact=True)
+        )
+        await expect(
+            alpha_row.get_by_text("You already have a view with that name.")
+        ).to_be_visible()
+        await expect(alpha_field).to_be_focused()
+        await expect(alpha_field).to_have_value("beta")
+        await expect(alpha_field).to_have_accessible_description(
+            "You already have a view with that name."
+        )
+        await expect(dialog.get_by_label("New name for Beta", exact=True)).to_have_count(0)
+
+
 @pytest.mark.parametrize("width", (320, 390))
 async def test_the_views_menu_and_dialogs_fit_small_screens(shell: Shell, width: int) -> None:
     state = queue_inbox(
