@@ -366,6 +366,30 @@ async def conversation_detail(
     return conversation_from_row(row, full_phone=True)
 
 
+def request_fingerprint(target: str, payload: Contract) -> str:
+    """What a request key is bound to: the action's target and the whole request body."""
+    return hashlib.sha256((target + payload.model_dump_json()).encode()).hexdigest()
+
+
+async def stored_receipt(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    actor: ConsoleActor,
+    request_key: UUID,
+    fingerprint: str,
+) -> dict[str, Any] | None:
+    """The stored result JSON of this request key, under the key's lock; 409 for another body."""
+    await db.q.fetch_one(
+        "inbox/lock_request.sql", (f"inbox:{client_id}:{actor.user_id}:{request_key}",), conn=conn
+    )
+    old = await db.q.fetch_one(
+        "inbox/get_action.sql", (client_id, actor.user_id, request_key), conn=conn
+    )
+    if old is not None and old["fingerprint"] != fingerprint:
+        raise HTTPException(409, "request key was used with different content")
+    return old["result"] if old else None
+
+
 async def replay(
     conn: AsyncConnection[Any],
     client_id: UUID,
@@ -373,18 +397,9 @@ async def replay(
     payload: InboxAction | ReplyDecision,
     target: str,
 ) -> tuple[str, InboxResult | None]:
-    fingerprint = hashlib.sha256((target + payload.model_dump_json()).encode()).hexdigest()
-    await db.q.fetch_one(
-        "inbox/lock_request.sql",
-        (f"inbox:{client_id}:{actor.user_id}:{payload.request_key}",),
-        conn=conn,
-    )
-    old = await db.q.fetch_one(
-        "inbox/get_action.sql", (client_id, actor.user_id, payload.request_key), conn=conn
-    )
-    if old is not None and old["fingerprint"] != fingerprint:
-        raise HTTPException(409, "request key was used with different content")
-    return fingerprint, InboxResult.model_validate(old["result"]) if old else None
+    fingerprint = request_fingerprint(target, payload)
+    old = await stored_receipt(conn, client_id, actor, payload.request_key, fingerprint)
+    return fingerprint, InboxResult.model_validate(old) if old is not None else None
 
 
 async def record(
@@ -776,6 +791,11 @@ def build_inbox_router() -> APIRouter:
         client_id: Annotated[UUID, Depends(tenant)],
     ) -> InboxResult:
         return await mutate_conversation(request, client_id, conversation_id, payload, "reply")
+
+    # The queue actions live in their own module, which imports this one.
+    from csa.console.inbox_queue_actions import add_queue_action_routes
+
+    add_queue_action_routes(router)
 
     @router.post("/approvals/{approval_id}/decide", response_model=InboxResult)
     async def decide(
