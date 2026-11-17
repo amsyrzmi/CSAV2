@@ -126,7 +126,7 @@ function Popover({ titleId, anchorRef, children }: {
 
 /**
  * The queue bar above the panes: the tabs with their counts, then search, Filters, Views (the
- * saved views menu), the Response times slot (filled by later work), Select and Sort, then the
+ * saved views menu), Response times (the company's response targets), Select and Sort, then the
  * removable filter chips. While conversations are selected, `bulk` (the bulk bar) takes the second line's place.
  */
 export function QueueBar({

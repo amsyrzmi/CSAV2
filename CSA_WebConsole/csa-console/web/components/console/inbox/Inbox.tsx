@@ -23,9 +23,11 @@ import { conversationName } from "./ConversationRow";
 import { PHONE_QUERY, useMediaQuery, useTicker, WIDE_QUERY } from "./hooks";
 import { OpenConversation } from "./OpenConversation";
 import { QueueBar } from "./QueueBar";
+import { ResponseTimes } from "./QueueSettings";
 import { useInboxActions, type InboxActions } from "./useInboxActions";
 import { usePages } from "./usePages";
 import { useQueueActions } from "./useQueueActions";
+import { useInboxSettings } from "./useQueueData";
 import { ViewsMenu, type ActiveView, type ChosenView } from "./ViewsMenu";
 
 const FIRST_TAB: QueueTabId = "needs_us";
@@ -95,6 +97,10 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   // feedback sits under the bar (not in an open thread, which a phone hides behind the list).
   const canSelect = me.role !== "read_only";
   const canAssign = me.role === "tenant_admin" || me.role === "platform_admin";
+  // The company's response times: read the first time their panel opens, and kept here so the
+  // answer survives the bulk bar taking the queue bar's second line.
+  const [timesAsked, setTimesAsked] = useState(false);
+  const times = useInboxSettings(query, timesAsked);
   const [picked, setPicked] = useState<ReadonlySet<string>>(NONE);
   const [selectMode, setSelectMode] = useState(false);
   const [selectMessage, setSelectMessage] = useState("");
@@ -408,6 +414,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
             if (view) setActiveView({ id: view.id, name: view.name, key });
             announce(`Saved the view “${name}”.`);
           }} />}
+        timesSlot={<ResponseTimes settings={times} canEdit={canAssign} onOpen={() => setTimesAsked(true)} />}
         selectSlot={canSelect ? <SelectToggle on={selectMode} toggleRef={selectToggleRef} disabled={actions.blocked}
           onToggle={() => { setSelectMode((value) => !value); setSelectMessage(""); }}
           canSelectAll={items.length > 0} onSelectAll={selectAll} /> : undefined}

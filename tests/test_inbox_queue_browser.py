@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
 import pytest
+from csa.console.inbox_settings import InboxSettingsIn
 from playwright.async_api import Page, expect
 
 from tests import test_inbox_redesign_browser as redesign
@@ -2888,3 +2890,362 @@ async def test_the_views_menu_and_dialogs_fit_small_screens(shell: Shell, width:
         await manage.get_by_role("button", name=f"Delete {LONG_VIEW}").click()
         await expect(manage.get_by_role("button", name="Yes, delete")).to_be_visible()
         await fits("manage delete", manage)
+
+
+# ---- response times (Task 8) ----
+
+SETTINGS_DEFAULTS = {
+    "target_urgent_min": 15,
+    "target_high_min": 60,
+    "target_normal_min": 240,
+    "target_low_min": 1440,
+    "repeat_minutes": 60,
+    "max_repeats": 3,
+    "follow_up_hours": 48,
+    "stale_claim_hours": 8,
+    "handback_prompt_hours": 24,
+}
+TIMES_LOADING = "Loading the response times…"
+TIMES_FAILED = "Could not load the response times. Try again."
+TIMES_SAVED = "Response times saved."
+TIMES_STAFF = "Only administrators can change these."
+TIMES_LATER = "Used by reminders, which come later."
+TIMES_CONFLICT = (
+    "Someone else changed these. The latest values are shown; check them and save again."
+)
+TARGET_WORDS = "Enter a whole number of minutes, from 5 to 10080."
+TARGET_LABELS = ("Urgent", "High", "Normal", "Low")
+
+
+def times_button(page: Page) -> Any:
+    return page.get_by_test_id("inbox-response-times")
+
+
+def times_panel(page: Page) -> Any:
+    return page.get_by_role("dialog", name="Response times")
+
+
+def settings_calls(state: Inbox, method: str) -> list[dict[str, Any]]:
+    return [call for call in state.settings_calls if call["method"] == method]
+
+
+async def open_times(page: Page) -> Any:
+    await times_button(page).click()
+    panel = times_panel(page)
+    await expect(panel).to_be_visible()
+    return panel
+
+
+async def times_loaded(panel: Any) -> None:
+    await expect(panel.get_by_label("Normal", exact=True)).to_be_visible(timeout=WAIT)
+
+
+def test_the_panels_ranges_are_the_apis() -> None:
+    """The client's SETTINGS_RANGES (lib/inbox-api.ts) equal the API model's bounds."""
+    source = (
+        Path(__file__).resolve().parents[1] / "CSA_WebConsole/csa-console/web/lib/inbox-api.ts"
+    ).read_text()
+    block = source.split("export const SETTINGS_RANGES", 1)[1].split("};", 1)[0]
+    client = {
+        key: (int(low), int(high))
+        for key, low, high in re.findall(r"(\w+): \[(\d+), (\d+)\]", block)
+    }
+    api = {}
+    for key, info in InboxSettingsIn.model_fields.items():
+        if key == "version":
+            continue
+        bounds = {type(item).__name__: item for item in info.metadata}
+        api[key] = (bounds["Ge"].ge, bounds["Le"].le)
+    assert client == api
+
+
+async def test_an_admin_changes_a_target_and_the_put_carries_every_field(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        # Nothing is read until the panel first opens.
+        assert state.settings_calls == []
+        button = times_button(page)
+        await expect(button).to_have_accessible_name("Response times")
+        panel = await open_times(page)
+        await times_loaded(panel)
+        for label, key in zip(TARGET_LABELS, ("urgent", "high", "normal", "low"), strict=True):
+            await expect(panel.get_by_label(label, exact=True)).to_have_value(
+                str(SETTINGS_DEFAULTS[f"target_{key}_min"])
+            )
+        normal = panel.get_by_label("Normal", exact=True)
+        await expect(normal).to_have_accessible_description("4 h")
+        await expect(panel.get_by_text(TIMES_LATER, exact=True)).to_be_visible()
+        await expect(
+            panel.get_by_text("A change applies only to conversations that enter the queue")
+        ).to_be_visible()
+        save = panel.get_by_role("button", name="Save", exact=True)
+        # Unchanged: Save does nothing.
+        await expect(save).to_have_attribute("aria-disabled", "true")
+        status = panel.get_by_test_id("inbox-response-times-status")
+        await expect(status).to_have_text("")
+        await expect(status).to_have_attribute("role", "status")
+        await normal.fill("90")
+        await expect(normal).to_have_accessible_description("1 h 30 min")
+        await normal.fill("30")
+        await expect(normal).to_have_accessible_description("30 min")
+        await expect(save).not_to_have_attribute("aria-disabled", "true")
+        await save.click()
+        await expect(status).to_have_text(TIMES_SAVED, timeout=WAIT)
+        puts = settings_calls(state, "PUT")
+        assert [call["body"] for call in puts] == [
+            {**SETTINGS_DEFAULTS, "target_normal_min": 30, "version": 0}
+        ]
+        await expect(save).to_have_attribute("aria-disabled", "true")
+        # The next save is made on the version the first one returned.
+        await panel.get_by_label("Urgent", exact=True).fill("10")
+        await save.click()
+        await expect(status).to_have_text(TIMES_SAVED, timeout=WAIT)
+        await eventually(lambda: len(settings_calls(state, "PUT")) == 2)
+        assert settings_calls(state, "PUT")[1]["body"] == {
+            **SETTINGS_DEFAULTS,
+            "target_normal_min": 30,
+            "target_urgent_min": 10,
+            "version": 1,
+        }
+        assert len(settings_calls(state, "GET")) == 1
+
+    # A platform administrator edits the chosen company's settings.
+    state = queue_inbox()
+    async with inbox_page(shell, state, role="platform_admin", path="/inbox") as page:
+        await page.get_by_label("Tenant").select_option(redesign.TENANT)
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        await panel.get_by_label("Low", exact=True).fill("720")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        await expect(panel.get_by_test_id("inbox-response-times-status")).to_have_text(
+            TIMES_SAVED, timeout=WAIT
+        )
+        assert [call["method"] for call in state.settings_calls] == ["GET", "PUT"]
+        assert all(f"client_id={redesign.TENANT}" in call["query"] for call in state.settings_calls)
+        assert state.settings_calls[1]["body"]["target_low_min"] == 720
+
+
+async def test_invalid_times_are_refused_in_words_before_anything_is_sent(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        normal = panel.get_by_label("Normal", exact=True)
+        save = panel.get_by_role("button", name="Save", exact=True)
+        for bad in ("4", "10081", "", "abc", "1.5"):
+            await normal.fill(bad)
+            await expect(normal).to_have_accessible_description(TARGET_WORDS)
+            await expect(normal).to_have_attribute("aria-invalid", "true")
+            await expect(save).to_have_attribute("aria-disabled", "true")
+            await save.click(force=True)
+            await normal.press("Enter")
+        # A press on Save while invalid moves focus to the field that needs fixing.
+        await panel.get_by_label("Urgent", exact=True).focus()
+        await save.click(force=True)
+        await expect(normal).to_be_focused()
+        # The valid value then goes out once: nothing was sent for the invalid ones.
+        await normal.fill("5")
+        await expect(normal).not_to_have_attribute("aria-invalid", "true")
+        await save.click()
+        await expect(panel.get_by_test_id("inbox-response-times-status")).to_have_text(
+            TIMES_SAVED, timeout=WAIT
+        )
+        assert [call["body"]["target_normal_min"] for call in settings_calls(state, "PUT")] == [5]
+
+
+async def test_staff_see_the_times_read_only_without_save(shell: Shell) -> None:
+    state = queue_inbox()
+    state.settings = {**SETTINGS_DEFAULTS, "target_normal_min": 90, "stale_claim_hours": 0}
+    state.settings["version"] = 2
+    async with inbox_page(shell, state, role="tenant_staff") as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await expect(panel.get_by_text(TIMES_STAFF, exact=True)).to_be_visible(timeout=WAIT)
+        values = panel.get_by_test_id("inbox-response-times-values")
+        await expect(values).to_contain_text("Normal")
+        await expect(values).to_contain_text("90 minutes (1 h 30 min)")
+        await expect(panel.get_by_text(TIMES_LATER, exact=True)).to_be_visible()
+        await expect(panel.get_by_test_id("inbox-response-times-reminders")).to_contain_text("Off")
+        await expect(panel.get_by_role("textbox")).to_have_count(0)
+        await expect(panel.get_by_role("button", name="Save", exact=True)).to_have_count(0)
+        assert settings_calls(state, "PUT") == []
+
+
+async def test_a_conflict_reloads_the_latest_values_and_says_so(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        # Someone else saves after this panel read the settings.
+        state.settings = {**SETTINGS_DEFAULTS, "target_normal_min": 120, "version": 4}
+        normal = panel.get_by_label("Normal", exact=True)
+        await normal.fill("30")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        await expect(panel.get_by_text(TIMES_CONFLICT, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(normal).to_have_value("120")
+        await expect(page.get_by_text("version_conflict")).to_have_count(0)
+        assert [call["method"] for call in state.settings_calls] == ["GET", "PUT", "GET"]
+        # Saving again is made on the version read anew.
+        await normal.fill("30")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        await expect(panel.get_by_test_id("inbox-response-times-status")).to_have_text(
+            TIMES_SAVED, timeout=WAIT
+        )
+        assert settings_calls(state, "PUT")[-1]["body"]["version"] == 4
+        await expect(panel.get_by_text(TIMES_CONFLICT, exact=True)).to_have_count(0)
+
+
+async def test_other_save_failures_are_plain_sentences(shell: Shell) -> None:
+    state = queue_inbox(
+        settings_script={
+            "PUT": [(403, {"detail": "forbidden"}), (500, {"detail": "synthetic outage"})]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        await panel.get_by_label("High", exact=True).fill("45")
+        save = panel.get_by_role("button", name="Save", exact=True)
+        await save.click()
+        await expect(
+            panel.get_by_text("You do not have permission to do that.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await save.click()
+        await expect(
+            panel.get_by_text("Could not save the response times. Try again.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text("synthetic outage")).to_have_count(0)
+        await expect(panel.get_by_label("High", exact=True)).to_have_value("45")
+
+
+async def test_one_save_at_a_time_and_a_late_answer_stays_out_of_a_closed_panel(
+    shell: Shell,
+) -> None:
+    gate = asyncio.Event()
+    state = queue_inbox(settings_gates={"PUT": gate})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        normal = panel.get_by_label("Normal", exact=True)
+        await normal.fill("30")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        saving = panel.get_by_role("button", name="Saving…", exact=True)
+        await expect(saving).to_have_attribute("aria-disabled", "true")
+        await eventually(lambda: len(settings_calls(state, "PUT")) == 1)
+        # Every field is inert while the save is pending, and Save cannot go out twice.
+        for label in TARGET_LABELS:
+            await expect(panel.get_by_label(label, exact=True)).to_have_attribute(
+                "aria-disabled", "true"
+            )
+        await normal.press("End")
+        await page.keyboard.type("9")
+        await expect(normal).to_have_value("30")
+        await saving.click(force=True)
+        await normal.press("Enter")
+        # The panel closes while the answer is still out; the answer then lands.
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        gate.set()
+        await eventually(lambda: state.settings["version"] == 1)
+        assert len(settings_calls(state, "PUT")) == 1
+        panel = await open_times(page)
+        # The saved values show, without a confirmation for a save made in the closed panel.
+        await expect(panel.get_by_label("Normal", exact=True)).to_have_value("30", timeout=WAIT)
+        await expect(panel.get_by_test_id("inbox-response-times-status")).to_have_text("")
+        await expect(panel.get_by_role("button", name="Save", exact=True)).to_have_attribute(
+            "aria-disabled", "true"
+        )
+        assert len(settings_calls(state, "PUT")) == 1
+
+
+async def test_escape_closes_the_times_panel_and_returns_focus(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        button = times_button(page)
+        await expect(button).to_have_attribute("aria-haspopup", "dialog")
+        await expect(button).to_have_attribute("aria-expanded", "false")
+        panel = await open_times(page)
+        await expect(button).to_have_attribute("aria-expanded", "true")
+        assert await panel.evaluate("el => el.contains(document.activeElement)")
+        await times_loaded(panel)
+        await panel.get_by_label("Normal", exact=True).focus()
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        await expect(button).to_be_focused()
+        # The Close button does the same.
+        panel = await open_times(page)
+        await panel.get_by_role("button", name="Close", exact=True).click()
+        await expect(panel).to_be_hidden()
+        await expect(button).to_be_focused()
+        # The settings were read once, when the panel first opened.
+        assert len(settings_calls(state, "GET")) == 1
+
+
+async def test_a_failed_read_says_so_and_try_again_reads_again(shell: Shell) -> None:
+    gate = asyncio.Event()
+    state = queue_inbox(
+        settings_script={"GET": [(500, {"detail": "synthetic outage"})]},
+        settings_gates={"GET": gate},
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        # While the read is out: the loading line only, never a field.
+        await expect(panel.get_by_text(TIMES_LOADING, exact=True)).to_be_visible()
+        await expect(panel.get_by_role("textbox")).to_have_count(0)
+        await expect(panel.get_by_role("button", name="Save", exact=True)).to_have_count(0)
+        gate.set()
+        await expect(panel.get_by_text(TIMES_FAILED, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text("synthetic outage")).to_have_count(0)
+        await expect(panel.get_by_role("textbox")).to_have_count(0)
+        await panel.get_by_role("button", name="Try again", exact=True).click()
+        await times_loaded(panel)
+        assert len(settings_calls(state, "GET")) == 2
+
+    state = queue_inbox(settings_script={"GET": [(403, {"detail": "forbidden"})]})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await expect(
+            panel.get_by_text("You do not have permission to do that.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await expect(panel.get_by_role("textbox")).to_have_count(0)
+
+
+async def test_the_times_panel_fits_small_screens(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page, 3)
+        for width in (390, 320, 768):
+            await page.set_viewport_size({"width": width, "height": 844})
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], (width, measured)
+            button = times_button(page)
+            box = await button.bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (width, box)
+            assert box["height"] >= 40, box
+            panel = await open_times(page)
+            await times_loaded(panel)
+            await panel.get_by_label("Normal", exact=True).fill("4")
+            await expect(panel.get_by_text(TARGET_WORDS, exact=True)).to_be_visible()
+            panel_box = await panel.bounding_box()
+            assert panel_box and panel_box["x"] >= 0, (width, panel_box)
+            assert panel_box["x"] + panel_box["width"] <= width, (width, panel_box)
+            overflow = await panel.evaluate(
+                """el => [...el.querySelectorAll('*')].filter(child => {
+                    const box = child.getBoundingClientRect();
+                    const out = box.left < -0.5 || box.right > window.innerWidth + 0.5;
+                    return box.width > 0 && out;
+                }).map(child => child.outerHTML.slice(0, 80))"""
+            )
+            assert overflow == [], (width, overflow)
+            await page.keyboard.press("Escape")
+            await expect(panel).to_be_hidden()
+            await expect(button).to_be_focused()

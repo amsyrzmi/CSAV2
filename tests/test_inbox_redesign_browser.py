@@ -25,7 +25,10 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from csa.console.inbox_settings import InboxSettingsIn
+from csa.inbox_queue.settings import InboxSettings
 from playwright.async_api import Page, async_playwright, expect
+from pydantic import ValidationError
 
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
@@ -290,6 +293,18 @@ class Inbox:
     views_script: dict[str, list[Any]] = field(default_factory=dict)
     views_delay: float = 0.0
     views_write_delay: float = 0.0
+    # The company's Inbox settings as the server stores them (the defaults with `version` 0 until a
+    # first save), the settings calls the page made ({"method", "body", "query"}), scripted answers
+    # per method used in order ((status, json)), and gates per method: while a test holds one shut,
+    # that answer waits until the test sets it. `role` is the signed-in person's (`inbox_page` sets
+    # it): tenant staff may read the settings but a save is 403, as on the server.
+    settings: dict[str, Any] = field(
+        default_factory=lambda: {**InboxSettings().model_dump(), "version": 0}
+    )
+    settings_calls: list[dict[str, Any]] = field(default_factory=list)
+    settings_script: dict[str, list[Any]] = field(default_factory=dict)
+    settings_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    role: str = "tenant_admin"
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -445,6 +460,30 @@ class Inbox:
         mine.remove(target)
         return 204, None
 
+    async def settings_route(self, request: Any, query: str) -> tuple[int, Any]:
+        """The company's settings as the API keeps them: every field, ranges, version, admins."""
+        method = request.method
+        body = request.post_data_json if method == "PUT" else None
+        self.settings_calls.append({"method": method, "body": body, "query": query})
+        gate = self.settings_gates.get(method)
+        if gate is not None:
+            await gate.wait()
+        script = self.settings_script.get(method) or []
+        if script:
+            return script.pop(0)
+        if method == "GET":
+            return 200, dict(self.settings)
+        if self.role == "tenant_staff":
+            return 403, {"detail": "forbidden"}
+        try:
+            saved = InboxSettingsIn.model_validate(body)
+        except ValidationError:
+            return 422, {"detail": [{"msg": "synthetic validation error"}]}
+        if saved.version != self.settings["version"]:
+            return 409, {"detail": "version_conflict"}
+        self.settings = {**saved.model_dump(), "version": saved.version + 1}
+        return 200, dict(self.settings)
+
     async def route(self, request_route: Any) -> None:
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
@@ -498,6 +537,8 @@ class Inbox:
                 status, data = self.assignees_status, {"detail": "synthetic directory outage"}
         elif path == "admin/clients" and request.method == "GET":
             data = self.clients
+        elif path == "inbox/settings" and request.method in ("GET", "PUT"):
+            status, data = await self.settings_route(request, query)
         elif path == "inbox/views" or path.startswith("inbox/views/"):
             status, data = await self.views_route(request, path, query)
             if status == 204:
@@ -682,6 +723,7 @@ async def inbox_page(
 ) -> AsyncIterator[Page]:
     """A logged-in page on the inbox, answered by `state`; checks for stray calls on exit."""
     me = make_me(role)
+    state.role = role
     # The signed-in person is the one whose saved views the stub serves.
     if state.viewer != ME_ID:
         me["user"] = {**me["user"], "id": state.viewer, "display_name": "Second Member"}

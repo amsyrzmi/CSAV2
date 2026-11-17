@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import {
-  assigneesPath, settingsPath, viewsPath,
+  assigneesPath, settingsBody, settingsPath, viewsPath,
   type InboxAssignee, type InboxSettings, type InboxSettingsValues, type SavedView,
 } from "@/lib/inbox-api";
 import { assigneesFailure, settingsErrorText, viewErrorText, type ViewFilters } from "@/lib/inbox-queue";
@@ -144,72 +144,112 @@ export function useSavedViews(query: string, enabled = true) {
 
 // ---- settings ----
 
-type SettingsState = { path: string; settings: InboxSettings | null; error: string };
-export type SettingsSave = { ok: boolean; error?: string };
+/** The fixed sentences of the settings read: loading, and a failure that is not a refusal. */
+export const SETTINGS_LOADING = "Loading the response times…";
+export const SETTINGS_READ_FAILED = "Could not load the response times. Try again.";
+const SETTINGS_SAVE_FAILED = "Could not save the response times. Try again.";
 
-/** The nine fields and nothing else: the server rejects an unknown one. */
-function settingsBody(values: InboxSettingsValues, version: number): InboxSettings {
-  return {
-    target_urgent_min: values.target_urgent_min,
-    target_high_min: values.target_high_min,
-    target_normal_min: values.target_normal_min,
-    target_low_min: values.target_low_min,
-    repeat_minutes: values.repeat_minutes,
-    max_repeats: values.max_repeats,
-    follow_up_hours: values.follow_up_hours,
-    stale_claim_hours: values.stale_claim_hours,
-    handback_prompt_hours: values.handback_prompt_hours,
-    version,
-  };
-}
+type SettingsState = { path: string; settings: InboxSettings | null; failed: boolean; error: string };
+/** A save's outcome: `conflict` when someone else saved first and the latest values were read anew. */
+export type SettingsSave = { ok: boolean; conflict?: boolean; error?: string };
+
+const readFailure = (cause: unknown) =>
+  describe(cause).status === 403 ? viewErrorText(403, null, SETTINGS_READ_FAILED) : SETTINGS_READ_FAILED;
 
 /**
- * The company's Inbox settings. `save` sends every field with the version that was read; on a
- * version conflict the settings are read again and the person is told to check and save again.
+ * The company's Inbox settings, read when `enabled` first turns true (never before), and for each
+ * company the query names. A failed read sets `failed` and `error` (one plain sentence) and keeps
+ * what was read before; `retry` reads again. `save` sends every field with the version that was read,
+ * one save at a time per company (`saving`); a version conflict reads the settings anew, so the
+ * form shows the latest values. Stale answers never win: every read or save answer takes a ticket,
+ * and a read that started before a newer answer arrived is dropped, as is any answer for a company
+ * the screen has left.
  */
-export function useInboxSettings(query: string) {
+export function useInboxSettings(query: string, enabled: boolean) {
   const path = settingsPath(query);
   const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<SettingsState>({ path, settings: null, error: "" });
-  const current = state.path === path ? state : { path, settings: null, error: "" };
+  const [state, setState] = useState<SettingsState>({ path, settings: null, failed: false, error: "" });
+  const [saving, setSaving] = useState<string | null>(null);
+  const current: SettingsState = state.path === path ? state : { path, settings: null, failed: false, error: "" };
+  // The company on screen and the newest ticket; both change only outside render.
+  const live = useRef(path);
+  const ticket = useRef(0);
+  // The company whose save is out, set before the first await so a second press in the same
+  // render cannot send another.
+  const inFlight = useRef<string | null>(null);
+  useEffect(() => { live.current = path; }, [path]);
+
+  const read = (target: string, signal: AbortSignal) => api<InboxSettings>(target, {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
+  });
+
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
+    const mine = ++ticket.current;
+    const fresh = () => !controller.signal.aborted && ticket.current === mine;
     async function load() {
       try {
-        const settings = await api<InboxSettings>(path, {
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
-        });
-        if (!controller.signal.aborted) setState({ path, settings, error: "" });
+        const settings = await read(path, controller.signal);
+        if (fresh()) setState({ path, settings, failed: false, error: "" });
       } catch (cause) {
-        if (controller.signal.aborted) return;
+        if (!fresh()) return;
         setState((previous) => ({
-          path, settings: previous.path === path ? previous.settings : null, error: (cause as Error).message,
+          path, settings: previous.path === path ? previous.settings : null, failed: true, error: readFailure(cause),
         }));
       }
     }
     void load();
     return () => controller.abort();
-  }, [path, revision]);
+  }, [enabled, path, revision]);
 
   async function save(values: InboxSettingsValues): Promise<SettingsSave> {
-    if (current.settings === null) return { ok: false, error: "The settings are not loaded yet. Try again in a moment." };
+    const target = path;
+    const before = current.settings;
+    if (before === null || inFlight.current === target) return { ok: false };
+    inFlight.current = target;
+    setSaving(target);
     try {
-      const saved = await api<InboxSettings>(path, {
-        method: "PUT", body: JSON.stringify(settingsBody(values, current.settings.version)),
+      const saved = await api<InboxSettings>(target, {
+        method: "PUT", body: JSON.stringify(settingsBody(values, before.version)),
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
       });
-      // The stored record carries the new version, so a second save does not conflict with the first.
-      setState({ path, settings: saved, error: "" });
-      setRevision((value) => value + 1);
+      // The answer is the stored record with its new version, so the next save is made on it.
+      if (live.current === target) {
+        ticket.current += 1;
+        setState({ path: target, settings: saved, failed: false, error: "" });
+      }
       return { ok: true };
     } catch (cause) {
       const { status, code } = describe(cause);
-      if (status === 409) setRevision((value) => value + 1);
-      return { ok: false, error: settingsErrorText(status, code, "Could not save the settings. Try again.") };
+      if (status !== 409 || code !== "version_conflict") {
+        return { ok: false, error: settingsErrorText(status, code, SETTINGS_SAVE_FAILED) };
+      }
+      // Someone else saved first: read what is stored now before the person tries again.
+      const mine = ++ticket.current;
+      const fresh = () => ticket.current === mine && live.current === target;
+      try {
+        const latest = await read(target, new AbortController().signal);
+        if (fresh()) setState({ path: target, settings: latest, failed: false, error: "" });
+        return { ok: false, conflict: true, error: settingsErrorText(status, code, SETTINGS_SAVE_FAILED) };
+      } catch (failure) {
+        // Never leave the older values editable: the panel shows the failed read and Try again.
+        if (fresh()) setState({ path: target, settings: null, failed: true, error: readFailure(failure) });
+        return { ok: false, conflict: true };
+      }
+    } finally {
+      if (inFlight.current === target) inFlight.current = null;
+      setSaving((value) => (value === target ? null : value));
     }
   }
+
   return {
-    settings: current.settings, loaded: current.settings !== null, error: current.error, save,
-    reload: () => setRevision((value) => value + 1),
+    path, settings: current.settings, loaded: current.settings !== null, failed: current.failed,
+    error: current.error, saving: saving === path, save,
+    retry: () => {
+      setState({ path, settings: current.settings, failed: false, error: "" });
+      setRevision((value) => value + 1);
+    },
   };
 }
+export type InboxSettingsData = ReturnType<typeof useInboxSettings>;

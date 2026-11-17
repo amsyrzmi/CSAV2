@@ -145,6 +145,9 @@ export type InboxSettings = {
   version: number;
 };
 export type InboxSettingsValues = Omit<InboxSettings, "version">;
+export type InboxSettingsKey = keyof InboxSettingsValues;
+/** The settings form as typed: one string per field. */
+export type SettingsDraft = Record<InboxSettingsKey, string>;
 /** A saved view as read back; `filters` carries the API's keys (see `viewToFilters`). */
 export type SavedView = { id: string; name: string; filters: Record<string, unknown>; created_at: string };
 
@@ -284,4 +287,88 @@ export function errorCode(cause: unknown): string | null {
   const detail = body.detail;
   if (typeof detail !== "object" || detail === null || !("code" in detail)) return null;
   return typeof detail.code === "string" ? detail.code : null;
+}
+
+// ---- response times (the company's Inbox settings) ----
+
+/**
+ * The lowest and highest value the API takes for each setting (csa/console/inbox_settings.py,
+ * InboxSettingsIn; tests/test_inbox_queue_browser.py compares the two). Keys in the API's order.
+ */
+export const SETTINGS_RANGES: Record<InboxSettingsKey, readonly [number, number]> = {
+  target_urgent_min: [5, 10080],
+  target_high_min: [5, 10080],
+  target_normal_min: [5, 10080],
+  target_low_min: [5, 10080],
+  repeat_minutes: [15, 1440],
+  max_repeats: [0, 10],
+  follow_up_hours: [0, 720],
+  stale_claim_hours: [0, 168],
+  handback_prompt_hours: [0, 720],
+};
+const SETTINGS_KEYS = Object.keys(SETTINGS_RANGES) as InboxSettingsKey[];
+/** The four response targets, most urgent first. */
+export const TARGET_KEYS = ["target_urgent_min", "target_high_min", "target_normal_min", "target_low_min"] as const;
+const SETTING_UNITS: Record<InboxSettingsKey, "minutes" | "hours" | "count"> = {
+  target_urgent_min: "minutes", target_high_min: "minutes", target_normal_min: "minutes", target_low_min: "minutes",
+  repeat_minutes: "minutes", max_repeats: "count",
+  follow_up_hours: "hours", stale_claim_hours: "hours", handback_prompt_hours: "hours",
+};
+
+/** A typed value as the whole number it says, or null (digits only: no sign, point or exponent). */
+function wholeNumber(raw: string): number | null {
+  const text = raw.trim();
+  return /^[0-9]+$/.test(text) ? Number(text) : null;
+}
+
+/** Why the server would refuse this value, in plain words, or null when it takes it. */
+export function settingProblem(key: InboxSettingsKey, raw: string): string | null {
+  const [low, high] = SETTINGS_RANGES[key];
+  const value = wholeNumber(raw);
+  if (value !== null && value >= low && value <= high) return null;
+  const unit = SETTING_UNITS[key];
+  return unit === "count"
+    ? `Enter a whole number, from ${low} to ${high}.`
+    : `Enter a whole number of ${unit}, from ${low} to ${high}.`;
+}
+
+/** The settings as the form shows them. */
+export function settingsDraft(settings: InboxSettingsValues): SettingsDraft {
+  return Object.fromEntries(SETTINGS_KEYS.map((key) => [key, String(settings[key])])) as SettingsDraft;
+}
+
+/** The nine values a draft says, or null while any of them would be refused. */
+export function draftValues(draft: SettingsDraft): InboxSettingsValues | null {
+  const values: Partial<InboxSettingsValues> = {};
+  for (const key of SETTINGS_KEYS) {
+    if (settingProblem(key, draft[key]) !== null) return null;
+    values[key] = wholeNumber(draft[key]) as number;
+  }
+  return values as InboxSettingsValues;
+}
+
+/** The PUT body: the nine fields and the version that was read, nothing else (the server refuses more). */
+export function settingsBody(values: InboxSettingsValues, version: number): InboxSettings {
+  const body = Object.fromEntries(SETTINGS_KEYS.map((key) => [key, values[key]])) as InboxSettingsValues;
+  return { ...body, version };
+}
+
+/** Minutes as hours and minutes ("1 h 30 min"); empty for anything but a whole number from 0. */
+export function minutesText(minutes: number): string {
+  if (!Number.isInteger(minutes) || minutes < 0) return "";
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours === 0) return `${rest} min`;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+
+/** A stored setting in plain words, for the read-only lists; 0 hours is "Off". */
+export function reminderSettingText(key: InboxSettingsKey, value: number): string {
+  const unit = SETTING_UNITS[key];
+  if (unit === "count") return String(value);
+  if (unit === "minutes") {
+    const words = `${value} minute${value === 1 ? "" : "s"}`;
+    return value >= 60 ? `${words} (${minutesText(value)})` : words;
+  }
+  return value === 0 ? "Off" : `${value} hour${value === 1 ? "" : "s"}`;
 }

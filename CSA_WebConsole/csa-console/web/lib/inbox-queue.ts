@@ -897,11 +897,11 @@ export function viewErrorText(status: number | null, code: string | null, fallba
   return fallback;
 }
 
-/** A plain sentence for a failed settings save. A version conflict means the settings were reloaded. */
+/** A plain sentence for a failed settings save. After a version conflict the latest values are read anew. */
 export function settingsErrorText(status: number | null, code: string | null, fallback: string): string {
   if (status === null) return actionErrorText(null, null, fallback);
   if (status === 409 && code === "version_conflict") {
-    return "These settings changed while you were editing. They are reloaded: check them and save again.";
+    return "Someone else changed these. The latest values are shown; check them and save again.";
   }
   if (status === 403) return "You do not have permission to do that.";
   if (status === 422) return "One of these values is out of range. Check them and save again.";

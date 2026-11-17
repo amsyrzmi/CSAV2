@@ -242,3 +242,74 @@ test("errorCode reads a coded refusal and is null for plain-text details and any
   assert.equal(errorCode(null), null);
   assert.equal(errorCode({ body: { detail: { code: 5 } } }), null);
 });
+
+// ---- response times (queue settings) ----
+
+const SETTINGS = {
+  target_urgent_min: 15, target_high_min: 60, target_normal_min: 240, target_low_min: 1440,
+  repeat_minutes: 60, max_repeats: 3, follow_up_hours: 48, stale_claim_hours: 8, handback_prompt_hours: 24,
+};
+
+test("the client's ranges are the API's (csa/console/inbox_settings.py InboxSettingsIn)", () => {
+  assert.deepEqual(inbox.SETTINGS_RANGES, {
+    target_urgent_min: [5, 10080], target_high_min: [5, 10080], target_normal_min: [5, 10080],
+    target_low_min: [5, 10080], repeat_minutes: [15, 1440], max_repeats: [0, 10],
+    follow_up_hours: [0, 720], stale_claim_hours: [0, 168], handback_prompt_hours: [0, 720],
+  });
+  assert.deepEqual([...inbox.TARGET_KEYS], ["target_urgent_min", "target_high_min", "target_normal_min", "target_low_min"]);
+});
+
+test("a response target is refused in plain words unless it is a whole number of minutes in range", () => {
+  const { settingProblem } = inbox;
+  const words = "Enter a whole number of minutes, from 5 to 10080.";
+  for (const ok of ["5", "30", " 30 ", "030", "10080"]) assert.equal(settingProblem("target_normal_min", ok), null, ok);
+  for (const bad of ["", " ", "4", "0", "10081", "-5", "1.5", "30.0", "1e3", "abc", "3 0", "+30", "٣٠"]) {
+    assert.equal(settingProblem("target_normal_min", bad), words, bad);
+  }
+  // The other fields carry their own unit and range.
+  assert.equal(settingProblem("repeat_minutes", "14"), "Enter a whole number of minutes, from 15 to 1440.");
+  assert.equal(settingProblem("max_repeats", "11"), "Enter a whole number, from 0 to 10.");
+  assert.equal(settingProblem("stale_claim_hours", "169"), "Enter a whole number of hours, from 0 to 168.");
+  assert.equal(settingProblem("follow_up_hours", "0"), null);
+});
+
+test("a draft becomes the nine values only when every field is valid", () => {
+  const { settingsDraft, draftValues } = inbox;
+  const draft = settingsDraft({ ...SETTINGS, version: 3 });
+  assert.deepEqual(draft, Object.fromEntries(Object.entries(SETTINGS).map(([key, value]) => [key, String(value)])));
+  assert.deepEqual(draftValues({ ...draft, target_normal_min: " 30 " }), { ...SETTINGS, target_normal_min: 30 });
+  assert.equal(draftValues({ ...draft, target_normal_min: "3" }), null);
+  assert.equal(draftValues({ ...draft, target_urgent_min: "" }), null);
+});
+
+test("the PUT body carries every field and the version read, and nothing else", () => {
+  const { settingsBody } = inbox;
+  const body = settingsBody({ ...SETTINGS, target_normal_min: 30, extra: "dropped" }, 4);
+  assert.deepEqual(body, { ...SETTINGS, target_normal_min: 30, version: 4 });
+  assert.deepEqual(Object.keys(body).sort(), [...Object.keys(SETTINGS), "version"].sort());
+  assert.equal(settingsBody(SETTINGS, 0).version, 0);
+});
+
+test("minutes are shown as hours and minutes", () => {
+  const { minutesText } = inbox;
+  assert.equal(minutesText(5), "5 min");
+  assert.equal(minutesText(45), "45 min");
+  assert.equal(minutesText(60), "1 h");
+  assert.equal(minutesText(90), "1 h 30 min");
+  assert.equal(minutesText(240), "4 h");
+  assert.equal(minutesText(1441), "24 h 1 min");
+  assert.equal(minutesText(10080), "168 h");
+  assert.equal(minutesText(0), "0 min");
+  for (const odd of [-1, 1.5, Number.NaN, Infinity]) assert.equal(minutesText(odd), "", String(odd));
+});
+
+test("the reminder settings read as plain words, 0 being off where it turns one off", () => {
+  const { reminderSettingText } = inbox;
+  assert.equal(reminderSettingText("repeat_minutes", 60), "60 minutes (1 h)");
+  assert.equal(reminderSettingText("max_repeats", 3), "3");
+  assert.equal(reminderSettingText("max_repeats", 0), "0");
+  assert.equal(reminderSettingText("follow_up_hours", 48), "48 hours");
+  assert.equal(reminderSettingText("stale_claim_hours", 1), "1 hour");
+  assert.equal(reminderSettingText("handback_prompt_hours", 0), "Off");
+  assert.equal(reminderSettingText("follow_up_hours", 0), "Off");
+});

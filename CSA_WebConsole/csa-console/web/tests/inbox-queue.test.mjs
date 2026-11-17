@@ -683,10 +683,10 @@ test("saved-view errors are plain sentences and never a raw code", () => {
   assert.equal(viewErrorText(409, "something else", fallback), fallback);
 });
 
-test("a settings error is a plain sentence, a version conflict says the settings were reloaded", () => {
+test("a settings error is a plain sentence, a version conflict says the latest values are shown", () => {
   const fallback = "Could not save.";
   assert.equal(settingsErrorText(409, "version_conflict", fallback),
-    "These settings changed while you were editing. They are reloaded: check them and save again.");
+    "Someone else changed these. The latest values are shown; check them and save again.");
   assert.equal(settingsErrorText(403, "x", fallback), "You do not have permission to do that.");
   assert.equal(settingsErrorText(422, "x", fallback), "One of these values is out of range. Check them and save again.");
   assert.equal(settingsErrorText(null, null, fallback), actionErrorText(null, null, fallback));
