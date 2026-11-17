@@ -586,6 +586,36 @@ export function bulkSummary(results: { id: string; outcome: BulkOutcome }[]): {
   return { text: sentences.join(" "), failedIds };
 }
 
+/** The selection's ceiling: the bulk route takes 1 to 50 ids. */
+export const BULK_LIMIT = 50;
+export const BULK_LIMIT_TEXT = `You can select up to ${BULK_LIMIT} conversations at a time.`;
+
+/**
+ * What did not apply, one line per conversation, grouped by outcome in the summary's order:
+ * "Aina Demo: the customer wrote after you opened the list." `nameOf` gives the name the person
+ * saw; an id it does not know is "A conversation no longer in this list".
+ */
+export function bulkFailureLines(
+  results: { id: string; outcome: BulkOutcome }[], nameOf: (id: string) => string | undefined,
+): string[] {
+  const lines: string[] = [];
+  for (const [outcome, reason] of NOT_DONE) {
+    for (const result of results) {
+      if (result.outcome === outcome) {
+        lines.push(`${nameOf(result.id) ?? "A conversation no longer in this list"}: ${reason}.`);
+      }
+    }
+  }
+  return lines;
+}
+
+/** What "Select all loaded" did, in words: it never reaches past the loaded rows or the ceiling. */
+export function selectAllText(loaded: number): string {
+  return loaded > BULK_LIMIT
+    ? `Selected the first ${BULK_LIMIT} of the ${loaded} conversations loaded so far. ${BULK_LIMIT_TEXT}`
+    : `Selected all ${loaded} conversations loaded so far.`;
+}
+
 // ---- filter chips ----
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {

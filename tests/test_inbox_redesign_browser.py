@@ -248,6 +248,14 @@ class Inbox:
     detail_reads: list[float] = field(default_factory=list)
     # Rows sent as an older server sent them, without any queue field (list and detail).
     bare: set[str] = field(default_factory=set)
+    # Bulk requests the page sent ({"body", "query"}). Answers are scripted in order: (status, json)
+    # or "abort"; with none left each id is applied as one action (`done`), unless `bulk_outcomes`
+    # names its outcome, and an id that is not a row is `not_found`. `as_of` fixes the list's read
+    # time (otherwise it is the time of each read).
+    bulk_calls: list[dict[str, Any]] = field(default_factory=list)
+    bulk_script: list[Any] = field(default_factory=list)
+    bulk_outcomes: dict[str, str] = field(default_factory=dict)
+    as_of: str | None = None
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -404,7 +412,7 @@ class Inbox:
                     "next_cursor": None,
                     "needs_review_count": self.needs_review_count,
                     "counts": self.queue_counts(),
-                    "as_of": datetime.now(UTC).isoformat(),
+                    "as_of": self.as_of or datetime.now(UTC).isoformat(),
                 }
         elif path == "inbox/assignees" and request.method == "GET":
             self.assignee_calls += 1
@@ -436,6 +444,24 @@ class Inbox:
                 data = self.apply_queue(identifier, action, body)
             else:
                 status, data = answer
+        elif path == "inbox/bulk" and request.method == "POST":
+            body = request.post_data_json or {}
+            self.bulk_calls.append({"body": body, "query": query})
+            answer = self.bulk_script.pop(0) if self.bulk_script else None
+            if answer == "abort":
+                await request_route.abort("failed")
+                return
+            if answer is not None:
+                status, data = answer
+            else:
+                results = []
+                for identifier in body.get("ids", []):
+                    outcome = self.bulk_outcomes.get(identifier)
+                    if outcome is None and any(item["id"] == identifier for item in self.items):
+                        self.apply_queue(identifier, body["action"], body)
+                        outcome = "done"
+                    results.append({"id": identifier, "outcome": outcome or "not_found"})
+                data = {"results": results}
         elif path.startswith("inbox/conversations/") and path.endswith(("/takeover", "/release")):
             identifier, action = path.split("/")[2], path.split("/")[3]
             self.handoffs.append(

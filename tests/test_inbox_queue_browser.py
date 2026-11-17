@@ -842,7 +842,8 @@ async def test_rows_show_only_the_labels_that_apply(shell: Shell) -> None:
         # The owner words moved out of the row: the state and the assignee say it.
         listing = page.get_by_role("list", name="Conversations")
         await expect(listing.get_by_text("Staff has taken over")).to_have_count(0)
-        # No selection checkboxes until bulk selection is wired up.
+        # Every row has a selection box, hidden until the row is hovered or focused.
+        await expect(listing.get_by_role("checkbox", include_hidden=True)).to_have_count(7)
         await expect(listing.get_by_role("checkbox")).to_have_count(0)
 
         # At 320 the rows wrap their meta line instead of pushing the page sideways.
@@ -1636,3 +1637,426 @@ async def test_the_thread_header_fits_small_screens(shell: Shell, width: int) ->
         await expect(dialog.get_by_role("radio", name="Aina Demo")).to_be_visible(timeout=WAIT)
         box = await dialog.bounding_box()
         assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, box
+
+
+# ---- selection and bulk actions ----------------------------------------------------------------
+
+AS_OF = "2026-11-17T01:59:30.123456+00:00"
+CAP_TEXT = "You can select up to 50 conversations at a time."
+UNKNOWN_ROW = "a0000000-0000-4000-8000-000000000009"
+CHECKED_JS = """els => els
+    .filter(el => el.parentElement.querySelector('input[type="checkbox"]').checked)
+    .map(el => el.dataset.conversationId)"""
+
+
+def bulk_bar(page: Page) -> Any:
+    return page.get_by_test_id("inbox-bulk-bar")
+
+
+def bulk_result(page: Page) -> Any:
+    return page.get_by_role("region", name="Bulk result")
+
+
+def check_box(page: Page, identifier: str) -> Any:
+    """The row's selection box: a sibling of the row's button in the same list item."""
+    return page.locator(f'li:has(> [data-conversation-id="{identifier}"]) input[type="checkbox"]')
+
+
+async def tick(page: Page, identifier: str) -> None:
+    """Click a row's box as a mouse user does: it shows while the row is hovered."""
+    await row(page, identifier).hover()
+    await check_box(page, identifier).click()
+
+
+async def checked_ids(page: Page) -> set[str]:
+    return set(await page.locator("[data-conversation-id]").evaluate_all(CHECKED_JS))
+
+
+def ids_of(rows: list[dict[str, Any]]) -> list[str]:
+    return [item["id"] for item in rows]
+
+
+async def test_checking_rows_shows_the_bulk_bar_and_sends_the_lists_read_time(
+    shell: Shell,
+) -> None:
+    rows = many_rows(5)
+    ids = ids_of(rows)
+    state = Inbox(items=rows, as_of=AS_OF)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 5)
+        await expect(bulk_bar(page)).to_have_count(0)
+        await tick(page, ids[0])
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        # The bulk bar takes the place of the search, Filters and Sort line.
+        await expect(page.get_by_test_id("inbox-search")).to_have_count(0)
+        await tick(page, ids[1])
+        await expect(bulk_bar(page)).to_contain_text("2 selected")
+        assert await checked_ids(page) == set(ids[:2])
+        await bulk_bar(page).get_by_role("button", name="Resolve", exact=True).click()
+        result = bulk_result(page)
+        await expect(result).to_contain_text("2 done.", timeout=WAIT)
+        # The request: the action, the ids in list order, the list's own read time, no version.
+        assert len(state.bulk_calls) == 1, state.bulk_calls
+        body = state.bulk_calls[0]["body"]
+        assert set(body) == {"request_key", "action", "ids", "seen_at"}, body
+        assert body["action"] == "resolve" and body["ids"] == ids[:2], body
+        assert body["seen_at"] == AS_OF, body
+        # Everything was done: the selection is empty, focus is on the result.
+        await expect(result).to_be_focused()
+        await expect(bulk_bar(page)).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-search")).to_be_visible()
+        assert await checked_ids(page) == set()
+
+
+async def test_bulk_results_name_what_did_not_apply_and_keep_it_selected(shell: Shell) -> None:
+    rows = many_rows(30)
+    ids = ids_of(rows)
+    state = Inbox(
+        items=rows, bulk_outcomes={ids[5]: "held_reply_pending", ids[10]: "customer_wrote"}
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 30)
+        await tick(page, ids[0])
+        bar = bulk_bar(page)
+        await bar.get_by_role("button", name="Select all loaded").click()
+        await expect(bar).to_contain_text("30 selected")
+        await expect(bar).to_contain_text("Selected all 30 conversations loaded so far.")
+        await bar.get_by_role("button", name="Claim", exact=True).click()
+        result = bulk_result(page)
+        await expect(result.get_by_role("status")).to_have_text(
+            "28 done. 1 not done: a held reply needs a decision first."
+            " 1 not done: the customer wrote after you opened the list.",
+            timeout=WAIT,
+        )
+        await expect(result.get_by_role("listitem")).to_have_text(
+            [
+                "Customer 105: a held reply needs a decision first.",
+                "Customer 110: the customer wrote after you opened the list.",
+            ]
+        )
+        await expect(result).to_be_focused()
+        body = state.bulk_calls[-1]["body"]
+        assert body["action"] == "claim" and body["ids"] == ids, body
+        # The two that did not apply stay selected; the 28 done leave the selection.
+        await expect(bar).to_contain_text("2 selected")
+        assert await checked_ids(page) == {ids[5], ids[10]}
+
+
+async def test_the_selection_stops_at_fifty_and_says_why(shell: Shell) -> None:
+    rows = many_rows(55)
+    ids = ids_of(rows)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 55)
+        await tick(page, ids[0])
+        bar = bulk_bar(page)
+        await bar.get_by_role("button", name="Select all loaded").click()
+        await expect(bar).to_contain_text("50 selected")
+        await expect(bar).to_contain_text(
+            "Selected the first 50 of the 55 conversations loaded so far."
+        )
+        assert await checked_ids(page) == set(ids[:50])
+        # The 51st cannot be checked, by mouse or by key, and the bar says why.
+        await tick(page, ids[50])
+        await expect(check_box(page, ids[50])).not_to_be_checked()
+        await expect(bar).to_contain_text(CAP_TEXT)
+        await row(page, ids[52]).focus()
+        await page.keyboard.press("x")
+        await expect(check_box(page, ids[52])).not_to_be_checked()
+        await expect(bar).to_contain_text("50 selected")
+        # Clearing one makes room again.
+        await check_box(page, ids[0]).click()
+        await tick(page, ids[50])
+        await expect(check_box(page, ids[50])).to_be_checked()
+        await expect(bar).to_contain_text("50 selected")
+        await expect(bar).not_to_contain_text(CAP_TEXT)
+
+
+async def test_staff_get_no_bulk_assign_and_admins_do(shell: Shell) -> None:
+    for role, assign in (("tenant_staff", 0), ("tenant_admin", 1)):
+        state = queue_inbox()
+        async with inbox_page(shell, state, role=role) as page:
+            await rows_loaded(page, 3)
+            await tick(page, NAMED)
+            bar = bulk_bar(page)
+            for name in ("Claim", "Resolve", "Clear"):
+                await expect(bar.get_by_role("button", name=name, exact=True)).to_be_visible()
+            await expect(bar.get_by_test_id("inbox-bulk-snooze")).to_be_visible()
+            await expect(bar.get_by_role("button", name=re.compile("^Assign"))).to_have_count(
+                assign
+            )
+
+
+async def test_platform_admin_on_a_company_assigns_many(shell: Shell) -> None:
+    team = [
+        {"id": AINA, "display_name": "Aina Demo", "role": "tenant_staff"},
+        {
+            "id": "33333333-3333-4333-8333-333333333332",
+            "display_name": "Bakar Demo",
+            "role": "tenant_admin",
+        },
+    ]
+    state = queue_inbox(assignees=team)
+    async with inbox_page(shell, state, role="platform_admin", path="/inbox") as page:
+        await page.get_by_label("Tenant").select_option(redesign.TENANT)
+        await rows_loaded(page, 3)
+        await tick(page, NAMED)
+        await tick(page, UNNAMED)
+        await bulk_bar(page).get_by_role("button", name="Assign…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(dialog).to_be_visible()
+        await expect(dialog).to_contain_text("Assign 2 conversations")
+        await dialog.get_by_role("radio", name="Aina Demo").check()
+        await dialog.get_by_role("button", name="Assign", exact=True).click()
+        await expect(bulk_result(page)).to_contain_text("2 done.", timeout=WAIT)
+        call = state.bulk_calls[-1]
+        assert call["body"]["action"] == "assign", call
+        assert call["body"]["assignee_id"] == AINA and call["body"]["ids"] == [NAMED, UNNAMED]
+        assert "assigneeName" not in call["body"], call
+        assert f"client_id={redesign.TENANT}" in call["query"], call
+
+
+async def test_a_new_tab_or_filter_clears_the_selection(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tick(page, NAMED)
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        await tab(page, "all").click()
+        await rows_loaded(page, 7)
+        await expect(bulk_bar(page)).to_have_count(0)
+        assert await checked_ids(page) == set()
+        # A filter on top of the tab: removing its chip clears the selection too.
+        panel = await open_filters(page)
+        await panel.get_by_role("checkbox", name="Escalated").check()
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        await rows_loaded(page, 1)
+        await tick(page, NAMED)
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        await page.get_by_role("button", name="Remove filter: Reason: Escalated").click()
+        await rows_loaded(page, 7)
+        await expect(bulk_bar(page)).to_have_count(0)
+        assert await checked_ids(page) == set()
+
+
+async def test_escape_clears_the_selection_unless_a_menu_or_dialog_took_it(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tick(page, NAMED)
+        bar = bulk_bar(page)
+        snooze = bar.get_by_test_id("inbox-bulk-snooze")
+        await snooze.click()
+        menu = page.get_by_role("menu")
+        await expect(menu).to_be_visible()
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
+        await expect(snooze).to_be_focused()
+        await expect(bar).to_contain_text("1 selected")
+        await bar.get_by_role("button", name="Assign…").click()
+        dialog = page.get_by_test_id("inbox-assign-dialog")
+        await expect(dialog).to_be_visible()
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_be_hidden()
+        await expect(bar).to_contain_text("1 selected")
+        # Now nothing else takes it: Escape clears the selection, and focus lands on Select.
+        await page.keyboard.press("Escape")
+        await expect(bar).to_have_count(0)
+        assert await checked_ids(page) == set()
+        await expect(page.get_by_test_id("inbox-select-mode")).to_be_focused()
+
+
+async def test_x_on_a_focused_row_selects_it_and_the_box_is_not_a_tab_stop(shell: Shell) -> None:
+    state = queue_inbox()
+    state.items.append(
+        conversation(
+            UNKNOWN_ROW,
+            "telegram",
+            name=None,
+            preview="Hi",
+            minutes=6,
+            queue_status="needs_staff",
+            queue_reason="customer_message",
+            needs_staff_since=at(-8),
+            due_at=at(40),
+        )
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await row(page, NAMED).focus()
+        await page.keyboard.press("x")
+        await expect(check_box(page, NAMED)).to_be_checked()
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        await expect(row(page, NAMED)).to_be_focused()
+        # Tab goes from row to row: the box is not a stop of its own outside Select mode.
+        await page.keyboard.press("Tab")
+        await expect(row(page, UNNAMED)).to_be_focused()
+        await page.keyboard.press("x")
+        await expect(bulk_bar(page)).to_contain_text("2 selected")
+        await page.keyboard.press("x")
+        await expect(check_box(page, UNNAMED)).not_to_be_checked()
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        # The box names the person; a contact with no real name also gets the channel.
+        await expect(check_box(page, NAMED)).to_have_accessible_name("Select Aisyah Rahman")
+        await expect(check_box(page, UNNAMED)).to_have_accessible_name(
+            "Select ••••0148 on WhatsApp"
+        )
+        # A hidden box has no accessible name: show it as a pointer user does.
+        await row(page, UNKNOWN_ROW).hover()
+        await expect(check_box(page, UNKNOWN_ROW)).to_have_accessible_name(
+            "Select Unknown sender on Telegram"
+        )
+
+
+async def test_select_mode_shows_every_box_for_touch(shell: Shell) -> None:
+    rows = many_rows(4)
+    ids = ids_of(rows)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page, 4)
+        toggle = page.get_by_test_id("inbox-select-mode")
+        await expect(toggle).to_have_text("Select")
+        await expect(toggle).to_have_attribute("aria-pressed", "false")
+        for identifier in ids:
+            await expect(check_box(page, identifier)).to_be_hidden()
+        await toggle.click()
+        await expect(toggle).to_have_attribute("aria-pressed", "true")
+        for identifier in ids:
+            await expect(check_box(page, identifier)).to_be_visible()
+        await check_box(page, ids[1]).click()
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        # In Select mode each box is a stop in the tab order, before its row.
+        await check_box(page, ids[1]).focus()
+        await page.keyboard.press("Tab")
+        await expect(row(page, ids[1])).to_be_focused()
+        await page.keyboard.press("Tab")
+        await expect(check_box(page, ids[2])).to_be_focused()
+        await page.keyboard.press("Space")
+        await expect(bulk_bar(page)).to_contain_text("2 selected")
+        # Clear empties the selection and leaves Select mode.
+        await bulk_bar(page).get_by_role("button", name="Clear", exact=True).click()
+        await expect(bulk_bar(page)).to_have_count(0)
+        await expect(toggle).to_have_attribute("aria-pressed", "false")
+        await expect(toggle).to_be_focused()
+        # The bar shrank under the pointer: move it off the rows, which show their box on hover.
+        await page.mouse.move(1, 1)
+        for identifier in ids:
+            await expect(check_box(page, identifier)).to_be_hidden()
+
+
+async def test_each_rows_box_stays_right_after_another_row_is_toggled(shell: Shell) -> None:
+    rows = many_rows(4)
+    a, b, c, _d = ids_of(rows)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await tick(page, a)
+        await tick(page, b)
+        await check_box(page, a).click()
+        await tick(page, c)
+        await expect(bulk_bar(page)).to_contain_text("2 selected")
+        assert await checked_ids(page) == {b, c}
+        await check_box(page, b).click()
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        assert await checked_ids(page) == {c}
+        await tick(page, a)
+        await expect(bulk_bar(page)).to_contain_text("2 selected")
+        assert await checked_ids(page) == {a, c}
+
+
+async def test_a_retried_uncertain_bulk_applies_its_results(shell: Shell) -> None:
+    rows = many_rows(3)
+    ids = ids_of(rows)
+    state = Inbox(items=rows, bulk_script=["abort"], bulk_outcomes={ids[1]: "customer_wrote"})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tick(page, ids[0])
+        bar = bulk_bar(page)
+        await bar.get_by_role("button", name="Select all loaded").click()
+        await expect(bar).to_contain_text("3 selected")
+        await bar.get_by_role("button", name="Resolve", exact=True).click()
+        await expect(page.get_by_text(UNCERTAIN, exact=True)).to_be_visible(timeout=WAIT)
+        # Nothing else is sent while the uncertain request is kept.
+        await expect(bar.get_by_role("button", name="Resolve", exact=True)).to_be_disabled()
+        await expect(check_box(page, ids[0])).to_be_disabled()
+        await page.get_by_role("button", name="Retry the same action").click()
+        result = bulk_result(page)
+        await expect(result.get_by_role("status")).to_have_text(
+            "2 done. 1 not done: the customer wrote after you opened the list.", timeout=WAIT
+        )
+        await expect(result.get_by_role("listitem")).to_have_text(
+            ["Customer 101: the customer wrote after you opened the list."]
+        )
+        await expect(result).to_be_focused()
+        await expect(bar).to_contain_text("1 selected")
+        assert await checked_ids(page) == {ids[1]}
+        first, second = state.bulk_calls
+        assert first["body"] == second["body"], (first, second)
+
+
+@pytest.mark.parametrize("width", (320, 390))
+async def test_the_bulk_bar_and_its_result_fit_small_screens(shell: Shell, width: int) -> None:
+    rows = many_rows(30)
+    ids = ids_of(rows)
+    state = Inbox(
+        items=rows,
+        bulk_outcomes={
+            ids[2]: "held_reply_pending",
+            ids[3]: "not_allowed",
+            ids[4]: "not_in_queue",
+            ids[5]: "not_found",
+        },
+    )
+    async with inbox_page(shell, state, width=width) as page:
+        await rows_loaded(page, 30)
+        await page.get_by_test_id("inbox-select-mode").click()
+        await page.get_by_role("button", name="Select all loaded").click()
+        bar = bulk_bar(page)
+        await expect(bar).to_contain_text("30 selected")
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], ("bar", measured)
+        for button in await bar.get_by_role("button").all():
+            box = await button.bounding_box()
+            assert box and box["height"] >= 40 and box["x"] + box["width"] <= width, box
+        await bar.get_by_role("button", name="Claim", exact=True).click()
+        result = bulk_result(page)
+        await expect(result.get_by_role("listitem")).to_have_count(4, timeout=WAIT)
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], ("result", measured)
+        box = await result.bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, box
+        # Scrolled into the list, the tab strip is still the only thing stuck to the top.
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight / 2)")
+        await asyncio.sleep(0.2)
+        strip = await page.get_by_role("region", name="Conversation queues").bounding_box()
+        assert strip is not None and abs(strip["y"]) < 1 and strip["height"] <= STICKY_BOUND
+        gone = await bar.bounding_box()
+        assert gone is not None and gone["y"] + gone["height"] <= 0, gone
+
+
+async def test_desktop_bar_with_the_bulk_bar_and_the_panes_fit_one_screen(shell: Shell) -> None:
+    """The bulk bar (two lines with its message) is taller: the panes shrink to keep one screen."""
+    rows = many_rows(30)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state) as page:
+        await page.set_viewport_size({"width": 1440, "height": 800})
+        await page.goto(f"{shell.base}/portal/inbox")
+        await rows_loaded(page, 30)
+        before = await page.get_by_test_id("inbox-queue-bar").bounding_box()
+        await tick(page, rows[0]["id"])
+        await bulk_bar(page).get_by_role("button", name="Select all loaded").click()
+        await expect(bulk_bar(page)).to_contain_text("Selected all 30 conversations loaded so far.")
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+        await asyncio.sleep(0.3)
+        bar = await page.get_by_test_id("inbox-queue-bar").bounding_box()
+        assert before and bar and abs(bar["y"]) < 1, bar
+        assert bar["height"] > before["height"], (before, bar)
+        listing = await page.locator("[data-inbox-list-scroll]").bounding_box()
+        assert listing is not None, listing
+        assert (
+            listing["y"] >= bar["y"] + bar["height"] and listing["y"] + listing["height"] <= 800
+        ), (
+            bar,
+            listing,
+        )

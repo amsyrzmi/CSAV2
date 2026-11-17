@@ -66,15 +66,21 @@ export function useQueueActions(query: string, actions: InboxActions) {
     return { ok: false, code: errorCode(done.cause) ?? undefined };
   }
 
-  /** Many items. `seenAt` is the list's `as_of`. Per-item refusals come back in `results`, not as a failure. */
+  /**
+   * Many items. `seenAt` is the list's `as_of`. Per-item refusals come back in `results`, not as a
+   * failure. `onResults` gets them on success, also when an uncertain request succeeds on Retry
+   * (which settles outside this call), so callers act on results there rather than on the return.
+   */
   async function bulk(
     action: QueueActionName, ids: string[], fields: QueueFields, seenAt: string,
+    onResults?: (results: BulkResult[]) => void,
   ): Promise<QueueRun> {
     if (actions.blocked) return NOT_SENT;
     const done = await actions.execute({
       path: bulkPath(query),
       payload: bulkBody(action, ids, fields, seenAt),
       notice: (result) => bulkSummary((result as BulkResponse).results).text,
+      onResult: onResults ? (result) => onResults((result as BulkResponse).results) : undefined,
       ...failureFor(action),
     });
     if (done.ok) return { ok: true, results: (done.result as BulkResponse).results };

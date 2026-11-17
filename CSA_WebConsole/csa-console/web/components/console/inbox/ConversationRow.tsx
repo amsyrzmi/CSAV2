@@ -19,6 +19,16 @@ export function contactOf(conversation: Pick<Conversation, "contact">): Contact 
   return cleanContact(conversation.contact ?? NO_CONTACT);
 }
 
+/**
+ * The conversation's name for a sentence or a control: the row's title, and the channel too when
+ * that title is not a real name ("Unknown sender on Telegram", "••••0148 on WhatsApp").
+ */
+export function conversationName(item: Pick<Conversation, "contact" | "channel">): string {
+  const contact = contactOf(item);
+  const title = rowTitle(contact);
+  return contact.display_name?.trim() ? title : `${title} on ${CHANNEL_NAME[item.channel]}`;
+}
+
 /** Customer (blue) or New sender (neutral with a dashed edge); the words carry the meaning. */
 export function SenderLabel({ known }: { known: boolean }) {
   const text = senderLabel(known);
@@ -52,7 +62,7 @@ export type ConversationRowProps = {
   tab: QueueTabId;
   /** The signed-in person's real user id, so "You" is right for every role. */
   me: { userId: string | null };
-  /** Touch "Select" mode: the checkbox always shows. */
+  /** Touch "Select" mode: the checkbox always shows and is a stop in the tab order. */
   selectMode?: boolean;
   checked?: boolean;
   /** Without it there is no checkbox at all. */
@@ -66,6 +76,8 @@ const META_TEXT = "text-xs text-ink-700";
  * One conversation in three lines: the name and the clock, the last message, and a meta line with
  * only what applies (state, due, High or Urgent, the reason, who has it, New sender, the channel).
  * The row opens with one button; the selection checkbox is its sibling, never nested inside it.
+ * Outside Select mode the box is not a tab stop: a keyboard user presses X on the focused row
+ * (the list handles it), so Tab still moves row to row.
  */
 function Row({ item, selected, disabled, now, tab, me, selectMode = false, checked = false, onCheck, onSelect }:
   ConversationRowProps) {
@@ -84,7 +96,8 @@ function Row({ item, selected, disabled, now, tab, me, selectMode = false, check
   return <li className="group/row relative">
     {onCheck && <label className={`absolute left-3 top-2 z-10 grid size-10 place-items-center rounded-full ${surface} ${
       checked || selectMode ? "" : "invisible group-hover/row:visible group-focus-within/row:visible"}`}>
-      <input type="checkbox" aria-label={`Select ${title}`} checked={checked} disabled={disabled}
+      <input type="checkbox" aria-label={`Select ${conversationName(item)}`} checked={checked} disabled={disabled}
+        tabIndex={selectMode ? undefined : -1}
         onChange={(event) => onCheck(item.id, event.target.checked)}
         className="size-4 shrink-0 accent-[var(--fs-primary)] max-md:scroll-mt-14 pointer-coarse:size-6 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]" />
     </label>}
@@ -129,8 +142,9 @@ function Row({ item, selected, disabled, now, tab, me, selectMode = false, check
 
 /**
  * Customer messages and escalations do not raise `inbox_version` (docs/CONSOLE_API.md), so the row
- * re-renders when its data differs, not only its version. Callbacks are not compared: the list
- * passes ones that stay the same.
+ * re-renders when its data differs, not only its version. Callbacks are not compared, only whether
+ * `onCheck` is there at all: the list passes `onSelect` and `onCheck` as stable callbacks that call
+ * the newest handler (a latest-ref), so a row that did not re-render never acts on an old selection.
  */
 function sameRow(a: ConversationRowProps, b: ConversationRowProps): boolean {
   return a.now === b.now && a.selected === b.selected && a.checked === b.checked && a.disabled === b.disabled

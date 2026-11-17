@@ -1,37 +1,59 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
 import { action, Notice } from "@/components/console/ui";
 import type { Me } from "@/lib/identity-contracts";
 import {
-  canConnectWhatsApp, type Conversation, type ConversationPage, type QueueCounts,
+  canConnectWhatsApp, type BulkResult, type Conversation, type ConversationPage, type QueueActionName,
+  type QueueCounts, type QueueFields,
 } from "@/lib/inbox-api";
 import {
-  activeFilterChips, priorityOrderAllowed, queueListQuery, tabFilters, tabOrder, withoutChip,
+  activeFilterChips, BULK_LIMIT, BULK_LIMIT_TEXT, bulkFailureLines, bulkSummary, priorityOrderAllowed,
+  queueListQuery, selectAllText, tabFilters, tabOrder, withoutChip,
   type QueueFilters, type QueueOrder, type QueueTabId,
 } from "@/lib/inbox-queue";
 import { shortcutFor, type KeyLike } from "@/lib/inbox-shortcuts";
 import { neighbourId } from "@/lib/inbox-thread";
 import { ProposalCard } from "../ProposalCard";
+import { BulkBar, SelectToggle } from "./BulkBar";
 import { ConversationList } from "./ConversationList";
+import { conversationName } from "./ConversationRow";
 import { PHONE_QUERY, useMediaQuery, useTicker, WIDE_QUERY } from "./hooks";
 import { OpenConversation } from "./OpenConversation";
 import { QueueBar } from "./QueueBar";
 import { useInboxActions, type InboxActions } from "./useInboxActions";
 import { usePages } from "./usePages";
+import { useQueueActions } from "./useQueueActions";
 
 const FIRST_TAB: QueueTabId = "needs_us";
 const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
+const NONE: ReadonlySet<string> = new Set();
 
-/** Outcome notices, the shared proposal card and the explicit retry, next to the work. */
-function Feedback({ actions, framed }: { actions: InboxActions; framed: boolean }) {
+/** A bulk action's answer: what did not apply, one line per conversation (the summary is the notice). */
+type BulkOutcomeView = { lines: string[] };
+
+/**
+ * Outcome notices, the shared proposal card and the explicit retry, next to the work. After a bulk
+ * action the summary and the list of what did not apply sit in one focusable "Bulk result" region.
+ */
+function Feedback({ actions, framed, bulk, bulkRef }: {
+  actions: InboxActions; framed: boolean;
+  bulk?: BulkOutcomeView | null; bulkRef?: RefObject<HTMLElement | null>;
+}) {
   const { error, notice, proposal, pending, busy } = actions;
   if (!error && !notice && !proposal && !(pending && !busy)) return null;
   return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3" : ""}`}>
     {error && <Notice error>{error}</Notice>}
-    {notice && <Notice>{notice}</Notice>}
+    {notice && (bulk ? <section ref={bulkRef} tabIndex={-1} aria-label="Bulk result" data-testid="inbox-bulk-result"
+      className="min-w-0 space-y-2 rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">
+      <Notice>{notice}</Notice>
+      {bulk.lines.length > 0 && <ul aria-label="Not done"
+        className="list-disc space-y-1 pl-5 text-sm text-[color:var(--fs-text)] [overflow-wrap:anywhere]">
+        {bulk.lines.map((line, index) => <li key={index}>{line}</li>)}
+      </ul>}
+    </section> : <Notice>{notice}</Notice>)}
     {proposal && <ProposalCard key={proposal.id} proposal={proposal} tenantId={actions.tenantId}
       onSettled={actions.refresh} />}
     {pending && !busy && <button type="button" className={action}
@@ -41,6 +63,7 @@ function Feedback({ actions, framed }: { actions: InboxActions; framed: boolean 
 
 export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId: string | null }) {
   const actions = useInboxActions(query, tenantId);
+  const queue = useQueueActions(query, actions);
   const rootRef = useRef<HTMLDivElement>(null);
   const motion = useMotionAllowed(rootRef);
   const now = useTicker(30_000);
@@ -61,6 +84,21 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const listScroll = useRef(0);
   const focusAfterBack = useRef(false);
 
+  // Bulk selection (design 14.6): the ids picked, Select mode for touch, what the bar says about
+  // the selection, and the last bulk answer. While a bulk action is the latest outcome, the
+  // feedback sits under the bar (not in an open thread, which a phone hides behind the list).
+  const canSelect = me.role !== "read_only";
+  const canAssign = me.role === "tenant_admin" || me.role === "platform_admin";
+  const [picked, setPicked] = useState<ReadonlySet<string>>(NONE);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectMessage, setSelectMessage] = useState("");
+  const [bulkFeedback, setBulkFeedback] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkOutcomeView | null>(null);
+  const bulkResultRef = useRef<HTMLElement>(null);
+  const bulkBarRef = useRef<HTMLDivElement>(null);
+  const selectToggleRef = useRef<HTMLButtonElement>(null);
+  const focusSelectToggle = useRef(false);
+
   // Typing settles for 300 ms before the server is asked; queueListQuery drops one character.
   useEffect(() => {
     const timer = setTimeout(() => { setQ(search); setPages(1); }, 300);
@@ -76,6 +114,9 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const searching = [...q.trim()].length >= 2;
   const chips = activeFilterChips(filters, tab);
   const filtered = chips.length > 0;
+  // The selection as it applies: the picked rows that are loaded, in list order. An id whose row
+  // has left the list (resolved elsewhere, say) is neither counted nor sent.
+  const chosen = items.filter((item) => picked.has(item.id)).map((item) => item.id);
 
   // The counts are the server's, for the whole tenant, and arrive with each list answer. Only an
   // answer changes them: a failed refresh or a new tab loading keeps the last ones. Null (before
@@ -97,14 +138,85 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     setCounts({ key: countsKey, value: serverCounts });
   }
 
+  /** Empties the selection and leaves Select mode; focus inside the vanishing bulk bar goes to Select. */
+  function clearSelection() {
+    if (bulkBarRef.current?.contains(document.activeElement)) focusSelectToggle.current = true;
+    setPicked(NONE);
+    setSelectMode(false);
+    setSelectMessage("");
+  }
+  useEffect(() => {
+    if (!focusSelectToggle.current || !selectToggleRef.current) return;
+    focusSelectToggle.current = false;
+    selectToggleRef.current.focus();
+  });
+
+  /** One box: the 51st is refused in words, and a box is only ever added to the loaded rows' selection. */
+  function checkRow(id: string, on: boolean) {
+    const next = new Set(chosen);
+    if (on && !next.has(id) && next.size >= BULK_LIMIT) {
+      setSelectMessage(BULK_LIMIT_TEXT);
+      return;
+    }
+    if (on) next.add(id); else next.delete(id);
+    setPicked(next);
+    setSelectMessage("");
+  }
+  function selectAll() {
+    setPicked(new Set(items.slice(0, BULK_LIMIT).map((item) => item.id)));
+    setSelectMessage(selectAllText(items.length));
+  }
+
+  // Applies a bulk answer, first attempt or Retry alike (the kept request carries this callback):
+  // what was done leaves the selection, what was not stays selected and is listed by name. Names
+  // are the ones on screen when the request was sent; refreshed every render for the newest rows.
+  const settleBulk = useRef<(results: BulkResult[], names: Map<string, string>) => void>(() => {});
+  useEffect(() => {
+    settleBulk.current = (results, names) => {
+      const failed = new Set(bulkSummary(results).failedIds);
+      setPicked((current) => {
+        const next = new Set(current);
+        for (const result of results) {
+          if (failed.has(result.id)) next.add(result.id); else next.delete(result.id);
+        }
+        return next;
+      });
+      const nameOf = (id: string) => {
+        const item = items.find((row) => row.id === id);
+        return names.get(id) ?? (item ? conversationName(item) : undefined);
+      };
+      setBulkResult({ lines: bulkFailureLines(results, nameOf) });
+      setBulkFeedback(true);
+    };
+  });
+  // Focus moves to the result, which names what is left to do.
+  useEffect(() => {
+    if (bulkResult) bulkResultRef.current?.focus();
+  }, [bulkResult]);
+
+  function runBulk(action: QueueActionName, fields: QueueFields = {}) {
+    if (chosen.length === 0 || actions.blocked) return;
+    const names = new Map(items.filter((item) => picked.has(item.id)).map((item) => [item.id, conversationName(item)]));
+    // The list's read time, so resolve and snooze refuse an item whose customer wrote after it. An
+    // answer without it (an older server) falls back to now: the server then cannot see a message
+    // that arrived between the read and the click, so this is a fallback, not the rule.
+    const seenAt = conversations.extra?.as_of ?? new Date().toISOString();
+    setBulkFeedback(true);
+    setBulkResult(null);
+    setSelectMessage("");
+    void queue.bulk(action, chosen, fields, seenAt, (results) => settleBulk.current(results, names));
+  }
+
   // A tab is a filter set and an order; choosing one drops the filters added on top of it.
   function chooseTab(next: QueueTabId) {
+    clearSelection();
     setTab(next);
     setFilters(tabFilters(next));
     setOrder(tabOrder(next));
     setPages(1);
   }
   function changeFilters(next: QueueFilters) {
+    clearSelection();
     setFilters(next);
     // Priority order is only allowed while the state is exactly "needs us".
     if (order === "priority" && !priorityOrderAllowed(next)) setOrder(tabOrder(tab));
@@ -119,6 +231,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
 
   function select(id: string) {
     if (id !== selected) actions.clearFeedback();
+    setBulkFeedback(false);
     setSelected(id);
     setThreadOpen(true);
     if (window.matchMedia?.(PHONE_QUERY).matches) {
@@ -168,13 +281,21 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
       // A control that handled the key itself (a menu, the reply question) marks it: leave it alone.
       if (event.defaultPrevented) return;
       const dialogOpen = slideOpen || document.querySelector("dialog[open]") !== null;
+      // A selection box is an input, but Escape on it still clears the selection.
+      const onBox = event.key === "Escape" && event.target instanceof HTMLInputElement && event.target.type === "checkbox";
       const shortcut = shortcutFor({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
-        target: event.target as KeyLike["target"],
+        target: onBox ? null : event.target as KeyLike["target"],
       }, { dialogOpen });
       if (!shortcut) return;
       if (shortcut === "close") {
-        if (threadOpen && actions.pending === null && window.matchMedia?.(PHONE_QUERY).matches) back();
+        const phone = window.matchMedia?.(PHONE_QUERY).matches;
+        if (threadOpen && phone) {
+          if (actions.pending === null) back();
+        } else if (chosen.length > 0 || selectMode) {
+          event.preventDefault();
+          clearSelection();
+        }
         return;
       }
       if (actions.blocked) return;
@@ -182,6 +303,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
       if (!next || next === selected) return;
       event.preventDefault();
       actions.clearFeedback();
+      setBulkFeedback(false);
       setSelected(next);
       requestAnimationFrame(() => document.querySelector(`[data-conversation-id="${CSS.escape(next)}"]`)
         ?.scrollIntoView({ block: "nearest" }));
@@ -194,6 +316,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   }, []);
 
   const row = items.find((item) => item.id === selected);
+  const feedbackTop = !selected || bulkFeedback;
   return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4"
     style={barHeight === null ? undefined : { ["--inbox-bar-h" as string]: `${barHeight}px` }}>
     {/* At md and wider the whole bar is sticky and the panes fill the screen below it. On a phone
@@ -207,15 +330,23 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         filters={filters} onFilters={changeFilters} order={order}
         onOrder={(next) => { setOrder(next); setPages(1); }}
         chips={chips} onRemoveChip={(key) => changeFilters(withoutChip(filters, tab, key))} onClear={clearFilters}
-        query={query} meId={me.user.id} />
+        query={query} meId={me.user.id}
+        selectSlot={canSelect ? <SelectToggle on={selectMode} toggleRef={selectToggleRef} disabled={actions.blocked}
+          onToggle={() => { setSelectMode((value) => !value); setSelectMessage(""); }}
+          canSelectAll={items.length > 0} onSelectAll={selectAll} /> : undefined}
+        bulk={canSelect && chosen.length > 0 ? <BulkBar barRef={bulkBarRef} count={chosen.length} message={selectMessage}
+          canSelectAll={chosen.length < Math.min(BULK_LIMIT, items.length)} onSelectAll={selectAll}
+          onClear={clearSelection} blocked={actions.blocked} canAssign={canAssign} query={query} meId={me.user.id}
+          onRun={runBulk} /> : undefined} />
     </div>
-    {!selected && <Feedback actions={actions} framed={false} />}
+    {feedbackTop && <Feedback actions={actions} framed={false} bulk={bulkResult} bulkRef={bulkResultRef} />}
     {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}
     {/* Below the sticky bar: the screen less the bar, the gap above and the page's bottom padding. */}
     <div className="grid min-w-0 gap-3 md:h-[min(46rem,max(20rem,calc(100dvh_-_var(--inbox-bar-h,7rem)_-_3rem)))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
-          tab={tab} meId={me.user.id}
+          tab={tab} meId={me.user.id} checked={picked} selectMode={selectMode}
+          onCheck={canSelect ? checkRow : undefined}
           status={{
             loaded: conversations.loaded, error: conversations.error, forbidden: refused,
             refusal: conversations.packageInactive ? conversations.error : null,
@@ -232,7 +363,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         actions={actions} now={now} motion={motion} wide={wide} cardHost={cardHost}
         threadClass={`${PANE} ${threadOpen ? "flex h-[calc(100dvh-1.5rem)] md:h-auto" : "hidden md:flex"}`}
         cardClass="card hidden min-h-0 min-w-0 overflow-y-auto min-[68.75rem]:block"
-        feedback={<Feedback actions={actions} framed />} onBack={back}
+        feedback={feedbackTop ? null : <Feedback actions={actions} framed />} onBack={back}
         onDetails={() => setDetailsOpen(true)} onCloseDetails={() => setDetailsOpen(false)} detailsRef={detailsRef}
         me={{ userId: me.user.id, role: me.role }} />
         : <>

@@ -15,7 +15,7 @@ const queue = await import(moduleUrl(
 const {
   TABS, tabFilters, queueListQuery, activeFilterChips, waitText, dueState, dueText, rowMeta,
   primaryAction, snoozePresets, actionErrorText, bulkSummary, initialsOf, withoutChip,
-  priorityOrderAllowed, tabOrder,
+  priorityOrderAllowed, tabOrder, bulkFailureLines, selectAllText, BULK_LIMIT_TEXT,
 } = queue;
 
 const BASE = "/console/v1/inbox/conversations";
@@ -482,6 +482,28 @@ test("bulkSummary counts each refusal once per kind and keeps failed ids", () =>
     "28 done. 1 not done: a held reply needs a decision first. 1 not done: the customer wrote after you opened the list.",
   );
   assert.deepEqual(summary.failedIds, ["w", "h"]);
+});
+
+test("bulkFailureLines names each item that did not apply, grouped as the summary orders them", () => {
+  const names = { w: "Aina Demo", h: "Unknown sender on Telegram" };
+  const lines = bulkFailureLines([
+    r("d", "done"), r("w", "customer_wrote"), r("x", "not_found"), r("h", "held_reply_pending"),
+    r("a", "already_handled"),
+  ], (id) => names[id]);
+  assert.deepEqual(lines, [
+    "Unknown sender on Telegram: a held reply needs a decision first.",
+    "Aina Demo: the customer wrote after you opened the list.",
+    "A conversation no longer in this list: it is not available any more.",
+  ]);
+  assert.deepEqual(bulkFailureLines([r("d", "done")], () => "x"), []);
+});
+
+test("selectAllText says the loaded rows only, and the ceiling when it bites", () => {
+  assert.equal(selectAllText(12), "Selected all 12 conversations loaded so far.");
+  assert.equal(selectAllText(50), "Selected all 50 conversations loaded so far.");
+  assert.equal(selectAllText(55),
+    "Selected the first 50 of the 55 conversations loaded so far. You can select up to 50 conversations at a time.");
+  assert.equal(BULK_LIMIT_TEXT, "You can select up to 50 conversations at a time.");
 });
 
 test("bulkSummary orders the kinds held reply, customer wrote, not allowed, not in queue, not found", () => {

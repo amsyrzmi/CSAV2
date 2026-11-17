@@ -20,6 +20,11 @@ export type Pending = {
    * settled and anything else (no answer, 5xx) is kept for Retry with the same request key.
    */
   definitive?: (status: number | null, cause: unknown) => boolean;
+  /**
+   * Called with the answer of a successful request, first attempt or Retry alike (Retry sends this
+   * same object), so a bulk action's results reach the screen however it got through.
+   */
+  onResult?: (result: unknown) => void;
 };
 /** What `submit` settled with. `definitive` is false when the outcome is uncertain and the request is kept. */
 export type Submitted =
@@ -49,6 +54,7 @@ export function useInboxActions(query: string, tenantId: string | null) {
       });
       setPending(null);
       request.onSuccess?.();
+      request.onResult?.(result);
       if (request.notice) {
         setNotice(request.notice(result));
         setRevision((value) => value + 1);

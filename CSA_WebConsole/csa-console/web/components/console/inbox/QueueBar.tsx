@@ -126,11 +126,12 @@ function Popover({ titleId, anchorRef, children }: {
 
 /**
  * The queue bar above the panes: the tabs with their counts, then search, Filters, the Views
- * and Response times slots (filled by later work) and Sort, then the removable filter chips.
+ * and Response times slots (filled by later work), Select and Sort, then the removable filter
+ * chips. While conversations are selected, `bulk` (the bulk bar) takes the second line's place.
  */
 export function QueueBar({
   tab, onTab, counts, nudge, announcement, panelId, search, onSearch, onClearSearch, filters, onFilters,
-  order, onOrder, chips, onRemoveChip, onClear, query, meId, viewsSlot, timesSlot,
+  order, onOrder, chips, onRemoveChip, onClear, query, meId, viewsSlot, timesSlot, selectSlot, bulk,
 }: {
   tab: QueueTabId; onTab: (tab: QueueTabId) => void;
   /** The server's counts, or null before the first answer and when it could not read them. */
@@ -140,6 +141,10 @@ export function QueueBar({
   order: QueueOrder; onOrder: (order: QueueOrder) => void;
   chips: { key: string; label: string }[]; onRemoveChip: (key: string) => void; onClear: () => void;
   query: string; meId: string; viewsSlot?: ReactNode; timesSlot?: ReactNode;
+  /** The Select mode toggle (and Select all loaded while it is on), just before Sort. */
+  selectSlot?: ReactNode;
+  /** The bulk bar, shown in place of search, Filters and Sort while anything is selected. */
+  bulk?: ReactNode;
 }) {
   const searchId = useId();
   const hintId = useId();
@@ -173,7 +178,7 @@ export function QueueBar({
     <QueueTabs tab={tab} onTab={onTab} counts={counts} nudge={nudge} panelId={panelId} />
     {/* Spoken once per change of the Needs us count, never on every poll. */}
     <p role="status" className="sr-only">{announcement}</p>
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
+    {bulk ?? <div className="flex min-w-0 flex-wrap items-center gap-2">
       <div className="relative min-w-0 flex-[1_1_14rem] md:max-w-xs">
         <Search aria-hidden size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
         <input ref={searchRef} id={searchId} type="search" data-testid="inbox-search" className={`${field} pr-11 pl-9`}
@@ -185,7 +190,11 @@ export function QueueBar({
           className={`absolute top-1/2 right-1 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-[var(--fs-radius-control)] text-ink-700 hover:bg-[var(--fs-tile)] hover:text-ink-900 focus-visible:outline-offset-0 ${ring} pointer-coarse:size-10`}>
           <X aria-hidden size={16} /></button>}
       </div>
-      <div ref={filtersRoot} className="relative" onKeyDown={dismiss.onKeyDown}>
+      {/* An Escape the popover takes is marked handled, so the Inbox's own Escape leaves it alone. */}
+      <div ref={filtersRoot} className="relative" onKeyDown={(event) => {
+        if (event.key === "Escape" && open && !sheet) event.preventDefault();
+        dismiss.onKeyDown(event);
+      }}>
         <button ref={filtersButton} type="button" className={secondary} data-testid="inbox-queue-filters"
           aria-haspopup="dialog" aria-expanded={open}
           aria-label={chips.length ? `Filters, ${chips.length} applied` : "Filters"}
@@ -199,6 +208,7 @@ export function QueueBar({
       </div>
       <div data-testid="inbox-views-slot" className="contents">{viewsSlot}</div>
       <div data-testid="inbox-times-slot" className="contents">{timesSlot}</div>
+      {selectSlot}
       <div className="ml-auto flex min-w-0 items-center gap-2">
         <label htmlFor={sortId} className="shrink-0 text-sm text-ink-700">Sort</label>
         <select id={sortId} data-testid="inbox-queue-sort" className={`${field.replace("w-full", "w-auto")} min-w-0`}
@@ -208,7 +218,7 @@ export function QueueBar({
         </select>
       </div>
       {short && <p id={hintId} className="w-full text-xs text-ink-600">Type at least two characters to search.</p>}
-    </div>
+    </div>}
     {named.length > 0 && <div data-testid="inbox-queue-chips" className="flex min-w-0 flex-wrap items-center gap-2">
       {named.map((chip) => <button key={chip.key} type="button" aria-label={`Remove filter: ${chip.label}`}
         onClick={() => onRemoveChip(chip.key)}

@@ -51,11 +51,15 @@ function Choices<T extends string>({ legend, name, values, labels, value, onPick
  * a failure (with Try again) and while the member directory is down (503) it says so in words, and
  * an empty list is never shown as if nobody could take the item.
  */
-export function AssignDialog({ open, onClose, returnFocusTo, query, meId, blocked, onAssign }: Shell & {
+export function AssignDialog({
+  open, onClose, returnFocusTo, query, meId, blocked, onAssign, title = "Assign this conversation",
+}: Shell & {
   query: string; meId: string | null; blocked: boolean; onAssign: (person: InboxAssignee) => void;
+  /** The bulk bar names how many ("Assign 3 conversations"). */
+  title?: string;
 }) {
   const team = useAssignees(query, open);
-  return <Dialog open={open} onClose={onClose} title="Assign this conversation" testId="inbox-assign-dialog"
+  return <Dialog open={open} onClose={onClose} title={title} testId="inbox-assign-dialog"
     returnFocusTo={returnFocusTo} widthClass="max-w-md">
     <AssignBody team={team} meId={meId} blocked={blocked} onCancel={onClose} onAssign={onAssign} />
   </Dialog>;

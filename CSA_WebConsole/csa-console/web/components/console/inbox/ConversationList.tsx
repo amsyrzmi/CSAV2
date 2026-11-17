@@ -31,7 +31,7 @@ export type ListStatus = {
  */
 export function ConversationList({
   items, status, selected, blocked, now, tab, meId, filtered, searching, connectHref, panelId, labelledBy,
-  onSelect, onRetry, onLoadOlder, onClearFilters, onClearSearch,
+  checked, selectMode, onCheck, onSelect, onRetry, onLoadOlder, onClearFilters, onClearSearch,
 }: {
   items: Conversation[]; status: ListStatus; selected: string; blocked: boolean; now: number;
   /** The open tab (the queue tabs show the wait) and the signed-in person's real id (for "You"). */
@@ -39,6 +39,10 @@ export function ConversationList({
   filtered: boolean; searching: boolean; connectHref: string | null;
   /** The id the tabs point at, and the selected tab's id that names this panel. */
   panelId: string; labelledBy: string;
+  /** The selected ids for bulk actions, and Select mode (every box shows and is a tab stop). */
+  checked: ReadonlySet<string>; selectMode: boolean;
+  /** Without it (a read-only role) rows have no selection box. */
+  onCheck?: (id: string, checked: boolean) => void;
   onSelect: (id: string) => void; onRetry: () => void; onLoadOlder: () => void;
   onClearFilters: () => void; onClearSearch: () => void;
 }) {
@@ -47,11 +51,16 @@ export function ConversationList({
   const latestSelect = useRef(onSelect);
   useLayoutEffect(() => { latestSelect.current = onSelect; });
   const selectRow = useCallback((id: string) => latestSelect.current(id), []);
+  const latestCheck = useRef(onCheck);
+  useLayoutEffect(() => { latestCheck.current = onCheck; });
+  const checkRow = useCallback((id: string, on: boolean) => latestCheck.current?.(id, on), []);
+  const hintId = useId();
   const me = { userId: meId };
   const showRows = !status.forbidden && items.length > 0;
   return <section id={panelId} role="tabpanel" aria-labelledby={labelledBy}
     className="flex min-h-0 min-w-0 flex-1 flex-col">
     <h2 id={headingId} tabIndex={-1} data-conversation-list-heading className="sr-only">Conversations</h2>
+    {onCheck && <p id={hintId} className="sr-only">Press X on a conversation to select it or clear it.</p>}
     <div className="min-h-0 flex-1 md:overflow-y-auto" data-inbox-list-scroll>
       <div aria-live="polite">
         {status.forbidden ? <ListState kind="forbidden" message={status.refusal ?? undefined} />
@@ -67,12 +76,22 @@ export function ConversationList({
       </div>
       {/* On a phone the page scrolls the list under the sticky tab strip: a focused row is moved
           clear of it (rows carry a matching scroll margin, which J and K's scrolling uses too). */}
-      {showRows && <ul aria-label="Conversations" onFocus={(event) => {
+      {/* X on a focused row toggles its box: the keyboard route to selecting while the boxes are
+          not tab stops (outside Select mode). Space and Enter stay the row button's own. */}
+      {showRows && <ul aria-label="Conversations" aria-describedby={onCheck ? hintId : undefined} onFocus={(event) => {
         if (window.matchMedia?.(PHONE_QUERY).matches && event.target instanceof HTMLElement) {
           event.target.scrollIntoView({ block: "nearest" });
         }
+      }} onKeyDown={(event) => {
+        if (!onCheck || blocked || (event.key !== "x" && event.key !== "X")) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const id = event.target instanceof HTMLElement ? event.target.dataset.conversationId : undefined;
+        if (!id) return;
+        event.preventDefault();
+        onCheck(id, !checked.has(id));
       }}>{items.map((item) => <ConversationRow key={item.id} item={item} selected={item.id === selected}
-        disabled={blocked} now={now} tab={tab} me={me} onSelect={selectRow} />)}</ul>}
+        disabled={blocked} now={now} tab={tab} me={me} selectMode={selectMode} checked={checked.has(item.id)}
+        onCheck={onCheck ? checkRow : undefined} onSelect={selectRow} />)}</ul>}
       {showRows && status.nextCursor && !status.error && <div className="p-3">
         <button type="button" className={`${secondary} w-full`} onClick={onLoadOlder}>Load older conversations</button>
       </div>}

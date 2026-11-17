@@ -19,7 +19,7 @@ import { useQueueActions } from "./useQueueActions";
 const RELEASE_QUESTION =
   "Let the assistant reply again? It won't answer messages that came in while you were handling this chat.";
 
-type Entry = { label: string; onSelect: () => void };
+export type Entry = { label: string; onSelect: () => void };
 
 const MENU_WIDTH = 240;
 const EDGE = 8;
@@ -34,7 +34,7 @@ const ITEM =
  * screen, so the thread's overflow never clips it. Keys it handles are marked handled, so the Inbox's
  * J, K and Escape (Back on a phone) leave them alone.
  */
-function Menu({ label, menuLabel, testId, disabled, entries, triggerRef }: {
+export function Menu({ label, menuLabel, testId, disabled, entries, triggerRef }: {
   label: string; menuLabel: string; testId: string; disabled: boolean; entries: Entry[];
   triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
