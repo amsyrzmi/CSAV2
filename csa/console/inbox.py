@@ -23,12 +23,21 @@ from csa.approval.service import (
 )
 from csa.console.access import tenant
 from csa.console.contracts import ConsoleActor, Contract, Role
+from csa.console.identity import IdentityService
 from csa.console.inbox_contact import (
     InboxContact,
     display_name_or_none,
     mask_phone,
     parse_search,
     preview_text,
+)
+from csa.console.inbox_settings import (
+    InboxAssignee,
+    InboxSettingsIn,
+    InboxSettingsOut,
+    company_assignees,
+    get_settings,
+    put_settings,
 )
 from csa.console.kb_uploads import audit
 from csa.console.services import package_gate
@@ -184,6 +193,14 @@ def inbox_actor(request: Request) -> ConsoleActor:
         Role.TENANT_STAFF,
     }:
         raise HTTPException(403, "staff inbox permission required")
+    return actor
+
+
+def inbox_admin(request: Request) -> ConsoleActor:
+    """The settings are changed by a tenant admin or a platform admin; tenant staff get 403."""
+    actor = inbox_actor(request)
+    if actor.role not in {Role.PLATFORM_ADMIN, Role.TENANT_ADMIN}:
+        raise HTTPException(403, "inbox settings require an administrator")
     return actor
 
 
@@ -403,6 +420,36 @@ def build_inbox_router() -> APIRouter:
             items=items,
             next_cursor=items[-1].id if len(rows) > limit else None,
             needs_review_count=counted["n"] if counted else 0,
+        )
+
+    @router.get("/settings", response_model=InboxSettingsOut)
+    async def inbox_settings(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> InboxSettingsOut:
+        """Response targets and reminder knobs; the defaults with version 0 until a first save."""
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await get_settings(conn, client_id)
+
+    @router.put("/settings", response_model=InboxSettingsOut)
+    async def replace_inbox_settings(
+        request: Request,
+        payload: InboxSettingsIn,
+        client_id: Annotated[UUID, Depends(tenant)],
+        actor: Annotated[ConsoleActor, Depends(inbox_admin)],
+    ) -> InboxSettingsOut:
+        """Replace every setting; 409 `version_conflict` when `version` is not the one stored.
+        Items already waiting keep their due time; only later arrivals use the new targets."""
+        async with tx(request.app.state.pool, str(client_id)) as conn:
+            return await put_settings(conn, client_id, actor, payload)
+
+    @router.get("/assignees", response_model=list[InboxAssignee])
+    async def assignees(
+        request: Request, client_id: Annotated[UUID, Depends(tenant)]
+    ) -> list[InboxAssignee]:
+        """Enabled administrators and staff of the company, by display name; no addresses."""
+        identity = getattr(request.app.state, "identity_service", None)
+        return await company_assignees(
+            identity.pool if isinstance(identity, IdentityService) else None, client_id
         )
 
     @router.get("/conversations/{conversation_id}", response_model=InboxConversation)
