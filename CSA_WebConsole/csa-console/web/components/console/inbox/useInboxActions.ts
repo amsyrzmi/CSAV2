@@ -15,6 +15,11 @@ export type Pending = {
   notice?: (result: unknown) => string;
   /** Queue requests only: the plain sentence for a failure. `status` is null when no answer came. */
   failure?: (cause: unknown, status: number | null) => string;
+  /**
+   * Queue requests only: whether a failure is settled (dropped, no Retry). Without it a 4xx is
+   * settled and anything else (no answer, 5xx) is kept for Retry with the same request key.
+   */
+  definitive?: (status: number | null, cause: unknown) => boolean;
 };
 /** What `submit` settled with. `definitive` is false when the outcome is uncertain and the request is kept. */
 export type Submitted =
@@ -57,8 +62,9 @@ export function useInboxActions(query: string, tenantId: string | null) {
       setRevision((value) => value + 1);
       return { ok: true, result };
     } catch (cause) {
-      const definitive = cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
       const status = cause instanceof ApiError ? cause.status : null;
+      const definitive = request.definitive ? request.definitive(status, cause)
+        : cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
       if (definitive) setPending(null);
       setError(request.failure ? request.failure(cause, status)
         : `${(cause as Error).message}${definitive ? ". Refreshed; review before acting again." : ". Outcome uncertain. Retry keeps the same request key. After reload, inspect history before sending again."}`);

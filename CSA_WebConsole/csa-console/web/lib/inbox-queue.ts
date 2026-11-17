@@ -533,14 +533,32 @@ export function actionErrorText(status: number | null, code: string | null, fall
 /** A queue request whose outcome is unknown; it is kept, so Retry sends the same key. */
 export const UNCERTAIN_TEXT = "Could not confirm that. Retry sends the same request again.";
 
+/** The server's plain detail when `assign` cannot read the member directory (nothing was written). */
+export const DIRECTORY_DOWN = "member directory unavailable";
+
 /**
- * The sentence for a failed queue action (one item or bulk). No answer, or a 5xx, may have been
- * applied, so it is the uncertain sentence (the request is kept for Retry); a 503 is the team list
- * only for `assign`, whose directory read it is. Everything else is `actionErrorText`.
+ * Whether a failed queue request is settled: nothing was written, so it is dropped and no Retry is
+ * offered (a kept request would hold every Inbox control until it is retried). A 4xx is settled; so
+ * is `assign`'s 503 when the server says the member directory is down, because only a new assign
+ * reads the directory and nothing is written then. Any other 5xx, a 503 without that detail (a proxy,
+ * say) and no answer at all may have been applied, so they are kept.
  */
-export function queueFailureText(action: QueueActionName, status: number | null, code: string | null): string {
-  if (status === null) return UNCERTAIN_TEXT;
-  if (status >= 500 && !(status === 503 && action === "assign")) return UNCERTAIN_TEXT;
+export function queueFailureIsFinal(action: QueueActionName, status: number | null, detail: string | null): boolean {
+  if (status === null) return false;
+  if (status >= 400 && status < 500) return true;
+  return action === "assign" && status === 503 && detail === DIRECTORY_DOWN;
+}
+
+/**
+ * The sentence for a failed queue action (one item or bulk). A failure that is not final may have
+ * been applied, so it is the uncertain sentence (the request is kept for Retry); `assign`'s
+ * directory 503 is the team-list sentence. Everything else is `actionErrorText`. `detail` is the
+ * server's plain-text detail, `code` the code of a coded one.
+ */
+export function queueFailureText(
+  action: QueueActionName, status: number | null, code: string | null, detail: string | null = null,
+): string {
+  if (!queueFailureIsFinal(action, status, detail)) return UNCERTAIN_TEXT;
   return actionErrorText(status, code, "That could not be done. Refreshed: look again before acting.");
 }
 

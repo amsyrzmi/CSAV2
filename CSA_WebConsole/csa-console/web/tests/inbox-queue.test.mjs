@@ -814,13 +814,28 @@ test("queueFailureText: an unanswered or 5xx request is uncertain; the team sent
   const uncertain = "Could not confirm that. Retry sends the same request again.";
   assert.equal(queueFailureText("resolve", null, null), uncertain);
   assert.equal(queueFailureText("claim", 500, null), uncertain);
-  assert.equal(queueFailureText("topic", 503, null), uncertain);
-  assert.equal(queueFailureText("assign", 503, null), "The team list is unavailable right now. Try again in a moment.");
+  assert.equal(queueFailureText("topic", 503, null, "member directory unavailable"), uncertain);
+  assert.equal(queueFailureText("assign", 503, null, "member directory unavailable"),
+    "The team list is unavailable right now. Try again in a moment.");
+  // A 503 without the server's detail (a proxy) may have been applied.
+  assert.equal(queueFailureText("assign", 503, null), uncertain);
   assert.equal(queueFailureText("assign", 502, null), uncertain);
   assert.equal(queueFailureText("resolve", 409, "held_reply_pending"), "A held reply needs a decision first.");
   assert.equal(queueFailureText("claim", 409, null), "This conversation changed. Refreshed, so look again before acting.");
   assert.equal(queueFailureText("claim", 403, null), "You do not have permission to do that.");
   assert.equal(queueFailureText("assign", 422, null), "That could not be done. Refreshed: look again before acting.");
+});
+
+test("queueFailureIsFinal: 4xx and assign's directory 503 are settled; no answer and other 5xx are kept", () => {
+  const { queueFailureIsFinal } = queue;
+  const down = "member directory unavailable";
+  for (const status of [400, 403, 404, 409, 422]) assert.equal(queueFailureIsFinal("claim", status, null), true);
+  assert.equal(queueFailureIsFinal("assign", 503, down), true);
+  assert.equal(queueFailureIsFinal("assign", 503, "Request failed (503)"), false);
+  assert.equal(queueFailureIsFinal("assign", 503, null), false);
+  assert.equal(queueFailureIsFinal("topic", 503, down), false);
+  assert.equal(queueFailureIsFinal("assign", 500, down), false);
+  assert.equal(queueFailureIsFinal("resolve", null, null), false);
 });
 
 test("customSnoozeUntil reads the field in +08:00 and says in words what is wrong", () => {

@@ -1,11 +1,12 @@
 "use client";
 
+import { ApiError } from "@/lib/api";
 import {
   bulkBody, bulkPath, errorCode, queueActionBody, queueActionPath,
   type BulkResponse, type BulkResult, type Conversation, type QueueActionName, type QueueActionResult,
   type QueueFields,
 } from "@/lib/inbox-api";
-import { bulkSummary, queueActionNotice, queueFailureText } from "@/lib/inbox-queue";
+import { bulkSummary, queueActionNotice, queueFailureIsFinal, queueFailureText } from "@/lib/inbox-queue";
 import type { InboxActions } from "./useInboxActions";
 
 /**
@@ -24,13 +25,21 @@ export type QueueRun = {
 
 const NOT_SENT: QueueRun = { ok: false, code: "busy" };
 
+/** The server's plain-text detail of a failed call (`ApiError.code`), or null without an answer. */
+const detailOf = (cause: unknown) => (cause instanceof ApiError ? cause.code : null);
+
 /**
  * A request that may have been applied is kept (network failure, timeout, 5xx): Retry sends the same
- * request key again, and the sentence says so. A definitive refusal (4xx) is dropped. Either way the
+ * request key again, and the sentence says so. A settled refusal (4xx, and assign's member-directory
+ * 503, which writes nothing) is dropped, so it never holds the Inbox's controls. Either way the
  * polled reads refresh.
  */
-const failureFor = (action: QueueActionName) =>
-  (cause: unknown, status: number | null): string => queueFailureText(action, status, errorCode(cause));
+const failureFor = (action: QueueActionName) => ({
+  failure: (cause: unknown, status: number | null): string =>
+    queueFailureText(action, status, errorCode(cause), detailOf(cause)),
+  definitive: (status: number | null, cause: unknown): boolean =>
+    queueFailureIsFinal(action, status, detailOf(cause)),
+});
 
 /**
  * The queue's write paths over the Inbox's shared plumbing (`actions`): the busy flag, the notice and
@@ -51,7 +60,7 @@ export function useQueueActions(query: string, actions: InboxActions) {
           assigneeName: fields.assigneeName,
         }, Date.now());
       },
-      failure: failureFor(action),
+      ...failureFor(action),
     });
     if (done.ok) return { ok: true, outcome: (done.result as QueueActionResult).outcome };
     return { ok: false, code: errorCode(done.cause) ?? undefined };
@@ -66,7 +75,7 @@ export function useQueueActions(query: string, actions: InboxActions) {
       path: bulkPath(query),
       payload: bulkBody(action, ids, fields, seenAt),
       notice: (result) => bulkSummary((result as BulkResponse).results).text,
-      failure: failureFor(action),
+      ...failureFor(action),
     });
     if (done.ok) return { ok: true, results: (done.result as BulkResponse).results };
     return { ok: false, code: errorCode(done.cause) ?? undefined };

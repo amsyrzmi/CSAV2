@@ -1290,6 +1290,8 @@ async def test_each_refusal_ends_in_a_plain_sentence_and_a_refresh(shell: Shell)
         "assign": [(503, {"detail": "member directory unavailable"})],
         "topic": [(503, {"detail": "synthetic outage"})],
     }
+    # A person holds this chat, so the reply box is on screen too.
+    row_of(state, UNNAMED).update(human_muted=True, owned_by="human")
     async with inbox_page(shell, state) as page:
         await rows_loaded(page, 4)
         await open_item(page, NAMED)
@@ -1317,24 +1319,28 @@ async def test_each_refusal_ends_in_a_plain_sentence_and_a_refresh(shell: Shell)
         # None of these is kept for a retry: they were refused.
         await expect(page.get_by_role("button", name="Retry the same action")).to_have_count(0)
 
-        # A 503 from assign is the team list; it may not have been applied, so Retry is offered.
+        # A 503 from assign is the member directory being down: nothing was written, so it is
+        # settled. No Retry is offered and nothing in the Inbox waits for it.
         await more.click()
         await page.get_by_role("menuitem", name="Assign to…").click()
         assign = page.get_by_test_id("inbox-assign-dialog")
         await assign.get_by_role("radio", name="Aina Demo").check()
         await assign.get_by_role("button", name="Assign", exact=True).click()
         await refused(page, state, "The team list is unavailable right now. Try again in a moment.")
-        retry = page.get_by_role("button", name="Retry the same action")
-        await expect(retry).to_be_visible()
-        # A kept request owns its key: every queue control waits for it.
+        await expect(page.get_by_role("button", name="Retry the same action")).to_have_count(0)
         for test_id in ("inbox-primary-action", "inbox-snooze-menu", "inbox-more-menu"):
-            await expect(page.get_by_test_id(test_id)).to_be_disabled()
-        await retry.click()
+            await expect(page.get_by_test_id(test_id)).to_be_enabled()
+        await expect(page.get_by_test_id("inbox-composer").locator("textarea")).to_be_enabled()
+        # Assigning again once the directory is back is a new request.
+        await more.click()
+        await page.get_by_role("menuitem", name="Assign to…").click()
+        await assign.get_by_role("radio", name="Aina Demo").check()
+        await assign.get_by_role("button", name="Assign", exact=True).click()
         await expect(page.get_by_text("Assigned to Aina Demo.", exact=True)).to_be_visible(
             timeout=WAIT
         )
         first, second = state.queue_calls[-2:]
-        assert first["body"] == second["body"], (first, second)
+        assert first["body"]["request_key"] != second["body"]["request_key"], (first, second)
 
         # A 503 from anything else is the uncertain sentence, not the team list.
         await more.click()
