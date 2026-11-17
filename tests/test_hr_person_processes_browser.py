@@ -309,7 +309,8 @@ async def test_probation_end_is_set_and_cleared_with_the_person_version(site: Si
         world = PersonWorld()
         async with person_page(browser, site, world, LINA_PROFILE) as page:
             panel = section(page)
-            when = panel.get_by_label("Probation end")
+            group = panel.get_by_role("group", name="Set probation end date")
+            when = group.get_by_label("Probation end", exact=True)
             await expect(when).to_have_value(day(85))
             await when.fill(day(90))
             await panel.get_by_role("button", name="Save", exact=True).click()
@@ -360,7 +361,7 @@ async def test_probation_end_from_the_keyboard_and_a_stale_version(site: Site) -
         world = PersonWorld()
         async with person_page(browser, site, world, LINA_PROFILE) as page:
             panel = section(page)
-            when = panel.get_by_label("Probation end")
+            when = panel.get_by_label("Probation end", exact=True)
             await expect(when).to_have_value(day(85))
             # Someone else changed Lina since the page loaded.
             world.processes.persons[LINA].version = 7
@@ -382,6 +383,9 @@ async def test_probation_end_from_the_keyboard_and_a_stale_version(site: Site) -
             assert versions == [3, 3], versions
             # Reload reads the person again; the next save sends the new version.
             await notice.get_by_role("button", name="Reload").click()
+            # Reload keeps focus on the notice, which now says what to do next.
+            await expect(notice).to_have_text("Reloaded. Check the date and save again.")
+            assert await focused_inside(page, notice)
             await when.fill(day(95))
             await panel.get_by_role("button", name="Save", exact=True).click()
             await expect(notice).to_have_text("Probation end saved.")
@@ -406,7 +410,7 @@ async def test_manager_sees_progress_of_a_report_without_notes_dates_or_hr_contr
             await expect(item).to_contain_text("Next: Read the safety handbook")
             await expect(panel.get_by_role("link")).to_have_count(0)
             await expect(panel.get_by_role("button")).to_have_count(0)
-            await expect(panel.get_by_label("Probation end")).to_have_count(0)
+            await expect(panel.get_by_label("Probation end", exact=True)).to_have_count(0)
             await expect(panel.get_by_test_id("hr-person-process-dates")).to_have_count(0)
             await expect(panel).not_to_contain_text("No offboarding template")
             # Steps' notes stay with the assignee and HR.
@@ -435,7 +439,7 @@ async def test_the_person_sees_their_own_progress_on_my_hr(site: Site) -> None:
             await expect(dates).to_contain_text(f"Probation end{date_text(day(85))}")
             await expect(panel.get_by_role("link")).to_have_count(0)
             await expect(panel.get_by_role("button")).to_have_count(0)
-            await expect(panel.get_by_label("Probation end")).to_have_count(0)
+            await expect(panel.get_by_label("Probation end", exact=True)).to_have_count(0)
             await expect(panel).not_to_contain_text("template")
 
     await with_browser(body)
@@ -457,6 +461,27 @@ async def test_no_section_for_a_viewer_the_api_does_not_serve(site: Site) -> Non
             ]
             await until(lambda: len(reads()) > 0)
             await expect(section(page)).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_try_again_on_the_section_moves_focus_to_its_heading(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = PersonWorld()
+        world.processes.failures[f"GET hr/people/{LINA}/processes"] = [(500, "boom")] * 4
+        async with person_page(
+            browser,
+            site,
+            world,
+            LINA_PROFILE,
+            ready=lambda p: section(p).get_by_role("button", name="Try again"),
+        ) as page:
+            world.processes.failures.clear()
+            await section(page).get_by_role("button", name="Try again").click()
+            item = section(page).get_by_test_id(f"hr-person-process-{PROCESS['onboarding']}")
+            await expect(item).to_be_visible()
+            heading = section(page).get_by_role("heading", name="Onboarding & offboarding")
+            await expect(heading).to_be_focused()
 
     await with_browser(body)
 
@@ -512,6 +537,30 @@ async def test_rehire_asks_first_when_an_offboarding_is_open(site: Site) -> None
             assert offboarding and offboarding.status == "cancelled"
             item = section(page).get_by_test_id(f"hr-person-process-{PROCESS['offboarding']}")
             await expect(item).to_contain_text("Cancelled")
+
+    await with_browser(body)
+
+
+async def test_rehire_waits_for_the_offboarding_check(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = PersonWorld()
+        async with person_page(browser, site, world, HANA_PROFILE) as page:
+            release = asyncio.Event()
+
+            async def held(route: Route) -> None:
+                await release.wait()
+                await route.fallback()
+
+            await page.route(f"**/console/v1/hr/people/{HANA}/processes**", held)
+            form = await open_rehire(page)
+            submit = form.get_by_role("button", name="Rehire", exact=True)
+            checking = form.get_by_test_id("hr-rehire-checking")
+            await expect(checking).to_have_text("Checking open processes\u2026")
+            await expect(submit).to_be_disabled()
+            release.set()
+            await expect(submit).to_be_enabled()
+            await expect(checking).to_have_count(0)
+            assert world.operations("person.rehire") == []
 
     await with_browser(body)
 
@@ -643,12 +692,17 @@ async def test_mark_all_read_goes_one_by_one_in_screen_order(site: Site) -> None
                 await route.fallback()
 
             await page.route("**/console/v1/hr/operations**", slow)
+            # The live region is on the page, empty, before anything is announced.
+            announced = page.get_by_test_id("hr-reminders-status")
+            await expect(announced).to_have_text("")
+            await expect(announced).to_have_attribute("role", "status")
             await page.get_by_role("button", name="Mark all read").click()
             await expect(page.get_by_test_id("hr-reminders-progress")).to_have_text(
                 "Marking 1 of 5…"
             )
             notice = page.get_by_test_id("hr-reminders-outcome")
             await expect(notice).to_have_text("Marked 5 reminders as read.", timeout=WAIT)
+            await expect(announced).to_have_text("Marked 5 reminders as read.")
             assert await focused_inside(page, notice)
             # Overdue, due soon, new, done, then the older kind; the read one is skipped.
             assert world.processes.notification_reads == [
@@ -761,7 +815,7 @@ async def test_read_only_session_sees_the_section_without_write_controls(site: S
             await expect(panel.get_by_test_id("hr-person-no-template-offboarding")).to_be_visible()
             await expect(panel.get_by_role("link", name="Create a template")).to_have_count(0)
             await expect(panel.get_by_role("button")).to_have_count(0)
-            await expect(panel.get_by_label("Probation end")).to_have_count(0)
+            await expect(panel.get_by_label("Probation end", exact=True)).to_have_count(0)
             await page.goto(f"{site.base}{HOME}")
             await expect(reminders(page)).to_be_visible(timeout=WAIT)
             await expect(page.get_by_role("button", name="Mark all read")).to_have_count(0)

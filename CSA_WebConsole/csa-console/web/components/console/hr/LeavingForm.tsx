@@ -156,6 +156,8 @@ export function RehireForm({ tenant, person, onDone, onReload, onCancel }: {
   // The start date waiting for Continue while the question about the open offboarding asks.
   const [asking, setAsking] = useState<string | null>(null);
   const [checkFailed, setCheckFailed] = useState(false);
+  // Rehire waits (disabled, with a line saying so) until the read of open processes settles.
+  const [checking, setChecking] = useState(true);
   const check = useRef<Promise<OffboardingCheck> | null>(null);
   const submitting = useRef(false);
   const submitButton = useRef<HTMLButtonElement>(null);
@@ -169,7 +171,7 @@ export function RehireForm({ tenant, person, onDone, onReload, onCancel }: {
       .then(data => ({ open: hasActiveOffboarding(data.processes) }))
       .catch(() => ({ failed: true as const }));
     check.current = pending;
-    void pending.then(result => { if (active) setCheckFailed("failed" in result); });
+    void pending.then(result => { if (active) { setCheckFailed("failed" in result); setChecking(false); } });
     return () => { active = false; };
   }, [processes, person.employee_id]);
 
@@ -218,9 +220,10 @@ export function RehireForm({ tenant, person, onDone, onReload, onCancel }: {
         </Notice></div>}
         <Problems problem={problem} onReload={onReload} />
         <div className="flex flex-wrap gap-2 sm:col-span-2">
-          <button ref={submitButton} className={action}>Rehire</button>
+          <button ref={submitButton} className={action} disabled={checking}>Rehire</button>
           <button type="button" className={secondary} onClick={onCancel}>Cancel</button>
         </div>
+        {checking && <p className="text-sm sm:col-span-2" data-testid="hr-rehire-checking">Checking open processes…</p>}
       </fieldset>
       {asking !== null && <div role="group" aria-labelledby={questionId} data-testid="hr-rehire-confirm-group"
         onKeyDown={event => { if (event.key === "Escape" && !busy) { event.stopPropagation(); setAsking(null); } }}

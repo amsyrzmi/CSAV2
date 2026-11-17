@@ -8,7 +8,7 @@ import { isDenied } from "@/lib/hr-pickers";
 import {
   processClient, type PersonProcess, type PersonProcesses as Processes,
 } from "@/lib/hr-process-api";
-import { processErrorText, processLoadError, processSaveError } from "@/lib/hr-process-copy";
+import { processLoadError, processSaveError } from "@/lib/hr-process-copy";
 import {
   anchorDateRows, dueText, isDateText, noTemplateText, processKindLabel, processToday, progressText, statusLabel,
 } from "@/lib/hr-process-view";
@@ -44,6 +44,9 @@ export function PersonProcesses({ tenant, employeeId, version, readonly, platfor
   const [load, setLoad] = useState<Load>(null);
   const [reads, setReads] = useState(0);
   const prefix = useId();
+  // After a Try again that worked, its button is gone: focus goes to the panel heading.
+  const retried = useRef(false);
+  const wrapper = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let active = true;
     client.personProcesses(employeeId)
@@ -51,6 +54,12 @@ export function PersonProcesses({ tenant, employeeId, version, readonly, platfor
       .catch(cause => { if (active) setLoad(isDenied(cause) ? { hidden: true } : { failed: processLoadError(cause) }); });
     return () => { active = false; };
   }, [client, employeeId, reads]);
+  useEffect(() => {
+    if (!retried.current || !load || !("data" in load)) return;
+    retried.current = false;
+    const heading = wrapper.current?.querySelector("h2");
+    if (heading) { heading.tabIndex = -1; heading.focus(); }
+  }, [load]);
   const reread = useCallback(async () => { await onChanged(); setReads(count => count + 1); }, [onChanged]);
 
   if (!load || "hidden" in load) return null;
@@ -58,7 +67,8 @@ export function PersonProcesses({ tenant, employeeId, version, readonly, platfor
   if ("failed" in load) return <div data-testid="hr-person-processes"><Panel title={title}>
     <div className="space-y-3">
       <Notice error>{load.failed}</Notice>
-      <button type="button" className={secondary} onClick={() => setReads(count => count + 1)}>Try again</button>
+      <button type="button" className={secondary} onClick={() => { retried.current = true; setReads(count => count + 1); }}>
+        Try again</button>
     </div>
   </Panel></div>;
   const { data } = load;
@@ -70,7 +80,7 @@ export function PersonProcesses({ tenant, employeeId, version, readonly, platfor
   const list = (items: PersonProcess[]) => <ul className="space-y-3">{items.map(item =>
     <ProcessItem key={item.process_id} item={item} today={today} titleId={`${prefix}-${item.process_id}`}
       href={hr ? hrHref({ tab: "processes", view: "detail", processId: item.process_id }, platform, tenant) : null} />)}</ul>;
-  return <div data-testid="hr-person-processes"><Panel title={title}>
+  return <div ref={wrapper} data-testid="hr-person-processes"><Panel title={title}>
     <div className="space-y-5">
       {dates.length > 0 && <dl data-testid="hr-person-process-dates" className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]">
         {dates.map(([label, value]) => <div key={label} className="contents">
@@ -96,7 +106,7 @@ export function PersonProcesses({ tenant, employeeId, version, readonly, platfor
         <h3 id={`${prefix}-other`} className="text-base font-semibold">Other processes</h3>
         {list(others)}
       </section>}
-      {hr && !readonly && <ProbationEnd tenant={tenant} employeeId={employeeId} version={version}
+      {hr && !readonly && version !== null && <ProbationEnd tenant={tenant} employeeId={employeeId} version={version}
         current={data.anchor_dates?.probation_end ?? null} onSaved={reread} />}
     </div>
   </Panel></div>;
@@ -128,7 +138,7 @@ type Outcome = { message: string } | { error: string; stale: boolean };
  * says so and offers Reload. Each answer moves focus to its notice, a repeated one too.
  */
 function ProbationEnd({ tenant, employeeId, version, current, onSaved }: {
-  tenant: string; employeeId: string; version: number | null; current: string | null; onSaved: () => Promise<void>;
+  tenant: string; employeeId: string; version: number; current: string | null; onSaved: () => Promise<void>;
 }) {
   // Memoised: the client holds the Idempotency-Key of an uncertain write until it succeeds.
   const client = useMemo(() => hrClient(tenant), [tenant]);
@@ -146,8 +156,6 @@ function ProbationEnd({ tenant, employeeId, version, current, onSaved }: {
       setOutcome({ error: current ? "Choose a date, or choose Clear." : "Choose a date.", stale: false });
       return;
     }
-    // Without the person's version the save cannot be checked: read the person again first.
-    if (version === null) { setOutcome({ error: processErrorText("person_changed"), stale: true }); return; }
     flight.current = true; setBusy(true); setOutcome(null);
     try {
       await client.operation({ operation: "person.probation_set", employee_id: employeeId, expected_version: version, probation_end: end });
@@ -166,7 +174,9 @@ function ProbationEnd({ tenant, employeeId, version, current, onSaved }: {
     if (flight.current) return;
     flight.current = true; setBusy(true);
     try { await onSaved(); } catch { /* As above. */ }
-    flight.current = false; setBusy(false); setOutcome(null);
+    flight.current = false; setBusy(false);
+    // Reload disabled itself; this new notice takes the focus it held (never the page).
+    setOutcome({ message: "Reloaded. Check the date and save again." });
   }
 
   return <form className="space-y-3" aria-busy={busy} onSubmit={event => {
@@ -178,14 +188,17 @@ function ProbationEnd({ tenant, employeeId, version, current, onSaved }: {
       {"stale" in outcome && outcome.stale && <button type="button" className={secondary} disabled={busy}
         onClick={() => void reload()}>Reload</button>}
     </div>}
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="w-full sm:w-56">
-        <label htmlFor={inputId} className="block text-sm">Probation end</label>
-        <input key={current ?? ""} id={inputId} className={`${field} mt-1`} name="probation_end" type="date"
-          defaultValue={current ?? ""} disabled={busy} />
+    <fieldset className="min-w-0 space-y-2">
+      <legend className="text-base font-semibold">Set probation end date</legend>
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="w-full sm:w-56">
+          <label htmlFor={inputId} className="block text-sm">Probation end</label>
+          <input key={current ?? ""} id={inputId} className={`${field} mt-1`} name="probation_end" type="date"
+            defaultValue={current ?? ""} disabled={busy} />
+        </div>
+        <button className={action} disabled={busy}>Save</button>
+        {current && <button type="button" className={secondary} disabled={busy} onClick={() => void save(null)}>Clear</button>}
       </div>
-      <button className={action} disabled={busy}>Save</button>
-      {current && <button type="button" className={secondary} disabled={busy} onClick={() => void save(null)}>Clear</button>}
-    </div>
+    </fieldset>
   </form>;
 }

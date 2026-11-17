@@ -11,6 +11,8 @@ import { NOTICE_FOCUS } from "./TaskActions";
 
 const row = "flex flex-wrap items-start justify-between gap-3 border-b border-ink-200 py-3 text-sm";
 type Outcome = { message: string; error?: string };
+/** Mark all read announces its progress at the first row and then every this many rows. */
+const ANNOUNCE_EVERY = 5;
 
 /**
  * Home's reminders. A task reminder shows its line and when the step is due, links to My tasks
@@ -25,6 +27,8 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
 }) {
   const [marking, setMarking] = useState<{ done: number; total: number } | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  // What the live region says: the start, every few rows and the result, never each row.
+  const [announced, setAnnounced] = useState("");
   const flight = useRef(false);
   const notice = useRef<HTMLDivElement>(null);
   // A new outcome object each time, so the same answer twice still moves focus to it.
@@ -36,11 +40,14 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
 
   async function mark(items: HomeReminder[], single: boolean) {
     if (flight.current || items.length === 0) return;
-    flight.current = true; setOutcome(null);
+    flight.current = true; setOutcome(null); setAnnounced("");
     let marked = 0;
     let failure: unknown = null;
     for (const item of items) {
-      if (!single) setMarking({ done: marked + 1, total: items.length });
+      if (!single) {
+        setMarking({ done: marked + 1, total: items.length });
+        if (marked % ANNOUNCE_EVERY === 0) setAnnounced(markingText(marked + 1, items.length));
+      }
       try { await client.operation({ operation: "notification.read", notification_id: item.id }); marked += 1; }
       catch (cause) { failure = cause; break; }
     }
@@ -48,14 +55,14 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
     try { await reload(); } catch { reloadFailed = true; }
     setMarking(null); flight.current = false;
     const reloadText = reloadFailed ? " The list could not refresh: choose Refresh reminders." : "";
-    if (failure !== null)
-      setOutcome({
+    const result: Outcome = failure !== null
+      ? {
         message: single ? "" : `Marked ${marked} of ${items.length} as read.${reloadText}`,
         error: processSaveError(failure, single ? "mark-read" : "mark-all-read"),
-      });
-    else setOutcome({
-      message: `${single ? "Marked as read." : `Marked ${marked} reminder${marked === 1 ? "" : "s"} as read.`}${reloadText}`,
-    });
+      }
+      : { message: `${single ? "Marked as read." : `Marked ${marked} reminder${marked === 1 ? "" : "s"} as read.`}${reloadText}` };
+    setOutcome(result);
+    if (!single) setAnnounced(result.message);
   }
 
   const markRead = (item: HomeReminder, describedBy: string) => !item.read_at && <button type="button" className={secondary}
@@ -75,7 +82,9 @@ export function HomeReminders({ client, reminders, open, readonly, busy, reload 
   return <div className="space-y-4">
     {!readonly && unread.length > 0 && <button type="button" className={secondary} disabled={locked}
       onClick={() => void mark(unread, false)}>Mark all read</button>}
-    {marking && <p role="status" data-testid="hr-reminders-progress" className="text-sm">{markingText(marking.done, marking.total)}</p>}
+    {/* Mounted empty, so the first text is announced; the visible progress line is not live. */}
+    <p role="status" data-testid="hr-reminders-status" className="sr-only">{announced}</p>
+    {marking && <p data-testid="hr-reminders-progress" className="text-sm">{markingText(marking.done, marking.total)}</p>}
     {outcome && <div ref={notice} tabIndex={-1} data-testid="hr-reminders-outcome" className={`space-y-2 ${NOTICE_FOCUS}`}>
       {outcome.message && <Notice>{outcome.message}</Notice>}
       {outcome.error && <Notice error>{outcome.error}</Notice>}
