@@ -6,7 +6,7 @@ import {
   assigneesPath, settingsPath, viewsPath,
   type InboxAssignee, type InboxSettings, type InboxSettingsValues, type SavedView,
 } from "@/lib/inbox-api";
-import { settingsErrorText, viewErrorText, type ViewFilters } from "@/lib/inbox-queue";
+import { assigneesFailure, settingsErrorText, viewErrorText, type ViewFilters } from "@/lib/inbox-queue";
 
 const READ_TIMEOUT_MS = 15_000;
 
@@ -17,18 +17,24 @@ function describe(cause: unknown): { status: number | null; code: string | null 
 
 // ---- assignees ----
 
-type AssigneesState = { path: string; people: InboxAssignee[] | null; unavailable: boolean; loaded: boolean };
+type AssigneesState = {
+  path: string; people: InboxAssignee[] | null; unavailable: boolean; failed: boolean; loaded: boolean;
+};
 
 /**
  * The people an item can be assigned to, read once when `enabled` first turns true (never before).
  * A 503 means the member directory is down: `unavailable`, and never an empty list. Any other failure
- * leaves `people` null and `loaded` false; `retry` asks again.
+ * (network, timeout, 5xx, 403) sets `failed` with `people` null and `loaded` false, so a caller can tell
+ * it from "still loading". `retry` clears both flags and asks again.
  */
 export function useAssignees(query: string, enabled: boolean) {
   const path = assigneesPath(query);
   const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<AssigneesState>({ path, people: null, unavailable: false, loaded: false });
-  const current = state.path === path ? state : { path, people: null, unavailable: false, loaded: false };
+  const [state, setState] = useState<AssigneesState>({
+    path, people: null, unavailable: false, failed: false, loaded: false,
+  });
+  const current: AssigneesState = state.path === path
+    ? state : { path, people: null, unavailable: false, failed: false, loaded: false };
   const done = current.loaded;
   useEffect(() => {
     if (!enabled || done) return;
@@ -38,19 +44,21 @@ export function useAssignees(query: string, enabled: boolean) {
         const people = await api<InboxAssignee[]>(path, {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
         });
-        if (!controller.signal.aborted) setState({ path, people, unavailable: false, loaded: true });
+        if (!controller.signal.aborted) setState({ path, people, unavailable: false, failed: false, loaded: true });
       } catch (cause) {
         if (controller.signal.aborted) return;
-        const unavailable = describe(cause).status === 503;
-        setState({ path, people: null, unavailable, loaded: false });
+        setState({ path, people: null, ...assigneesFailure(describe(cause).status), loaded: false });
       }
     }
     void load();
     return () => controller.abort();
   }, [enabled, done, path, attempt]);
   return {
-    people: current.people, unavailable: current.unavailable, loaded: current.loaded,
-    retry: () => setAttempt((value) => value + 1),
+    people: current.people, unavailable: current.unavailable, failed: current.failed, loaded: current.loaded,
+    retry: () => {
+      setState({ path, people: null, unavailable: false, failed: false, loaded: false });
+      setAttempt((value) => value + 1);
+    },
   };
 }
 

@@ -616,3 +616,11 @@ test("a settings error is a plain sentence, a version conflict says the settings
   assert.equal(settingsErrorText(null, null, fallback), actionErrorText(null, null, fallback));
   assert.equal(settingsErrorText(500, "x", fallback), fallback);
 });
+
+test("a failed assignee read is unavailable for 503 only; every other failure is `failed`, never plain loading", () => {
+  const { assigneesFailure } = queue;
+  assert.deepEqual(assigneesFailure(503), { unavailable: true, failed: false });
+  for (const status of [null, 403, 404, 500, 502, 504]) {
+    assert.deepEqual(assigneesFailure(status), { unavailable: false, failed: true }, String(status));
+  }
+});

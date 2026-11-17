@@ -621,3 +621,8 @@ export function settingsErrorText(status: number | null, code: string | null, fa
   if (status === 422) return "One of these values is out of range. Check them and save again.";
   return fallback;
 }
+
+/** How a failed assignee read is told apart: 503 is the member directory being down, anything else is a failure. */
+export function assigneesFailure(status: number | null): { unavailable: boolean; failed: boolean } {
+  return status === 503 ? { unavailable: true, failed: false } : { unavailable: false, failed: true };
+}
