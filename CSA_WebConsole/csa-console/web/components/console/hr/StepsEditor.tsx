@@ -22,12 +22,14 @@ type FocusAsk = { key: number; which: Which } | { title: number };
  * name ("Step 3: <title>"). A move keeps focus on the moved row. A 41st step is refused with a sentence.
  * `problems` are shown next to their fields (the editor passes none until the first save).
  */
-export function StepsEditor({ kind, steps, problems, people, peopleLoaded, onChange }: {
+export function StepsEditor({ kind, steps, problems, people, peopleLoaded, peopleKnown, onChange }: {
   kind: ProcessKind;
   steps: StepDraft[];
   problems: StepProblems[];
   people: Option[];
   peopleLoaded: boolean;
+  /** The people list loaded: a named owner missing from it has left. */
+  peopleKnown: boolean;
   onChange: (steps: StepDraft[]) => void;
 }) {
   const [refused, setRefused] = useState("");
@@ -76,6 +78,7 @@ export function StepsEditor({ kind, steps, problems, people, peopleLoaded, onCha
     <h3 id="hr-template-steps-heading" className="font-semibold">Steps</h3>
     <ol ref={list} className="space-y-4">{steps.map((step, index) => <StepRow key={step.key} step={step} index={index}
       count={steps.length} kind={kind} problems={problems[index] ?? {}} people={people} peopleLoaded={peopleLoaded}
+      peopleKnown={peopleKnown}
       onChange={patch => change(index, patch)} onMove={(delta, which) => move(index, delta, which)}
       onRemove={() => remove(index)} />)}</ol>
     <div className="flex flex-wrap items-center gap-3">
@@ -85,7 +88,7 @@ export function StepsEditor({ kind, steps, problems, people, peopleLoaded, onCha
   </section>;
 }
 
-function StepRow({ step, index, count, kind, problems, people, peopleLoaded, onChange, onMove, onRemove }: {
+function StepRow({ step, index, count, kind, problems, people, peopleLoaded, peopleKnown, onChange, onMove, onRemove }: {
   step: StepDraft;
   index: number;
   count: number;
@@ -93,6 +96,7 @@ function StepRow({ step, index, count, kind, problems, people, peopleLoaded, onC
   problems: StepProblems;
   people: Option[];
   peopleLoaded: boolean;
+  peopleKnown: boolean;
   onChange: (patch: Partial<StepDraft>) => void;
   onMove: (delta: number, which: Which) => void;
   onRemove: () => void;
@@ -139,6 +143,9 @@ function StepRow({ step, index, count, kind, problems, people, peopleLoaded, onC
             aria-describedby={problems.owner_employee_id ? `${id("owner_employee_id")}-problem` : undefined}
             onChange={event => onChange({ owner_employee_id: event.target.value })}>
             <option value="">{peopleLoaded ? "Choose a person…" : "Loading…"}</option>
+            {/* The saved owner the list does not hold stays chosen, by a name that says why. */}
+            {peopleLoaded && step.owner_employee_id && !people.some(([value]) => value === step.owner_employee_id)
+              && <option value={step.owner_employee_id}>{peopleKnown ? "Former employee" : "The person chosen before"}</option>}
             {people.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
           {problems.owner_employee_id && <p id={`${id("owner_employee_id")}-problem`} className={problemText}>
@@ -161,11 +168,11 @@ function StepRow({ step, index, count, kind, problems, people, peopleLoaded, onC
         <div>
           <label className="block text-sm font-medium" htmlFor={id("anchor")}>Counted from</label>
           <select id={id("anchor")} className={`${field} mt-1`} value={step.anchor}
-            aria-invalid={Boolean(problems.anchor)}
+            aria-invalid={Boolean(problems.anchor)} aria-describedby={problems.anchor ? `${id("anchor")}-problem` : undefined}
             onChange={event => onChange({ anchor: event.target.value as Anchor })}>
             {anchorsFor(kind).map(anchor => <option key={anchor} value={anchor}>{ANCHOR_LABELS[anchor]}</option>)}
           </select>
-          {problems.anchor && <p className={problemText}>{problems.anchor}</p>}
+          {problems.anchor && <p id={`${id("anchor")}-problem`} className={problemText}>{problems.anchor}</p>}
         </div>
       </div>
       {sentence && <p className="text-sm" data-testid="hr-template-step-due">Due: {sentence}</p>}

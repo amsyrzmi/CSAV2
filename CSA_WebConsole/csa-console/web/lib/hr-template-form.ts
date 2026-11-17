@@ -81,7 +81,11 @@ const SENTENCE = {
   person: "Choose an active person of this company for the step.",
   entity: "A legal entity is at most 200 characters.",
   count: "A template has at most 40 steps.",
+  control: "This text has a character we can't save. Remove it and try again.",
+  former: "This person is no longer in your company list. Choose someone else.",
 } as const;
+/** The sentence for a named owner who is not among the people the page could load. */
+export const FORMER_OWNER = SENTENCE.former;
 export const TOO_MANY_STEPS = SENTENCE.count;
 
 const ANCHORS: Record<ProcessKind, Anchor[]> = {
@@ -157,12 +161,31 @@ export function copyDraft(draft: TemplateDraft): TemplateDraft {
 export function textLength(text: string): number {
   return [...text].length;
 }
+/**
+ * Text as the server can store it: a tab (a list pasted from a word processor) becomes a space, and in
+ * a description CRLF and CR become LF. Any other control character is left for `unsavable` to flag.
+ */
+export function cleanText(text: string, lines = false): string {
+  const spaced = text.replaceAll("\t", " ");
+  return lines ? spaced.replaceAll("\r\n", "\n").replaceAll("\r", "\n") : spaced;
+}
+/** A control character the server refuses (every one below 32 and DEL; a description may hold LF). */
+export function unsavable(text: string, lines = false): boolean {
+  return [...cleanText(text, lines)].some(char => {
+    const code = char.charCodeAt(0);
+    return (code < 32 && !(lines && code === 10)) || code === 127;
+  });
+}
 const optional = (text: string) => {
-  const trimmed = text.trim();
+  const trimmed = cleanText(text).trim();
   return trimmed === "" ? null : trimmed;
 };
-/** A description keeps its line breaks (CRLF becomes LF, as the server stores it). */
-const multiline = (text: string) => optional(text.replaceAll("\r\n", "\n"));
+/** A description keeps its line breaks (as LF, as the server stores them). */
+const multiline = (text: string) => {
+  const trimmed = cleanText(text, true).trim();
+  return trimmed === "" ? null : trimmed;
+};
+const nameText = (draft: TemplateDraft) => cleanText(draft.name).trim();
 
 /** Every rule, trimmed (null for "Any"), or null for a template with no rule: the company default. */
 export function rulesBody(rules: RuleDraft): TemplateRules | null {
@@ -178,7 +201,7 @@ export function rulesBody(rules: RuleDraft): TemplateRules | null {
 /** One step to save; its ordinal is its position in `steps`. Check `stepProblems` first. */
 export function stepBody(step: StepDraft): TemplateStep {
   return {
-    title_en: step.title_en.trim(),
+    title_en: cleanText(step.title_en).trim(),
     title_ms: optional(step.title_ms),
     description_en: multiline(step.description_en),
     description_ms: multiline(step.description_ms),
@@ -194,12 +217,12 @@ export function stepBody(step: StepDraft): TemplateStep {
 }
 
 export function createBody(draft: TemplateDraft): TemplateCreate {
-  return { kind: draft.kind, name: draft.name.trim(), rules: rulesBody(draft.rules), steps: draft.steps.map(stepBody) };
+  return { kind: draft.kind, name: nameText(draft), rules: rulesBody(draft.rules), steps: draft.steps.map(stepBody) };
 }
 /** `rules` is always present (null clears them); `is_active` only to turn the template on again. */
 export function updateBody(draft: TemplateDraft, expectedVersion: number, activate = false): TemplateUpdate {
   const body: TemplateUpdate = {
-    expected_version: expectedVersion, name: draft.name.trim(), rules: rulesBody(draft.rules),
+    expected_version: expectedVersion, name: nameText(draft), rules: rulesBody(draft.rules),
     steps: draft.steps.map(stepBody),
   };
   return activate ? { ...body, is_active: true } : body;
@@ -211,26 +234,38 @@ export function sameDraft(a: TemplateDraft, b: TemplateDraft): boolean {
 }
 
 const OFFSET = /^-?\d{1,3}$/;
-export function stepProblems(step: StepDraft, kind: ProcessKind): StepProblems {
+/**
+ * A step's problems as sentences. `known` says whether a named owner is among the people the page
+ * loaded (leave it out when they could not be loaded: the server then checks).
+ */
+export function stepProblems(step: StepDraft, kind: ProcessKind, known?: (employeeId: string) => boolean): StepProblems {
   const problems: StepProblems = {};
-  const title = step.title_en.trim();
+  const title = cleanText(step.title_en).trim();
   if (title === "" || textLength(title) > TEMPLATE_LIMITS.title) problems.title_en = SENTENCE.title_en;
-  if (textLength(step.title_ms.trim()) > TEMPLATE_LIMITS.title) problems.title_ms = SENTENCE.title_ms;
+  if (textLength(optional(step.title_ms) ?? "") > TEMPLATE_LIMITS.title) problems.title_ms = SENTENCE.title_ms;
   if (textLength(multiline(step.description_en) ?? "") > TEMPLATE_LIMITS.description) problems.description_en = SENTENCE.description;
   if (textLength(multiline(step.description_ms) ?? "") > TEMPLATE_LIMITS.description) problems.description_ms = SENTENCE.description;
-  if (textLength(step.reference_note.trim()) > TEMPLATE_LIMITS.reference) problems.reference_note = SENTENCE.reference;
+  if (textLength(optional(step.reference_note) ?? "") > TEMPLATE_LIMITS.reference) problems.reference_note = SENTENCE.reference;
+  for (const [name, lines] of [["title_en", false], ["title_ms", false], ["description_en", true], ["description_ms", true],
+    ["reference_note", false]] as const)
+    if (unsavable(step[name], lines)) problems[name] = SENTENCE.control;
   const offset = step.due_offset_days.trim();
   if (!OFFSET.test(offset) || Math.abs(Number(offset)) > TEMPLATE_LIMITS.offset) problems.due_offset_days = SENTENCE.offset;
   if (!anchorsFor(kind).includes(step.anchor)) problems.anchor = SENTENCE.anchor;
-  if (step.owner_role === "person" && step.owner_employee_id.trim() === "") problems.owner_employee_id = SENTENCE.person;
+  const owner = step.owner_employee_id.trim();
+  if (step.owner_role === "person" && owner === "") problems.owner_employee_id = SENTENCE.person;
+  else if (step.owner_role === "person" && known && !known(owner)) problems.owner_employee_id = SENTENCE.former;
   return problems;
 }
 
-export function draftProblems(draft: TemplateDraft): DraftProblems {
-  const problems: DraftProblems = { steps: draft.steps.map(step => stepProblems(step, draft.kind)) };
-  const name = draft.name.trim();
+export function draftProblems(draft: TemplateDraft, known?: (employeeId: string) => boolean): DraftProblems {
+  const problems: DraftProblems = { steps: draft.steps.map(step => stepProblems(step, draft.kind, known)) };
+  const name = nameText(draft);
   if (name === "" || textLength(name) > TEMPLATE_LIMITS.name) problems.name = SENTENCE.name;
-  if (textLength(draft.rules.legal_entity_reference.trim()) > TEMPLATE_LIMITS.entity) problems.legal_entity = SENTENCE.entity;
+  else if (unsavable(draft.name)) problems.name = SENTENCE.control;
+  const entity = optional(draft.rules.legal_entity_reference) ?? "";
+  if (textLength(entity) > TEMPLATE_LIMITS.entity) problems.legal_entity = SENTENCE.entity;
+  else if (unsavable(draft.rules.legal_entity_reference)) problems.legal_entity = SENTENCE.control;
   if (draft.steps.length > TEMPLATE_LIMITS.steps) problems.count = SENTENCE.count;
   return problems;
 }

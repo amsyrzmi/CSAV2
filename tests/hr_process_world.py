@@ -1153,10 +1153,17 @@ def _tie_rules(rules: dict[str, Any] | None) -> tuple[str | None, ...]:
     return tuple(values)
 
 
-def _text(value: Any, limit: int, *, required: bool = False) -> bool:
+def _text(value: Any, limit: int, *, required: bool = False, lines: bool = False) -> bool:
+    """Text the API takes: no control character (a description may hold line feeds; a tab is
+    refused, as csa/hr/process_models.py `_StepText` refuses it), within `limit`."""
     if value is None:
         return not required
-    return isinstance(value, str) and (not required or bool(value.strip())) and len(value) <= limit
+    if not isinstance(value, str):
+        return False
+    plain = value.replace("\n", "") if lines else value
+    if any(ord(c) < 32 or ord(c) == 127 for c in plain):
+        return False
+    return (not required or bool(value.strip())) and len(value) <= limit
 
 
 def _rules_problem(rules: Any) -> str | None:
@@ -1182,8 +1189,8 @@ def _step_problem(world: ProcessWorld, kind: str, step: Any) -> str | None:
     checks = {
         "title_en": _text(step.get("title_en"), 160, required=True),
         "title_ms": _text(step.get("title_ms"), 160),
-        "description_en": _text(step.get("description_en"), 2000),
-        "description_ms": _text(step.get("description_ms"), 2000),
+        "description_en": _text(step.get("description_en"), 2000, lines=True),
+        "description_ms": _text(step.get("description_ms"), 2000, lines=True),
         "reference_note": _text(step.get("reference_note"), 500),
         "owner_role": step.get("owner_role") in OWNER_ROLES,
         "anchor": step.get("anchor") in ANCHORS[kind],
@@ -1202,7 +1209,7 @@ def _step_problem(world: ProcessWorld, kind: str, step: Any) -> str | None:
 
 def _template_problem(world: ProcessWorld, kind: str, body: dict[str, Any]) -> str | None:
     name = body.get("name")
-    if not (isinstance(name, str) and name.strip() == name and 1 <= len(name) <= 120):
+    if not (isinstance(name, str) and _text(name, 120, required=True) and name.strip() == name):
         return "name"
     if problem := _rules_problem(body.get("rules")):
         return problem

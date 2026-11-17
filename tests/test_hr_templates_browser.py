@@ -42,7 +42,12 @@ SABAH = "66666666-6666-4666-8666-000000000105"
 CONTRACT = "66666666-6666-4666-8666-000000000106"
 WAREHOUSE = TEMPLATE["warehouse"]
 LEAVING = TEMPLATE["leaving"]
-TEMPLATE_CHANGED = "Someone changed this template since you opened it. Reload to see it."
+CONFLICT = (
+    "Someone else changed this template while you were editing. "
+    "Your changes are still here and have not been saved."
+)
+UNSAVABLE = "This text has a character we can't save. Remove it and try again."
+FORMER = "This person is no longer in your company list. Choose someone else."
 UNCERTAIN = "We couldn't confirm that. Choose Save again; it won't be done twice."
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 CODES = ("full_time", "start_date", "last_day", "probation_end", "peninsular_labuan", "_")
@@ -584,29 +589,182 @@ async def test_preview_follows_the_rules_and_shows_ties(site: Site) -> None:
     await with_browser(body)
 
 
-async def test_a_stale_version_says_so_and_reloads(site: Site) -> None:
+async def stale_save(world: TemplatesWorld, page: Page) -> Locator:
+    """Someone else saves the warehouse template, then Nadia saves her name change: the save is
+    refused and the conflict notice (which takes focus) offers her choices."""
+    name = editor(page).get_by_label("Name", exact=True)
+    await expect(name).to_have_value("Warehouse onboarding", timeout=WAIT)
+    world.processes.touch_template(WAREHOUSE, name="Warehouse onboarding (new)")
+    await name.fill("My edit")
+    await editor(page).get_by_role("button", name="Save", exact=True).click()
+    conflict = page.get_by_test_id("hr-template-conflict")
+    await expect(conflict).to_contain_text(CONFLICT, timeout=WAIT)
+    await expect(conflict.get_by_role("button", name="Keep my changes")).to_be_enabled()
+    await expect(notices(page)).to_be_focused()
+    # The draft is still on screen.
+    await expect(name).to_have_value("My edit")
+    return conflict
+
+
+async def test_a_stale_save_keeps_the_draft_and_keeping_it_replaces_theirs(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = TemplatesWorld()
-        path = template_path(WAREHOUSE)
-        async with processes_page(browser, site, world, path, ready=editor) as page:
-            name = editor(page).get_by_label("Name", exact=True)
-            await expect(name).to_have_value("Warehouse onboarding", timeout=WAIT)
-            world.processes.touch_template(WAREHOUSE, name="Warehouse onboarding (new)")
-            await name.fill("My edit")
+        put_path = f"hr/templates/{WAREHOUSE}"
+        async with processes_page(
+            browser, site, world, template_path(WAREHOUSE), ready=editor
+        ) as page:
+            conflict = await stale_save(world, page)
+            await expect(page.get_by_test_id("hr-template-error")).to_have_count(0)
+            # Their version was read beside the draft, after the refused save.
+            calls = [(c["method"], c["path"]) for c in world.calls]
+            refused = calls.index(("PUT", put_path))
+            assert ("GET", put_path) in calls[refused:], calls[refused:]
+            await conflict.get_by_role("button", name="Keep my changes").click()
+            await expect(conflict).to_contain_text("Saving now replaces their version.")
+            await expect(notices(page)).to_be_focused()
+            # Someone saves once more before Nadia does: the notice comes back with that version.
+            world.processes.touch_template(WAREHOUSE, name="Warehouse onboarding (newest)")
             save = editor(page).get_by_role("button", name="Save", exact=True)
             await save.click()
-            await expect(page.get_by_test_id("hr-template-error")).to_contain_text(
-                TEMPLATE_CHANGED, timeout=WAIT
+            await wait_for(world, page, "PUT", put_path, 2)
+            await expect(conflict.get_by_role("button", name="Keep my changes")).to_be_visible(
+                timeout=WAIT
             )
-            await expect(name).to_have_value("Warehouse onboarding (new)", timeout=WAIT)
-            assert await focus_place(page, "hr-template-outcome") == "dialog"
+            await expect(notices(page)).to_be_focused()
+            await conflict.get_by_role("button", name="Keep my changes").click()
             await save.click()
-            await wait_for(world, page, "PUT", f"hr/templates/{WAREHOUSE}", 2)
-            puts = world.template_calls("PUT", f"hr/templates/{WAREHOUSE}")
-            assert [p["body"]["expected_version"] for p in puts] == [2, 3], puts
             await expect(page.get_by_test_id("hr-template-notice")).to_have_text(
                 "Template saved.", timeout=WAIT
             )
+            await expect(conflict).to_have_count(0)
+            puts = world.template_calls("PUT", put_path)
+            assert [p["body"]["expected_version"] for p in puts] == [2, 3, 4], puts
+            # Every try sends the same draft: only the version moves.
+            drafts = [{k: v for k, v in p["body"].items() if k != "expected_version"} for p in puts]
+            assert drafts[0] == drafts[1] == drafts[2], drafts
+            assert drafts[0]["name"] == "My edit", drafts
+            assert drafts[0]["steps"] == WAREHOUSE_STEPS, drafts
+            template = world.processes.template(WAREHOUSE)
+            assert template and template.name == "My edit" and template.version == 5
+
+    await with_browser(body)
+
+
+async def test_a_stale_save_can_show_their_version_after_a_confirm(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TemplatesWorld()
+        async with processes_page(
+            browser, site, world, template_path(WAREHOUSE), ready=editor
+        ) as page:
+            conflict = await stale_save(world, page)
+            name = editor(page).get_by_label("Name", exact=True)
+            theirs = conflict.get_by_role("button", name="Show their version")
+            await theirs.click()
+            ask = page.get_by_test_id("hr-template-theirs")
+            await expect(ask).to_contain_text("Discard your changes?")
+            await ask.get_by_role("button", name="Keep editing").click()
+            await expect(ask).to_have_count(0)
+            await expect(theirs).to_be_focused()
+            await expect(name).to_have_value("My edit")
+            await theirs.click()
+            await ask.get_by_role("button", name="Discard my changes").click()
+            await expect(name).to_have_value("Warehouse onboarding (new)")
+            await expect(page.get_by_test_id("hr-template-notice")).to_have_text(
+                "Showing their version. Your changes were discarded."
+            )
+            await expect(notices(page)).to_be_focused()
+            await expect(conflict).to_have_count(0)
+            await editor(page).get_by_role("button", name="Save", exact=True).click()
+            await wait_for(world, page, "PUT", f"hr/templates/{WAREHOUSE}", 2)
+            puts = world.template_calls("PUT", f"hr/templates/{WAREHOUSE}")
+            assert puts[1]["body"]["expected_version"] == 3, puts
+            assert puts[1]["body"]["name"] == "Warehouse onboarding (new)", puts
+
+    await with_browser(body)
+
+
+async def test_a_stale_save_can_copy_the_draft_as_a_new_template(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TemplatesWorld()
+        async with processes_page(
+            browser, site, world, template_path(WAREHOUSE), ready=editor
+        ) as page:
+            conflict = await stale_save(world, page)
+            await conflict.get_by_role("button", name="Show their version").click()
+            ask = page.get_by_test_id("hr-template-theirs")
+            await ask.get_by_role("button", name="Copy my version as new").click()
+            await page.wait_for_url(f"{site.base}{NEW}")
+            await expect(editor(page).get_by_label("Name", exact=True)).to_have_value(
+                "Copy of My edit"
+            )
+            assert await step_titles(page) == [s["title_en"] for s in WAREHOUSE_STEPS]
+            assert len(world.template_calls("PUT", f"hr/templates/{WAREHOUSE}")) == 1
+
+    await with_browser(body)
+
+
+async def test_a_pasted_tab_is_sent_as_a_space(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TemplatesWorld()
+        path = template_path(LEAVING)
+        async with processes_page(browser, site, world, path, ready=editor) as page:
+            await expect(steps(page)).to_have_count(1, timeout=WAIT)
+            # A bulleted list pasted from a word processor arrives with tabs and CRLF.
+            await fill_step(
+                step_row(page, 1),
+                title_en="Return\tthe laptop",
+                description_en="•\tThe laptop\r\n•\tThe charger",
+            )
+            await editor(page).get_by_role("button", name="Save", exact=True).click()
+            await expect(page.get_by_test_id("hr-template-notice")).to_have_text(
+                "Template saved.", timeout=WAIT
+            )
+            (put,) = world.template_calls("PUT", f"hr/templates/{LEAVING}")
+            sent = put["body"]["steps"][0]
+            assert sent["title_en"] == "Return the laptop", sent
+            assert sent["description_en"] == "• The laptop\n• The charger", sent
+
+    await with_browser(body)
+
+
+async def test_a_character_the_api_refuses_is_marked_on_its_field(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TemplatesWorld()
+        path = template_path(LEAVING)
+        async with processes_page(browser, site, world, path, ready=editor) as page:
+            await expect(steps(page)).to_have_count(1, timeout=WAIT)
+            row = step_row(page, 1)
+            await fill_step(row, reference_note="Locker \u0007 B")
+            await editor(page).get_by_role("button", name="Save", exact=True).click()
+            note = row.get_by_label("Reference note", exact=True)
+            await expect(note).to_be_focused()
+            await expect(note).to_have_accessible_description(UNSAVABLE)
+            assert world.template_calls("PUT", f"hr/templates/{LEAVING}") == []
+
+    await with_browser(body)
+
+
+async def test_a_named_owner_who_left_is_marked_and_blocks_the_save(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TemplatesWorld()
+        gone = "55555555-5555-4555-8555-000000000099"
+        warehouse = world.processes.template(WAREHOUSE)
+        assert warehouse and warehouse.details
+        warehouse.details[2]["owner_employee_id"] = gone
+        path = template_path(WAREHOUSE)
+        async with processes_page(browser, site, world, path, ready=editor) as page:
+            owner = step_row(page, 3).get_by_label("Employee", exact=True)
+            await expect(owner).to_have_value(gone, timeout=WAIT)
+            chosen = owner.locator("option:checked")
+            await expect(chosen).to_have_text("Former employee")
+            await expect(owner).to_have_accessible_description(FORMER, timeout=WAIT)
+            await editor(page).get_by_role("button", name="Save", exact=True).click()
+            await expect(owner).to_be_focused()
+            assert world.template_calls("PUT", f"hr/templates/{WAREHOUSE}") == []
+            await owner.select_option(EMPLOYEE[MANAGER])
+            await expect(step_row(page, 3).get_by_text(FORMER)).to_have_count(0)
+            await editor(page).get_by_role("button", name="Save", exact=True).click()
+            await wait_for(world, page, "PUT", f"hr/templates/{WAREHOUSE}", 1)
 
     await with_browser(body)
 
@@ -692,6 +850,7 @@ async def test_copy_as_new_opens_a_new_template_with_the_steps(site: Site) -> No
             await editor(page).get_by_role("button", name="Save", exact=True).click()
             await wait_for(world, page, "POST", "hr/templates", 1)
             (call,) = world.template_calls("POST", "hr/templates")
+            assert call["body"]["kind"] == "onboarding", call
             assert call["body"]["name"] == "Copy of Warehouse onboarding", call
             assert call["body"]["steps"] == WAREHOUSE_STEPS, call
             assert call["body"]["rules"] == {
@@ -789,12 +948,17 @@ async def test_a_read_only_member_sees_the_templates_without_controls(site: Site
             await expect(view).to_contain_text("Farid Ismail")
             await expect(view.locator("input, select, textarea, button")).to_have_count(0)
             await page.wait_for_timeout(700)
+            before = len(world.calls)
             await page.goto(f"{site.base}{NEW}")
             await expect(page.get_by_text("Your account can only view templates.")).to_be_visible(
                 timeout=WAIT
             )
             await page.wait_for_timeout(700)
             assert [c for c in world.calls if c["method"] in {"POST", "PUT"}] == []
+            # The notice is all the page shows: no list is read for it.
+            lists = {"hr/people", "hr/templates", "hr/departments"}
+            read = [c["path"] for c in world.calls[before:] if c["path"] in lists]
+            assert read == [], read
 
     await with_browser(body)
 

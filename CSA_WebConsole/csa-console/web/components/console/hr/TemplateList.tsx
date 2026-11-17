@@ -13,16 +13,17 @@ import { action, secondary, Notice, Panel } from "../ui";
 const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
 /** The company's departments for the rules: `name(id)` reads "…" while loading and null for one not listed. */
-export function useDepartments(tenant: string) {
+export function useDepartments(tenant: string, enabled = true) {
   const [state, setState] = useState<{ items: Department[]; loaded: boolean; failed: boolean }>(
     { items: [], loaded: false, failed: false });
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     peopleClient(tenant).departments()
       .then(result => { if (active) setState({ items: result.items, loaded: true, failed: false }); })
       .catch(() => { if (active) setState({ items: [], loaded: true, failed: true }); });
     return () => { active = false; };
-  }, [tenant]);
+  }, [tenant, enabled]);
   const name = (departmentId: string): string | null => {
     if (!state.loaded) return "…";
     if (state.failed) return "a department";

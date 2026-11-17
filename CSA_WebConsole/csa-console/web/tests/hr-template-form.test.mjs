@@ -14,7 +14,7 @@ const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
 const {
   anchorsFor, emptyDraft, emptyStep, draftFromTemplate, copyDraft, rulesBody, stepBody, createBody, updateBody,
   stepProblems, draftProblems, hasProblems, rulesText, templateTies, previewText, warningText, moveItem, sameDraft,
-  textLength, stepName, legalEntities, withKind, TEMPLATE_LIMITS, CHECK_CHOICES,
+  textLength, stepName, legalEntities, withKind, TEMPLATE_LIMITS, CHECK_CHOICES, cleanText, unsavable, FORMER_OWNER,
 } = await import(
   moduleUrl((await read("../lib/hr-template-form.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
@@ -249,4 +249,51 @@ test("legalEntities lists the distinct legal entities of the people read", () =>
     person("Syarikat Cekap Sdn Bhd"), person(null), person(" "), person("Kedai Mawar Enterprise"),
     person("syarikat cekap sdn bhd"), person(" Kedai Mawar Enterprise "),
   ]), ["Kedai Mawar Enterprise", "Syarikat Cekap Sdn Bhd"]);
+});
+
+test("a pasted tab becomes a space and CRLF or CR a line feed, as the server can store them", () => {
+  assert.equal(cleanText("•\tItem one"), "• Item one");
+  assert.equal(cleanText("a\r\nb\rc", true), "a\nb\nc");
+  const body = stepBody(step({
+    title_en: "Sign\tthe contract", description_en: "•\tItem one\r\n•\tItem two\rEnd", description_ms: "\tBaris",
+    reference_note: "Folder\tA", title_ms: "Tandatangan\tkontrak",
+  }));
+  assert.equal(body.title_en, "Sign the contract");
+  assert.equal(body.title_ms, "Tandatangan kontrak");
+  assert.equal(body.description_en, "• Item one\n• Item two\nEnd");
+  assert.equal(body.description_ms, "Baris");
+  assert.equal(body.reference_note, "Folder A");
+  assert.equal(createBody({ ...emptyDraft(), name: "Warehouse\tonboarding" }).name, "Warehouse onboarding");
+  assert.deepEqual(stepProblems(step({ title_en: "A\tB", description_en: "x\r\ny\tz" }), "onboarding"), {});
+});
+
+test("any other control character is a field problem with a sentence", () => {
+  const sentence = "This text has a character we can't save. Remove it and try again.";
+  assert.equal(unsavable("a\u0000b"), true);
+  assert.equal(unsavable("a\nb"), true);
+  assert.equal(unsavable("a\nb", true), false);
+  assert.equal(unsavable("bell\u0007", true), true);
+  assert.equal(unsavable("del\u007f", true), true);
+  const problems = stepProblems(step({
+    title_en: "Sign\u0000", title_ms: "x\u0007", description_en: "ok\u0000", description_ms: "\u0007",
+    reference_note: "\u001b[1m",
+  }), "onboarding");
+  assert.deepEqual(problems, {
+    title_en: sentence, title_ms: sentence, description_en: sentence, description_ms: sentence, reference_note: sentence,
+  });
+  const draft = { ...emptyDraft(), name: "Bad\u0007name", rules: { ...emptyDraft().rules, legal_entity_reference: "X\u0000" },
+    steps: [step()] };
+  const found = draftProblems(draft);
+  assert.equal(found.name, sentence);
+  assert.equal(found.legal_entity, sentence);
+});
+
+test("a named owner who is not among the loaded people is a problem only when they could be loaded", () => {
+  const PERSON2 = "55555555-5555-4555-8555-000000000009";
+  const named = step({ owner_role: "person", owner_employee_id: PERSON2 });
+  assert.deepEqual(stepProblems(named, "onboarding"), {});
+  assert.equal(stepProblems(named, "onboarding", (id) => id === PERSON).owner_employee_id, FORMER_OWNER);
+  assert.equal(FORMER_OWNER, "This person is no longer in your company list. Choose someone else.");
+  assert.deepEqual(stepProblems({ ...named, owner_employee_id: PERSON }, "onboarding", (id) => id === PERSON), {});
+  assert.equal(hasProblems(draftProblems({ ...emptyDraft(), name: "X", steps: [named] }, () => false)), true);
 });

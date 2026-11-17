@@ -12,7 +12,7 @@ import { processLoadError, processSaveError } from "@/lib/hr-process-copy";
 import { offsetSentence, processKindLabel } from "@/lib/hr-process-view";
 import {
   APPROVAL_CHOICES, CHECK_CHOICES, EMPLOYMENT_TYPES, KIND_CHOICES, OWNER_CHOICES, REGION_LABELS,
-  SYSTEM_CHECK_LABEL, copyDraft, createBody, draftFromTemplate, draftProblems, emptyDraft, hasProblems, legalEntities,
+  FORMER_OWNER, SYSTEM_CHECK_LABEL, copyDraft, createBody, draftFromTemplate, draftProblems, emptyDraft, hasProblems, legalEntities,
   previewText, rulesBody, rulesText, sameDraft, updateBody, warningText, withKind, type RuleDraft, type TemplateDraft,
 } from "@/lib/hr-template-form";
 import Dialog from "../fs/Dialog";
@@ -24,8 +24,9 @@ import { useDepartments } from "./TemplateList";
 import { useHrRunner } from "./useHrRunner";
 import { useReturnFocus } from "./useReturnFocus";
 
-/** Refusals that mean the template on screen is out of date: say so and read it again. */
-const STALE: ReadonlySet<string> = new Set(["template_changed", "resource_unavailable"]);
+/** Someone else saved the template since it was read: the draft stays and their version is read beside it. */
+const CHANGED: ReadonlySet<string> = new Set(["template_changed"]);
+const CONFLICT_TEXT = "Someone else changed this template while you were editing. Your changes are still here and have not been saved.";
 const PREVIEW_DELAY = 400;
 const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 /** What a new template is compared with to tell whether it holds unsaved work. */
@@ -46,10 +47,11 @@ export function forgetTemplateArrival(open: string | null) {
 }
 
 /** The people the editor names (the named-employee picker) and the legal entities on their records. */
-function useTemplatePeople(tenant: string) {
-  const [state, setState] = useState<{ options: Option[]; entities: string[]; loaded: boolean }>(
-    { options: [], entities: [], loaded: false });
+function useTemplatePeople(tenant: string, enabled: boolean) {
+  const [state, setState] = useState<{ options: Option[]; entities: string[]; loaded: boolean; failed: boolean }>(
+    { options: [], entities: [], loaded: false, failed: false });
   useEffect(() => {
+    if (!enabled) return;
     let active = true;
     const people = peopleClient(tenant);
     (async () => {
@@ -66,11 +68,12 @@ function useTemplatePeople(tenant: string) {
       .then(items => {
         if (active) setState({
           options: items.map(person => [person.employee_id, personLabel(person)]), entities: legalEntities(items), loaded: true,
+          failed: false,
         });
       })
-      .catch(() => { if (active) setState({ options: [], entities: [], loaded: true }); });
+      .catch(() => { if (active) setState({ options: [], entities: [], loaded: true, failed: true }); });
     return () => { active = false; };
-  }, [tenant]);
+  }, [tenant, enabled]);
   return state;
 }
 
@@ -81,7 +84,9 @@ type Load = { form: Form; template: TemplateOut | null } | { failed: string } | 
  * One template for the HR team (`templateId`, or null for a new one): name, kind (fixed after the
  * template is created), who it applies to with a live count of the people that matches now and the
  * templates it may tie with, and its steps. Save sends the whole template with the version it was
- * read at; a stale version says so and reads it again. Deactivate asks first; Copy as new opens a new
+ * read at; when someone else saved meanwhile, the draft stays and the person chooses to keep it (the next
+ * Save replaces their version) or to show theirs (after a confirm, with a copy of the draft offered as a
+ * new template). Deactivate asks first; Copy as new opens a new
  * template with the same rules and steps. Leaving with unsaved changes asks first. A read-only member
  * sees the template without any control, and no count is asked for them.
  */
@@ -90,10 +95,12 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
 }) {
   const client = useMemo(() => processClient(tenant), [tenant]);
   const router = useRouter();
-  const departments = useDepartments(tenant);
-  const people = useTemplatePeople(tenant);
-  const runner = useHrRunner();
   const isNew = templateId === null;
+  // A read-only member on the new template's page only sees a notice: nothing else is read.
+  const reading = !(readonly && isNew);
+  const departments = useDepartments(tenant, reading);
+  const people = useTemplatePeople(tenant, reading);
+  const runner = useHrRunner();
   const [load, setLoad] = useState<Load>(() => isNew
     ? { form: { draft: copied ?? emptyDraft(), baseline: BLANK, version: 0, active: true }, template: null } : null);
   const [reads, setReads] = useState(0);
@@ -106,6 +113,11 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
   const [ask, setAsk] = useState<{ opener: HTMLElement } | null>(null);
   const [dialogError, setDialogError] = useState("");
   const [leaving, setLeaving] = useState<string | null>(null);
+  // A save refused because someone else saved first: their version once read, and whether the person kept theirs.
+  const [conflict, setConflict] = useState<{ latest: TemplateOut | null; failed: string; kept: boolean } | null>(null);
+  const [showTheirs, setShowTheirs] = useState(false);
+  // A new template is saved and its page is opening: nothing may be saved again here.
+  const [opening, setOpening] = useState(false);
   const [invalidFocus, setInvalidFocus] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
   const notices = useRef<HTMLDivElement>(null);
@@ -126,17 +138,17 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
         if (!active) return;
         const text = processLoadError(cause);
         setLoad(old => old && "form" in old ? old : { failed: text });
-        if (reads > 0) setOutcome(old => ({ ...old, error: [old?.error, text].filter(Boolean).join(" ") }));
       })
       .finally(() => { if (active) setReloading(false); });
     return () => { active = false; };
   }, [client, templateId, reads]);
   // The names of the templates a save says this one may tie with.
   useEffect(() => {
+    if (!reading) return;
     let active = true;
     client.templates().then(list => { if (active) setSummaries(list.items); }).catch(() => undefined);
     return () => { active = false; };
-  }, [client]);
+  }, [client, reading]);
   // A new template's page takes focus on its save message once it has loaded.
   const loaded = load !== null && "form" in load;
   useEffect(() => {
@@ -177,7 +189,10 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
 
   // The live count: debounced, and only for those who may edit (the read is refused to read-only members).
   const kind = form?.draft.kind ?? "onboarding";
-  const problems = form ? draftProblems(form.draft) : null;
+  // A named owner must be among the people loaded; when they could not be loaded the server checks.
+  const known = people.loaded && !people.failed
+    ? (employeeId: string) => people.options.some(([value]) => value === employeeId) : undefined;
+  const problems = form ? draftProblems(form.draft, known) : null;
   const rules = form ? rulesBody(form.draft.rules) : null;
   const previewKey = JSON.stringify([kind, rules]);
   const previewable = Boolean(form) && !readonly && !problems?.legal_entity;
@@ -216,10 +231,13 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
   const { draft } = load.form;
   const current = load.form;
   const shown = tried && problems ? problems : null;
+  // A named owner who has left is marked at once (the select cannot show them), the rest after the first Save.
+  const stepProblems = shown?.steps ?? (problems?.steps ?? []).map(step =>
+    step.owner_employee_id === FORMER_OWNER ? { owner_employee_id: FORMER_OWNER } : {});
   const nameOf = (id: string) => summaries.find(item => item.template_id === id)?.name ?? "another template";
   const set = (next: TemplateDraft) => setLoad({ ...load, form: { ...current, draft: next } });
   const setRules = (patch: Partial<RuleDraft>) => set({ ...draft, rules: { ...draft.rules, ...patch } });
-  const busy = runner.busy || reloading;
+  const busy = runner.busy || reloading || opening;
 
   if (readonly) return <div ref={panel} data-testid="hr-template-editor" className="space-y-3">
     {back}
@@ -233,11 +251,37 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
       ordinal => saving.steps[ordinal - 1]?.title_en.trim() || null)),
     conflicts: receipt.conflicts,
   });
+  /** Their version, read beside the draft (which stays on screen). */
+  const readTheirs = async () => {
+    if (templateId === null) return;
+    setConflict({ latest: null, failed: "", kept: false });
+    try {
+      const latest = await client.template(templateId);
+      setConflict({ latest, failed: "", kept: false });
+    } catch (cause) {
+      setConflict({ latest: null, failed: processLoadError(cause), kept: false });
+    }
+  };
+  /** Keep the draft: the next Save carries their version's number, so it knowingly replaces theirs. */
+  const keepMine = (latest: TemplateOut) => {
+    setLoad({ ...load, form: { ...current, version: latest.version, active: latest.is_active } });
+    setConflict({ latest, failed: "", kept: true });
+    returnFocus(null);
+  };
+  const discardMine = (latest: TemplateOut) => {
+    const theirs = draftFromTemplate(latest);
+    setShowTheirs(false);
+    setConflict(null);
+    setTried(false);
+    setLoad({ form: { draft: theirs, baseline: theirs, version: latest.version, active: latest.is_active }, template: latest });
+    setOutcome({ message: "Showing their version. Your changes were discarded." });
+    returnFocus(null);
+  };
   const save = (activate: boolean) => runner.run(async () => {
     // Cleared first: the same refusal twice is a new message, and takes focus again.
     setOutcome(null);
     const saving = draft;
-    if (hasProblems(draftProblems(saving))) {
+    if (hasProblems(draftProblems(saving, known))) {
       setTried(true);
       setOutcome({ error: "Check the fields marked below." });
       setInvalidFocus(count => count + 1);
@@ -247,17 +291,19 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
       if (templateId === null) {
         const receipt = await client.createTemplate(createBody(saving));
         arrival = { templateId: receipt.template_id, outcome: saved(receipt, saving) };
+        setOpening(true);
         setLoad({ ...load, form: { ...current, baseline: saving } });
         router.replace(hrHref({ tab: "processes", view: "template", templateId: receipt.template_id }, platform, tenant));
         return;
       }
       const receipt = await client.updateTemplate(templateId, updateBody(saving, current.version, activate));
       setLoad({ ...load, form: { draft: saving, baseline: saving, version: receipt.version, active: activate || current.active } });
+      setConflict(null);
       setOutcome(saved(receipt, saving));
       setTried(false);
     } catch (cause) {
-      setOutcome({ error: processSaveError(cause, "save") });
-      if (isStale(cause, STALE)) reload();
+      if (isStale(cause, CHANGED)) await readTheirs();
+      else setOutcome({ error: processSaveError(cause, "save") });
     }
     returnFocus(null);
   });
@@ -272,17 +318,16 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
       setOutcome({ message: "Template deactivated. New processes no longer use it." });
       returnFocus(opener);
     } catch (cause) {
-      const text = processSaveError(cause, "deactivate");
-      if (isStale(cause, STALE)) {
+      if (isStale(cause, CHANGED)) {
         setAsk(null);
-        setOutcome({ error: text });
-        returnFocus(opener);
-        reload();
-      } else setDialogError(text);
+        await readTheirs();
+        returnFocus(null);
+      } else setDialogError(processSaveError(cause, "deactivate"));
     }
   });
   const copyAsNew = () => {
     copied = copyDraft(draft);
+    setShowTheirs(false);
     router.push(hrHref({ tab: "processes", view: "new-template" }, platform, tenant));
   };
 
@@ -296,14 +341,32 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
     {back}
     <Panel title={isNew ? "New template" : current.baseline.name || "Template"}>
       <div className="space-y-5">
-        {outcome && <div ref={notices} tabIndex={-1} data-testid="hr-template-outcome" className={`space-y-3 ${NOTICE_FOCUS}`}>
-          {outcome.message && <Notice testId="hr-template-notice">{outcome.message}</Notice>}
-          {(outcome.warnings?.length || outcome.conflicts?.length) ? <div data-testid="hr-template-warnings" className="space-y-2">
-            {outcome.warnings?.map(text => <Notice key={text} warning>{text}</Notice>)}
-            {outcome.conflicts?.length ? <Notice warning>May tie with {outcome.conflicts.map(nameOf).join(", ")}. When both match
+        {(outcome || conflict) && <div ref={notices} tabIndex={-1} data-testid="hr-template-outcome"
+          className={`space-y-3 ${NOTICE_FOCUS}`}>
+          {conflict && <div data-testid="hr-template-conflict" className="space-y-2 text-sm">
+            <Notice warning>{CONFLICT_TEXT}</Notice>
+            {conflict.kept ? <p className="font-medium">Saving now replaces their version.</p>
+              : conflict.latest ? <div className="flex flex-wrap gap-2">
+                <button type="button" className={secondary} disabled={busy}
+                  onClick={() => conflict.latest && keepMine(conflict.latest)}>Keep my changes</button>
+                <button type="button" className={secondary} disabled={busy} onClick={() => setShowTheirs(true)}>
+                  Show their version</button>
+              </div>
+                : conflict.failed ? <div className="space-y-2">
+                  <Notice error>{conflict.failed}</Notice>
+                  <button type="button" className={secondary} disabled={busy} onClick={() => void runner.run(async () => {
+                    await readTheirs(); returnFocus(null);
+                  })}>Try again</button>
+                </div>
+                  : <p className="text-[color:var(--fs-text-secondary)]">Reading their version…</p>}
+          </div>}
+          {outcome?.message && <Notice testId="hr-template-notice">{outcome.message}</Notice>}
+          {(outcome?.warnings?.length || outcome?.conflicts?.length) ? <div data-testid="hr-template-warnings" className="space-y-2">
+            {outcome?.warnings?.map(text => <Notice key={text} warning>{text}</Notice>)}
+            {outcome?.conflicts?.length ? <Notice warning>May tie with {outcome.conflicts.map(nameOf).join(", ")}. When both match
               a person, the older template is used.</Notice> : null}
           </div> : null}
-          {outcome.error && <Notice error testId="hr-template-error">{outcome.error}</Notice>}
+          {outcome?.error && <Notice error testId="hr-template-error">{outcome.error}</Notice>}
         </div>}
         <form ref={formRef} noValidate className="space-y-5" onSubmit={event => { event.preventDefault(); void save(false); }}>
           <fieldset disabled={busy} className="min-w-0 space-y-5">
@@ -357,9 +420,13 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
                   </select>
                 </div>
               </div>
-              <div data-testid="hr-template-preview" aria-live="polite" className="space-y-1 text-sm">
+              {/* Only the answer is announced: "Counting…" sits outside the live region. */}
+              <div data-testid="hr-template-preview" className="space-y-1 text-sm">
+                {!problems?.legal_entity && (!preview || preview.key !== previewKey)
+                  && <p className="text-[color:var(--fs-text-secondary)]">Counting the people…</p>}
+                <div aria-live="polite" className="space-y-1">
                 {problems?.legal_entity ? <p>Fix the legal entity to see who this applies to.</p>
-                  : !preview || preview.key !== previewKey ? <p className="text-[color:var(--fs-text-secondary)]">Counting the people…</p>
+                  : !preview || preview.key !== previewKey ? null
                     : "failed" in preview ? <p>{preview.failed}</p>
                       : <>
                         <p className="font-medium">{previewText(preview.result)}</p>
@@ -369,10 +436,11 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
                           <p className="text-[color:var(--fs-text-secondary)]">When both match a person, the older template is used.</p>
                         </>}
                       </>}
+                </div>
               </div>
             </fieldset>
-            <StepsEditor kind={draft.kind} steps={draft.steps} problems={shown?.steps ?? []} people={people.options}
-              peopleLoaded={people.loaded} onChange={steps => set({ ...draft, steps })} />
+            <StepsEditor kind={draft.kind} steps={draft.steps} problems={stepProblems} people={people.options}
+              peopleLoaded={people.loaded} peopleKnown={known !== undefined} onChange={steps => set({ ...draft, steps })} />
           </fieldset>
           <div className="flex flex-wrap gap-2">
             <button type="submit" className={primary} disabled={busy}>Save</button>
@@ -394,6 +462,18 @@ export function TemplateEditor({ tenant, templateId, readonly, platform }: {
           <button type="button" className={primary} disabled={runner.busy} onClick={() => void deactivate(ask.opener)}>
             Deactivate</button>
           <button type="button" className={secondary} disabled={runner.busy} onClick={() => setAsk(null)}>Keep it</button>
+        </div>
+      </div>
+    </Dialog>}
+    {showTheirs && conflict?.latest && <Dialog open onClose={() => setShowTheirs(false)} testId="hr-template-theirs"
+      title="Discard your changes?">
+      <div className="space-y-3 text-sm">
+        <p>Their version replaces what you have on screen. To keep yours, copy it as a new template first.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={primary} onClick={() => conflict.latest && discardMine(conflict.latest)}>
+            Discard my changes</button>
+          <button type="button" className={secondary} onClick={copyAsNew}>Copy my version as new</button>
+          <button type="button" className={secondary} onClick={() => setShowTheirs(false)}>Keep editing</button>
         </div>
       </div>
     </Dialog>}
