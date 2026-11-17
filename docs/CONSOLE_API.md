@@ -360,6 +360,266 @@ areas and HR owner row for the tenant are deleted, its membership is disabled an
 revoked, and one `console_audit` row `hr.leaver_finished` is written. The account link stays.
 Each step happens once, whoever runs it.
 
+### Process templates, processes and tasks (HR processes PRs 1-2, migrations 0630-0635)
+
+A company keeps templates of ordered steps for onboarding, offboarding and custom processes.
+Adding or rehiring a person starts an onboarding from the matching template, marking them as
+leaving starts an offboarding (the `hr_employees` trigger of 0632); HR can also start and cancel
+processes by hand. Every route takes `client_id` (and `GET /processes` and `GET /tasks/mine` the
+filters below; any other key is 400 `invalid_hr_query`) and answers no-store. Writes need CSRF (403 without) and an
+`Idempotency-Key` (422 without); a read-only session's write is 403 `read_only_session`. A same-key
+retry returns the first receipt with `duplicate: true`; the same key with another body is 409
+`idempotency_conflict`. A caller the route does not serve gets 404 `resource_unavailable`, never
+403. A 422 is `{detail: "invalid_hr_input", invalid_fields}` and never repeats the input.
+
+**Templates** (the HR owner and Manage people holders only):
+
+- `GET /templates` returns `TemplateList`: up to 500 `items` of `TemplateSummary` (`template_id`,
+  `kind`, `name`, `version`, `is_active`, `rules`, `step_count`, `created_at`, `updated_at`),
+  by kind, then name.
+- `GET /templates/{template_id}` returns `TemplateOut`: the summary fields, `steps` (each
+  `TemplateStepOut`: `ordinal`, `title_en`, `title_ms`, `description_en`, `description_ms`,
+  `owner_role`, `owner_employee_id`, `anchor`, `due_offset_days`, `required`, `approval_by`,
+  `auto_check`, `reference_note`), `conflicts` and `warnings`.
+- `POST /templates` `TemplateCreate` `{kind, name, rules?, steps}` answers 201 `TemplateReceipt`
+  `{operation: "template.create", template_id, version, conflicts, warnings, status: "saved",
+  duplicate}`.
+- `PUT /templates/{template_id}` `TemplateUpdate` `{expected_version, name, rules, steps,
+  is_active?}` replaces the name, rules and steps (`version` + 1; the kind never changes). `rules`
+  must be sent: `null` makes the template the company default, and a body without the key is 422,
+  so a client can never clear the rules by forgetting them. `is_active` `null` or absent keeps it.
+  A stale version is 409 `template_changed`.
+- `POST /templates/{template_id}/deactivate` `{expected_version}` returns `TemplateReceipt`
+  (`version` + 1).
+
+`kind` is `onboarding`, `offboarding` or `custom`; `name` 1-120 characters. `rules` is
+`{department_id, employment_type, legal_entity_reference, region}`, each `null` for "anyone":
+`employment_type` is one of the `hr_employees` types (`full_time`, `part_time`, `contract`,
+`intern`), `region` one of `peninsular_labuan`, `sabah`, `sarawak`, the legal entity at most 200
+characters (compared trimmed and case-insensitive). The most specific matching active template
+wins, then the oldest; a template with no rule is the default. `steps` holds 1 to 40 steps, numbered
+by position: `title_en` 1-160 characters, `title_ms` at most 160, `description_en` and
+`description_ms` at most 2000 and the only fields that may hold line breaks (`\n`; a `\r\n` is
+stored as `\n`; a tab or any other control character is 422 as everywhere in HR),
+`reference_note` at most 500 (text is trimmed; an empty string is stored as `null`); `owner_role` `hr`, `manager`, `employee` (the person the process is about) or
+`person` (then `owner_employee_id`, an active person of this company, and only then);
+`anchor` `start_date` or `probation_end` for onboarding, `last_day` for offboarding, any for custom;
+`due_offset_days` an integer from -365 to 365; `required` (default `true`); `approval_by` `hr`,
+`manager` or `null`; `auto_check` `account_linked`, `personal_details_complete`, `access_removed`,
+`document_uploaded:<contract|identity|certificate|other>` or `null`. `conflicts` lists the other
+active templates of the same kind that may tie with this one for some person (they may; runtime
+picks the oldest and never errors); `warnings` holds `{code: "step_after_last_day", ordinal}` for a
+step of the leaver due after the last day (it will be due on the last day); a client should show
+an unknown `code` generically, since later releases may add codes. Running processes keep the steps
+they were started with.
+
+**Processes:**
+
+- `GET /processes?kind=&status=&overdue=&department=&owner=&limit=&after=` returns `ProcessPage`:
+  `items` of `ProcessRow` (`process_id`, `employee_id`, `employee_name`, `department_id`, `kind`,
+  `name` (the template's), `status`, `started_at`, `closed_at`, `tasks_total`, `tasks_done` (done or
+  skipped), `next_due_on`, `overdue`), newest first, and `next_cursor` (pass it as `after`) while
+  more remain. `limit` is 1-200 (default 50); `status` is `active`, `completed` or `cancelled`;
+  `overdue=true` keeps processes with an open task due before today (Asia/Kuala_Lumpur);
+  `overdue=false`, like leaving it out, means no filter (it does not keep only processes that are
+  on time);
+  `department` is the person's department; `owner` an employee with a task in the process. The HR
+  team sees every process, a manager the processes of their direct reports, the person their own
+  onboarding and offboarding (`next_due_on` and `overdue` then count only their own tasks); anyone
+  else an empty page.
+- `GET /processes/{process_id}` returns `ProcessDetail` `{view, process, tasks, events?}` with
+  `view` `hr`, `manager`, `self` or `assignee` (a person who owns a task in it). What each view gets
+  is below; a field the caller may not see is **absent** (the route answers with
+  `response_model_exclude_unset`), a visible empty field is `null`.
+  - `process` (`ProcessHeader`): everyone `process_id`, `kind`, `name`, `status`,
+    `employee_name`; `hr`, `manager` and `self` add `started_at`, `closed_at`; `hr` and `manager`
+    add `employee_id`, `tasks_total`, `tasks_done`; `self` adds `required_total`, `required_done`,
+    `open_tasks`; `hr` adds `template_id`, `template_version`, `anchor_dates` (`{start_date,
+    last_day, probation_end}`) and `started_by`.
+  - `tasks` (`ProcessTask`): `self` and `assignee` get only their own tasks. Every task has
+    `task_id`, `ordinal`, `title_en`, `title_ms`, `owner_role`, `assignee_name`, `due_on`, `status`
+    (`todo`, `awaiting_approval`, `done`, `rejected`, `skipped`), `required`, `overdue`, `mine`.
+    The caller's own tasks, and every task for `hr`, add `description_en`, `description_ms`,
+    `anchor`, `approval_by`, `auto_check`, `reference_note`, `completed_at`, `note`, `version`,
+    `sent_back_reason` (why the approver sent the step back, for the assignee; `null` once it is
+    completed again; may hold line breaks), `done_by_hr` (`true` when someone other than the named
+    assignee completed it, which only the HR team may: the console shows "done by HR"). `reference_note` is the step's reference, copied when the process started, so a later
+    template edit does not change it. The descriptions and `note` may hold line breaks (`\n`):
+    when the person leaves, "person left" is added to a skipped task's note on a new line. `hr`
+    alone adds `assignee_employee_id`, `assignee_overridden` (`true` once HR reassigned the step by
+    hand; a manager change then leaves it), `due_offset_days`, `due_overridden`, `completed_by`,
+    `approved_by`, `approved_at`. A task with no assignee is in the HR pool.
+  - `events` (`hr` only): `{event_id, at, actor, action, task_id, detail}`; `actor` `null` is the
+    system; `action` is `process.started`, `process.cancelled`, `process.completed`,
+    `task.created`, `task.completed`, `task.skipped`, `task.reassigned`, `task.date_changed`,
+    `task.approved`, `task.sent_back`, `task.noted` or `task.rescheduled`; `detail` holds the keys
+    that action writes (`reason`, `kind`, `template_id`, `template_version`, `owner_role`,
+    `assignee_employee_id`, `due_on`, `fallback`, `clamped`, `anchor`, `old`, `new`, `from`, `to`,
+    `auto_check`, `remark`, `sent_back`, `awaiting_approval`, `on_behalf`, `approver`,
+    `approved_without_second_person`). Every `detail` value is any JSON value,
+    returned exactly as stored (not trimmed; text may hold line breaks), because events never
+    change. Later releases add actions and keys (the task actions of PR 2): `action` is typed as a
+    string of at most 80 characters and unknown `detail` keys pass through, so a client should show
+    an unknown action generically.
+- `POST /processes` `ProcessStart` `{employee_id, kind, template_id?}` (HR team) starts a custom
+  process (`template_id` required) or an onboarding or offboarding of an existing person
+  (`template_id` optional: the matching template; a still-active process of the same kind is
+  cancelled first). It answers 201 `ProcessStartReceipt` `{operation: "process.start", process_id,
+  employee_id, kind, template_id, status: "saved", duplicate}`.
+- `POST /processes/{process_id}/cancel` (no body; HR team) cancels an active process: its open
+  tasks are skipped. It returns `ProcessCancelReceipt` `{operation: "process.cancel", process_id,
+  status: "saved", duplicate}`.
+- `GET /people/{employee_id}/processes` returns `PersonProcesses` `{view, employee_id, processes,
+  anchor_dates?, no_matching_template?}` for the HR team (`view` `hr`), the person's manager
+  (`manager`) and the person (`self`, onboarding and offboarding only). `processes` are newest
+  first: `{process_id, kind, name, status, started_at, closed_at, tasks_total, tasks_done,
+  next_task: {title_en, title_ms, due_on} | null}` (for `self`, the next of their own tasks).
+  `anchor_dates` (HR and the person) is `{start_date, last_day, probation_end}`;
+  `no_matching_template` (HR only) is `{onboarding, offboarding}`, true when the person has no
+  process of that kind in their current employment and no template matches them. Absent fields
+  as for the process detail.
+
+**Probation end** on `POST /operations` (HR owner or Manage people holder):
+`person.probation_set` `{employee_id, expected_version, probation_end}` sets (a date) or clears
+(`null`) the end of probation; the key must be sent. Open tasks counted from it move with it. It
+returns the usual `OperationReceipt` with the person's new `version`; a stale version is 409
+`person_changed`. The date reads back in `GET /people/{employee_id}/processes` `anchor_dates`.
+
+**Tasks** (migration 0634, `hr_task_apply` and `hr_task_rows_mine`). Who may act is decided by
+the database: the assignee (the person a step is assigned to, through their linked account), the
+approver of a step waiting for approval (the person's manager when the step says so and the manager
+is active, linked and able to act: an enabled membership that is not read-only and an enabled
+account; else the HR team) and the HR team (the HR owner and Manage people holders: any
+step, on anyone's behalf; the event log names who really did it). A read-only member's writes are
+refused by the session (403 `read_only_session`) even when they are linked to an assignee, so the
+console shows a read-only member their My tasks without the action buttons. Someone with no part in
+a step (not its assignee, not the manager of the process's person, not HR), and a step or process of
+another company, gets 404 `resource_unavailable`, as does a manager or assignee asking for an
+HR-only action (skip, reschedule, reassign, close). Every task action but `note` sends
+`expected_version` (the step's `version` from My tasks or the process detail; stale is 409
+`task_changed`). A done or skipped step, or one whose process is closed, is 409 `task_closed`. Each
+action raises the step's `version` and returns `TaskReceipt` `{operation, task_id, process_id,
+task_status, version, process_status, status: "saved", duplicate}` (`process_status` becomes
+`completed` when the action settles the last required step). Notes and reasons may hold line
+breaks (`\n`; a `\r\n` is stored as `\n`); any other control character is 422.
+
+- `GET /tasks/mine?status=&limit=&after=` returns `MyTaskPage` `{items, next_cursor}`: the caller's
+  own steps, the HR pool for the HR team (`pool: true`: no assignee), for the HR team also the steps
+  of a person whose reminders go to the HR pool (no console account, a disabled membership or a
+  read-only member; `pool: false`, migration 0635) and the steps waiting for the caller's approval
+  (`needs_my_approval: true`), soonest due first (no due date last), keyset by
+  `next_cursor` (pass it as `after`) while more remain. `status` is a task status (`todo`,
+  `awaiting_approval`, `done`, `rejected`, `skipped`); without it, the open ones (not done or
+  skipped). `limit` is 1-200 (default 50). Each `MyTask` has every field, always present:
+  `task_id`, `process_id`, `process_kind`, `process_name` (the template's), `employee_name` (the
+  person the process is about), `ordinal`, `title_en`, `title_ms`, `description_en`,
+  `description_ms`, `owner_role`, `due_on`, `required`, `approval_by`, `auto_check`,
+  `reference_note`, `status`, `note` (the shared note), `version`, `overdue`, `pool`,
+  `needs_my_approval`, `sent_back_reason` (why the approver sent it back, for the assignee and HR;
+  `null` once completed again), `mine` (`true` when the caller is the step's assignee: an HR
+  member's own step, as opposed to one listed on someone's behalf or in the pool),
+  `assignee_name` (the assignee's name, for the HR team only; `null` for a pool step and for
+  everyone else) and `done_by_hr` (as in the process detail). On a row the caller only approves
+  (a manager's approval of a report's step), the descriptions, `reference_note`, `note`,
+  `sent_back_reason` and `done_by_hr` are `null` by design (present, never filled in for that
+  viewer: the console shows nothing there). A caller with
+  nothing to do gets an empty page.
+- `POST /tasks/{task_id}/complete` `TaskComplete` `{expected_version, note?}` (the assignee or the
+  HR team): `done`, or `awaiting_approval` for a step with an approver. A `note` (at most 2000
+  characters) replaces the shared note; absent, `null` or `""` keeps it (unlike `/note`, where `""`
+  clears it). A step with an automatic check
+  completes only when the check holds (409 `check_not_met`; HR may skip it); `access_removed` is 409
+  `task_system_only`; a step waiting for approval is 409 `task_awaiting_approval`.
+- `POST /tasks/{task_id}/approve` `TaskApprove` `{expected_version}` (the approver): `done`. Not
+  waiting is 409 `task_not_awaiting_approval`; someone else 409 `task_not_approver`; the person who
+  completed it 409 `task_self_approval`; an HR team member approving a step of a process about
+  themself 409 `task_own_process` (they may send it back). The HR owner may still approve in both
+  cases when nobody else in the HR team can act (recorded as `approved_without_second_person`).
+- `POST /tasks/{task_id}/send-back` `TaskReason` `{expected_version, reason}` (the approver): back to
+  `todo`, the `reason` (1-500 characters) shown to the assignee as `sent_back_reason`; the note is
+  kept. A step of a person who has left is skipped instead.
+- `POST /tasks/{task_id}/note` `TaskNote` `{note}` (the assignee or the HR team): replaces the shared
+  note (at most 2000 characters); `null` or `""` clears it. `note` must be sent. No version check.
+- `POST /tasks/{task_id}/skip` `TaskReason` `{expected_version, reason}` (the HR team): `skipped`;
+  the reason (1-500 characters) stays in HR's event log.
+- `POST /tasks/{task_id}/reschedule` `TaskReschedule` `{expected_version, due_on}` (the HR team): a
+  new due date (`YYYY-MM-DD`) that stays put when the anchor date moves.
+- `POST /tasks/{task_id}/reassign` `TaskReassign` `{expected_version, assignee_employee_id}` (the HR
+  team): an active person of this company (else 409 `task_assignee_unavailable`) or `null` for the
+  HR pool; it stays put when the manager changes. The key must be sent.
+- `POST /processes/{process_id}/close` `ProcessClose` `{note}` (the HR team) closes an active
+  process anyway: its open steps are skipped and it completes; the note (1-500 characters) stays in
+  HR's event log. It returns `ProcessCloseReceipt` `{operation: "process.close_anyway", process_id,
+  process_status: "completed", status: "saved", duplicate}`; a closed process is 409
+  `process_closed`.
+
+Request bodies: `complete` and `note` take up to 32768 bytes (a 2000-character note sent escaped as
+JSON is larger than 8192); every other task write keeps 8192 (413 `hr_request_too_large`). There is
+no `GET /tasks/{task_id}` (spec 5.6): My tasks and `GET /processes/{process_id}` carry every step a
+caller may see.
+
+**Reminders (migration 0635).** The worker writes task reminders to the recipient's Home
+notifications (`GET /records/notifications`, `NotificationRecord`), console only. New `kind` values:
+`task_assigned` (once per assignee, or when the step enters the HR pool), `task_due_soon` (1-2 days
+before), `task_due` (on the day) and `task_overdue` (each of the 3 days after, then weekly). For
+these, `resource_id` is the step's `task_id`, `due_on` the step's due date when written and
+`subject` the plain line ("Due today: <step title>"); the earlier kinds return `due_on` and
+`subject` as `null`. The recipient is the assignee's console account, or every HR team member when
+the step is in the HR pool or its assignee cannot get reminders; each one points at a step the
+recipient sees in My tasks. `notification.read` marks one read as for every kind.
+
+**Problem codes** (`detail` of the response; the console shows the sentence). Every refusal the
+database functions raise maps to one of these (`csa.hr.processes.REFUSALS` and `PROBLEMS`); any
+other database error is 503 `hr_database_unavailable`, with no database text. The `task_*` and
+`check_not_met` codes come from the task actions above (migration 0634, `hr_task_apply`).
+
+| Code | Status | Meaning |
+|---|---|---|
+| `permission_denied` | 404 (as `resource_unavailable`) | Only the HR owner or someone with Manage people can do this. |
+| `resource_unavailable` | 404 | That item does not exist, or you cannot see it. |
+| `idempotency_conflict` | 409 | This request key was already used for a different change. |
+| `unsupported_operation` | 409 | That change is not supported. |
+| `human_operation_required` | 409 | Only a signed-in person can make this change. |
+| `template_unavailable` | 409 | That template is not available for this kind of process. |
+| `template_changed` | 409 | Someone changed this template since you opened it. Reload to see it. |
+| `template_kind_invalid` | 409 | Choose onboarding, offboarding or custom. |
+| `template_name_invalid` | 409 | Give the template a name of at most 120 characters. |
+| `template_invalid` | 409 | Active must be yes or no. |
+| `template_rules_invalid` | 409 | Check who the template applies to. |
+| `department_unavailable` | 409 | That department is not in this company. |
+| `template_steps_invalid` | 409 | A template needs 1 to 40 steps. |
+| `template_step_title_invalid` | 409 | Each step needs an English title of at most 160 characters. |
+| `template_step_text_invalid` | 409 | A description is at most 2000 characters, a reference 500. |
+| `template_step_owner_invalid` | 409 | Only a step owned by a named person names that person. |
+| `template_step_person_unavailable` | 409 | Choose an active person of this company for the step. |
+| `template_step_anchor_invalid` | 409 | Onboarding steps count from the start date or the probation end, offboarding steps from the last day. |
+| `template_step_offset_invalid` | 409 | A step is due at most 365 days before or after its date. |
+| `template_step_approval_invalid` | 409 | A step is approved by HR or the manager. |
+| `template_step_check_invalid` | 409 | That automatic check is not available. |
+| `process_kind_invalid` | 409 | Choose onboarding, offboarding or custom. |
+| `person_not_active` | 409 | This person is not active. |
+| `person_not_leaving` | 409 | Mark this person as leaving before starting their offboarding. |
+| `process_template_required` | 409 | Choose a template for a custom process. |
+| `process_no_template` | 409 | No active template applies to this person. |
+| `process_already_active` | 409 | This person already has an active process of this kind. |
+| `process_closed` | 409 | This process is already completed or cancelled. |
+| `person_changed` | 409 | Someone changed this person since you opened it. Reload to see it. |
+| `probation_end_invalid` | 409 | Give the probation end as a date, or clear it. |
+| `task_changed` | 409 | Someone changed this step since you opened it. Reload to see it. |
+| `task_closed` | 409 | This step is already done or skipped, or its process is closed. |
+| `task_not_assignee` | 409 | Only the person this step is assigned to, or HR, can do this. |
+| `task_not_approver` | 409 | Only the approver of this step can approve it or send it back. |
+| `task_awaiting_approval` | 409 | This step is waiting for approval. |
+| `task_not_awaiting_approval` | 409 | This step is not waiting for approval. |
+| `task_self_approval` | 409 | Someone other than the person who completed this step must approve it. |
+| `task_own_process` | 409 | Someone else in HR must approve a step of a process about you. |
+| `check_not_met` | 409 | The automatic check for this step is not met yet. |
+| `task_system_only` | 409 | The system completes this step when the person's access is removed. |
+| `task_reason_invalid` | 409 | Give a reason of 1 to 500 characters. |
+| `task_note_invalid` | 409 | A note is at most 2000 characters. |
+| `task_due_invalid` | 409 | Give the new due date as a date. |
+| `task_assignee_unavailable` | 409 | Choose an active person of this company, or the HR pool. |
+
 ## Authentication, tenancy and settings
 
 Development reset safety: `make db-reset` is destructive. Its default target is loopback

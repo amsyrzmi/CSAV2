@@ -497,7 +497,8 @@ e. The host file `/srv/csa-prod/host.env`, readable by `ubuntu`. It holds what t
    `deploy/production-rollout.env` (a reviewed PR), and `CSA_PROD_GROQ_CHAT_URL` is never
    accepted. The optional Jev switches (`CSA_STAGING_JEV_SECRET`, `CSA_STAGING_ASSISTANT_DECIDER_*`,
    `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT`, `CSA_STAGING_JEV_FLOOR_*`) may be added to
-   `deploy/production-rollout.env` by a reviewed PR too; none is set today. `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
+   `deploy/production-rollout.env` by a reviewed PR too; today that file sets the four shadow lines
+   in "Jev on production (shadow)" below and nothing else of the Jev switches. `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
 
 f. The backup script, **only after step e**: the repository's `deploy/production/backup.sh` reads
    the bucket and region from `host.env`, so if it replaced the installed copy first, the
@@ -1127,6 +1128,58 @@ on the local backend the gateway's own origin. No CSP sets `media-src` today.
   built from this change has `/etc/ssl/certs/ca-certificates.crt`, and an https ffprobe there
   completes the TLS handshake with it (`docs/TRAINING_VIDEO_CAPACITY.md`). The first video on
   production is the end-to-end check against the bucket's own host.
+
+## Jev on production (shadow)
+
+`deploy/production-rollout.env` turns Jev on for the staff assistant areas in **shadow** mode
+(`docs/RUNBOOK.md`, "Jev for the staff assistant and the customer classifier"): Groq still decides
+every email, routing and inbound-injection question, Jev answers beside it, and both answers are
+written to `decision_log`. Nothing a user sees changes. The customer classifier stays on the LLM
+(`CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT` is not set). The four lines are
+`CSA_STAGING_JEV_SECRET=staging_jev_key` and `CSA_STAGING_ASSISTANT_DECIDER_EMAIL`, `_ROUTING` and
+`_INBOUND_INJECTION`, each `shadow`. Evidence behind the choice: the evaluation of 2026-11-17 (168
+labelled messages, every question met its target) and cascade running on staging since 2026-11-17.
+
+The key file is `/srv/csa-prod/secrets/pipeline/staging_jev_key` (that is `pipeline/staging_jev_key`
+under the production secret directory; the production overlay reuses the staging pipeline file's
+`staging_jev_key` secret, mounted as `TYPESAFE_API_KEY` on the gateway and the worker). **Until it
+exists, `plan` stops with the file listed as missing and nothing is deployed.** Owner steps:
+
+1. **Create a separate production key** with the Jev provider (a new key for production; do not
+   reuse the staging key, so each can be rotated or revoked alone).
+2. **Write the file** on the instance as the runtime user (UID 1000, not with sudo), from the
+   checkout, with the hidden prompt (the key never goes on a command line or into shell history):
+
+   ```bash
+   uv run python -m scripts.staging_jev_key --secret-dir /srv/csa-prod/secrets
+   ```
+
+   It writes `pipeline/staging_jev_key` with mode `0400` and no trailing newline, refuses to
+   overwrite an existing file or follow a symlink, and prints only the file's path. It first runs
+   the staging layout check on the directory; if that check refuses the production directory (it
+   knows only the staging layout), write the file by hand the same way, refusing to overwrite:
+
+   ```bash
+   F=/srv/csa-prod/secrets/pipeline/staging_jev_key
+   test ! -e "$F" || { echo "exists; not overwriting"; false; }
+   read -rsp "Jev production key: " V; echo
+   printf %s "$V" | install -m 0400 /dev/stdin "$F"
+   unset V
+   ls -l "$F"   # -r-------- 1 <uid 1000 user>, mode 0400
+   ```
+3. **Deploy** with the `deploy-production` workflow as usual. `plan` lists any file still missing;
+   `apply` recreates the gateway and the worker with the key mounted.
+4. **Read the log.** Use the three audit queries in the runbook ("Audit queries") on the production
+   database: for the staff areas `decision_log` should show `mode = shadow`, `provider` for both
+   Jev and the LLM, few `jev_timeout` or `jev_http_*` fallbacks, and few disagreements on confident
+   answers. Run them after a few days of real use.
+5. **Move to cascade** only by a reviewed PR that changes the three `shadow` lines in
+   `deploy/production-rollout.env` to `auto` or `cascade`, after the shadow log looks right, then
+   a normal deploy. The customer classifier has its own gate (runbook step 4) and its own PR.
+6. **Kill switch.** A reviewed PR that sets the three areas to `llm` (always accepted, needs no
+   key), or removes the four lines, then a normal deploy recreates the gateway and the worker.
+   To rotate the key: remove the old file, write the new one as in step 2, and restart the gateway
+   and the worker (the runbook's "The secret file" has the staging commands and the check).
 
 ## Pictures (PR 2b): before the first production deploy
 

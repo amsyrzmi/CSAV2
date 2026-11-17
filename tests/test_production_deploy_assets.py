@@ -2082,7 +2082,13 @@ def test_header_comments_match_what_the_code_accepts_and_installs() -> None:
     # load_flags also accepts the optional tuning keys and the Jev switches.
     switches = (ROOT / "deploy" / "production-rollout.env").read_text()
     assert "Exactly these six keys" not in switches
-    for needle in ("six keys below are all required", "CSA_PROD_*", "CSA_STAGING_JEV_SECRET"):
+    for needle in (
+        "six keys below are all required",
+        "CSA_PROD_*",
+        "CSA_STAGING_JEV_SECRET",
+        "pipeline/staging_jev_key",
+        "Kill switch",
+    ):
         assert needle in switches, needle
 
 

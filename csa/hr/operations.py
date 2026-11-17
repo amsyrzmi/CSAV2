@@ -38,6 +38,7 @@ from csa.hr.automation_models import (
     PersonalSave,
     PersonLeave,
     PersonLeaveUndo,
+    PersonProbationSet,
     PersonRehire,
     PersonUpdate,
     PrivateAccessSave,
@@ -84,6 +85,8 @@ _PEOPLE_REFUSALS = {
     "hr_person_not_active": "person_not_active",
     "hr_last_day_past": "last_day_past",
     "hr_leaver_has_access": "leaver_has_access",
+    # Probation (hr_probation_set).
+    "hr_probation_end_invalid": "probation_end_invalid",
     # Personal details (hr_personal_apply and hr_personal_reveal).
     "hr_personal_access_required": "permission_denied",
     "hr_personal_field_refused": "personal_field_refused",
@@ -155,7 +158,7 @@ class HrOperations:
             ),
         ):
             self.owner(access)
-        elif isinstance(body, _PEOPLE_OPERATIONS):
+        elif isinstance(body, (*_PEOPLE_OPERATIONS, PersonProbationSet)):
             self.people_manager(access)
         elif isinstance(body, (CandidateIntake, CandidateNote, CandidateErase, InterviewSchedule)):
             await self.private(conn, session, "recruitment")
@@ -205,9 +208,13 @@ class HrOperations:
                 return OperationReceipt.model_validate(old["receipt"]).model_copy(
                     update={"duplicate": True}
                 )
-            if isinstance(body, (*_PEOPLE_OPERATIONS, AccountLink)):
+            if isinstance(body, (*_PEOPLE_OPERATIONS, AccountLink, PersonProbationSet)):
                 path = (
-                    "hr/admin_apply.sql" if isinstance(body, AccountLink) else "hr/people_apply.sql"
+                    "hr/admin_apply.sql"
+                    if isinstance(body, AccountLink)
+                    else "hr/probation_set.sql"
+                    if isinstance(body, PersonProbationSet)
+                    else "hr/people_apply.sql"
                 )
                 row = await self._people_apply(
                     conn,

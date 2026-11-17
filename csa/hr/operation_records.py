@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -130,11 +131,24 @@ class PayrollSnapshotRecord(HrModel):
 
 
 class NotificationRecord(HrModel):
+    """One Home reminder. The task kinds (0635) carry the step as resource_id, the plain line in
+    subject and the step's due date; the earlier kinds have neither."""
+
     id: UUID
-    kind: Literal["workflow_review", "training_review", "interview_upcoming"]
+    kind: Literal[
+        "workflow_review",
+        "training_review",
+        "interview_upcoming",
+        "task_assigned",
+        "task_due_soon",
+        "task_due",
+        "task_overdue",
+    ]
     resource_id: UUID
     created_at: AwareDatetime
     read_at: AwareDatetime | None
+    due_on: date | None = None
+    subject: str | None = Field(default=None, max_length=200)
 
 
 OperationRecord = (
