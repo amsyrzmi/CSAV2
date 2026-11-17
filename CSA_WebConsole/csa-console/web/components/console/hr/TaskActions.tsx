@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { MyTask, processClient, TaskAction, TaskBodies, TaskReceipt } from "@/lib/hr-process-api";
 import { processErrorText, processSaveError, type ProcessAction } from "@/lib/hr-process-copy";
 import Dialog from "../fs/Dialog";
@@ -9,21 +9,24 @@ import type { HrRunner } from "./useHrRunner";
 export type ProcessClient = ReturnType<typeof processClient>;
 /**
  * What a task write came to: the list shows `message` or `error`, and reloads when `reload`. `opener` is
- * the row button the person chose: the list gives focus back to it after the reload when it is still
- * there (else to the message), so focus never falls to the page body.
+ * the row button the person chose: the list gives focus back to it (after the reload, if any) when it
+ * is still there, else to the message, so focus never falls to the page body.
  */
 export interface TaskOutcome { message?: string; error?: string; reload: boolean; opener?: HTMLElement | null }
 
 const NOTE_MAX = 2000;
+/** A message that takes focus shows the focus ring when the keyboard brought it there. */
+export const NOTICE_FOCUS = "rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]";
 const REASON_MAX = 500;
 /** Refusals that mean the list is out of date: show the sentence and read the list again. */
 const OUTDATED = new Set(["task_changed", "task_closed", "resource_unavailable", "task_awaiting_approval",
   "task_not_awaiting_approval", "task_not_approver"]);
 
-function outdated(failure: unknown): boolean {
+/** A 404 or 409 refusal whose code is in `codes`: what the viewer sees is out of date. */
+export function isStale(failure: unknown, codes: ReadonlySet<string>): boolean {
   if (typeof failure !== "object" || failure === null) return false;
   const { status, code } = failure as { status?: unknown; code?: unknown };
-  return (status === 404 || status === 409) && typeof code === "string" && OUTDATED.has(code);
+  return (status === 404 || status === 409) && typeof code === "string" && codes.has(code);
 }
 
 function savedText(action: TaskAction, receipt: TaskReceipt): string {
@@ -62,9 +65,9 @@ export function useTaskWrites(client: ProcessClient, runner: HrRunner,
       onOutcome({ message: savedText(name, receipt), reload: true, opener });
     } catch (cause) {
       const text = processSaveError(cause, button);
-      if (outdated(cause)) { setAsk(null); onOutcome({ error: text, reload: true, opener }); }
+      if (isStale(cause, OUTDATED)) { setAsk(null); onOutcome({ error: text, reload: true, opener }); }
       else if (inDialog) setDialogError(text);
-      else onOutcome({ error: text, reload: false });
+      else onOutcome({ error: text, reload: false, opener });
     }
   }), [client, run, onOutcome]);
   const show = useCallback((next: Ask) => { setDialogError(""); setAsk(next); }, []);
@@ -140,7 +143,8 @@ export function TaskDialog({ writes }: { writes: TaskWrites }) {
 
 /**
  * A text box with its limit for a dialog: the submit button stays off while the text is required
- * and empty, or longer than `max` (then `tooLong` says why). It submits the trimmed text.
+ * and empty, or longer than `max` (then `tooLong` says why). It submits the trimmed text. A refusal
+ * (`error`) takes focus, since the submit button it came from was off while the write ran.
  */
 export function TextForm({ label, hint, initial, required, max, tooLong, submit, busy, error, onSubmit, onCancel }: {
   label: string;
@@ -157,6 +161,8 @@ export function TextForm({ label, hint, initial, required, max, tooLong, submit,
 }) {
   const [value, setValue] = useState(initial);
   const id = useId();
+  const refusal = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (error) refusal.current?.focus(); }, [error]);
   const text = value.trim();
   const long = text.length > max;
   const invalid = long || (required && text === "");
@@ -170,7 +176,7 @@ export function TextForm({ label, hint, initial, required, max, tooLong, submit,
       <p id={`${id}-count`} className="mt-1 text-xs text-[color:var(--fs-text-secondary)]">{text.length} of {max} characters</p>
       {long && <p id={`${id}-long`} className="mt-1 text-[color:var(--fs-danger)]">{tooLong}</p>}
     </div>
-    {error && <Notice error>{error}</Notice>}
+    {error && <div ref={refusal} tabIndex={-1} className={NOTICE_FOCUS}><Notice error>{error}</Notice></div>}
     <div className="flex flex-wrap gap-2">
       <button type="submit" className={primary} disabled={invalid || busy}>{submit}</button>
       <button type="button" className={secondary} disabled={busy} onClick={onCancel}>Cancel</button>

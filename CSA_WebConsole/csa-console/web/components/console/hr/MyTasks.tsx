@@ -6,8 +6,9 @@ import { autoCheckText, dueText, processKindLabel, processToday, statusLabel } f
 import { isDenied } from "@/lib/hr-pickers";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
 import { secondary, Notice, Panel } from "../ui";
-import { TaskActions, TaskDialog, useTaskWrites, type TaskOutcome } from "./TaskActions";
+import { NOTICE_FOCUS, TaskActions, TaskDialog, useTaskWrites, type TaskOutcome } from "./TaskActions";
 import { useHrRunner } from "./useHrRunner";
+import { useReturnFocus } from "./useReturnFocus";
 
 const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 const TONES: Record<TaskStatus, StatusTone> = {
@@ -38,10 +39,10 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
   const pages = useRef(1);
   // Bumped by every reload: a Load more that started before it is dropped (its rows carry old versions).
   const generation = useRef(0);
-  // After a write's reload, focus goes back to the row button (or the message, or the heading).
-  const refocus = useRef<{ opener: HTMLElement | null } | null>(null);
   const panel = useRef<HTMLDivElement>(null);
   const notices = useRef<HTMLDivElement>(null);
+  // After a write (and its reload), focus goes back to the row button, or the message, or the heading.
+  const returnFocus = useReturnFocus(!reloading && !runner.busy, notices, panel);
   useEffect(() => {
     let active = true;
     const wanted = pages.current;
@@ -62,17 +63,6 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
       .finally(() => { if (active) setReloading(false); });
     return () => { active = false; };
   }, [client, reads]);
-  useEffect(() => {
-    if (reloading || !refocus.current) return;
-    const { opener } = refocus.current;
-    refocus.current = null;
-    const usable = opener && opener.isConnected && !(opener instanceof HTMLButtonElement && opener.disabled)
-      && opener.getClientRects().length > 0;
-    if (usable) { opener.focus(); return; }
-    if (notices.current) { notices.current.focus(); return; }
-    const heading = panel.current?.querySelector("h2");
-    if (heading) { heading.tabIndex = -1; heading.focus(); }
-  }, [reloading]);
   const reload = useCallback(() => {
     generation.current += 1;
     setReloading(true);
@@ -80,8 +70,10 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
   }, []);
   const onOutcome = useCallback((next: TaskOutcome | null) => {
     setOutcome(next);
-    if (next?.reload) { refocus.current = { opener: next.opener ?? null }; reload(); }
-  }, [reload]);
+    if (!next) return;
+    if (next.reload || next.opener) returnFocus(next.opener ?? null);
+    if (next.reload) reload();
+  }, [reload, returnFocus]);
   const writes = useTaskWrites(client, runner, onOutcome);
   const loadMore = async (items: MyTask[], after: string) => {
     const started = generation.current;
@@ -103,7 +95,7 @@ export function MyTasks({ tenant, readonly }: { tenant: string; readonly: boolea
   return <div ref={panel} data-testid="hr-my-tasks" aria-busy={runner.busy || reloading}><Panel title="My tasks">
     <div className="space-y-3">
       {(outcome?.message || outcome?.error) && <div ref={notices} tabIndex={-1} data-testid="hr-my-tasks-outcome"
-        className="space-y-3 rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">
+        className={`space-y-3 ${NOTICE_FOCUS}`}>
         {outcome.message && <Notice testId="hr-my-tasks-notice">{outcome.message}</Notice>}
         {outcome.error && <Notice error testId="hr-my-tasks-error">{outcome.error}</Notice>}
       </div>}

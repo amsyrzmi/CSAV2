@@ -301,6 +301,8 @@ async def test_automatic_check_says_when_it_is_not_met(site: Site) -> None:
             await expect(page.get_by_test_id("hr-my-tasks-error")).to_have_text(
                 CHECK_NOT_MET, timeout=WAIT
             )
+            # Not met reloads nothing: focus goes back to the button, never the page body.
+            await expect(details.get_by_role("button", name="Check now")).to_be_focused()
             (check,) = world.task_posts("complete")
             assert_write(check, "complete", "details", {"expected_version": 1})
             # Met now: the same button completes it and the step leaves the list.

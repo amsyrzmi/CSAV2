@@ -110,6 +110,53 @@ export function progressText(done: number, total: number, required = false): str
   return `${done} of ${total} ${noun}${total === 1 ? "" : "s"}`;
 }
 
+const EVENT: Record<string, string> = {
+  "process.started": "Process started",
+  "process.cancelled": "Process cancelled",
+  "process.completed": "Process completed",
+  "task.created": "Step added",
+  "task.completed": "Step marked done",
+  "task.skipped": "Step skipped",
+  "task.reassigned": "Step reassigned",
+  "task.date_changed": "Due date moved with its date",
+  "task.rescheduled": "Step rescheduled",
+  "task.approved": "Step approved",
+  "task.sent_back": "Step sent back",
+  "task.noted": "Note changed",
+};
+/** What a history event did. Later releases add actions: one this console does not know reads generically. */
+export function eventText(action: string): string {
+  return Object.hasOwn(EVENT, action) ? EVENT[action] : "Something changed";
+}
+
+/**
+ * A history event's `detail` as plain text, one "key: value" line per key in the order stored. Values
+ * are shown exactly as stored (text may hold line breaks); a yes/no, nothing, or any other JSON value
+ * reads as plain text too, so a key a later release adds still shows.
+ */
+export function eventDetailLines(detail: Record<string, unknown>): string[] {
+  return Object.entries(detail).map(([key, value]) => {
+    const text = typeof value === "string" ? value
+      : value === null || value === undefined ? "none"
+        : typeof value === "boolean" ? (value ? "yes" : "no")
+          : typeof value === "number" ? String(value) : JSON.stringify(value);
+    return `${key.replaceAll("_", " ")}: ${text}`;
+  });
+}
+
+/** A real calendar date written `YYYY-MM-DD`, as a due date is sent. */
+export function isDateText(text: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const parsed = new Date(`${text}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text;
+}
+
+/** The start form's question after a `process_already_active` refusal. `name` is null when unknown. */
+export function replaceQuestion(kind: ProcessKind | (string & {}), name: string | null): string {
+  const what = kind === "onboarding" || kind === "offboarding" ? kind : "process";
+  return `There is already an active ${what} for ${name ?? "this person"}. Replace it?`;
+}
+
 /** Most urgent first; any kind not listed follows in the order it first appears. */
 const REMINDER_KINDS: [kind: string, label: string][] = [
   ["task_overdue", "Overdue"],

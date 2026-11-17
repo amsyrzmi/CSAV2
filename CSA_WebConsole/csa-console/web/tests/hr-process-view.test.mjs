@@ -13,7 +13,7 @@ const read = (name) => readFile(new URL(name, import.meta.url), "utf8");
 const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
 const {
   dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText,
-  processKindLabel,
+  processKindLabel, eventText, eventDetailLines, isDateText, replaceQuestion,
 } = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
@@ -142,4 +142,43 @@ test("processKindLabel names a process without a template name", () => {
   assert.equal(processKindLabel("offboarding"), "Offboarding");
   assert.equal(processKindLabel("custom"), "Custom process");
   assert.equal(processKindLabel("later_kind"), "Process");
+});
+
+test("eventText says what a history event did; an action it does not know reads generically", () => {
+  assert.equal(eventText("process.started"), "Process started");
+  assert.equal(eventText("process.cancelled"), "Process cancelled");
+  assert.equal(eventText("process.completed"), "Process completed");
+  assert.equal(eventText("task.created"), "Step added");
+  assert.equal(eventText("task.completed"), "Step marked done");
+  assert.equal(eventText("task.skipped"), "Step skipped");
+  assert.equal(eventText("task.reassigned"), "Step reassigned");
+  assert.equal(eventText("task.date_changed"), "Due date moved with its date");
+  assert.equal(eventText("task.rescheduled"), "Step rescheduled");
+  assert.equal(eventText("task.approved"), "Step approved");
+  assert.equal(eventText("task.sent_back"), "Step sent back");
+  assert.equal(eventText("task.noted"), "Note changed");
+  assert.equal(eventText("task.escalated"), "Something changed");
+  assert.equal(eventText("toString"), "Something changed");
+});
+
+test("eventDetailLines shows a detail as plain text lines, in the order stored", () => {
+  assert.deepEqual(eventDetailLines({}), []);
+  assert.deepEqual(eventDetailLines({ reason: "Left early.\nLaptop back.", due_on: "2026-11-20" }),
+    ["reason: Left early.\nLaptop back.", "due on: 2026-11-20"]);
+  assert.deepEqual(eventDetailLines({ fallback: true, level: 2, to: null, old: { a: 1 }, list: ["x", 2] }),
+    ["fallback: yes", "level: 2", "to: none", 'old: {"a":1}', 'list: ["x",2]']);
+  assert.deepEqual(eventDetailLines({ on_behalf: false }), ["on behalf: no"]);
+});
+
+test("isDateText takes a real calendar date as YYYY-MM-DD only", () => {
+  assert.equal(isDateText("2026-11-20"), true);
+  assert.equal(isDateText("2028-02-29"), true);
+  for (const bad of ["", " ", "2026-02-30", "2026-13-01", "2026-1-5", "20-11-2026", "2026-11-20T00:00", "tomorrow"])
+    assert.equal(isDateText(bad), false, bad);
+});
+
+test("replaceQuestion asks before replacing an active onboarding or offboarding", () => {
+  assert.equal(replaceQuestion("onboarding", "Lina Wong"), "There is already an active onboarding for Lina Wong. Replace it?");
+  assert.equal(replaceQuestion("offboarding", "Hana Yusof"), "There is already an active offboarding for Hana Yusof. Replace it?");
+  assert.equal(replaceQuestion("custom", null), "There is already an active process for this person. Replace it?");
 });
