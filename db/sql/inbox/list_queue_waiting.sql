@@ -15,8 +15,9 @@
 --   message, `known` and the pending approval count are then read for the page's rows only.
 -- Order: needs_staff_since (oldest first, rows without one last), then id ascending;
 --   conversations_queue_since_idx serves it for the needs_staff rows.
--- Search: the three contains matches are written on the bare contacts columns (full_name,
---   telegram_username, phone_digits) so their trigram indexes (0620) can serve them.
+-- Search: a bounded per-company scan of contacts on their client_id index. The trigram
+--   indexes (0620) cannot serve it: csa_app reads contacts under row security and the ILIKE and
+--   LIKE operators are not leakproof, so the planner cannot use an index on the matched columns.
 SELECT p.id, p.channel, p.status, p.owned_by, p.ai_muted_until, p.inbox_version, p.opened_at,
        p.human_muted, p.queue_status, p.queue_reason, p.topic, p.priority, p.assignee_id,
        p.claimed_at, p.needs_staff_since, p.due_at, p.snoozed_until, p.last_customer_at,

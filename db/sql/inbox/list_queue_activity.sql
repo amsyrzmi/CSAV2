@@ -13,10 +13,11 @@
 --   reading contacts only inside the search and sender conditions. The contact fields, the last
 --   message, `known` and the pending approval count are then read for the page's rows only.
 -- Order: last_activity_at (the newest message, else opened_at), then id, newest first,
---   which conversations_activity_idx serves. The default unless the state filter is
---   exactly needs_staff.
--- Search: the three contains matches are written on the bare contacts columns (full_name,
---   telegram_username, phone_digits) so their trigram indexes (0620) can serve them.
+--   which conversations_activity_idx serves. The default unless every row in scope needs
+--   staff (QueueFilter.needs_staff_only).
+-- Search: a bounded per-company scan of contacts on their client_id index. The trigram
+--   indexes (0620) cannot serve it: csa_app reads contacts under row security and the ILIKE and
+--   LIKE operators are not leakproof, so the planner cannot use an index on the matched columns.
 SELECT p.id, p.channel, p.status, p.owned_by, p.ai_muted_until, p.inbox_version, p.opened_at,
        p.human_muted, p.queue_status, p.queue_reason, p.topic, p.priority, p.assignee_id,
        p.claimed_at, p.needs_staff_since, p.due_at, p.snoozed_until, p.last_customer_at,

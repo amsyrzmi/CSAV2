@@ -15,10 +15,11 @@
 --   message, `known` and the pending approval count are then read for the page's rows only.
 -- Order: due_at (soonest first, rows without one last), then id ascending;
 --   conversations_queue_due_idx serves it for the needs_staff rows and
---   conversations_queue_mine_idx for one assignee. The default when the state filter is
---   exactly needs_staff.
--- Search: the three contains matches are written on the bare contacts columns (full_name,
---   telegram_username, phone_digits) so their trigram indexes (0620) can serve them.
+--   conversations_queue_mine_idx for one assignee. The default when every row in scope
+--   needs staff (the state filter needs_staff alone, or overdue or waiting_over set).
+-- Search: a bounded per-company scan of contacts on their client_id index. The trigram
+--   indexes (0620) cannot serve it: csa_app reads contacts under row security and the ILIKE and
+--   LIKE operators are not leakproof, so the planner cannot use an index on the matched columns.
 SELECT p.id, p.channel, p.status, p.owned_by, p.ai_muted_until, p.inbox_version, p.opened_at,
        p.human_muted, p.queue_status, p.queue_reason, p.topic, p.priority, p.assignee_id,
        p.claimed_at, p.needs_staff_since, p.due_at, p.snoozed_until, p.last_customer_at,

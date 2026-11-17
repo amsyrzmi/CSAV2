@@ -15,7 +15,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from csa.console.inbox_cursor import decode as decode_cursor
-from csa.console.inbox_queue_list import LIST_QUERIES, QueueFilter, list_params
+from csa.console.inbox_queue_list import (
+    LIST_QUERIES,
+    QueueFilter,
+    fetch_counts,
+    fetch_page,
+    list_params,
+)
 from csa.console.inbox_settings import InboxSettingsIn, assignee_names, company_assignees
 from csa.core import db
 from csa.core.db import DB_SQL_DIR
@@ -25,6 +31,7 @@ from csa.jobs.clock import FakeClock
 from csa.jobs.inbox_queue import run_inbox_snooze_wake
 from csa.jobs.runner import JobRunner, build_default_registry
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from tests.conftest import requires_docker
 from tests.test_console_services import activate
@@ -795,6 +802,21 @@ async def _tied_items(w: SessionWorld) -> list[Item]:
         )
     for priority, activity in (("high", a), ("high", a), ("low", now)):
         rows.append(await _item(w, state="waiting_customer", priority=priority, activity=activity))
+    # Two of the asking person's own (Mine: one needs us, one waits on the customer) and two
+    # resolved ones, so those tabs have a second page as well.
+    rows.append(
+        await _item(
+            w,
+            state="needs_staff",
+            assignee=w.admin_id,
+            since=b,
+            due=now + timedelta(hours=2),
+            activity=b,
+        )
+    )
+    rows.append(await _item(w, state="waiting_customer", assignee=w.admin_id, activity=now))
+    for _ in range(2):
+        rows.append(await _item(w, state="resolved", activity=a))
     return rows
 
 
@@ -804,13 +826,78 @@ async def test_each_order_pages_every_row_once_through_ties(
 ) -> None:
     w = sessions
     rows = await _tied_items(w)
-    expected = _ordered(rows, order)
-    assert await _walk(w, f"&order={order}", limit=50) == expected
-    assert await _walk(w, f"&order={order}", limit=2) == expected
-    assert await _walk(w, f"&order={order}", limit=1) == expected
-    # The queue tab alone: only the rows that need us, every one of them carrying both times.
     needs = [r for r in rows if r.state == "needs_staff"]
+    # The priority order is the Needs us tab's only (every other scope is 422, tested below).
+    scope, query = (needs, "&state=needs_staff") if order == "priority" else (rows, "")
+    expected = _ordered(scope, order)
+    for limit in (50, 2, 1):
+        assert await _walk(w, f"&order={order}{query}", limit=limit) == expected, limit
+    # The queue tab alone: only the rows that need us, every one of them carrying both times.
     assert await _walk(w, f"&order={order}&state=needs_staff", limit=2) == _ordered(needs, order)
+
+
+async def test_order_priority_is_only_for_the_needs_us_tab(sessions: SessionWorld) -> None:
+    w = sessions
+    await _tied_items(w)
+    for query in (
+        "&order=priority",
+        "&order=priority&state=waiting_customer",
+        "&order=priority&state=needs_staff&state=waiting_customer",
+        "&order=priority&overdue=true",
+        "&order=priority&waiting_over=5",
+        "&order=priority&assignee=me",
+    ):
+        response = await w.admin.get(list_path(w, query))
+        assert response.status_code == 422, query
+        detail = response.json()["detail"]
+        assert isinstance(detail, str) and "priority" in detail, (query, detail)
+    allowed = await w.admin.get(list_path(w, "&order=priority&state=needs_staff&assignee=none"))
+    assert allowed.status_code == 200, allowed.text
+    with pytest.raises(ValidationError):
+        QueueFilter(order="priority")
+    with pytest.raises(ValidationError):
+        QueueFilter(order="priority", state=["needs_staff", "snoozed"])
+    assert QueueFilter(order="priority", state=["needs_staff"]).effective_order() == "priority"
+
+
+async def test_needs_staff_only_picks_the_default_order() -> None:
+    cases: list[tuple[dict[str, Any], bool]] = [
+        ({}, False),
+        ({"state": ["needs_staff"]}, True),
+        ({"state": ["needs_staff", "needs_staff"]}, True),
+        ({"state": ["needs_staff", "waiting_customer"]}, False),
+        ({"state": ["resolved"]}, False),
+        ({"overdue": True}, True),
+        ({"waiting_over": 5}, True),
+        ({"assignee": "none"}, False),
+    ]
+    for query, only in cases:
+        flt = QueueFilter.model_validate(query)
+        assert flt.needs_staff_only() is only, query
+        assert flt.effective_order() == ("due" if only else "activity"), query
+
+
+async def test_the_list_and_counts_plan_each_run_for_its_own_values(sessions: SessionWorld) -> None:
+    """After five runs on one connection a prepared statement may switch to a generic plan, in
+    which `$n IS NULL OR ...` is not folded and the partial indexes stop serving: the list and the
+    counts force a custom plan for their transaction only."""
+    w = sessions
+    client, me = UUID(w.tenants[0]), UUID(w.admin_id)
+
+    async def mode(conn: Any) -> str:
+        row = await (await conn.execute("SHOW plan_cache_mode")).fetchone()
+        return row["plan_cache_mode"]
+
+    async with tx(w.pool, w.tenants[0]) as conn:
+        assert await mode(conn) == "auto"
+        await fetch_page(
+            conn, QueueFilter(), client_id=client, user_id=me, search=None, cursor=None, limit=5
+        )
+        assert await mode(conn) == "force_custom_plan"
+    async with tx(w.pool, w.tenants[0]) as conn:
+        assert await mode(conn) == "auto"
+        await fetch_counts(conn, client, me)
+        assert await mode(conn) == "force_custom_plan"
 
 
 async def test_the_default_order_is_due_for_needs_staff_and_activity_otherwise(
@@ -824,7 +911,14 @@ async def test_the_default_order_is_due_for_needs_staff_and_activity_otherwise(
     waiting = [r for r in rows if r.state == "waiting_customer"]
     assert await _walk(w, "&state=waiting_customer") == _ordered(waiting, "activity")
     both = "&state=needs_staff&state=waiting_customer"
-    assert await _walk(w, both) == _ordered(rows, "activity")
+    queued = [r for r in rows if r.state in {"needs_staff", "waiting_customer"}]
+    assert await _walk(w, both) == _ordered(queued, "activity")
+    # Overdue and waiting-over keep only rows that need us, so they are due-first too.
+    assert await _walk(w, "&waiting_over=1") == _ordered(needs, "due")
+    late = await _walk(w, "&overdue=true")
+    assert late == _ordered([r for r in needs if r.id in set(late)], "due")
+    past = datetime.now(UTC) - timedelta(minutes=30)
+    assert {r.id for r in needs if r.due is not None and r.due < past} <= set(late)
 
 
 async def test_a_cursor_from_another_order_or_a_malformed_one_is_422(
@@ -1093,6 +1187,13 @@ async def test_the_four_list_queries_share_one_filter_block() -> None:
     assert "c.channel IN ('telegram', 'whatsapp')" in first
     for order, block in blocks.items():
         assert block == first, order
+    # csa_app reads contacts under row security and the ILIKE operators are not leakproof, so
+    # no trigram index serves the search; the headers say what does.
+    for order in QUEUE_FILES:
+        text = (DB_SQL_DIR / "inbox" / f"list_queue_{order}.sql").read_text(encoding="utf-8")
+        header = text.split("\nSELECT", 1)[0]
+        assert "trigram indexes (0620) can serve" not in header, order
+        assert "client_id index" in header, order
     assert not (DB_SQL_DIR / "inbox" / "list_conversations.sql").exists()
 
 
@@ -1145,7 +1246,8 @@ async def _tab_plan(w: SessionWorld, label: str, query: dict[str, Any], index: s
         after = None
         if cursor:
             first = await _page(w, "&limit=1&" + urlencode({**query, "order": order}, doseq=True))
-            after = decode_cursor(first["next_cursor"], order) if first["next_cursor"] else None
+            assert first["next_cursor"], (label, "the tab needs a second page")
+            after = decode_cursor(first["next_cursor"], order)
         params = list_params(
             flt,
             client_id=UUID(w.tenants[0]),
@@ -1157,9 +1259,11 @@ async def _tab_plan(w: SessionWorld, label: str, query: dict[str, Any], index: s
         plan = await _plan(w, LIST_QUERIES[order], params)
         assert index in plan, (label, plan)
         assert "Sort" not in plan, (label, plan)
-        if after is not None and order in {"activity", "due", "waiting"}:
-            # The cursor is an index condition (a seek), not a filter over the skipped rows.
-            assert "Index Cond" in plan and "ROW(" in plan, (label, plan)
+        if after is not None and (order == "activity" or flt.needs_staff_only()):
+            # The cursor is an index condition (a seek), not a filter over the skipped rows:
+            # every plan line holding the row comparison is an Index Cond line.
+            compared = [line for line in plan.splitlines() if "ROW(" in line]
+            assert compared and all("Index Cond:" in line for line in compared), (label, plan)
 
 
 async def test_the_counts_read_the_partial_indexes(sessions: SessionWorld) -> None:

@@ -14,7 +14,7 @@ from fastapi.routing import APIRoute
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from csa.approval.service import (
     EditTextError,
@@ -516,20 +516,26 @@ def build_inbox_router() -> APIRouter:
             search = parse_search(q)
         except ValueError:
             raise HTTPException(422, "search needs at least two characters") from None
-        flt = QueueFilter(
-            state=state or [],
-            assignee=assignee,
-            priority_min=priority_min,
-            reason=reason or [],
-            topic=topic or [],
-            overdue=overdue,
-            waiting_over=waiting_over,
-            channel=channel,
-            needs_review=needs_review,
-            sender=sender,
-            q=q,
-            order=order,
-        )
+        try:
+            flt = QueueFilter(
+                state=state or [],
+                assignee=assignee,
+                priority_min=priority_min,
+                reason=reason or [],
+                topic=topic or [],
+                overdue=overdue,
+                waiting_over=waiting_over,
+                channel=channel,
+                needs_review=needs_review,
+                sender=sender,
+                q=q,
+                order=order,
+            )
+        except ValidationError as invalid:
+            # The parameters were validated one by one above; what is left are the rules across
+            # them (order=priority). The messages name no input, so the search never shows.
+            detail = "; ".join(e["msg"].removeprefix("Value error, ") for e in invalid.errors())
+            raise HTTPException(422, detail) from None
         try:
             cursor = decode_cursor(before, flt.effective_order()) if before else None
         except ValueError:
@@ -796,6 +802,11 @@ def build_inbox_router() -> APIRouter:
     from csa.console.inbox_queue_actions import add_queue_action_routes
 
     add_queue_action_routes(router)
+
+    # The saved views too (they import this module for inbox_actor).
+    from csa.console.inbox_saved_views import add_saved_view_routes
+
+    add_saved_view_routes(router)
 
     @router.post("/approvals/{approval_id}/decide", response_model=InboxResult)
     async def decide(

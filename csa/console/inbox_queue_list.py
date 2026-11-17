@@ -1,21 +1,22 @@
 """The Inbox work queue list: its filters, orders, keyset paging and the tab counts.
 
 The filters combine with AND (design 6.2). `QueueFilter` is the shape of the list's query
-parameters (the saved views store the same shape). The four orders each have their own SQL file
-(``LIST_QUERIES``) sharing one filter block; the page is read from ``conversations`` alone and the
-contact, last message and counts are added for its rows only. Search text is personal data: the
-callers parse it with ``parse_search`` and never log it.
+parameters; its base `InboxFilters` is the part a saved view stores, validated by the same rules.
+The four orders each have their own SQL file (``LIST_QUERIES``) sharing one filter block; the page
+is read from ``conversations`` alone and the contact, last message and counts are added for its
+rows only. Search text is personal data: the callers parse it with ``parse_search`` and never log
+it. Both reads force custom plans (``custom_plans``).
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from psycopg import AsyncConnection
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from csa.console.contracts import Contract
 from csa.console.inbox_contact import Search
@@ -38,15 +39,21 @@ LIST_QUERIES: dict[QueueOrder, str] = {
     "due": "inbox/list_queue_due.sql",
     "priority": "inbox/list_queue_priority.sql",
 }
+COUNTS_QUERY = "inbox/queue_counts.sql"
 
 
-class QueueFilter(Contract):
-    """The list's filters and order. Empty lists, None and False filter nothing.
+PRIORITY_ORDER_RULE = "order=priority is only for the state filter needs_staff alone"
+
+
+class InboxFilters(Contract):
+    """The list's filters and order, as a saved view stores them (never the search, a cursor
+    or a limit). Empty lists, None and False filter nothing.
 
     `assignee` is ``me`` (the person asking), ``none`` (no assignee) or a user id (any id is
     accepted: one that holds nothing matches nothing). `overdue` and `waiting_over` imply
-    ``needs_staff``. Without `order` the list is due-first when `state` is exactly
-    ``needs_staff``, newest activity first otherwise.
+    ``needs_staff``. Without `order` the list is due-first when every row in scope needs staff
+    (`needs_staff_only`), newest activity first otherwise. `order=priority` sorts the rows in
+    scope (no index holds the rank), so it is allowed only where they are the needs_staff rows.
     """
 
     state: list[QueueState] = []
@@ -57,20 +64,32 @@ class QueueFilter(Contract):
     overdue: bool = False
     waiting_over: Annotated[int, Field(ge=1, le=WAITING_OVER_MAX)] | None = None
     channel: Literal["telegram", "whatsapp"] | None = None
-    needs_review: bool = False
     sender: Literal["known", "new"] | None = None
-    q: Annotated[str, Field(max_length=64)] | None = None
     order: QueueOrder | None = None
+
+    @model_validator(mode="after")
+    def _priority_order_is_for_needs_us(self) -> Self:
+        if self.order == "priority" and set(self.state) != {"needs_staff"}:
+            raise ValueError(PRIORITY_ORDER_RULE)
+        return self
 
     def effective_order(self) -> QueueOrder:
         if self.order is not None:
             return self.order
-        return "due" if set(self.state) == {"needs_staff"} else "activity"
+        return "due" if self.needs_staff_only() else "activity"
 
     def needs_staff_only(self) -> bool:
         """Every row in scope is needs_staff, so each has a due time and a waiting-since time."""
-        only_state = bool(self.state) and set(self.state) == {"needs_staff"}
+        only_state = set(self.state) == {"needs_staff"}
         return only_state or self.overdue or self.waiting_over is not None
+
+
+class QueueFilter(InboxFilters):
+    """The list's query parameters: a saved view's filters plus the needs-review flag (kept for
+    current clients) and the search text `q` (personal data: never stored, logged or audited)."""
+
+    needs_review: bool = False
+    q: Annotated[str, Field(max_length=64)] | None = None
 
 
 class InboxQueueCounts(Contract):
@@ -144,6 +163,33 @@ def _cursor_of(order: QueueOrder, row: dict[str, Any]) -> str:
     return encode(order, at=row["due_at"], id=row["id"], rank=PRIORITY_RANK[row["priority"]])
 
 
+async def custom_plans(conn: AsyncConnection[Any]) -> None:
+    """Plan each list and counts run for its own parameter values, for this transaction only.
+
+    psycopg prepares a query after five runs on one connection, and PostgreSQL may then switch the
+    prepared statement to a generic plan, in which ``%(x)s IS NULL OR ...`` is not folded away and
+    the partial indexes stop serving the tabs.
+    """
+    await conn.execute("SET LOCAL plan_cache_mode = force_custom_plan")
+
+
+def page_query(
+    flt: QueueFilter,
+    *,
+    client_id: UUID,
+    user_id: UUID,
+    search: Search | None,
+    cursor: QueueCursor | None,
+    limit: int,
+) -> tuple[str, dict[str, Any]]:
+    """The SQL file and parameters of one page: `limit` + 1 rows, the extra one telling whether
+    a next page exists. `cursor` must not be a legacy one (see fetch_page)."""
+    params = list_params(
+        flt, client_id=client_id, user_id=user_id, search=search, cursor=cursor, limit=limit + 1
+    )
+    return LIST_QUERIES[flt.effective_order()], params
+
+
 async def fetch_page(
     conn: AsyncConnection[Any],
     flt: QueueFilter,
@@ -160,6 +206,7 @@ async def fetch_page(
     that is not one of the company's conversations gives an empty page, as it did before.
     """
     order = flt.effective_order()
+    await custom_plans(conn)
     if cursor is not None and cursor.legacy:
         found = await db.q.fetch_one(
             "inbox/cursor_activity.sql",
@@ -169,10 +216,10 @@ async def fetch_page(
         if found is None:
             return [], None
         cursor = replace(cursor, at=found["last_activity_at"], legacy=False)
-    params = list_params(
-        flt, client_id=client_id, user_id=user_id, search=search, cursor=cursor, limit=limit + 1
+    path, params = page_query(
+        flt, client_id=client_id, user_id=user_id, search=search, cursor=cursor, limit=limit
     )
-    rows = await db.q.fetch_all(LIST_QUERIES[order], params, conn=conn)
+    rows = await db.q.fetch_all(path, params, conn=conn)
     page = rows[:limit]
     return page, _cursor_of(order, page[-1]) if len(rows) > limit else None
 
@@ -181,8 +228,9 @@ async def fetch_counts(
     conn: AsyncConnection[Any], client_id: UUID, user_id: UUID
 ) -> InboxQueueCounts:
     """The tab counts, read from the queue's partial indexes."""
+    await custom_plans(conn)
     row = await db.q.fetch_one(
-        "inbox/queue_counts.sql", {"client_id": client_id, "user_id": user_id}, conn=conn
+        COUNTS_QUERY, {"client_id": client_id, "user_id": user_id}, conn=conn
     )
     if row is None:
         raise RuntimeError("queue_counts_returned_no_row")
