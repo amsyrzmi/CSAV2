@@ -49,12 +49,14 @@ export function SelectToggle({ on, onToggle, canSelectAll, onSelectAll, disabled
  * says what Select all did or why the 51st box would not check.
  */
 export function BulkBar({
-  count, message, canSelectAll, onSelectAll, onClear, blocked, canAssign, query, meId, onRun, barRef,
+  count, message, canSelectAll, onSelectAll, onClear, blocked, canAssign, query, meId, onRun, barRef, countRef,
 }: {
   count: number; message: string; canSelectAll: boolean; onSelectAll: () => void; onClear: () => void;
   blocked: boolean; canAssign: boolean; query: string; meId: string | null;
   onRun: (action: QueueActionName, fields?: QueueFields) => void;
   barRef: RefObject<HTMLDivElement | null>;
+  /** The count, where focus goes after Select all (whose button may go away). */
+  countRef: RefObject<HTMLParagraphElement | null>;
 }) {
   const assignRef = useRef<HTMLButtonElement>(null);
   const snoozeRef = useRef<HTMLButtonElement>(null);
@@ -69,7 +71,8 @@ export function BulkBar({
   ];
   return <div ref={barRef} role="group" aria-label="Selected conversations" data-testid="inbox-bulk-bar"
     className="flex min-w-0 flex-wrap items-center gap-2">
-    <p role="status" className="min-w-0 pr-1 text-sm font-semibold text-[color:var(--fs-text)]">
+    <p ref={countRef} role="status" tabIndex={-1} data-testid="inbox-bulk-count"
+      className="min-w-0 rounded-[var(--fs-radius-control)] pr-1 text-sm font-semibold text-[color:var(--fs-text)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">
       <span className="num">{count}</span> selected</p>
     <button type="button" className={secondary} disabled={blocked} onClick={() => onRun("claim")}>Claim</button>
     {canAssign && <button ref={assignRef} type="button" className={secondary} disabled={blocked}

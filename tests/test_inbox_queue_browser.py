@@ -2060,3 +2060,108 @@ async def test_desktop_bar_with_the_bulk_bar_and_the_panes_fit_one_screen(shell:
             bar,
             listing,
         )
+
+
+LATER = "2026-11-17T02:05:00.000000+00:00"
+LATEST = "2026-11-17T02:10:00.000000+00:00"
+NEWEST = "2026-11-17T02:15:00.000000+00:00"
+CUSTOMER_WROTE = "1 not done: the customer wrote after you opened the list."
+
+
+async def test_bulk_sends_the_read_time_of_the_selection_not_the_latest_poll(shell: Shell) -> None:
+    rows = many_rows(4)
+    ids = ids_of(rows)
+    state = Inbox(items=rows, as_of=AS_OF, bulk_outcomes={ids[1]: "customer_wrote"})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await tick(page, ids[0])
+        # The list polls and is now read later; a row added to the selection keeps the first time.
+        state.as_of = LATER
+        await settle(state, len(state.list_queries))
+        await tick(page, ids[1])
+        # From here the list cannot be read again until the test says so.
+        state.fail_lists = True
+        bar = bulk_bar(page)
+        resolve = bar.get_by_role("button", name="Resolve", exact=True)
+        await resolve.click()
+        await expect(bulk_result(page).get_by_role("status")).to_have_text(
+            f"1 done. {CUSTOMER_WROTE}", timeout=WAIT
+        )
+        assert state.bulk_calls[-1]["body"]["seen_at"] == AS_OF, state.bulk_calls
+        await expect(bar).to_contain_text("1 selected")
+        # Acting again with no new list answer: still the old time, so it is refused again.
+        await resolve.click()
+        await eventually(lambda: len(state.bulk_calls) == 2)
+        await expect(bulk_result(page).get_by_role("status")).to_have_text(
+            f"Nothing was done. {CUSTOMER_WROTE}", timeout=WAIT
+        )
+        assert state.bulk_calls[-1]["body"]["seen_at"] == AS_OF, state.bulk_calls
+        # The refreshed list (with the customer's message) answers: its time is the new one.
+        state.as_of = LATEST
+        state.fail_lists = False
+        await settle(state, len(state.list_queries))
+        state.bulk_outcomes = {}
+        await resolve.click()
+        await eventually(lambda: len(state.bulk_calls) == 3)
+        await expect(bulk_result(page).get_by_role("status")).to_have_text("1 done.", timeout=WAIT)
+        assert state.bulk_calls[-1]["body"]["seen_at"] == LATEST, state.bulk_calls
+        # A new selection after that starts from the list as it reads then.
+        state.as_of = NEWEST
+        await settle(state, len(state.list_queries))
+        await tick(page, ids[2])
+        await bar.get_by_role("button", name="Claim", exact=True).click()
+        await eventually(lambda: len(state.bulk_calls) == 4)
+        assert state.bulk_calls[-1]["body"]["seen_at"] == NEWEST, state.bulk_calls
+
+
+async def test_a_thread_action_after_a_bulk_shows_in_the_thread_without_the_bulk_list(
+    shell: Shell,
+) -> None:
+    state = action_inbox(bulk_outcomes={NAMED: "customer_wrote"})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        await tick(page, NAMED)
+        await tick(page, WAITING_ROW)
+        await bulk_bar(page).get_by_role("button", name="Resolve", exact=True).click()
+        result = bulk_result(page)
+        await expect(result.get_by_role("list", name="Not done")).to_have_count(1, timeout=WAIT)
+        await expect(primary(page)).to_have_text("Take it")
+        await primary(page).click()
+        thread = page.get_by_test_id("inbox-thread")
+        await expect(thread.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(result).to_have_count(0)
+        await expect(page.get_by_role("list", name="Not done")).to_have_count(0)
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_have_count(1)
+
+
+async def test_select_all_by_keyboard_moves_focus_to_the_count(shell: Shell) -> None:
+    rows = many_rows(4)
+    ids = ids_of(rows)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        count = page.get_by_test_id("inbox-bulk-count")
+        # From Select mode, where the button's whole line gives way to the bulk bar.
+        toggle = page.get_by_test_id("inbox-select-mode")
+        await toggle.focus()
+        await page.keyboard.press("Enter")
+        await expect(toggle).to_have_attribute("aria-pressed", "true")
+        await page.get_by_role("button", name="Select all loaded").focus()
+        await page.keyboard.press("Enter")
+        await expect(bulk_bar(page)).to_contain_text("4 selected")
+        await expect(count).to_be_focused()
+        await page.keyboard.press("Escape")
+        await expect(bulk_bar(page)).to_have_count(0)
+        # From inside the bulk bar, where the button goes once everything loaded is selected.
+        await row(page, ids[0]).focus()
+        await page.keyboard.press("x")
+        await expect(bulk_bar(page)).to_contain_text("1 selected")
+        select_all = bulk_bar(page).get_by_role("button", name="Select all loaded")
+        await select_all.focus()
+        await page.keyboard.press("Enter")
+        await expect(bulk_bar(page)).to_contain_text("4 selected")
+        await expect(select_all).to_have_count(0)
+        await expect(count).to_be_focused()

@@ -6,7 +6,7 @@ import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
 import { action, Notice } from "@/components/console/ui";
 import type { Me } from "@/lib/identity-contracts";
 import {
-  canConnectWhatsApp, type BulkResult, type Conversation, type ConversationPage, type QueueActionName,
+  bulkPath, canConnectWhatsApp, type BulkResult, type Conversation, type ConversationPage, type QueueActionName,
   type QueueCounts, type QueueFields,
 } from "@/lib/inbox-api";
 import {
@@ -31,8 +31,11 @@ const FIRST_TAB: QueueTabId = "needs_us";
 const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
 const NONE: ReadonlySet<string> = new Set();
 
-/** A bulk action's answer: what did not apply, one line per conversation (the summary is the notice). */
-type BulkOutcomeView = { lines: string[] };
+/**
+ * A bulk action's answer: its summary (the notice it set) and what did not apply, one line per
+ * conversation. Shown only while the notice is still that summary.
+ */
+type BulkOutcomeView = { summary: string; lines: string[] };
 
 /**
  * Outcome notices, the shared proposal card and the explicit retry, next to the work. After a bulk
@@ -46,7 +49,7 @@ function Feedback({ actions, framed, bulk, bulkRef }: {
   if (!error && !notice && !proposal && !(pending && !busy)) return null;
   return <div className={`space-y-2 ${framed ? "max-h-[45%] overflow-y-auto border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3" : ""}`}>
     {error && <Notice error>{error}</Notice>}
-    {notice && (bulk ? <section ref={bulkRef} tabIndex={-1} aria-label="Bulk result" data-testid="inbox-bulk-result"
+    {notice && (bulk && notice === bulk.summary ? <section ref={bulkRef} tabIndex={-1} aria-label="Bulk result" data-testid="inbox-bulk-result"
       className="min-w-0 space-y-2 rounded-[var(--fs-radius-control)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">
       <Notice>{notice}</Notice>
       {bulk.lines.length > 0 && <ul aria-label="Not done"
@@ -98,6 +101,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   const bulkBarRef = useRef<HTMLDivElement>(null);
   const selectToggleRef = useRef<HTMLButtonElement>(null);
   const focusSelectToggle = useRef(false);
+  const bulkCountRef = useRef<HTMLParagraphElement>(null);
+  const focusBulkCount = useRef(false);
 
   // Typing settles for 300 ms before the server is asked; queueListQuery drops one character.
   useEffect(() => {
@@ -117,6 +122,33 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   // The selection as it applies: the picked rows that are loaded, in list order. An id whose row
   // has left the list (resolved elsewhere, say) is neither counted nor sent.
   const chosen = items.filter((item) => picked.has(item.id)).map((item) => item.id);
+
+  // The read time a bulk request sends as `seen_at`: the list's `as_of` when the selection started,
+  // kept (the earliest) while more rows are added, so a customer who wrote after the person looked
+  // is refused even when the list has polled since. After a bulk answer it moves to the next list
+  // answer's `as_of` (the person has seen the refreshed list), so an item refused because the
+  // customer wrote can be acted on again once that message is on screen, and not before.
+  const listAsOf = conversations.extra?.as_of ?? null;
+  const [selectionAsOf, setSelectionAsOf] = useState<string | null>(null);
+  const [renewAsOf, setRenewAsOf] = useState<{ from: string | null } | null>(null);
+  if (renewAsOf && listAsOf !== renewAsOf.from) {
+    setRenewAsOf(null);
+    setSelectionAsOf(listAsOf);
+  }
+  /** A selection starts (from nothing): it is made against the list as it reads now. */
+  function startSelection() {
+    setSelectionAsOf(listAsOf);
+    setRenewAsOf(null);
+  }
+
+  // Where an outcome shows: a request that starts decides it. Only a bulk one (first try or its
+  // Retry) puts its outcome under the bar; any other (a thread action, a reply, an approval) keeps
+  // it in the thread pane as before.
+  const [wasBusy, setWasBusy] = useState(false);
+  if (actions.busy !== wasBusy) {
+    setWasBusy(actions.busy);
+    if (actions.busy) setBulkFeedback(actions.pending?.path === bulkPath(query));
+  }
 
   // The counts are the server's, for the whole tenant, and arrive with each list answer. Only an
   // answer changes them: a failed refresh or a new tab loading keeps the last ones. Null (before
@@ -144,8 +176,14 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     setPicked(NONE);
     setSelectMode(false);
     setSelectMessage("");
+    setSelectionAsOf(null);
+    setRenewAsOf(null);
   }
   useEffect(() => {
+    if (focusBulkCount.current && bulkCountRef.current) {
+      focusBulkCount.current = false;
+      bulkCountRef.current.focus();
+    }
     if (!focusSelectToggle.current || !selectToggleRef.current) return;
     focusSelectToggle.current = false;
     selectToggleRef.current.focus();
@@ -158,13 +196,17 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
       setSelectMessage(BULK_LIMIT_TEXT);
       return;
     }
+    if (on && chosen.length === 0) startSelection();
     if (on) next.add(id); else next.delete(id);
     setPicked(next);
     setSelectMessage("");
   }
+  /** Its button goes away (the bar changes under it), so focus moves to the count it changed. */
   function selectAll() {
+    if (chosen.length === 0) startSelection();
     setPicked(new Set(items.slice(0, BULK_LIMIT).map((item) => item.id)));
     setSelectMessage(selectAllText(items.length));
+    focusBulkCount.current = true;
   }
 
   // Applies a bulk answer, first attempt or Retry alike (the kept request carries this callback):
@@ -185,8 +227,9 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         const item = items.find((row) => row.id === id);
         return names.get(id) ?? (item ? conversationName(item) : undefined);
       };
-      setBulkResult({ lines: bulkFailureLines(results, nameOf) });
+      setBulkResult({ summary: bulkSummary(results).text, lines: bulkFailureLines(results, nameOf) });
       setBulkFeedback(true);
+      setRenewAsOf({ from: listAsOf });
     };
   });
   // Focus moves to the result, which names what is left to do.
@@ -197,10 +240,11 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   function runBulk(action: QueueActionName, fields: QueueFields = {}) {
     if (chosen.length === 0 || actions.blocked) return;
     const names = new Map(items.filter((item) => picked.has(item.id)).map((item) => [item.id, conversationName(item)]));
-    // The list's read time, so resolve and snooze refuse an item whose customer wrote after it. An
-    // answer without it (an older server) falls back to now: the server then cannot see a message
-    // that arrived between the read and the click, so this is a fallback, not the rule.
-    const seenAt = conversations.extra?.as_of ?? new Date().toISOString();
+    // The read time of the list the selection was made on (see `selectionAsOf`), so resolve and
+    // snooze refuse an item whose customer wrote after it. Only a list answer without `as_of` (an
+    // older server) leaves it empty; then it is now, which cannot catch a message that arrived
+    // between the read and the click.
+    const seenAt = selectionAsOf ?? new Date().toISOString();
     setBulkFeedback(true);
     setBulkResult(null);
     setSelectMessage("");
@@ -334,7 +378,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         selectSlot={canSelect ? <SelectToggle on={selectMode} toggleRef={selectToggleRef} disabled={actions.blocked}
           onToggle={() => { setSelectMode((value) => !value); setSelectMessage(""); }}
           canSelectAll={items.length > 0} onSelectAll={selectAll} /> : undefined}
-        bulk={canSelect && chosen.length > 0 ? <BulkBar barRef={bulkBarRef} count={chosen.length} message={selectMessage}
+        bulk={canSelect && chosen.length > 0 ? <BulkBar barRef={bulkBarRef} countRef={bulkCountRef} count={chosen.length} message={selectMessage}
           canSelectAll={chosen.length < Math.min(BULK_LIMIT, items.length)} onSelectAll={selectAll}
           onClear={clearSelection} blocked={actions.blocked} canAssign={canAssign} query={query} meId={me.user.id}
           onRun={runBulk} /> : undefined} />
