@@ -16,6 +16,9 @@
 --   without one last, then id ascending. after_rank is the cursor row's rank. No index
 --   holds the rank, so this order sorts the rows in scope (a top-N sort). The API allows it
 --   with the state filter needs_staff alone, so those are the needs_staff rows only.
+-- Exclusions: the two NOT EXISTS carry OFFSET 0, an optimisation fence and not a limit. It
+--   keeps them as per-row filters (an index probe each) on the queue index scan; without it the
+--   planner may turn them into hash anti joins, whose output is not ordered, and then sort.
 -- Search: a bounded per-company scan of contacts on their client_id index. The trigram
 --   indexes (0620) cannot serve it: csa_app reads contacts under row security and the ILIKE and
 --   LIKE operators are not leakproof, so the planner cannot use an index on the matched columns.
@@ -39,9 +42,9 @@ FROM (
     WHERE c.client_id = %(client_id)s
       -- The exclusions: customer channels only, and never a console chat conversation.
       AND c.channel IN ('telegram', 'whatsapp')
-      AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id)
+      AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = c.id OFFSET 0)
       AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
-                      WHERE p.contact_id = c.contact_id)
+                      WHERE p.contact_id = c.contact_id OFFSET 0)
       AND (%(channel)s::text IS NULL OR c.channel = %(channel)s::text)
       AND (%(states)s::text[] IS NULL OR c.queue_status = ANY (%(states)s::text[]))
       AND (%(assignee)s::uuid IS NULL OR c.assignee_user_id = %(assignee)s::uuid)

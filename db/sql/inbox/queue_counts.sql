@@ -9,7 +9,9 @@
 --   oldest_waiting_at the earliest needs_staff_since of the needs_staff rows
 -- One branch per state, so each reads its own partial index (conversations_queue_due_idx,
 -- _waiting_idx, _snoozed_idx) and the bot and resolved rows, the large majority, are never read.
--- The list's exclusions apply to the rows found.
+-- The list's exclusions apply to the rows found, written as in the list: OFFSET 0 in each NOT
+-- EXISTS is an optimisation fence, not a limit, so they stay per-row index probes on the rows the
+-- partial indexes give and are never turned into anti joins over the chat tables.
 WITH queued AS (
     SELECT c.id, c.contact_id, c.channel, c.queue_status, c.assignee_user_id, c.due_at,
            c.needs_staff_since
@@ -37,6 +39,6 @@ SELECT count(*) FILTER (WHERE q.queue_status = 'needs_staff')::int AS needs_us,
        min(q.needs_staff_since) FILTER (WHERE q.queue_status = 'needs_staff') AS oldest_waiting_at
 FROM queued q
 WHERE q.channel IN ('telegram', 'whatsapp')
-  AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = q.id)
+  AND NOT EXISTS (SELECT 1 FROM public.console_chat_threads t WHERE t.id = q.id OFFSET 0)
   AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
-                  WHERE p.contact_id = q.contact_id);
+                  WHERE p.contact_id = q.contact_id OFFSET 0);
