@@ -9,6 +9,7 @@ import { secondary } from "@/components/console/ui";
 import { rowTitle, secondaryLine, senderLabel } from "@/lib/customer-identity";
 import { listTime, type Contact, type Conversation } from "@/lib/inbox-api";
 import { cleanContact, rowSubtitle } from "@/lib/inbox-thread";
+import { PHONE_QUERY } from "./hooks";
 
 export const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
 export const NO_CONTACT: Contact = {
@@ -79,7 +80,13 @@ export function ConversationList({
             : <ListState kind="empty" connectHref={connectHref} />)
           : null}
       </div>
-      {showRows && <ul aria-label="Conversations">{items.map((item) => <Row key={item.id} item={item}
+      {/* On a phone the page scrolls the list under the sticky tab strip: a focused row is moved
+          clear of it (rows carry a matching scroll margin, which J and K's scrolling uses too). */}
+      {showRows && <ul aria-label="Conversations" onFocus={(event) => {
+        if (window.matchMedia?.(PHONE_QUERY).matches && event.target instanceof HTMLElement) {
+          event.target.scrollIntoView({ block: "nearest" });
+        }
+      }}>{items.map((item) => <Row key={item.id} item={item}
         selected={item.id === selected} disabled={blocked} now={now} onSelect={onSelect} />)}</ul>}
       {showRows && status.nextCursor && !status.error && <div className="p-3">
         <button type="button" className={`${secondary} w-full`} onClick={onLoadOlder}>Load older conversations</button>
@@ -129,7 +136,7 @@ function Row({ item, selected, disabled, now, onSelect }: {
   return <li>
     <button type="button" data-conversation-id={item.id} aria-current={selected ? "true" : undefined}
       disabled={disabled} onClick={() => onSelect(item.id)}
-      className={`flex w-full min-w-0 items-start gap-3 border-b border-[color:var(--fs-ink-100)] px-3 py-3.5 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-60 ${selected
+      className={`flex w-full max-md:scroll-mt-14 min-w-0 items-start gap-3 border-b border-[color:var(--fs-ink-100)] px-3 py-3.5 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-[color:var(--fs-focus)] disabled:cursor-not-allowed disabled:opacity-60 ${selected
         ? "bg-[var(--fs-surface-blue)] shadow-[inset_3px_0_0_var(--fs-primary)]" : "bg-[var(--fs-surface)] hover:bg-[var(--fs-tile)]"}`}>
       <CustomerAvatar id={item.id} name={contact.display_name} size={40} />
       <span className="flex min-w-0 flex-1 flex-col gap-1">

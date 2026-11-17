@@ -131,19 +131,32 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     focusAfterBack.current = true;
     setThreadOpen(false);
     setDetailsOpen(false);
-    requestAnimationFrame(() => window.scrollTo({ top: listScroll.current }));
   }, []);
   // Back hides the thread and shows the list in one commit. The Back button vanishes with the
   // thread, so focus goes to the row that was open, or to the list heading when that row is gone
-  // (filtered out, or disabled while an action is pending).
+  // (filtered out, or disabled while an action is pending). The list comes back where it was, then
+  // the row is nudged clear of the sticky tab strip (rows carry a scroll margin for it).
   useEffect(() => {
     if (threadOpen || !focusAfterBack.current) return;
     focusAfterBack.current = false;
-    const target = [...document.querySelectorAll<HTMLElement>("[data-conversation-id]")]
-      .find((el) => el.dataset.conversationId === selected && !(el instanceof HTMLButtonElement && el.disabled))
-      ?? document.querySelector<HTMLElement>("[data-conversation-list-heading]");
+    window.scrollTo({ top: listScroll.current });
+    const row = [...document.querySelectorAll<HTMLElement>("[data-conversation-id]")]
+      .find((el) => el.dataset.conversationId === selected && !(el instanceof HTMLButtonElement && el.disabled));
+    const target = row ?? document.querySelector<HTMLElement>("[data-conversation-list-heading]");
     target?.focus({ preventScroll: true });
+    row?.scrollIntoView({ block: "nearest" });
   }, [threadOpen, selected]);
+
+  // The bar's height, so the panes below it fill the rest of the screen at md and wider.
+  const barRef = useRef<HTMLDivElement>(null);
+  const [barHeight, setBarHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar || typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(() => setBarHeight(Math.ceil(bar.getBoundingClientRect().height)));
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
 
   // The card is a slide-over only below the three-pane width, and only for an open conversation.
   const slideOpen = detailsOpen && !wide && selected !== "";
@@ -179,9 +192,13 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   }, []);
 
   const row = items.find((item) => item.id === selected);
-  return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4">
-    {/* Sticky on a phone, where the page itself scrolls the list; hidden while a thread fills it. */}
-    <div className={`${selected && threadOpen ? "hidden md:block" : "block"} min-w-0 bg-[var(--fs-bg)] max-md:sticky max-md:top-0 max-md:z-20 max-md:pt-1 max-md:pb-2`}>
+  return <div ref={rootRef} data-motion={motion ? "on" : "off"} className="mt-6 min-w-0 space-y-4"
+    style={barHeight === null ? undefined : { ["--inbox-bar-h" as string]: `${barHeight}px` }}>
+    {/* At md and wider the whole bar is sticky and the panes fill the screen below it. On a phone
+        the box dissolves (`contents`) so only its tab strip sticks, within this whole column, and
+        the bar is hidden while a thread fills the screen. */}
+    <div ref={barRef} data-testid="inbox-queue-bar"
+      className={`${selected && threadOpen ? "hidden md:block" : "max-md:contents"} min-w-0 md:sticky md:top-0 md:z-20 md:bg-[var(--fs-bg)] md:pt-2`}>
       <QueueBar tab={tab} onTab={chooseTab} counts={counts?.value ?? null} nudge={nudge} announcement={announcement}
         panelId={panelId} search={search} onSearch={setSearch}
         onClearSearch={() => { setSearch(""); setQ(""); setPages(1); }}
@@ -192,7 +209,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     </div>
     {!selected && <Feedback actions={actions} framed={false} />}
     {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}
-    <div className="grid min-w-0 gap-3 md:h-[min(46rem,calc(100dvh-5rem))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
+    {/* Below the sticky bar: the screen less the bar, the gap above and the page's bottom padding. */}
+    <div className="grid min-w-0 gap-3 md:h-[min(46rem,max(20rem,calc(100dvh_-_var(--inbox-bar-h,7rem)_-_3rem)))] md:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)] min-[68.75rem]:grid-cols-[18rem_minmax(0,1fr)_12rem]">
       <div className={`${PANE} ${selected && threadOpen ? "hidden md:flex" : "flex"}`}>
         <ConversationList items={items} selected={selected} blocked={actions.blocked} now={now}
           status={{

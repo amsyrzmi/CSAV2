@@ -1,6 +1,9 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState,
+  type KeyboardEvent, type ReactNode, type RefObject,
+} from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { useDismiss } from "@/components/console/shell/useDismiss";
@@ -49,7 +52,9 @@ function QueueTabs({ tab, onTab, counts, nudge, panelId }: {
     event.preventDefault();
     buttons.current[next]?.focus();
   }
-  return <div role="region" aria-label="Conversation queues" className="min-w-0 overflow-x-auto overscroll-x-contain">
+  // Below md this region is the only sticky part of the bar (its parent box is `contents` there).
+  return <div role="region" aria-label="Conversation queues"
+    className="min-w-0 overflow-x-auto overscroll-x-contain max-md:sticky max-md:top-0 max-md:z-20 max-md:bg-[var(--fs-bg)]">
     <div role="tablist" aria-label="Conversation queues"
       className="flex w-max min-w-full items-stretch border-b border-[color:var(--fs-border)]">
       {TABS.map((item, index) => {
@@ -81,14 +86,39 @@ function QueueTabs({ tab, onTab, counts, nudge, panelId }: {
   </div>;
 }
 
-/** The popover body: focus moves into it when it opens. */
-function Popover({ titleId, children }: { titleId: string; children: ReactNode }) {
+const POPOVER_WIDTH = 416; // 26rem
+const EDGE = 16;
+
+/**
+ * The popover body: focus moves into it when it opens. It hangs from the Filters button, moved
+ * left as far as needed (and narrowed on a small screen) so it never passes the viewport's edges.
+ */
+function Popover({ titleId, anchorRef, children }: {
+  titleId: string; anchorRef: RefObject<HTMLElement | null>; children: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    function measure() {
+      const anchor = anchorRef.current;
+      if (!anchor) return;
+      const viewport = document.documentElement.clientWidth;
+      const width = Math.min(POPOVER_WIDTH, viewport - 2 * EDGE);
+      const start = anchor.getBoundingClientRect().left;
+      // Offsets are from the button's left edge: shift left to fit, but never past the left margin.
+      const left = Math.max(EDGE - start, Math.min(0, viewport - EDGE - width - start));
+      setPlace({ left, width });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [anchorRef]);
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>("input:not(:disabled), button:not(:disabled)")?.focus();
   }, []);
   return <div ref={ref} role="dialog" aria-labelledby={titleId} data-testid="inbox-queue-filters-panel"
-    className="absolute top-full left-0 z-30 mt-2 max-h-[min(36rem,calc(100dvh-10rem))] w-[min(26rem,calc(100vw-4rem))] overflow-y-auto overscroll-contain rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] p-4 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]">
+    style={place ?? { left: 0, width: POPOVER_WIDTH }}
+    className="absolute top-full z-30 mt-2 max-h-[min(36rem,calc(100dvh-10rem))] overflow-y-auto overscroll-contain rounded-[var(--fs-radius-tile)] border border-[color:var(--fs-border)] bg-[var(--fs-surface-raised)] p-4 text-[color:var(--fs-text)] shadow-[var(--fs-shadow-popover)]">
     <h2 id={titleId} className="mb-3 font-(family-name:--fs-font-heading) text-base font-semibold">Filters</h2>
     {children}
   </div>;
@@ -139,7 +169,7 @@ export function QueueBar({
       filtersButton.current?.focus();
     }} />;
 
-  return <div className="min-w-0 space-y-2">
+  return <div className="min-w-0 space-y-2 max-md:contents">
     <QueueTabs tab={tab} onTab={onTab} counts={counts} nudge={nudge} panelId={panelId} />
     {/* Spoken once per change of the Needs us count, never on every poll. */}
     <p role="status" className="sr-only">{announcement}</p>
@@ -165,7 +195,7 @@ export function QueueBar({
             className="num inline-flex min-w-5 justify-center rounded-full bg-[var(--fs-surface-blue)] px-1.5 text-xs font-semibold text-[color:var(--fs-primary)]">
             {chips.length}</span>}
         </button>
-        {open && !sheet && <Popover titleId={titleId}>{body}</Popover>}
+        {open && !sheet && <Popover titleId={titleId} anchorRef={filtersButton}>{body}</Popover>}
       </div>
       <div data-testid="inbox-views-slot" className="contents">{viewsSlot}</div>
       <div data-testid="inbox-times-slot" className="contents">{timesSlot}</div>

@@ -29,8 +29,10 @@ from tests.test_inbox_redesign_browser import (
     conversation,
     eventually,
     inbox_page,
+    on_top,
     open_filters,
     page_width,
+    row,
     rows_loaded,
 )
 from tests.test_services_browser import WAIT
@@ -594,3 +596,152 @@ async def test_assignee_list_failure_unavailable_and_retry(shell: Shell) -> None
         await expect(group.get_by_role("radio")).to_have_count(3)
         await group.get_by_role("radio", name="Me").check()
         await eventually(lambda: "assignee=me" in state.list_queries[-1])
+
+
+# ---- the bar stays small on phones and fits the screen on desktop -----------------------------
+
+# The phone's sticky block is the tab strip alone: a 40 px tab (44 px on a coarse pointer) and its
+# 1 px border. Anything taller means search, Filters, Sort or the chips stuck to the top too.
+STICKY_BOUND = 48
+UNCOVERED_JS = """el => {
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    return {top: r.top, bottom: r.bottom, uncovered: hit === el || el.contains(hit)};
+}"""
+
+
+def many_rows(count: int = 30) -> list[dict[str, Any]]:
+    """Rows that all pass the chips the phone test applies (high, escalated, Telegram, customer)."""
+    return [
+        conversation(
+            f"a0000000-0000-4000-8000-{index:012d}",
+            "telegram",
+            name=f"Customer {index:02d}",
+            known=True,
+            preview=f"Question number {index}.",
+            minutes=index + 1,
+            queue_status="needs_staff",
+            queue_reason="escalation",
+            priority="high",
+            needs_staff_since=at(-index - 5),
+            due_at=at(60 - index),
+        )
+        for index in range(100, 100 + count)
+    ]
+
+
+@pytest.mark.parametrize("size", ((390, 844), (320, 256)))
+async def test_phone_only_the_tab_strip_sticks_and_rows_stay_clear_of_it(
+    shell: Shell, size: tuple[int, int]
+) -> None:
+    width, height = size
+    rows = many_rows()
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state, width=width) as page:
+        await page.set_viewport_size({"width": width, "height": height})
+        await page.goto(f"{shell.base}/portal/inbox")
+        await rows_loaded(page, 30)
+        panel = await open_filters(page)
+        await (
+            panel.get_by_role("group", name="Priority")
+            .get_by_role("radio", name="High and above")
+            .check()
+        )
+        await panel.get_by_role("checkbox", name="Escalated").check()
+        await (
+            panel.get_by_role("group", name="Channel").get_by_role("radio", name="Telegram").check()
+        )
+        await (
+            panel.get_by_role("group", name="Sender").get_by_role("radio", name="Customers").check()
+        )
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        chips = page.get_by_test_id("inbox-queue-chips").get_by_role("button", name="Remove filter")
+        await expect(chips).to_have_count(4)
+        await rows_loaded(page, 30)
+
+        # Scrolled into the list: only the tab strip is stuck to the top, and it is small.
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight / 2)")
+        await asyncio.sleep(0.2)
+        strip = page.get_by_role("region", name="Conversation queues")
+        box = await strip.bounding_box()
+        assert box is not None and abs(box["y"]) < 1, box
+        assert box["height"] <= STICKY_BOUND, box
+        sticky_bottom = box["y"] + box["height"]
+        for scrolled_away in (page.get_by_test_id("inbox-queue-filters"), chips.first):
+            gone = await scrolled_away.bounding_box()
+            assert gone is not None and gone["y"] + gone["height"] <= 0, gone
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], measured
+
+        ids = [row["id"] for row in rows]
+        # J moves the selection; K back onto a row hidden under the strip brings it out from under.
+        for _ in range(11):
+            await page.keyboard.press("j")
+        await expect(row(page, ids[10])).to_have_attribute("aria-current", "true")
+        await row(page, ids[10]).evaluate(
+            "el => window.scrollBy(0, el.getBoundingClientRect().top - 5)"
+        )
+        await page.keyboard.press("k")
+        chosen = row(page, ids[9])
+        await expect(chosen).to_have_attribute("aria-current", "true")
+        await asyncio.sleep(0.2)
+        seen = await chosen.evaluate(UNCOVERED_JS)
+        assert seen["uncovered"] and seen["top"] >= sticky_bottom - 0.5, (size, seen)
+
+        # Shift+Tab onto a row that sits under the strip: focus brings it out from under too.
+        await row(page, ids[20]).evaluate(
+            "el => { window.scrollBy(0, el.getBoundingClientRect().top - 5);"
+            " el.focus({preventScroll: true}); }"
+        )
+        await page.keyboard.press("Shift+Tab")
+        focused = row(page, ids[19])
+        await expect(focused).to_be_focused()
+        await asyncio.sleep(0.2)
+        seen = await focused.evaluate(UNCOVERED_JS)
+        assert seen["uncovered"] and seen["top"] >= sticky_bottom - 0.5, (size, seen)
+
+
+async def test_filters_popover_never_passes_the_screen_edge(shell: Shell) -> None:
+    state = Inbox()
+    async with inbox_page(shell, state, width=768) as page:
+        for width in (768, 1024, 1440):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.goto(f"{shell.base}/portal/inbox")
+            await rows_loaded(page)
+            panel = await open_filters(page)
+            box = await panel.bounding_box()
+            assert box is not None, width
+            assert box["x"] >= 0 and box["x"] + box["width"] <= width, (width, box)
+            measured = await page_width(page)
+            assert measured["scroll"] <= measured["inner"], ("open", width, measured)
+            await page.keyboard.press("Escape")
+            await expect(panel).to_be_hidden()
+
+
+async def test_desktop_bar_and_composer_fit_one_screen(shell: Shell) -> None:
+    """At 1440 x 800 the bar stays at the top and the reply box is fully on screen below it."""
+    state = Inbox()
+    async with inbox_page(shell, state) as page:
+        await page.set_viewport_size({"width": 1440, "height": 800})
+        await page.goto(f"{shell.base}/portal/inbox")
+        await rows_loaded(page)
+        # Staff has taken over this one, so the reply box is open.
+        await row(page, NEWCOMER).click()
+        composer = page.get_by_test_id("inbox-composer")
+        await expect(composer).to_be_visible(timeout=WAIT)
+        # The page title and the how-to line sit above the Inbox: scroll them away, as staff do.
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+        await asyncio.sleep(0.2)
+        bar = await page.get_by_test_id("inbox-queue-bar").bounding_box()
+        assert bar is not None and abs(bar["y"]) < 1, bar
+        bar_bottom = bar["y"] + bar["height"]
+        seen = await composer.evaluate(UNCOVERED_JS)
+        assert seen["top"] >= bar_bottom and seen["bottom"] <= 800, (bar, seen)
+        thread = await page.get_by_test_id("inbox-thread").bounding_box()
+        assert thread is not None and thread["y"] >= bar_bottom, (bar, thread)
+        send = page.get_by_role("button", name="Send reply", exact=True)
+        await expect(send).to_be_in_viewport()
+        assert await on_top(send)
+        # The tabs are still usable from there.
+        assert await on_top(tab(page, "all"))
