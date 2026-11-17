@@ -47,6 +47,9 @@ LONG_NAME = ("Wolfeschlegelsteinhausenbergerdorff" * 2)[:60]
 FULL_PHONE = "+60125550148"
 MASKED_PHONE = "••••0148"
 WIDTHS = (320, 390, 768, 1024, 1440)
+# The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
+ME_ID = "22222222-2222-4222-8222-222222222222"
+PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
 
 
 def ago(minutes: int) -> str:
@@ -65,6 +68,15 @@ def conversation(
     minutes: int,
     pending: int = 0,
     human_muted: bool = False,
+    queue_status: str = "bot",
+    queue_reason: str | None = None,
+    topic: str | None = None,
+    priority: str = "normal",
+    assignee_id: str | None = None,
+    assignee_name: str | None = None,
+    needs_staff_since: str | None = None,
+    due_at: str | None = None,
+    snoozed_until: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": identifier,
@@ -85,6 +97,21 @@ def conversation(
         },
         "last_message": {"preview": preview, "at": ago(minutes)},
         "pending_approvals": pending,
+        # The work-queue fields; a plain row is one the assistant has (`bot`), outside the queue.
+        "queue_status": queue_status,
+        "queue_reason": queue_reason,
+        "topic": topic,
+        "priority": priority,
+        "assignee_id": assignee_id,
+        "assignee": None
+        if assignee_id is None
+        else {"id": assignee_id, "display_name": assignee_name},
+        "claimed_at": None if assignee_id is None else ago(minutes),
+        "needs_staff_since": needs_staff_since,
+        "due_at": due_at,
+        "snoozed_until": snoozed_until,
+        "last_customer_at": ago(minutes),
+        "last_staff_reply_at": None,
     }
 
 
@@ -157,6 +184,24 @@ class Inbox:
         ]
     )
     needs_review_count: int = 2
+    # The tab counts the list sends: computed from the rows unless a test fixes them, or null.
+    counts_override: dict[str, Any] | None = None
+    null_counts: bool = False
+    # Off by default: the older tests expect every row whatever tab the page opens on.
+    filter_state: bool = False
+    # The people the Filters panel offers, and what the assignee read answers (200 or a status).
+    assignees: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "id": "33333333-3333-4333-8333-333333333331",
+                "display_name": "Aina Demo",
+                "role": "tenant_staff",
+            },
+            {"id": ME_ID, "display_name": "Synthetic User", "role": "tenant_admin"},
+        ]
+    )
+    assignees_status: int = 200
+    assignee_calls: int = 0
     fail_lists: bool = False
     # A 403 `detail` code for the list (for example "package_inactive"), or None.
     refuse_lists: str | None = None
@@ -177,6 +222,53 @@ class Inbox:
     # What the picture route answers (200 = a synthetic PNG, else that status) and was asked.
     picture_status: int = 200
     picture_requests: list[str] = field(default_factory=list)
+
+    def queue_counts(self) -> dict[str, Any] | None:
+        """The tab counts, from the rows (as the server counts them) unless a test set them."""
+        if self.null_counts:
+            return None
+        if self.counts_override is not None:
+            return self.counts_override
+        now = datetime.now(UTC).isoformat()
+
+        def count(state: str, extra: Any = lambda _item: True) -> int:
+            return sum(1 for item in self.items if item["queue_status"] == state and extra(item))
+
+        waiting = [
+            item["needs_staff_since"]
+            for item in self.items
+            if item["queue_status"] == "needs_staff" and item["needs_staff_since"]
+        ]
+        return {
+            "needs_us": count("needs_staff"),
+            "mine": count("needs_staff", lambda i: i["assignee_id"] == ME_ID)
+            + count("waiting_customer", lambda i: i["assignee_id"] == ME_ID),
+            "unassigned": count("needs_staff", lambda i: i["assignee_id"] is None),
+            "overdue": count("needs_staff", lambda i: bool(i["due_at"]) and i["due_at"] < now),
+            "waiting_customer": count("waiting_customer"),
+            "snoozed": count("snoozed"),
+            "oldest_waiting_at": min(waiting) if waiting else None,
+        }
+
+    def queue_filter(self, items: list[dict[str, Any]], params: dict[str, list[str]]) -> list[Any]:
+        """The queue filters, close enough to the server's for the screen's tests."""
+        if self.filter_state and "state" in params:
+            items = [item for item in items if item["queue_status"] in params["state"]]
+        if "assignee" in params:
+            wanted = params["assignee"][0]
+            target = ME_ID if wanted == "me" else None if wanted == "none" else wanted
+            items = [item for item in items if item["assignee_id"] == target]
+        if "priority_min" in params:
+            floor = PRIORITY_RANK[params["priority_min"][0]]
+            items = [item for item in items if PRIORITY_RANK[item["priority"]] >= floor]
+        if "reason" in params:
+            items = [item for item in items if item["queue_reason"] in params["reason"]]
+        if "topic" in params:
+            items = [item for item in items if item["topic"] in params["topic"]]
+        if params.get("overdue") == ["true"]:
+            now = datetime.now(UTC).isoformat()
+            items = [item for item in items if item["due_at"] and item["due_at"] < now]
+        return items
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -213,6 +305,7 @@ class Inbox:
             items = self.items
             if params.get("needs_review") == ["true"]:
                 items = [item for item in items if item["pending_approvals"] > 0]
+            items = self.queue_filter(items, params)
             if "channel" in params:
                 items = [item for item in items if item["channel"] in params["channel"]]
             if "sender" in params:
@@ -238,7 +331,15 @@ class Inbox:
                     "items": items,
                     "next_cursor": None,
                     "needs_review_count": self.needs_review_count,
+                    "counts": self.queue_counts(),
+                    "as_of": datetime.now(UTC).isoformat(),
                 }
+        elif path == "inbox/assignees" and request.method == "GET":
+            self.assignee_calls += 1
+            if self.assignees_status == 200:
+                data = self.assignees
+            else:
+                status, data = self.assignees_status, {"detail": "synthetic directory outage"}
         elif path.startswith("inbox/conversations/") and path.endswith("/reply"):
             await asyncio.sleep(self.reply_delay)
             self.replies.append((request.post_data_json or {}).get("body", ""))
@@ -471,19 +572,38 @@ async def test_long_name_does_not_break_the_row(shell: Shell) -> None:
             assert clipped == {"ellipsis": "ellipsis", "cut": True}, (width, clipped)
 
 
-async def test_needs_review_count_stays_visible_and_filters_on_the_server(shell: Shell) -> None:
-    state = Inbox()
+def held(state: Inbox) -> Inbox:
+    """The two rows with a held reply wait on staff for it, as the queue model files them."""
+    for item in state.items:
+        if item["pending_approvals"] > 0:
+            item.update(queue_status="needs_staff", queue_reason="held_reply")
+            item["needs_staff_since"] = item["last_message"]["at"]
+    return state
+
+
+async def open_filters(page: Page) -> Any:
+    await page.get_by_test_id("inbox-queue-filters").click()
+    panel = page.get_by_role("dialog", name="Filters")
+    await expect(panel).to_be_visible()
+    return panel
+
+
+async def test_needs_us_count_stays_visible_and_held_replies_filter_on_the_server(
+    shell: Shell,
+) -> None:
+    # Was the "Needs review" count and chip: the count is now the Needs us tab's, and a held
+    # reply is the Reason filter. The needs_review parameter is never sent any more.
+    state = held(Inbox())
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
-        count = page.get_by_test_id("inbox-needs-review-count")
+        count = page.get_by_test_id("inbox-needs-us-count")
         await expect(count).to_have_text("2")
         await expect(count).to_be_visible()
-        assert not any("needs_review" in query for query in state.list_queries)
-        chip = page.get_by_test_id("inbox-filter-needs-review")
-        await chip.click()
-        await expect(chip).to_have_attribute("aria-pressed", "true")
+        panel = await open_filters(page)
+        await panel.get_by_role("checkbox", name="Held reply").check()
         await rows_loaded(page, 2)
-        assert any("needs_review=true" in query for query in state.list_queries)
+        assert any("reason=held_reply" in query for query in state.list_queries)
+        assert not any("needs_review" in query for query in state.list_queries)
         await expect(row(page, NAMED)).to_have_count(1)
         await expect(row(page, NEWCOMER)).to_have_count(1)
         await expect(count).to_be_visible()
@@ -974,60 +1094,39 @@ async def test_assistant_launcher_never_covers_the_reply_buttons(
         )
 
 
-async def test_inbox_view_chips_filter_like_the_old_control(shell: Shell) -> None:
+async def test_sender_and_channel_filters_work_like_the_old_controls(shell: Shell) -> None:
+    # Was the All / Customers / New senders chips and the channel select: both moved into
+    # the Filters panel and still combine into one request.
     state = Inbox()
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
-        group = page.get_by_test_id("inbox-view")
-        await expect(group).to_have_attribute("role", "group")
-        chips = group.get_by_role("button")
-        await expect(chips).to_have_text(
-            ["All", re.compile(r"^Needs review\s*\d+$"), "Customers", "New senders"]
-        )
-        # The channel control stays a select.
-        channel = page.get_by_test_id("inbox-channel-filter")
-        assert await channel.evaluate("el => el.tagName") == "SELECT"
-        # The count lives inside its chip and keeps its own id.
-        await expect(
-            page.get_by_test_id("inbox-filter-needs-review").get_by_test_id(
-                "inbox-needs-review-count"
-            )
-        ).to_have_text("2")
+        panel = await open_filters(page)
+        sender = panel.get_by_role("group", name="Sender")
+        await expect(sender.get_by_role("radio")).to_have_count(3)
+        await expect(sender.get_by_role("radio", name="Anyone")).to_be_checked()
 
-        async def press(test_id: str, expected: str) -> dict[str, list[str]]:
+        async def choose(group: str, name: str, key: str, expected: str) -> dict[str, list[str]]:
             before = len(state.list_queries)
-            await page.get_by_test_id(test_id).click()
-            await expect(page.get_by_test_id(test_id)).to_have_attribute("aria-pressed", "true")
-            for other in await chips.all():
-                if await other.get_attribute("data-testid") != test_id:
-                    await expect(other).to_have_attribute("aria-pressed", "false")
+            await panel.get_by_role("group", name=group).get_by_role("radio", name=name).check()
             await eventually(lambda: len(state.list_queries) > before)
             await asyncio.sleep(0.3)
             latest = parse_qs(state.list_queries[-1])
-            assert latest.get("needs_review", [""])[0] == ("true" if expected == "review" else "")
-            assert latest.get("sender", [""])[0] == (
-                expected if expected in {"known", "new"} else ""
-            )
+            assert latest.get(key, [""])[0] == expected, latest
+            assert "needs_review" not in latest, latest
             return latest
 
-        await press("inbox-filter-needs-review", "review")
+        await choose("Sender", "Customers", "sender", "known")
         await rows_loaded(page, 2)
-        await press("inbox-filter-customers", "known")
+        await choose("Sender", "New senders", "sender", "new")
         await rows_loaded(page, 2)
-        await press("inbox-filter-new-senders", "new")
-        await rows_loaded(page, 2)
-        # A pressed chip stays pressed when pressed again (single select, as before).
-        await page.get_by_test_id("inbox-filter-new-senders").click()
-        await expect(page.get_by_test_id("inbox-filter-new-senders")).to_have_attribute(
-            "aria-pressed", "true"
-        )
-        await press("inbox-filter-all", "all")
+        await choose("Sender", "Anyone", "sender", "")
         await rows_loaded(page, 4)
-        # Chips and the channel select still combine into one request.
-        await channel.select_option("whatsapp")
-        await press("inbox-filter-needs-review", "review")
-        latest = parse_qs(state.list_queries[-1])
-        assert latest["channel"] == ["whatsapp"] and latest["needs_review"] == ["true"]
+        # Channel and sender still combine into one request.
+        await choose("Channel", "WhatsApp", "channel", "whatsapp")
+        latest = await choose("Sender", "New senders", "sender", "new")
+        assert latest["channel"] == ["whatsapp"] and latest["sender"] == ["new"]
+        await rows_loaded(page, 1)
+        await expect(row(page, UNNAMED)).to_have_count(1)
 
 
 async def test_search_clear_button_resets(shell: Shell) -> None:

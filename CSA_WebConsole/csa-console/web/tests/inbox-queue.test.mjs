@@ -14,7 +14,8 @@ const queue = await import(moduleUrl(
 ));
 const {
   TABS, tabFilters, queueListQuery, activeFilterChips, waitText, dueState, dueText, rowMeta,
-  primaryAction, snoozePresets, actionErrorText, bulkSummary, initialsOf,
+  primaryAction, snoozePresets, actionErrorText, bulkSummary, initialsOf, withoutChip,
+  priorityOrderAllowed, tabOrder,
 } = queue;
 
 const BASE = "/console/v1/inbox/conversations";
@@ -141,6 +142,57 @@ test("values are URL-encoded and needs_review is never sent", () => {
   });
   assert.equal(url, `${BASE}?assignee=a%20b%26c&order=activity`);
   assert.ok(!url.includes("needs_review"));
+});
+
+test("search text with reserved or non-ASCII characters is encoded (moved from inboxListQuery)", () => {
+  assert.equal(listFor("all", { q: "50% off" }), `${BASE}?order=activity&q=50%25%20off`);
+  assert.equal(listFor("all", { q: "@aisyah" }), `${BASE}?order=activity&q=%40aisyah`);
+  assert.equal(listFor("all", { q: "a&b=c" }), `${BASE}?order=activity&q=a%26b%3Dc`);
+  assert.equal(listFor("all", { q: "Zoë 你好" }), `${BASE}?order=activity&q=${encodeURIComponent("Zoë 你好")}`);
+  assert.equal(listFor("all", { tenantQuery: "client_id=abc", q: "a" }), `${BASE}?client_id=abc&order=activity`);
+});
+
+// ---- withoutChip / priorityOrderAllowed / tabOrder ----
+
+test("removing a chip puts that value back to the tab's own and leaves the rest", () => {
+  const filters = {
+    ...tabFilters("needs_us"), assignee: "u-9", priorityMin: "high", reason: ["escalation", "manual"],
+    topic: ["payment"], channel: "telegram", sender: "new", overdue: true, waitingOver: 60,
+  };
+  const keys = activeFilterChips(filters, "needs_us").map((chip) => chip.key);
+  assert.deepEqual(keys, [
+    "assignee:u-9", "priority", "reason:escalation", "reason:manual", "topic:payment", "channel", "sender",
+    "overdue", "waiting_over",
+  ]);
+  assert.equal(withoutChip(filters, "needs_us", "assignee:u-9").assignee, "");
+  assert.equal(withoutChip(filters, "needs_us", "priority").priorityMin, "");
+  assert.deepEqual(withoutChip(filters, "needs_us", "reason:escalation").reason, ["manual"]);
+  assert.deepEqual(withoutChip(filters, "needs_us", "topic:payment").topic, []);
+  assert.equal(withoutChip(filters, "needs_us", "channel").channel, "");
+  assert.equal(withoutChip(filters, "needs_us", "sender").sender, "");
+  assert.equal(withoutChip(filters, "needs_us", "overdue").overdue, false);
+  assert.equal(withoutChip(filters, "needs_us", "waiting_over").waitingOver, null);
+  // Every chip removed one by one leaves exactly the tab's own filters.
+  const cleared = keys.reduce((current, key) => withoutChip(current, "needs_us", key), filters);
+  assert.deepEqual(cleared, tabFilters("needs_us"));
+  assert.deepEqual(activeFilterChips(cleared, "needs_us"), []);
+  // The state is never a chip, and an unknown key changes nothing.
+  assert.equal(withoutChip(filters, "needs_us", "nonsense"), filters);
+});
+
+test("a chip on a tab that sets the same filter goes back to the tab's value", () => {
+  const mine = { ...tabFilters("mine"), assignee: "none" };
+  assert.deepEqual(activeFilterChips(mine, "mine").map((chip) => chip.key), ["assignee:none"]);
+  assert.equal(withoutChip(mine, "mine", "assignee:none").assignee, "me");
+});
+
+test("priority order only when the state is exactly needs_staff, and each tab's own order", () => {
+  assert.equal(priorityOrderAllowed(tabFilters("needs_us")), true);
+  assert.equal(priorityOrderAllowed(tabFilters("unassigned")), true);
+  assert.equal(priorityOrderAllowed(tabFilters("mine")), false);
+  assert.equal(priorityOrderAllowed(tabFilters("waiting")), false);
+  assert.equal(priorityOrderAllowed(tabFilters("all")), false);
+  for (const t of TABS) assert.equal(tabOrder(t.id), t.order);
 });
 
 // ---- waitText / dueText / dueState ----

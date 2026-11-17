@@ -451,6 +451,33 @@ export function activeFilterChips(filters: QueueFilters, tab: QueueTabId): { key
   return chips;
 }
 
+/** The filters with one chip (an `activeFilterChips` key) taken off: that value goes back to the tab's own. */
+export function withoutChip(filters: QueueFilters, tab: QueueTabId, key: string): QueueFilters {
+  const own = tabFilters(tab);
+  const [name, value] = key.includes(":") ? [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)] : [key, ""];
+  switch (name) {
+    case "assignee": return { ...filters, assignee: own.assignee };
+    case "priority": return { ...filters, priorityMin: own.priorityMin };
+    case "reason": return { ...filters, reason: filters.reason.filter((reason) => reason !== value) };
+    case "topic": return { ...filters, topic: filters.topic.filter((topic) => topic !== value) };
+    case "channel": return { ...filters, channel: own.channel };
+    case "sender": return { ...filters, sender: own.sender };
+    case "overdue": return { ...filters, overdue: own.overdue };
+    case "waiting_over": return { ...filters, waitingOver: own.waitingOver };
+    default: return filters;
+  }
+}
+
+/** `order=priority` is allowed only when the state filter is exactly `needs_staff` (the API's rule). */
+export function priorityOrderAllowed(filters: Pick<QueueFilters, "state">): boolean {
+  return filters.state.length === 1 && filters.state[0] === "needs_staff";
+}
+
+/** The order a tab opens with. */
+export function tabOrder(tab: QueueTabId): QueueOrder {
+  return TABS.find((t) => t.id === tab)?.order ?? "activity";
+}
+
 // ---- saved views ----
 
 /** A view's filters under the API's keys. Only what is set is present; the search is never part of it. */

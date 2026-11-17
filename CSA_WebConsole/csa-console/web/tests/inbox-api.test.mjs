@@ -12,49 +12,13 @@ function moduleUrl(source) {
 const inbox = await import(moduleUrl(
   await readFile(new URL("../lib/inbox-api.ts", import.meta.url), "utf8"),
 ));
-const { inboxListQuery, approvalsPath, canConnectWhatsApp, mergeById, listTime, messagePictureId } = inbox;
+const { approvalsPath, canConnectWhatsApp, mergeById, listTime, messagePictureId } = inbox;
 const apiUrl = moduleUrl(await readFile(new URL("../lib/api.ts", import.meta.url), "utf8"));
 const channels = await import(moduleUrl(
   (await readFile(new URL("../lib/channels-api.ts", import.meta.url), "utf8")).replace('"./api"', JSON.stringify(apiUrl)),
 ));
 
 const BASE = "/console/v1/inbox/conversations";
-const none = { tenantQuery: "", channel: "", needsReview: false, sender: "", q: "" };
-
-test("with nothing set the list path has no query and no trailing separator", () => {
-  assert.equal(inboxListQuery(none), BASE);
-});
-
-test("the tenant query comes first and only set filters follow", () => {
-  assert.equal(inboxListQuery({ ...none, tenantQuery: "client_id=abc" }), `${BASE}?client_id=abc`);
-  assert.equal(inboxListQuery({ ...none, channel: "whatsapp" }), `${BASE}?channel=whatsapp`);
-  assert.equal(inboxListQuery({ ...none, needsReview: true }), `${BASE}?needs_review=true`);
-  assert.equal(inboxListQuery({ ...none, sender: "new" }), `${BASE}?sender=new`);
-  assert.equal(
-    inboxListQuery({ tenantQuery: "client_id=abc", channel: "telegram", needsReview: true, sender: "known", q: "ali" }),
-    `${BASE}?client_id=abc&channel=telegram&needs_review=true&sender=known&q=ali`,
-  );
-  assert.equal(
-    inboxListQuery({ ...none, channel: "telegram", sender: "known" }),
-    `${BASE}?channel=telegram&sender=known`,
-  );
-});
-
-test("the search text is trimmed and URL-encoded", () => {
-  assert.equal(inboxListQuery({ ...none, q: "  ali  " }), `${BASE}?q=ali`);
-  assert.equal(inboxListQuery({ ...none, q: "50% off" }), `${BASE}?q=50%25%20off`);
-  assert.equal(inboxListQuery({ ...none, q: "@aisyah" }), `${BASE}?q=%40aisyah`);
-  assert.equal(inboxListQuery({ ...none, q: "a&b=c" }), `${BASE}?q=a%26b%3Dc`);
-  assert.equal(inboxListQuery({ ...none, q: "Zoë 你好" }), `${BASE}?q=${encodeURIComponent("Zoë 你好")}`);
-});
-
-test("a search shorter than two characters is dropped", () => {
-  assert.equal(inboxListQuery({ ...none, q: "a" }), BASE);
-  assert.equal(inboxListQuery({ ...none, q: "  a  " }), BASE);
-  assert.equal(inboxListQuery({ ...none, q: " " }), BASE);
-  assert.equal(inboxListQuery({ ...none, q: "ab" }), `${BASE}?q=ab`);
-  assert.equal(inboxListQuery({ ...none, tenantQuery: "client_id=abc", q: "a" }), `${BASE}?client_id=abc`);
-});
 
 test("the approvals path carries the conversation and the handled flag", () => {
   const id = "3f2c1a40-0000-4000-8000-000000000001";

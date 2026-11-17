@@ -234,6 +234,9 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             data = {"items": items, "next_cursor": None, "needs_review_count": 0}
         elif path == "inbox/approvals":
             data = {"items": [], "next_cursor": None}
+        elif path == "inbox/assignees":
+            # The Filters panel reads the team list when it opens.
+            data = []
         else:
             unexpected.append(f"{request.method} {path}?{query}")
             status, data = 500, {"detail": "unexpected synthetic call"}
@@ -278,7 +281,15 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
         await expect(badges).to_have_count(2, timeout=WAIT)
         await expect(badges.nth(0)).to_have_text("WhatsApp")
         await expect(badges.nth(1)).to_have_text("Telegram")
-        await page.get_by_test_id("inbox-channel-filter").select_option("whatsapp")
+        # The channel filter lives in the queue bar's Filters panel.
+        await page.get_by_test_id("inbox-queue-filters").click()
+        filters = page.get_by_role("dialog", name="Filters")
+        await (
+            filters.get_by_role("group", name="Channel")
+            .get_by_role("radio", name="WhatsApp")
+            .check()
+        )
+        await page.keyboard.press("Escape")
         await expect(badges).to_have_count(1, timeout=WAIT)
         await expect(badges.first).to_have_text("WhatsApp")
         assert any("channel=whatsapp" in query for query in inbox_queries)

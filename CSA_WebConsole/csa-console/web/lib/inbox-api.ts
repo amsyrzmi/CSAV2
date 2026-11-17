@@ -153,25 +153,6 @@ export type SenderFilter = "" | "known" | "new";
 
 const INBOX = "/console/v1/inbox";
 
-/** Full path and query for the conversation list. Only set filters are sent. */
-export function inboxListQuery(o: {
-  tenantQuery: string;
-  channel: ChannelFilter;
-  needsReview: boolean;
-  sender: SenderFilter;
-  q: string;
-}): string {
-  const parts: string[] = [];
-  if (o.tenantQuery) parts.push(o.tenantQuery);
-  if (o.channel) parts.push(`channel=${encodeURIComponent(o.channel)}`);
-  if (o.needsReview) parts.push("needs_review=true");
-  if (o.sender) parts.push(`sender=${encodeURIComponent(o.sender)}`);
-  // The server answers 422 for a one-character search, so it is never sent.
-  const q = o.q.trim();
-  if ([...q].length >= 2) parts.push(`q=${encodeURIComponent(q)}`);
-  return parts.length ? `${INBOX}/conversations?${parts.join("&")}` : `${INBOX}/conversations`;
-}
-
 /** Approvals for one conversation, used by the customer card. */
 export function approvalsPath(o: {
   tenantQuery: string;

@@ -1,21 +1,19 @@
 "use client";
 
-import { useId, useRef } from "react";
-import { BellRing, Search, SearchX, X } from "lucide-react";
+import { useId } from "react";
+import { BellRing, SearchX } from "lucide-react";
 import CustomerAvatar from "@/components/console/fs/CustomerAvatar";
 import { ListState } from "@/components/console/fs/ListStates";
 import StatusLabel from "@/components/console/fs/StatusLabel";
-import { field, secondary } from "@/components/console/ui";
-import { StatusChips } from "@/components/console/kit";
+import { secondary } from "@/components/console/ui";
 import { rowTitle, secondaryLine, senderLabel } from "@/lib/customer-identity";
-import { listTime, type ChannelFilter, type Contact, type Conversation } from "@/lib/inbox-api";
+import { listTime, type Contact, type Conversation } from "@/lib/inbox-api";
 import { cleanContact, rowSubtitle } from "@/lib/inbox-thread";
 
 export const CHANNEL_NAME = { telegram: "Telegram", whatsapp: "WhatsApp" } as const;
 export const NO_CONTACT: Contact = {
   display_name: null, telegram_username: null, phone_masked: null, phone: null, kind: "customer", known: false,
 };
-export type View = "all" | "review" | "known" | "new";
 
 /** A contact the identity helpers can trust: present, and with a single-@ username. */
 export function contactOf(conversation: Pick<Conversation, "contact">): Contact {
@@ -42,74 +40,32 @@ export function OwnerLabel({ humanMuted }: { humanMuted: boolean }) {
     : <StatusLabel tone="neutral">Assistant</StatusLabel>;
 }
 
-const CHIPS: { view: View; label: string; testId: string }[] = [
-  { view: "all", label: "All", testId: "inbox-filter-all" },
-  { view: "review", label: "Needs review", testId: "inbox-filter-needs-review" },
-  { view: "known", label: "Customers", testId: "inbox-filter-customers" },
-  { view: "new", label: "New senders", testId: "inbox-filter-new-senders" },
-];
-
 export type ListStatus = {
   loaded: boolean; error: string; forbidden: boolean; partial: boolean; nextCursor: boolean;
   /** The server's plain-words refusal to show instead of the default no-access copy. */
   refusal: string | null;
 };
 
+/**
+ * The rows, their states and "Load older": the panel the queue tabs control. Search, filters and
+ * sort live in the queue bar above; the heading is for screen readers and for focus to return to.
+ */
 export function ConversationList({
-  items, status, selected, blocked, now, search, onSearch, view, onView, channel, onChannel,
-  reviewCount, nudge, filtered, searching, connectHref, onSelect, onRetry, onLoadOlder,
-  onClearFilters, onClearSearch,
+  items, status, selected, blocked, now, filtered, searching, connectHref, panelId, labelledBy,
+  onSelect, onRetry, onLoadOlder, onClearFilters, onClearSearch,
 }: {
   items: Conversation[]; status: ListStatus; selected: string; blocked: boolean; now: number;
-  search: string; onSearch: (value: string) => void; view: View; onView: (view: View) => void;
-  channel: ChannelFilter; onChannel: (channel: ChannelFilter) => void;
-  /** The server's count for the whole tenant, or null before the first answer. */
-  reviewCount: number | null; nudge: number; filtered: boolean; searching: boolean;
-  connectHref: string | null; onSelect: (id: string) => void; onRetry: () => void; onLoadOlder: () => void;
+  filtered: boolean; searching: boolean; connectHref: string | null;
+  /** The id the tabs point at, and the selected tab's id that names this panel. */
+  panelId: string; labelledBy: string;
+  onSelect: (id: string) => void; onRetry: () => void; onLoadOlder: () => void;
   onClearFilters: () => void; onClearSearch: () => void;
 }) {
-  const searchId = useId();
-  const hintId = useId();
-  const searchRef = useRef<HTMLInputElement>(null);
-  const short = [...search.trim()].length === 1;
+  const headingId = useId();
   const showRows = !status.forbidden && items.length > 0;
-  return <section aria-labelledby={`${searchId}-title`} className="flex min-h-0 min-w-0 flex-1 flex-col">
-    <div className="space-y-3 border-b border-[color:var(--fs-ink-100)] p-3">
-      <h2 id={`${searchId}-title`} tabIndex={-1} data-conversation-list-heading
-        className="text-base font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Conversations</h2>
-      <div>
-        <label htmlFor={searchId} className="mb-1 block text-xs font-medium text-ink-700">Search customers</label>
-        <div className="relative">
-          <Search aria-hidden size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
-          <input ref={searchRef} id={searchId} type="search" data-testid="inbox-search" className={`${field} pr-11 pl-9`}
-            value={search} maxLength={64} autoComplete="off" placeholder="Name or phone"
-            aria-describedby={short ? hintId : undefined} onChange={(event) => onSearch(event.target.value)} />
-          {search !== "" && <button type="button" data-testid="inbox-search-clear" aria-label="Clear the search box"
-            onClick={() => { onClearSearch(); searchRef.current?.focus(); }}
-            className="absolute top-1/2 right-1 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-[var(--fs-radius-control)] text-ink-700 hover:bg-[var(--fs-tile)] hover:text-ink-900 focus-visible:outline-3 focus-visible:outline-offset-0 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:size-10">
-            <X aria-hidden size={16} /></button>}
-        </div>
-        {short && <p id={hintId} className="mt-1 text-xs text-ink-600">Type at least two characters to search.</p>}
-      </div>
-      <StatusChips mode="single" testId="inbox-view" ariaLabel="Show conversations" value={view}
-        onChange={(next) => onView(next as View)}
-        options={CHIPS.map((chip) => ({
-          value: chip.view, label: chip.label, testId: chip.testId,
-          // The tenant-wide count keeps its own id and its "–" while the first answer loads.
-          badge: chip.view === "review" ? <span key={nudge} data-testid="inbox-needs-review-count"
-            aria-label={reviewCount === null ? "count loading" : undefined}
-            className={`inline-block rounded-full bg-[var(--fs-warning-bg)] px-1.5 text-xs font-semibold text-[color:var(--fs-warning)] ${nudge > 0 ? "fs-nudge" : ""}`}>
-            {reviewCount ?? "–"}</span> : undefined,
-        }))} />
-      <label className="block"><span className="text-xs font-medium text-ink-700">Channel</span>
-        <select className={`${field} mt-1`} value={channel} data-testid="inbox-channel-filter"
-          onChange={(event) => onChannel(event.target.value as ChannelFilter)}>
-          <option value="">All channels</option>
-          <option value="whatsapp">WhatsApp</option>
-          <option value="telegram">Telegram</option>
-        </select>
-      </label>
-    </div>
+  return <section id={panelId} role="tabpanel" aria-labelledby={labelledBy}
+    className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <h2 id={headingId} tabIndex={-1} data-conversation-list-heading className="sr-only">Conversations</h2>
     <div className="min-h-0 flex-1 md:overflow-y-auto" data-inbox-list-scroll>
       <div aria-live="polite">
         {status.forbidden ? <ListState kind="forbidden" message={status.refusal ?? undefined} />
@@ -143,7 +99,7 @@ function NoMatch({ searching, filtered, onClearSearch, onClearFilters }: {
       <p className="font-medium">{searching ? "No conversations match your search." : "No conversations match these filters."}</p>
       <p className="text-xs text-ink-700">{searching
         ? "Check the spelling, or try part of the name or the phone number."
-        : "Show everyone to see all the conversations your customers have started."}</p>
+        : "Clear the filters to see everything in this tab again."}</p>
     </div>
     {both ? <button type="button" className={secondary} data-testid="inbox-no-match-action"
       onClick={() => { onClearSearch(); onClearFilters(); }}>Clear search and filters</button>
