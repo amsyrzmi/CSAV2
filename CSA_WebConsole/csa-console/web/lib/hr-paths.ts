@@ -1,17 +1,22 @@
 import type { HrContext } from "./hr-api";
 
 /** The People & HR tabs, the pages under them, and who gets which tab. Pure: no fetches. */
-export type HrTab = "home" | "people" | "recruitment" | "leave" | "payroll" | "training" | "requests" | "settings";
+export type HrTab = "home" | "people" | "processes" | "recruitment" | "leave" | "payroll" | "training" | "requests" | "settings";
 export type PeopleView = "list" | "org-chart" | "departments" | "new";
 export type HrRoute =
   | { tab: "people"; view: PeopleView }
   | { tab: "people"; view: "profile"; employeeId: string }
-  | { tab: Exclude<HrTab, "people"> };
+  | { tab: "processes"; view: "list" }
+  | { tab: "processes"; view: "templates" }
+  | { tab: "processes"; view: "detail"; processId: string }
+  | { tab: "processes"; view: "template"; templateId: string }
+  | { tab: Exclude<HrTab, "people" | "processes"> };
 
-/** Onboarding has no tab and no route until project 3. */
+/** Processes (onboarding, offboarding and custom) are one tab with a list, a detail and a templates view. */
 export const HR_TABS: readonly { tab: HrTab; label: string; segment: string | null }[] = [
   { tab: "home", label: "Home", segment: null },
   { tab: "people", label: "People", segment: "people" },
+  { tab: "processes", label: "Processes", segment: "processes" },
   { tab: "recruitment", label: "Recruitment", segment: "recruitment" },
   { tab: "leave", label: "Leave & attendance", segment: "leave" },
   { tab: "payroll", label: "Payroll", segment: "payroll" },
@@ -28,11 +33,23 @@ function tabForSegment(segment: string): HrTab | null {
   return match ? match.tab : null;
 }
 
+function parseProcessesPath(path: string[]): HrRoute | null {
+  if (path.length === 1) return { tab: "processes", view: "list" };
+  if (path[1] === "templates") {
+    if (path.length === 2) return { tab: "processes", view: "templates" };
+    const templateId = path[2].toLowerCase();
+    return path.length === 3 && UUID.test(templateId) ? { tab: "processes", view: "template", templateId } : null;
+  }
+  const processId = path[1].toLowerCase();
+  return path.length === 2 && UUID.test(processId) ? { tab: "processes", view: "detail", processId } : null;
+}
+
 /** The optional catch-all segments after `/hr` or `/portal/hr`. Anything the pages do not serve is null. */
 export function parseHrPath(path: string[] | undefined): HrRoute | null {
   if (!path || path.length === 0) return { tab: "home" };
   const tab = tabForSegment(path[0]);
   if (tab === null) return null;
+  if (tab === "processes") return parseProcessesPath(path);
   if (tab !== "people") return path.length === 1 ? { tab } : null;
   if (path.length === 1) return { tab: "people", view: "list" };
   if (path.length > 2) return null;
@@ -43,6 +60,11 @@ export function parseHrPath(path: string[] | undefined): HrRoute | null {
 
 function segments(route: HrRoute): string[] {
   if (route.tab === "home") return [];
+  if (route.tab === "processes") {
+    if (route.view === "list") return ["processes"];
+    if (route.view === "templates") return ["processes", "templates"];
+    return route.view === "detail" ? ["processes", route.processId] : ["processes", "templates", route.templateId];
+  }
   if (route.tab !== "people") return [route.tab];
   if (route.view === "list") return ["people"];
   return ["people", route.view === "profile" ? route.employeeId : route.view];
@@ -106,7 +128,10 @@ export function hrNavItems(tabs: HrTab[], platform: boolean, tenant: string | nu
   return HR_TABS.filter((item) => tabs.includes(item.tab)).map((item) => ({
     key: `hr_${item.tab}`,
     label: item.label,
-    href: hrHref(item.tab === "people" ? { tab: "people", view: "list" } : { tab: item.tab }, platform, tenant),
+    href: hrHref(
+      item.tab === "people" || item.tab === "processes" ? { tab: item.tab, view: "list" } : { tab: item.tab },
+      platform, tenant,
+    ),
     testId: `hr-nav-${item.tab}`,
   }));
 }
@@ -119,6 +144,8 @@ export function visibleTabs(ctx: HrContext): HrTab[] {
   const show: Record<HrTab, boolean> = {
     home: true,
     people: owner || ctx.switches.includes("manage_people") || ctx.switches.includes("sensitive_details") || ctx.switches.includes("directory"),
+    // The HR team's tab, as the backend decides it: the HR owner and Manage people holders.
+    processes: owner || ctx.switches.includes("manage_people"),
     recruitment: area("recruitment") || workflow("recruitment"),
     leave: owner || area("attendance") || workflow("leave", "attendance"),
     payroll: area("payroll"),
