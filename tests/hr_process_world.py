@@ -180,6 +180,9 @@ class ProcessWorld:
     members: dict[str, Member] = field(default_factory=dict)
     # A person's department, by employee id (a process row carries it).
     departments: dict[str, str] = field(default_factory=dict)
+    # Answers to give instead of the route's, by "METHOD path": each call takes the first
+    # `(status, code)` off its list (a 500 makes a write uncertain, a 409 refuses it).
+    failures: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
 
     def handles(self, path: str) -> bool:
         return path.startswith(PREFIXES) or any(p.fullmatch(path) for _, p, _ in ROUTES)
@@ -191,6 +194,9 @@ class ProcessWorld:
         if not self.handles(path):
             return None
         call = Call(caller, method, path, params, body)
+        if planned := self.failures.get(f"{method} {path}"):
+            status, code = planned.pop(0)
+            return status, {"detail": code}
         for wanted, pattern, handler in ROUTES:
             match = pattern.fullmatch(path)
             if match and wanted == method:
@@ -297,14 +303,24 @@ class ProcessWorld:
             }
         )
 
-    def end(self, process: Process, status: str, actor: str, action: str, **detail: Any) -> None:
-        """Cancel or close `process`: its open steps are skipped."""
+    def end(
+        self,
+        process: Process,
+        status: str,
+        actor: str,
+        action: str,
+        skipped: str,
+        **detail: Any,
+    ) -> None:
+        """Cancel or close `process`: each open step is skipped (`task.skipped` with the reason
+        `skipped`), then the process event `action` (0632 `hr_process_cancel`, 0634 close)."""
         process.status = status
         process.closed_at = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
         for step in self.steps_of(process.process_id):
             if step.status in OPEN:
                 step.status = "skipped"
                 step.version += 1
+                self.log(process, "task.skipped", actor, step.task_id, reason=skipped)
         self.log(process, action, actor, **detail)
 
     def process_row(self, process: Process) -> dict[str, Any]:
@@ -724,13 +740,15 @@ def _hr_action(
     body: dict[str, Any],
 ) -> Answer:
     """Skip (a reason), reschedule (a date) or reassign (a person or the HR pool) a step."""
+    # The detail each action writes (0634 `hr_task_apply`): HR's words in `remark`, codes in
+    # `reason`, employee ids in `from`/`to`, dates in `old`/`new`.
     detail: dict[str, Any]
     if action == "skip":
         reason = body["reason"].strip()
         if not 1 <= len(reason) <= REASON_MAX:
             return 422, {"detail": "task_reason_invalid"}
         step.status = "skipped"
-        detail = {"reason": reason}
+        detail = {"reason": "skipped_by_hr", "remark": reason}
     elif action == "reschedule":
         if not _is_date(body["due_on"]):
             return 422, {"detail": "task_due_invalid"}
@@ -742,7 +760,11 @@ def _hr_action(
         member = None if wanted is None else world.members.get(wanted)
         if wanted is not None and member is None:
             return 409, {"detail": "task_assignee_unavailable"}
-        detail = {"from": step.assignee.employee_id if step.assignee else None, "to": wanted}
+        detail = {
+            "from": step.assignee.employee_id if step.assignee else None,
+            "to": wanted,
+            "reason": "reassigned_by_hr",
+        }
         step.assignee = member
         step.assignee_overridden = True
     step.version += 1
@@ -903,7 +925,14 @@ def process_start(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
         if running and body.get("replace") is not True:
             return 409, {"detail": "process_already_active"}
         if running:
-            world.end(running, "cancelled", call.caller, "process.cancelled", reason="superseded")
+            world.end(
+                running,
+                "cancelled",
+                call.caller,
+                "process.cancelled",
+                "process_cancelled",
+                reason="superseded",
+            )
     number = len(world.processes) + 1
     process = Process(
         process_id=f"88888888-8888-4888-8888-{number:012d}",
@@ -917,6 +946,14 @@ def process_start(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
         started_by=call.caller,
     )
     world.processes.append(process)
+    world.log(
+        process,
+        "process.started",
+        call.caller,
+        kind=kind,
+        template_id=template.template_id,
+        template_version=template.version,
+    )
     for ordinal, title in enumerate(template.steps, start=1):
         world.steps.append(
             Step(
@@ -931,14 +968,15 @@ def process_start(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
                 due_on=None,
             )
         )
-    world.log(
-        process,
-        "process.started",
-        call.caller,
-        kind=kind,
-        template_id=template.template_id,
-        template_version=template.version,
-    )
+        world.log(
+            process,
+            "task.created",
+            call.caller,
+            world.steps[-1].task_id,
+            owner_role="hr",
+            assignee_employee_id=None,
+            due_on=None,
+        )
     return 201, {
         "operation": "process.start",
         "process_id": process.process_id,
@@ -967,14 +1005,29 @@ def process_end(world: ProcessWorld, call: Call, match: re.Match[str]) -> Answer
     if process.status != "active":
         return 409, {"detail": "process_closed"}
     if action == "cancel":
-        world.end(process, "cancelled", call.caller, "process.cancelled", reason="manual")
+        world.end(
+            process,
+            "cancelled",
+            call.caller,
+            "process.cancelled",
+            "process_cancelled",
+            reason="cancelled_by_hr",
+        )
         receipt = {"operation": "process.cancel"}
     else:
         assert isinstance(body, dict)
         note = body["note"].strip()
         if not 1 <= len(note) <= REASON_MAX:
             return 422, {"detail": "invalid_hr_input"}
-        world.end(process, "completed", call.caller, "process.completed", remark=note)
+        world.end(
+            process,
+            "completed",
+            call.caller,
+            "process.completed",
+            "process_closed_anyway",
+            reason="closed_anyway",
+            remark=note,
+        )
         receipt = {"operation": "process.close_anyway", "process_status": "completed"}
     return 200, receipt | {"process_id": process.process_id, "status": "saved", "duplicate": False}
 

@@ -144,17 +144,75 @@ class ProcessesWorld(TasksWorld):
         )
         process = world.process(PROCESS["onboarding"])
         assert process
-        world.log(
-            process, "process.started", None, kind="onboarding", template_id=TEMPLATE["warehouse"]
+        # Lina's onboarding history in the shapes the migrations write (0632, 0634): codes in
+        # `reason`, HR's words in `remark`, employee ids in `from`/`to`, dates in `old`/`new`.
+        log = world.log
+        log(
+            process,
+            "process.started",
+            None,
+            kind="onboarding",
+            template_id=TEMPLATE["warehouse"],
+            template_version=2,
         )
-        world.log(
+        log(
+            process,
+            "task.created",
+            None,
+            TASK["sign"],
+            owner_role="employee",
+            assignee_employee_id=EMPLOYEE[STAFF],
+            due_on=day(2),
+        )
+        log(
+            process,
+            "task.created",
+            None,
+            TASK["payroll"],
+            owner_role="hr",
+            assignee_employee_id=None,
+            due_on=day(7),
+        )
+        log(
+            process,
+            "task.created",
+            None,
+            LUNCH,
+            owner_role="manager",
+            assignee_employee_id=None,
+            due_on=day(3),
+            fallback="hr_pool",
+            reason="no_manager",
+        )
+        log(
+            process,
+            "task.reassigned",
+            OWNER,
+            LUNCH,
+            to=EMPLOYEE[OWNER],
+            reason="reassigned_by_hr",
+            **{"from": None},
+        )
+        log(
             process,
             "task.sent_back",
             MANAGER,
             TASK["handbook"],
-            reason="Please sign the last page too.",
+            remark="Please sign the last page too.",
         )
-        world.log(process, "task.escalated", OWNER, TASK["handbook"], level=2)
+        log(process, "task.completed", STAFF, BANK, awaiting_approval=False, on_behalf=False)
+        log(
+            process,
+            "task.date_changed",
+            None,
+            TASK["sign"],
+            anchor="start_date",
+            old=day(1),
+            new=day(2),
+        )
+        # An action and a key this console does not know; the id in it is never shown.
+        log(process, "task.escalated", OWNER, TASK["handbook"], level=2, owner=EMPLOYEE[STAFF])
+        log(process, "task.noted", STAFF, TASK["kit"], reason="later_reason")
 
     def answer(
         self, caller: str, method: str, path: str, params: dict[str, str], body: Any
@@ -271,6 +329,30 @@ def assert_write(call: dict[str, Any], path: str, body: Any) -> None:
     assert call["csrf"] == "synthetic-csrf", call
 
 
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+CODES = (
+    "_by_hr",
+    "hr_pool",
+    "no_manager",
+    "person_left",
+    "superseded",
+    "closed_anyway",
+    "later_reason",
+    "task.",
+    "process.",
+    "employee_id",
+    "owner:",
+    "template id",
+)
+
+
+async def assert_readable(history: Locator) -> None:
+    """History holds no id and no code, only words."""
+    text = await history.inner_text()
+    assert not UUID.search(text), text
+    assert not [code for code in CODES if code in text], text
+
+
 async def wait_for_query(world: ProcessesWorld, page: Page, wanted: dict[str, str]) -> None:
     """The newest list read asked for exactly `wanted` (plus the tenant)."""
     expected = {"client_id": TENANT} | wanted
@@ -317,9 +399,11 @@ async def test_hr_sees_the_list_filters_it_and_switches_to_templates(site: Site)
             await expect(hana).to_contain_text("No date yet")
             await expect(hana).to_contain_text("0 of 1 step")
             await expect(hana.get_by_text("Overdue", exact=True)).to_have_count(0)
-            # Each row links to its process.
-            await expect(lina.get_by_role("link", name="Lina Wong")).to_have_attribute(
-                "href", detail_path(PROCESS["onboarding"])
+            # Each row links to its process; the link's name says which process it is.
+            link = lina.get_by_role("link", name="Lina Wong")
+            await expect(link).to_have_attribute("href", detail_path(PROCESS["onboarding"]))
+            await expect(link).to_have_accessible_name(
+                f"Lina Wong, Onboarding, started {date_text(day(-5))}, 10:00"
             )
 
             filters = page.get_by_role("search", name="Filter processes")
@@ -343,7 +427,7 @@ async def test_hr_sees_the_list_filters_it_and_switches_to_templates(site: Site)
             )
             await expect(lina).to_be_visible(timeout=WAIT)
             # Farid owns no step of an active onboarding: nothing matches.
-            await filters.get_by_label("Step owner").select_option(EMPLOYEE[MANAGER])
+            await filters.get_by_label("Assigned to").select_option(EMPLOYEE[MANAGER])
             await wait_for_query(
                 world,
                 page,
@@ -490,16 +574,41 @@ async def test_detail_shows_the_timeline_and_the_history(site: Site) -> None:
             events = history.get_by_test_id("hr-process-event")
             await expect(events.first).to_be_hidden()
             await history.locator("summary").click()
-            await expect(events).to_have_count(3)
-            await expect(events.nth(0)).to_contain_text("Process started")
-            await expect(events.nth(0)).to_contain_text("By the system")
-            await expect(events.nth(1)).to_contain_text("Step sent back: Read the safety handbook")
-            await expect(events.nth(1)).to_contain_text("reason: Please sign the last page too.")
-            # An action this console does not know reads generically, its detail as plain text.
-            await expect(events.nth(2)).to_contain_text("Something changed")
-            await expect(events.nth(2)).to_contain_text("level: 2")
-            await expect(events.nth(2)).to_contain_text("By you")
-            await expect(events.nth(2)).not_to_contain_text("task.escalated")
+            expected = [
+                ["Process started", "By the system", "Onboarding", "Template version 2"],
+                # The steps a start created: one line, and why one went to the HR team.
+                [
+                    "3 steps created",
+                    "Book the welcome lunch: Assigned to the HR team (the person has no manager)",
+                ],
+                [
+                    "Step reassigned: Book the welcome lunch",
+                    "By you",
+                    "Reassigned by HR",
+                    "Assigned to Nadia Hassan",
+                    "Was the HR team",
+                ],
+                [
+                    "Step sent back: Read the safety handbook",
+                    "By someone in your team",
+                    "Note: Please sign the last page too.",
+                ],
+                ["Step marked done: Open a salary bank account"],
+                [
+                    "Due date moved with its date: Sign the employment contract",
+                    f"Due date changed from {date_text(day(1))} to {date_text(day(2))}",
+                    "Counted from the start date",
+                ],
+                # An action this console does not know reads generically; a key it does not know
+                # is plain text, unless it holds an id.
+                ["Something changed: Read the safety handbook", "level: 2"],
+                ["Note changed: Pick up the safety kit", "Updated"],
+            ]
+            await expect(events).to_have_count(len(expected))
+            for index, texts in enumerate(expected):
+                for text in texts:
+                    await expect(events.nth(index)).to_contain_text(text)
+            await assert_readable(history)
 
     await with_browser(body)
 
@@ -546,7 +655,8 @@ async def test_start_asks_before_replacing_an_active_onboarding(site: Site) -> N
                 "hr/processes",
                 {"employee_id": EMPLOYEE[STAFF], "kind": "onboarding", "replace": True},
             )
-            # A different body: a new Idempotency-Key.
+            # The same start sent again keeps its key; a different body gets a new one.
+            assert posts[0]["key"] == posts[1]["key"], posts
             assert replaced["key"] not in {p["key"] for p in posts[:-1]}, posts
             old = world.processes.process(PROCESS["onboarding"])
             assert old and old.status == "cancelled"
@@ -573,9 +683,10 @@ async def test_custom_start_requires_a_template(site: Site) -> None:
             await ask.get_by_label("Template").select_option(label="Transfer checklist")
             await ask.get_by_role("button", name="Start process").click()
             await page.wait_for_url(re.compile(r"/portal/hr/processes/88888888-[0-9a-f-]+0004$"))
-            await expect(
-                detail(page).get_by_role("heading", name="Custom process for Farid Ismail")
-            ).to_be_visible(timeout=WAIT)
+            heading = detail(page).get_by_role("heading", name="Custom process for Farid Ismail")
+            await expect(heading).to_be_visible(timeout=WAIT)
+            # The start dialog is gone: focus is on the new process's heading.
+            await expect(heading).to_be_focused()
             await expect(detail(page)).to_contain_text("Hand over open orders")
             (start,) = world.posts("hr/processes")
             assert_write(
@@ -855,5 +966,334 @@ async def test_escape_closes_dialogs_and_focus_returns(site: Site) -> None:
             await page.keyboard.press("Escape")
             await expect(cancel).to_be_focused()
             assert [c for c in world.calls if c["method"] == "POST"] == []
+
+    await with_browser(body)
+
+
+async def test_two_processes_of_one_person_have_distinct_link_names(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        world.processes.processes.append(
+            Process(
+                process_id="88888888-8888-4888-8888-000000000009",
+                kind="custom",
+                name="Transfer checklist",
+                about=MEMBERS[STAFF],
+                started_at=utc_at(-1, 1),
+                department_id=DEPARTMENT["warehouse"],
+            )
+        )
+        async with processes_page(browser, site, world, width=390) as page:
+            links = (
+                tab(page).get_by_test_id("hr-process-cards").get_by_role("link", name="Lina Wong")
+            )
+            await expect(links).to_have_count(2, timeout=WAIT)
+            names = [
+                await link.evaluate("(el) => el.getAttribute('aria-label')")
+                for link in await links.all()
+            ]
+            assert names == [
+                f"Lina Wong, Custom process, started {date_text(day(-1))}, 09:00",
+                f"Lina Wong, Onboarding, started {date_text(day(-5))}, 10:00",
+            ], names
+
+    await with_browser(body)
+
+
+async def test_history_reads_every_known_event_kind(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        process = world.processes.process(PROCESS["offboarding"])
+        assert process
+        laptop = TASK["laptop"]
+        lina = MEMBERS[STAFF].employee_id
+        gone = "55555555-5555-4555-8555-000000000099"
+        log = world.processes.log
+        log(
+            process,
+            "task.skipped",
+            OWNER,
+            laptop,
+            reason="skipped_by_hr",
+            remark="Sent by courier.",
+        )
+        log(
+            process,
+            "task.skipped",
+            MANAGER,
+            laptop,
+            reason="person_left",
+            remark="x",
+            sent_back=True,
+        )
+        log(process, "task.skipped", None, laptop, reason="process_cancelled")
+        log(process, "task.skipped", None, laptop, reason="process_completed")
+        log(process, "task.skipped", OWNER, laptop, reason="process_closed_anyway")
+        log(process, "task.rescheduled", OWNER, laptop, old=None, new=day(9))
+        log(
+            process,
+            "task.reassigned",
+            OWNER,
+            laptop,
+            to=gone,
+            reason="reassigned_by_hr",
+            **{"from": lina},
+        )
+        log(
+            process,
+            "task.reassigned",
+            None,
+            laptop,
+            to=None,
+            fallback="hr_pool",
+            reason="person_left",
+            **{"from": lina},
+        )
+        log(
+            process,
+            "task.reassigned",
+            None,
+            laptop,
+            to=None,
+            fallback="hr_pool",
+            reason="manager_inactive",
+            **{"from": gone},
+        )
+        log(
+            process,
+            "task.completed",
+            OWNER,
+            laptop,
+            awaiting_approval=True,
+            on_behalf=True,
+            auto_check="document_uploaded:other",
+        )
+        log(
+            process,
+            "task.approved",
+            OWNER,
+            laptop,
+            approver="hr",
+            approved_without_second_person=True,
+        )
+        log(process, "task.approved", MANAGER, laptop, approver="manager")
+        log(process, "task.noted", OWNER, laptop)
+        log(process, "process.cancelled", OWNER, reason="superseded")
+        log(process, "process.cancelled", None, reason="rehired")
+        log(process, "process.cancelled", None, reason="last_day_cleared")
+        log(process, "process.cancelled", OWNER, reason="cancelled_by_hr")
+        log(process, "process.completed", None)
+        log(process, "process.completed", OWNER, reason="closed_anyway", remark="All done.\nFiled.")
+        log(
+            process,
+            "task.date_changed",
+            None,
+            laptop,
+            anchor="last_day",
+            old=day(12),
+            new=day(10),
+            clamped=True,
+        )
+        expected = [
+            ["Step skipped: Return the laptop", "Skipped by HR", "Note: Sent by courier."],
+            ["The person left", "Note: x", "Sent back after the person left, so it was skipped"],
+            ["Skipped because the process was cancelled"],
+            ["Skipped because the process was completed"],
+            ["Skipped because HR closed the process"],
+            [
+                "Step rescheduled: Return the laptop",
+                f"Due date changed from no date to {date_text(day(9))}",
+            ],
+            ["Step reassigned", "Reassigned by HR", "Assigned to someone else", "Was Lina Wong"],
+            ["Assigned to the HR team (the person left)", "Was Lina Wong"],
+            ["Assigned to the HR team (their manager is not active)"],
+            [
+                "Step marked done",
+                "Checked automatically: a document is uploaded.",
+                "Waiting for approval",
+                "Done by HR for the person it is assigned to",
+            ],
+            [
+                "Step approved",
+                "Approved by HR",
+                "Approved without a second person: no one else in HR could approve it",
+            ],
+            ["Step approved", "Approved by the manager"],
+            ["Note changed: Return the laptop"],
+            ["Process cancelled", "Replaced by a new process"],
+            ["Process cancelled", "Cancelled because the person was rehired"],
+            ["Process cancelled", "Cancelled because the last day was cleared"],
+            ["Process cancelled", "Cancelled by HR"],
+            ["Process completed"],
+            [
+                "Process completed",
+                "Closed by HR before every step was done",
+                "Note: All done.\nFiled.",
+            ],
+            [
+                "Due date moved with its date",
+                f"Due date changed from {date_text(day(12))} to {date_text(day(10))}",
+                "Counted from the last day",
+                "Kept on or before the last day",
+            ],
+        ]
+        path = detail_path(PROCESS["offboarding"])
+        async with processes_page(browser, site, world, path, ready=detail) as page:
+            history = page.get_by_test_id("hr-process-history")
+            await history.locator("summary").click(timeout=WAIT)
+            events = history.get_by_test_id("hr-process-event")
+            await expect(events).to_have_count(len(expected))
+            for index, texts in enumerate(expected):
+                for text in texts:
+                    await expect(events.nth(index)).to_contain_text(text, use_inner_text=True)
+            await assert_readable(history)
+
+    await with_browser(body)
+
+
+async def test_start_refusals_say_why_and_a_retry_keeps_its_key(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        world.processes.failures["POST hr/processes"] = [
+            (500, "synthetic_outage"),
+            (409, "process_no_template"),
+        ]
+        async with processes_page(browser, site, world) as page:
+            await tab(page).get_by_role("button", name="Start a process").click()
+            ask = start_dialog(page)
+            await ask.get_by_label("Person").select_option(EMPLOYEE[MANAGER])
+            await ask.get_by_label("Kind").select_option("offboarding")
+            start = ask.get_by_role("button", name="Start process")
+            await start.click()
+            # Uncertain: the same button again is safe.
+            uncertain = (
+                "We couldn't confirm that. Choose Start process again; it won't be done twice."
+            )
+            await expect(ask.get_by_text(uncertain)).to_be_visible(timeout=WAIT)
+            await expect(ask.locator(":focus")).to_contain_text(uncertain)
+            await start.click()
+            refusal_text = "No active template applies to this person."
+            refusal = ask.get_by_text(refusal_text)
+            await expect(refusal).to_be_visible(timeout=WAIT)
+            await expect(ask.locator(":focus")).to_contain_text(refusal_text)
+            await start.click()
+            await page.wait_for_url(re.compile(r"/portal/hr/processes/88888888-[0-9a-f-]+0004$"))
+            posts = world.posts("hr/processes")
+            assert len(posts) == 3, posts
+            assert len({p["key"] for p in posts}) == 1, posts
+            assert posts[0]["body"] == {"employee_id": EMPLOYEE[MANAGER], "kind": "offboarding"}
+
+    await with_browser(body)
+
+
+async def test_cancel_of_a_process_closed_meanwhile_says_so_and_reloads(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        path = detail_path(PROCESS["onboarding"])
+        async with processes_page(browser, site, world, path, ready=detail) as page:
+            cancel = detail(page).get_by_role("button", name="Cancel process")
+            await expect(cancel).to_be_visible(timeout=WAIT)
+            process = world.processes.process(PROCESS["onboarding"])
+            assert process
+            # Someone else closes it while the page is open.
+            world.processes.end(
+                process,
+                "completed",
+                MANAGER,
+                "process.completed",
+                "process_closed_anyway",
+                reason="closed_anyway",
+                remark="Done elsewhere.",
+            )
+            await cancel.click()
+            await dialog(page).get_by_role("button", name="Cancel process").click()
+            await expect(page.get_by_test_id("hr-process-error")).to_have_text(
+                "This process is already completed or cancelled.", timeout=WAIT
+            )
+            await expect(dialog(page)).to_have_count(0)
+            await expect(page.get_by_test_id("hr-process-header")).to_contain_text(
+                "Completed", timeout=WAIT
+            )
+            await expect(detail(page).get_by_role("button", name="Cancel process")).to_have_count(0)
+            await expect(outcome(page)).to_be_focused()
+
+    await with_browser(body)
+
+
+async def focus_place(page: Page, dialog_id: str) -> str:
+    """Where focus is: in the dialog, in the page, or on the body (lost)."""
+    return await page.evaluate(
+        "(id) => { const el = document.activeElement;"
+        " if (!el || el === document.body) return 'body';"
+        " return el.closest(`[data-testid=${id}]`) ? 'dialog' : 'page'; }",
+        dialog_id,
+    )
+
+
+async def wait_for_posts(world: ProcessesWorld, page: Page, path: str, count: int) -> None:
+    """Until `count` POSTs to `path` have reached the stub."""
+    for _ in range(100):
+        if len(world.posts(path)) >= count:
+            return
+        await page.wait_for_timeout(100)
+    raise AssertionError((path, count, len(world.posts(path))))
+
+
+async def test_close_anyway_failing_twice_keeps_focus_on_the_message(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        close_path = f"hr/processes/{PROCESS['offboarding']}/close"
+        world.processes.failures[f"POST {close_path}"] = [
+            (500, "synthetic_outage"),
+            (500, "synthetic_outage"),
+        ]
+        path = detail_path(PROCESS["offboarding"])
+        async with processes_page(browser, site, world, path, ready=detail) as page:
+            await detail(page).get_by_role("button", name="Close anyway").click(timeout=WAIT)
+            ask = dialog(page)
+            await ask.get_by_label("Note").fill("Hana left early.")
+            uncertain = (
+                "We couldn't confirm that. Choose Close anyway again; it won't be done twice."
+            )
+            for attempt in (1, 2):
+                await ask.get_by_role("button", name="Close anyway").click()
+                await wait_for_posts(world, page, close_path, attempt)
+                await expect(ask.get_by_text(uncertain)).to_be_visible(timeout=WAIT)
+                # The refusal, not the page body, has focus after each attempt.
+                await expect(ask.locator(":focus")).to_contain_text(uncertain)
+                assert await focus_place(page, "hr-process-dialog") == "dialog", attempt
+            await ask.get_by_role("button", name="Close anyway").click()
+            await expect(page.get_by_test_id("hr-process-notice")).to_have_text(
+                "Process closed. Its open steps were skipped.", timeout=WAIT
+            )
+            posts = world.posts(close_path)
+            assert len(posts) == 3 and len({p["key"] for p in posts}) == 1, posts
+
+    await with_browser(body)
+
+
+async def test_a_failed_reload_after_a_write_keeps_the_message(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = ProcessesWorld()
+        path = detail_path(PROCESS["onboarding"])
+        async with processes_page(browser, site, world, path, ready=detail) as page:
+            payroll = step(page, "payroll")
+            await payroll.get_by_role("button", name="Skip").click(timeout=WAIT)
+            await dialog(page).get_by_label("Reason").fill("Done by the agency.")
+            world.processes.failures[f"GET hr/processes/{PROCESS['onboarding']}"] = [
+                (503, "hr_database_unavailable")
+            ]
+            await dialog(page).get_by_role("button", name="Skip").click()
+            await expect(page.get_by_test_id("hr-process-notice")).to_have_text(
+                "Step skipped.", timeout=WAIT
+            )
+            reload_error = page.get_by_test_id("hr-process-reload-error")
+            await expect(reload_error).to_contain_text("We couldn't load this. Try again.")
+            # The page stays: the step is still listed, as last read.
+            await expect(payroll).to_contain_text("To do")
+            await reload_error.get_by_role("button", name="Try again").click()
+            await expect(payroll).to_contain_text("Skipped", timeout=WAIT)
+            await expect(reload_error).to_have_count(0)
+            await expect(page.get_by_test_id("hr-process-notice")).to_have_text("Step skipped.")
 
     await with_browser(body)

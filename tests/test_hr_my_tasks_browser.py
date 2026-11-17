@@ -485,6 +485,34 @@ async def test_a_stale_step_shows_the_sentence_and_reloads(site: Site) -> None:
     await with_browser(body)
 
 
+async def test_a_dialog_write_failing_twice_keeps_focus_on_the_message(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = TasksWorld()
+        path = f"hr/tasks/{TASK['sign']}/complete"
+        world.processes.failures[f"POST {path}"] = [
+            (500, "synthetic_outage"),
+            (500, "synthetic_outage"),
+        ]
+        async with tasks_page(browser, site, world, STAFF) as page:
+            await row(page, "sign").get_by_role("button", name="Mark done").click(timeout=WAIT)
+            ask = dialog(page)
+            uncertain = "We couldn't confirm that. Choose Mark done again; it won't be done twice."
+            for attempt in (1, 2):
+                await ask.get_by_role("button", name="Mark done").click()
+                for _ in range(100):
+                    if len(world.task_posts("complete")) >= attempt:
+                        break
+                    await page.wait_for_timeout(100)
+                # The same refusal again still takes focus: never the page body.
+                await expect(ask.locator(":focus")).to_contain_text(uncertain, timeout=WAIT)
+            await ask.get_by_role("button", name="Mark done").click()
+            await expect(row(page, "sign")).to_contain_text("Waiting for approval", timeout=WAIT)
+            posts = world.task_posts("complete")
+            assert len(posts) == 3 and len({p["key"] for p in posts}) == 1, posts
+
+    await with_browser(body)
+
+
 async def test_load_more_follows_the_cursor(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = TasksWorld()

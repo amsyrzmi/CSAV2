@@ -59,6 +59,8 @@ export function useTaskWrites(client: ProcessClient, runner: HrRunner,
   const send = useCallback(<A extends TaskAction>(task: MyTask, name: A, body: TaskBodies[A], button: ProcessAction,
     opener: HTMLElement, inDialog: boolean) => run(async () => {
     onOutcome(null);
+    // Cleared first: the same refusal twice is a new message, and takes focus again.
+    setDialogError("");
     try {
       const receipt = await client.taskAction(task.task_id, name, body);
       setAsk(null);

@@ -2,6 +2,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ProcessKind, ProcessStart, TemplateSummary } from "@/lib/hr-process-api";
 import { processErrorText, processLoadError, processSaveError } from "@/lib/hr-process-copy";
+import { optionName } from "@/lib/hr-pickers";
 import { processKindLabel, replaceQuestion } from "@/lib/hr-process-view";
 import Dialog from "../fs/Dialog";
 import { action as primary, field, secondary, Notice } from "../ui";
@@ -13,19 +14,17 @@ import { useHrRunner } from "./useHrRunner";
 const KINDS: ProcessKind[] = ["onboarding", "offboarding", "custom"];
 const ALREADY_ACTIVE: ReadonlySet<string> = new Set(["process_already_active"]);
 
-// Set when a start succeeds; the process page that opens next reads it once and moves focus to its heading.
-let arrivedFromStart = false;
-/** True once, right after a start brought the person to the new process. */
-export function takeStartArrival(): boolean {
-  const arrived = arrivedFromStart;
-  arrivedFromStart = false;
+// The process a start just opened: its page moves focus to its heading once it has loaded.
+let arrival: string | null = null;
+/** True once, when a start brought the person to `processId`; it is forgotten either way. */
+export function takeStartArrival(processId: string): boolean {
+  const arrived = arrival === processId;
+  arrival = null;
   return arrived;
 }
-
-/** "Lina Wong" from a people option "Lina Wong · Packer"; null when the picker fell back to a typed id. */
-function personName(people: Options, employeeId: string): string | null {
-  const option = people.options.find(([id]) => id === employeeId);
-  return option ? option[1].split(" · ")[0] : null;
+/** Forget the arrival unless it is for `processId` (the page now open, if any). */
+export function forgetStartArrival(processId: string | null): void {
+  if (arrival !== processId) arrival = null;
 }
 
 type Problem = { field: "employee_id" | "template_id"; text: string };
@@ -73,7 +72,7 @@ export function StartProcessForm({ client, people, onClose, onStarted }: {
     setError("");
     try {
       const receipt = await client.startProcess(body);
-      arrivedFromStart = true;
+      arrival = receipt.process_id;
       onStarted(receipt.process_id);
     } catch (cause) {
       setReplace(null);
@@ -94,7 +93,7 @@ export function StartProcessForm({ client, people, onClose, onStarted }: {
       if (control instanceof HTMLElement) control.focus();
       return;
     }
-    void send({ employee_id: employee, kind, ...(template ? { template_id: template } : {}) }, personName(people, employee));
+    void send({ employee_id: employee, kind, ...(template ? { template_id: template } : {}) }, optionName(people.options, employee));
   };
 
   return <Dialog open onClose={close} title="Start a process" testId="hr-start-dialog">

@@ -1,12 +1,14 @@
 "use client";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { dateText } from "@/lib/hr-people";
-import { shortWhen } from "@/lib/hr-pickers";
-import { processClient, type ProcessDetail as Detail, type ProcessTask, type TaskStatus } from "@/lib/hr-process-api";
+import { optionName, shortWhen } from "@/lib/hr-pickers";
+import {
+  processClient, type ProcessDetail as Detail, type ProcessEvent, type ProcessTask, type TaskStatus,
+} from "@/lib/hr-process-api";
 import { processErrorText, processLoadError, processSaveError, type ProcessAction } from "@/lib/hr-process-copy";
 import {
-  autoCheckText, dueText, eventDetailLines, eventText, isDateText, ownerRoleLabel, processKindLabel, processToday,
-  progressText, statusLabel,
+  autoCheckText, dueText, eventLines, eventText, groupHistory, isDateText, ownerRoleLabel, processKindLabel,
+  processToday, progressText, statusLabel,
 } from "@/lib/hr-process-view";
 import Dialog from "../fs/Dialog";
 import StatusLabel, { type StatusTone } from "../fs/StatusLabel";
@@ -54,27 +56,37 @@ export function ProcessDetail({ tenant, processId, readonly, userId }: {
   const [outcome, setOutcome] = useState<{ message?: string; error?: string } | null>(null);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [dialogError, setDialogError] = useState("");
+  // A reload that failed after the page had loaded: the page stays, with this sentence beside the message.
+  const [reloadError, setReloadError] = useState("");
   const panel = useRef<HTMLDivElement>(null);
   const notices = useRef<HTMLDivElement>(null);
   const returnFocus = useReturnFocus(!reloading && !runner.busy, notices, panel);
   useEffect(() => {
     let active = true;
     client.process(processId)
-      .then(detail => { if (active) setLoad({ detail }); })
-      .catch(cause => { if (active) setLoad({ failed: processLoadError(cause) }); })
+      .then(detail => { if (active) { setLoad({ detail }); setReloadError(""); } })
+      .catch(cause => {
+        if (!active) return;
+        const text = processLoadError(cause);
+        setLoad(old => old && "detail" in old ? old : { failed: text });
+        setReloadError(text);
+      })
       .finally(() => { if (active) setReloading(false); });
     return () => { active = false; };
   }, [client, processId, reads]);
   // Right after a start, focus moves to this page's heading (the start dialog it came from is gone).
-  const loaded = load !== null && "detail" in load;
+  // The first answer settles it either way, so a page that failed to load never moves focus later.
+  const settled = load !== null;
   useEffect(() => {
-    if (loaded && takeStartArrival()) returnFocus(null);
-  }, [loaded, returnFocus]);
+    if (settled && takeStartArrival(processId) && !reloadError) returnFocus(null);
+  }, [settled, processId, reloadError, returnFocus]);
   const reload = useCallback(() => { setReloading(true); setReads(count => count + 1); }, []);
 
   const write = (opener: HTMLElement, button: ProcessAction, saved: string, call: () => Promise<unknown>) =>
     runner.run(async () => {
       setOutcome(null);
+      // Cleared first: the same refusal twice is a new message, and takes focus again.
+      setDialogError("");
       try {
         await call();
         setAsk(null);
@@ -106,15 +118,22 @@ export function ProcessDetail({ tenant, processId, readonly, userId }: {
   const busy = runner.busy || reloading;
   const today = processToday();
   const titleOf = (taskId: string | null) => tasks.find(task => task.task_id === taskId)?.title_en ?? null;
+  const nameOf = (employeeId: string) => optionName(people.options, employeeId);
+  const by = (event: ProcessEvent) => `${shortWhen(event.at)} · ${event.actor === null ? "By the system"
+    : event.actor === userId ? "By you" : "By someone in your team"}`;
   const kindWord = processKindLabel(process.kind).toLowerCase();
 
   return <div ref={panel} data-testid="hr-process-detail" aria-busy={busy}>
     <Panel title={`${processKindLabel(process.kind)} for ${process.employee_name}`}>
       <div className="space-y-5">
-        {(outcome?.message || outcome?.error) && <div ref={notices} tabIndex={-1} data-testid="hr-process-outcome"
-          className={`space-y-3 ${NOTICE_FOCUS}`}>
-          {outcome.message && <Notice testId="hr-process-notice">{outcome.message}</Notice>}
-          {outcome.error && <Notice error testId="hr-process-error">{outcome.error}</Notice>}
+        {(outcome?.message || outcome?.error || reloadError) && <div ref={notices} tabIndex={-1}
+          data-testid="hr-process-outcome" className={`space-y-3 ${NOTICE_FOCUS}`}>
+          {outcome?.message && <Notice testId="hr-process-notice">{outcome.message}</Notice>}
+          {outcome?.error && <Notice error testId="hr-process-error">{outcome.error}</Notice>}
+          {reloadError && <div className="space-y-2" data-testid="hr-process-reload-error">
+            <Notice error>{reloadError}</Notice>
+            <button type="button" className={secondary} disabled={busy} onClick={reload}>Try again</button>
+          </div>}
         </div>}
         <dl data-testid="hr-process-header" className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           <Fact label="Template">{process.name
@@ -156,15 +175,28 @@ export function ProcessDetail({ tenant, processId, readonly, userId }: {
         {Array.isArray(events) && <details data-testid="hr-process-history" className="text-sm">
           <summary className={`cursor-pointer font-semibold ${NOTICE_FOCUS}`}>History</summary>
           {events.length === 0 ? <p className="mt-2 text-ink-500">Nothing recorded yet.</p>
-            : <ol className="mt-3 space-y-3">{events.map(event => {
+            : <ol className="mt-3 space-y-3">{groupHistory(events).map(item => {
+              const entry = "border-l-2 border-[color:var(--fs-border)] pl-3";
+              const line = "whitespace-pre-line [overflow-wrap:anywhere]";
+              if (item.created) {
+                // One line for the steps a start created, and why any of them went to the HR team.
+                const [first] = item.created;
+                const count = item.created.length;
+                return <li key={first.event_id} data-testid="hr-process-event" className={entry}>
+                  <p className="font-medium">{count} {count === 1 ? "step" : "steps"} created</p>
+                  <p className="text-[color:var(--fs-text-secondary)]">{by(first)}</p>
+                  {item.created.filter(event => event.detail.fallback === "hr_pool").map(event =>
+                    <p key={event.event_id} className={line}>
+                      {titleOf(event.task_id) ?? "A step"}: {eventLines({ fallback: "hr_pool", reason: event.detail.reason },
+                        nameOf)[0]}</p>)}
+                </li>;
+              }
+              const { event } = item;
               const step = titleOf(event.task_id);
-              return <li key={event.event_id} data-testid="hr-process-event"
-                className="border-l-2 border-[color:var(--fs-border)] pl-3">
+              return <li key={event.event_id} data-testid="hr-process-event" className={entry}>
                 <p className="font-medium [overflow-wrap:anywhere]">{eventText(event.action)}{step ? `: ${step}` : ""}</p>
-                <p className="text-[color:var(--fs-text-secondary)]">{shortWhen(event.at)} · {event.actor === null
-                  ? "By the system" : event.actor === userId ? "By you" : "By someone in your team"}</p>
-                {eventDetailLines(event.detail).map((line, index) =>
-                  <p key={index} className="whitespace-pre-line [overflow-wrap:anywhere]">{line}</p>)}
+                <p className="text-[color:var(--fs-text-secondary)]">{by(event)}</p>
+                {eventLines(event.detail, nameOf).map((text, index) => <p key={index} className={line}>{text}</p>)}
               </li>;
             })}</ol>}
         </details>}

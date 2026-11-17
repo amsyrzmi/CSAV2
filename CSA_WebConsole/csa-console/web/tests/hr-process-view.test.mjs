@@ -13,7 +13,7 @@ const read = (name) => readFile(new URL(name, import.meta.url), "utf8");
 const peopleUrl = moduleUrl(await read("../lib/hr-people.ts"));
 const {
   dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText,
-  processKindLabel, eventText, eventDetailLines, isDateText, replaceQuestion,
+  processKindLabel, eventText, eventLines, groupHistory, isDateText, replaceQuestion,
 } = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
@@ -161,13 +161,97 @@ test("eventText says what a history event did; an action it does not know reads 
   assert.equal(eventText("toString"), "Something changed");
 });
 
-test("eventDetailLines shows a detail as plain text lines, in the order stored", () => {
-  assert.deepEqual(eventDetailLines({}), []);
-  assert.deepEqual(eventDetailLines({ reason: "Left early.\nLaptop back.", due_on: "2026-11-20" }),
-    ["reason: Left early.\nLaptop back.", "due on: 2026-11-20"]);
-  assert.deepEqual(eventDetailLines({ fallback: true, level: 2, to: null, old: { a: 1 }, list: ["x", 2] }),
-    ["fallback: yes", "level: 2", "to: none", 'old: {"a":1}', 'list: ["x",2]']);
-  assert.deepEqual(eventDetailLines({ on_behalf: false }), ["on behalf: no"]);
+const LINA = "55555555-5555-4555-8555-000000000003";
+const FARID = "55555555-5555-4555-8555-000000000002";
+const GONE = "55555555-5555-4555-8555-000000000099";
+const NAMES = { [LINA]: "Lina Wong", [FARID]: "Farid Ismail" };
+const nameOf = (id) => NAMES[id] ?? null;
+const lines = (detail) => eventLines(detail, nameOf);
+
+test("eventLines says every reason code the migrations write as a sentence, never the code", () => {
+  const said = {
+    process_cancelled: "Skipped because the process was cancelled",
+    process_completed: "Skipped because the process was completed",
+    process_closed_anyway: "Skipped because HR closed the process",
+    superseded: "Replaced by a new process",
+    last_day_cleared: "Cancelled because the last day was cleared",
+    rehired: "Cancelled because the person was rehired",
+    cancelled_by_hr: "Cancelled by HR",
+    person_left: "The person left",
+    skipped_by_hr: "Skipped by HR",
+    reassigned_by_hr: "Reassigned by HR",
+    closed_anyway: "Closed by HR before every step was done",
+    no_manager: "The person has no manager",
+    manager_inactive: "Their manager is not active",
+    manager_unlinked: "Their manager has no console account",
+    person_inactive: "The person is not active",
+  };
+  for (const [reason, sentence] of Object.entries(said)) assert.deepEqual(lines({ reason }), [sentence], reason);
+  // A reason a later release adds reads generically.
+  assert.deepEqual(lines({ reason: "later_reason" }), ["Updated"]);
+  assert.deepEqual(lines({ reason: 7 }), ["Updated"]);
+});
+
+test("eventLines says why a step went to the HR team", () => {
+  assert.deepEqual(lines({ owner_role: "manager", assignee_employee_id: null, due_on: "2026-11-20", fallback: "hr_pool",
+    reason: "no_manager" }), ["Assigned to the HR team (the person has no manager)", "Due on 20 Nov 2026", "Owner: Manager"]);
+  assert.deepEqual(lines({ fallback: "hr_pool", reason: "manager_inactive" }),
+    ["Assigned to the HR team (their manager is not active)"]);
+  assert.deepEqual(lines({ fallback: "hr_pool", reason: "manager_unlinked" }),
+    ["Assigned to the HR team (their manager has no console account)"]);
+  assert.deepEqual(lines({ fallback: "hr_pool", reason: "person_inactive" }),
+    ["Assigned to the HR team (the person is not active)"]);
+  assert.deepEqual(lines({ from: LINA, to: null, fallback: "hr_pool", reason: "person_left" }),
+    ["Assigned to the HR team (the person left)", "Was Lina Wong"]);
+  assert.deepEqual(lines({ fallback: "hr_pool", reason: "later" }), ["Assigned to the HR team"]);
+});
+
+test("eventLines shows HR's words, people by name and dates, and hides ids", () => {
+  assert.deepEqual(lines({ reason: "skipped_by_hr", remark: "Done by the agency.\nNo action." }),
+    ["Skipped by HR", "Note: Done by the agency.\nNo action."]);
+  assert.deepEqual(lines({ remark: "Please sign the last page too." }), ["Note: Please sign the last page too."]);
+  assert.deepEqual(lines({ from: LINA, to: FARID, reason: "reassigned_by_hr" }),
+    ["Reassigned by HR", "Assigned to Farid Ismail", "Was Lina Wong"]);
+  assert.deepEqual(lines({ from: null, to: LINA }), ["Assigned to Lina Wong", "Was the HR team"]);
+  // Someone the page cannot name is never shown as an id.
+  assert.deepEqual(lines({ from: GONE, to: GONE }), ["Assigned to someone else"]);
+  assert.deepEqual(lines({ owner_role: "employee", assignee_employee_id: LINA, due_on: null }),
+    ["Assigned to Lina Wong", "Owner: The employee"]);
+  assert.deepEqual(lines({ owner_role: "hr", assignee_employee_id: null }), ["Assigned to the HR team", "Owner: HR team"]);
+  assert.deepEqual(lines({ old: "2026-11-19", new: "2026-11-27" }), ["Due date changed from 19 Nov 2026 to 27 Nov 2026"]);
+  assert.deepEqual(lines({ old: null, new: "2026-11-27" }), ["Due date changed from no date to 27 Nov 2026"]);
+  assert.deepEqual(lines({ anchor: "last_day", old: "2026-11-19", new: "2026-11-18", clamped: true }), [
+    "Due date changed from 19 Nov 2026 to 18 Nov 2026", "Counted from the last day", "Kept on or before the last day"]);
+  assert.deepEqual(lines({ kind: "onboarding", template_id: LINA, template_version: 2 }), ["Onboarding", "Template version 2"]);
+});
+
+test("eventLines says what a completion or an approval was", () => {
+  assert.deepEqual(lines({ awaiting_approval: false, on_behalf: false }), []);
+  assert.deepEqual(lines({ awaiting_approval: true, on_behalf: true, auto_check: "account_linked" }), [
+    "Checked automatically: the person's console account is linked.", "Waiting for approval",
+    "Done by HR for the person it is assigned to"]);
+  assert.deepEqual(lines({ approver: "manager" }), ["Approved by the manager"]);
+  assert.deepEqual(lines({ approver: "hr", approved_without_second_person: true }),
+    ["Approved by HR", "Approved without a second person: no one else in HR could approve it"]);
+  assert.deepEqual(lines({ reason: "person_left", remark: "Not needed.", sent_back: true }),
+    ["The person left", "Note: Not needed.", "Sent back after the person left, so it was skipped"]);
+});
+
+test("eventLines keeps a key it does not know as plain text, but never an id", () => {
+  assert.deepEqual(lines({ level: 2, urgent: true, quiet: false, nothing: null, label: "Second reminder" }),
+    ["level: 2", "urgent: yes", "quiet: no", "nothing: none", "label: Second reminder"]);
+  assert.deepEqual(lines({ owner_hint: LINA, list: ["x", 2], nested: { who: FARID }, plain: { a: 1 } }),
+    ['list: ["x",2]', 'plain: {"a":1}']);
+  assert.deepEqual(lines({ kind: "later_kind", owner_role: "later_role", approver: "later", anchor: "later" }), []);
+});
+
+test("groupHistory folds each run of task.created into one item", () => {
+  const event = (id, action) => ({ event_id: id, action });
+  const items = groupHistory([event("1", "process.started"), event("2", "task.created"), event("3", "task.created"),
+    event("4", "task.sent_back"), event("5", "task.created")]);
+  assert.deepEqual(items.map((item) => item.created ? item.created.map((e) => e.event_id) : item.event.event_id),
+    ["1", ["2", "3"], "4", ["5"]]);
+  assert.deepEqual(groupHistory([]), []);
 });
 
 test("isDateText takes a real calendar date as YYYY-MM-DD only", () => {

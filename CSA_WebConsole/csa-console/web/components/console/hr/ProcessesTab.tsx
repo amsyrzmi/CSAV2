@@ -1,10 +1,12 @@
 "use client";
+import { useEffect } from "react";
 import { hrHref, type HrRoute } from "@/lib/hr-paths";
 import SectionNav from "../kit/SectionNav";
 import { Panel } from "../ui";
 import type { HrTabProps } from "./HrShell";
 import { ProcessDetail } from "./ProcessDetail";
 import { ProcessList } from "./ProcessList";
+import { forgetStartArrival } from "./StartProcessForm";
 
 export type ProcessesRoute = Extract<HrRoute, { tab: "processes" }>;
 
@@ -15,6 +17,11 @@ export type ProcessesRoute = Extract<HrRoute, { tab: "processes" }>;
 export function ProcessesTab({ route, tenant, readonly, platform, userId }: HrTabProps & { route: ProcessesRoute }) {
   const href = (next: HrRoute) => hrHref(next, platform, tenant);
   const templates = route.view === "templates" || route.view === "template" || route.view === "new-template";
+  // A start's focus move belongs to the process it opened: moving to any other page here forgets it,
+  // and that process's first answer takes it (loaded or not). No unmount cleanup: development
+  // StrictMode replays one on mount and would drop the move before the new process loads.
+  const open = route.view === "detail" ? route.processId : null;
+  useEffect(() => { forgetStartArrival(open); }, [open]);
   return <div data-testid="hr-processes" className="space-y-5">
     <SectionNav label="Process pages" testId="hr-process-views" current={templates ? "templates" : "list"} items={[
       { key: "list", label: "Processes", href: href({ tab: "processes", view: "list" }), testId: "hr-process-view-list" },

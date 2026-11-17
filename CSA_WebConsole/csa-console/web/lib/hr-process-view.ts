@@ -129,19 +129,116 @@ export function eventText(action: string): string {
   return Object.hasOwn(EVENT, action) ? EVENT[action] : "Something changed";
 }
 
+/** The `reason` codes the migrations (0632-0636) write, as sentences. */
+const REASON: Record<string, string> = {
+  process_cancelled: "Skipped because the process was cancelled",
+  process_completed: "Skipped because the process was completed",
+  process_closed_anyway: "Skipped because HR closed the process",
+  superseded: "Replaced by a new process",
+  last_day_cleared: "Cancelled because the last day was cleared",
+  rehired: "Cancelled because the person was rehired",
+  cancelled_by_hr: "Cancelled by HR",
+  person_left: "The person left",
+  skipped_by_hr: "Skipped by HR",
+  reassigned_by_hr: "Reassigned by HR",
+  closed_anyway: "Closed by HR before every step was done",
+  no_manager: "The person has no manager",
+  manager_inactive: "Their manager is not active",
+  manager_unlinked: "Their manager has no console account",
+  person_inactive: "The person is not active",
+};
+/** Why a step went to the HR team (`fallback: "hr_pool"`), inside a sentence. */
+const POOL_REASON: Record<string, string> = {
+  no_manager: "the person has no manager",
+  manager_inactive: "their manager is not active",
+  manager_unlinked: "their manager has no console account",
+  person_inactive: "the person is not active",
+  person_left: "the person left",
+};
+/** The keys `eventLines` says in words; any other key is shown as plain "key: value". */
+const KNOWN_DETAIL: ReadonlySet<string> = new Set([
+  "reason", "fallback", "remark", "from", "to", "assignee_employee_id", "old", "new", "due_on", "anchor", "clamped",
+  "kind", "template_id", "template_version", "owner_role", "auto_check", "awaiting_approval", "on_behalf", "approver",
+  "approved_without_second_person", "sent_back",
+]);
+const ID_TEXT = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const known = <T extends string>(table: Record<T, string>, value: unknown): value is T =>
+  typeof value === "string" && Object.hasOwn(table, value);
+
+/** A value of a key the console does not know, as plain text; null when it holds an id (never shown). */
+function plainValue(value: unknown): string | null {
+  const text = typeof value === "string" ? value
+    : value === null || value === undefined ? "none"
+      : typeof value === "boolean" ? (value ? "yes" : "no")
+        : typeof value === "number" ? String(value) : JSON.stringify(value);
+  return ID_TEXT.test(text) ? null : text;
+}
+
 /**
- * A history event's `detail` as plain text, one "key: value" line per key in the order stored. Values
- * are shown exactly as stored (text may hold line breaks); a yes/no, nothing, or any other JSON value
- * reads as plain text too, so a key a later release adds still shows.
+ * A history event's `detail` in words, one line each: the reason as a sentence (an unknown one reads
+ * "Updated"), HR's own words (`remark`), people by name through `nameOf` (an id the page cannot name
+ * is never shown), dates as "27 Oct 2026". A key a later release adds is shown as "key: value",
+ * unless its value holds an id. Line breaks in HR's words are kept.
  */
-export function eventDetailLines(detail: Record<string, unknown>): string[] {
-  return Object.entries(detail).map(([key, value]) => {
-    const text = typeof value === "string" ? value
-      : value === null || value === undefined ? "none"
-        : typeof value === "boolean" ? (value ? "yes" : "no")
-          : typeof value === "number" ? String(value) : JSON.stringify(value);
-    return `${key.replaceAll("_", " ")}: ${text}`;
-  });
+export function eventLines(detail: Record<string, unknown>, nameOf: (employeeId: string) => string | null): string[] {
+  const lines: string[] = [];
+  const has = (key: string) => Object.hasOwn(detail, key);
+  /** A person: null is the HR team; undefined is someone the page cannot name. */
+  const who = (value: unknown) => value === null ? "the HR team"
+    : typeof value === "string" ? nameOf(value) ?? undefined : undefined;
+  const day = (value: unknown) => value === null ? "no date"
+    : typeof value === "string" && isDateText(value) ? dateText(value) : "another date";
+  const pooled = detail.fallback === "hr_pool";
+  if (pooled)
+    lines.push(known(POOL_REASON, detail.reason) ? `Assigned to the HR team (${POOL_REASON[detail.reason]})` : "Assigned to the HR team");
+  else if (has("reason")) lines.push(known(REASON, detail.reason) ? REASON[detail.reason] : "Updated");
+  if (typeof detail.remark === "string" && detail.remark.trim()) lines.push(`Note: ${detail.remark}`);
+  if (has("to") && !pooled) {
+    const to = who(detail.to);
+    lines.push(to === undefined ? "Assigned to someone else" : `Assigned to ${to}`);
+  }
+  if (has("from")) {
+    const from = who(detail.from);
+    if (from !== undefined) lines.push(`Was ${from}`);
+  }
+  if (has("assignee_employee_id") && !pooled) {
+    const assignee = who(detail.assignee_employee_id);
+    if (assignee !== undefined) lines.push(`Assigned to ${assignee}`);
+  }
+  if (has("old") || has("new")) lines.push(`Due date changed from ${day(detail.old)} to ${day(detail.new)}`);
+  if (typeof detail.due_on === "string" && isDateText(detail.due_on)) lines.push(`Due on ${dateText(detail.due_on)}`);
+  if (known(ANCHOR, detail.anchor)) lines.push(`Counted from ${ANCHOR[detail.anchor]}`);
+  if (detail.clamped === true) lines.push("Kept on or before the last day");
+  if (known(KIND, detail.kind)) lines.push(KIND[detail.kind]);
+  if (typeof detail.template_version === "number") lines.push(`Template version ${detail.template_version}`);
+  if (known(OWNER_ROLE, detail.owner_role)) lines.push(`Owner: ${OWNER_ROLE[detail.owner_role]}`);
+  if (typeof detail.auto_check === "string") lines.push(autoCheckText(detail.auto_check, false));
+  if (detail.awaiting_approval === true) lines.push("Waiting for approval");
+  if (detail.on_behalf === true) lines.push("Done by HR for the person it is assigned to");
+  if (detail.approver === "hr" || detail.approver === "manager")
+    lines.push(`Approved by ${detail.approver === "hr" ? "HR" : "the manager"}`);
+  if (detail.approved_without_second_person === true)
+    lines.push("Approved without a second person: no one else in HR could approve it");
+  if (detail.sent_back === true) lines.push("Sent back after the person left, so it was skipped");
+  for (const [key, value] of Object.entries(detail)) {
+    if (KNOWN_DETAIL.has(key)) continue;
+    const text = plainValue(value);
+    if (text !== null) lines.push(`${key.replaceAll("_", " ")}: ${text}`);
+  }
+  return lines;
+}
+
+/** History items: each run of `task.created` events (one per step of a start) becomes one item. */
+export type HistoryItem<E> = { event: E; created?: undefined } | { created: E[]; event?: undefined };
+export function groupHistory<E extends { action: string }>(events: readonly E[]): HistoryItem<E>[] {
+  const items: HistoryItem<E>[] = [];
+  for (const event of events) {
+    const last = items.at(-1);
+    if (event.action !== "task.created") items.push({ event });
+    else if (last?.created) last.created.push(event);
+    else items.push({ created: [event] });
+  }
+  return items;
 }
 
 /** A real calendar date written `YYYY-MM-DD`, as a due date is sent. */

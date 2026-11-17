@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { hrHref } from "@/lib/hr-paths";
+import { shortWhen } from "@/lib/hr-pickers";
 import { peopleClient, type Department } from "@/lib/hr-people-api";
 import { processClient, type ProcessFilters, type ProcessKind, type ProcessRow, type ProcessStatus } from "@/lib/hr-process-api";
 import { processLoadError } from "@/lib/hr-process-copy";
@@ -83,6 +84,8 @@ export function ProcessList({ tenant, readonly, platform }: { tenant: string; re
   };
   const today = processToday();
   const detailHref = (processId: string) => hrHref({ tab: "processes", view: "detail", processId }, platform, tenant);
+  // One person may have two processes: each link's name says which one.
+  const linkName = (row: ProcessRow) => `${row.employee_name}, ${processKindLabel(row.kind)}, started ${shortWhen(row.started_at)}`;
 
   return <div className="space-y-5" data-testid="hr-process-list">
     <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" role="search" aria-label="Filter processes"
@@ -104,7 +107,8 @@ export function ProcessList({ tenant, readonly, platform }: { tenant: string; re
           {departments.map(item => <option key={item.department_id} value={item.department_id}>
             {item.name}{item.archived ? " (archived)" : ""}</option>)}
         </select></label>
-      {ownerFilter && <PersonSelect people={people} name="owner" label="Step owner" noneLabel="Anyone" required={false} />}
+      {/* `owner` keeps the processes with a step assigned to that person. */}
+      {ownerFilter && <PersonSelect people={people} name="owner" label="Assigned to" noneLabel="Anyone" required={false} />}
       <label className="flex min-h-10 items-center gap-2 self-end text-sm pointer-coarse:min-h-11">
         <input type="checkbox" name="overdue" className="h-4 w-4" />Overdue only</label>
       {filtered && <div className="flex items-end">
@@ -130,7 +134,8 @@ export function ProcessList({ tenant, readonly, platform }: { tenant: string; re
                   <th className="p-2" key={label} scope="col">{label}</th>)}</tr></thead>
                 <tbody>{current.items.map(row => <tr key={row.process_id} data-testid={`hr-process-row-${row.process_id}`}
                   className="border-t border-ink-200 align-top">
-                  <td className="p-2 [overflow-wrap:anywhere]"><Link className="font-medium underline" href={detailHref(row.process_id)}>
+                  <td className="p-2 [overflow-wrap:anywhere]"><Link className="font-medium underline" href={detailHref(row.process_id)}
+                    aria-label={linkName(row)}>
                     {row.employee_name}</Link></td>
                   <td className="p-2 [overflow-wrap:anywhere]"><ProcessName row={row} /></td>
                   <td className="p-2">{progressText(row.tasks_done, row.tasks_total)}</td>
@@ -140,7 +145,8 @@ export function ProcessList({ tenant, readonly, platform }: { tenant: string; re
               </table>
               <ul data-testid="hr-process-cards" className="space-y-3 md:hidden">{current.items.map(row =>
                 <li key={row.process_id} data-testid={`hr-process-card-${row.process_id}`} className={card}>
-                  <Link className="font-medium underline [overflow-wrap:anywhere]" href={detailHref(row.process_id)}>{row.employee_name}</Link>
+                  <Link className="font-medium underline [overflow-wrap:anywhere]" href={detailHref(row.process_id)}
+                    aria-label={linkName(row)}>{row.employee_name}</Link>
                   <dl className="mt-2 space-y-1 text-sm">
                     <div className="flex justify-between gap-3"><dt className="text-[color:var(--fs-text-secondary)]">Process</dt>
                       <dd className="min-w-0 text-right [overflow-wrap:anywhere]"><ProcessName row={row} /></dd></div>
