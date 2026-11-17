@@ -7,6 +7,7 @@ member; admin a tenant admin with no HR authority.
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,7 +19,7 @@ from csa.hr import processes as process_service
 
 from tests.conftest import requires_docker
 from tests.test_hr_people import make_other_tenant_owner, make_people_manager
-from tests.test_hr_persistence import HrWorld, hr_database, world
+from tests.test_hr_persistence import ORIGIN, HrWorld, hr_database, world
 from tests.test_hr_process_api import (
     HR,
     PROCESSES,
@@ -710,3 +711,46 @@ async def test_my_tasks_pages_soonest_due_first(world: HrWorld) -> None:
     # A cursor this caller cannot place (another tenant's step) gives an empty page.
     foreign_task, _process = await foreign_ids(world)
     assert (await mine(world, "owner", f"after={foreign_task}"))["items"] == []
+
+
+async def test_note_and_complete_take_a_long_escaped_note_other_task_writes_keep_8192(
+    world: HrWorld,
+) -> None:
+    """A 2000-character note sent with every character JSON-escaped (\\uXXXX pairs for an emoji)
+    is far over 8192 bytes: complete and note take up to 32768; the other task writes keep 8192."""
+    process = await custom_process(
+        world,
+        world.employees["staff"],
+        step(title_en="Fill in details", owner_role="employee"),
+        step(title_en="Order a desk"),
+    )
+    note = "\U0001f600" * 2000
+    task, body = await at(world, process, 1)
+
+    async def raw(who: str, path: str, payload: dict[str, Any]) -> httpx.Response:
+        await world.call(who, "GET", MINE)  # opens the browser with its cookies
+        content = json.dumps(payload, ensure_ascii=True).encode()
+        assert len(content) > 8192
+        return await world.browsers[who].post(
+            path,
+            content=content,
+            headers={
+                "Origin": ORIGIN,
+                "X-CSRF-Token": world.csrf[who],
+                "Idempotency-Key": str(uuid4()),
+                "Content-Type": "application/json",
+            },
+        )
+
+    noted = await raw("staff", f"{TASKS}/{task}/note", {"note": note})
+    assert noted.status_code == 200, noted.text
+    completed = await raw(
+        "staff", f"{TASKS}/{task}/complete", {"expected_version": 2, "note": note}
+    )
+    assert completed.status_code == 200, completed.text
+    assert (await task_of(world, process, 1))["note"] == note
+    other, other_body = await at(world, process, 2)
+    skipped = await raw("owner", f"{TASKS}/{other}/skip", {**other_body, "reason": "x" * 9000})
+    problem(skipped, 413, "hr_request_too_large")
+    too_long = await raw("staff", f"{TASKS}/{task}/note", {"note": "\U0001f600" * 3000})
+    problem(too_long, 413, "hr_request_too_large")

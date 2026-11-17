@@ -98,6 +98,9 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy
 _BODY_LIMITS = {"/console/v1/hr/operations": 262144, "/console/v1/hr/access/changes": 65536}
 _DOCUMENT_UPLOAD = re.compile(r"/console/v1/hr/people/[0-9a-fA-F-]{36}/documents")
 _TEMPLATE_WRITE = re.compile(r"/console/v1/hr/templates(/[0-9a-fA-F-]{36})?")
+# A step's note is up to 2000 characters; escaped as JSON (\uXXXX pairs) it can pass 8192 bytes.
+_TASK_NOTE_WRITE = re.compile(r"/console/v1/hr/tasks/[0-9a-fA-F-]{36}/(complete|note)")
+TASK_NOTE_BODY_LIMIT = 32768
 # Extra query keys per GET path; every HR path also takes client_id.
 _QUERY_KEYS = {
     "/console/v1/hr/employees": {"limit", "after"},
@@ -159,6 +162,8 @@ class HrRoute(APIRoute):
                     else TEMPLATE_BODY_LIMIT
                     if request.method in {"POST", "PUT"}
                     and _TEMPLATE_WRITE.fullmatch(request.url.path)
+                    else TASK_NOTE_BODY_LIMIT
+                    if request.method == "POST" and _TASK_NOTE_WRITE.fullmatch(request.url.path)
                     else _BODY_LIMITS.get(request.url.path, 8192)
                 )
                 async for chunk in request.stream():
