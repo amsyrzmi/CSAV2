@@ -69,7 +69,9 @@ def out(payload):
 
 
 def fail(code, operation, text):
-    sys.stderr.write(f"An error occurred ({code}) when calling the {operation} operation: {text}\n")
+    # The real CLI starts its error text with a blank line.
+    message = f"An error occurred ({code}) when calling the {operation} operation: {text}"
+    sys.stderr.write(f"\n{message}\n")
     sys.exit(254)
 
 
@@ -109,6 +111,9 @@ if opts.get("output") != "json":
     bug("--output json is required")
 if os.environ.get("FAKE_AWS_DENY") == f"{service} {command}":
     fail("AccessDenied", command, "User is not authorized to perform this operation.")
+if os.environ.get("FAKE_AWS_SILENT") == f"{service} {command}":
+    sys.stderr.write("\n  \n")
+    sys.exit(254)
 
 state = load()
 account = os.environ.get("FAKE_AWS_ACCOUNT", state["account"])
@@ -231,7 +236,8 @@ elif (service, command) == ("ssm", "update-document-default-version"):
 
 elif (service, command) == ("ssm", "get-document"):
     document = document_or_missing("GetDocument")
-    version = int(opts.get("document-version", document["default"]))
+    version = opts.get("document-version", document["default"])
+    version = len(document["versions"]) if version == "$LATEST" else int(version)
     out({"Name": opts["name"], "DocumentVersion": str(version), "Status": "Active",
          "Content": document["versions"][version - 1]})
 
@@ -443,11 +449,29 @@ def test_an_unexpected_aws_error_stops_the_run_and_names_the_step(aws: Aws) -> N
     result = aws.apply("staging", env={"FAKE_AWS_DENY": "iam get-role"})
     assert result.returncode == 1
     assert "AccessDenied" in result.stderr
+    # The real CLI's text starts with a blank line; the reason is its first non-blank line.
+    assert re.search(r"failed: An error occurred", result.stderr), result.stderr
     # The provider step finished before the failing role step; nothing after it ran.
     assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == [
         "iam create-open-id-connect-provider"
     ]
     assert aws.commands()[-1] == "iam get-role"
+
+
+def test_an_aws_error_with_no_text_still_says_something(aws: Aws) -> None:
+    result = aws.apply("staging", env={"FAKE_AWS_SILENT": "iam get-role"})
+    assert result.returncode == 1
+    assert re.search(r"failed: \S", result.stderr), result.stderr
+
+
+def test_a_failed_identity_call_prints_a_plain_message(aws: Aws) -> None:
+    result = aws.apply("staging", env={"FAKE_AWS_DENY": "sts get-caller-identity"})
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[0].startswith(
+        "could not read the caller identity: An error occurred"
+    )
+    assert "[0/0]" not in result.stderr
+    assert aws.commands() == ["sts get-caller-identity"]
 
 
 # --- apply ----------------------------------------------------------------------------------
@@ -560,6 +584,59 @@ def test_a_changed_document_is_updated_and_made_the_default(aws: Aws, target: st
     aws.reset_log()
     assert aws.apply(target).returncode == 0
     assert not [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)]
+
+
+def test_an_interrupted_document_update_is_finished_by_a_rerun(aws: Aws) -> None:
+    assert aws.apply("staging").returncode == 0
+    name = "csa-staging-plan"
+    state = aws.state()
+    current = state["documents"][name]["versions"][0]
+    old = json.loads(current)
+    old["description"] = "an older description"
+    # update-document succeeded (a new version holds the right content), but the default was
+    # never moved: AWS would now reject another update-document as a duplicate.
+    state["documents"][name]["versions"] = [json.dumps(old), json.dumps(old, indent=2), current]
+    state["documents"][name]["default"] = 1
+    aws.save(state)
+    aws.reset_log()
+
+    check = aws.check("staging")
+    assert check.returncode == 1
+    assert "differs" in {m.group(4) for m in step_lines(check)}
+    assert all(READ_ONLY.match(command) for command in aws.commands()), aws.commands()
+    aws.reset_log()
+
+    result = aws.apply("staging")
+
+    assert result.returncode == 0, result.stderr
+    [write] = [c for c in aws.calls() if CREATE_OR_UPDATE.match(" ".join(c["argv"][:2]))]
+    assert write["argv"][:2] == ["ssm", "update-document-default-version"]
+    assert write["argv"][write["argv"].index("--document-version") + 1] == "3"
+    assert aws.state()["documents"][name]["default"] == 3
+    assert len(aws.state()["documents"][name]["versions"]) == 3
+    assert "updated" in {m.group(4) for m in step_lines(result)}
+    aws.reset_log()
+    assert aws.apply("staging").returncode == 0
+    assert not [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)]
+
+
+def test_a_stale_latest_version_is_not_mistaken_for_the_right_content(aws: Aws) -> None:
+    assert aws.apply("staging").returncode == 0
+    name = "csa-staging-plan"
+    state = aws.state()
+    current = state["documents"][name]["versions"][0]
+    old = json.loads(current)
+    old["description"] = "an older description"
+    state["documents"][name]["versions"] = [json.dumps(old), json.dumps(old, indent=2)]
+    aws.save(state)
+    aws.reset_log()
+
+    assert aws.apply("staging").returncode == 0
+
+    assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == [
+        "ssm update-document",
+        "ssm update-document-default-version",
+    ]
 
 
 def test_a_document_with_only_different_formatting_counts_as_unchanged(aws: Aws) -> None:
@@ -775,6 +852,11 @@ def test_activate_prints_the_id_and_code_once_with_the_warning(aws: Aws) -> None
         "type the code at the hidden prompt on the host; never paste it anywhere else"
     ]
     steps = step_lines(result)
+    # The code is on stdout only: no file anywhere under the temp dir or the test directory.
+    for path in aws.tmp.parent.rglob("*"):
+        if path.is_file() and aws.bin not in path.parents:  # the fake aws holds the literal
+            assert b"FAKE-ACTIVATION-CODE-0123" not in path.read_bytes(), path
+    assert list(aws.tmp.iterdir()) == []
     assert {int(m.group(2)) for m in steps} == {3}
     for number in (1, 2, 3):
         assert len([m for m in steps if int(m.group(1)) == number]) == 2
@@ -806,6 +888,33 @@ def test_a_failed_activation_prints_no_code_and_leaves_no_temporary_files(aws: A
     assert "AccessDenied" in result.stderr
     assert "Activation code" not in result.stdout
     assert list(aws.tmp.iterdir()) == []
+
+
+WAIT_HINT = (
+    "if the role was only just created, wait a minute and run the same command again "
+    "(it will say exists and continue)"
+)
+
+
+def test_a_failed_activation_after_creating_the_role_says_to_wait_and_rerun(aws: Aws) -> None:
+    result = aws.run(
+        "staging", "activate", "--region", REGION, env={"FAKE_AWS_DENY": "ssm create-activation"}
+    )
+    assert result.returncode == 1
+    assert WAIT_HINT in result.stderr.splitlines()
+    assert "iam create-role" in aws.commands()
+    assert aws.commands()[-1] == "ssm create-activation"  # no retry loop
+
+
+def test_a_failed_activation_with_an_existing_role_gives_no_wait_hint(aws: Aws) -> None:
+    assert activate(aws, "staging").returncode == 0
+    aws.reset_log()
+    result = aws.run(
+        "staging", "activate", "--region", REGION, env={"FAKE_AWS_DENY": "ssm create-activation"}
+    )
+    assert result.returncode == 1
+    assert WAIT_HINT not in result.stderr
+    assert "iam create-role" not in aws.commands()
 
 
 def test_activate_node_role_names_match_the_runbook() -> None:
@@ -1040,6 +1149,15 @@ def test_every_step_is_printed_and_nothing_else_from_aws(aws: Aws, target: str) 
         if not STEP_LINE.match(line) and not line.startswith("Role ARN ")
     ]
     assert all(line == "" or line.startswith("apply ") for line in others), others
+    notes = [line for line in others if line.startswith("apply note: ")]
+    assert any("run check before apply" in line and "--subject" in line for line in notes), notes
+    arn_note = [line for line in notes if "CloudShell" in line]
+    assert len(arn_note) == 1 and "GitHub environment secrets" in arn_note[0], notes
+    assert "account id" in arn_note[0] and arn_note[0].endswith("only"), notes
+    lines = result.stdout.splitlines()
+    assert lines.index(arn_note[0]) < min(
+        i for i, line in enumerate(lines) if line.startswith("Role ARN ")
+    )
     # Account and node ids appear nowhere in the output apart from the role ARNs.
     for line in result.stdout.splitlines():
         if not line.startswith("Role ARN "):

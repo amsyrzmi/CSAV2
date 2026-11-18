@@ -14,7 +14,11 @@
 #          creates it (or updates its trust) and puts its inline policy; for each Systems Manager
 #          document, creates it (or, when the default version's content differs, updates it and
 #          makes the new version the default). Anything already right is left alone: a second
-#          run makes no write call. Ends by printing the role ARNs, which go into GitHub secrets.
+#          run makes no write call. An interrupted document update (the new version exists but is
+#          not the default) is finished by the next run. Ends by printing the role ARNs, which
+#          contain the account id: use them in CloudShell and in GitHub environment secrets only.
+#          Run `check` before `apply` (especially for production, where a mistyped --subject
+#          rewrites a role's trust policy).
 #   check  read-only (get, list and describe calls only): reports ok, missing or differs for the
 #          provider, each role's trust and inline policy, each document's default version, and
 #          the node's ping status. Exits 0 only when everything is ok.
@@ -166,10 +170,19 @@ aws_call() {
     return "$status"
 }
 
-aws_fail() {
+# first_error_line: the first non-blank line of AWS_ERR (the real CLI starts its text with a blank
+# line), or a fallback when there is none.
+first_error_line() {
     local first
-    first="$(head -n 1 <<< "$AWS_ERR")"
-    echo "[$STEP/$TOTAL] $WHAT: failed: $first" >&2
+    first="$(grep -m1 -v '^[[:space:]]*$' <<< "$AWS_ERR" || true)"
+    echo "${first:-no error text from aws}"
+}
+
+FAIL_HINT=""
+
+aws_fail() {
+    echo "[$STEP/$TOTAL] $WHAT: failed: $(first_error_line)" >&2
+    if [[ -n "$FAIL_HINT" ]]; then echo "$FAIL_HINT" >&2; fi
     exit 1
 }
 
@@ -191,7 +204,10 @@ aws_probe() {
 }
 
 # ---- the account, then the filled templates -------------------------------------------------
-aws_must sts get-caller-identity
+if [[ "$ACTION" == "apply" ]]; then
+    echo "apply note: run check before apply (read-only); a mistyped --subject rewrites a role's trust policy, so do this especially for production"
+fi
+aws_call sts get-caller-identity || die "could not read the caller identity: $(first_error_line)"
 ACCOUNT="$(jq -r '.Account // empty' <<< "$AWS_OUT")"
 valid '^[0-9]{12}$' "$ACCOUNT" || die "the account id from sts get-caller-identity is not 12 digits"
 OIDC_ARN="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
@@ -279,16 +295,32 @@ policy_state() {
     if [[ "$have" == "$want" ]]; then STATE=ok; else STATE=differs; fi
 }
 
-# document_state <document> <file>: compares the default version's content.
+# document_state <document> <file>: compares the default version's content. When it differs,
+# LATEST_MATCH becomes the number of the latest version if that one already holds the right
+# content (an update-document that was never followed by update-document-default-version);
+# otherwise it is empty.
+LATEST_MATCH=""
 document_state() {
     local have want
+    LATEST_MATCH=""
     if ! aws_probe InvalidDocument ssm get-document --name "$1" --document-format JSON; then
         STATE=missing
         return 0
     fi
     have="$(jq -r '.Content' <<< "$AWS_OUT" | jq -S . 2> /dev/null)" || have="not JSON"
     want="$(normalised "$WORK/files/$2")"
-    if [[ "$have" == "$want" ]]; then STATE=ok; else STATE=differs; fi
+    if [[ "$have" == "$want" ]]; then
+        STATE=ok
+        return 0
+    fi
+    STATE=differs
+    if aws_probe InvalidDocument ssm get-document --name "$1" --document-version '$LATEST' --document-format JSON; then
+        have="$(jq -r '.Content' <<< "$AWS_OUT" | jq -S . 2> /dev/null)" || have="not JSON"
+        if [[ "$have" == "$want" ]]; then
+            LATEST_MATCH="$(jq -r '.DocumentVersion // empty' <<< "$AWS_OUT")"
+            valid '^[0-9]+$' "$LATEST_MATCH" || die "[$STEP/$TOTAL] $WHAT: get-document returned no version number"
+        fi
+    fi
 }
 
 node_state() {
@@ -308,6 +340,7 @@ node_state() {
 if [[ "$ACTION" == "activate" ]]; then
     TOTAL=3
 
+    ROLE_CREATED=0
     step_begin "node role $NODE_ROLE"
     if aws_probe NoSuchEntity iam get-role --role-name "$NODE_ROLE"; then
         step_end exists
@@ -316,6 +349,7 @@ if [[ "$ACTION" == "activate" ]]; then
         jq -n --arg account "$ACCOUNT" --arg region "$REGION" '{Version: "2012-10-17", Statement: [{Effect: "Allow", Principal: {Service: "ssm.amazonaws.com"}, Action: "sts:AssumeRole", Condition: {StringEquals: {"aws:SourceAccount": $account}, ArnEquals: {"aws:SourceArn": ("arn:aws:ssm:" + $region + ":" + $account + ":*")}}}]}' > "$WORK/ssm-node-trust.json"
         aws_must iam create-role --role-name "$NODE_ROLE" \
             --assume-role-policy-document "file://$WORK/ssm-node-trust.json"
+        ROLE_CREATED=1
         step_end created
     fi
 
@@ -325,6 +359,9 @@ if [[ "$ACTION" == "activate" ]]; then
     step_end attached
 
     step_begin "single-use activation for $INSTANCE_NAME, expires in 4 hours"
+    if [[ "$ROLE_CREATED" -eq 1 ]]; then
+        FAIL_HINT="if the role was only just created, wait a minute and run the same command again (it will say exists and continue)"
+    fi
     EXPIRY="$(date -u -d '+4 hours' +%Y-%m-%dT%H:%M:%SZ)"
     aws_must ssm create-activation --iam-role "$NODE_ROLE" --default-instance-name "$INSTANCE_NAME" \
         --registration-limit 1 --expiration-date "$EXPIRY"
@@ -402,10 +439,13 @@ for entry in "${DOCUMENTS[@]}"; do
             --document-type Command --document-format JSON
         step_end created
     elif [[ "$STATE" == "differs" ]]; then
-        aws_must ssm update-document --name "$document" --content "file://$WORK/files/$file" \
-            --document-version '$LATEST' --document-format JSON
-        version="$(jq -r '.DocumentDescription.DocumentVersion // empty' <<< "$AWS_OUT")"
-        valid '^[0-9]+$' "$version" || die "[$STEP/$TOTAL] $WHAT: update-document returned no version number"
+        version="$LATEST_MATCH"
+        if [[ -z "$version" ]]; then
+            aws_must ssm update-document --name "$document" --content "file://$WORK/files/$file" \
+                --document-version '$LATEST' --document-format JSON
+            version="$(jq -r '.DocumentDescription.DocumentVersion // empty' <<< "$AWS_OUT")"
+            valid '^[0-9]+$' "$version" || die "[$STEP/$TOTAL] $WHAT: update-document returned no version number"
+        fi
         aws_must ssm update-document-default-version --name "$document" --document-version "$version"
         step_end updated
     else
@@ -426,6 +466,7 @@ if [[ "$ACTION" == "check" ]]; then
 fi
 
 # apply: the role ARNs go into GitHub secrets (see deploy/PRODUCTION.md and deploy/STAGING_PIPELINE.md).
+echo "apply note: the role ARNs below contain the account id: use them in CloudShell and in GitHub environment secrets only"
 for entry in "${ROLES[@]}"; do
     IFS='|' read -r role _ <<< "$entry"
     aws_must iam get-role --role-name "$role"
