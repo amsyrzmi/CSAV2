@@ -4,8 +4,8 @@ Two older documents, ``deploy/PRODUCTION.md`` and ``deploy/STAGING_PIPELINE.md``
 generic sections to DEPLOY.md and keep a heading and a pointer where something points at them.
 ``MOVED`` and ``KEEP_STUB`` hold exactly what must stay findable; they do not freeze every heading
 of the old files, because feature rollout sections there are edited with each feature. That
-nothing was dropped in a move was proved once, by a throwaway line-by-line check that is not part
-of the repository.
+nothing is dropped in a move is checked by a one-off line-by-line comparison made when the move
+happens; it is not a test and is not kept in the repository.
 
 Also here: the stale-wording guard (the image publish needs no approval today), which fails until
 the older documents, the skills and the workflow header say so too, and the scan that keeps real
@@ -98,6 +98,7 @@ def test_moved_headings_exist_at_their_destination_and_stubbed_ones_keep_a_point
     for (_, _), (destination_file, destination_heading) in MOVED.items():
         assert _has_heading(_read(destination_file), destination_heading), destination_heading
 
+    assert KEEP_STUB <= set(MOVED), "every stubbed heading must also be listed in MOVED"
     for old_file, old_heading in KEEP_STUB:
         destination_file, destination_heading = MOVED[(old_file, old_heading)]
         assert destination_file == DEPLOY_NAME, (old_file, old_heading)
@@ -105,6 +106,9 @@ def test_moved_headings_exist_at_their_destination_and_stubbed_ones_keep_a_point
         pointer = f'Moved to deploy/DEPLOY.md, "{title}".'
         text = _read(old_file)
         assert _has_heading(text, old_heading), (old_file, old_heading)
+        # _section includes child headings, so a pointer under a `###` child (or inside a code
+        # fence or an HTML comment) would also pass. Accepted: the pointers are written by hand
+        # and read in review; this test keeps the heading and the pointer from vanishing.
         assert pointer in _section(text, old_heading), (old_file, old_heading, pointer)
 
 
@@ -146,17 +150,48 @@ def test_deploy_doc_has_its_required_headings() -> None:
     assert sum(1 for heading in found if heading.startswith("# ")) == 1
 
 
+SETUP_FLAGS = {
+    "--check",
+    "--repo",
+    "--region",
+    "--image-namespace",
+    "--reviewer",
+    "--replace-reviewers",
+    "--auto-plan",
+    "--paused",
+}
+
+
 def _setup_script_words() -> tuple[set[str], set[str]]:
-    """Flags from the leading comment block (the usage) of the setup script and every secret,
-    variable and environment name it holds, when the script exists."""
-    flags: set[str] = set()
-    names: set[str] = set()
+    """Flags of the synopsis of the setup script and the environment, secret and variable names
+    of its target tables, when the script exists.
+
+    Only the synopsis lines are read for flags (the comment lines that start at
+    ``setup-environments.sh`` and run to the first bare ``#``), so a ``--word`` in the prose of
+    the header or in a ``gh api`` call does not have to be documented; and only the quoted rows
+    of the ENVIRONMENTS, SECRETS and VARIABLES tables are read for names, so a shell variable
+    that happens to start with ``PROD_`` does not either.
+    """
     if not SETUP_SCRIPT.exists():
-        return flags, names
+        return set(), set()
     text = SETUP_SCRIPT.read_text(encoding="utf-8")
-    usage = text.split("set -euo pipefail", 1)[0]
-    flags = set(re.findall(r"--[a-z][a-z-]*", usage))
-    names = set(re.findall(r"\b(?:STAGING|PROD)_[A-Z]+(?:_[A-Z]+)*\b|\bIMAGE_NAMESPACE\b", text))
+    synopsis: list[str] = []
+    collecting = False
+    for line in text.splitlines():
+        if line.startswith("set -euo pipefail"):
+            break
+        if re.match(r"#\s+setup-environments\.sh\b", line):
+            collecting = True
+        elif collecting and not re.match(r"#\s+\S", line):
+            break
+        if collecting:
+            synopsis.append(line)
+    flags = set(re.findall(r"--[a-z][a-z-]*", "\n".join(synopsis)))
+    names = set(re.findall(r'^\s*"[a-z-]+\|([A-Z][A-Z_]*)"', text, re.MULTILINE))  # SECRETS
+    names |= set(
+        re.findall(r'^\s*"([A-Z][A-Z_]*)\|(?:namespace|region|switch)\|', text, re.MULTILINE)
+    )  # VARIABLES
+    names |= set(re.findall(r'^\s*"([a-z-]+)\|(?:required|preserved)\|', text, re.MULTILINE))
     return flags, names
 
 
@@ -178,16 +213,13 @@ def _workflow_reads(path: Path) -> tuple[set[str], set[str], set[str]]:
 def test_deploy_doc_names_every_setup_script_flag_secret_and_variable() -> None:
     text = _deploy()
     script_flags, script_names = _setup_script_words()
-    flags = {
-        "--check",
-        "--repo",
-        "--region",
-        "--image-namespace",
-        "--reviewer",
-        "--replace-reviewers",
-        "--auto-plan",
-        "--paused",
-    } | script_flags
+    if SETUP_SCRIPT.exists():
+        # The parse must not silently find nothing (a changed header would otherwise leave only
+        # the hard-coded list), and the script must not grow a flag the list does not know.
+        assert script_flags, "no flag found in the synopsis of the setup script"
+        assert script_flags <= SETUP_FLAGS, sorted(script_flags - SETUP_FLAGS)
+        assert script_names, "no name found in the target tables of the setup script"
+    flags = SETUP_FLAGS | script_flags
     names = {
         "STAGING_DEPLOY_ROLE_ARN",
         "STAGING_INSTANCE_ID",
@@ -230,6 +262,14 @@ def test_deploy_doc_explains_the_full_put_the_reread_and_the_separate_branch_pol
         "separate",
         "deployment-branch-policies",
         "404",
+        "at most six",
+        "`unset: off`",
+        "reviewers on production: <old logins> -> <new logins>",
+        "admin bypass: true -> false (changed)",
+        "failed: <field> is <actual> after the write, expected <intended>",
+        # The owner's decision of 2026-11-18 and the self-review rule.
+        "`can_admins_bypass` is wanted `false` on `production` and `production-plan`",
+        "`prevent_self_review` is never changed",
     ):
         assert needle in setup, needle
 
@@ -255,8 +295,58 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "the dispatch was accepted but no deploy-production run started",
         "gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true",
         "gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body false",
+        # The limits of the cancel, stated plainly (decision 5 of the plan).
+        "a window of one API round trip",
+        "replaces the pending manual run",
+        "does not stop an SSM command",
+        "check the host log and the public smoke test by hand",
+        "`deploy-production-auto` concurrency group",
+        # The security statement (decision 6).
+        "no `environment`, no `id-token` permission and no secret",
+        "not one; the script and the workflow contain no call that approves",
+        "uses no field of the triggering event in a command",
+        "setup-environments.sh production --check --repo amsyrzmi/CSAV2",
     ):
         assert needle in section, needle
+
+
+def test_deploy_doc_states_the_facts_the_review_checked() -> None:
+    text = _flat(_deploy())
+    rollback = _flat(_section(_deploy(), "## Rollback"))
+    routine = _flat(_section(_deploy(), "## The routine for one release"))
+    auto = _flat(_section(_deploy(), "## Auto-planned production runs (PROD_AUTO_PLAN)"))
+
+    # Both targets have five app services (scripts/rollout_targets.py); no count is safest.
+    assert "four services" not in text
+    assert "stops the app services on staging" in routine
+    assert "recreates the five services" in rollback
+    # Production never writes a staged record (scripts/staging_rollout.py, PRODUCTION.md).
+    assert "staged record is not written" not in text
+    assert "nothing is recorded as deployed" in rollback
+    # Restoring is a decision of the owner, not a step of the runbook.
+    assert "is an owner decision, not a step" in rollback
+    # The staging-images branch policy exists only after the setup script has run.
+    assert "`main`-only once the setup script has run" in text
+    # Wording of the staging workflow's own header, and the statuses that block `check`.
+    assert "can be a later commit" in auto
+    assert "is not the commit that run handled" not in text
+    assert "queued, in progress, waiting, pending or already succeeded" in auto
+    # A cancel after an approval can leave the instance deploying with no smoke test.
+    assert "no workflow smoke test" in auto
+    # The red outcomes of the chain are all listed, not one.
+    assert "the one that means the chain itself failed" in auto
+    assert "an unreadable run list" in auto
+    assert "a refused dispatch" in auto
+    # A cancelled deploy-production-auto run is normal.
+    assert "a cancelled `deploy-production-auto` run" in auto
+    # The ci row says it can be dispatched, and that the archives are not images in a registry.
+    assert "a manual dispatch" in text
+    assert "`packages: read`" in auto
+    assert "at most one per merge" in auto
+    # Order: the first apply ends non-zero until the secrets exist.
+    order = _flat(_section(_deploy(), "### Order and checks"))
+    assert "still missing" in order
+    assert "expected until step 5" in order
 
 
 def test_deploy_doc_carries_no_account_ids_addresses_arns_or_personal_names() -> None:
@@ -277,25 +367,84 @@ def test_deploy_doc_carries_no_account_ids_addresses_arns_or_personal_names() ->
 
 # --- the stale wording: the image publish needs no approval today ---------------------------------
 
-STALE_PHRASES = (
-    "owner approves",
-    "owner's approval on",
-    "waits for the owner",
-    "approval is still required",
-    "with a required reviewer",
+# The guard reads one sentence at a time and flags a sentence that names the image publish AND says
+# the owner approves it (or that it has a required reviewer). Its limits, accepted: a claim that
+# spreads over two sentences ("The publish needs a reviewer. The owner clicks.") or names the
+# publish only by "it" is not seen; a table row is one block (a subject and a phrase in two cells
+# of one row are seen, in two rows they are not); a negated sentence ("the owner never approves
+# the image publish") is flagged like the claim, so write the true statement the way DEPLOY.md
+# does ("needs no approval today"); and a paraphrase the patterns do not know passes. Case, the
+# curly apostrophe, wrapped lines, comment prefixes and `e.g.` are handled.
+STALE_SUBJECTS = re.compile(r"staging-images|image publish|the publish\b|publish(?:ing)? images?")
+STALE_PHRASES = re.compile(
+    "|".join(
+        (
+            r"\bowner(?:'s)?\s+(?:\w+\s+){0,2}approv\w*",
+            r"\bapproved by the owner\b",
+            r"\bwaits? for the owner\b",
+            r"\bapproval is (?:still )?required\b",
+            r"\brequired reviewers?\b",
+        )
+    )
 )
-STALE_SUBJECTS = ("staging-images", "image publish")
-STALE_EXEMPTION = "If a reviewer is added to"
+STALE_EXEMPTION = "if a reviewer is added to"
+_LIST_ITEM = re.compile(r"\s*(?:[-*] |\d+\. )")
 
 
-def _stale_sentences(text: str) -> list[str]:
-    """Sentences of ``text`` (flattened, split at a full stop and a space) that say the owner
-    approves the image publish, unless the sentence says what a later reviewer would do."""
+def _blocks(text: str, *, markdown: bool) -> list[str]:
+    """The text cut into blocks that cannot share a sentence, each flattened to one line: a
+    heading alone, a table row, a list item (with its wrapped lines) and a paragraph. Comment
+    prefixes (``# ``) are stripped and wrapped lines joined; in a markdown file ``#`` at the start
+    of a line outside a code fence is a heading, in anything else it is a comment."""
+    blocks: list[str] = []
+    current: list[str] = []
+    fenced = False
+
+    def close() -> None:
+        if current:
+            blocks.append(" ".join(" ".join(current).split()))
+            current.clear()
+
+    for line in text.splitlines():
+        if markdown and line.startswith("```"):
+            fenced = not fenced
+            close()
+            continue
+        if markdown and not fenced and re.match(r"#{1,6} ", line):
+            close()
+            blocks.append(line.lstrip("#").strip())
+            continue
+        body = re.sub(r"^\s*#+ ?", "", line)
+        if not body.strip():
+            close()
+        elif body.lstrip().startswith("|"):
+            close()
+            blocks.append(" ".join(body.split()))  # one table row is one block
+        else:
+            if _LIST_ITEM.match(body):
+                close()
+            current.append(body)
+    close()
+    return blocks
+
+
+def _sentences(block: str) -> list[str]:
+    """Lower-cased sentences of one block, split at a full stop, ``?`` or ``!`` and a space (not
+    after ``e.g.`` or ``i.e.``), with the curly apostrophes made straight."""
+    block = block.casefold().replace("\u2019", "'").replace("\u2018", "'")
+    block = re.sub(r"\b(e\.g|i\.e)\.(?=\s)", lambda m: m.group(1).replace(".", ""), block)
+    return re.split(r"[.!?]\s+", block)
+
+
+def _stale_sentences(text: str, *, markdown: bool = True) -> list[str]:
+    """Sentences of ``text`` that say the owner approves the image publish (or that it has a
+    required reviewer), unless the sentence says what a later reviewer would do."""
     return [
         sentence
-        for sentence in _flat(text).split(". ")
-        if any(subject in sentence for subject in STALE_SUBJECTS)
-        and any(phrase in sentence for phrase in STALE_PHRASES)
+        for block in _blocks(text, markdown=markdown)
+        for sentence in _sentences(block)
+        if STALE_SUBJECTS.search(sentence)
+        and STALE_PHRASES.search(sentence)
         and STALE_EXEMPTION not in sentence
     ]
 
@@ -317,7 +466,8 @@ def test_the_stale_guard_flags_a_violation_and_spares_the_sentence_about_a_later
     wrapped = (
         "# The publish is manual and the environment approval is\n# still required either way."
     )
-    assert _stale_sentences("Publishing needs `staging-images`; " + wrapped) != []
+    # Wrapped comment lines of a workflow header (not markdown: there `# ` would be a heading).
+    assert _stale_sentences("Publishing needs `staging-images`; " + wrapped, markdown=False) != []
     assert _stale_sentences("The owner approves the image publish on GitHub.") != []
     assert _stale_sentences("Before dispatch, staging-images with a required reviewer.") != []
     assert _stale_sentences("The `staging-images` environment waits for the owner. Next.") != []
@@ -333,6 +483,51 @@ def test_the_stale_guard_flags_a_violation_and_spares_the_sentence_about_a_later
     )
 
 
+def test_the_stale_guard_sees_the_other_ways_to_say_it() -> None:
+    for claim in (
+        "Owner approves the image publish.",  # sentence-initial capital
+        "Waits for the owner on `staging-images`.",
+        "The owner\u2019s approval on `staging-images` is needed.",  # curly apostrophe
+        "The owner will approve the image publish.",
+        "The owner will then approve each image publish.",
+        "The `staging-images` environment has required reviewers.",  # plural
+        "The owner approves the publish.",  # no word 'image'
+        "Publishing images needs the owner to approve it, so the owner approves each run.",
+        "Each `staging-images` run is approved by the owner.",
+        "The `staging-images` environment, e.g. the owner approves each publish, is open.",
+    ):
+        assert _stale_sentences(claim) != [], claim
+
+
+def test_the_stale_guard_reads_headings_tables_and_bullets_one_block_at_a_time() -> None:
+    table = (
+        "| Workflow | Environments | Who clicks |\n"
+        "| --- | --- | --- |\n"
+        "| `publish-staging-images` | `staging-images` (no reviewer) | nobody |\n"
+        "| `deploy-production` | `production` | the owner approves the `apply` |\n"
+    )
+    assert _stale_sentences(table) == []
+    row = "| `publish-staging-images` | `staging-images` | the owner approves the `apply` |\n"
+    assert _stale_sentences(row) != []
+    assert _stale_sentences("| `staging-images` | nobody |\n| other | the owner approves |\n") == []
+    # A heading is its own block: it does not merge into the first sentence under it.
+    assert (
+        _stale_sentences("## The `staging-images` environment\nThe owner approves the apply.") == []
+    )
+    assert _stale_sentences("## The owner approves\n\nThe image publish needs no approval.") == []
+    bullets = "- `staging-images` has no reviewer\n- The owner approves the apply\n"
+    assert _stale_sentences(bullets) == []
+    assert _stale_sentences("- the owner approves the staging-images job\n- another\n") != []
+    numbered = "1. The `staging-images` run\n2. The owner approves the apply\n"
+    assert _stale_sentences(numbered) == []
+    # A wrapped list item is one block.
+    wrapped = "- the `staging-images` job\n  waits for the owner\n"
+    assert _stale_sentences(wrapped) != []
+    # In a file that is not markdown, `# ` is a comment, not a heading.
+    comment = "# Publishing images, `staging-images`,\n# waits for the owner.\n"
+    assert _stale_sentences(comment, markdown=False) != []
+
+
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by Tasks 11 and 12")
 def test_no_doc_or_workflow_claims_the_owner_approves_the_publish() -> None:
     texts = {
@@ -346,11 +541,21 @@ def test_no_doc_or_workflow_claims_the_owner_approves_the_publish() -> None:
         texts[skill] = skill.read_text(encoding="utf-8")
 
     violations = {
-        str(path.relative_to(ROOT)): _stale_sentences(text)
+        str(path.relative_to(ROOT)): _stale_sentences(text, markdown=path.suffix == ".md")
         for path, text in texts.items()
-        if _stale_sentences(text)
+        if _stale_sentences(text, markdown=path.suffix == ".md")
     }
     assert violations == {}
+
+
+def test_deploy_doc_itself_never_claims_the_owner_approves_the_publish() -> None:
+    assert _stale_sentences(_deploy()) == []
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by Task 11")
+def test_no_placeholder_sections_remain() -> None:
+    # Task 11 moves the last text into DEPLOY.md; its builder removes this marker.
+    assert "This section is completed by the next change in this series." not in _deploy()
 
 
 def test_the_release_history_section_the_stale_guard_exempts_still_exists() -> None:
@@ -360,7 +565,8 @@ def test_the_release_history_section_the_stale_guard_exempts_still_exists() -> N
     assert spelled.count(RELEASE_HISTORY_HEADING) == 1
 
     section = _section(text, RELEASE_HISTORY_HEADING)
-    assert "required reviewer" in section
+    # The exemption is real: the guard would flag this section if it were not exempt.
+    assert _stale_sentences(section) != []
     # The section ends at the next heading of the same or a higher level (today the staging host
     # image pull section), so the exemption cannot silently swallow what follows it.
     start = spelled.index(RELEASE_HISTORY_HEADING)

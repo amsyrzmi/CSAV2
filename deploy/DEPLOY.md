@@ -28,8 +28,8 @@ with its own `GITHUB_TOKEN`. Who starts what, and who clicks:
 
 | Workflow | Starts when | Environments | Who clicks |
 | --- | --- | --- | --- |
-| `ci` | a pull request, or a push to `main` | none | nobody |
-| `publish-staging-images` | a green push-to-main `ci` run completes, or a dispatch with a `ci_run_id` | `staging-images` (no reviewer, `main` only) | nobody |
+| `ci` | a pull request, a push to `main`, or a manual dispatch (the full suite on any branch, never publishable) | none | nobody |
+| `publish-staging-images` | a green push-to-main `ci` run completes, or a dispatch with a `ci_run_id` | `staging-images` (no reviewer; `main`-only once the setup script has run) | nobody |
 | `deploy-staging` | `publish-staging-images` completes, or a dispatch | `staging` for `plan` and `apply` (no reviewer, `main` only); the `record` job names none | nobody |
 | `deploy-production-auto` | `deploy-staging` completes and the repository variable `PROD_AUTO_PLAN` is `true` | none | nobody |
 | `deploy-production` | "Run workflow" (a person), or `deploy-production-auto` | `production-plan` for `plan` (no reviewer, `main` only); `production` for `apply` (reviewers, `main` only) | one reviewer approves the `apply` |
@@ -48,9 +48,10 @@ reviewer is added to `staging-images`, every merge waits on that click.
 ## The routine for one release
 
 1. **Open and merge a pull request.** `ci` must be green on the pull request. A migration in the
-   change stops all four services on staging during the automatic rollout, so say so in the pull
+   change stops the app services on staging during the automatic rollout, so say so in the pull
    request when it carries one.
-2. **`ci` runs on `main`.** The push to `main` runs the full suite again and builds the two images.
+2. **`ci` runs on `main`.** The push to `main` runs the full suite again and builds the two images
+   as OCI archives (artifacts of the run; nothing is pushed to a registry).
 3. **The images are published.** `publish-staging-images` starts by itself when that `ci` run is
    green. It needs no approval today, so there is nothing to click.
 4. **`deploy-staging` runs by itself.** Open the run from the Actions tab, or list the latest runs
@@ -95,8 +96,8 @@ This section is completed by the next change in this series.
 
 The repository variable `PROD_AUTO_PLAN` switches the automatic start of the production **plan**.
 Unset or any value but `true` means off, and it is off by default: with it on, both reviewers get a
-GitHub review request for every waiting apply, one per merge. The production apply is never
-approved by an agent and never skips the approval: the approval is a property of the `production`
+GitHub review request for every waiting apply, at most one per merge. The production apply is
+never approved by an agent and never skips the approval: the approval is a property of the `production`
 environment (its required reviewers and its `main`-only branch policy), not of any workflow file,
 so no workflow change can remove it.
 
@@ -109,8 +110,8 @@ token always creates a run. It has one job, `plan`, which runs
 
 1. `check` decides whether there is anything to plan, with the staging mode of
    `deploy/production/resolve_commit.sh`, and ends green with a notice when there is not. It looks
-   at the tip of `main`, never at the sha GitHub attaches to the triggering run, which is not the
-   commit that run handled.
+   at the tip of `main`, never at the sha GitHub attaches to the triggering run, which can be a later
+   commit than the one that run handled.
 2. `supersede` cancels earlier auto-started runs whose apply is still waiting.
 3. `start` dispatches `deploy-production` with no input (so an empty `sha`: the tip of `main`; the
    auto path can never request an explicit rollback) and checks that a run appeared.
@@ -124,8 +125,8 @@ token always creates a run. It has one job, `plan`, which runs
 - `nothing to plan: main's tip <sha7> is not staged yet` (green): staging is paused, the rollout was
   superseded or failed, or the record job failed. Nothing is planned until a staged record exists.
 - `a deploy-production run for <sha7> already exists: <run id>` (green): a run for the tip is
-  queued, in progress, waiting or already succeeded. A run that failed or was cancelled does not
-  count, so an early manual dispatch that failed with "not staged yet" does not stop the auto plan.
+  queued, in progress, waiting, pending or already succeeded. A run that failed or was cancelled
+  does not count, so an early manual dispatch that failed with "not staged yet" does not stop the auto plan.
 - `cancelled run <id> (planned <sha7>)`: a stale auto-started run was cancelled.
 - `left alone: run <id> (<reason>)`: a waiting run was not cancelled. The reason is
   `started by <login>` (a person's run, including a rollback), `same commit`, `apply is not
@@ -136,8 +137,11 @@ token always creates a run. It has one job, `plan`, which runs
 - `started deploy-production run <id>: <url>`: the plan was started. The apply waits for approval on
   the `production` environment.
 - `the dispatch was accepted but no deploy-production run started (check that workflow_run chaining
-  is not limited)` (red): GitHub accepted the dispatch and made no run. This is the one failure that
-  needs looking at: start `deploy-production` by hand and say so.
+  is not limited)` (red): GitHub accepted the dispatch and made no run. This is the one that means
+  the chain itself failed: start `deploy-production` by hand and say so. The run is also red for any
+  other failure of the resolver, an unreadable run list, an unreadable listing of the runs to
+  supersede, or a refused dispatch; each says what it could not do. Start `deploy-production` by hand
+  after any of them.
 
 With the switch off or unset, the job is skipped, so the whole run concludes `skipped` (grey), not
 success. A failed or cancelled `deploy-staging` run also leaves the job skipped.
@@ -152,16 +156,20 @@ and `apply` (waiting). Every field must be present and well-formed, or the run i
 whose apply is in progress is never knowingly cancelled. The limits, stated plainly:
 
 - The cancel is a read followed by a request, not one atomic step, so a window of one API round
-  trip remains in which an approval can land first. That is harmless: the apply's first steps
-  re-check that `main` has not moved (a stale run then fails with `main moved to <sha7> since this
-  run's plan`), and a late cancel does not stop an SSM command that was already sent to the
-  instance.
+  trip remains in which an approval can land first. The apply's first steps re-check that `main`
+  has not moved (a stale run then fails with `main moved to <sha7> since this run's plan`), but a
+  late cancel does not stop an SSM command that was already sent to the instance: the run then
+  reads cancelled while the instance may still deploy, with no workflow smoke test. After a
+  cancelled run that was approved, check the host log and the public smoke test by hand.
 - The pass runs once, before `start`: an earlier auto run with its `plan` job still running is not
   listed as waiting and is missed. The new run queues behind it and the owner rejects the older one.
-- The workflow shares the `deploy-production` concurrency group with manual runs, and GitHub keeps at
-  most one pending run in a group. An auto dispatch made while one manual run waits and another is
-  pending replaces the pending manual run. `supersede` never cancels a manual run, but this rule can
-  replace a person's pending one; dispatch again.
+- The `deploy-production` run that the auto workflow dispatches shares the `deploy-production`
+  concurrency group with manual runs, and GitHub keeps at most one pending run in a group. An auto
+  dispatch made while one manual run waits and another is pending replaces the pending manual run.
+  `supersede` never cancels a manual run, but this rule can replace a person's pending one;
+  dispatch again. The auto workflow itself has its own `deploy-production-auto` concurrency group
+  (an idle run gets a group of its own, so it cannot replace a real one), and a cancelled
+  `deploy-production-auto` run, replaced while it was pending, is normal.
 - A run that was cancelled has already sent its review request to both reviewers; cancelling does
   not recall it. That is why the switch is off by default.
 - A duplicate completion of `deploy-staging` for a tip whose auto run failed or was rejected plans
@@ -173,11 +181,12 @@ whose apply is in progress is never knowingly cancelled. The limits, stated plai
   `github-actions[bot]`).
 
 **Security.** The auto workflow has no `environment`, no `id-token` permission and no secret. Its
-token can read the repository, read Actions and deployments, and write Actions (cancel and
-dispatch). Approving a pending deployment needs a user who is a required reviewer, and the token is
-not one; the script and the workflow contain no call that approves. It never checks out or runs
-anything from the triggering run: it checks out `main`, takes no artifact, and uses no field of the
-triggering event in a command.
+token can read the repository, read Actions and deployments, read packages (`packages: read`, for
+the check that the images exist), and write Actions (cancel and dispatch). Approving a pending
+deployment needs a user who is a required reviewer, and the token is not one; the script and the
+workflow contain no call that approves. It never checks out or runs anything from the triggering
+run: it checks out `main`, takes no artifact, and uses no field of the triggering event in a
+command.
 
 **Turning it on and off** (an owner action; the value is `true` or `false`):
 
@@ -187,8 +196,8 @@ gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body false
 ```
 
 The first line turns it on, the second off. Read the state of the switch with
-`deploy/github/setup-environments.sh production --check`, which prints `true`, `false` or
-`unset: off`.
+`deploy/github/setup-environments.sh production --check --repo amsyrzmi/CSAV2`, which prints
+`true`, `false` or `unset: off`.
 
 ## Rollback
 
@@ -196,13 +205,14 @@ The first line turns it on, the second off. Read the state of the switch with
   an explicit `sha`; the manual rollout is the way back (see "Break-glass").
 - **Production, image only, automatic.** When `/readyz` or the smoke test fails after services were
   recreated, the run applied no migration and the previous images are registry digests, the rollout
-  recreates the four services on the previous digests, waits for readiness and prints
-  `Rolled back: the previous images are running; <sha7> is not.` It still ends red, and the
-  staged record is not written. The exact lines are in "What a smoke stop or a rollback means".
-- **Production, when migrations ran,** or the previous images are unknown, nothing is rolled back
-  by itself. Fix forward with a new commit, or restore the backup the deploy took first
-  (`deploy/PRODUCTION.md`, "Restoring a backup"). The recovery lines the rollout prints are in
-  "What a failure means".
+  recreates the five services on the previous digests, waits for readiness and prints
+  `Rolled back: the previous images are running; <sha7> is not.` It still ends red, and nothing
+  is recorded as deployed (production never writes a staged record). The exact lines are in "What
+  a smoke stop or a rollback means".
+- **Production, when migrations ran,** or the previous images are unknown, nothing is rolled back by
+  itself. Fix forward with a new commit; restoring the backup the deploy took first
+  (`deploy/PRODUCTION.md`, "Restoring a backup") is an owner decision, not a step. The recovery
+  lines the rollout prints are in "What a failure means".
 - **A deliberate rollback** is an explicit `sha` on `deploy-production`: a staged commit on `main`
   that already includes the digest change. The plan shows the downgrade warning, and the apply
   does not check the tip of `main` for an explicit `sha`. An older revision than the digest change
@@ -211,10 +221,11 @@ The first line turns it on, the second off. Read the state of the switch with
 
 ## One-time setup
 
-Each target needs three sides prepared once, in this order: GitHub, AWS, and the host. The two
-scripts below are the repeatable path and the manual steps in `deploy/PRODUCTION.md`, "One-time
-setup", and `deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts", are the reference
-they were built from.
+Each target needs three sides prepared once: GitHub, AWS and the host, interleaved as in "Order
+and checks" below (the host comes before the AWS `apply`). The two scripts below are the repeatable
+path, and the manual steps in `deploy/PRODUCTION.md`, "One-time setup", and
+`deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts", are the reference they were
+built from.
 
 ### The AWS side: deploy/aws/setup-target.sh
 
@@ -275,7 +286,7 @@ terminal, and reaches `gh secret set` on stdin only. A secret that already exist
 for and not overwritten unless its `SETUP_<NAME>` is set (an explicit rotation), so a routine run
 prompts for nothing. Values are validated (role ARN, managed-node id, origin with no path, port or
 trailing slash) before any write, and no message ever contains a value. The only values printed
-are the two switches, which are `true` or `false`.
+are the two switches, which are `true`, `false` or `unset: off`.
 
 **Read, build the whole desired state, write only the difference, then re-read.** `apply` reads
 each environment, builds the complete `PUT` body from the current values plus the desired changes
@@ -328,7 +339,9 @@ root-owned config, the secret files, the lock and log directories.
 ### Order and checks
 
 1. **GitHub environments:** `setup-environments.sh <target> --check`, then without `--check` (secrets
-   cannot be set before the environment exists).
+   cannot be set before the environment exists). With no `SETUP_<NAME>` values given, this first
+   apply creates the environments and variables, then ends non-zero with
+   `apply: <n> item(s) still missing`: that is expected until step 5.
 2. **AWS activation:** `setup-target.sh <target> activate`, for the host's Systems Manager node.
 3. **The host:** the steps of the target's own document, including the registration of the node.
 4. **AWS apply:** `setup-target.sh <target> check`, then `apply`, then `check` again.
@@ -370,8 +383,8 @@ has no gate. Use the workflow whenever it works. Where each procedure lives:
   staging.
 - **`deploy/RELEASE.md`:** how the images are built and published, with the dated history of the
   first publication.
-- **The `deploy` skill:** what an agent may and may not do for either flow (plan before apply, never
-  approve, never bypass the staged gate).
+- **The `deploy` skill (added later in this series):** what an agent may and may not do for either
+  flow (plan before apply, never approve, never bypass the staged gate).
 
 The test `tests/test_deploy_docs.py` keeps the moved headings at their destination and the stubbed
 ones in place, and nothing else here is frozen: later edits are expected.
