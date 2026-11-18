@@ -37,10 +37,15 @@
 # overwritten unless its SETUP_<NAME> is set (an explicit rotation). A secret or required variable
 # that has no value ends the run with `apply: <n> item(s) still missing` (exit 1), after
 # everything else was applied. Every input is validated before the first `gh` call, and every
-# secret value before the first write. The one permission check is `gh api repos/<repo>`
+# secret value before the first write. Every SETUP_<NAME> is moved out of the environment into a
+# shell array before the first child process starts, so no gh, jq or mktemp inherits one, and
+# tracing is switched off before any is read. The one permission check is `gh api repos/<repo>`
 # (`.permissions.admin`): the login check of gh itself exits non-zero when any other configured
 # account is stale. No input is run through eval.
+# A caller's `bash -x`, or SHELLOPTS=xtrace in the environment, must never print a secret: tracing
+# goes off on the line after the strict mode, before any SETUP_<NAME> is read, and stays off.
 set -euo pipefail
+set +x
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
 export LC_ALL=C
@@ -52,9 +57,11 @@ RE_REGION='^[a-z]{2}(-[a-z]+)+-[0-9]$'
 RE_NAMESPACE='^ghcr\.io/[a-z0-9][a-z0-9-]*$'
 RE_REVIEWER='^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
 # The three kinds of secret value (the script prints the kind, never the value).
-RE_ROLE_ARN='^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,._@-]+$'
+# AWS caps a role name at 64 characters and a path is refused (the name has no `/`). Every pattern
+# is bounded, so no value of any length can match.
+RE_ROLE_ARN='^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,._@-]{1,64}$'
 RE_INSTANCE_ID='^mi-[0-9a-f]{17}$'
-RE_ORIGIN='^https://[A-Za-z0-9.-]+$'
+RE_ORIGIN='^https://[A-Za-z0-9.-]{1,253}$'
 MAX_REVIEWERS=6
 
 # ---- the two targets --------------------------------------------------------------------------
@@ -220,6 +227,16 @@ fi
 command -v jq > /dev/null || die "jq is required"
 command -v gh > /dev/null || die "the gh CLI is required"
 
+# Take every SETUP_<NAME> out of the environment before any child process (mktemp, gh, jq, grep)
+# can inherit it: the values live in this shell array only, never exported. (`command -v` and the
+# checks above are builtins and start no process.)
+declare -A TYPED_VALUE=()
+for setup_var in "${!SETUP_@}"; do
+    TYPED_VALUE["${setup_var#SETUP_}"]="${!setup_var}"
+    unset "$setup_var"
+done
+unset setup_var
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -264,10 +281,17 @@ report() {
 ENV_WRITTEN=0
 
 # gh_fail <what>: a call that failed ends the run, naming the item that was being read or written.
+# Before the first item is reported (NUMBERED is 0) there is no step number to give: the line is
+# plain, so a failure while reading what the run needs is not shown as step 1.
+NUMBERED=1
 gh_fail() {
     local suffix=""
     [[ "$ENV_WRITTEN" -eq 0 ]] || suffix=" (the environment was written; run again to finish)"
-    echo "[$((STEP + 1))/$TOTAL] $1: failed: $(first_error_line)$suffix" >&2
+    if [[ "$NUMBERED" -eq 1 ]]; then
+        echo "[$((STEP + 1))/$TOTAL] $1: failed: $(first_error_line)$suffix" >&2
+    else
+        echo "$1: failed: $(first_error_line)$suffix" >&2
+    fi
     exit 1
 }
 
@@ -585,6 +609,7 @@ secret_pattern() {
 # the variable and the kind of value, never the value.
 prepare_secrets() {
     local entry env name var value from_setup needed other other_env other_name interactive=0 seen=" "
+    local where
     if [[ -t 0 && -t 2 ]]; then
         interactive=1
     fi
@@ -595,19 +620,21 @@ prepare_secrets() {
         var="SETUP_$name"
         value=""
         from_setup=0
-        if [[ -n "${!var+x}" ]]; then
-            value="${!var}"
+        if [[ -n "${TYPED_VALUE[$name]+x}" ]]; then
+            value="${TYPED_VALUE[$name]}"
             from_setup=1
         else
             needed=0
+            where=""
             for other in "${SECRETS[@]}"; do
                 IFS='|' read -r other_env other_name <<< "$other"
                 if [[ "$other_name" == "$name" ]] && ! secret_listed "$other_env" "$name"; then
                     needed=1
+                    where="${where:+$where, }$other_env"
                 fi
             done
             if [[ "$needed" -eq 1 && "$interactive" -eq 1 ]]; then
-                read -rs -p "Value for $name (hidden; Enter skips it): " value || value=""
+                read -rs -p "Value for $name (hidden; Enter skips it; will be set on: $where): " value || value=""
                 echo >&2
             fi
         fi
@@ -704,10 +731,13 @@ run_apply() {
     local entry name existed result need want_set want_bypass timer prevent body live_bypass
     local environment_count="${#ENVIRONMENTS[@]}" secret_count="${#SECRETS[@]}" variable_count="${#VARIABLES[@]}"
     TOTAL="$((environment_count + secret_count + variable_count))"
+    NUMBERED=0
     resolve_given
     decide_all
-    prepare_secrets
+    # The variables are read before anything is asked, so a failed read cannot cost a typed value.
     read_variables
+    prepare_secrets
+    NUMBERED=1
     for entry in "${ENVIRONMENTS[@]}"; do
         IFS='|' read -r name _ _ <<< "$entry"
         want_set="${WANT_SET[$name]}"

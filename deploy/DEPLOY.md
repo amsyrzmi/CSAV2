@@ -288,15 +288,19 @@ below); a present one is never changed unless its flag is given with a different
 
 **Secrets never appear on a command line or in output.** A secret value comes from the environment
 variable `SETUP_<NAME>` (for example `SETUP_PROD_INSTANCE_ID`), or from a hidden prompt on a
-terminal (`Value for <NAME> (hidden; Enter skips it)`; Enter leaves the secret missing), and
-reaches `gh secret set` on stdin only. Without a terminal and without `SETUP_<NAME>` a missing
-secret is not prompted for and not waited for: it is counted as missing. A secret that already
-exists is not prompted for and not overwritten unless its `SETUP_<NAME>` is set (an explicit
-rotation), so a routine run prompts for nothing. Values are validated (role ARN, managed-node id,
-origin with no path, port or trailing slash) before any write, and no message ever contains a
-value. The only values printed are the two switches, which are `true`, `false` or `unset: off`
-(for example `variable PROD_AUTO_PLAN: set (true)` or `unchanged (unset: off)` from `apply`, and
-`ok (true)` from `--check`).
+terminal (`Value for <NAME> (hidden; Enter skips it; will be set on: <environments>)`; Enter leaves
+the secret missing), and reaches `gh secret set` on stdin only. Without a terminal and without
+`SETUP_<NAME>` a missing secret is not prompted for and not waited for: it is counted as missing. A
+secret that already exists is not prompted for and not overwritten unless its `SETUP_<NAME>` is set
+(an explicit rotation), so a routine run prompts for nothing. Values are validated (role ARN,
+managed-node id, origin with no path, port or trailing slash) before any write, and no message ever
+contains a value. A `SETUP_<NAME>` that is exported but empty is an error (exit 2), not a skip, and
+a role ARN with a path (`role/path/name`) is refused. The script switches tracing off before it
+reads any value (a caller's `bash -x` or `SHELLOPTS=xtrace` prints no secret) and moves every
+`SETUP_<NAME>` out of the environment before it starts `gh`, `jq` or any other program, so no child
+process inherits one. The only values printed are the two switches, which are `true`, `false` or
+`unset: off` (for example `variable PROD_AUTO_PLAN: set (true)` or `unchanged (unset: off)` from
+`apply`, and `ok (true)` from `--check`).
 
 **What `apply` prints.** One `[n/total] <what>: <result>` line per item: first the environments
 (`created`, `updated` or `unchanged`), then the secrets (`secret <NAME> on <env>: set`,

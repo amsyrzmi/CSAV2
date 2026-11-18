@@ -12,8 +12,10 @@ import os
 import pty
 import re
 import select
+import shutil
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -1527,6 +1529,15 @@ def test_a_hidden_prompt_supplies_a_missing_secret_and_does_not_echo(gh: Gh) -> 
     )
 
     assert status == 0, (shown, stdout)
+    # The prompt names where the value will be set (PROD_INSTANCE_ID is on two environments).
+    assert (
+        "Value for PROD_INSTANCE_ID (hidden; Enter skips it; will be set on: "
+        "production-plan, production): "
+    ) in shown
+    assert (
+        "Value for PROD_CONSOLE_ORIGIN (hidden; Enter skips it; will be set on: production): "
+        in (shown)
+    )
     state = gh.state()
     assert state["environments"]["production-plan"]["secrets"] == {
         "PROD_PLAN_ROLE_ARN": VALUES["PROD_PLAN_ROLE_ARN"],
@@ -1597,6 +1608,7 @@ def test_a_prompted_value_fills_only_the_environment_that_lacks_the_secret(gh: G
     assert status == 0, (shown, stdout)
     # One prompt, and the value is written where the secret is missing, not where it exists.
     assert shown.count("Value for ") == 1
+    assert "(hidden; Enter skips it; will be set on: production): " in shown
     assert [argv[2:5] for argv in secret_sets(gh)] == [["PROD_INSTANCE_ID", "--env", "production"]]
     envs = gh.state()["environments"]
     assert envs["production"]["secrets"]["PROD_INSTANCE_ID"] == typed
@@ -1635,6 +1647,77 @@ def test_without_a_terminal_a_missing_secret_is_reported_not_prompted_and_the_re
         "IMAGE_NAMESPACE": NAMESPACE,
         "STAGING_DEPLOY_REGION": REGION,
     }
+
+
+def test_an_open_stdin_that_is_not_a_terminal_is_never_waited_on(gh: Gh) -> None:
+    # stdin is a pipe nobody writes to or closes (a CI step, a supervisor): a read would block
+    # for ever, so the script must not prompt. /dev/null would end the read at once and prove
+    # nothing.
+    stdout_path = gh.tmp / "pipe-stdout.txt"
+    with (
+        stdout_path.open("w") as stdout_file,
+        (gh.tmp / "pipe-stderr.txt").open("w") as stderr_file,
+    ):
+        process = subprocess.Popen(
+            [str(SCRIPT), "staging", "--repo", REPO, *VARIABLE_FLAGS],
+            stdin=subprocess.PIPE,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            env=gh.environment(),
+            cwd=gh.tmp,
+        )
+        try:
+            status = process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            pytest.fail("the script is waiting for input on a stdin that is not a terminal")
+        finally:
+            if process.stdin is not None:
+                process.stdin.close()
+    assert status == 1
+    assert stdout_path.read_text().splitlines()[-1] == "apply: 2 item(s) still missing"
+    assert "Value for" not in stdout_path.read_text() + (gh.tmp / "pipe-stderr.txt").read_text()
+
+
+def test_a_failed_variable_read_ends_the_run_before_any_prompt(gh: Gh) -> None:
+    patch_fake(
+        gh,
+        'if rest == ["actions", "variables"] and method == "GET":',
+        'if rest == ["actions", "variables"]:\n'
+        '            sys.stderr.write("gh: Server Error (HTTP 500)\\n")\n'
+        "            finish(1)\n        ",
+    )
+
+    status, shown, stdout = run_in_terminal(
+        gh, "staging", {"STAGING_DEPLOY_ROLE_ARN": VALUES["STAGING_DEPLOY_ROLE_ARN"]}
+    )
+
+    assert status == 1, (shown, stdout)
+    assert "repository variables: failed: gh: Server Error (HTTP 500)" in shown
+    # Nothing was asked for, so no typed value can be lost.
+    assert "Value for" not in shown
+
+
+def test_a_failed_secret_list_read_while_deciding_is_a_plain_failure_not_a_numbered_step(
+    gh: Gh,
+) -> None:
+    complete(gh, "staging")
+    patch_fake(
+        gh,
+        'if tail == "/secrets" and method == "GET":',
+        'if tail == "/secrets":\n'
+        '        sys.stderr.write("gh: Forbidden (HTTP 403)\\n")\n'
+        "        finish(1)\n    ",
+    )
+
+    result = apply(gh, "staging", secrets=False)
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stderr.splitlines()[-1] == (
+        "secret STAGING_DEPLOY_ROLE_ARN on staging: failed: gh: Forbidden (HTTP 403)"
+    )
+    assert "[1/" not in result.stderr + result.stdout
 
 
 def test_with_no_secret_values_every_secret_is_counted_and_the_variables_are_still_set(
@@ -1695,7 +1778,12 @@ BAD_SECRETS = [
     ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::12345:role/short-account-{MARKER}", "role ARN"),
     ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/{MARKER} with space", "role ARN"),
     ("PROD_PLAN_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/ok\n{MARKER}", "role ARN"),
+    ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/service-role/example", "role ARN"),
+    ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/{'a' * 65}", "role ARN"),
     ("PROD_INSTANCE_ID", "mi-0123456789abcdeg", "managed-node id"),
+    ("PROD_INSTANCE_ID", "mi-0123456789abcdef01", "managed-node id"),
+    ("PROD_INSTANCE_ID", "xmi-0123456789abcdef0", "managed-node id"),
+    ("PROD_INSTANCE_ID", "mi-0123456789abcdef0 ", "managed-node id"),
     ("PROD_INSTANCE_ID", "mi-0123456789ABCDEF0", "managed-node id"),
     ("PROD_INSTANCE_ID", "i-0123456789abcdef0", "managed-node id"),
     ("PROD_INSTANCE_ID", "", "managed-node id"),
@@ -1728,6 +1816,125 @@ def test_secret_values_are_validated_before_any_write_and_never_echoed(
     assert MARKER not in shown
     if value.strip():
         assert value not in shown
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["PROD_APPLY_ROLE_ARN", "PROD_INSTANCE_ID", "PROD_CONSOLE_ORIGIN"],
+)
+def test_a_very_long_value_is_refused_for_every_kind_of_secret(gh: Gh, name: str) -> None:
+    prefix = {
+        "PROD_APPLY_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/",
+        "PROD_INSTANCE_ID": "mi-0123456789abcdef0",
+        "PROD_CONSOLE_ORIGIN": "https://",
+    }[name]
+    value = prefix + "a" * 120_000
+
+    result = apply(gh, "production", "--reviewer", "reviewer-a", env={f"SETUP_{name}": value})
+
+    assert result.returncode == 2, (result.stdout[:200], result.stderr[:200])
+    assert f"SETUP_{name} is not a valid" in result.stderr
+    assert gh.writes() == []
+    assert "a" * 50 not in result.stdout + result.stderr + gh.log_path.read_text()
+
+
+def test_the_longest_role_name_is_still_accepted(gh: Gh) -> None:
+    role = f"arn:aws:iam::{ACCOUNT}:role/{'a' * 64}"
+    result = apply(gh, "staging", env={"SETUP_STAGING_DEPLOY_ROLE_ARN": role})
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert gh.state()["environments"]["staging"]["secrets"]["STAGING_DEPLOY_ROLE_ARN"] == role
+
+
+# --- a secret is never traced and never exported ---------------------------------------------
+
+TRACE_MARKERS = {
+    "SETUP_STAGING_DEPLOY_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/{MARKER}-traced",
+    "SETUP_STAGING_INSTANCE_ID": "mi-0badc0ffee1234567",
+}
+
+
+@pytest.mark.parametrize("way", ["bash -x", "SHELLOPTS=xtrace"])
+@pytest.mark.parametrize("failing", [False, True], ids=["success", "failing-write"])
+def test_a_secret_never_appears_when_the_caller_turns_tracing_on(
+    gh: Gh, way: str, failing: bool
+) -> None:
+    if failing:
+        patch_fake(
+            gh,
+            'elif argv[:2] == ["secret", "set"]:',
+            'elif argv[:2] == ["secret", "set"] and True:\n    read_stdin()\n'
+            '    sys.stderr.write("gh: Forbidden (HTTP 403)\\n")\n    finish(1)\n',
+        )
+    command = ["bash", "-x", str(SCRIPT)] if way == "bash -x" else [str(SCRIPT)]
+    extra = {"SHELLOPTS": "xtrace"} if way == "SHELLOPTS=xtrace" else {}
+
+    result = subprocess.run(
+        [*command, "staging", "--repo", REPO, *VARIABLE_FLAGS],
+        capture_output=True,
+        text=True,
+        env=gh.environment({**TRACE_MARKERS, **extra}),
+        cwd=gh.tmp,
+        stdin=subprocess.DEVNULL,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == (1 if failing else 0), (result.stdout, result.stderr[-2000:])
+    # Tracing really was on for the first lines, and was turned off before any value was read.
+    assert "set +x" in result.stderr
+    for value in TRACE_MARKERS.values():
+        assert value not in result.stdout + result.stderr + gh.log_path.read_text()
+    assert MARKER not in result.stdout + result.stderr + gh.log_path.read_text()
+
+
+def record_setup_variables(record: Path, who: str) -> str:
+    """Python source that notes which SETUP_ variables the process inherited."""
+    return (
+        f"with open({str(record)!r}, 'a') as handle:\n"
+        "    names = ','.join(k for k in os.environ if k.startswith('SETUP_'))\n"
+        f"    handle.write({who!r} + ' ' + names + '\\n')\n"
+    )
+
+
+def wrap_children(gh: Gh, record: Path) -> None:
+    """Put a recording wrapper in front of jq, mktemp, grep and rm: each notes which SETUP_
+    variables it inherited, then runs the real program."""
+    for tool in ("jq", "mktemp", "grep", "rm"):
+        real = shutil.which(tool, path=os.environ["PATH"])
+        assert real
+        wrapper = gh.bin / tool
+        wrapper.write_text(
+            f"#!{sys.executable}\nimport os, sys\n"
+            + record_setup_variables(record, tool)
+            + f"os.execv({real!r}, [{real!r}, *sys.argv[1:]])\n"
+        )
+        wrapper.chmod(0o755)
+    patch_fake(gh, "argv = sys.argv[1:]\n", record_setup_variables(record, "gh"))
+
+
+@pytest.mark.parametrize("mode", ["apply", "check"])
+def test_no_setup_variable_stays_in_the_environment_of_any_child_process(
+    gh: Gh, tmp_path: Path, mode: str
+) -> None:
+    record = tmp_path / "children.txt"
+    record.write_text("")
+    wrap_children(gh, record)
+    values = {**setup_values("staging"), "SETUP_PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"]}
+
+    if mode == "check":
+        result = run(gh, "staging", "--check", "--repo", REPO, env=values)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+    else:
+        result = run(gh, "staging", "--repo", REPO, *VARIABLE_FLAGS, env=values)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert gh.state()["environments"]["staging"]["secrets"] == {
+            "STAGING_DEPLOY_ROLE_ARN": VALUES["STAGING_DEPLOY_ROLE_ARN"],
+            "STAGING_INSTANCE_ID": VALUES["STAGING_INSTANCE_ID"],
+        }
+
+    seen = [line.split(" ") for line in record.read_text().splitlines()]
+    assert {tool for tool, _ in seen} >= {"gh", "jq", "mktemp", "rm"}
+    assert [(tool, names) for tool, names in seen if names] == []
 
 
 def test_no_value_reaches_stdout_stderr_or_the_log(gh: Gh) -> None:
@@ -1875,11 +2082,19 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 DEPLOY_WORKFLOWS = ["deploy-production.yml", "deploy-staging.yml", "publish-staging-images.yml"]
 
 
+def names_read(text: str, context: str) -> set[str]:
+    """The names read from ``secrets`` or ``vars`` in a piece of workflow text, in both spellings:
+    ``secrets.NAME`` and ``secrets['NAME']`` (or double quotes)."""
+    dotted = re.findall(rf"\b{context}\.([A-Z][A-Z0-9_]*)", text)
+    indexed = re.findall(rf"\b{context}\[\s*['\"]([A-Z][A-Z0-9_]*)['\"]\s*\]", text)
+    return set(dotted) | set(indexed)
+
+
 def workflow_reads(path: Path) -> tuple[set[str], set[str], set[str]]:
     """The secrets, variables and environments one workflow reads (``GITHUB_TOKEN`` excluded)."""
     text = path.read_text(encoding="utf-8")
-    secrets = set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", text)) - {"GITHUB_TOKEN"}
-    variables = set(re.findall(r"vars\.([A-Z][A-Z0-9_]*)", text))
+    secrets = names_read(text, "secrets") - {"GITHUB_TOKEN"}
+    variables = names_read(text, "vars")
     environments: set[str] = set()
     for job in (yaml.safe_load(text).get("jobs") or {}).values():
         environment = job.get("environment")
@@ -1888,6 +2103,45 @@ def workflow_reads(path: Path) -> tuple[set[str], set[str], set[str]]:
         if isinstance(environment, str):
             environments.add(environment)
     return secrets, variables, environments
+
+
+def job_secrets(path: Path) -> dict[tuple[str, str], set[str]]:
+    """The secrets each job of a workflow reads, by (job id, environment name; "" for none)."""
+    jobs = yaml.safe_load(path.read_text(encoding="utf-8")).get("jobs") or {}
+    found: dict[tuple[str, str], set[str]] = {}
+    for job_id, job in jobs.items():
+        environment = job.get("environment") or ""
+        if isinstance(environment, dict):
+            environment = environment.get("name", "")
+        assert isinstance(environment, str), (path.name, job_id)
+        # The job as text, once re-serialised: every `if`, `env`, `with` and `run` of it.
+        text = yaml.safe_dump(job)
+        found[(job_id, environment)] = names_read(text, "secrets") - {"GITHUB_TOKEN"}
+    return found
+
+
+def test_each_job_reads_exactly_the_secrets_the_script_sets_for_its_environment() -> None:
+    text = SCRIPT.read_text()
+    by_environment: dict[str, set[str]] = {}
+    for environment, name in re.findall(r'^\s*"([a-z-]+)\|([A-Z][A-Z_]*)"$', text, re.MULTILINE):
+        by_environment.setdefault(environment, set()).add(name)
+    assert set(by_environment) == {"staging", "production-plan", "production"}
+
+    jobs = 0
+    for name in DEPLOY_WORKFLOWS:
+        for (job_id, environment), secrets in job_secrets(WORKFLOWS / name).items():
+            jobs += 1
+            # A job outside any environment, or in one the script gives no secrets, reads none.
+            assert secrets == by_environment.get(environment, set()), (name, job_id, environment)
+    assert jobs >= 5
+
+
+def test_the_secret_and_variable_readers_know_both_spellings() -> None:
+    sample = (
+        "a: ${{ secrets.ONE }} ${{ secrets['TWO'] }} ${{ secrets[\"THREE\"] }} ${{ vars['FOUR'] }}"
+    )
+    assert names_read(sample, "secrets") == {"ONE", "TWO", "THREE"}
+    assert names_read(sample, "vars") == {"FOUR"}
 
 
 def test_the_names_in_the_script_match_what_the_workflows_read() -> None:
@@ -1936,6 +2190,11 @@ def test_script_is_bash_strict_quoted_and_executable() -> None:
     locale = lines.index("export LC_ALL=C")
     assert strict < locale < next(i for i, line in enumerate(lines) if "=~" in line)
     assert not re.search(r"\beval\b|\b(?:ba)?sh -c\b|\bset -x\b|\bsource\b", code)
+    # Tracing is switched off before anything is read: a caller's `bash -x` or SHELLOPTS=xtrace
+    # must not print a secret (checked by running it in the tests above).
+    assert lines[strict + 1] == "set +x"
+    assert strict + 1 < locale
+    assert code.index("SETUP_") > code.index("set +x")
     assert "jq" in code
     assert _unquoted_expansions(text) == []
     assert SCRIPT.stat().st_mode & stat.S_IXUSR
