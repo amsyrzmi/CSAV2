@@ -2985,6 +2985,16 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
 
     # An empty sha is the tip of main, and each refusal the plan job can print is named.
     assert "Leave `sha` empty to deploy the tip of `main`" in deploying
+    # The two sentences about an auto-started run (steps 2 and 4 of the section).
+    for needle in (
+        "A run may already exist: when `PROD_AUTO_PLAN` is `true`",
+        "Look at the latest runs before starting another one",
+        "gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production.yml --limit 5",
+        "`triggering_actor` of an auto-started run is `github-actions[bot]`",
+        "A dispatch made by `deploy-production-auto` counts as a dispatch here and can replace "
+        "a person's *pending* run",
+    ):
+        assert needle in deploying, needle
     for needle in (
         "sha must be the full 40 character lowercase commit SHA",
         "commit <sha7> is not on main",
@@ -2999,6 +3009,8 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
     assert "anonymous" in deploying
     assert "`read:packages` token is needed only for break-glass" in setup
     assert "needed for every deploy" not in flat_text
+    # The moved region (the IMAGE_NAMESPACE paragraph) says it where it now lives, too.
+    assert "needed for every deploy" not in " ".join(_deploy_doc().split())
     assert "still enforces the staged gate" in break_glass
     # The smoke test: the instance's checks, then the public step.
     for needle in ("5 s apart", "`PROD_CONSOLE_ORIGIN`", "2xx or 3xx", "frontend"):
@@ -3225,10 +3237,14 @@ def test_parse_plan_points_at_text_that_exists_in_the_pipeline_runbook() -> None
         "(roll back by hand, deploy/STAGING_PIPELINE.md)"
     )
     assert refusal in script
-    doc = " ".join(PIPELINE_DOC.read_text(encoding="utf-8").split())
-    assert "roll back by hand" in doc
+    # The refusal row moved with the staging outcome table to DEPLOY.md; the manual procedure it
+    # points at stays in the pipeline runbook.
+    doc = " ".join(DEPLOY_DOC.read_text(encoding="utf-8").split())
     assert refusal in doc
-    assert "Manual rollout (break-glass)" in doc
+    assert "roll back by hand" in doc
+    pipeline = " ".join(PIPELINE_DOC.read_text(encoding="utf-8").split())
+    assert "Manual rollout (break-glass)" in pipeline
+    assert "roll back by hand" in pipeline
 
 
 def test_spec_lists_the_changes_made_while_building_pr_2() -> None:

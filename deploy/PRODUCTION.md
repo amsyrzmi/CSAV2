@@ -370,7 +370,8 @@ h. Run a plan on the instance as Systems Manager would, for the newest staged co
   port or trailing slash; the public smoke test asks it for `/`).
 - Repository variable **`PROD_DEPLOY_REGION`**: `<region>`.
 - Repository variable **`IMAGE_NAMESPACE`**: `ghcr.io/amsyrzmi`, the lowercase registry prefix of the
-  images (see Deploying from GitHub); the owner changes it if the repository moves.
+  images (see `deploy/DEPLOY.md`, "Production: deploying from GitHub"); the owner changes it if the
+  repository moves.
 
 On both environments leave "Allow administrators to bypass" off (the setup script and its `--check`
 want `can_admins_bypass` to be `false` on `production` and `production-plan`).

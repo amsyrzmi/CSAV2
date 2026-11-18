@@ -7,8 +7,9 @@ description: Use when the owner asks to roll out, deploy or update staging (csa-
 
 Rollouts of `csa-staging` are automatic: every green merge to `main` is rolled out by the
 `deploy-staging` workflow (plan, apply, then a record job that writes the staged record) once its
-image publish has finished. The owner approves the image publish on GitHub (the `staging-images`
-environment); the automatic rollout starts when that publish finishes. This
+image publish has finished. The image publish needs no approval today (the `staging-images`
+environment has no reviewer). If a reviewer is added to `staging-images`, every merge waits on that
+click. The automatic rollout starts when the publish finishes. This
 skill checks that workflow, dispatches it when the owner says so, and keeps the manual
 `scripts/staging_rollout.py` steps for when the owner asks for them. Details:
 `deploy/STAGING_PIPELINE.md`, "Routine rollouts".
@@ -41,8 +42,8 @@ skill checks that workflow, dispatches it when the owner says so, and keeps the 
 Pause first (`STAGING_AUTO_PAUSED` `true`), unpause after.
 
 Everything runs in `/home/amsyrzmi/CSAV2`, the main checkout, never in a worktree. The script
-refuses when HEAD is not on `origin/main` or the worktree has tracked changes. The owner approves
-the image publish on GitHub and gives the go here; nothing reaches staging by hand without both.
+refuses when HEAD is not on `origin/main` or the worktree has tracked changes. The owner's go here
+is what authorises a manual rollout; nothing reaches staging by hand without it.
 
 ### Steps
 
@@ -52,8 +53,8 @@ the image publish on GitHub and gives the go here; nothing reaches staging by ha
    downtime (a migration stops gateway, frontend, worker, delivery and the training worker: console
    unavailable, bot replies delayed, not lost), the check files, and any missing secret files (exit 2).
    - `images for <sha7> are not published yet (<state>)`: the publish run starts by itself after a
-     green main CI run; the owner approves the `staging-images` environment on it. Tell the owner
-     and stop; do not poll.
+     green main CI run and needs no approval today (`<state>` reads `waiting for approval` only if a
+     reviewer was added to `staging-images`). Tell the owner and stop; do not poll.
    - Any other `Stopped at <step>: ...`: report it as it is and stop.
 3. Wait for the owner's go. A go covers this one plan only. If the plan output changes before
    `apply` (different SHA, digests or migrations), show the new plan and ask again.

@@ -7,9 +7,9 @@ of the old files, because feature rollout sections there are edited with each fe
 nothing is dropped in a move is checked by a one-off line-by-line comparison made when the move
 happens; it is not a test and is not kept in the repository.
 
-Also here: the stale-wording guard (the image publish needs no approval today), which fails until
-the older documents, the skills and the workflow header say so too, and the scan that keeps real
-identifiers out of the public repository.
+Also here: the stale-wording guard (the image publish needs no approval today), which fails when
+a document, a skill or a workflow header claims the owner approves the publish, and the scan that
+keeps real identifiers out of the public repository.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +33,7 @@ PRODUCTION_NAME = "deploy/PRODUCTION.md"
 PIPELINE_NAME = "deploy/STAGING_PIPELINE.md"
 
 # (file, heading with its marks) of an old document -> (file, heading with its marks) of its new
-# home. Production's generic sections are here; staging's follow in the next change of the series.
+# home: production's generic sections and staging's automatic-rollout section.
 MOVED: dict[tuple[str, str], tuple[str, str]] = {
     (PRODUCTION_NAME, "## Deploying from GitHub"): (
         DEPLOY_NAME,
@@ -46,12 +45,19 @@ MOVED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     (PRODUCTION_NAME, "### What a failure means"): (DEPLOY_NAME, "### What a failure means"),
     (PRODUCTION_NAME, "### What each refusal means"): (DEPLOY_NAME, "### What each refusal means"),
+    (PIPELINE_NAME, "### Automatic rollouts (deploy-staging)"): (
+        DEPLOY_NAME,
+        "## Staging: automatic rollouts (deploy-staging)",
+    ),
 }
 
 # Old headings that stay in the old file, with a pointer line, because code, tests or other
 # documents point at them. A heading that stays unchanged needs no stub and is in neither set; one
 # that moves and is pointed at is in MOVED and here; one that moves unpointed is only in MOVED.
-KEEP_STUB: set[tuple[str, str]] = {(PRODUCTION_NAME, "## Deploying from GitHub")}
+KEEP_STUB: set[tuple[str, str]] = {
+    (PRODUCTION_NAME, "## Deploying from GitHub"),
+    (PIPELINE_NAME, "### Automatic rollouts (deploy-staging)"),
+}
 
 RELEASE_HISTORY_HEADING = "#### First publication: PR #11 merge images (2026-10-22)"
 
@@ -442,14 +448,32 @@ def test_the_six_left_alone_reasons_are_what_the_script_prints_and_the_doc_lists
     assert "reason: " + ", ".join(LEFT_ALONE_REASONS) in header
 
 
+# `four` within a few words of `services` ("all four services", "four app services", "the four
+# stopped services"): both targets run five app services, and a count in prose goes stale.
+FOUR_SERVICES = re.compile(r"\bfour\b(?:\W+\w+){0,3}?\W+services\b", re.IGNORECASE)
+
+
+def test_the_four_services_pattern_sees_the_spellings_it_is_meant_to() -> None:
+    for claim in (
+        "A migration stops all four services.",
+        "Stops the four app services.",
+        "Of the Four stopped services, none runs.",
+        "four\nservices",
+    ):
+        assert FOUR_SERVICES.search(claim), claim
+    for fine in ("recreates the five services", "the four workflows", "fourstacks services"):
+        assert not FOUR_SERVICES.search(fine), fine
+
+
 def test_deploy_doc_states_the_facts_the_review_checked() -> None:
     text = _flat(_deploy())
     rollback = _flat(_section(_deploy(), "## Rollback"))
     routine = _flat(_section(_deploy(), "## The routine for one release"))
     auto = _flat(_section(_deploy(), "## Auto-planned production runs (PROD_AUTO_PLAN)"))
 
-    # Both targets have five app services (scripts/rollout_targets.py); no count is safest.
-    assert "four services" not in text
+    # Both targets have five app services (scripts/rollout_targets.py); no count is safest. The
+    # word `four` next to services, app services or the stack is flagged in any spelling.
+    assert not FOUR_SERVICES.search(text)
     assert "stops the app services on staging" in routine
     assert "recreates the five services" in rollback
     # Production never writes a staged record (scripts/staging_rollout.py, PRODUCTION.md).
@@ -506,7 +530,9 @@ def test_deploy_doc_carries_no_account_ids_addresses_arns_or_personal_names() ->
 # of one row are seen, in two rows they are not); a negated sentence ("the owner never approves
 # the image publish") is flagged like the claim, so write the true statement the way DEPLOY.md
 # does ("needs no approval today"); and a paraphrase the patterns do not know passes. Case, the
-# curly apostrophe, wrapped lines, comment prefixes and `e.g.` are handled.
+# curly apostrophe, wrapped lines, comment prefixes and `e.g.` are handled. Text inside a code fence
+# is read like any other text, so a code fence that contains stale wording is still flagged (the
+# safer side: the claim is wrong wherever it is written).
 STALE_SUBJECTS = re.compile(r"staging-images|image publish|the publish\b|publish(?:ing)? images?")
 STALE_PHRASES = re.compile(
     "|".join(
@@ -655,12 +681,14 @@ def test_the_stale_guard_reads_headings_tables_and_bullets_one_block_at_a_time()
     # A wrapped list item is one block.
     wrapped = "- the `staging-images` job\n  waits for the owner\n"
     assert _stale_sentences(wrapped) != []
+    # Text inside a code fence is read like any other: stale wording in a fence is still flagged.
+    fenced = "```\nthe owner approves the staging-images job\n```\n"
+    assert _stale_sentences(fenced) != []
     # In a file that is not markdown, `# ` is a comment, not a heading.
     comment = "# Publishing images, `staging-images`,\n# waits for the owner.\n"
     assert _stale_sentences(comment, markdown=False) != []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by Tasks 11 and 12")
 def test_no_doc_or_workflow_claims_the_owner_approves_the_publish() -> None:
     texts = {
         RELEASE_DOC: _without_release_history(RELEASE_DOC.read_text(encoding="utf-8")),
@@ -700,10 +728,25 @@ def test_no_workflow_header_claims_the_owner_approves_the_publish() -> None:
         assert _stale_sentences(path.read_text(encoding="utf-8"), markdown=False) == [], path.name
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by Task 11")
+PLACEHOLDER = re.compile(
+    r"completed\s+by\s+the\s+next\s+change|next\s+change\s+in\s+this\s+series|"
+    r"\bto\s+be\s+(?:written|completed)\b",
+    re.IGNORECASE,
+)
+
+
 def test_no_placeholder_sections_remain() -> None:
-    # Task 11 moves the last text into DEPLOY.md; its builder removes this marker.
-    assert "This section is completed by the next change in this series." not in _deploy()
+    # The text is flattened first, so a placeholder sentence cannot hide by wrapping across lines.
+    text = _flat(_deploy())
+    assert PLACEHOLDER.search(text) is None, PLACEHOLDER.search(text)
+    assert PLACEHOLDER.search("This section is completed by\nthe next change in this series.")
+    # The two sections that were placeholders hold their text (their needles are asserted in
+    # tests/test_production_deploy_assets.py and tests/test_staging_rollout.py).
+    for heading in (
+        "## Staging: automatic rollouts (deploy-staging)",
+        "## Production: deploying from GitHub",
+    ):
+        assert len(_flat(_section(_deploy(), heading))) > 2000, heading
 
 
 def test_the_release_history_section_the_stale_guard_exempts_still_exists() -> None:
@@ -724,3 +767,15 @@ def test_the_release_history_section_the_stale_guard_exempts_still_exists() -> N
     assert RELEASE_HISTORY_HEADING not in remaining
     assert f"{'#' * ends[0][0]} {ends[0][1]}" in remaining
     assert ends[0][1] not in section
+
+
+def test_production_doc_points_the_image_namespace_at_the_moved_paragraph() -> None:
+    # The IMAGE_NAMESPACE paragraph moved to DEPLOY.md with the section; the stub names neither it
+    # nor the variable, so the pointer in the setup list must name the new home, not the old
+    # heading (which is now a stub).
+    text = _flat(_read(PRODUCTION_NAME))
+    start = text.index("Repository variable **`IMAGE_NAMESPACE`**")
+    bullet = text[start : text.index("if the repository moves.", start)]
+    assert '`deploy/DEPLOY.md`, "Production: deploying from GitHub"' in bullet
+    assert "see Deploying from GitHub" not in bullet
+    assert "IMAGE_NAMESPACE" in _flat(_section(_deploy(), "## Production: deploying from GitHub"))

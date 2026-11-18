@@ -74,7 +74,107 @@ reviewer is added to `staging-images`, every merge waits on that click.
 
 ## Staging: automatic rollouts (deploy-staging)
 
-This section is completed by the next change in this series.
+Every green merge to `main` rolls out to staging by itself once its image publish (which needs no
+approval today, see "The pipeline") has finished. The workflow
+`.github/workflows/deploy-staging.yml` starts when `publish-staging-images` completes (that run is
+only a wake-up) and by manual dispatch. It always resolves the tip of `main` itself: the commit
+GitHub attaches to the publish run can be a later commit than the one it published, so it is never
+read. It has four jobs. `paused` writes a notice. `plan` and `apply` send the read-only plan and
+then exactly that plan's apply to the staging host through AWS Systems Manager, as the host user
+`csa-deploy` (the entry script `/usr/local/sbin/csa-staging-deploy` and its config
+`/usr/local/sbin/csa-staging-deploy.conf`; each run is also logged in `/var/log/csa-staging-deploy/`
+on the host). `record` writes the staged record. The newest commit wins in three places: GitHub's
+concurrency drops an older pending run, a run whose tip is not ready yet ends green, and an apply
+whose plan was overtaken ends green without sending anything. Read the outcome from the run page
+(the job summary has the plan and apply output):
+
+| What you see | What it means |
+| --- | --- |
+| `nothing to roll out` (green) | The tip's `ci` is not green yet, or its images are not published yet. That commit's own publish run starts the next rollout. Green only on an automatic run: a dispatch of a commit that is not ready fails red. |
+| `already staged` (green) | The tip already has a staged record, so a late duplicate run does not restart staging. Green only on an automatic run: a dispatch of an already-staged commit rolls it out again. |
+| `superseded` (green) | `main` moved after this run's plan. Nothing was sent; the run for the newer commit rolls it out. |
+| `paused` (green) | `STAGING_AUTO_PAUSED` is `true`. Nothing was sent. |
+| `Stopped at lock: another rollout of staging is running; nothing was changed` (red) | The core's per-target lock (`/run/lock/csa-staging-rollout.lock`) is held, for example by a manual rollout. Nothing was pulled or recreated. Start the workflow again when the other run ends. |
+| `Missing secret files:` (red, plan exit 2) | A secret file the stack needs does not exist for `csa-deploy`. Nothing was sent to apply. After a new secret directory, re-run the `find ... setfacl` line of step 7 of `deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts". |
+| `the plan is a downgrade; staging never goes back by itself (roll back by hand, deploy/STAGING_PIPELINE.md)` (red) | The plan's target is older than what runs now. The workflow never moves staging back, not even for an explicit `sha`; use `deploy/STAGING_PIPELINE.md`, "Manual rollout (break-glass)". An explicit-`sha` dispatch of an older commit ends here too, and it may have replaced the pending automatic run for the tip (see the limits below). |
+| `Stopped at <step>: ...` (red) | The rollout stopped on the host. The recovery lines under `deploy/STAGING_PIPELINE.md`, "Recovery, retest and switches (automatic and manual rollouts)", apply unchanged. The Systems Manager output holds at most 24,000 characters, so the complete log is the one on the host. |
+| `Recorded <sha7> as staged` (green) | The record job wrote the staged record, after the host reported success (smoke test included). |
+| the record job is red, with `staging is fine but the staged record was not written; use Re-run failed jobs on this run` | Staging was updated but the record was not written. Use "Re-run failed jobs" on that run now. |
+
+**The record is written by the workflow.** The workflow writes the staged record, not the host: the
+`record` job runs only after the apply job reported success on the host, and uses the workflow's
+token; the host's own rollout writes none when it is given digests. If the record job fails, staging
+is already updated but unrecorded, so production's gate does not see the commit and the next
+automatic run sees the tip as "not staged" and rolls it out again (stopping the services again when
+migrations are pending). Re-run the failed record job promptly. `record_staged.sh` prints a usage
+line for a bad argument or a missing credential; for a failed write it prints the retry line above,
+and may print `gh answered HTTP <code>` (the code only, never `gh`'s own text) on the line before
+it. A 403 or 404 will not go away on a re-run: tell the owner. A run given digests is treated as the
+workflow's run, which is a proxy: a manual run must therefore use no digests (the manual commands of
+`deploy/STAGING_PIPELINE.md`, "Manual rollout (break-glass)", pass none), or its record is skipped.
+
+**What counts as staged.** Production's gate (`deploy/production/resolve_commit.sh`) and the core's
+break-glass gate count a deployment only when its description is `staging rollout`. The plan and
+apply jobs use the `staging` environment with `deployment: false` so GitHub creates no deployment
+object of its own, and the record job names no environment. If GitHub did create extra deployments
+anyway (see "First run (acceptance), watched live" in `deploy/STAGING_PIPELINE.md`), they never
+count as staged, but they still take slots in `scripts/image_keep_list.py` (it takes the newest 15
+deployment rows before it keeps only those with a success status, with no description filter), so
+extra rows shrink the number of distinct staged shas kept; the newest 20 sha tags are still kept.
+
+**A migration stops the app services on every such merge.** When a merge carries migrations, the
+rollout stops the app services (`gateway`, `frontend`, `worker`, `delivery` and `training-worker`)
+before `migrate` runs, as described in `deploy/STAGING_PIPELINE.md`, "Recovery, retest and switches
+(automatic and manual rollouts)". That now happens on every merge that has migrations, without
+anyone watching.
+
+**Pause and catch up.** The repository variable `STAGING_AUTO_PAUSED` is the switch: `true` turns
+automatic runs into a green `paused` notice; unset or any other value means automatic. A manual
+dispatch ignores the pause.
+
+```bash
+gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body true
+gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body false
+gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main
+```
+
+The first line pauses, the second resumes. After a pause, catch up with the third: a dispatch with
+an empty `sha` rolls out the tip of `main` (add `-f sha=<full 40-character sha>` to roll out a
+named commit; the downgrade refusal still applies, and an explicit-`sha` dispatch can replace the pending
+automatic run for the tip, see the limits below). A dispatch always rolls out, even when the
+tip is already staged (it restarts staging, and stops the services again when migrations are
+pending), so dispatch only when the tip is not staged.
+
+**Limits to know about.**
+
+- A pending dispatch run is replaced by a newer automatic run in the same concurrency group
+  (`deploy-staging`): GitHub keeps only one pending run. If a dispatch seems to vanish, look at
+  the newer run; it rolls out the tip anyway.
+- The tip-only rule: only the tip of `main` is rolled out. A green commit whose successor's `ci` is
+  still red when its run starts is not rolled out until the next green merge.
+- A failed or skipped publish run gets its own concurrency group, so it cannot cancel a pending
+  good run.
+- An explicit-`sha` dispatch shares the `deploy-staging` concurrency group, so it can replace the
+  pending automatic run for the tip. If its `sha` is older than what runs now it stops red at the
+  downgrade stop, and the tip is not rolled out until the next merge or a dispatch with an empty
+  `sha`.
+
+**Trust.** Merge rights on `main` plus a green `ci` equal root-equivalent code execution on the home
+server, as `csa-deploy` (a member of the `docker` group), a minute after the merge: the entry script
+checks out the deployed sha and runs its Python from the `csa-deploy`-owned checkout. This rests on
+`main`'s branch protection (required review, no bypass). The checkout is writable by `csa-deploy`,
+so a malicious commit could persist there (for example in git hooks). The image publish needs no
+approval today (the `staging-images` environment has no reviewer). If a reviewer is added to
+`staging-images`, every merge waits on that click.
+
+**Access.** Each run takes a short-lived AWS role session through GitHub OIDC. One role serves both
+the plan and apply sessions (`deploy-staging-plan` and `deploy-staging-apply` are the session names,
+so the audit log tells them apart), and it can send only the two staging documents. Its trust policy
+accepts only the subject for the environment `staging`. That subject contains the environment but no
+ref, so the `staging` environment's main-only deployment-branch policy is the only restriction by
+branch (and every job also has `if: github.ref == 'refs/heads/main'`). Without that policy a
+workflow on another branch could use `environment: staging` and assume the role: check it as
+`deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts", says.
 
 ## Production: deploying from GitHub
 
@@ -100,10 +200,11 @@ script asks once more anonymously (the images are public). The script is shared 
 `deploy-staging` and needs `DEPLOY_TARGET` (`production` or `staging`) in its environment: the
 workflow sets `DEPLOY_TARGET: production`, and only production enforces the staged check.
 The rollout core on the instance also takes a per-target lock, `/run/lock/csa-prod-rollout.lock`, in
-`plan` and `apply`, shared with break-glass runs by hand (see `deploy/PRODUCTION.md`, "Reinstalling the shared entry script"). The two digests go to the
-instance with the plan and the apply. The instance still pulls by digest with an empty Docker
-config and checks each pulled image's digest and revision label against the commit. A host run by
-hand without digests keeps the old path (see `deploy/PRODUCTION.md`, "Break-glass: manual deploy (owner only)").
+`plan` and `apply`, shared with break-glass runs by hand (see `deploy/PRODUCTION.md`, "Reinstalling
+the shared entry script"). The two digests go to the instance with the plan and the apply. The
+instance still pulls by digest with an empty Docker config and checks each pulled image's digest and
+revision label against the commit. A host run by hand without digests keeps the old path (see
+`deploy/PRODUCTION.md`, "Break-glass: manual deploy (owner only)").
 
 The registry prefix of the images is the repository variable `IMAGE_NAMESPACE` (Settings, Secrets
 and variables, Actions, Variables), for example `ghcr.io/example-owner`: lowercase, no scheme, no
@@ -125,8 +226,8 @@ image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha
    40-character SHA of an older staged commit on `main` (a deliberate rollback; the plan shows the
    downgrade warning). The commit must be one that includes the digest change (it runs that
    commit's own rollout CLI, which must accept the digests the workflow sends); an older revision
-   can only be restored with break-glass, see `deploy/PRODUCTION.md`, "Rolling back to a revision older than the digest
-   change". From a terminal:
+   can only be restored with break-glass, see `deploy/PRODUCTION.md`, "Rolling back to a revision
+   older than the digest change". From a terminal:
 
    ```bash
    gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
@@ -151,16 +252,16 @@ image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha
    scripts.staging_rollout --target production apply ...`) is for reference only: the instance
    runs the rollout with `/opt/csa-deploy/venv/bin/python` through `csa-prod-deploy`.
 4. **Approve or reject** the `production` deployment on the run page ("Review deployments"). One
-   approval from either reviewer is enough; self-approval is allowed. Approval is the decision,
-   so read the plan first: a migration stops gateway, frontend, both workers, delivery and the
-   training worker (console unavailable, bot replies delayed, not lost), and a downgrade warning
-   means the target is older than what runs now. Reject to cancel; nothing on production has changed (only
-   the deploy checkout moved to the commit). A run waiting for approval holds the workflow's
-   concurrency group: a new dispatch queues behind it, and a third dispatch cancels the queued
-   second. A dispatch made by `deploy-production-auto` counts as a dispatch here and can replace a
-   person's *pending* run (an accepted limit; see "Auto-planned production runs (PROD_AUTO_PLAN)"). Reject a stale waiting run before you start a new one (the common case now that the
-   default is the tip of `main`), and after the digest change merges, reject any run still
-   waiting from before it.
+   approval from either reviewer is enough; self-approval is allowed. Approval is the decision, so
+   read the plan first: a migration stops gateway, frontend, both workers, delivery and the training
+   worker (console unavailable, bot replies delayed, not lost), and a downgrade warning means the
+   target is older than what runs now. Reject to cancel; nothing on production has changed (only the
+   deploy checkout moved to the commit). A run waiting for approval holds the workflow's concurrency
+   group: a new dispatch queues behind it, and a third dispatch cancels the queued second. A
+   dispatch made by `deploy-production-auto` counts as a dispatch here and can replace a person's
+   *pending* run (an accepted limit; see "Auto-planned production runs (PROD_AUTO_PLAN)"). Reject a
+   stale waiting run before you start a new one (the common case now that the default is the tip of
+   `main`), and after the digest change merges, reject any run still waiting from before it.
 5. **Read the result** in the `apply` job's summary. `apply` first checks that `main` is still at
    the planned commit (a default run only; an explicit `sha` is not checked), checks out `main`
    again for its runner scripts, then sends the planned values; on the instance the rollout
