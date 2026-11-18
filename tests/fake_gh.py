@@ -27,8 +27,11 @@ must not depend on any of these):
 * ``--jq`` runs the system ``jq`` with ``-S`` (object keys sorted, as gh's gojq does). gojq's regex
   engine and some builtins differ from jq's, and the fake's jq is the more lenient of the two: a
   filter that passes here can still fail in real gh.
-* ``--paginate`` returns one page and ignores ``per_page``. Combined with a non-GET method it is
-  refused client-side with gh's message (exit 1), as real gh does.
+* ``--paginate`` returns one page and ignores ``per_page``. Like real gh (verified in gh source,
+  pkg/cmd/api/api.go) it is refused client-side, exit 1, before any request: with an explicit
+  non-GET ``--method`` ("the `--paginate` option is not supported for non-GET requests"), then with
+  ``--input`` even beside an explicit GET ("the `--paginate` option is not supported with
+  `--input`"); both checks come before the implicit POST of ``--input`` is applied.
 * A policy POST whose pattern already exists answers ``gh: HTTP 303`` (exit 1). GitHub's OpenAPI
   description lists 303 for it; how gh prints a 303 (text, exit code) is UNVERIFIED.
 * ``render_environment`` lists the ``branch_policy`` protection rule only for custom policies;
@@ -41,10 +44,17 @@ must not depend on any of these):
 * ``gh secret set`` / ``gh variable set``: names are stored uppercase and a ``GITHUB_`` prefix
   (any case) is refused with 422; a secret read from stdin loses trailing CR/LF characters; a
   logged-out gh exits 4. The 404 text of ``secret set`` is ``gh: Not Found (HTTP 404)`` (the plan's
-  wording); real gh prints something like ``failed to fetch public key: HTTP 404: Not Found``
-  (recollection, unverified), so a script must never match on that text. ``--body ""`` falls back
-  to stdin in real gh (unverified) and is not modelled; ``variable set`` takes only ``--body``
-  (its value is stored untrimmed, as gh does).
+  wording); real gh prints ``failed to fetch public key: HTTP 404: Not Found`` (verified in gh
+  source, set.go), so a script must never match on that text. ``--body ""`` falls back to stdin in
+  real gh (verified in gh source: ``getBody`` tests ``opts.Body != ""`` in secret set and variable
+  set) and is not modelled: the fake treats any ``--body`` to ``secret set`` as a test bug, and
+  accepts only ``--body`` for ``variable set``. Real ``variable set`` also trims trailing CR/LF
+  from a value read on stdin; that is not modelled, so a ``--body`` value is stored untrimmed,
+  which is right for ``--body``.
+* A secret passed on argv to ``secret set`` is a test bug (exit 252), and its value is redacted in
+  the log and in the error text, so it never reaches a log file or a terminal.
+* The repository (``owner/repo``) matches case-insensitively, as on GitHub, and the stored
+  spelling is returned.
 
 Anything the fake does not model exits 252 with ``fake gh: unsupported call: ...``: that is a test
 bug, never a silent success. There is deliberately no ``gh auth status``.
@@ -91,10 +101,34 @@ def save(state):
         json.dump(state, handle)
 
 
+def redact(args):
+    # A value given to `gh secret set` on argv (--body VALUE, -b VALUE, --body=VALUE, -b=VALUE,
+    # -bVALUE) must reach neither the log nor stderr: it is replaced before anything is written.
+    if args[:2] != ["secret", "set"]:
+        return list(args)
+    shown = []
+    hide_next = False
+    for arg in args:
+        if hide_next:
+            shown.append("REDACTED")
+            hide_next = False
+        elif arg in ("--body", "-b"):
+            shown.append(arg)
+            hide_next = True
+        elif arg.startswith("--body="):
+            shown.append("--body=REDACTED")
+        elif arg.startswith("-b") and not arg.startswith("--"):
+            shown.append("-b=REDACTED" if arg.startswith("-b=") else "-bREDACTED")
+        else:
+            shown.append(arg)
+    return shown
+
+
 def finish(code):
-    # The one exit. It logs argv and the byte length of stdin, never stdin content.
+    # The one exit. It logs argv (a secret on argv redacted) and the byte length of stdin, never
+    # stdin content.
     with open(LOG, "a") as handle:
-        handle.write(json.dumps({"argv": argv, "stdin": stdin_length}) + "\n")
+        handle.write(json.dumps({"argv": redact(argv), "stdin": stdin_length}) + "\n")
     sys.stdout.flush()
     sys.stderr.flush()
     sys.exit(code)
@@ -106,7 +140,7 @@ def bug(text):
 
 
 def unsupported():
-    bug("unsupported call: " + " ".join(argv))
+    bug("unsupported call: " + " ".join(redact(argv)))
 
 
 def http_error(status, message):
@@ -194,11 +228,15 @@ def parse_api(args):
         i += 1
     if path is None:
         unsupported()
-    if opts["method"] is None:
-        opts["method"] = "POST" if opts["input"] else "GET"
-    if opts["paginate"] and opts["method"] != "GET":
+    # Real gh checks these in this order, both before it applies the implicit POST of --input.
+    if opts["paginate"] and opts["method"] not in (None, "GET"):
         sys.stderr.write("the `--paginate` option is not supported for non-GET requests\n")
         finish(1)
+    if opts["paginate"] and opts["input"]:
+        sys.stderr.write("the `--paginate` option is not supported with `--input`\n")
+        finish(1)
+    if opts["method"] is None:
+        opts["method"] = "POST" if opts["input"] else "GET"
     if opts["method"] not in ("GET", "POST", "PUT", "DELETE"):
         unsupported()
     return opts, path
@@ -225,10 +263,8 @@ def user_of(state, user_id):
 
 
 def login_of(state, user_id):
-    for login, entry in state["users"].items():
-        if (entry["id"] if isinstance(entry, dict) else entry) == user_id:
-            return login
-    return f"user-{user_id}"
+    user = user_of(state, user_id)
+    return user["login"] if user else f"user-{user_id}"
 
 
 def render_environment(state, name):
@@ -455,7 +491,7 @@ def api_command(args):
         emit({"login": login, "id": user["id"], "type": user.get("type", "User")}, opts["jq"])
     if parts[0] == "repos" and len(parts) >= 3:
         repo = state["repo"]
-        if f"{parts[1]}/{parts[2]}" != repo["full_name"]:
+        if f"{parts[1]}/{parts[2]}".lower() != repo["full_name"].lower():
             not_found()
         rest = parts[3:]
         if not rest and method == "GET":
@@ -519,7 +555,7 @@ def secret_set(args):
     state = load()
     require_login(state)
     env_name = find_name(state["environments"], values["env"])
-    if values["repo"] != state["repo"]["full_name"] or env_name is None:
+    if values["repo"].lower() != state["repo"]["full_name"].lower() or env_name is None:
         sys.stderr.write("gh: Not Found (HTTP 404)\n")
         finish(1)
     if not valid_name(positional[0]):
@@ -536,7 +572,7 @@ def variable_set(args):
         unsupported()
     state = load()
     require_login(state)
-    if values["repo"] != state["repo"]["full_name"]:
+    if values["repo"].lower() != state["repo"]["full_name"].lower():
         sys.stderr.write("gh: Not Found (HTTP 404)\n")
         finish(1)
     if not valid_name(positional[0]):
@@ -565,9 +601,22 @@ WRITE_VERBS = {
 }
 
 
+FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
+
+
+def is_field_flag(arg: str) -> bool:
+    """A ``gh api`` field flag: ``-f``/``-F``/``--field``/``--raw-field`` alone, ``--field=...``,
+    ``--raw-field=...``, or a short flag with its value attached (``-f=a=b``, ``-fa=b``)."""
+    if arg in FIELD_FLAGS or arg.startswith(("--field=", "--raw-field=")):
+        return True
+    return arg[:2] in ("-f", "-F") and not arg.startswith("--")
+
+
 def api_method(argv: list[str]) -> str:
     """The HTTP method a ``gh api`` call uses: explicit (``--method``/``-X``, either spelling), else
-    POST with ``--input`` (``--input -`` or ``--input=-``), else GET. Mirrors ``parse_api``."""
+    POST with ``--input`` (``--input -`` or ``--input=-``) or with a field flag (``-f``, ``-F``,
+    ``--field``, ``--raw-field``, in any spelling gh accepts), else GET. The fake does not model
+    fields (such a call exits 252), but it is still classified as the write it would be."""
     method: str | None = None
     has_input = False
     for index, arg in enumerate(argv):
@@ -576,6 +625,8 @@ def api_method(argv: list[str]) -> str:
         elif arg.startswith("--method="):
             method = arg.split("=", 1)[1].upper()
         elif arg == "--input" or arg.startswith("--input="):
+            has_input = True
+        elif is_field_flag(arg):
             has_input = True
     if method is not None:
         return method
@@ -635,7 +686,7 @@ class Gh:
                 values = {
                     argv[i + 1]
                     for i, arg in enumerate(argv)
-                    if arg in ("--method", "-X", "--jq", "-q") and i + 1 < len(argv)
+                    if arg in ("--method", "-X", "--jq", "-q", *FIELD_FLAGS) and i + 1 < len(argv)
                 }
                 path = [arg for arg in path if arg not in values]
                 labels.append(f"api {api_method(argv)} {path[0] if path else ''}")

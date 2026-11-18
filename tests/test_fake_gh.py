@@ -350,6 +350,40 @@ def test_secret_set_reads_stdin_needs_the_environment_and_refuses_body(gh: Gh) -
     assert no_repo.returncode == 252
 
 
+@pytest.mark.parametrize(
+    "form",
+    [("--body", "SECRET-ARGV-MARKER"), ("-b", "SECRET-ARGV-MARKER"),
+     ("--body=SECRET-ARGV-MARKER",), ("-b=SECRET-ARGV-MARKER",), ("-bSECRET-ARGV-MARKER",)],
+)  # fmt: skip
+def test_a_secret_passed_on_argv_is_never_logged_or_printed(gh: Gh, form: tuple[str, ...]) -> None:
+    gh.add_environment("production")
+    result = gh.call(
+        "secret", "set", "NAME", "--env", "production", "--repo", REPO, *form, stdin="v"
+    )
+    assert result.returncode == 252
+    assert "SECRET-ARGV-MARKER" not in gh.log_path.read_text()
+    assert "SECRET-ARGV-MARKER" not in result.stdout
+    assert "SECRET-ARGV-MARKER" not in result.stderr
+    assert "fake gh:" in result.stderr
+    # The call is still logged (as a secret set), with the rest of its argv intact.
+    assert gh.commands() == ["secret set"]
+    assert gh.calls()[0]["argv"][:7] == [
+        "secret", "set", "NAME", "--env", "production", "--repo", REPO
+    ]  # fmt: skip
+    # The same value on a call that is unsupported for another reason (no --repo).
+    gh.reset_log()
+    other = gh.call("secret", "set", "NAME", "--env", "production", *form, stdin="v")
+    assert other.returncode == 252
+    assert "SECRET-ARGV-MARKER" not in gh.log_path.read_text()
+    assert "SECRET-ARGV-MARKER" not in other.stderr
+
+
+def test_a_variable_value_on_argv_stays_in_the_log(gh: Gh) -> None:
+    # Variables are not secrets and go on --body: their argv is logged as given.
+    gh.call("variable", "set", "X", "--repo", REPO, "--body", "plain-value")
+    assert gh.calls()[0]["argv"][-1] == "plain-value"
+
+
 def test_secret_names_are_listed_without_values_on_the_documented_path(gh: Gh) -> None:
     gh.add_environment("production", secrets={"PROD_INSTANCE_ID": "VALUE-MARKER", "B_NAME": "x"})
     path = f"repos/{REPO}/environments/production/secrets"
@@ -606,13 +640,69 @@ def test_paginate_with_a_non_get_method_is_refused_like_gh_does(
     assert "the `--paginate` option is not supported for non-GET requests" in result.stderr
     assert result.stdout == ""
     assert gh.state() == before
-    # The same flags in the other order, and a method-less --input (a POST), refuse too.
-    last = gh.call("api", policies_url(), "--input=-", "--paginate", stdin="{}")
-    assert last.returncode == 1
-    assert "not supported for non-GET requests" in last.stderr
+    # The same flags in the other order refuse too.
+    other = gh.call("api", policies_url(), "--method=POST", "--input=-", "--paginate", stdin="{}")
+    assert other.returncode == 1
+    assert "not supported for non-GET requests" in other.stderr
     assert gh.state() == before
     ok = gh.call("api", "--paginate", "--method", "GET", policies_url())
     assert ok.returncode == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--paginate", "--input", "-"),
+        ("--input=-", "--paginate"),
+        ("--paginate", "--method", "GET", "--input", "-"),
+        ("--paginate", "-X", "get", "--input=-"),
+    ],
+)
+def test_paginate_with_input_is_refused_with_its_own_message_before_any_request(
+    gh: Gh, args: tuple[str, ...]
+) -> None:
+    # Real gh refuses --paginate with --input (even with an explicit GET), and does so before it
+    # applies the implicit POST of --input, so the message is the --input one.
+    assert put(gh, "production", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    before = gh.state()
+    result = gh.call("api", *args, policies_url(), stdin=json.dumps({"name": "main"}))
+    assert result.returncode == 1, args
+    assert "the `--paginate` option is not supported with `--input`" in result.stderr
+    assert "non-GET" not in result.stderr
+    assert result.stdout == ""
+    assert gh.state() == before
+
+
+@pytest.mark.parametrize(
+    "field_args",
+    [
+        ("-f", "a=b"),
+        ("-F", "a=b"),
+        ("--field", "a=b"),
+        ("--raw-field", "a=b"),
+        ("--field=a=b",),
+        ("--raw-field=a=b",),
+        ("-f=a=b",),
+        ("-Fa=b",),
+    ],
+)
+@pytest.mark.parametrize("field_first", [True, False])
+def test_a_field_flag_without_a_method_makes_the_call_a_post_and_a_logged_write(
+    gh: Gh, field_args: tuple[str, ...], field_first: bool
+) -> None:
+    # Real gh turns -f, -F, --field and --raw-field into a POST when there is no --method. The
+    # fake does not model fields (the call exits 252), but it is still classified as a write.
+    url = f"repos/{REPO}/actions/variables"
+    args = (*field_args, url) if field_first else (url, *field_args)
+    result = gh.call("api", *args)
+    assert result.returncode == 252
+    assert gh.commands() == [f"api POST {url}"]
+    assert [call["argv"] for call in gh.writes()] == [["api", *args]]
+    # An explicit method wins, as with --input.
+    gh.reset_log()
+    gh.call("api", "--method", "GET", *args)
+    assert gh.commands() == [f"api GET {url}"]
+    assert gh.writes() == []
 
 
 # --- the recorded bodies ----------------------------------------------------------------------
@@ -637,6 +727,25 @@ def test_api_bodies_holds_only_accepted_puts_and_policy_posts_in_order(gh: Gh) -
         {"method": "PUT", "path": "production", "body": second},
         {"method": "POST", "path": "production/policies", "body": post},
     ]
+
+
+def test_api_bodies_paths_use_the_stored_spelling_of_the_environment(gh: Gh) -> None:
+    assert put(gh, "Production", {"wait_timer": 3}).returncode == 0  # created as "Production"
+    assert gh.api_bodies()[-1]["path"] == "Production"
+    assert put(gh, "PRODUCTION", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    assert gh.api_bodies()[-1]["path"] == "Production"
+    post = {"name": "main", "type": "branch"}
+    created = gh.call("api", policies_url("PRODUCTION"), "--input=-", stdin=json.dumps(post))
+    assert created.returncode == 0, created.stderr
+    assert gh.api_bodies()[-1]["path"] == "Production/policies"
+    # A lower-case environment asked for in another case stays lower case.
+    assert put(gh, "staging", {"wait_timer": 1}).returncode == 0
+    assert put(gh, "STAGING", {"wait_timer": 2}).returncode == 0
+    assert gh.api_bodies()[-1]["path"] == "staging"
+    assert put(gh, "STAGING", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    other = gh.call("api", policies_url("Staging"), "--input=-", stdin=json.dumps(post))
+    assert other.returncode == 0, other.stderr
+    assert gh.api_bodies()[-1]["path"] == "staging/policies"
 
 
 # --- validation boundaries --------------------------------------------------------------------
@@ -839,3 +948,25 @@ def test_user_lookup_is_case_insensitive_and_returns_the_stored_login(gh: Gh) ->
     found_rule = rule(get_env(gh, "production"), "required_reviewers")
     assert found_rule is not None
     assert found_rule["reviewers"][0]["reviewer"]["login"] == "MixedCaseUser"
+
+
+def test_the_repository_name_matches_case_insensitively_and_the_stored_one_is_returned(
+    gh: Gh,
+) -> None:
+    gh.add_environment("production")
+    asked = REPO.upper()
+    found = gh.call("api", f"repos/{asked}", "--jq", ".full_name")
+    assert found.returncode == 0, found.stderr
+    assert found.stdout.strip() == REPO
+    assert gh.call("api", f"repos/{asked.lower()}/actions/variables").returncode == 0
+    assert gh.call("api", f"repos/{asked}/environments/production").returncode == 0
+    wrong = gh.call("api", "repos/other-owner/other")
+    assert wrong.returncode == 1
+    assert wrong.stderr.strip() == NOT_FOUND
+    done = gh.call("secret", "set", "S", "--env", "production", "--repo", asked, stdin="v")
+    assert done.returncode == 0, done.stderr
+    assert stored(gh, "production")["secrets"] == {"S": "v"}
+    assert gh.call("variable", "set", "V", "--repo", asked, "--body", "1").returncode == 0
+    assert gh.state()["variables"] == {"V": "1"}
+    other = gh.call("variable", "set", "V", "--repo", "other-owner/other", "--body", "1")
+    assert other.stderr.strip() == NOT_FOUND
