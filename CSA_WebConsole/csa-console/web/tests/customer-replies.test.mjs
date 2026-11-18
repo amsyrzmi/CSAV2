@@ -17,7 +17,7 @@ const api = await import(apiUrl);
 test("only a mode that replies needs a brand name", () => {
   assert.equal(replies.saveBlockedReason("off", ""), null);
   assert.equal(replies.saveBlockedReason("off", "   "), null);
-  assert.equal(replies.saveBlockedReason("auto", "Team Jo"), null);
+  assert.equal(replies.saveBlockedReason("auto", "Team Contoh"), null);
   for (const mode of ["approve", "auto"]) {
     for (const name of ["", "   "]) {
       assert.equal(replies.saveBlockedReason(mode, name), "Add your brand name first.");

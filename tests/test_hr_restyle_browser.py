@@ -1807,7 +1807,7 @@ class PersonWorld(RestyleWorld):
                 person["work_email"] = "farid@example.test"
                 person["employment_profile"] = {
                     "region": "sabah",
-                    "legal_entity_reference": "Syarikat Cekap",
+                    "legal_entity_reference": "Contoh Satu",
                     "employment_category": "permanent",
                 }
             else:
@@ -1971,7 +1971,7 @@ async def test_edit_opens_more_details_when_filled(site: Site) -> None:
                 if filled:
                     await expect(email).to_have_value("farid@example.test")
                     await expect(control(page, "legal_entity_reference")).to_have_value(
-                        "Syarikat Cekap"
+                        "Contoh Satu"
                     )
                 else:
                     await expect(email).to_be_hidden()

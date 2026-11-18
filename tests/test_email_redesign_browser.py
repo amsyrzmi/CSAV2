@@ -757,7 +757,7 @@ async def test_platform_picker_with_long_names_fits_narrow_screens(site: Site, w
     async def body(browser: Any) -> None:
         world = World()
         world.companies[0]["name"] = (
-            "Perusahaan Perniagaan Serbaneka Kedai Runcit Aminah dan Anak-anak Sdn Bhd"
+            "Contoh Perusahaan Perniagaan Serba Ada Kedai Runcit Contoh dan Anak-anak Sdn Bhd"
         )
         async with email_page(
             browser, site, world, width=width, role="platform_admin", wait="email-tenant"

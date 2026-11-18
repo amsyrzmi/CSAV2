@@ -30,7 +30,7 @@ const NOW = new Date("2026-11-13T04:00:00Z");
 function company(overrides = {}) {
   return {
     client_id: "11111111-1111-4111-8111-111111111111",
-    name: "Kedai Mawar",
+    name: "Kedai Contoh",
     status: "ok",
     stage: "pilot",
     bundle: "individual",
