@@ -27,8 +27,9 @@ runbook for the details.
 
 Everything runs from the main checkout `/home/amsyrzmi/CSAV2`, never from a worktree. The staging
 and production flows use only `gh` commands, against the repository `amsyrzmi/CSAV2`: nothing runs
-on an instance from here, because Systems Manager runs the rollout there. The one exception is the
-staging manual break-glass below, which runs `scripts/staging_rollout.py` in the main checkout (it
+on the production instance from here, because Systems Manager runs the rollout there. The one
+exception is the staging manual break-glass below, which runs `scripts/staging_rollout.py` (and
+the git and docker commands listed there) in the main checkout, on the host that runs staging (it
 refuses when HEAD is not on `origin/main` or the tree has tracked changes).
 
 ## Staging: automatic rollouts
@@ -131,7 +132,7 @@ deploying from GitHub" (the host facts and break-glass stay in `deploy/PRODUCTIO
    staging rollout, printed `Recorded <sha7> as staged`); naming an older one is a deliberate rollback. A commit
    staging has not run goes through the staging flow above first.
 2. Look for a run that already exists, then start one only if the owner has asked for it and none
-   covers the tip: with `PROD_AUTO_PLAN` on, `deploy-production-auto` may have started the plan
+   covers that commit (the tip, or the commit the owner named): with `PROD_AUTO_PLAN` on, `deploy-production-auto` may have started the plan
    already (see `## Auto-planned production runs`). Dispatch only after the owner's go: the owner's
    request to deploy production is the go to start the plan, and it is not the approval in step 4.
    Start the run, then find it:
@@ -199,10 +200,10 @@ the owner or the other developer, and the human approval is never given by an ag
   plans, and that its apply is waiting for the owner or the other developer.
 - Never approve it and never reject it, and never ask someone else to approve for the owner. The
   owner approves or rejects on the run page ("Review deployments").
-- Cancel a production run only after the owner's go and only after reading the run's state in the
-  same turn: never one whose apply is `in_progress` or finished (an approved run may already have
-  sent the deploy to the instance; tell the owner to check the host log and the public smoke test
-  instead). The auto workflow itself cancels stale auto-started runs whose apply is still waiting;
+- Cancel a production run only after the owner's go, and cancel only a run whose apply job is
+  still `waiting` (read in the same turn); never one whose apply is approved, queued, `in_progress`
+  or finished (an approved run may already have sent the deploy to the instance; tell the owner to
+  check the host log and the public smoke test instead). The auto workflow itself cancels stale auto-started runs whose apply is still waiting;
   it never cancels a person's run.
 - `PROD_AUTO_PLAN` is changed only on the owner's say-so:
   `gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true|false`. The plain read is
@@ -224,6 +225,10 @@ the owner or the other developer, and the human approval is never given by an ag
   <sha7> is not.` and `Fix forward, then re-run plan and apply.` The run still ends red (exit 1)
   and writes no staged record; report the lines verbatim. `Stopped at rollback:` means the
   rollback itself failed: show the lines and ask the owner.
+- Staging: if an apply is slow, hangs (for example on a docker pull) or is rolled back by the
+  smoke check, report the lines verbatim and ask the owner. Do not kill any process and do not
+  re-run a failed job on your own: a re-run is a rollout action and needs the owner's go. Host
+  load is the usual cause (this machine also runs other work).
 - Staging: if `apply` fails, show the script's own recovery lines verbatim: the step, the state
   staging is in, then whichever applies (`Nothing on staging was changed.`, the `docker ... start`
   restart command, `Migrations were applied: ...` with fix forward, or `Rollback images:` with the
@@ -274,10 +279,16 @@ take the same rollout lock as a rollout: when one holds it they change nothing a
   `apply` before the owner's go.
 - Export the staging switches yourself. They live in `deploy/staging-rollout.env`; changing one is
   a pull request.
-- Approve or reject a production deployment, ask anyone to approve for the owner, cancel a
-  production run without reading its state first (or ever one whose apply is `in_progress`), or
-  change the environments, their reviewers or branch rules, the secrets, the AWS roles and
-  documents, or `PROD_AUTO_PLAN`, on your own.
+- Approve or reject a production deployment, or ask anyone to approve for the owner. Never, with
+  or without the owner's go.
+- Cancel a production run without the owner's go: cancel only a run whose apply job is still
+  `waiting` (read in the same turn); never one whose apply is approved, queued, `in_progress` or
+  finished.
+- Run `gh run rerun` on a production run: a rerun re-uses the old plan. A new run, after the
+  owner's go, is the way.
+- Change the environments, their reviewers or branch rules, the secrets, or the AWS roles and
+  documents. Never.
+- Change `PROD_AUTO_PLAN` on your own: only on the owner's say-so.
 - Bypass the staged gate or suggest a way around it. The break-glass procedure in
   `deploy/PRODUCTION.md` is the owner's own decision, outside the staged-first rule; do not run
   it or offer it as a fix for a refusal.

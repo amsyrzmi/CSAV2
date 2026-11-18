@@ -99,13 +99,13 @@ without that record. A failed rollout records nothing. If the write fails after 
 
 ### Recovery, retest and switches (automatic and manual rollouts)
 
-**A migration rollout stops all four services.** Owner decision of 2026-10-30, for every
-migration: `gateway`, `frontend`, `worker` and `delivery` are stopped before `migrate` runs, so no
-old code runs against the new schema. The console is unavailable and bot replies are delayed
+**A migration rollout stops all five services.** Owner decision of 2026-10-30, for every
+migration: `gateway`, `frontend`, `worker`, `delivery` and `training-worker` are stopped before
+`migrate` runs, so no old code runs against the new schema. The console is unavailable and bot replies are delayed
 (queued, not lost) until the services are back, usually a few minutes.
 
 **Recovery.** On any failure `apply` stops and prints `Stopped at <step>: ...`, the state staging
-is in (which of the four services are stopped, recreated or still on the previous images), the
+is in (which of the five services are stopped, recreated or still on the previous images), the
 recovery lines for how far it got, and last `Re-run plan, then apply, once the cause is fixed.`
 It never retries a migrate and never rolls one back (a migration cannot be un-applied). The
 recovery lines are:
@@ -115,8 +115,8 @@ recovery lines are:
 - **Services stopped, no planned migration recorded** (the stop or `migrate` failed and
   `schema_migrations` has none of the planned versions): `To bring the previous version back:`
   followed by a copy-ready `docker --host unix:///var/run/docker.sock start
-  csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1`,
-  which restarts the old containers and needs no environment. If `schema_migrations` could not be
+  csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
+  csa-staging-training-worker-1`, which restarts the old containers and needs no environment. If `schema_migrations` could not be
   read, `apply` says the migration state is unknown: check `schema_migrations` before restarting.
 - **A planned migration was recorded**: `Migrations were applied: <versions>.` The previous images
   fail `/readyz` against the new schema, so do not roll back: fix forward, then run `plan` and
@@ -128,7 +128,7 @@ recovery lines are:
   When they share one revision it prints `To roll back: git checkout <previous sha> in
   /home/amsyrzmi/CSAV2, run plan and apply, then git checkout main.`; otherwise pick one of the
   listed revisions and do the same.
-- **A failed check** stops the four services again and they stay stopped until investigated:
+- **A failed check** stops the five services again and they stay stopped until investigated:
   investigate what the check found, then run `plan` and `apply` again.
 - **The smoke test** runs after the check files, read-only, and prints one `smoke <name>: ok`
   line per passing check (`migrations`, `replicas`, `frontend`; the origin checks run only when a
@@ -278,8 +278,10 @@ settings below.
    ```
 
    It is read-only and prints one line per item, ending `check: everything is ok` or `check: <n>
-   item(s) not ok`. Until the script has been applied, `environment staging-images branch policy:
-   missing` is expected. The manual commands above stay for reading GitHub's raw answers, and the
+   item(s) not ok`. At this step it also reports the secrets and the region variable as missing
+   (they are set at step 13), so `check: <n> item(s) not ok` is expected here; the exit status is
+   1 until step 13 has run. Until the script has been applied, `environment staging-images branch
+   policy: missing` is expected. The manual commands above stay for reading GitHub's raw answers, and the
    probe is still made by hand: the script does not make it (`deploy/DEPLOY.md`, "The GitHub side:
    deploy/github/setup-environments.sh", explains every line).
 
@@ -440,7 +442,7 @@ in AWS:
 
     The preferred path is the script, which creates or updates the environments, asks at a hidden
     prompt for each secret that is missing (or reads `SETUP_<NAME>`), and sets the region
-    variable; the manual commands above remain below it for the same effect:
+    variable; the manual commands above remain above it for the same effect:
 
     ```bash
     deploy/github/setup-environments.sh staging --repo amsyrzmi/CSAV2 --region <region>
@@ -1072,11 +1074,11 @@ export CSA_STAGING_PYTHON_IMAGE=ghcr.io/amsyrzmi/csa-python@sha256:<digest of th
 export CSA_STAGING_FRONTEND_IMAGE=ghcr.io/amsyrzmi/csa-frontend@sha256:<digest of the merged commit>
 ```
 
-Then stop the four services (a migration never runs beside old code) and run the one-shot, as for
+Then stop the five services (a migration never runs beside old code) and run the one-shot, as for
 any release (`deploy/RELEASE.md`):
 
 ```bash
-csa_pipeline_compose stop gateway frontend worker delivery
+csa_pipeline_compose stop gateway frontend worker delivery training-worker
 CSA_STAGING_MIGRATION_APPROVAL=approved-isolated-staging \
   csa_pipeline_compose --profile migration-approved run --rm --no-deps migrate
 echo "migrate exit=$?"
@@ -1488,7 +1490,7 @@ changed`. Run them again when that rollout has ended. `plan` takes no lock.
 
 1. The code is merged, published and rolled out by the routine rollout above.
    `staging_reset.py` runs from the checkout, but `staging_accounts.py` runs inside the
-   gateway, so it must be in the running image. `plan` checks that all four services run
+   gateway, so it must be in the running image. `plan` checks that all five services run
    the image for HEAD.
 2. You are in the main checkout `/home/amsyrzmi/CSAV2`, on `origin/main`, with a clean
    tracked tree (`git pull --ff-only origin main`).
@@ -1541,7 +1543,7 @@ output names people. They need the owner's passwords, so an agent can only run `
    cd /home/amsyrzmi/CSAV2 && .venv/bin/python -m scripts.staging_reset wipe
    ```
 
-   In order, it backs up, stops the four services, drops and creates the database, empties
+   In order, it backs up, stops the five services, drops and creates the database, empties
    the three upload volumes, loads the base schema, migrates, creates the first platform admin,
    starts the services and waits until they are ready. If it fails at the stop or at the
    drop and the database is still there, nothing is lost, and it prints the command that
@@ -1665,10 +1667,10 @@ terminal for all four steps.
 B=~/csa-staging-backups/<timestamp>
 ```
 
-1. Stop the four services. A container that does not exist gives an error. That is fine.
+1. Stop the five services. A container that does not exist gives an error. That is fine.
 
    ```bash
-   docker --host unix:///var/run/docker.sock stop csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
+   docker --host unix:///var/run/docker.sock stop csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1 csa-staging-training-worker-1
    ```
 
 2. Rebuild the empty database and load the dump. The dump goes in on stdin. Run these
@@ -1712,7 +1714,7 @@ B=~/csa-staging-backups/<timestamp>
    git -C /home/amsyrzmi/CSAV2 rev-parse HEAD
    ```
 
-   Start the existing containers only if all four still exist, the manifest's
+   Start the existing containers only if all five still exist, the manifest's
    `schema_version` is the number the newest migration file begins with, and its `sha` is
    the checkout's HEAD. A backup taken before a later rollout does not meet this, because
    its database has an older schema than the images now expect. If the numbers differ, or
@@ -1723,7 +1725,7 @@ B=~/csa-staging-backups/<timestamp>
    To start them:
 
    ```bash
-   docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1
+   docker --host unix:///var/run/docker.sock start csa-staging-gateway-1 csa-staging-frontend-1 csa-staging-worker-1 csa-staging-delivery-1 csa-staging-training-worker-1
    ```
 
    Then check readiness, the same `/readyz` probe the rollout uses. Exit 0 and no output

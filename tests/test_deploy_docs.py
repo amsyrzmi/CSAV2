@@ -547,6 +547,47 @@ def test_deploy_doc_states_the_facts_the_review_checked() -> None:
     assert "expected until step 5" in order
 
 
+FIVE_STAGING_SERVICES = ("gateway", "frontend", "worker", "delivery", "training-worker")
+
+
+def test_the_migration_paragraphs_name_all_five_staging_services() -> None:
+    # scripts/rollout_targets.py STAGING.stop_services is the truth; a count that goes stale or a
+    # name that is dropped (the training worker was the one forgotten) would not trip FOUR_SERVICES.
+    deploy = _flat(_section(_deploy(), "## Staging: automatic rollouts (deploy-staging)"))
+    paragraph = deploy.split("**A migration stops the app services on every such merge.**", 1)[1]
+    paragraph = paragraph.split("**Pause and catch up.**", 1)[0]
+    for name in FIVE_STAGING_SERVICES:
+        assert f"`{name}`" in paragraph, name
+    pipeline = _section(
+        _read(PIPELINE_NAME), "### Recovery, retest and switches (automatic and manual rollouts)"
+    )
+    flat_pipeline = _flat(pipeline)
+    lead = flat_pipeline.split("**Recovery.**", 1)[0]
+    assert "stops all five services" in lead
+    for name in FIVE_STAGING_SERVICES:
+        assert f"`{name}`" in lead, name
+    # The copy-ready restart line the script prints names the five containers in this order.
+    containers = " ".join(f"csa-staging-{name}-1" for name in FIVE_STAGING_SERVICES)
+    assert containers in flat_pipeline
+    # No count of four services anywhere in the staging runbook (the versions and steps that are
+    # four are not services).
+    assert not FOUR_SERVICES.search(_flat(_read(PIPELINE_NAME)))
+
+
+def test_the_host_setup_steps_say_what_the_check_prints_before_the_script_has_been_applied() -> (
+    None
+):
+    setup = _flat(_section(_read(PIPELINE_NAME), "## Host setup for automatic rollouts"))
+    # Step 2 runs --check before step 13 sets the secrets and the region variable: it ends with
+    # `check: <n> item(s) not ok` and exit 1, and the text says so and points at step 13.
+    assert "At this step it also reports the secrets and the region variable as missing" in setup
+    assert "(they are set at step 13)" in setup
+    assert "`check: <n> item(s) not ok` is expected here" in setup
+    # In step 13 the manual commands are the code block above the script's command.
+    assert "the manual commands above remain above it for the same effect" in setup
+    assert "remain below it" not in setup
+
+
 def test_deploy_doc_carries_no_account_ids_addresses_arns_or_personal_names() -> None:
     text = _deploy()
 
@@ -826,10 +867,13 @@ def test_production_doc_points_the_image_namespace_at_the_moved_paragraph() -> N
 # --- the deploy skill ----------------------------------------------------------------------------
 
 DEPLOY_SKILL = ROOT / ".claude" / "skills" / "deploy" / "SKILL.md"
+_OLD_SKILL = r"(?:staging-rollout|production-deploy)"
+# A path, a "<name> skill" or "skill <name>" with any quoting or punctuation between, the
+# `<name>/SKILL.md` file, or a frontmatter `name:` line, in any letter case.
 OLD_SKILL_NAMES = re.compile(
-    r"skills/(staging-rollout|production-deploy)|"
-    r"`(staging-rollout|production-deploy)` skill|"
-    r"name: (staging-rollout|production-deploy)"
+    rf"skills/{_OLD_SKILL}|{_OLD_SKILL}/SKILL|{_OLD_SKILL}\W{{0,3}}skill\b|"
+    rf"\bskill\W{{0,3}}{_OLD_SKILL}|name:\s*{_OLD_SKILL}\b",
+    re.IGNORECASE,
 )
 
 
@@ -869,8 +913,20 @@ def test_the_old_skill_directories_are_gone_and_nothing_live_names_them() -> Non
     # A bare `staging-rollout` is not the needle: deploy/staging-rollout.env and the lock name
     # csa-staging-rollout.lock are live. Older specs and plans (docs/superpowers) are history.
     this_file = Path(__file__).resolve()
-    roots = [ROOT / ".claude" / "skills", ROOT / "deploy", ROOT / "tests", ROOT / "scripts"]
-    files = [ROOT / "docs" / "RUNBOOK.md"]
+    roots = [
+        ROOT / ".claude" / "skills",
+        ROOT / "deploy",
+        ROOT / "tests",
+        ROOT / "scripts",
+        ROOT / ".github",
+    ]
+    files = [
+        ROOT / "docs" / "RUNBOOK.md",
+        ROOT / "docs" / "PROJECT_OVERVIEW.md",
+        ROOT / "AGENTS.md",
+        ROOT / "CLAUDE.md",
+        ROOT / "Makefile",
+    ]
     for root in roots:
         files.extend(path for path in sorted(root.rglob("*")) if path.is_file())
     found = []
@@ -886,13 +942,24 @@ def test_the_old_skill_directories_are_gone_and_nothing_live_names_them() -> Non
         ".claude/skills/staging-rollout/SKILL.md",
         "the `production-deploy` skill",
         "name: staging-rollout",
+        "the staging-rollout skill",
+        "Production-Deploy skill",
+        "skill 'production-deploy'",
+        "production-deploy/SKILL.md",
     ):
         assert OLD_SKILL_NAMES.search(sample), sample
     assert not OLD_SKILL_NAMES.search("deploy/staging-rollout.env csa-staging-rollout.lock")
 
 
+CANCEL_RULE = (
+    "cancel only a run whose apply job is still `waiting` (read in the same turn); never one "
+    "whose apply is approved, queued, `in_progress` or finished"
+)
+
+
 def test_the_deploy_skill_never_approves_and_checks_state_before_cancelling() -> None:
-    flat = _flat(_skill_text())
+    skill = _skill_text()
+    flat = _flat(skill)
     for needle in (
         "never approve",
         "never reject",
@@ -902,13 +969,77 @@ def test_the_deploy_skill_never_approves_and_checks_state_before_cancelling() ->
         "owner's go",
     ):
         assert needle in flat, needle
-    never = _flat(_section(_skill_text(), "## Never"))
-    for needle in (
-        "Approve or reject a production deployment",
-        "cancel a production run without reading its state",
-        "`PROD_AUTO_PLAN`",
-    ):
-        assert needle in never, needle
+    # The cancel rule is stated positively and identically where a run is waiting and in Never.
+    auto = _flat(_section(skill, "## Auto-planned production runs"))
+    never = _flat(_section(skill, "## Never"))
+    assert CANCEL_RULE in auto
+    assert CANCEL_RULE in never
+    assert flat.count(CANCEL_RULE) == 2
+    # Approving or rejecting has its own bullet and holds with or without the owner's go.
+    bullets = [" ".join(chunk.split()) for chunk in _section(skill, "## Never").split("\n- ")[1:]]
+    approve = next(b for b in bullets if b.startswith("Approve or reject"))
+    assert approve == (
+        "Approve or reject a production deployment, or ask anyone to approve for the owner. "
+        "Never, with or without the owner's go."
+    )
+    # "on your own" is left only for PROD_AUTO_PLAN; the rest of the setup is a flat never.
+    own = [b for b in bullets if "on your own" in b]
+    assert len(own) == 1 and "`PROD_AUTO_PLAN`" in own[0]
+    setup = next(b for b in bullets if b.startswith("Change the environments"))
+    assert setup.endswith("Never.") and "PROD_AUTO_PLAN" not in setup
+    for needle in ("their reviewers or branch rules", "the secrets", "the AWS roles and documents"):
+        assert needle in setup, needle
+    # A rerun of a production run re-uses the old plan.
+    assert any(b.startswith("Run `gh run rerun` on a production run:") for b in bullets)
+    assert "a rerun re-uses the old plan" in never
+
+
+def test_the_deploy_skill_keeps_the_rules_that_are_not_about_approval() -> None:
+    skill = _skill_text()
+    never = _flat(_section(skill, "## Never"))
+    staging = _flat(_section(skill, "## Staging: automatic rollouts"))
+    manual = _flat(_section(skill, "## Staging: manual rollout (break-glass)"))
+    steps = _flat(_section(skill, "## Production: steps"))
+    wrong = _flat(_section(skill, "## If something goes wrong"))
+    # Secrets and the host file stay unread; the staged gate has no way round.
+    assert "anything under `/srv/csa-staging/secrets`" in never
+    assert "`/srv/csa-prod/host.env` values" in never
+    assert "Bypass the staged gate or suggest a way around it" in never
+    # Setup is the owner's, with the two scripts, and no value is set by the agent.
+    assert "`deploy/github/setup-environments.sh`" in wrong
+    assert "Do not run either script, and do not set a secret value" in wrong
+    # Starting a run is the owner's go, which is not the approval.
+    assert "Dispatch only after the owner's go" in staging
+    assert "Dispatch only after the owner's go" in steps
+    assert "it is not the approval in step 4" in steps
+    # A manual rollout pauses staging first and unpauses after.
+    assert "Pause first (`STAGING_AUTO_PAUSED` `true`), unpause after." in manual
+    assert "pause first, unpause after" in staging
+    # A stale waiting run is the owner's to reject; a failed record job is re-run only on a go.
+    assert "You never reject it yourself." in wrong
+    assert "After the owner's go, re-run that job (`gh run rerun <id> --failed`)" in staging
+
+
+def test_the_deploy_skill_says_where_it_runs_and_what_to_do_when_staging_misbehaves() -> None:
+    skill = _skill_text()
+    where = _flat(_section(skill, "## Where to run"))
+    wrong = _flat(_section(skill, "## If something goes wrong"))
+    steps = _flat(_section(skill, "## Production: steps"))
+    # The staging exception names the commands it uses, and "nothing runs on an instance" is the
+    # production instance, not this host.
+    assert "(and the git and docker commands listed there)" in where
+    assert "nothing runs on the production instance from here" in where
+    assert "nothing runs on an instance from here" not in where
+    # An explicit sha is covered by the same check as the tip.
+    assert "none covers that commit" in steps
+    assert "none covers the tip" not in steps
+    # A slow, hung or rolled-back staging apply is reported, never fixed by killing or re-running.
+    assert (
+        "if an apply is slow, hangs (for example on a docker pull) or is rolled back by the smoke "
+        "check, report the lines verbatim and ask the owner. Do not kill any process and do not "
+        "re-run a failed job on your own: a re-run is a rollout action and needs the owner's go. "
+        "Host load is the usual cause (this machine also runs other work)."
+    ) in wrong
 
 
 def test_the_deploy_skill_points_at_the_one_entry_runbook_and_the_setup_scripts() -> None:
