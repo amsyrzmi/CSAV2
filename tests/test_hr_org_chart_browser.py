@@ -35,9 +35,7 @@ CHART = "/portal/hr/people/org-chart"
 OPS, WAREHOUSE, FINANCE = (f"88888888-8888-4888-8888-00000000010{n}" for n in (1, 2, 3))
 SERBANEKA = "Perniagaan Serbaneka Sdn Bhd"
 MAWAR = "Kedai Mawar Enterprise"
-GONE = "99999999-9999-4999-8999-999999999999"  # a manager who is not in the chart
 TEAM = 40
-EMPTY_CELL = None
 
 
 def eid(number: int) -> str:
@@ -55,7 +53,10 @@ def node(
     start: str | None = "2025-01-06",
     last_day: str | None = None,
     entity: str | None = None,
+    outside: bool = False,
 ) -> dict[str, Any]:
+    """One org node as the server sends it: `manager_id` is null for a manager who is not on the
+    chart (then `outside` is true) and for everyone in a reporting loop."""
     return {
         "employee_id": eid(number),
         "display_name": name,
@@ -63,6 +64,7 @@ def node(
         "department_id": department[0] if department else None,
         "department": department[1] if department else None,
         "manager_id": manager,
+        "manager_outside": outside,
         "status": status,
         "start_date": start,
         "last_day": last_day,
@@ -97,9 +99,9 @@ class OrgWorld(RestyleWorld):
             node(7, "Aiman Yusof", "Coordinator", ops, eid(6)),
             node(8, "Mei Ling Tan", "Coordinator", ops, eid(6)),
             node(9, "Kumar Raj", "Coordinator", ops, eid(6)),
-            node(10, "Edwin Tan", "Picker", wh, eid(11)),
-            node(11, "Priya Nair", "Picker", wh, eid(10)),
-            node(12, "=Zul Karim", "Driver", wh, GONE),
+            node(10, "Edwin Tan", "Picker", wh, None),
+            node(11, "Priya Nair", "Picker", wh, None),
+            node(12, "=Zul Karim", "Driver", wh, None, outside=True),
         ]
         for n in range(team):
             self.nodes.append(node(100 + n, f"Associate {n:03d}", "Associate", wh, eid(2)))
@@ -214,6 +216,12 @@ async def test_every_person_shows_with_department_markers_and_labels(site: Site)
             await expect(row(page, "=Zul Karim")).to_contain_text("Manager not in the chart")
             await expect(row(page, "Farid Ismail")).not_to_contain_text("No manager")
             await expect(row(page, "Farid Ismail")).not_to_contain_text("Manager not in the chart")
+            # Both members of a loop have a null manager from the server; they are not "No manager".
+            for name in ("Edwin Tan", "Priya Nair"):
+                await expect(row(page, name)).to_contain_text("In a reporting loop")
+                await expect(row(page, name)).not_to_contain_text("No manager")
+            await expect(row(page, "=Zul Karim")).not_to_contain_text("No manager")
+            await expect(row(page, "Nadia Hassan")).not_to_contain_text("In a reporting loop")
 
             # The loop notice names the pair, for the owner.
             notice = page.get_by_role("alert").filter(has_text="each other's managers in a loop")
@@ -229,6 +237,7 @@ async def test_loop_notice_is_for_the_owner_only(site: Site) -> None:
         async with org_page(browser, site, world, caller=STAFF) as page:
             await expect(count_text(page)).to_have_text(f"{len(world.nodes)} people shown")
             await expect(page.get_by_text("each other's managers in a loop")).to_have_count(0)
+            await expect(row(page, "Edwin Tan")).to_contain_text("In a reporting loop")
             await expect(row(page, "Edwin Tan")).to_be_visible()
 
     await with_browser(body)

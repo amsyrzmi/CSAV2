@@ -414,6 +414,7 @@ class RecordsWorld(World):
                             "last_day",
                         )
                     },
+                    "manager_outside": False,
                     "legal_entity_reference": None,
                 }
                 for user in self.people

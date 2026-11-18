@@ -17,8 +17,8 @@ interface BranchProps {
   nodes: OrgTreeNode[];
   depth: number;
   prefix: string;
-  /** Everyone on the chart, to tell a manager who left from one who is simply above. */
-  known: ReadonlySet<string>;
+  /** The people the server reports in a reporting loop (their `manager_id` is null). */
+  loopIds: ReadonlySet<string>;
   hrefFor: (employeeId: string) => string;
   open: (id: string, depth: number) => boolean;
   onToggle: (id: string, now: boolean) => void;
@@ -34,12 +34,23 @@ function DepartmentChip({ node }: { node: OrgTreeNode }) {
       : { background: "var(--fs-neutral-bg)", color: "var(--fs-neutral-text)" }}>{node.department}</span>;
 }
 
+/**
+ * Why someone stands at the top, from what the server sends: a manager who left or is hidden from
+ * this viewer (`manager_outside`, the id is withheld), a reporting loop (`manager_id` is null for
+ * everyone in it), or no manager at all. A root with a manager on the chart gets no label.
+ */
+function rootLabel(node: OrgTreeNode, loopIds: ReadonlySet<string>): string | null {
+  if (node.manager_outside) return "Manager not in the chart";
+  if (loopIds.has(node.employee_id)) return "In a reporting loop";
+  return node.manager_id ? null : "No manager";
+}
+
 function Chevron({ open }: { open: boolean }) {
   return <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
     style={{ transform: open ? "rotate(90deg)" : undefined }}><path d="M6 3l5 5-5 5" /></svg>;
 }
 
-function Branch({ nodes, depth, prefix, known, hrefFor, open, onToggle }: BranchProps) {
+function Branch({ nodes, depth, prefix, loopIds, hrefFor, open, onToggle }: BranchProps) {
   return <ul aria-label={depth === 0 ? "Org chart" : undefined}
     className={depth === 0 ? "space-y-1" : "mt-1 space-y-1 border-l border-[color:var(--fs-border)] pl-2 sm:pl-5"}>
     {nodes.map(node => {
@@ -61,11 +72,10 @@ function Branch({ nodes, depth, prefix, known, hrefFor, open, onToggle }: Branch
           <DepartmentChip node={node} />
           {marker === "starting" && <span data-testid="org-marker"><StatusLabel tone="info">Starting</StatusLabel></span>}
           {marker === "leaving" && <span data-testid="org-marker"><StatusLabel tone="attention">Leaving</StatusLabel></span>}
-          {depth === 0 && !(node.manager_id && known.has(node.manager_id)) && <span className="text-xs text-[color:var(--fs-text-secondary)]">
-            {node.manager_id ? "Manager not in the chart" : "No manager"}</span>}
+          {depth === 0 && rootLabel(node, loopIds) && <span className="text-xs text-[color:var(--fs-text-secondary)]">{rootLabel(node, loopIds)}</span>}
         </div>
         {kids > 0 && <div id={listId} hidden={!isOpen}>
-          <Branch nodes={node.children} depth={depth + 1} prefix={prefix} known={known} hrefFor={hrefFor} open={open} onToggle={onToggle} />
+          <Branch nodes={node.children} depth={depth + 1} prefix={prefix} loopIds={loopIds} hrefFor={hrefFor} open={open} onToggle={onToggle} />
         </div>}
       </li>;
     })}
@@ -101,7 +111,7 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
   // Narrowing opens every branch so a match is never tucked away, but a fold the person chose stays.
   const open = (id: string, depth: number) => folds.get(id) ?? (filtered || depth < OPEN_DEPTH);
   const folded = shown.nodes.length - seen(tree, 0, open);
-  const known = useMemo(() => new Set(shown.nodes.map(node => node.employee_id)), [shown]);
+  const loopIds = useMemo(() => new Set(chart.looped), [chart]);
   const setAll = (value: boolean) => setFolds(new Map(chart.nodes.map(node => [node.employee_id, value])));
   const clear = () => { setFilter({}); result.current?.focus(); };
 
@@ -124,7 +134,7 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
           <p className="text-sm">No one matches the search or the filters.</p>
           <button type="button" className={secondary} onClick={clear}>Clear filters</button>
         </div>
-        : <div className="max-w-full overflow-x-auto"><Branch nodes={tree} depth={0} prefix={prefix} known={known} hrefFor={hrefFor} open={open} onToggle={(id, now) => setFolds(old => new Map(old).set(id, now))} /></div>}
+        : <div className="max-w-full overflow-x-auto"><Branch nodes={tree} depth={0} prefix={prefix} loopIds={loopIds} hrefFor={hrefFor} open={open} onToggle={(id, now) => setFolds(old => new Map(old).set(id, now))} /></div>}
     </div>
   </div>;
 }
