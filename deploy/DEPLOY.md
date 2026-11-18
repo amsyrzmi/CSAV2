@@ -769,8 +769,9 @@ has no gate. Use the workflow whenever it works. Where each procedure lives:
   staging.
 - **`deploy/RELEASE.md`:** how the images are built and published, with the dated history of the
   first publication.
-- **The `deploy` skill (added later in this series):** what an agent may and may not do for either
-  flow (plan before apply, never approve, never bypass the staged gate).
+- **The `deploy` skill:** what an agent may and may not do for either flow (plan before apply,
+  never approve, never bypass the staged gate), in `.claude/skills/deploy/SKILL.md` (it points back
+  here for the details).
 
 The test `tests/test_deploy_docs.py` keeps the moved headings at their destination and the stubbed
 ones in place, and nothing else here is frozen: later edits are expected.

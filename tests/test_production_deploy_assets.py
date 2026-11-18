@@ -2744,8 +2744,7 @@ def test_backup_refuses_an_unreadable_host_file(tmp_path: Path) -> None:
 PRODUCTION_DOC = ROOT / "deploy" / "PRODUCTION.md"
 DEPLOY_DOC = ROOT / "deploy" / "DEPLOY.md"
 PIPELINE_DOC = ROOT / "deploy" / "STAGING_PIPELINE.md"
-STAGING_SKILL = ROOT / ".claude" / "skills" / "staging-rollout" / "SKILL.md"
-PRODUCTION_SKILL = ROOT / ".claude" / "skills" / "production-deploy" / "SKILL.md"
+DEPLOY_SKILL = ROOT / ".claude" / "skills" / "deploy" / "SKILL.md"
 
 
 def _section(text: str, heading: str) -> str:
@@ -2871,8 +2870,7 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
 SCANNED_DOCS = (
     "PRODUCTION.md",
     "DEPLOY.md",
-    "production skill",
-    "staging skill",
+    "deploy skill",
     "pipeline routine",
 )
 
@@ -2884,8 +2882,7 @@ def _scanned_doc(name: str) -> str:
     path = {
         "PRODUCTION.md": PRODUCTION_DOC,
         "DEPLOY.md": DEPLOY_DOC,
-        "production skill": PRODUCTION_SKILL,
-        "staging skill": STAGING_SKILL,
+        "deploy skill": DEPLOY_SKILL,
     }[name]
     return path.read_text(encoding="utf-8")
 
@@ -2927,7 +2924,7 @@ def test_the_scan_catches_what_it_forbids() -> None:
 
 def test_staging_skill_mentions_the_staged_record() -> None:
     retry = f"{sr.RECORD_COMMAND} --sha"
-    skill = STAGING_SKILL.read_text(encoding="utf-8")
+    skill = DEPLOY_SKILL.read_text(encoding="utf-8")
     routine = _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
 
     for text in (skill, routine):
@@ -2938,11 +2935,8 @@ def test_staging_skill_mentions_the_staged_record() -> None:
 
 
 def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate() -> None:
-    text = PRODUCTION_SKILL.read_text(encoding="utf-8")
-    frontmatter = text.split("---", 2)[1]
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
 
-    assert "name: production-deploy" in frontmatter
-    assert "description: Use when the owner asks to deploy" in frontmatter
     for needle in (
         "deploy-production",
         "gh workflow run deploy-production",
@@ -3224,7 +3218,7 @@ def test_release_doc_names_the_resolver_target_and_exit_code() -> None:
 
 
 def test_production_skill_says_what_not_staged_yet_means() -> None:
-    flat = " ".join(PRODUCTION_SKILL.read_text(encoding="utf-8").split())
+    flat = " ".join(DEPLOY_SKILL.read_text(encoding="utf-8").split())
     assert "not staged yet; wait for deploy-staging" in flat
     assert "gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5" in flat
     assert "deploy-staging" in flat

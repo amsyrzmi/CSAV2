@@ -1436,12 +1436,13 @@ def test_seed_runbook_points_at_the_live_checkout() -> None:
     assert "cd /home/amsyrzmi/CSAV2 " in text
 
 
+DEPLOY_SKILL = REPO / ".claude" / "skills" / "deploy" / "SKILL.md"
+
+
 def test_skill_requires_plan_then_owner_go_then_apply() -> None:
-    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
     frontmatter = text.split("---", 2)[1]
-    assert "name: staging-rollout" in frontmatter
+    assert "name: deploy" in frontmatter
     assert "description: Use when the owner asks to roll out, deploy or update staging" in (
         frontmatter
     )
@@ -1669,6 +1670,10 @@ def test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval() -> N
         assert "waits for the owner's approval on the `staging-images` environment" not in document
         assert "still waits for the owner's approval" not in document, name
         assert PUBLISH_NO_APPROVAL in document, name
+    # The deploy skill says the same, and never the stale claim (inverted check).
+    skill_flat = _flat(DEPLOY_SKILL.read_text(encoding="utf-8"))
+    assert "The owner approves the image publish" not in skill_flat
+    assert "no approval today" in skill_flat
     for fragment in (
         "no approval today",
         "the `staging-images` environment has no reviewer",
@@ -1708,9 +1713,7 @@ def test_pipeline_runbook_reset_section_takes_the_rollout_lock() -> None:
         "Stopped at lock: another rollout of staging is running; nothing was changed",
     ):
         assert needle in reset, needle
-    skill = _flat(
-        (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
-    )
+    skill = _flat(DEPLOY_SKILL.read_text(encoding="utf-8"))
     assert "set `STAGING_AUTO_PAUSED` to `true` first" in skill
     assert "`staging_reset` `wipe` and `accounts` take the same rollout lock" in skill
     assert "Stopped at lock: ..." in skill
@@ -1731,8 +1734,10 @@ def test_owned_docs_carry_no_local_paths_session_ids_or_personal_names() -> None
     files = (
         "deploy/STAGING_PIPELINE.md",
         "deploy/PRODUCTION.md",
-        ".claude/skills/staging-rollout/SKILL.md",
+        ".claude/skills/deploy/SKILL.md",
+        "deploy/DEPLOY.md",
         "docs/superpowers/plans/2026-11-17-cd-pipeline-pr2.md",
+        "docs/superpowers/plans/2026-11-18-cd-pipeline-pr3.md",
     )
     for name in files:
         text = (REPO / name).read_text(encoding="utf-8")
@@ -1758,9 +1763,7 @@ def test_host_setup_config_line_matches_the_example_config() -> None:
 
 
 def test_staging_skill_checks_the_workflow_and_keeps_the_manual_steps() -> None:
-    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
     flat = _flat(text)
     for needle in (
         "automatic",

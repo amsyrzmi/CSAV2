@@ -779,3 +779,141 @@ def test_production_doc_points_the_image_namespace_at_the_moved_paragraph() -> N
     assert '`deploy/DEPLOY.md`, "Production: deploying from GitHub"' in bullet
     assert "see Deploying from GitHub" not in bullet
     assert "IMAGE_NAMESPACE" in _flat(_section(_deploy(), "## Production: deploying from GitHub"))
+
+
+# --- the deploy skill ----------------------------------------------------------------------------
+
+DEPLOY_SKILL = ROOT / ".claude" / "skills" / "deploy" / "SKILL.md"
+OLD_SKILL_NAMES = re.compile(
+    r"skills/(staging-rollout|production-deploy)|"
+    r"`(staging-rollout|production-deploy)` skill|"
+    r"name: (staging-rollout|production-deploy)"
+)
+
+
+def _skill_text() -> str:
+    return DEPLOY_SKILL.read_text(encoding="utf-8")
+
+
+def test_the_deploy_skill_description_triggers_on_both_flows() -> None:
+    # The frontmatter is parsed, not searched: a plain scalar holding ': ' or ' #' is a YAML
+    # error, the skill would not load, and a substring test cannot see that.
+    text = _skill_text()
+    assert text.startswith("---\n")
+    frontmatter = yaml.safe_load(text.split("---", 2)[1])
+    assert isinstance(frontmatter, dict)
+    assert frontmatter["name"] == "deploy"
+    description = frontmatter["description"]
+    assert isinstance(description, str)
+    assert description.startswith("Use when the owner asks to roll out, deploy or update staging")
+    for needle in (
+        "roll out",
+        "deploy",
+        "update",
+        "staging",
+        "production",
+        "deploy-staging",
+        "deploy-production",
+        "migrations",
+    ):
+        assert needle in description, needle
+
+
+def test_the_old_skill_directories_are_gone_and_nothing_live_names_them() -> None:
+    skills = ROOT / ".claude" / "skills"
+    assert not (skills / "staging-rollout").exists()
+    assert not (skills / "production-deploy").exists()
+    assert DEPLOY_SKILL.is_file()
+    # A bare `staging-rollout` is not the needle: deploy/staging-rollout.env and the lock name
+    # csa-staging-rollout.lock are live. Older specs and plans (docs/superpowers) are history.
+    this_file = Path(__file__).resolve()
+    roots = [ROOT / ".claude" / "skills", ROOT / "deploy", ROOT / "tests", ROOT / "scripts"]
+    files = [ROOT / "docs" / "RUNBOOK.md"]
+    for root in roots:
+        files.extend(path for path in sorted(root.rglob("*")) if path.is_file())
+    found = []
+    for path in files:
+        if path.resolve() == this_file or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if OLD_SKILL_NAMES.search(text):
+            found.append(str(path.relative_to(ROOT)))
+    assert found == []
+    # The pattern catches what it forbids.
+    for sample in (
+        ".claude/skills/staging-rollout/SKILL.md",
+        "the `production-deploy` skill",
+        "name: staging-rollout",
+    ):
+        assert OLD_SKILL_NAMES.search(sample), sample
+    assert not OLD_SKILL_NAMES.search("deploy/staging-rollout.env csa-staging-rollout.lock")
+
+
+def test_the_deploy_skill_never_approves_and_checks_state_before_cancelling() -> None:
+    flat = _flat(_skill_text())
+    for needle in (
+        "never approve",
+        "never reject",
+        "read its state",
+        "in_progress",
+        "PROD_AUTO_PLAN",
+        "owner's go",
+    ):
+        assert needle in flat, needle
+    never = _flat(_section(_skill_text(), "## Never"))
+    for needle in (
+        "Approve or reject a production deployment",
+        "cancel a production run without reading its state",
+        "`PROD_AUTO_PLAN`",
+    ):
+        assert needle in never, needle
+
+
+def test_the_deploy_skill_points_at_the_one_entry_runbook_and_the_setup_scripts() -> None:
+    flat = _flat(_skill_text())
+    for needle in (
+        "deploy/DEPLOY.md",
+        "deploy/aws/setup-target.sh",
+        "deploy/github/setup-environments.sh",
+        "deploy-production-auto",
+        "gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true|false",
+        "nothing to plan: ...",
+        "no approval today",
+    ):
+        assert needle in flat, needle
+    assert "The owner approves the image publish" not in flat
+
+
+def test_the_pictures_hold_is_carried_over_unchanged() -> None:
+    hold = _flat(_section(_skill_text(), "## Production: hold before step 1"))
+    assert hold.endswith(
+        "If the target contains the pictures PR 2b commits (the QR picture with payment answers "
+        "and Telegram reminders) and production does not yet run `c770ad77` "
+        "(`c770ad770eb426ebc93ad923e55fd3f588afc05a`, PR 2a) or a later commit, stop and tell "
+        "the owner: production must first deploy `c770ad77` with an explicit `sha` "
+        '(`deploy/PRODUCTION.md`, "Pictures (PR 2b): before the first production deploy").'
+    )
+
+
+def test_the_deploy_skill_has_the_planned_sections_in_order() -> None:
+    headings = [title for level, title, _ in _headings(_skill_text()) if level <= 2]
+    assert headings == [
+        "Deploy",
+        "Which flow",
+        "Where to run",
+        "Staging: automatic rollouts",
+        "Staging: manual rollout (break-glass)",
+        "Production: hold before step 1",
+        "Production: steps",
+        "Auto-planned production runs",
+        "If something goes wrong",
+        "Resetting staging",
+        "Never",
+    ]
+
+
+def test_deploy_doc_names_the_deploy_skill_without_the_later_in_this_series_phrase() -> None:
+    text = _flat(_deploy())
+    assert "added later in this series" not in text
+    assert "The `deploy` skill:" in text
+    assert "`.claude/skills/deploy/SKILL.md`" in text
