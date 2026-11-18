@@ -430,6 +430,8 @@ class Inbox:
         script = self.views_script.get(method) or []
         if script:
             return script.pop(0)
+        # Only a POST or PUT has a body; the calls above record it as sent.
+        payload: dict[str, Any] = body or {}
         mine = self.views.setdefault(self.viewer, [])
 
         def served(view: dict[str, Any]) -> dict[str, Any]:
@@ -441,24 +443,24 @@ class Inbox:
         if method == "GET":
             return 200, [served(view) for view in mine]
         if method == "POST":
-            name = body["name"].strip()
+            name = payload["name"].strip()
             if taken(name):
                 return 409, {"detail": "you already have a saved view with this name"}
             if len(mine) >= 20:
                 return 409, {"detail": "you can keep at most 20 saved views"}
-            view = saved_view(name, body["filters"])
+            view = saved_view(name, payload["filters"])
             mine.insert(0, view)
             return 201, served(view)
         target = next((view for view in mine if view["id"] == path.split("/")[-1]), None)
         if target is None:
             return 404, {"detail": "saved view not found"}
         if method == "PUT":
-            if "name" in body:
-                if taken(body["name"].strip(), target["id"]):
+            if "name" in payload:
+                if taken(payload["name"].strip(), target["id"]):
                     return 409, {"detail": "you already have a saved view with this name"}
-                target["name"] = body["name"].strip()
-            if "filters" in body:
-                target["filters"] = body["filters"]
+                target["name"] = payload["name"].strip()
+            if "filters" in payload:
+                target["filters"] = payload["filters"]
             return 200, served(target)
         mine.remove(target)
         return 204, None
