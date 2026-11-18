@@ -1641,6 +1641,12 @@ def hold_rollout_lock(target: Target) -> Iterator[None]:
         except FileNotFoundError:
             try:
                 fd = os.open(path, plain | os.O_CREAT | os.O_EXCL, 0o644)
+                try:
+                    # The umask masks the mode above; under 077 the next user could not open it.
+                    os.fchmod(fd, 0o644)
+                except OSError:
+                    os.close(fd)
+                    raise
             except FileExistsError:  # another process created it first
                 fd = os.open(path, plain)
     except OSError:

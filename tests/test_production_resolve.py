@@ -771,12 +771,14 @@ def test_a_token_answer_without_a_usable_token_fails_closed(
     )
 
 
-def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness) -> None:
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness, target: str) -> None:
+    # Staging reads the same record, and still fails closed on a malformed matching deployment.
     harness.set(
         "deployments.json",
         json.dumps([_deployment("11; echo pwned")]),
     )
-    _assert_refused(harness.run())
+    _assert_refused(harness.run(target=target))
 
 
 @pytest.mark.parametrize(
@@ -789,10 +791,17 @@ def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness) -> No
         "2026-11-13T10:00:00+08:00",
     ],
 )
-def test_staged_on_must_be_a_plain_utc_timestamp(harness: Harness, created_at: str) -> None:
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_staged_on_must_be_a_plain_utc_timestamp(
+    harness: Harness, created_at: str, target: str
+) -> None:
+    if target == "staging" and created_at == "":
+        # The script skips an empty date as "no success recorded": production then refuses for
+        # the missing record, staging reports staged_on= empty and goes on. Not a malformed value.
+        pytest.skip("an empty date is an absent record, which staging accepts")
     harness.set("deployments.json", json.dumps([_deployment(11)]))
     harness.set("statuses-11.json", _statuses(("success", created_at)))
-    _assert_refused(harness.run())
+    _assert_refused(harness.run(target=target))
 
 
 def test_a_tip_that_is_not_a_full_sha_is_refused(harness: Harness) -> None:

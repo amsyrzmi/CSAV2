@@ -202,6 +202,18 @@ def test_a_lost_creation_race_retries_the_plain_open(monkeypatch: pytest.MonkeyP
     assert opened == [plain, created, plain]
 
 
+def test_a_new_lock_file_is_world_readable_whatever_the_umask() -> None:
+    # open(O_CREAT, 0o644) is masked by the umask; under 077 the next user could not open it.
+    path = lock_path()
+    previous = os.umask(0o077)
+    try:
+        with sr.hold_rollout_lock(STAGING):
+            pass
+    finally:
+        os.umask(previous)
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
 def test_a_read_only_existing_lock_file_can_still_be_locked() -> None:
     path = lock_path()
     path.touch()

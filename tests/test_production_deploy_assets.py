@@ -1836,6 +1836,7 @@ NEW_FILES = (
     PRODUCTION_DIR / "backup.sh",
     PRODUCTION_CONFIG_EXAMPLE,
     STAGING_CONFIG_EXAMPLE,
+    ROOT / "deploy" / "aws" / "setup-target.sh",
 )
 
 
