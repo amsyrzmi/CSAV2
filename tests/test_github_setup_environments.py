@@ -250,13 +250,15 @@ def test_check_makes_only_read_calls(gh: Gh, target: str, state: str) -> None:
     extra = ["--reviewer", "reviewer-b"] if target == "production" else []
     result = check(gh, target, *extra, "--region", REGION, "--image-namespace", NAMESPACE)
     assert result.returncode in (0, 1), result.stderr
+    # A call the fake does not model is a bug in the script, never a read.
+    assert "fake gh: unsupported" not in result.stderr
     assert gh.writes() == []
     assert all(label.startswith("api GET ") for label in gh.commands()), gh.commands()
     # Reviewers are compared by login from the environment read: no user lookup is needed.
     assert not [label for label in gh.commands() if "api GET users/" in label]
-    assert all(
-        "--method" not in call["argv"] and "--input" not in call["argv"] for call in gh.calls()
-    )
+    # No method, no body, no field flag (the fake classifies -f/-F as a POST).
+    forbidden = {"--method", "-X", "--input", "-f", "-F", "--field", "--raw-field"}
+    assert all(not forbidden & set(call["argv"]) for call in gh.calls())
 
 
 # --- an empty repository --------------------------------------------------------------------
@@ -297,6 +299,19 @@ def test_check_passes_on_a_complete_target(gh: Gh, target: str) -> None:
     assert result.returncode == 0, result.stdout
     assert result.stdout.splitlines()[-1] == "check: everything is ok"
     assert not_ok(result) == []
+
+    # Every list read pages (the fake ignores --paginate, real gh does not): the secrets of each
+    # environment that has some, the repository variables and the branch policies.
+    reads = {
+        "secrets": [
+            c for c in gh.calls() if any(a.split("?")[0].endswith("/secrets") for a in c["argv"])
+        ],
+        "variables": [c for c in gh.calls() if any("actions/variables" in a for a in c["argv"])],
+        "policies": [c for c in gh.calls() if any(POLICY_LIST in a for a in c["argv"])],
+    }
+    for kind, calls in reads.items():
+        assert calls, kind
+        assert all("--paginate" in call["argv"] for call in calls), kind
 
 
 def test_check_compares_a_given_region_and_namespace_without_printing_them(gh: Gh) -> None:
@@ -443,6 +458,29 @@ def test_check_production_without_a_reviewer_is_not_ok_and_given_reviewers_are_c
     assert "reviewers on production:" not in result.stdout
 
 
+def test_exactly_six_reviewers_are_accepted_and_the_seventh_is_not(gh: Gh) -> None:
+    six = [x for n in range(6) for x in ("--reviewer", f"user{n}")]
+    result = check(gh, "production", *six)
+    assert result.returncode in (0, 1), result.stderr
+    assert gh.calls() != []
+    gh.reset_log()
+    seven = [x for n in range(7) for x in ("--reviewer", f"user{n}")]
+    assert check(gh, "production", *seven).returncode == 2
+    assert gh.calls() == []
+
+
+def test_a_mixed_case_live_reviewer_login_matches_the_lowercase_given_one(gh: Gh) -> None:
+    state = gh.state()
+    state["users"]["Reviewer-C"] = 1003
+    gh.save(state)
+    complete(gh, "production", reviewers=("Reviewer-C",))
+    assert check(gh, "production", "--reviewer", "reviewer-c").returncode == 0
+    assert check(gh, "production", "--reviewer", "REVIEWER-C").returncode == 0
+    result = check(gh, "production", "--reviewer", "reviewer-a")
+    assert results(result)["environment production reviewers"] == "differs"
+    assert "note: reviewers on production: reviewer-c -> reviewer-a" in result.stdout
+
+
 def test_check_notes_reviewers_on_other_environments_without_failing(gh: Gh) -> None:
     complete(gh, "staging")
     for name in ("staging", "staging-images"):
@@ -557,14 +595,622 @@ def test_check_output_keeps_to_the_step_grammar(gh: Gh) -> None:
             assert result.stderr == ""
 
 
-# --- apply is not there yet -----------------------------------------------------------------
+# --- apply: environments, reviewers and branch policies ------------------------------------
+
+MODES = ["merge", "replace"]
+MARKER = "MARKER-VALUE-4417"
+BODY_KEYS = {
+    "reviewers",
+    "wait_timer",
+    "prevent_self_review",
+    "can_admins_bypass",
+    "deployment_branch_policy",
+}
+CUSTOM_POLICIES = {"protected_branches": False, "custom_branch_policies": True}
 
 
-def test_apply_is_not_available_yet(gh: Gh) -> None:
-    result = run(gh, "staging", "--repo", REPO)
-    assert result.returncode == 2
-    assert "apply is added by the next change" in result.stderr
-    assert gh.calls() == []
+def apply(
+    gh: Gh, target: str, *extra: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return run(gh, target, "--repo", REPO, *extra, env=env)
+
+
+def set_mode(gh: Gh, mode: str) -> None:
+    state = gh.state()
+    state["put_semantics"] = mode
+    gh.save(state)
+
+
+def put_bodies(gh: Gh) -> dict[str, dict[str, Any]]:
+    """The body of each accepted environment PUT, by environment name (the last one wins)."""
+    return {b["path"]: b["body"] for b in gh.api_bodies() if b["method"] == "PUT"}
+
+
+def put_commands(gh: Gh) -> list[str]:
+    return [label for label in gh.commands() if label.startswith("api PUT ")]
+
+
+def policy_names(gh: Gh, name: str) -> list[str]:
+    return [policy["name"] for policy in gh.state()["environments"][name]["policies"]]
+
+
+def reviewer_ids(gh: Gh, name: str) -> list[int]:
+    return sorted(item["id"] for item in gh.state()["environments"][name]["reviewers"])
+
+
+def policies_path(name: str) -> str:
+    return f"repos/{REPO}/environments/{name}/{POLICY_LIST}"
+
+
+def fresh_gh(gh: Gh) -> Gh:
+    """A second, empty fake repository next to this one."""
+    directory = gh.tmp.parent / "fresh"
+    directory.mkdir(exist_ok=True)
+    return Gh(directory)
+
+
+def plant_markers(gh: Gh) -> None:
+    """A marker in every variable and every secret that exists: none may ever be printed."""
+    state = gh.state()
+    state["variables"]["IMAGE_NAMESPACE"] = f"{MARKER}-namespace"
+    state["variables"]["UNRELATED"] = f"{MARKER}-unrelated"
+    for env in state["environments"].values():
+        env["secrets"] = {name: f"{MARKER}-{name}" for name in env["secrets"]}
+    gh.save(state)
+
+
+def everything(gh: Gh, *results: subprocess.CompletedProcess[str]) -> str:
+    return "".join(r.stdout + r.stderr for r in results) + gh.log_path.read_text()
+
+
+def step_lines(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return [line for line in result.stdout.splitlines() if STEP_LINE.match(line)]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_apply_on_an_empty_repository_creates_each_environment_then_its_main_policy_in_order(
+    gh: Gh, target: str, mode: str
+) -> None:
+    set_mode(gh, mode)
+    environments = TARGETS[target]["environments"]
+    production = target == "production"
+    extra = ["--reviewer", "reviewer-a", "--reviewer", "reviewer-b"] if production else []
+
+    result = apply(gh, target, *extra)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    # Every environment is read, and both reviewers resolved, before the first write; then, for
+    # each environment, the PUT, the re-read, and only then the policy list and the POST: the
+    # list of an environment with no custom policies is a 404, so nothing asks for it earlier.
+    expected = [f"api GET repos/{REPO}"]
+    expected += [f"api GET repos/{REPO}/environments/{name}" for name in environments]
+    if production:
+        expected += ["api GET users/reviewer-a", "api GET users/reviewer-b"]
+    for name in environments:
+        path = f"repos/{REPO}/environments/{name}"
+        expected += [
+            f"api PUT {path}",
+            f"api GET {path}",
+            f"api GET {policies_path(name)}?per_page=100",
+            f"api POST {policies_path(name)}",
+        ]
+    assert gh.commands() == expected
+    assert step_lines(result) == [
+        f"[{n}/2] environment {name}: created" for n, name in enumerate(environments, 1)
+    ]
+
+    state = gh.state()
+    for name in environments:
+        env = state["environments"][name]
+        assert policy_names(gh, name) == ["main"]
+        assert env["custom_branch_policies"] is True and env["protected_branches"] is False
+        assert env["can_admins_bypass"] is (not production)
+        assert (env["wait_timer"], env["prevent_self_review"]) == (0, False)
+        gated = production and name == "production"
+        assert reviewer_ids(gh, name) == ([1001, 1002] if gated else [])
+        # The body is the complete desired state, the policy flags included.
+        body = put_bodies(gh)[name]
+        assert set(body) == BODY_KEYS
+        assert body["deployment_branch_policy"] == CUSTOM_POLICIES
+        assert body["can_admins_bypass"] is (not production)
+    # The write goes through stdin (--input -), never through field flags.
+    for call in gh.writes():
+        argv = call["argv"]
+        assert argv[argv.index("--input") + 1] == "-" and call["stdin"] > 0
+        assert not {"-f", "-F", "--field", "--raw-field"} & set(argv)
+    assert "fake gh: unsupported" not in result.stderr
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_apply_twice_makes_no_write_call_the_second_time(gh: Gh, target: str, mode: str) -> None:
+    set_mode(gh, mode)
+    extra = (
+        ["--reviewer", "reviewer-a", "--reviewer", "reviewer-b"] if target == "production" else []
+    )
+    assert apply(gh, target, *extra).returncode == 0
+    before = gh.state()
+    for again in (extra, []):  # the same arguments, then with the live reviewers carried over
+        gh.reset_log()
+        result = apply(gh, target, *again)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert gh.writes() == []
+        assert {line.split(": ")[-1] for line in step_lines(result)} == {"unchanged"}
+        assert "note:" not in result.stdout
+    after = gh.state()
+    assert after["environments"] == before["environments"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_put_body_is_the_full_desired_state_and_keeps_what_exists(gh: Gh, mode: str) -> None:
+    set_mode(gh, mode)
+    gh.add_environment(
+        "production",
+        reviewers=("reviewer-a", "reviewer-b"),
+        wait_timer=5,
+        prevent_self_review=True,
+        can_admins_bypass=False,
+        policies=None,
+    )
+    result = apply(gh, "production")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    body = put_bodies(gh)["production"]
+    assert set(body) == BODY_KEYS
+    assert sorted(body["reviewers"], key=lambda item: item["id"]) == [
+        {"type": "User", "id": 1001},
+        {"type": "User", "id": 1002},
+    ]
+    assert body["wait_timer"] == 5
+    assert body["prevent_self_review"] is True
+    assert body["can_admins_bypass"] is False
+    assert body["deployment_branch_policy"] == CUSTOM_POLICIES
+    # Whichever way GitHub treats what a PUT leaves out, nothing was lost.
+    env = gh.state()["environments"]["production"]
+    assert reviewer_ids(gh, "production") == [1001, 1002]
+    assert (env["wait_timer"], env["prevent_self_review"], env["can_admins_bypass"]) == (
+        5,
+        True,
+        False,
+    )
+    assert policy_names(gh, "production") == ["main"]
+    # production-plan did not exist: created, with the defaults of a new environment.
+    assert results(result)["environment production-plan"] == "created"
+    assert results(result)["environment production"] == "updated"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_admin_bypass_is_false_on_production_and_production_plan_and_carried_on_the_others(
+    gh: Gh, mode: str
+) -> None:
+    set_mode(gh, mode)
+    for name in ("production-plan", "production"):
+        gh.add_environment(
+            name,
+            reviewers=("reviewer-a",) if name == "production" else (),
+            can_admins_bypass=True,
+            policies=["main"],
+        )
+    result = apply(gh, "production")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    for name in ("production-plan", "production"):
+        assert put_bodies(gh)[name]["can_admins_bypass"] is False
+        assert gh.state()["environments"][name]["can_admins_bypass"] is False
+        assert f"note: {name} admin bypass: true -> false (changed)" in result.stdout
+        assert results(result)[f"environment {name}"] == "updated"
+    assert reviewer_ids(gh, "production") == [1001]
+
+    # staging and staging-images keep what they have, true here and false below, and are not
+    # written for it.
+    for bypass in (True, False):
+        gh.reset_log()
+        for name in ("staging", "staging-images"):
+            gh.add_environment(name, can_admins_bypass=bypass, policies=["main"])
+        result = apply(gh, "staging")
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert gh.writes() == []
+        assert "admin bypass" not in result.stdout
+        for name in ("staging", "staging-images"):
+            assert gh.state()["environments"][name]["can_admins_bypass"] is bypass
+
+    # A write for another reason (the policy is missing) carries the flag over unchanged.
+    gh.add_environment("staging", can_admins_bypass=False, policies=["main"])
+    gh.add_environment("staging-images", can_admins_bypass=False, policies=None)
+    gh.reset_log()
+    result = apply(gh, "staging")
+    assert result.returncode == 0
+    assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/staging-images"]
+    assert put_bodies(gh)["staging-images"]["can_admins_bypass"] is False
+    assert "admin bypass" not in result.stdout
+
+
+def refusal_fixture(gh: Gh, *, reviewers: tuple[str, ...] = ("reviewer-a",)) -> None:
+    """An existing production, and a production-plan that needs a write (custom policies off,
+    admin bypass on): a refusal must still leave the repository untouched."""
+    gh.add_environment("production-plan", can_admins_bypass=True, policies=None)
+    gh.add_environment(
+        "production", reviewers=reviewers, can_admins_bypass=False, policies=["main"]
+    )
+
+
+def test_a_changed_reviewer_set_on_an_existing_production_is_refused_without_replace_reviewers(
+    gh: Gh,
+) -> None:
+    refusal_fixture(gh)
+    plant_markers(gh)
+    result = apply(gh, "production", "--reviewer", "reviewer-b")
+    assert result.returncode == 1
+    assert "note: reviewers on production: reviewer-a -> reviewer-b" in result.stdout
+    assert "--replace-reviewers" in result.stderr
+    # Nothing was written anywhere, production-plan included.
+    assert gh.writes() == []
+    assert step_lines(result) == []
+    assert MARKER not in everything(gh, result)
+
+    gh.reset_log()
+    result = apply(gh, "production", "--reviewer", "reviewer-a", "--reviewer", "reviewer-b")
+    assert result.returncode == 1
+    assert "reviewers on production: reviewer-a -> reviewer-a, reviewer-b" in result.stdout
+    assert gh.writes() == []
+
+    # Giving reviewers to a production that has none is a change too.
+    refusal_fixture(gh, reviewers=())
+    gh.reset_log()
+    result = apply(gh, "production", "--reviewer", "reviewer-a")
+    assert result.returncode == 1
+    assert "reviewers on production: none -> reviewer-a" in result.stdout
+    assert gh.writes() == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_reviewers_applies_the_change_and_prints_old_and_new_logins(
+    gh: Gh, mode: str
+) -> None:
+    set_mode(gh, mode)
+    refusal_fixture(gh)
+    result = apply(gh, "production", "--reviewer", "reviewer-b", "--replace-reviewers")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "note: reviewers on production: reviewer-a -> reviewer-b" in result.stdout
+    assert reviewer_ids(gh, "production") == [1002]
+    assert results(result)["environment production"] == "updated"
+    assert results(result)["environment production-plan"] == "updated"
+    assert gh.state()["environments"]["production-plan"]["can_admins_bypass"] is False
+
+
+def test_given_reviewers_equal_to_the_live_set_need_no_flag_and_a_new_production_needs_none(
+    gh: Gh,
+) -> None:
+    complete(gh, "production", reviewers=("reviewer-a", "reviewer-b"))
+    # The same set, in another order and case: no change, so no flag and no write.
+    result = apply(gh, "production", "--reviewer", "REVIEWER-B", "--reviewer", "reviewer-a")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert gh.writes() == []
+    assert "reviewers on production" not in result.stdout
+
+    fresh = fresh_gh(gh)
+    result = apply(fresh, "production", "--reviewer", "reviewer-a")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "--replace-reviewers" not in result.stdout + result.stderr
+    assert reviewer_ids(fresh, "production") == [1001]
+
+
+def test_production_is_refused_without_a_reviewer_when_it_has_none_and_nothing_is_written(
+    gh: Gh,
+) -> None:
+    refusal_fixture(gh, reviewers=())
+    result = apply(gh, "production")
+    assert result.returncode == 1
+    assert "production needs at least one reviewer" in result.stderr
+    assert "--reviewer" in result.stderr
+    assert gh.writes() == []
+
+    # A production that does not exist yet is refused the same way, before anything is created.
+    fresh = fresh_gh(gh)
+    result = apply(fresh, "production")
+    assert result.returncode == 1
+    assert "production needs at least one reviewer" in result.stderr
+    assert fresh.writes() == []
+    assert fresh.state()["environments"] == {}
+
+
+def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
+    refusal_fixture(gh)
+    state = gh.state()
+    state["users"]["some-org"] = {"id": 2001, "type": "Organization"}
+    gh.save(state)
+    for login in ("ghost-user", "some-org"):
+        gh.reset_log()
+        result = apply(gh, "production", "--reviewer", "reviewer-a", "--reviewer", login)
+        assert result.returncode == 1, login
+        assert login in result.stderr
+        assert gh.writes() == []
+        # Every environment was read before the lookup, and no environment write came after it.
+        assert gh.commands()[1:3] == [
+            f"api GET repos/{REPO}/environments/production-plan",
+            f"api GET repos/{REPO}/environments/production",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("label", "mode", "ignored", "setup", "extra", "failure"),
+    [
+        (
+            "reviewers kept (merge)",
+            "merge",
+            "reviewers",
+            "plan-ok",
+            ("--reviewer", "reviewer-b", "--replace-reviewers"),
+            "[2/2] environment production: failed: reviewers is reviewer-a after the write, "
+            "expected reviewer-b",
+        ),
+        (
+            "reviewers reset (replace)",
+            "replace",
+            "reviewers",
+            "plan-ok",
+            ("--reviewer", "reviewer-b", "--replace-reviewers"),
+            "[2/2] environment production: failed: reviewers is none after the write, "
+            "expected reviewer-b",
+        ),
+        (
+            "admin bypass (merge)",
+            "merge",
+            "can_admins_bypass",
+            "plan-bypass",
+            (),
+            "[1/2] environment production-plan: failed: can_admins_bypass is true after the "
+            "write, expected false",
+        ),
+        (
+            "admin bypass (replace)",
+            "replace",
+            "can_admins_bypass",
+            "plan-bypass",
+            (),
+            "[1/2] environment production-plan: failed: can_admins_bypass is true after the "
+            "write, expected false",
+        ),
+        (
+            "wait timer reset (replace)",
+            "replace",
+            "wait_timer",
+            "plan-wait",
+            (),
+            "[1/2] environment production-plan: failed: wait_timer is 0 after the write, "
+            "expected 5",
+        ),
+        (
+            "self-review reset (replace)",
+            "replace",
+            "prevent_self_review",
+            "plan-self-review",
+            (),
+            "[1/2] environment production-plan: failed: prevent_self_review is false after "
+            "the write, expected true",
+        ),
+        (
+            "policy flags (merge)",
+            "merge",
+            "deployment_branch_policy",
+            "plan-no-policy",
+            (),
+            "[1/2] environment production-plan: failed: custom_branch_policies is false after "
+            "the write, expected true",
+        ),
+        (
+            "policy flags (replace)",
+            "replace",
+            "deployment_branch_policy",
+            "plan-no-policy",
+            (),
+            "[1/2] environment production-plan: failed: custom_branch_policies is false after "
+            "the write, expected true",
+        ),
+    ],
+)
+def test_a_put_that_did_not_take_effect_fails_loudly_after_the_re_read(
+    gh: Gh,
+    label: str,
+    mode: str,
+    ignored: str,
+    setup: str,
+    extra: tuple[str, ...],
+    failure: str,
+) -> None:
+    plan: dict[str, Any] = {"can_admins_bypass": False, "policies": ["main"]}
+    if setup == "plan-bypass":
+        plan["can_admins_bypass"] = True
+    elif setup == "plan-wait":
+        plan.update(can_admins_bypass=True, wait_timer=5)  # the bypass change forces a write
+    elif setup == "plan-self-review":
+        plan.update(can_admins_bypass=True, reviewers=("reviewer-a",), prevent_self_review=True)
+    elif setup == "plan-no-policy":
+        plan["policies"] = None
+    gh.add_environment("production-plan", **plan)
+    gh.add_environment(
+        "production", reviewers=("reviewer-a",), can_admins_bypass=False, policies=["main"]
+    )
+    plant_markers(gh)
+    state = gh.state()
+    state["put_semantics"] = mode
+    state["put_ignores"] = [ignored]
+    gh.save(state)
+
+    result = apply(gh, "production", *extra)
+
+    assert result.returncode == 1, label
+    assert failure in result.stderr, (label, result.stderr)
+    assert MARKER not in everything(gh, result)
+    # The script stopped: nothing after the failed environment was touched.
+    failed = "production-plan" if "[1/2]" in failure else "production"
+    assert put_commands(gh)[-1] == f"api PUT repos/{REPO}/environments/{failed}"
+    if failed == "production-plan":
+        assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/production-plan"]
+        assert policies_path("production-plan") not in " ".join(gh.commands())
+    assert step_lines(result) == (
+        [] if failed == "production-plan" else ["[1/2] environment production-plan: unchanged"]
+    )
+
+
+def test_extra_branch_policies_are_deleted_only_after_main_exists(gh: Gh) -> None:
+    complete(gh, "staging")
+    set_policies(gh, "staging", ["release/*", "hotfix/*"])
+    gh.reset_log()
+    result = apply(gh, "staging")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    commands = gh.commands()
+    post = commands.index(f"api POST {policies_path('staging')}")
+    deletes = [i for i, label in enumerate(commands) if label.startswith("api DELETE ")]
+    assert len(deletes) == 2 and all(post < i for i in deletes)
+    assert policy_names(gh, "staging") == ["main"]
+    assert "note: staging policy main: created" in result.stdout
+    assert "note: staging policy release/*: removed" in result.stdout
+    assert "note: staging policy hotfix/*: removed" in result.stdout
+    assert results(result)["environment staging"] == "updated"
+    assert results(result)["environment staging-images"] == "unchanged"
+    # Only the policies changed: the environment itself was not rewritten.
+    assert put_commands(gh) == []
+
+    # A tag policy named main is not the branch policy: main is created, the tag removed.
+    state = gh.state()
+    state["environments"]["staging"]["policies"] = [{"id": 800, "name": "main", "type": "tag"}]
+    gh.save(state)
+    gh.reset_log()
+    assert apply(gh, "staging").returncode == 0
+    assert policy_names(gh, "staging") == ["main"]
+    assert gh.state()["environments"]["staging"]["policies"][0]["type"] == "branch"
+
+    # protected-branches on and custom policies off is rewritten to custom policies.
+    state = gh.state()
+    state["environments"]["staging"].update(
+        custom_branch_policies=False, protected_branches=True, policies=[]
+    )
+    gh.save(state)
+    assert apply(gh, "staging").returncode == 0
+    env = gh.state()["environments"]["staging"]
+    assert (env["custom_branch_policies"], env["protected_branches"]) == (True, False)
+    assert policy_names(gh, "staging") == ["main"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_staging_apply_gives_staging_images_the_policy_and_keeps_its_reviewers(
+    gh: Gh, mode: str
+) -> None:
+    """The real repository today: staging-images has no custom policy (its list is a 404)."""
+    set_mode(gh, mode)
+    gh.add_environment("staging", can_admins_bypass=True, policies=["main"])
+    gh.add_environment("staging-images", can_admins_bypass=True, policies=None)
+    result = apply(gh, "staging")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    path = f"repos/{REPO}/environments/staging-images"
+    # staging is already right, so it is only listed; staging-images has no custom policy: the
+    # PUT that turns them on, the re-read, and only then the list and the POST.
+    assert gh.commands() == [
+        f"api GET repos/{REPO}",
+        f"api GET repos/{REPO}/environments/staging",
+        f"api GET {path}",
+        f"api GET {policies_path('staging')}?per_page=100",
+        f"api PUT {path}",
+        f"api GET {path}",
+        f"api GET {policies_path('staging-images')}?per_page=100",
+        f"api POST {policies_path('staging-images')}",
+    ]
+    assert policy_names(gh, "staging-images") == ["main"]
+    assert reviewer_ids(gh, "staging-images") == []
+    assert reviewer_ids(gh, "staging") == []
+    assert results(result)["environment staging"] == "unchanged"
+    assert results(result)["environment staging-images"] == "updated"
+
+    # An existing reviewer on staging-images is kept (check reports it as a note).
+    gh.add_environment("staging-images", reviewers=("reviewer-a",), policies=None)
+    result = apply(gh, "staging")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert reviewer_ids(gh, "staging-images") == [1001]
+    assert put_bodies(gh)["staging-images"]["reviewers"] == [{"type": "User", "id": 1001}]
+    assert policy_names(gh, "staging-images") == ["main"]
+
+
+def test_a_failed_write_names_the_step_and_exits_1_without_continuing(gh: Gh) -> None:
+    # A carried-over reviewer whose id is not an account: GitHub refuses the PUT with a 422.
+    gh.add_environment("production-plan", can_admins_bypass=False, policies=["main"])
+    state = gh.state()
+    state["environments"]["production-plan"]["reviewers"] = [{"type": "User", "id": 9999}]
+    state["environments"]["production-plan"]["can_admins_bypass"] = True
+    gh.save(state)
+    plant_markers(gh)
+
+    result = apply(gh, "production", "--reviewer", "reviewer-a")
+
+    assert result.returncode == 1
+    assert "[1/2] environment production-plan: failed: gh: Validation Failed (HTTP 422)" in (
+        result.stderr
+    )
+    assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/production-plan"]
+    assert "production" not in gh.state()["environments"]
+    assert MARKER not in everything(gh, result)
+
+
+def test_a_failed_policy_delete_names_the_environment_and_stops(gh: Gh) -> None:
+    complete(gh, "staging")
+    set_policies(gh, "staging", ["release/*"])
+    # A fake gh that refuses every DELETE the way GitHub refuses a missing permission.
+    fake = gh.bin / "gh"
+    refuse = (
+        'if "DELETE" in argv:\n    sys.stderr.write("gh: Forbidden (HTTP 403)\\n")\n    finish(1)\n'
+    )
+    fake.write_text(
+        fake.read_text().replace('if argv[:1] == ["api"]:', refuse + 'if argv[:1] == ["api"]:', 1)
+    )
+    plant_markers(gh)
+
+    result = apply(gh, "staging")
+
+    assert result.returncode == 1
+    assert "[1/2] environment staging branch policy: failed: gh: Forbidden (HTTP 403)" in (
+        result.stderr
+    )
+    # main was created first, and staging-images was never reached.
+    assert policy_names(gh, "staging") == ["release/*", "main"]
+    # (staging-images was read with every environment, before the first write, and no more.)
+    assert [label for label in gh.commands() if "staging-images" in label] == [
+        f"api GET repos/{REPO}/environments/staging-images"
+    ]
+    assert MARKER not in everything(gh, result)
+
+
+def test_apply_makes_no_secret_or_variable_call_yet(gh: Gh) -> None:
+    for target, reviewers in (("staging", []), ("production", ["--reviewer", "reviewer-a"])):
+        plant_markers(gh)
+        gh.reset_log()
+        result = apply(gh, target, *reviewers, "--region", REGION, "--image-namespace", NAMESPACE)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        labels = gh.commands()
+        assert not [label for label in labels if label.startswith(("secret ", "variable "))]
+        assert not [label for label in labels if "actions/variables" in label]
+        assert not [label for label in labels if label.split("?")[0].endswith("/secrets")]
+        assert MARKER not in everything(gh, result)
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_check_after_apply_is_ok_for_the_environment_items(gh: Gh, target: str) -> None:
+    extra = (
+        ["--reviewer", "reviewer-a", "--reviewer", "reviewer-b"] if target == "production" else []
+    )
+    assert apply(gh, target, *extra).returncode == 0
+    result = check(gh, target, *extra)
+    # Only the secrets and the required variables are still missing: apply does not set them yet.
+    assert result.returncode == 1
+    assert not_ok(result)
+    assert all(item.startswith(("secret ", "variable ")) for item in not_ok(result)), not_ok(result)
+    for name in TARGETS[target]["environments"]:
+        assert results(result)[f"environment {name} branch policy"] == "ok"
+        assert results(result)[f"environment {name} reviewers"] == "ok"
+        assert results(result)[f"environment {name}"] == "ok"
+        if target == "production":
+            assert results(result)[f"environment {name} admin bypass"] == "ok"
 
 
 # --- the script itself ----------------------------------------------------------------------

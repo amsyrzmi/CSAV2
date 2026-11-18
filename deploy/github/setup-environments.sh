@@ -1,8 +1,7 @@
 #!/bin/bash
-# Check (and, in a later change, apply) the GitHub side of a deploy target: the environments the
-# deploy workflows run in, their branch policies and reviewers, the environment secrets and the
-# repository variables. Run it on a machine where `gh` is logged in as an administrator of the
-# repository:
+# Check or apply the GitHub side of a deploy target: the environments the deploy workflows run in,
+# their branch policies and reviewers, the environment secrets and the repository variables. Run it
+# on a machine where `gh` is logged in as an administrator of the repository:
 #
 #   setup-environments.sh <staging|production> [--check] --repo <owner/name>
 #       [--region <region>] [--image-namespace <ghcr.io/owner>] [--reviewer <login>]...
@@ -17,14 +16,20 @@
 #                       the repository variables of the target; when given, check compares them.
 #   --reviewer          production only (at most six): the people who approve a production apply.
 #                       Check compares them with the live set by login.
-#   --replace-reviewers production only, apply only.
+#   --replace-reviewers production only, apply only: allows the reviewer set of an existing
+#                       `production` to change (without it apply prints the old and the new
+#                       logins and stops before the first write).
 #   --auto-plan         production only: the PROD_AUTO_PLAN switch.
 #   --paused            staging only: the STAGING_AUTO_PAUSED switch.
 #
-# Without --check the script would apply; that part is added by a later change, and for now it
-# refuses with exit 2 before any call. Every input is validated before the first `gh` call. The
-# one permission check is `gh api repos/<repo>` (`.permissions.admin`): the login check of gh
-# itself exits non-zero when any other configured account is stale. No input is run through eval.
+# Without --check the script applies. For each environment of the target it reads the live state,
+# builds the complete desired state (reviewers, wait timer, self-review, admin bypass and the
+# branch-policy flags, so a PUT can never drop one), writes only when something differs, re-reads
+# the environment after every write and stops when a field is not what was intended, then makes
+# the `main`-only branch policy. Secrets and variables are added by a later change. Every input is
+# validated before the first `gh` call. The one permission check is `gh api repos/<repo>`
+# (`.permissions.admin`): the login check of gh itself exits non-zero when any other configured
+# account is stale. No input is run through eval.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -192,10 +197,6 @@ if [[ "$REPLACE" -eq 1 ]]; then
     [[ "$CHECK" -eq 0 ]] || bad "--replace-reviewers does not apply to --check (check shows the difference anyway)"
 fi
 
-if [[ "$CHECK" -eq 0 ]]; then
-    bad "apply is added by the next change; use --check"
-fi
-
 if [[ "$TARGET" == "production" ]]; then
     SWITCH_GIVEN="$AUTO_PLAN"
 else
@@ -250,15 +251,6 @@ gh_fail() {
     exit 1
 }
 
-for entry in "${ENVIRONMENTS[@]}"; do
-    IFS='|' read -r _ _ bypass <<< "$entry"
-    TOTAL="$((TOTAL + 3))"
-    [[ "$bypass" != "false" ]] || TOTAL="$((TOTAL + 1))"
-done
-SECRET_COUNT="${#SECRETS[@]}"
-VARIABLE_COUNT="${#VARIABLES[@]}"
-TOTAL="$((TOTAL + SECRET_COUNT + VARIABLE_COUNT))"
-
 # ---- read every environment of the target before reporting anything ---------------------------
 # ENV_JSON[<name>] is the environment's JSON, or empty when it does not exist (a 404).
 declare -A ENV_JSON=()
@@ -282,6 +274,14 @@ env_has() {
     jq -e "$2" <<< "${ENV_JSON[$1]}" > /dev/null 2>&1
 }
 
+# list_policies <name>: the environment's branch policies as a JSON array in POLICIES. Only for an
+# environment whose own read says custom policies are on (the list of any other is a 404).
+POLICIES="[]"
+list_policies() {
+    gh_call api --paginate "repos/$REPO/environments/$1/deployment-branch-policies?per_page=100" --jq '.branch_policies[] | {id, name, type}' || gh_fail "environment $1 branch policy"
+    POLICIES="$(jq -cs '.' <<< "$GH_OUT")"
+}
+
 # ---- state probes: STATE becomes ok, missing or differs ---------------------------------------
 # policy_state <name>: custom policies on, protected branches off, and exactly `main` (branch).
 # An environment whose own read says `deployment_branch_policy` is null has no policies and its
@@ -296,8 +296,8 @@ policy_state() {
         STATE=differs
         return 0
     fi
-    gh_call api --paginate "repos/$REPO/environments/$1/deployment-branch-policies?per_page=100" --jq '.branch_policies[] | {name, type}' || gh_fail "environment $1 branch policy"
-    policies="$(jq -cs '.' <<< "$GH_OUT")"
+    list_policies "$1"
+    policies="$POLICIES"
     if jq -e 'length == 0' <<< "$policies" > /dev/null; then
         STATE=missing
     elif jq -e 'length == 1 and .[0].name == "main" and .[0].type == "branch"' <<< "$policies" > /dev/null; then
@@ -321,7 +321,212 @@ given_reviewers() {
     fi
 }
 
+# ---- apply: environments, reviewers and branch policies ---------------------------------------
+# Lowercase logins of every reviewer seen, by id, for messages (logins are public account names).
+LOGIN_MAP="{}"
+declare -A WANT_SET=()
+declare -A WANT_BYPASS=()
+GIVEN_SET="[]"
+
+# remember_logins <name>: the logins of the environment's required reviewers, by id.
+remember_logins() {
+    LOGIN_MAP="$(jq -c --argjson map "$LOGIN_MAP" '$map + ([.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]? | {key: (.reviewer.id | tostring), value: ((.reviewer.login // .reviewer.slug // "unknown") | ascii_downcase)}] | from_entries)' <<< "${ENV_JSON[$1]}")"
+}
+
+# reviewer_set <name>: the required reviewers as `[{type, id}]`, sorted by id.
+reviewer_set() {
+    jq -c '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]? | {type, id: .reviewer.id}] | sort_by(.id)' <<< "${ENV_JSON[$1]}"
+}
+
+# same_ids <set> <set>: both reviewer sets hold the same ids.
+same_ids() {
+    jq -ne --argjson a "$1" --argjson b "$2" '($a | map(.id) | sort) == ($b | map(.id) | sort)' > /dev/null
+}
+
+# logins_of <set>: the logins, sorted, or `none`.
+logins_of() {
+    jq -r --argjson map "$LOGIN_MAP" '[.[] | $map[(.id | tostring)] // ("user-" + (.id | tostring))] | sort | if length == 0 then "none" else join(", ") end' <<< "$1"
+}
+
+# env_value <name> <field>: one setting of an environment as read, printed as text.
+env_value() {
+    case "$2" in
+        wait_timer) jq -r '[.protection_rules[]? | select(.type == "wait_timer") | .wait_timer | numbers] | (first // 0)' <<< "${ENV_JSON[$1]}" ;;
+        prevent_self_review) jq -r '[.protection_rules[]? | select(.type == "required_reviewers") | .prevent_self_review == true] | any' <<< "${ENV_JSON[$1]}" ;;
+        can_admins_bypass) jq -r '.can_admins_bypass != false' <<< "${ENV_JSON[$1]}" ;;
+        custom_branch_policies) jq -r '.deployment_branch_policy.custom_branch_policies == true' <<< "${ENV_JSON[$1]}" ;;
+        protected_branches) jq -r '.deployment_branch_policy.protected_branches == true' <<< "${ENV_JSON[$1]}" ;;
+    esac
+}
+
+# write_failed <name> <field> <actual> <intended>: the re-read after a write found a difference.
+# Field names, counts, booleans and logins only: never a secret.
+write_failed() {
+    echo "[$((STEP + 1))/$TOTAL] environment $1: failed: $2 is $3 after the write, expected $4" >&2
+    exit 1
+}
+
+# step <what> <result>: one line per item of the apply.
+step() {
+    STEP="$((STEP + 1))"
+    echo "[$STEP/$TOTAL] $1: $2"
+}
+
+# resolve_given: the --reviewer logins as `[{type, id}]` in GIVEN_SET; an unknown login or an
+# account that is not a user stops the run (nothing has been written yet).
+resolve_given() {
+    local reviewer
+    [[ "${#REVIEWERS[@]}" -gt 0 ]] || return 0
+    for reviewer in "${REVIEWERS[@]}"; do
+        gh_call api "users/$reviewer" --jq '{id, type, login}' || die "could not look up reviewer $reviewer: $(first_error_line)"
+        jq -e '.type == "User" and (.id | type == "number") and (.login | type == "string")' <<< "$GH_OUT" > /dev/null 2>&1 || die "reviewer $reviewer is not a user account"
+        GIVEN_SET="$(jq -c --argjson cur "$GIVEN_SET" '$cur + [{type: "User", id: .id}]' <<< "$GH_OUT")"
+        LOGIN_MAP="$(jq -c --argjson map "$LOGIN_MAP" '$map + {(.id | tostring): (.login | ascii_downcase)}' <<< "$GH_OUT")"
+    done
+    GIVEN_SET="$(jq -c 'sort_by(.id)' <<< "$GIVEN_SET")"
+}
+
+# decide_all: every refusal and every wanted value for the whole target, before the first write.
+# production-plan is processed before production, so a refusal about production must not come
+# after production-plan has already been written.
+decide_all() {
+    local entry name reviewers bypass live_set want_set
+    for entry in "${ENVIRONMENTS[@]}"; do
+        IFS='|' read -r name reviewers bypass <<< "$entry"
+        live_set="[]"
+        if env_exists "$name"; then
+            live_set="$(reviewer_set "$name")"
+            remember_logins "$name"
+        fi
+        want_set="$live_set"
+        if [[ "$reviewers" == "required" && "${#REVIEWERS[@]}" -gt 0 ]]; then
+            want_set="$GIVEN_SET"
+        fi
+        WANT_SET["$name"]="$want_set"
+        if [[ "$reviewers" == "required" ]]; then
+            if jq -e 'length == 0' <<< "$want_set" > /dev/null; then
+                die "$name needs at least one reviewer: pass --reviewer <login>"
+            fi
+            if env_exists "$name" && ! same_ids "$want_set" "$live_set"; then
+                echo "note: reviewers on $name: $(logins_of "$live_set") -> $(logins_of "$want_set")"
+                [[ "$REPLACE" -eq 1 ]] || die "refusing to change the reviewers of $name: pass --replace-reviewers to allow it"
+            fi
+        fi
+        if [[ "$bypass" == "false" ]]; then
+            WANT_BYPASS["$name"]=false
+        elif env_exists "$name"; then
+            WANT_BYPASS["$name"]="$(env_value "$name" can_admins_bypass)"
+        else
+            WANT_BYPASS["$name"]=true
+        fi
+    done
+}
+
+# verify_write <name> <reviewer set> <wait timer> <self-review> <admin bypass>: re-read the
+# environment after a PUT and stop when a field is not what was intended. GitHub's behaviour for
+# the fields a PUT does not mention is not documented, so the re-read is the guard.
+verify_write() {
+    local name="$1" want_set="$2" actual
+    gh_call api "repos/$REPO/environments/$name" || gh_fail "environment $name"
+    ENV_JSON["$name"]="$GH_OUT"
+    remember_logins "$name"
+    actual="$(reviewer_set "$name")"
+    same_ids "$actual" "$want_set" || write_failed "$name" reviewers "$(logins_of "$actual")" "$(logins_of "$want_set")"
+    actual="$(env_value "$name" wait_timer)"
+    [[ "$actual" == "$3" ]] || write_failed "$name" wait_timer "$actual" "$3"
+    actual="$(env_value "$name" prevent_self_review)"
+    [[ "$actual" == "$4" ]] || write_failed "$name" prevent_self_review "$actual" "$4"
+    actual="$(env_value "$name" can_admins_bypass)"
+    [[ "$actual" == "$5" ]] || write_failed "$name" can_admins_bypass "$actual" "$5"
+    actual="$(env_value "$name" custom_branch_policies)"
+    [[ "$actual" == "true" ]] || write_failed "$name" custom_branch_policies "$actual" true
+    actual="$(env_value "$name" protected_branches)"
+    [[ "$actual" == "false" ]] || write_failed "$name" protected_branches "$actual" false
+}
+
+# sync_policies <name>: `main` (branch) exists, created first; then every other policy is deleted.
+# Sets POLICY_WRITES to 1 when something was written.
+POLICY_WRITES=0
+sync_policies() {
+    local name="$1" ids pid pname
+    list_policies "$name"
+    if ! jq -e 'any(.[]; .name == "main" and .type == "branch")' <<< "$POLICIES" > /dev/null; then
+        gh_call api --method POST "repos/$REPO/environments/$name/deployment-branch-policies" --input - <<< '{"name":"main","type":"branch"}' || gh_fail "environment $name branch policy"
+        echo "note: $name policy main: created"
+        POLICY_WRITES=1
+    fi
+    ids="$(jq -r '.[] | select(.name != "main" or .type != "branch") | .id | tostring' <<< "$POLICIES")"
+    while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        valid '^[0-9]+$' "$pid" || die "environment $name has a branch policy with an unreadable id"
+        pname="$(jq -r --argjson id "$pid" '.[] | select(.id == $id) | .name' <<< "$POLICIES")"
+        gh_call api --method DELETE "repos/$REPO/environments/$name/deployment-branch-policies/$pid" || gh_fail "environment $name branch policy"
+        echo "note: $name policy $pname: removed"
+        POLICY_WRITES=1
+    done <<< "$ids"
+}
+
+# run_apply: for each environment of the target, in order.
+run_apply() {
+    local entry name existed result need want_set want_bypass timer prevent body live_bypass
+    TOTAL="${#ENVIRONMENTS[@]}"
+    resolve_given
+    decide_all
+    for entry in "${ENVIRONMENTS[@]}"; do
+        IFS='|' read -r name _ _ <<< "$entry"
+        want_set="${WANT_SET[$name]}"
+        want_bypass="${WANT_BYPASS[$name]}"
+        existed=0
+        need=0
+        result=unchanged
+        timer=0
+        prevent=false
+        if env_exists "$name"; then
+            existed=1
+            timer="$(env_value "$name" wait_timer)"
+            prevent="$(env_value "$name" prevent_self_review)"
+            live_bypass="$(env_value "$name" can_admins_bypass)"
+            if [[ "$live_bypass" != "$want_bypass" ]]; then
+                need=1
+                echo "note: $name admin bypass: $live_bypass -> $want_bypass (changed)"
+            fi
+            same_ids "$want_set" "$(reviewer_set "$name")" || need=1
+            [[ "$(env_value "$name" custom_branch_policies)" == "true" && "$(env_value "$name" protected_branches)" == "false" ]] || need=1
+        else
+            need=1
+            result=created
+        fi
+        if [[ "$need" -eq 1 ]]; then
+            # The complete desired state, whatever GitHub does with a field a PUT leaves out.
+            body="$(jq -nc --argjson reviewers "$want_set" --argjson timer "$timer" --argjson prevent "$prevent" --argjson bypass "$want_bypass" '{reviewers: $reviewers, wait_timer: $timer, prevent_self_review: $prevent, can_admins_bypass: $bypass, deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}')"
+            gh_call api --method PUT "repos/$REPO/environments/$name" --input - <<< "$body" || gh_fail "environment $name"
+            verify_write "$name" "$want_set" "$timer" "$prevent" "$want_bypass"
+            [[ "$existed" -eq 0 ]] || result=updated
+        fi
+        # The policy list exists only while custom policies are on: after the write above, or
+        # when the environment's own read already said so.
+        POLICY_WRITES=0
+        sync_policies "$name"
+        [[ "$POLICY_WRITES" -eq 0 || "$result" == "created" ]] || result=updated
+        step "environment $name" "$result"
+    done
+}
+
+if [[ "$CHECK" -eq 0 ]]; then
+    run_apply
+    exit 0
+fi
+
 # ---- the check --------------------------------------------------------------------------------
+for entry in "${ENVIRONMENTS[@]}"; do
+    IFS='|' read -r _ _ bypass <<< "$entry"
+    TOTAL="$((TOTAL + 3))"
+    [[ "$bypass" != "false" ]] || TOTAL="$((TOTAL + 1))"
+done
+SECRET_COUNT="${#SECRETS[@]}"
+VARIABLE_COUNT="${#VARIABLES[@]}"
+TOTAL="$((TOTAL + SECRET_COUNT + VARIABLE_COUNT))"
+
 GIVEN="$(given_reviewers)"
 
 for entry in "${ENVIRONMENTS[@]}"; do
