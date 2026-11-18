@@ -105,11 +105,13 @@ and frontend for the migrate step.
   “directory”: they get no People tab. Anyone else with HR access sees only their own profile,
   under Home.
 - **The org chart.** **People → Org chart** draws the company as a tree by manager. Each manager's
-  team folds and unfolds with a button (the first three levels open at first; **Expand all** and
-  **Collapse all** change every team). A person row shows the name (a link to their profile), the job
+  team folds and unfolds with a button (at first the top two levels' teams are open, so three levels
+  of people show, and teams below that start folded; **Expand all** and **Collapse all** change
+  every team). A person row shows the name (a link to their profile), the job
   title, the department as a coloured chip that always carries the department name, and **Starting**
   or **Leaving** where it applies. A person at the top is labelled **No manager**, **Manager not in
-  the chart** (their manager left or is not visible to the viewer) or **In a reporting loop** (the HR
+  the chart** (their manager is not visible to the viewer, or has left: that case is rare, because a
+  leaver's reports move to their heir on the last day) or **In a reporting loop** (the HR
   owner also gets a notice naming the loop, which is fixed by changing a manager on a profile). Search
   (name or job title) and the department filter narrow the chart to the matches and the managers
   above them; HR also gets a legal entity filter when anyone has one. The live line says “N people

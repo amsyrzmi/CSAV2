@@ -1173,6 +1173,7 @@ async def test_the_defaults_dialog_says_what_it_creates_and_closes_cleanly(site:
                     "company default",
                     "the next person you add starts onboarding with real tasks and reminders",
                     "You can edit both afterwards",
+                    "Open either one from the template list to see all its steps",
                 ):
                     await expect(dialog).to_contain_text(text)
                 # aria-describedby points at one element that says what the dialog does.

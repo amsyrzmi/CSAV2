@@ -33,8 +33,8 @@ site = services.site
 
 CHART = "/portal/hr/people/org-chart"
 OPS, WAREHOUSE, FINANCE = (f"88888888-8888-4888-8888-00000000010{n}" for n in (1, 2, 3))
-SERBANEKA = "Perniagaan Serbaneka Sdn Bhd"
-MAWAR = "Kedai Mawar Enterprise"
+SERBANEKA = "Contoh Sdn Bhd"
+MAWAR = "Syarikat Contoh Dua Enterprise"
 NIGHT = "88888888-8888-4888-8888-000000000104"
 TEAM = 40
 

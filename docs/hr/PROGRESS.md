@@ -59,7 +59,9 @@ deploy switch `CSA_STAGING_HR_DEFAULT_TEMPLATES` **off** until a reviewer has si
 [DEFAULT_TEMPLATES_REVIEW.md](./DEFAULT_TEMPLATES_REVIEW.md); the steps to turn it on are in
 [SETUP.md](./SETUP.md), "The Malaysian default templates", and the owner's checks are rows 14 to 21
 of [PROCESSES_RETEST.md](./PROCESSES_RETEST.md). The research is in
-[default-templates-sources.md](./default-templates-sources.md).
+[default-templates-sources.md](./default-templates-sources.md). Before the reviewer signs: print the
+second official URL for steps whose rule sits in a different instrument (Employment Regulations 1957
+for onboarding step 1 reg 8(1) and offboarding step 11 reg 5) in DEFAULT_TEMPLATES_REVIEW.md.
 
 ## HR chat retired (project 1b)
 

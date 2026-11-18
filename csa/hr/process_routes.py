@@ -6,7 +6,8 @@ read-only session's write is refused by the session dependency (403 `read_only_s
 `POST /templates/preview` is a read with a body: CSRF as a write, no `Idempotency-Key`.
 `POST /templates/defaults` creates the default templates once; while the deploy switch
 `HR_DEFAULT_TEMPLATES_ENABLED` (`app.state.hr_default_templates_enabled`) is off it answers 404
-`resource_unavailable` before any other check, so the route cannot be told apart from a missing one.
+`resource_unavailable` before any session, CSRF, key or database check, so the route looks like a
+missing one.
 Template reads and the template and process writes are for the HR team; a task action is for the
 assignee, the approver or the HR team, as the database decides (0634). The process reads answer
 with `response_model_exclude_unset`: a field the caller may not see is absent, an empty one is

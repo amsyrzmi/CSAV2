@@ -16,8 +16,9 @@ Tick each row, write what you saw in **Result**, and stop at the first row that 
   company. Row 4 needs a second person who can approve (see row 4). Row 11 needs a read-only
   member, which the owner sets on the Team page, linked to a person record.
 - Rows 14 to 19 use the org chart (**People → Org chart**). Row 15 needs a plain colleague signed in
-  with the directory switch only, and a person who is leaving and has a manager who also has the
-  directory switch. Row 21 needs a company with no active onboarding or offboarding template: use
+  with the directory switch only, and a person who is leaving and has a manager. The manager must have
+  the directory switch and their console account linked to their own person record (otherwise they do
+  not see the leaving date and the row will look like a failure). Row 21 needs a company with no active onboarding or offboarding template: use
   a second synthetic test company, or deactivate the templates from rows 1 and 7 first.
 - Reminders come from the background worker, which runs every 15 minutes. After the step that
   creates a task, wait up to 15 minutes before you look for its reminder (rows 5 and 8).
@@ -238,10 +239,11 @@ Do: open **People**, then **Org chart**. With the keyboard only, press Tab to a 
 press Enter, then press Enter again; try Space as well. Then press **Collapse all** and **Expand
 all**.
 
-You should see: each fold button names the manager ("Name's team (3)") and is a real button that
-folds and unfolds that team with Enter or Space, keeping focus on the button; the first three levels
-are open when the page loads and deeper teams are folded; **Collapse all** leaves only the people at
-the top, and **Expand all** shows everyone. The line "N people shown" counts everyone, also when
+You should see: each fold is a real button (a screen reader announces it as "Name's team (3)", with
+its expanded or collapsed state) that folds and unfolds that team with Enter or Space, keeping focus
+on the button; when the page loads the top two levels' teams are open, so three levels of people
+show, and teams below that start folded; **Collapse all** leaves only the people at the top, and
+**Expand all** shows everyone. The line "N people shown" counts everyone, also when
 teams are folded.
 
 Result: ____________________
@@ -264,13 +266,14 @@ Result: ____________________
 
 ### 16. Org chart: people at the top
 
-Do: make three situations with synthetic people: someone with no manager; someone whose manager has
-left; two people who are each other's manager (change a manager on a profile; if the form refuses
-to make a loop, skip that part and say so).
+Do: make a synthetic person with no manager (add them without choosing one, or clear the manager on
+their profile). The other two labels, **Manager not in the chart** and **In a reporting loop**, are
+rare states that the console cannot be steered into by hand (a leaver's reports move to their heir
+on the last day, and a loop is not expected to arise), so they are covered by automated tests
+(`tests/test_hr_people_rules.py` and the org chart browser fixture) and are not part of this row.
 
-You should see: at the top of the chart, the first reads **No manager**, the second **Manager not
-in the chart**, and each person in a loop **In a reporting loop**, and nobody is missing from the
-chart. The HR owner also sees a notice naming the loop and how to fix it; a colleague does not.
+You should see: the person with no manager stands at the top of the chart with **No manager**, and
+nobody is missing from the chart.
 
 Result: ____________________
 
@@ -290,10 +293,10 @@ Result: ____________________
 
 ### 18. Org chart: print and download CSV
 
-Do: on the org chart, fold a team, then press **Print** and look at the print preview (do not
-print). Close it and open another page (People list) in print preview. Back on the org chart, press
-**Download CSV**, open the file in a spreadsheet, and give one synthetic person a name that starts
-with `=` (for example `=Test`) before downloading to see how it appears.
+Do: first rename one synthetic person so that the name starts with `=` (for example `=Test`) on
+their profile. On the org chart, fold a team, then press **Print** and look at the print preview
+(do not print). Close it and open another page (People list) in print preview. Back on the org
+chart, press **Download CSV** and open the file in a spreadsheet.
 
 You should see: the print preview shows the whole tree, including the folded team, without the side
 menu, top bar and filters, on a white background with dark text; the other page's print preview is

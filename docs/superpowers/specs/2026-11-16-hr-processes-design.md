@@ -41,6 +41,11 @@ it differs from this document:
    the route answers 404 and the template list reports `defaults.available: false`.
 5. **The offboarding default has 15 steps** (the onboarding default has 14).
 6. **Org chart focus (section 5.5).** See the implementation decision in the 5.5 note below.
+7. **No "unlinked" state on the org chart (section 5.5).** Section 5.5 promised that the left, unlinked
+   and "no manager" states are shown. The chart shows "No manager", "Manager not in the chart" and
+   "In a reporting loop" on the people at the top, and Starting and Leaving markers, but no indicator
+   for a person with no console account: whether an account is linked is HR-only data. It is a
+   follow-up if wanted.
 
 ## 1. Intent
 

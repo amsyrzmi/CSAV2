@@ -106,7 +106,7 @@ export function DefaultTemplates({ client, tenant, platform, show, fallback, onC
         <p>Neither has an &quot;Applies to&quot; rule, so each becomes a company default: the next person you add starts
           onboarding with real tasks and reminders, and marking someone as leaving starts the offboarding. If the company already
           has an active template of one kind, that kind is left as it is.</p>
-        <p>You can edit both afterwards. The template list then shows each one with all its steps and reference notes.</p>
+        <p>You can edit both afterwards. Open either one from the template list to see all its steps and reference notes.</p>
         {error && <Refusal key={error.attempt} text={error.text} />}
         <div className="flex flex-wrap gap-2">
           <button type="button" className={primary} disabled={busy} onClick={() => void create()}>Create the default templates</button>

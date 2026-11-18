@@ -390,8 +390,7 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
   POST is 403 like every write). `created` is `true` when onboarding and offboarding each already
   have an active template, made by the action or by hand, so the action would create nothing (also
   when the list is cut at 500). A console shows the button only when `available` is `true` and
-  `created` is `false`, says the defaults are already present when both are `true`, and shows
-  nothing about them while `available` is `false`.
+  `created` is `false`, and shows nothing about the defaults otherwise.
 - `GET /templates/{template_id}` returns `TemplateOut`: the summary fields, `steps` (each
   `TemplateStepOut`: `ordinal`, `title_en`, `title_ms`, `description_en`, `description_ms`,
   `owner_role`, `owner_employee_id`, `anchor`, `due_offset_days`, `required`, `approval_by`,
@@ -415,7 +414,8 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
   read-only session 403 `read_only_session`, an assistant or capability session 409
   `human_operation_required`). While the switch `HR_DEFAULT_TEMPLATES_ENABLED` is off (the
   default; on only after the content review is signed) it answers 404 `resource_unavailable`
-  before any other check. It answers 201 `DefaultTemplatesReceipt` `{created: [{kind,
+  before any session, CSRF, key or database check (a malformed JSON body is still parsed first, so
+  that case answers 422). It answers 201 `DefaultTemplatesReceipt` `{created: [{kind,
   template_id, version, name}], skipped: [{kind, reason: "already_present"}], duplicate}`: under
   the company's HR operations lock, a kind that already has an active template is skipped, never
   duplicated (a second default would tie), and the others are created in one transaction, all or
