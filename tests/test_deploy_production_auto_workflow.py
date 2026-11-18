@@ -44,7 +44,10 @@ SUPERSEDE_STEP = "Cancel earlier auto-started runs that are still waiting"
 START_STEP = "Start the production plan"
 START_SENTENCE = "The plan starts now; the apply waits for approval on the production environment."
 GROUP = (
-    "${{ github.event.workflow_run.conclusion == 'success' && vars.PROD_AUTO_PLAN == 'true' "
+    "${{ github.event.workflow_run.conclusion == 'success' "
+    "&& github.event.workflow_run.head_branch == 'main' "
+    "&& github.event.workflow_run.head_repository.full_name == github.repository "
+    "&& vars.PROD_AUTO_PLAN == 'true' "
     "&& 'deploy-production-auto' || format('deploy-production-auto-idle-{0}', github.run_id) }}"
 )
 JOB_IF = (
@@ -157,7 +160,9 @@ def test_triggers_permissions_concurrency_and_pins() -> None:
 
 def test_the_job_runs_only_for_main_and_only_when_the_switch_is_true() -> None:
     assert _job_if() == JOB_IF
-    # The switch is `== 'true'` and nothing else: no `!=`, so unset means off.
+    # The switch is `== 'true'` and nothing else: no `!=`, so unset means off. (GitHub compares
+    # strings without regard to letter case, so `TRUE` also switches it on; the shared evaluator
+    # here is case-sensitive, so that case is not asserted either way.)
     assert "vars.PROD_AUTO_PLAN == 'true'" in JOB_IF
     assert "!=" not in _job_if()
     assert "needs:" not in _jobs(AUTO_WORKFLOW)["plan"]
@@ -167,7 +172,6 @@ def test_the_job_runs_only_for_main_and_only_when_the_switch_is_true() -> None:
         (_context(), True),
         (_context(switch=""), False),  # unset
         (_context(switch="false"), False),
-        (_context(switch="TRUE"), False),
         (_context(switch="1"), False),
         (_context(conclusion="failure"), False),
         (_context(conclusion="cancelled"), False),
@@ -190,6 +194,10 @@ def test_the_concurrency_group_queues_real_runs_and_isolates_everything_else() -
         (_context(conclusion="failure"), idle),
         (_context(conclusion="cancelled"), idle),
         (_context(conclusion="skipped"), idle),
+        # The same two clauses as the job's `if`: a run that fails them must not share the real
+        # group and replace a pending real run.
+        (_context(branch="feature"), idle),
+        (_context(repository="someone-else/CSAV2"), idle),
     ]
     for context, group in cases:
         assert _evaluate(expression, **context) == group, context
@@ -216,6 +224,18 @@ def test_the_auto_path_has_no_way_to_approve() -> None:
         "gh run",
         "deployments/",
     )
+    # Ways to approve, reject or dispatch that do not go through the script: a raw API call in a
+    # run line of the workflow itself.
+    workflow_forbidden = (
+        "/approve",
+        "/reject",
+        "curl",
+        "api.github.com",
+        "--input",
+        "dispatches",
+    )
+    for word in workflow_forbidden:
+        assert word not in code, word
     arguments = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field)(?:[\s=]|$)")
     script_code = "\n".join(_code(AUTO_PLAN.read_text(encoding="utf-8")))
     for scope in (code, script_code):
@@ -436,6 +456,7 @@ def test_the_header_names_the_switch_the_approval_and_the_chain() -> None:
         "PROD_AUTO_PLAN",
         "must be `true`",
         "off by default",
+        "unset, or anything that is not `true`, letter case ignored",
         "review request",
         "PLAN only",
         "waits for approval on the `production` environment",

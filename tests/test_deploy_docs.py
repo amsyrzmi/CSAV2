@@ -313,6 +313,14 @@ def test_deploy_doc_explains_the_full_put_the_reread_and_the_separate_branch_pol
         "a role ARN with a path",
         "tracing off before it reads any value",
         "moves every `SETUP_<NAME>` out of the environment",
+        # What the move does not cover (a name that is not a shell identifier, an empty name, and
+        # the process's own /proc/<pid>/environ, which bash cannot change).
+        "an environment name that is not one (for example `SETUP_A.B`) is never read and passes "
+        "to child processes untouched",
+        "an exported `SETUP_` with no name is ignored",
+        "Bash cannot change the script's own `/proc/<pid>/environ`",
+        "stay readable there by the same user and by root while the script runs",
+        "use the hidden prompt when that matters",
         "it is counted as missing",
         "`secret <NAME> on <env>: set`",
         "`apply: <n> item(s) still missing`",
@@ -320,6 +328,31 @@ def test_deploy_doc_explains_the_full_put_the_reread_and_the_separate_branch_pol
         "`variable PROD_AUTO_PLAN: set (true)`",
     ):
         assert needle in setup, needle
+
+
+def test_the_setup_script_header_states_what_the_move_out_of_the_environment_does_not_cover() -> (
+    None
+):
+    header = _flat(SETUP_SCRIPT.read_text(encoding="utf-8").split("set -euo pipefail", 1)[0])
+    for needle in (
+        "that is not a valid shell identifier, such as `SETUP_A.B`, is never a shell variable",
+        "bash passes it to children untouched",
+        "An exported `SETUP_` with an empty name names no secret and is dropped",
+        "What bash cannot do is change the script's own /proc/<pid>/environ",
+        "stay readable there by the same user and by root for as long as the script runs",
+        "Use the hidden prompt when that matters",
+    ):
+        assert needle in header, needle
+
+
+def test_the_auto_switch_wording_does_not_claim_a_case_sensitive_comparison() -> None:
+    # GitHub compares strings without regard to letter case, so `TRUE` is on too.
+    auto = _flat(_section(_deploy(), "## Auto-planned production runs (PROD_AUTO_PLAN)"))
+    workflow = _flat(AUTO_WORKFLOW.read_text(encoding="utf-8").split("\nname:", 1)[0])
+    for text in (auto, workflow):
+        assert "any value but" not in text
+        assert "any other value" not in text
+    assert "anything that is not `true`, letter case ignored" in workflow
 
 
 def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
@@ -369,6 +402,15 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "`gh variable get PROD_AUTO_PLAN --repo amsyrzmi/CSAV2`",
         "`[n/total] variable PROD_AUTO_PLAN: ok (true)`",
         "needs repository admin and exits 1 when any other item of the target is not ok",
+        # The switch is read the way GitHub compares strings: letter case ignored.
+        "Unset, or anything that is not `true` (letter case ignored), means off",
+        # The unattended plan job of the auto-started run, and what is still unverified.
+        "runs in `production-plan` (no reviewer, `main` only) with the plan AWS role, and sends a "
+        "read-only plan to the production instance",
+        "The `apply` job still waits for the human click on the `production` environment",
+        "unverified until the first auto run",
+        "expected to be `github-actions[bot]`",
+        "(check that workflow_run chaining is not limited); look for a run before starting another",
     ):
         assert needle in section, needle
 

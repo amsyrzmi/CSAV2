@@ -68,11 +68,13 @@
 #
 # start dispatches deploy-production.yml on main with NO input (an empty sha means the tip of main,
 # so the auto path can never ask for a rollback), then reads the run list again, up to
-# START_WAIT_SECONDS / START_POLL_SECONDS times (with START_POLL_SECONDS=0 it reads
-# START_WAIT_SECONDS times without sleeping), until a run that was not in the first list appears,
-# and prints `started deploy-production run <id>: <url>`. When none appears it fails (exit 1) with
-# "the dispatch was accepted but no deploy-production run started (check that workflow_run chaining
-# is not limited)". A refused dispatch exits 1 with gh's first error line.
+# START_WAIT_SECONDS / START_POLL_SECONDS times, rounded up (with START_POLL_SECONDS=0 it reads
+# START_WAIT_SECONDS times without sleeping; the first read after the dispatch is immediate), until
+# a run that was not in the first list appears, and prints `started deploy-production run <id>:
+# <url>`. When none appears it fails (exit 1) with "the dispatch was accepted but no
+# deploy-production run started (check that workflow_run chaining is not limited); look for a run
+# before starting another" (a run can be slow to appear). A refused dispatch exits 1 with gh's
+# first error line.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -201,8 +203,9 @@ check() {
 row_definition='def row: if (.id | type) == "number" and (.id | floor) == .id and .id > 0 then (.id | tostring) as $id | .head_sha as $sha | .status as $st | .event as $ev | .head_branch as $br | (.triggering_actor.login? // null) as $lg | if ($sha | type) == "string" and ($sha | test("\\A[0-9a-f]{40}\\z")) and ($st | type) == "string" and ($st | test("\\A[a-z_]{1,30}\\z")) and ($ev | type) == "string" and ($ev | test("\\A[a-z_]{1,40}\\z")) and ($br | type) == "string" and ($br | test("\\A[A-Za-z0-9._/-]{1,255}\\z")) and ($lg | type) == "string" and ($lg | test("\\A[A-Za-z0-9_.\\[\\]-]{1,100}\\z")) then "\($id) \($st) \($ev) \($br) \($sha) \($lg)" else "\($id) unreadable" end else error("id") end;'
 list_program='if (.workflow_runs | type) == "array" then .workflow_runs[] | row else error("shape") end'
 # The jobs of a run: "waiting" when they are exactly `plan` (completed, success) and `apply`
-# (waiting), "other" for any other well-formed list, "unreadable" when the shape is not as expected.
-jobs_program='if (.jobs | type) == "array" and all(.jobs[]; type == "object" and (.name | type) == "string" and (.status | type) == "string" and has("conclusion") and ((.conclusion | type) == "string" or .conclusion == null)) then if (.jobs | map(.name) | sort) == ["apply", "plan"] and (.jobs | map(select(.name == "plan"))[0] | .status == "completed" and .conclusion == "success") and (.jobs | map(select(.name == "apply"))[0].status == "waiting") then "waiting" else "other" end else "unreadable" end'
+# (waiting, no conclusion yet), "other" for any other well-formed list, "unreadable" when the
+# shape is not as expected.
+jobs_program='if (.jobs | type) == "array" and all(.jobs[]; type == "object" and (.name | type) == "string" and (.status | type) == "string" and has("conclusion") and ((.conclusion | type) == "string" or .conclusion == null)) then if (.jobs | map(.name) | sort) == ["apply", "plan"] and (.jobs | map(select(.name == "plan"))[0] | .status == "completed" and .conclusion == "success") and (.jobs | map(select(.name == "apply"))[0] | .status == "waiting" and .conclusion == null) then "waiting" else "other" end else "unreadable" end'
 
 # judge <id> <status> <event> <branch> <sha> <login>: sets verdict to "cancel" only when every
 # condition for a cancel holds, otherwise to the reason the run is left alone. The tip being
@@ -331,7 +334,8 @@ start() {
     fi
 
     if [[ "$poll" -gt 0 ]]; then
-        attempts=$((wait / poll))
+        # Rounded up, so a wait shorter than one poll still reads once more after that poll.
+        attempts=$(((wait + poll - 1) / poll))
     else
         attempts="$wait"
     fi
@@ -348,7 +352,7 @@ start() {
             return 0
         done <<< "$rows"
     done
-    die "the dispatch was accepted but no deploy-production run started (check that workflow_run chaining is not limited)"
+    die "the dispatch was accepted but no deploy-production run started (check that workflow_run chaining is not limited); look for a run before starting another"
 }
 
 command="${1:-}"

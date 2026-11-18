@@ -449,11 +449,11 @@ Refusals at the later steps:
 ## Auto-planned production runs (PROD_AUTO_PLAN)
 
 The repository variable `PROD_AUTO_PLAN` switches the automatic start of the production **plan**.
-Unset or any value but `true` means off, and it is off by default: with it on, both reviewers get a
-GitHub review request for every waiting apply, at most one per merge. The production apply is
-never approved by an agent and never skips the approval: the approval is a property of the `production`
-environment (its required reviewers and its `main`-only branch policy), not of any workflow file,
-so no workflow change can remove it.
+Unset, or anything that is not `true` (letter case ignored), means off, and it is off by default:
+with it on, both reviewers get a GitHub review request for every waiting apply, at most one per
+merge. The production apply is never approved by an agent and never skips the approval: the
+approval is a property of the `production` environment (its required reviewers and its `main`-only
+branch policy), not of any workflow file, so no workflow change can remove it.
 
 **What the workflow does.** `.github/workflows/deploy-production-auto.yml` starts when
 `deploy-staging` completes on `main`. The chain is `ci`, `publish-staging-images`,
@@ -469,6 +469,10 @@ which runs `deploy/production/auto_plan.sh` three times:
 2. `supersede` cancels earlier auto-started runs whose apply is still waiting.
 3. `start` dispatches `deploy-production` with no input (so an empty `sha`: the tip of `main`; the
    auto path can never request an explicit rollback) and checks that a run appeared.
+
+The unattended `plan` job of the `deploy-production` run it starts runs in `production-plan` (no
+reviewer, `main` only) with the plan AWS role, and sends a read-only plan to the production
+instance. The `apply` job still waits for the human click on the `production` environment.
 
 **What each line means.**
 
@@ -500,11 +504,13 @@ which runs `deploy/production/auto_plan.sh` three times:
 - `started deploy-production run <id>: <url>`: the plan was started. The apply waits for approval on
   the `production` environment.
 - `the dispatch was accepted but no deploy-production run started (check that workflow_run chaining
-  is not limited)` (red): GitHub accepted the dispatch and made no run. This is the one that means
-  the chain itself failed: start `deploy-production` by hand and say so. The run is also red for any
-  other failure of the resolver, an unreadable run list, an unreadable listing of the runs to
-  supersede, or a refused dispatch; each says what it could not do. Start `deploy-production` by hand
-  after any of them.
+  is not limited); look for a run before starting another` (red): GitHub accepted the dispatch and
+  made no run within the wait. This is the one that means the chain itself failed, or that the run
+  is only slow to appear: look at the latest `deploy-production` runs first, and start
+  `deploy-production` by hand (and say so) only if there really is none. The run is also red for
+  any other failure of the resolver, an unreadable run list, an unreadable listing of the runs to
+  supersede, or a refused dispatch; each says what it could not do. Start `deploy-production` by
+  hand after any of them.
 
 With the switch off or unset, the job is skipped, so the whole run concludes `skipped` (grey), not
 success. A failed or cancelled `deploy-staging` run also leaves the job skipped.
@@ -513,7 +519,9 @@ success. A failed or cancelled `deploy-staging` run also leaves the job skipped.
 concurrency group, and GitHub's concurrency rules cannot cancel only a run whose apply is waiting,
 so `supersede` uses the REST call that cancels a run. It cancels a run only when all of these
 hold, read just before the call: the run is `waiting`; its event is `workflow_dispatch`; its
-`triggering_actor` is `github-actions[bot]` (a person's run is never touched); its branch is `main`;
+`triggering_actor` is `github-actions[bot]` (the value expected for a run the workflow's own token
+dispatched, and unverified until the first auto run; if it differs, nothing is cancelled, which is
+safe; a person's run is never touched); its branch is `main`;
 its `head_sha` is not the commit being planned; its jobs are exactly `plan` (completed, success)
 and `apply` (waiting). Every field must be present and well-formed, or the run is left alone. A run
 whose apply is in progress is never knowingly cancelled. The limits, stated plainly:
@@ -541,7 +549,7 @@ whose apply is in progress is never knowingly cancelled. The limits, stated plai
   triggers and the file is left as it was; the auto workflow starts it by a `workflow_dispatch`.
   Reading the header alone would miss that a run can already exist: in "Run workflow", look at the
   latest `deploy-production` runs first (the `triggering_actor` of an auto-started run is
-  `github-actions[bot]`).
+  expected to be `github-actions[bot]`).
 
 **Security.** The auto workflow has no `environment`, no `id-token` permission and no secret. Its
 token can read the repository, read Actions and deployments, read packages (`packages: read`, for
@@ -661,7 +669,11 @@ contains a value. A `SETUP_<NAME>` that is exported but empty is an error (exit 
 a role ARN with a path (`role/path/name`) is refused. The script switches tracing off before it
 reads any value (a caller's `bash -x` or `SHELLOPTS=xtrace` prints no secret) and moves every
 `SETUP_<NAME>` out of the environment before it starts `gh`, `jq` or any other program, so no child
-process inherits one. The only values printed are the two switches, which are `true`, `false` or
+process inherits one. That covers every name that is a valid shell identifier: an environment name
+that is not one (for example `SETUP_A.B`) is never read and passes to child processes untouched,
+and an exported `SETUP_` with no name is ignored. Bash cannot change the script's own
+`/proc/<pid>/environ`, so the original `SETUP_` values stay readable there by the same user and by
+root while the script runs: use the hidden prompt when that matters. The only values printed are the two switches, which are `true`, `false` or
 `unset: off` (for example `variable PROD_AUTO_PLAN: set (true)` or `unchanged (unset: off)` from
 `apply`, and `ok (true)` from `--check`).
 

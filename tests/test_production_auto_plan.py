@@ -912,6 +912,23 @@ def test_supersede_leaves_alone_a_run_whose_jobs_cannot_be_read(
     assert harness.gh.writes() == []
 
 
+@pytest.mark.parametrize("conclusion", ["success", "cancelled"])
+def test_supersede_never_cancels_an_apply_that_reads_waiting_but_has_a_conclusion(
+    harness: Harness, conclusion: str
+) -> None:
+    # GitHub never reports this combination (the fake refuses to plant it), but the script must
+    # not take `waiting` alone for a pending approval: a conclusion means the job is over.
+    run_id = stale_run(harness)
+    jobs = _jobs_json({"name": "apply", "status": "waiting", "conclusion": conclusion})
+    env = hook(
+        harness, {"match": rf"runs/{run_id}/jobs$", "nth": 1, "action": "print", "stdout": jobs}
+    )
+    result = supersede(harness, env=env)
+    assert result.stdout == f"left alone: run {run_id} (apply is not waiting)\n"
+    assert (result.returncode, result.stderr) == (0, "")
+    assert harness.gh.writes() == []
+
+
 def test_supersede_fails_when_the_jobs_cannot_be_fetched(harness: Harness) -> None:
     run_id = stale_run(harness)
     env = hook(harness, {"match": rf"runs/{run_id}/jobs$", "nth": 1, "action": "fail"})
@@ -1151,7 +1168,8 @@ def test_start_fails_red_when_the_dispatch_creates_no_run(harness: Harness) -> N
     assert result.returncode == 1 and result.stdout == ""
     assert result.stderr == (
         "the dispatch was accepted but no deploy-production run started "
-        "(check that workflow_run chaining is not limited)\n"
+        "(check that workflow_run chaining is not limited); "
+        "look for a run before starting another\n"
     )
     # The dispatch was made once, then the list was read again a bounded number of times.
     commands = harness.gh.commands()
@@ -1165,6 +1183,24 @@ def test_start_polls_a_bounded_number_of_times_with_a_zero_sleep(harness: Harnes
     assert result.returncode == 1
     reads_after = harness.gh.commands().count(START_LIST) - 1
     assert 1 <= reads_after <= 10
+
+
+def test_start_reads_again_when_the_wait_is_shorter_than_one_poll(harness: Harness) -> None:
+    # 1 second of waiting with a poll every 2 seconds is one more read after one poll (the wait is
+    # divided rounding up), not zero: the run that shows up on the second read is found.
+    harness.gh.set_state(dispatch_lag=1)
+    result = start(harness, env={"START_WAIT_SECONDS": "1", "START_POLL_SECONDS": "2"})
+    new = max(r["id"] for r in harness.gh.state()["runs"])
+    assert (result.returncode, result.stderr) == (0, "")
+    assert result.stdout.startswith(f"started deploy-production run {new}: ")
+    assert harness.gh.commands().count(START_LIST) == 3
+
+
+def test_start_with_no_wait_reads_once_and_never_sleeps(harness: Harness) -> None:
+    harness.gh.set_state(dispatch_no_run=True)
+    result = start(harness, env={"START_WAIT_SECONDS": "0", "START_POLL_SECONDS": "5"})
+    assert result.returncode == 1 and "no deploy-production run started" in result.stderr
+    assert harness.gh.commands().count(START_LIST) == 2
 
 
 def test_start_waits_for_a_run_that_appears_late(harness: Harness) -> None:

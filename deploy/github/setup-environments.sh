@@ -37,11 +37,16 @@
 # overwritten unless its SETUP_<NAME> is set (an explicit rotation). A secret or required variable
 # that has no value ends the run with `apply: <n> item(s) still missing` (exit 1), after
 # everything else was applied. Every input is validated before the first `gh` call, and every
-# secret value before the first write. Every SETUP_<NAME> is moved out of the environment into a
-# shell array before the first child process starts, so no gh, jq or mktemp inherits one, and
-# tracing is switched off before any is read. The one permission check is `gh api repos/<repo>`
-# (`.permissions.admin`): the login check of gh itself exits non-zero when any other configured
-# account is stale. No input is run through eval.
+# secret value before the first write. Every SETUP_<NAME> that bash holds as a shell variable is
+# moved out of the environment into a shell array before the first child process starts, so no gh,
+# jq or mktemp inherits one, and tracing is switched off before any is read. (An environment name
+# that is not a valid shell identifier, such as `SETUP_A.B`, is never a shell variable: bash passes
+# it to children untouched, and the script never reads it. An exported `SETUP_` with an empty name
+# names no secret and is dropped.) What bash cannot do is change the script's own
+# /proc/<pid>/environ: the original SETUP_ values stay readable there by the same user and by root
+# for as long as the script runs. Use the hidden prompt when that matters.
+# The one permission check is `gh api repos/<repo>` (`.permissions.admin`): the login check of gh
+# itself exits non-zero when any other configured account is stale. No input is run through eval.
 # A caller's `bash -x`, or SHELLOPTS=xtrace in the environment, must never print a secret: tracing
 # goes off on the line after the strict mode, before any SETUP_<NAME> is read, and stays off.
 set -euo pipefail
@@ -232,7 +237,10 @@ command -v gh > /dev/null || die "the gh CLI is required"
 # checks above are builtins and start no process.)
 declare -A TYPED_VALUE=()
 for setup_var in "${!SETUP_@}"; do
-    TYPED_VALUE["${setup_var#SETUP_}"]="${!setup_var}"
+    # SETUP_ with no name names no secret (and is not a valid array subscript): drop it.
+    if [[ "$setup_var" != "SETUP_" ]]; then
+        TYPED_VALUE["${setup_var#SETUP_}"]="${!setup_var}"
+    fi
     unset "$setup_var"
 done
 unset setup_var

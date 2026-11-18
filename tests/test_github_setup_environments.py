@@ -1649,35 +1649,58 @@ def test_without_a_terminal_a_missing_secret_is_reported_not_prompted_and_the_re
     }
 
 
-def test_an_open_stdin_that_is_not_a_terminal_is_never_waited_on(gh: Gh) -> None:
-    # stdin is a pipe nobody writes to or closes (a CI step, a supervisor): a read would block
-    # for ever, so the script must not prompt. /dev/null would end the read at once and prove
-    # nothing.
+@pytest.mark.parametrize(
+    ("stdin_kind", "stderr_kind"),
+    [("pipe", "file"), ("pipe", "pty"), ("pty", "file")],
+    ids=["stdin-pipe", "stdin-pipe-stderr-terminal", "stdin-terminal-stderr-file"],
+)
+def test_a_prompt_needs_both_stdin_and_stderr_to_be_a_terminal(
+    gh: Gh, stdin_kind: str, stderr_kind: str
+) -> None:
+    # The prompt is only offered when stdin AND stderr are terminals. Here exactly one of them (or
+    # neither) is: an open pipe nobody writes to or closes (a CI step, a supervisor), or a
+    # terminal nobody types at. A read would block for ever, so the script must not prompt.
+    # /dev/null would end the read at once and prove nothing. Each case kills the mutants that
+    # test only one of the two (`[[ -t 0 ]]`, `[[ -t 2 ]]`).
     stdout_path = gh.tmp / "pipe-stdout.txt"
-    with (
-        stdout_path.open("w") as stdout_file,
-        (gh.tmp / "pipe-stderr.txt").open("w") as stderr_file,
-    ):
+    stderr_path = gh.tmp / "pipe-stderr.txt"
+    master, slave = pty.openpty()
+    stdin_arg: int = subprocess.PIPE if stdin_kind == "pipe" else slave
+    with stdout_path.open("w") as stdout_file, stderr_path.open("w") as stderr_file:
         process = subprocess.Popen(
             [str(SCRIPT), "staging", "--repo", REPO, *VARIABLE_FLAGS],
-            stdin=subprocess.PIPE,
+            stdin=stdin_arg,
             stdout=stdout_file,
-            stderr=stderr_file,
+            stderr=slave if stderr_kind == "pty" else stderr_file,
             env=gh.environment(),
             cwd=gh.tmp,
+            close_fds=True,
         )
+        os.close(slave)
         try:
             status = process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-            pytest.fail("the script is waiting for input on a stdin that is not a terminal")
+            pytest.fail(
+                "the script is waiting for input where stdin and stderr are not both terminals"
+            )
         finally:
             if process.stdin is not None:
                 process.stdin.close()
+            shown = b""
+            ready, _, _ = select.select([master], [], [], 0.2)
+            if ready:
+                try:
+                    shown = os.read(master, 65536)
+                except OSError:
+                    shown = b""
+            os.close(master)
     assert status == 1
     assert stdout_path.read_text().splitlines()[-1] == "apply: 2 item(s) still missing"
-    assert "Value for" not in stdout_path.read_text() + (gh.tmp / "pipe-stderr.txt").read_text()
+    assert "Value for" not in stdout_path.read_text() + stderr_path.read_text() + shown.decode(
+        errors="replace"
+    )
 
 
 def test_a_failed_variable_read_ends_the_run_before_any_prompt(gh: Gh) -> None:
@@ -1919,7 +1942,12 @@ def test_no_setup_variable_stays_in_the_environment_of_any_child_process(
     record = tmp_path / "children.txt"
     record.write_text("")
     wrap_children(gh, record)
-    values = {**setup_values("staging"), "SETUP_PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"]}
+    # SETUP_ (an empty name) is taken out of the environment too, and breaks nothing.
+    values = {
+        **setup_values("staging"),
+        "SETUP_PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"],
+        "SETUP_": MARKER,
+    }
 
     if mode == "check":
         result = run(gh, "staging", "--check", "--repo", REPO, env=values)
@@ -1935,6 +1963,25 @@ def test_no_setup_variable_stays_in_the_environment_of_any_child_process(
     seen = [line.split(" ") for line in record.read_text().splitlines()]
     assert {tool for tool, _ in seen} >= {"gh", "jq", "mktemp", "rm"}
     assert [(tool, names) for tool, names in seen if names] == []
+
+
+@pytest.mark.parametrize("mode", ["apply", "check"])
+def test_an_exported_setup_variable_with_an_empty_name_is_ignored_not_a_bash_error(
+    gh: Gh, mode: str
+) -> None:
+    # `export SETUP_=x` names no secret: it must not reach bash's array handling (a raw `bad
+    # array subscript` error and exit 1) and must not change what the run does.
+    if mode == "check":
+        result = run(gh, "staging", "--check", "--repo", REPO, env={"SETUP_": MARKER})
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert result.stdout.splitlines()[-1].startswith("check: ")
+    else:
+        result = apply(gh, "staging", env={"SETUP_": MARKER})
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert result.stdout.splitlines()[-1] == "apply: everything is in place"
+    printed = result.stdout + result.stderr
+    assert "subscript" not in printed
+    assert MARKER not in printed + gh.log_path.read_text()
 
 
 def test_no_value_reaches_stdout_stderr_or_the_log(gh: Gh) -> None:
