@@ -124,13 +124,15 @@ def build_default_registry(
             batch_size=500,
         )
     )
-    # Per company, console notifications older than 30 days, in batches of 1000.
+    # Per company, console notifications older than 30 days, deleted in batches of 1000 that each
+    # commit in a company transaction of their own on the app pool.
     registry.register(
         Job(
             name="console_notifications_purge",
             every=timedelta(hours=6),
             fn=run_console_notifications_purge,
             per_client=True,
+            own_transactions=True,
             batch_size=1000,
         )
     )

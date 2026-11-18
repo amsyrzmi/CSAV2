@@ -35,8 +35,9 @@ only stores and shows documents, and shares nothing with it except the HR-owner 
 
 The package must be active for the company, for every role. Reading is open to every role by design:
 the library is a shelf, with no per-item or per-role visibility. A `read_only` member can make
-exactly one write, asking for a summary (`POST /training/items/{id}/summary`); the exemption in
-`csa/console/access.py` (`reader_may_post`) matches that one route and nothing else.
+exactly two writes: asking for a summary (`POST /training/items/{id}/summary`) and marking their own
+console notifications read (`POST /notifications/read`); the exemptions in
+`csa/console/access.py` (`reader_may_post`) match those two routes, each with its own path, and nothing else.
 
 ## Limits
 
@@ -221,7 +222,7 @@ assistant's own rule: it admits platform admins, tenant admins and `tenant_staff
 and it needs the assistant switched on for the company (`WORKSPACE_ASSISTANT_ENABLED`) and the
 Training library package (without the package the assistant answers as it does for a locked tab).
 Every video write is a manage route and the summary is made by the worker, so `reader_may_post` is
-unchanged: a `read_only` member still has the one PDF summary exemption and nothing else.
+unchanged: a `read_only` member still has the PDF summary exemption (and the notification read-marking one) and nothing else.
 
 ### Limits for video
 

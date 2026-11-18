@@ -69,8 +69,10 @@ class NotificationsRead(Contract):
 
     @model_validator(mode="after")
     def _exactly_one(self) -> Self:
-        if (self.ids is not None) == bool(self.all_):
-            raise ValueError("give ids or all: true, not both and not neither")
+        if self.ids is not None and self.all_ is not None:
+            raise ValueError("give ids or all: true, not both")
+        if self.ids is None and self.all_ is not True:
+            raise ValueError("give ids or all: true")
         return self
 
 

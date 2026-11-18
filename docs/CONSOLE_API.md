@@ -1377,8 +1377,8 @@ wakes the item itself if the job has not yet).
 **Reminders.** Six kinds notify staff about Inbox work that waits; each is a row of the generic reminder
 table (`csa.reminders`) and fires from the `reminders_fire` job, which runs every minute for each company,
 so a reminder is on time to the minute (not to the second), and a reminder that has become stale (the
-customer wrote, the item was resolved, snoozed, handed back or reassigned, the setting was turned off,
-the priority changed) is dropped without a message. `inbox.overdue`: a `needs_staff` item is past its
+customer wrote, the item was resolved, snoozed, handed back or reassigned, the setting was turned off)
+is dropped without a message, while a priority change moves an unfired overdue reminder to the new due time. `inbox.overdue`: a `needs_staff` item is past its
 response target; it repeats every `repeat_minutes` up to `max_repeats` times, one priority level higher
 from the second notice, and the last one also names every tenant admin. `inbox.stale_claim`: a claimed
 item saw no action for `stale_claim_hours`; the holder first, the tenant admins `repeat_minutes` later.
@@ -1435,7 +1435,7 @@ Rows older than 30 days are deleted, read or not, by the `console_notifications_
 hours, per company, in batches of 1000).
 
 **Who may call.** Any active member of the company, `read_only` included: a read-only member reads their
-own rows and may call the POST (the one write they have besides the training summary). There is no
+own rows and may call the POST (the only write they have besides the training summary). There is no
 package gate. A platform admin is not a member and has no rows: `GET /notifications` is
 `{"items": [], "unread": 0}`, `/count` is `{"unread": 0}`, and `POST /read` is `{"updated": 0}` (they
 still select a company with `client_id`, else 400). The POST needs the CSRF token like every other
@@ -2724,10 +2724,11 @@ Who may call:
   [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#the-hr-owner-dependency)). `can_manage` on the list
   says which a caller is. A plain staff member gets 403 `training_forbidden`.
 - A `read_only` member is refused every `POST`, `PUT`, `PATCH` and `DELETE` by the console's write rule
-  with 403 `write permission required` before the route runs, with one exception: `POST
-  /training/items/{id}/summary`. That exemption (`reader_may_post` in `csa/console/access.py`) holds
-  only when the matched route is that one and the decoded path is exactly that route with a
-  canonical UUID. CSRF and origin checks still apply to it. `read_only` asking for `regenerate: true`
+  with 403 `write permission required` before the route runs, with two exceptions: `POST
+  /training/items/{id}/summary` and `POST /notifications/read` (marking their own console
+  notifications read). Those exemptions (`reader_may_post` in `csa/console/access.py`) hold
+  only when the matched route is that route and the decoded path is exactly that route (with a
+  canonical UUID for the summary); a route is never paired with the other route's path. CSRF and origin checks still apply to it. `read_only` asking for `regenerate: true`
   gets 403 `training_forbidden`.
 
 | Method/path | Who | Result |
@@ -2908,7 +2909,7 @@ a plain sentence (see below).
 | 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
 | 403 | `human session required` | A machine token on a `GET` route |
 | 403 | `machine principal has read-only access` | A machine token on `POST`, `PUT`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
-| 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` |
+| 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` and `POST /notifications/read` |
 | 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit, remove or retry; anyone but a manager sending `regenerate: true` |
 | 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made; a video a reader may not see yet (not `ready`); `playback` or `video` of a manager's video with no file to play; `file` of a video, or `playback`, `video` and `transcript` of a PDF |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |

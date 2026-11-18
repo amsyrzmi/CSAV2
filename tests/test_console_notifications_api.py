@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from csa.console.access import reader_may_post
-from csa.core.tenancy import tx
 from csa.jobs.clock import FakeClock
 from csa.jobs.console_notifications import run_console_notifications_purge
 
@@ -178,6 +177,7 @@ async def test_exactly_one_of_ids_and_all(sessions: SessionWorld) -> None:
     for body in (
         {},
         {"ids": [row], "all": True},
+        {"ids": [row], "all": False},
         {"all": False},
         {"ids": None, "all": None},
         {"ids": ["not-a-uuid"]},
@@ -215,6 +215,15 @@ async def test_reader_exemption_matches_the_notification_route_only() -> None:
     assert not reader_may_post("POST", route, "/console/v1/notifications/read/")
     assert not reader_may_post("POST", route, "/console/v1/notifications/readx")
     assert not reader_may_post("POST", None, path_)
+    # A route is never paired with the other route's path.
+    item = uuid4()
+    summary_route = "/training/items/{item_id}/summary"
+    summary_path = f"/console/v1/training/items/{item}/summary"
+    assert reader_may_post("POST", summary_route, summary_path)
+    assert not reader_may_post("POST", route, summary_path)
+    assert not reader_may_post("POST", "/console/v1" + route, summary_path)
+    assert not reader_may_post("POST", summary_route, path_)
+    assert not reader_may_post("POST", "/console/v1" + summary_route, path_)
 
 
 async def test_a_platform_admin_has_no_notifications(sessions: SessionWorld) -> None:
@@ -288,10 +297,9 @@ async def test_no_package_is_needed(sessions: SessionWorld) -> None:
 
 
 async def _purge(w: SessionWorld, tenant: int, **kw: Any) -> dict[str, Any]:
-    async with tx(w.pool, w.tenants[tenant]) as conn:
-        return await run_console_notifications_purge(
-            conn, UUID(w.tenants[tenant]), FakeClock(NOW), **kw
-        )
+    return await run_console_notifications_purge(
+        w.pool, UUID(w.tenants[tenant]), FakeClock(NOW), **kw
+    )
 
 
 async def _remaining(w: SessionWorld, tenant: int) -> set[str]:
