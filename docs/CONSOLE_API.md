@@ -903,7 +903,7 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 
 | Method/path | Request | Result |
 |---|---|---|
-| `GET /conversations` | `before` (opaque cursor; a bare conversation UUID is still accepted), `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters), and the queue filters `state`, `assignee`, `priority_min`, `reason`, `topic`, `overdue`, `waiting_over`, `order` (see [Inbox work queue](#inbox-work-queue)) | `{items,next_cursor,needs_review_count,counts}` |
+| `GET /conversations` | `before` (opaque cursor; a bare conversation UUID is still accepted), `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters), and the queue filters `state`, `assignee`, `priority_min`, `reason`, `topic`, `handled_by`, `overdue`, `waiting_over`, `order` (see [Inbox work queue](#inbox-work-queue)) | `{items,next_cursor,needs_review_count,counts}` |
 | `GET /queue/counts`, `GET /assignees`, `GET`/`PUT /settings` | see [Inbox work queue](#inbox-work-queue) | Tab counts; people a chat can go to; the company's response targets |
 | `POST /conversations/{id}/queue/{claim,unclaim,assign,snooze,resolve,priority,topic}`, `POST /bulk`, `GET`/`POST /views`, `PUT`/`DELETE /views/{id}` | see [Inbox work queue](#inbox-work-queue) | Queue actions, bulk actions and saved views |
 | `GET /conversations/{id}` | — | Ownership, mute and version metadata, the queue fields and `assignee`, plus `contact` with the full `phone` |
@@ -1215,11 +1215,19 @@ parameter, as `state=needs_staff&state=snoozed`, is OR within itself):
 | `topic` | repeatable: the seven topics above |
 | `channel` | `telegram` or `whatsapp` |
 | `sender` | `known` or `new`, as before |
+| `handled_by` | `person` or `assistant`: who handles the chat (below) |
 | `overdue` | `true`: `needs_staff` with `due_at` in the past |
 | `waiting_over` | minutes (1 to 525600): `needs_staff` waiting longer than that |
 | `needs_review` | `true`: a live pending held reply, as before |
 | `q` | contact search, as before |
 | `order` | `activity`, `waiting`, `due`, `priority` |
+
+`handled_by=person` keeps the chats whose `human_muted` flag is true: `owned_by` is `human_support` and
+the assistant's mute has not ended (no end, or an end in the future); `handled_by=assistant` keeps all
+the others (the assistant owns the chat, or the mute has ended). A bot escalation also pauses the
+assistant for 24 hours, so an escalated chat nobody has opened yet counts as `person` until that mute
+ends. The console words this "Assistant paused". The filter is not part of the search and does not
+change the tab counts (`counts`), which stay unfiltered; a saved view may carry it.
 
 Any other value is 422. A repeatable parameter holds each value once (repeats are dropped) and at
 most as many values as it has (5 states, 4 reasons, 7 topics); more is 422. The fixed tabs of the design are filter sets: Needs us is
@@ -1362,7 +1370,7 @@ creates one (201); `PUT /inbox/views/{id}` with `{name?, filters?}` (at least on
 filters or both; `DELETE /inbox/views/{id}` is 204. `name` is 1 to 60 characters once trimmed and unique
 per person ignoring case (409 otherwise); a person keeps at most 20 (409 `you can keep at most 20 saved
 views`). `filters` accepts `state`, `assignee`, `priority_min`, `reason`, `topic`, `overdue`,
-`waiting_over`, `channel`, `sender` and `order`, validated by the list's own rules (including the
+`waiting_over`, `channel`, `sender`, `handled_by` and `order`, validated by the list's own rules (including the
 `order=priority` restriction and the list bounds, 422); it never holds the search text, a cursor or a
 limit. A POST or PUT body over 32 KiB is 413. Create, rename and delete are audited by id only. Read-only members get 403.
 

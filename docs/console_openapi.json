@@ -8805,7 +8805,7 @@
       },
       "InboxFilters": {
         "additionalProperties": false,
-        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first\nwhen every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
+        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`handled_by` is ``person`` when the assistant is paused for the chat (``human_muted``: owned by\nsupport and the mute not ended, which a bot escalation also sets for a day) and ``assistant``\notherwise. `overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is\ndue-first when every row in scope needs staff (`needs_staff_only`), newest activity first\notherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
         "properties": {
           "assignee": {
             "anyOf": [
@@ -8840,6 +8840,21 @@
               }
             ],
             "title": "Channel"
+          },
+          "handled_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "assistant",
+                  "person"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handled By"
           },
           "order": {
             "anyOf": [
@@ -37139,6 +37154,26 @@
                 }
               ],
               "title": "Sender"
+            }
+          },
+          {
+            "in": "query",
+            "name": "handled_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "assistant",
+                    "person"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Handled By"
             }
           },
           {

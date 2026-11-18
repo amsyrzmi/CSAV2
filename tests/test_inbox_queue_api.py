@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import pytest
+from csa.agents.escalation.agent import MUTE_FOR
 from csa.console.inbox_cursor import decode as decode_cursor
 from csa.console.inbox_queue_list import (
     LIST_QUERIES,
@@ -712,6 +713,9 @@ BAD_QUERIES = (
     "&limit=51",
     "&channel=web",
     "&q=a",
+    "&handled_by=robot",
+    "&handled_by=",
+    "&handled_by=Person",
 )
 
 
@@ -1205,6 +1209,136 @@ async def test_a_takeover_receipt_carries_the_queue_ids_and_no_name(
     assert row["assignee"] == {"id": w.admin_id, "display_name": "Synthetic Admin"}
 
 
+async def _handled(
+    w: SessionWorld, item: Item, owned_by: str | None, muted_until: datetime | None = None
+) -> None:
+    """Set who owns the chat and until when the assistant is muted (the escalation write)."""
+    await w.q(
+        "UPDATE conversations SET owned_by = %s, ai_muted_until = %s WHERE id = %s",
+        owned_by,
+        muted_until,
+        UUID(item.id),
+    )
+
+
+async def _handled_world(w: SessionWorld) -> tuple[dict[str, Item], str]:
+    """One chat per way the assistant is, or is not, paused (synthetic values only)."""
+    now = datetime.now(UTC)
+    _, staff = await _signed_in(w, "Kay Synthetic")
+    items = {
+        # A person took over: owned by support with no end to the mute.
+        "taken_over": await _item(w, state="waiting_customer", assignee=w.admin_id),
+        "taken_over_needs_us": await _item(w, state="needs_staff", assignee=staff),
+        "assistant": await _item(w, state="needs_staff", assignee=w.admin_id),
+        "assistant_unset": await _item(w, state="needs_staff"),
+        "expired_mute": await _item(w, state="needs_staff", assignee=w.admin_id),
+        # The bot escalated: the escalation agent mutes the assistant for MUTE_FOR (a day), so
+        # an escalated chat nobody has opened yet is "person" (plan decision 11).
+        "escalated": await _item(w, state="needs_staff", reason="escalation"),
+    }
+    await _handled(w, items["taken_over"], "human_support")
+    await _handled(w, items["taken_over_needs_us"], "human_support")
+    await _handled(w, items["assistant"], "ai")
+    await _handled(w, items["expired_mute"], "human_support", now - timedelta(minutes=1))
+    mute = await w.q(
+        "UPDATE conversations SET status = 'escalated', owned_by = 'human_support',"
+        " ai_muted_until = now() + %s WHERE id = %s RETURNING ai_muted_until",
+        MUTE_FOR,
+        UUID(items["escalated"].id),
+    )
+    assert mute[0]["ai_muted_until"] > now + timedelta(hours=23)
+    return items, staff
+
+
+async def test_handled_by_picks_the_chats_the_assistant_is_or_is_not_paused_for(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    items, staff = await _handled_world(w)
+    person = {"taken_over", "taken_over_needs_us", "escalated"}
+    assistant = set(items) - person
+    assert _names(items, await _ids(w, "&handled_by=person")) == person
+    assert _names(items, await _ids(w, "&handled_by=assistant")) == assistant
+    # A mute that has ended and a chat the assistant owns are the assistant's.
+    assert "expired_mute" in assistant and "assistant_unset" in assistant
+    assert _names(items, await _ids(w)) == set(items)
+    # Each filter value agrees with the row's own human_muted flag.
+    for value, flag in (("person", True), ("assistant", False)):
+        rows = (await _page(w, f"&limit=50&handled_by={value}"))["items"]
+        assert rows and {row["human_muted"] for row in rows} == {flag}, value
+    # Combined with the other filters.
+    cases: dict[str, set[str]] = {
+        "&handled_by=person&state=needs_staff": {"taken_over_needs_us", "escalated"},
+        "&handled_by=assistant&state=needs_staff": {
+            "assistant",
+            "assistant_unset",
+            "expired_mute",
+        },
+        f"&handled_by=person&assignee={staff}": {"taken_over_needs_us"},
+        "&handled_by=person&assignee=me": {"taken_over"},
+        "&handled_by=person&assignee=none": {"escalated"},
+        "&handled_by=assistant&assignee=me&state=needs_staff": {"assistant", "expired_mute"},
+        "&handled_by=person&state=needs_staff&assignee=none": {"escalated"},
+        "&handled_by=person&state=bot": set(),
+        "&handled_by=person&reason=escalation&state=needs_staff": {
+            "taken_over_needs_us",
+            "escalated",
+        },
+    }
+    for query, expected in cases.items():
+        assert _names(items, await _ids(w, query)) == expected, query
+
+
+async def test_handled_by_pages_through_the_cursor_in_every_order(sessions: SessionWorld) -> None:
+    w = sessions
+    items, _ = await _handled_world(w)
+    person = {items[n].id for n in ("taken_over", "taken_over_needs_us", "escalated")}
+    for order in ("activity", "due", "waiting"):
+        walked = await _walk(w, f"&handled_by=person&order={order}", limit=2)
+        assert set(walked) == person, order
+    walked = await _walk(w, "&handled_by=person&state=needs_staff&order=priority", limit=1)
+    assert set(walked) == {items["taken_over_needs_us"].id, items["escalated"].id}
+
+
+async def test_handled_by_leaves_the_counts_unfiltered_and_the_search_alone(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    items, _ = await _handled_world(w)
+    named = await _item(w, name="Handled Person Synthetic", state="needs_staff")
+    items["named"] = named
+    plain = (await w.admin.get(counts_path(w))).json()
+    for value in ("person", "assistant"):
+        page = await _page(w, f"&handled_by={value}")
+        assert page["counts"] == plain, value
+        assert (await w.admin.get(counts_path(w))).json() == plain
+    # The search reads the contact only: the words of a handled_by value find nothing by
+    # themselves, and the search narrows the filtered list like any other filter.
+    assert _names(items, await _ids(w, "&q=person")) == {"named"}
+    assert _names(items, await _ids(w, "&q=assistant")) == set()
+    assert _names(items, await _ids(w, "&q=Handled&handled_by=assistant")) == {"named"}
+    assert _names(items, await _ids(w, "&q=Handled&handled_by=person")) == set()
+
+
+async def test_handled_by_is_a_stored_filter_and_a_list_parameter() -> None:
+    assert QueueFilter(handled_by="person").handled_by == "person"
+    assert QueueFilter().handled_by is None
+    for bad in ("robot", "", "Person"):
+        with pytest.raises(ValidationError):
+            QueueFilter.model_validate({"handled_by": bad})
+    base: dict[str, Any] = {
+        "client_id": uuid4(),
+        "user_id": uuid4(),
+        "search": None,
+        "cursor": None,
+        "limit": 5,
+    }
+    assert list_params(QueueFilter(handled_by="assistant"), **base)["handled_by"] == "assistant"
+    assert list_params(QueueFilter(), **base)["handled_by"] is None
+    # It does not change which order is the default.
+    assert QueueFilter(handled_by="person").effective_order() == "activity"
+
+
 def _filter_block(order: str) -> str:
     text = (DB_SQL_DIR / "inbox" / f"list_queue_{order}.sql").read_text(encoding="utf-8")
     start, end = "-- queue filter: begin", "-- queue filter: end"
@@ -1217,6 +1351,7 @@ async def test_the_four_list_queries_share_one_filter_block() -> None:
     first = blocks["activity"]
     assert "console_chat_threads" in first and "console_chat_participants" in first
     assert "c.channel IN ('telegram', 'whatsapp')" in first
+    assert "%(handled_by)s::text" in first
     for order, block in blocks.items():
         assert block == first, order
     # csa_app reads contacts under row security and the ILIKE operators are not leakproof, so

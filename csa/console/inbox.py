@@ -502,6 +502,7 @@ def build_inbox_router() -> APIRouter:
         channel: Literal["telegram", "whatsapp"] | None = None,
         needs_review: bool = False,
         sender: Literal["known", "new"] | None = None,
+        handled_by: Literal["assistant", "person"] | None = None,
         q: Annotated[str | None, Query(max_length=64)] = None,
         state: Annotated[list[QueueState] | None, Query()] = None,
         assignee: Literal["me", "none"] | UUID | None = None,
@@ -531,6 +532,7 @@ def build_inbox_router() -> APIRouter:
                 channel=channel,
                 needs_review=needs_review,
                 sender=sender,
+                handled_by=handled_by,
                 q=q,
                 order=order,
             )

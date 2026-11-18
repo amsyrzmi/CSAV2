@@ -6,7 +6,8 @@
 -- Named parameters (NULL or false means "no filter"):
 --   client_id; channel; states, priorities, reasons, topics (text arrays); assignee (uuid; the
 --   actor's id for "me"); unassigned (bool); overdue (bool); waiting_over (minutes); needs_review
---   (bool: a live pending approval); sender ('known' or 'new'); like (escaped ILIKE pattern) and
+--   (bool: a live pending approval); sender ('known' or 'new'); handled_by ('assistant' or
+--   'person'); like (escaped ILIKE pattern) and
 --   digits (the query's digits) for the search; after_at, after_id (the cursor row;
 --   after_id NULL on the first page); limit.
 -- Shape: the inner query picks one page of conversations from public.conversations alone,
@@ -50,6 +51,11 @@ FROM (
       AND (%(priorities)s::text[] IS NULL OR c.priority = ANY (%(priorities)s::text[]))
       AND (%(reasons)s::text[] IS NULL OR c.queue_reason = ANY (%(reasons)s::text[]))
       AND (%(topics)s::text[] IS NULL OR c.topic = ANY (%(topics)s::text[]))
+      -- handled_by: 'person' is the human_muted flag (owned by support and the mute not ended),
+      -- 'assistant' is everything else; a bot escalation mutes the assistant for a day.
+      AND (%(handled_by)s::text IS NULL OR ((c.owned_by = 'human_support' AND
+           (c.ai_muted_until IS NULL OR c.ai_muted_until > now())) IS TRUE)
+           = (%(handled_by)s::text = 'person'))
       AND (NOT %(overdue)s::boolean OR (c.queue_status = 'needs_staff' AND c.due_at < now()))
       AND (%(waiting_over)s::integer IS NULL
            OR (c.queue_status = 'needs_staff'

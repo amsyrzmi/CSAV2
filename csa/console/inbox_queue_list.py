@@ -69,8 +69,11 @@ class InboxFilters(Contract):
     `state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many
     values as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no
     assignee) or a user id (any id is accepted: one that holds nothing matches nothing).
-    `overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first
-    when every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.
+    `handled_by` is ``person`` when the assistant is paused for the chat (``human_muted``: owned by
+    support and the mute not ended, which a bot escalation also sets for a day) and ``assistant``
+    otherwise. `overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is
+    due-first when every row in scope needs staff (`needs_staff_only`), newest activity first
+    otherwise.
     `order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only
     where they are the needs_staff rows.
     """
@@ -84,6 +87,7 @@ class InboxFilters(Contract):
     waiting_over: Annotated[int, Field(ge=1, le=WAITING_OVER_MAX)] | None = None
     channel: Literal["telegram", "whatsapp"] | None = None
     sender: Literal["known", "new"] | None = None
+    handled_by: Literal["assistant", "person"] | None = None
     order: QueueOrder | None = None
 
     @model_validator(mode="after")
@@ -161,6 +165,7 @@ def list_params(
         "waiting_over": flt.waiting_over,
         "needs_review": flt.needs_review,
         "sender": flt.sender,
+        "handled_by": flt.handled_by,
         "like": search.like if search else None,
         "digits": search.digits if search else None,
         "nulls": not flt.needs_staff_only(),
