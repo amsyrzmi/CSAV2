@@ -11,7 +11,6 @@ Inbox kinds registered into it, as the worker does at start-up.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -29,6 +28,7 @@ from csa.inbox_queue import transitions
 from csa.inbox_queue.reminders import (
     KINDS,
     SUBJECT_TYPE,
+    cycle_epoch,
     register_inbox_reminder_kinds,
     reminder_key,
     reminder_payload,
@@ -160,13 +160,6 @@ def _owner_exec(dsn: str, query: Any, params: tuple[Any, ...]) -> None:
         conn.execute(query, params)
 
 
-async def _next_second() -> None:
-    """Wait for the next whole second: a cycle key is in epoch seconds (plan 2a, decision 3), so
-    two cycles of one item that begin in the same second share one key (see the task report)."""
-    now = datetime.now(UTC)
-    await asyncio.sleep(1.05 - now.microsecond / 1_000_000)
-
-
 @pytest.fixture
 async def pool(app_dsn: str) -> AsyncIterator[AsyncConnectionPool]:
     async with db.build_pool(app_dsn, max_size=4) as made:
@@ -243,16 +236,20 @@ def test_another_handler_for_an_inbox_kind_is_refused(inbox_kinds: ReminderRegis
             register_inbox_reminder_kinds()
 
 
-def test_the_key_names_the_kind_the_conversation_and_the_cycle_in_epoch_seconds() -> None:
+def test_the_key_names_the_kind_the_conversation_and_the_cycle_in_epoch_microseconds() -> None:
     conversation = UUID("00000000-0000-4000-8000-0000000000aa")
     cycle = datetime(2030, 1, 1, 12, 0, 5, 999_999, tzinfo=UTC)
+    micros = 1_893_499_205_999_999  # 2030-01-01 12:00:05.999999 UTC
+    assert cycle_epoch(cycle) == micros
     assert reminder_key("inbox.overdue", conversation, cycle) == (
-        f"inbox.overdue:{conversation}:{int(cycle.replace(microsecond=0).timestamp())}"
+        f"inbox.overdue:{conversation}:{micros}"
     )
     assert reminder_payload(conversation, cycle) == {
         "conversation_id": str(conversation),
-        "cycle": int(cycle.replace(microsecond=0).timestamp()),
+        "cycle": micros,
     }
+    # The same second, another microsecond: another cycle.
+    assert cycle_epoch(cycle.replace(microsecond=1)) == micros - 999_998
     assert SUBJECT_TYPE == "conversation"
 
 
@@ -731,8 +728,6 @@ async def test_a_stale_claim_is_cleared_by_release_reassign_or_a_staff_action(
     t = _team(migrated_dsn)
     s, due = await _claimed(migrated_dsn, pool, t, t.staff_one)
     client, conversation = UUID(t.client_id), UUID(s.conversation_id)
-    if change == "assign":
-        await _next_second()  # a new claim is a new cycle only from the next second (now())
     async with tx(pool, t.client_id) as conn:
         if change == "unclaim":
             await transitions.unclaim(conn, client, conversation, actor_user_id=UUID(t.staff_one))

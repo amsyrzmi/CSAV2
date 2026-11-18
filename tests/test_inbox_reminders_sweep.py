@@ -10,7 +10,6 @@ queries on 50,000 conversations, 800 of them needing staff: one indexed read eac
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -25,6 +24,7 @@ from csa.inbox_queue import transitions
 from csa.inbox_queue.reminders import (
     SUBJECT_TYPE,
     SWEEP_QUERIES,
+    cycle_epoch,
     register_inbox_reminder_kinds,
     reminder_key,
     schedule_missing,
@@ -58,13 +58,6 @@ pytestmark = requires_docker
 
 NONE = {"inbox.overdue": 0, "inbox.stale_claim": 0, "inbox.snooze_due": 0}
 TARGETS = {"urgent": 15, "high": 60, "normal": 240, "low": 1440}
-
-
-async def _next_second() -> None:
-    """Wait for the next whole second: a cycle key is in epoch seconds (plan 2a, decision 3), so
-    two cycles of one item that begin in the same second share one key (see the task report)."""
-    now = datetime.now(UTC)
-    await asyncio.sleep(1.05 - now.microsecond / 1_000_000)
 
 
 @pytest.fixture
@@ -123,7 +116,7 @@ async def test_a_trigger_made_item_gets_one_overdue_reminder_and_a_second_sweep_
         )
         assert reminder["payload"] == {
             "conversation_id": s.conversation_id,
-            "cycle": int(cycle.replace(microsecond=0).timestamp()),
+            "cycle": cycle_epoch(cycle),
         }
     assert await _sweep(pool, c, now + timedelta(minutes=1)) == NONE
     assert len(_reminders(migrated_dsn, c)) == 2
@@ -226,12 +219,64 @@ async def test_a_finished_cycle_is_not_rescheduled_and_a_new_cycle_gets_a_new_ke
             conn, UUID(c), UUID(s.conversation_id), actor_user_id=UUID(actor), seen_customer_at=None
         )
     assert await _sweep(pool, c, now) == NONE  # resolved: not in Needs us
-    await _next_second()  # a new clock is a new cycle only from the next second
     assert _enter(app_dsn, s, "manual")  # back in Needs us with a new clock
     assert (await _sweep(pool, c, now + timedelta(minutes=1)))["inbox.overdue"] == 1
     old, new = _of(migrated_dsn, s, "inbox.overdue")
     assert old["id"] == first["id"] and old["state"] == "done"
     assert new["state"] == "scheduled" and new["dedupe_key"] != old["dedupe_key"]
+
+
+async def test_the_sql_and_python_cycle_values_are_identical(migrated_dsn: str) -> None:
+    """The sweep's SQL and reminder_key make the same key text (Task 6 builds keys in Python)."""
+    times = [
+        datetime(2030, 1, 1, 12, 0, 5, 999_999, tzinfo=UTC),
+        datetime(2030, 1, 1, 12, 0, 5, 1, tzinfo=UTC),
+        datetime(2026, 11, 18, 3, 4, 5, 123_457, tzinfo=UTC),
+        datetime(2026, 11, 18, 3, 4, 5, tzinfo=UTC),
+        datetime(1969, 12, 31, 23, 59, 59, 500_000, tzinfo=UTC),
+        datetime.now(UTC),
+    ]
+    with _owner(migrated_dsn) as conn:
+        for at in times:
+            [row] = conn.execute(
+                "SELECT (extract(epoch FROM %s::timestamptz) * 1000000)::bigint::text AS n", (at,)
+            ).fetchall()
+            assert row["n"] == str(cycle_epoch(at)), at
+
+
+async def test_two_cycles_in_the_same_second_get_two_overdue_reminders(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    first = datetime.now(UTC).replace(microsecond=100_000) - timedelta(minutes=5)
+    s = _seed(
+        migrated_dsn,
+        c,
+        owned_by="human_support",
+        **_needs_staff("customer_message"),
+    )
+
+    def clock(since: datetime) -> None:
+        with _owner(migrated_dsn) as conn:
+            conn.execute(
+                "UPDATE conversations SET needs_staff_since = %s, due_at = %s WHERE id = %s",
+                (since, since + timedelta(minutes=240), s.conversation_id),
+            )
+
+    clock(first)
+    now = datetime.now(UTC)
+    assert (await _sweep(pool, c, now))["inbox.overdue"] == 1
+    with _owner(migrated_dsn) as conn:  # the first cycle's reminder was cancelled, as Task 6 does
+        conn.execute("UPDATE reminders SET state = 'cancelled' WHERE client_id = %s", (c,))
+    second = first.replace(microsecond=600_000)  # the same second, a new clock
+    clock(second)
+    assert (await _sweep(pool, c, now))["inbox.overdue"] == 1
+    old, new = _of(migrated_dsn, s, "inbox.overdue")
+    assert old["state"] == "cancelled" and new["state"] == "scheduled"
+    conversation = UUID(s.conversation_id)
+    assert old["dedupe_key"] == reminder_key("inbox.overdue", conversation, first)
+    assert new["dedupe_key"] == reminder_key("inbox.overdue", conversation, second)
+    assert new["due_at"] == second + timedelta(minutes=240)
 
 
 async def test_the_sweep_is_bounded_by_the_batch_size(

@@ -2,7 +2,7 @@
 -- items whose inbox.overdue reminder for the current cycle is missing, or is still unfired and
 -- due at the wrong time after a priority change. csa.inbox_queue.reminders.schedule_missing
 -- schedules (or moves) each row it returns, so a returned row is not returned again.
--- The cycle key is 'inbox.overdue:<conversation id>:<needs_staff_since in epoch seconds>'
+-- The cycle key is 'inbox.overdue:<conversation id>:<needs_staff_since in epoch microseconds>'
 -- (csa.inbox_queue.reminders.reminder_key); a cycle with any reminder row (scheduled, fired,
 -- cancelled or done) is never scheduled again.
 -- The due time is the item's due_at while that is in the future, else the now parameter plus the
@@ -23,7 +23,7 @@ LEFT JOIN LATERAL (
     FROM public.reminders r
     WHERE r.client_id = c.client_id
       AND r.dedupe_key = 'inbox.overdue:' || c.id::text || ':'
-          || floor(extract(epoch FROM c.needs_staff_since))::bigint::text
+          || (extract(epoch FROM c.needs_staff_since) * 1000000)::bigint::text
     OFFSET 0
 ) r ON true
 WHERE c.client_id = %(client_id)s

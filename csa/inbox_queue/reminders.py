@@ -4,8 +4,9 @@ Five kinds, registered with :mod:`csa.reminders` when the worker starts
 (:func:`register_inbox_reminder_kinds`); ``inbox.assigned`` is sent at once by the assignment
 and has no reminder row. A reminder's subject is the conversation (``SUBJECT_TYPE``, the id as
 text); its payload holds the conversation id and the cycle only, and its key is
-``<kind>:<conversation id>:<cycle in epoch seconds>`` (:func:`reminder_key`), the cycle being the
-time the item's current wait began:
+``<kind>:<conversation id>:<cycle in epoch microseconds>`` (:func:`reminder_key`), the cycle being
+the time the item's current wait began (to the microsecond, so two cycles that begin in the same
+second are two reminders):
 
 - ``inbox.overdue`` (cycle ``needs_staff_since``): the item waits past its response target. The
   holder when the team still has them, else the whole team; also the company staff chat. From
@@ -78,8 +79,12 @@ _WAKE_TRIES = 5
 
 
 def cycle_epoch(cycle: datetime) -> int:
-    """A cycle time as whole UTC epoch seconds (floored), as the sweep's SQL writes it."""
-    return (cycle - _EPOCH) // timedelta(seconds=1)
+    """A cycle time as UTC epoch microseconds, exactly as the sweep's SQL writes it.
+
+    ``(extract(epoch FROM ts) * 1000000)::bigint`` in SQL; both are exact (a timestamptz holds
+    microseconds), so a key made here and one made by the sweep are the same text.
+    """
+    return (cycle - _EPOCH) // timedelta(microseconds=1)
 
 
 def reminder_key(kind: str, conversation_id: UUID, cycle: datetime) -> str:
