@@ -15,6 +15,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import time
@@ -204,6 +205,19 @@ printf 'gh\t%s\n' "$*" >> "$STUB_LOG"
 printf '%s\n' "$STUB_TIP"
 """
 
+# The stat stub stands in for the real stat, which the entry script calls by bare name. With
+# $STUB_STAT_FAIL set to a format (%u or %a), a read of a *.conf path in that format fails; with
+# $STUB_STAT_UID set, the owner of a *.conf path reads as that uid; otherwise it delegates to the
+# real stat.
+STAT_STUB = r"""#!/bin/bash
+[[ "${STUB_STAT_FAIL:-}" != "$2" || "${@: -1}" != *.conf ]] || exit 1
+if [[ -n "${STUB_STAT_UID:-}" && "$1 $2" == "-c %u" && "${@: -1}" == *.conf ]]; then
+    echo "$STUB_STAT_UID"
+    exit 0
+fi
+exec /usr/bin/stat "$@"
+"""
+
 
 ENTRY_NAMES = {"production": "csa-prod-deploy", "staging": "csa-staging-deploy"}
 
@@ -230,6 +244,7 @@ class Harness:
         self._write_stub(self.bin / "git", GIT_STUB)
         self._write_stub(self.bin / "aws", AWS_STUB)
         self._write_stub(self.bin / "gh", GH_STUB)
+        self._write_stub(self.bin / "stat", STAT_STUB)
         self._write_stub(self.python, PYTHON_STUB)
         self.sbin = tmp_path / "sbin"
         self.sbin.mkdir()
@@ -835,6 +850,84 @@ def test_entry_refuses_a_wrong_user_before_taking_the_lock(harness: Harness) -> 
     assert harness.calls() == []
     assert not harness.lock.exists()
     assert not harness.log_dir.exists()
+
+
+def test_entry_refuses_an_unreadable_config_with_78(harness: Harness) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode 000 file")
+    harness.config.chmod(0)
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert f"csa-prod-deploy: the config {harness.config} is not readable".encode() in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+@pytest.mark.parametrize("format_", ["%u", "%a"])
+def test_entry_refuses_with_78_when_stat_fails(harness: Harness, format_: str) -> None:
+    result = harness.run(["plan", SHA, "", ""], STUB_STAT_FAIL=format_)
+
+    assert result.returncode == 78
+    assert b"csa-prod-deploy: cannot stat the config" in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+def test_entry_refuses_a_config_owned_by_someone_else(harness: Harness) -> None:
+    control = harness.run(["plan", SHA, "", ""], STUB_STAT_UID="")
+    assert control.returncode == 0, control.stderr
+    harness.log.unlink()
+    harness.lock.unlink()
+    shutil.rmtree(harness.log_dir)
+
+    result = harness.run(["plan", SHA, "", ""], STUB_STAT_UID="4242")
+
+    assert result.returncode == 78
+    assert b"is not owned by the owner of this script" in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+def test_entry_refuses_a_crlf_config_without_echoing_a_value(harness: Harness) -> None:
+    harness.write_config_text(harness.config.read_text().replace("\n", "\r\n"))
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert b"the config value of " in result.stderr
+    assert str(harness.checkout).encode() not in result.stderr + result.stdout
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+def test_entry_checks_the_config_before_any_argument(harness: Harness) -> None:
+    harness.write_config_text(harness.config.read_text() + "EXTRA=/x\n")
+
+    result = harness.run(["bogus"])
+
+    assert result.returncode == 78
+    assert b"usage" not in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+
+
+def test_entry_checks_the_user_before_any_argument(harness: Harness) -> None:
+    actual = pwd.getpwuid(os.geteuid()).pw_name
+    harness.write_config(DEPLOY_USER="some-other-user")
+
+    result = harness.run(["bogus"])
+
+    assert result.returncode == 64
+    assert f"csa-prod-deploy: run as some-other-user, not {actual}".encode() in result.stderr
+    assert b"usage" not in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
 
 
 def test_staging_entry_runs_the_staging_target_without_a_host_digest(

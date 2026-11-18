@@ -10,9 +10,9 @@
 # Production's apply needs the 12 hex host digest; staging takes none (its apply refuses one).
 #
 # Every path and the target come from the config file installed next to this script, "<script>.conf":
-# a root-owned regular file (not a symlink, not writable by group or others), owned by the uid that
-# owns this script. It is parsed line by line and never sourced. Its lines are blank, "#" comments,
-# or KEY=value, with exactly these six keys, each required and given once:
+# a regular file (not a symlink, not writable by group or others), owned by the uid that owns this
+# script (root once installed). It is parsed line by line and never sourced. Its lines are blank,
+# "#" comments, or KEY=value, with exactly these six keys, each required and given once:
 #   TARGET       staging or production
 #   DEPLOY_USER  the only user allowed to run this script
 #   CHECKOUT     the git checkout the rollout runs from
@@ -53,10 +53,12 @@ conf="${self}.conf"
 [[ -e "$conf" || -L "$conf" ]] || bad_config "no config at $conf"
 [[ ! -L "$conf" ]] || bad_config "the config $conf is a symlink"
 [[ -f "$conf" ]] || bad_config "the config $conf is not a regular file"
-self_owner="$(stat -c %u -- "$self")"
-[[ "$(stat -c %u -- "$conf")" == "$self_owner" ]] ||
+[[ -r "$conf" ]] || bad_config "the config $conf is not readable"
+self_owner="$(stat -c %u -- "$self")" || bad_config "cannot stat the config"
+conf_owner="$(stat -c %u -- "$conf")" || bad_config "cannot stat the config"
+[[ "$conf_owner" == "$self_owner" ]] ||
     bad_config "the config $conf is not owned by the owner of this script"
-conf_mode="$(stat -c %a -- "$conf")"
+conf_mode="$(stat -c %a -- "$conf")" || bad_config "cannot stat the config"
 (((8#$conf_mode & 8#022) == 0)) || bad_config "the config $conf is writable by group or others"
 
 declare -A config=()
