@@ -352,10 +352,42 @@ async def test_resolving_after_the_first_repeat_stops_the_rest(
             actor_user_id=UUID(t.admin),
             seen_customer_at=None,
         )
+    # Resolve cancels the reminder in its own transaction (Task 6); nothing is left to fire.
+    assert _reminder(migrated_dsn, t.client_id, "inbox.overdue", s)["state"] == "cancelled"
     stats = await _fire(pool, t.client_id, at + timedelta(minutes=120))
-    assert stats["dropped"] == 1 and stats["fired"] == 0
+    assert stats["dropped"] == 0 and stats["fired"] == 0
     assert len(_console(migrated_dsn, t.client_id, "inbox.overdue")) == 6
-    assert _reminder(migrated_dsn, t.client_id, "inbox.overdue", s)["state"] == "done"
+
+
+@requires_docker
+async def test_a_first_fire_before_a_lowered_due_time_waits_for_it_without_counting(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    t = _team(migrated_dsn)
+    _target(migrated_dsn, t.client_id)
+    s, due = await _overdue_item(migrated_dsn, pool, t)
+    # The priority is lowered before the sweep could move the reminder: the item is due later.
+    async with tx(pool, t.client_id) as conn:
+        await transitions.set_priority(
+            conn,
+            UUID(t.client_id),
+            UUID(s.conversation_id),
+            priority="low",
+            actor_user_id=UUID(t.admin),
+        )
+    later: datetime = _state(migrated_dsn, s)["due_at"]
+    assert later > due + timedelta(hours=1)
+    await _fire(pool, t.client_id, due + timedelta(seconds=1))
+    assert _console(migrated_dsn, t.client_id, "inbox.overdue") == []
+    assert _chat(migrated_dsn, t.client_id) == []
+    waiting = _reminder(migrated_dsn, t.client_id, "inbox.overdue", s)
+    assert waiting["state"] == "scheduled" and waiting["due_at"] == later
+    assert waiting["fire_count"] == 0  # a wait is not a fire: the first notice is still fire 1
+    assert (await _fire(pool, t.client_id, later + timedelta(seconds=1)))["fired"] == 1
+    rows = _console(migrated_dsn, t.client_id, "inbox.overdue")
+    assert _users(rows) == t.everyone
+    assert {(r["priority"], r["params"]["repeat"]) for r in rows} == {("low", 1)}
+    assert _reminder(migrated_dsn, t.client_id, "inbox.overdue", s)["fire_count"] == 1
 
 
 @requires_docker
@@ -677,6 +709,34 @@ async def test_wake_one_wakes_a_due_item_once_and_refuses_others(
     assert _state(migrated_dsn, later)["queue_status"] == "snoozed"
 
 
+@requires_docker
+async def test_a_snooze_reminder_ahead_of_the_database_clock_retries_and_gives_up_after_five(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    t = _team(migrated_dsn)
+    until = datetime.now(UTC) + timedelta(hours=1)  # not yet due by the database clock
+    s = _seed(
+        migrated_dsn,
+        t.client_id,
+        owned_by="human_support",
+        queue_status="snoozed",
+        snoozed_until=until,
+        assignee_user_id=t.staff_two,
+        claimed_at=datetime.now(UTC),
+    )
+    await _sweep(pool, t.client_id, datetime.now(UTC))
+    at = until + timedelta(seconds=1)  # due by the job clock
+    for attempt in range(1, 5):
+        assert (await _fire(pool, t.client_id, at))["fired"] == 1, attempt
+        retry = _reminder(migrated_dsn, t.client_id, "inbox.snooze_due", s)
+        assert retry["state"] == "scheduled" and retry["due_at"] == at + timedelta(minutes=1)
+        at += timedelta(minutes=1)
+    assert (await _fire(pool, t.client_id, at))["dropped"] == 1  # the fifth try gives up
+    assert _reminder(migrated_dsn, t.client_id, "inbox.snooze_due", s)["state"] == "done"
+    assert _state(migrated_dsn, s)["queue_status"] == "snoozed"  # the wake job still wakes it
+    assert _console(migrated_dsn, t.client_id, "inbox.snooze_due") == []
+
+
 # --- inbox.stale_claim ----------------------------------------------------------------------------
 
 
@@ -751,7 +811,24 @@ async def test_a_stale_claim_is_cleared_by_release_reassign_or_a_staff_action(
             " ORDER BY created_at LIMIT 1",
             (t.client_id,),
         ).fetchall()
-    assert first["state"] == "done"
+    # Release and reassign cancel it (Task 6); a staff action leaves it to the handler's re-check.
+    assert first["state"] == ("done" if change == "topic" else "cancelled")
+
+
+@requires_docker
+async def test_a_stale_claim_whose_holder_left_goes_straight_to_the_admins(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    t = _team(migrated_dsn)
+    s, due = await _claimed(migrated_dsn, pool, t, t.staff_one)
+    _owner_exec(
+        migrated_dsn,
+        "UPDATE console_memberships SET is_enabled = false WHERE user_id = %s",
+        (t.staff_one,),
+    )
+    await _fire(pool, t.client_id, due + timedelta(seconds=1))  # the overdue one fires too
+    assert _users(_console(migrated_dsn, t.client_id, "inbox.stale_claim")) == [t.admin]
+    assert _reminder(migrated_dsn, t.client_id, "inbox.stale_claim", s)["state"] == "done"
 
 
 @requires_docker
@@ -772,7 +849,11 @@ async def test_stale_claim_hours_zero_turns_it_off(
 async def _replied(
     dsn: str, pool: AsyncConnectionPool, t: Team, *, owned_by: str = "human_support"
 ) -> tuple[Seeded, datetime]:
-    """Person 1 answered: waiting on the customer, both prompts scheduled as Task 6 will."""
+    """Person 1 answered: waiting on the customer, both prompts scheduled.
+
+    ``replied()`` schedules them (Task 6; the handback only while a person holds the chat); the
+    explicit schedule below is the same upsert, and gives an AI-owned chat a handback to drop.
+    """
     s = _seed(
         dsn,
         t.client_id,
@@ -836,7 +917,7 @@ async def test_follow_up_drops_when_the_customer_returned_the_item_to_the_bot(
 
 
 @requires_docker
-async def test_follow_up_and_handback_drop_after_resolve(
+async def test_follow_up_and_handback_are_cancelled_by_resolve(
     migrated_dsn: str, pool: AsyncConnectionPool
 ) -> None:
     t = _team(migrated_dsn)
@@ -849,8 +930,10 @@ async def test_follow_up_and_handback_drop_after_resolve(
             actor_user_id=UUID(t.staff_one),
             seen_customer_at=None,
         )
+    for kind in ("inbox.follow_up", "inbox.handback"):
+        assert _reminder(migrated_dsn, t.client_id, kind, s)["state"] == "cancelled"
     stats = await _fire(pool, t.client_id, replied_at + timedelta(hours=49))
-    assert stats["dropped"] == 2 and stats["fired"] == 0
+    assert stats["dropped"] == 0 and stats["fired"] == 0
 
 
 @requires_docker

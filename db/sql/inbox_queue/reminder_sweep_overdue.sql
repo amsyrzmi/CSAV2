@@ -9,7 +9,8 @@
 -- response target of its priority (a fresh clock, no burst for old items). An unfired reminder
 -- moves when the item's due_at is in the future and differs, or when it is past and the fresh
 -- clock of the item's priority is sooner than the reminder (a priority rise on an old item);
--- otherwise it stays.
+-- otherwise it stays. A reminder waiting out a failure's backoff (attempts > 0) is never moved,
+-- so the sweep does not pull a failing handler earlier.
 -- Read along conversations_queue_due_idx (client_id, due_at, id) WHERE needs_staff: no sort, and
 -- the scan stops at the limit parameter. The reminder is one probe of the (client_id, dedupe_key)
 -- key per row: the OFFSET 0 in the lateral keeps it a per-row subquery (without it the planner
@@ -19,7 +20,7 @@
 SELECT c.id, c.priority, c.needs_staff_since AS cycle, c.due_at
 FROM public.conversations c
 LEFT JOIN LATERAL (
-    SELECT r.id, r.due_at, r.state, r.fire_count
+    SELECT r.id, r.due_at, r.state, r.fire_count, r.attempts
     FROM public.reminders r
     WHERE r.client_id = c.client_id
       AND r.dedupe_key = 'inbox.overdue:' || c.id::text || ':'
@@ -33,7 +34,7 @@ WHERE c.client_id = %(client_id)s
   AND NOT EXISTS (SELECT 1 FROM public.console_chat_participants p
                   WHERE p.contact_id = c.contact_id OFFSET 0)
   AND (r.id IS NULL
-       OR (r.state = 'scheduled' AND r.fire_count = 0
+       OR (r.state = 'scheduled' AND r.fire_count = 0 AND r.attempts = 0
            AND CASE WHEN c.due_at > %(now)s::timestamptz THEN r.due_at <> c.due_at
                     ELSE r.due_at > %(now)s::timestamptz + make_interval(mins => CASE c.priority
                         WHEN 'urgent' THEN %(target_urgent)s::int

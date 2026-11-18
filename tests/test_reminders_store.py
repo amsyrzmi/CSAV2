@@ -6,6 +6,7 @@ so row security and grants are part of every check. Reading back goes through th
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -192,7 +193,67 @@ async def test_another_companys_reminder_is_never_touched(migrated_dsn: str, app
     assert _row(migrated_dsn, mine)["state"] == "cancelled"
 
 
+@requires_docker
+async def test_cancel_skip_locked_cancels_the_kinds_but_the_kept_keys(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    a = await _schedule(app_dsn, c, kind="k.a", subject_id="s1", dedupe_key="1")
+    b = await _schedule(app_dsn, c, kind="k.b", subject_id="s1", dedupe_key="2")
+    kept = await _schedule(app_dsn, c, kind="k.b", subject_id="s1", dedupe_key="3")
+    other_kind = await _schedule(app_dsn, c, kind="k.c", subject_id="s1", dedupe_key="4")
+    other_subject = await _schedule(app_dsn, c, kind="k.a", subject_id="s2", dedupe_key="5")
+    done = await _schedule(app_dsn, c, kind="k.a", subject_id="s1", dedupe_key="6")
+    with _owner(migrated_dsn) as conn:
+        conn.execute("UPDATE reminders SET state = 'done' WHERE id = %s", (done,))
+    cancelled = await _act(
+        app_dsn, c, reminders.cancel_skip_locked, ["k.a", "k.b"], "thing", "s1", keep=["3"]
+    )
+    assert cancelled == 2
+    states = {
+        name: _row(migrated_dsn, rid)["state"]
+        for name, rid in {
+            "a": a,
+            "b": b,
+            "kept": kept,
+            "other_kind": other_kind,
+            "other_subject": other_subject,
+            "done": done,
+        }.items()
+    }
+    assert states == {
+        "a": "cancelled",
+        "b": "cancelled",
+        "kept": "scheduled",
+        "other_kind": "scheduled",
+        "other_subject": "scheduled",
+        "done": "done",
+    }
+    assert await _act(app_dsn, c, reminders.cancel_skip_locked, ["k.a"], "thing", "s1") == 0
+
+
+@requires_docker
+async def test_cancel_skip_locked_skips_a_row_another_transaction_holds(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    held = await _schedule(app_dsn, c, kind="k.a", subject_id="s1", dedupe_key="1")
+    free = await _schedule(app_dsn, c, kind="k.a", subject_id="s1", dedupe_key="2")
+    async with await psycopg.AsyncConnection.connect(app_dsn) as holder:
+        async with holder.transaction():
+            await holder.execute("SELECT set_config('app.client_id', %s, true)", (c,))
+            await holder.execute("SELECT id FROM reminders WHERE id = %s FOR UPDATE", (held,))
+            cancelled = await asyncio.wait_for(
+                _act(app_dsn, c, reminders.cancel_skip_locked, ["k.a"], "thing", "s1"),
+                timeout=10,
+            )
+            assert cancelled == 1
+    assert _row(migrated_dsn, held)["state"] == "scheduled"
+    assert _row(migrated_dsn, free)["state"] == "cancelled"
+
+
 def test_the_package_exports_schedule_and_cancel() -> None:
+    assert callable(reminders.cancel_skip_locked)
     assert callable(reminders.schedule) and callable(reminders.cancel)
 
 

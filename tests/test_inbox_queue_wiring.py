@@ -8,6 +8,7 @@ their own. Disposable database, synthetic data only.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -30,6 +31,8 @@ from tests.conftest import requires_docker
 from tests.test_console_inbox import held, path, seed, takeover
 from tests.test_console_services import activate
 from tests.test_console_sessions import SessionWorld
+from tests.test_inbox_queue_actions_api import bulk_path, queue_path
+from tests.test_inbox_queue_api import _item, _named
 
 pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
@@ -704,3 +707,64 @@ async def test_automated_messages_leave_a_needs_staff_item_alone(sessions: Sessi
     assert reviewed[0]["n"] == 3
     assert await state(w, conversation) == before
     assert await events(w, conversation) == history
+
+
+# --- inbox.assigned through the routes (plan 2a, task 6) ------------------------------------------
+
+
+async def assigned_rows(w: SessionWorld) -> list[dict[str, Any]]:
+    return await w.q(
+        "SELECT user_id::text AS user_id, dedupe_key FROM console_notifications"
+        " WHERE client_id = %s AND kind = 'inbox.assigned' ORDER BY created_at, dedupe_key",
+        UUID(w.tenants[0]),
+    )
+
+
+async def test_scenario_11_staff_cannot_assign_and_an_admin_assignment_is_told_once(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    staff_client, _ = await w.member()
+    target = await _named(w, "Ivy Synthetic")
+    item = await _item(w, state="needs_staff")
+    before = await state(w, item.id)
+    body = {
+        "request_key": str(uuid4()),
+        "expected_version": before["inbox_version"],
+        "assignee_id": target,
+    }
+    refused = await w.mutate(staff_client, queue_path(w, item.id, "assign"), body)
+    assert refused.status_code == 403, refused.text
+    assert await state(w, item.id) == before
+    assert await assigned_rows(w) == []
+    # A tenant admin can; the assignee is told once, and a replay of the request sends nothing.
+    admin_client, _ = await w.member(role="tenant_admin")
+    body["request_key"] = str(uuid4())
+    done = await w.mutate(admin_client, queue_path(w, item.id, "assign"), body)
+    assert done.status_code == 200, done.text
+    replay = await w.mutate(admin_client, queue_path(w, item.id, "assign"), body)
+    assert replay.status_code == 200 and replay.json() == done.json()
+    [row] = await assigned_rows(w)
+    assert row["user_id"] == target
+    assert row["dedupe_key"].startswith(f"inbox.assigned:{item.id}:")
+
+
+async def test_a_bulk_assign_of_three_items_makes_three_rows(sessions: SessionWorld) -> None:
+    w = sessions
+    target = await _named(w, "Jay Synthetic")
+    items = [(await _item(w, state="needs_staff")).id for _ in range(3)]
+    body = {
+        "request_key": str(uuid4()),
+        "action": "assign",
+        "ids": items,
+        "seen_at": datetime.now(UTC).isoformat(),
+        "assignee_id": target,
+    }
+    response = await w.mutate(w.admin, bulk_path(w), body)
+    assert response.status_code == 200, response.text
+    assert {r["outcome"] for r in response.json()["results"]} == {"done"}
+    replay = await w.mutate(w.admin, bulk_path(w), body)
+    assert replay.status_code == 200 and replay.json() == response.json()
+    rows = await assigned_rows(w)
+    assert [r["user_id"] for r in rows] == [target] * 3
+    assert sorted(r["dedupe_key"].split(":")[1] for r in rows) == sorted(items)

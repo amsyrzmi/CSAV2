@@ -16,6 +16,10 @@ A kind with no handler in this process is not lost: an older worker during a rol
 a process that never registered the kind, only pushes it ``UNKNOWN_KIND_RETRY`` ahead with
 ``last_error = 'unknown kind'`` (no attempt counted), so a worker that knows the kind fires it.
 
+A decision with a ``next_due_at`` and no notices is a wait, not a fire: the row moves to that time
+and its ``fire_count`` and ``last_fired_at`` stay, so the next notice is still the fire it would
+have been (a handler that finds its subject not yet due says so this way).
+
 A notification's key is ``<reminder id>:<fire number>`` (a second notice in the same decision
 adds ``:<index>``). A worker that dies after delivering and before committing leaves the row
 scheduled with the same ``fire_count``, so the replay delivers with the same key and the
@@ -122,9 +126,10 @@ async def fire_due(
 ) -> dict[str, int]:
     """Fire up to ``batch_size`` of the company's due reminders, oldest first, and count them.
 
-    ``fired``: the handler acted (delivered, or asked to fire again). ``dropped``: an empty
-    decision. ``failed``: raised (or caught a database error, or hung), will retry. ``dead``:
-    failed for the last time. ``unknown``: no handler for the kind here, pushed ahead.
+    ``fired``: the handler acted (delivered, asked to fire again, or asked to wait).
+    ``dropped``: an empty decision. ``failed``: raised (or caught a database error, or hung), will
+    retry. ``dead``: failed for the last time. ``unknown``: no handler for the kind here, pushed
+    ahead.
     ``handlers`` defaults to the process registry and ``deliver`` to :func:`deliver_notice`
     (``notify_people``).
     """
@@ -229,7 +234,7 @@ async def _fire_one(
             **ids,
             "state": "done" if decision.next_due_at is None else "scheduled",
             "due_at": decision.next_due_at,
-            "fired": 1,
+            "fired": 1 if decision.notices else 0,  # no notice and a next time: a wait
             "last_error": None,
         },
         conn=conn,

@@ -15,7 +15,7 @@ from csa.reminders.registry import (
     ReminderRegistry,
     register_kind,
 )
-from csa.reminders.store import cancel, schedule
+from csa.reminders.store import cancel, cancel_skip_locked, schedule
 
 __all__ = [
     "Decision",
@@ -25,6 +25,7 @@ __all__ = [
     "ReminderHandler",
     "ReminderRegistry",
     "cancel",
+    "cancel_skip_locked",
     "fire_due",
     "register_kind",
     "schedule",

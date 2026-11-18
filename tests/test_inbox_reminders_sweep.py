@@ -200,6 +200,35 @@ async def test_a_priority_rise_moves_a_scheduled_reminder_and_not_a_fired_one(
     assert await _sweep(pool, c, later + timedelta(minutes=1)) == NONE
 
 
+async def test_a_reminder_in_failure_backoff_is_not_moved_earlier(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    admin = member(migrated_dsn, c, "tenant_admin")
+    s = _seed(
+        migrated_dsn, c, owned_by="human_support", **_needs_staff("customer_message", "normal", 5)
+    )
+    now = datetime.now(UTC)
+    assert await _sweep(pool, c, now) == _counts(overdue=1)
+    # Its handler failed once and it waits for its backoff (fire.py: attempts 1, a minute later).
+    backoff = now + timedelta(minutes=1)
+    with _owner(migrated_dsn) as conn:
+        conn.execute(
+            "UPDATE reminders SET attempts = 1, last_error = 'RuntimeError', due_at = %s"
+            " WHERE client_id = %s AND subject_id = %s",
+            (backoff, c, s.conversation_id),
+        )
+    async with tx(pool, c) as conn:
+        await transitions.set_priority(
+            conn, UUID(c), UUID(s.conversation_id), priority="urgent", actor_user_id=UUID(admin)
+        )
+    item = _state(migrated_dsn, s)
+    assert item["due_at"] > now and item["due_at"] != backoff  # it would move without the rule
+    assert await _sweep(pool, c, now) == NONE
+    [reminder] = _of(migrated_dsn, s, "inbox.overdue")
+    assert reminder["due_at"] == backoff and reminder["attempts"] == 1
+
+
 async def test_a_finished_cycle_is_not_rescheduled_and_a_new_cycle_gets_a_new_key(
     migrated_dsn: str, app_dsn: str, pool: AsyncConnectionPool
 ) -> None:

@@ -44,8 +44,9 @@ class Decision:
 
     ``notices`` are delivered now. ``next_due_at`` set means fire again then (the row stays
     scheduled and its ``fire_count`` goes up); ``None`` means the reminder is finished (``done``).
-    An empty decision, no notices and no ``next_due_at``, drops the reminder silently: its
-    subject moved on.
+    ``next_due_at`` with no notices is a wait: the row moves and ``fire_count`` stays, so the next
+    notice is still the fire it would have been. An empty decision, no notices and no
+    ``next_due_at``, drops the reminder silently: its subject moved on.
     """
 
     notices: tuple[Notice, ...] = ()

@@ -205,6 +205,33 @@ async def test_a_next_due_at_reschedules_and_counts_the_fire(
 
 
 @requires_docker
+async def test_a_next_due_at_without_notices_waits_and_counts_no_fire(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    made = _put(migrated_dsn, c)
+    later = NOW + timedelta(hours=2)
+
+    async def handler(ctx: HandlerContext) -> Decision:
+        if ctx.now < later:
+            return Decision(next_due_at=later)  # not yet: wait, nothing sent
+        return Decision(notices=(_notice(),))
+
+    handlers = _handlers("demo.due", handler)
+    sent = Recorder()
+    ran = await fire.fire_due(pool, uuid.UUID(c), FakeClock(NOW), handlers=handlers, deliver=sent)
+    assert ran == _stats(fired=1) and sent.calls == []
+    row = _row(migrated_dsn, made)
+    assert row["state"] == "scheduled" and row["due_at"] == later
+    assert row["fire_count"] == 0 and row["last_fired_at"] is None
+    ran = await fire.fire_due(pool, uuid.UUID(c), FakeClock(later), handlers=handlers, deliver=sent)
+    assert ran == _stats(fired=1)
+    assert sent.keys == [f"{made}:1"]  # the first notice is still fire 1
+    row = _row(migrated_dsn, made)
+    assert row["state"] == "done" and row["fire_count"] == 1 and row["last_fired_at"] == later
+
+
+@requires_docker
 async def test_an_empty_decision_is_dropped_silently(
     migrated_dsn: str, pool: AsyncConnectionPool
 ) -> None:
