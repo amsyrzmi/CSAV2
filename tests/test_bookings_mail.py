@@ -27,7 +27,7 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 pytest_plugins = ["tests.test_console_sessions"]
 
 SENDER = "FourStacks <no-reply@fourstacks.my>"
-BRAND = "Kedai Mawar Synthetic"
+BRAND = "Kedai Contoh Synthetic"
 ADDRESS = "12 Jalan Contoh, Kuala Lumpur"
 # 02:00 UTC is 10:00 in Kuala Lumpur, inside the default working day.
 TEN_KL = at(2)

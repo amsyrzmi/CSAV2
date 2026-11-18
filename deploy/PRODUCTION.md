@@ -329,7 +329,12 @@ ping status, step 2 (registration). It never verifies step 1: the node role is t
 `activate`. It reports
 `ok`, `missing` or `differs` per item and exits 0 only when everything is `ok`. It does not
 replace reading the steps, and never run its `apply` mode against production without the owner's
-decision.
+decision. `--subject` may be repeated, and production's live roles trust several subjects, so
+`production check` must be given all of them (and `production apply` is never run with fewer).
+`production apply` refuses to remove a subject that a live role trusts unless it is given
+`--allow-subject-removal`. `apply` replaces the whole trust document of a role, not only its
+subject: any extra statement or condition in a live trust is overwritten, and `check` reports it
+as `differs`.
 
 ### 1. AWS (CloudShell, admin login): the agent's service role and an activation
 
@@ -394,6 +399,8 @@ aws ssm delete-activation --region "$REGION" --activation-id <ActivationId from 
 The plan role trusts only the `production-plan` environment of this repository and may send only
 the plan document; the apply role trusts only `production` and may send only the apply document.
 Both may send to the one instance only, and neither has any other AWS access.
+If the roles already trust several subjects, do not run the manual commands below as written (they
+fill one subject): use `deploy/aws/setup-target.sh production check` and `apply` with every subject instead.
 
 The trust policies name the token's subject, and GitHub decides its shape per repository: the classic
 `repo:<owner>/<repo>` or, for repositories that use the immutable subject, `repo:<owner>@<owner id>/<repo>@<repo id>`.

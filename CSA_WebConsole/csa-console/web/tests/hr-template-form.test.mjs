@@ -55,8 +55,8 @@ test("withKind moves every anchor the new kind does not allow to its first date"
 test("rulesBody sends every rule, trimmed, or null when none is set", () => {
   const none = { department_id: "", employment_type: "", legal_entity_reference: "  ", region: "" };
   assert.equal(rulesBody(none), null);
-  assert.deepEqual(rulesBody({ ...none, region: "sabah", legal_entity_reference: " Syarikat Cekap " }), {
-    department_id: null, employment_type: null, legal_entity_reference: "Syarikat Cekap", region: "sabah",
+  assert.deepEqual(rulesBody({ ...none, region: "sabah", legal_entity_reference: " Contoh Satu " }), {
+    department_id: null, employment_type: null, legal_entity_reference: "Contoh Satu", region: "sabah",
   });
 });
 
@@ -146,8 +146,8 @@ test("rulesText says who a template applies to in words, never an id or a code",
   assert.equal(rulesText({}, names), "Everyone");
   assert.equal(rulesText({ department_id: null, region: null }, names), "Everyone");
   assert.equal(rulesText({
-    department_id: DEPARTMENT, employment_type: "full_time", legal_entity_reference: "Syarikat Cekap", region: "peninsular_labuan",
-  }, names), "Department: Warehouse · Type: Full-time · Legal entity: Syarikat Cekap · Region: Peninsular Malaysia / Labuan");
+    department_id: DEPARTMENT, employment_type: "full_time", legal_entity_reference: "Contoh Satu", region: "peninsular_labuan",
+  }, names), "Department: Warehouse · Type: Full-time · Legal entity: Contoh Satu · Region: Peninsular Malaysia / Labuan");
   assert.equal(rulesText({ department_id: "11111111-1111-4111-8111-000000000009" }, names),
     "Department: one no longer listed");
   assert.equal(rulesText({ region: "sabah", employment_type: "intern" }, names), "Type: Intern · Region: Sabah");
@@ -165,7 +165,7 @@ test("templateTies mirrors the server's tie rule", () => {
     t("g", "custom", {}),
     t("h", "custom", {}),
     t("i", "onboarding", { employment_type: "contract" }, false),
-    t("j", "onboarding", { legal_entity_reference: "Kedai Mawar" }),
+    t("j", "onboarding", { legal_entity_reference: "Contoh Dua" }),
     t("k", "onboarding", { legal_entity_reference: "kedai mawar", region: "sabah" }),
     t("l", "onboarding", { legal_entity_reference: "KEDAI MAWAR", employment_type: "full_time" }),
   ]);
@@ -246,9 +246,9 @@ test("legalEntities lists the distinct legal entities of the people read", () =>
       : { region: "sabah", legal_entity_reference, employment_category: "" },
   });
   assert.deepEqual(legalEntities([
-    person("Syarikat Cekap Sdn Bhd"), person(null), person(" "), person("Kedai Mawar Enterprise"),
-    person("syarikat cekap sdn bhd"), person(" Kedai Mawar Enterprise "),
-  ]), ["Kedai Mawar Enterprise", "Syarikat Cekap Sdn Bhd"]);
+    person("Contoh Satu Sdn Bhd"), person(null), person(" "), person("Contoh Dua Enterprise"),
+    person("contoh satu sdn bhd"), person(" Contoh Dua Enterprise "),
+  ]), ["Contoh Dua Enterprise", "Contoh Satu Sdn Bhd"]);
 });
 
 test("a pasted tab becomes a space and CRLF or CR a line feed, as the server can store them", () => {

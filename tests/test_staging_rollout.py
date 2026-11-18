@@ -1558,6 +1558,10 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
         "setup-target.sh staging apply --region <region> --node <node-id> --subject '<subject>'",
         "setup-target.sh staging check",
         "setup-target.sh production check",
+        "`--subject` may be repeated (pass every subject the role must trust, including the "
+        "subjects of a planned repository or organisation move)",
+        "Production's live roles trust several subjects, so `production check` must be given all "
+        "of them (and `production apply` is never run with fewer)",
         "STAGING_DEPLOY_ROLE_ARN",
         "STAGING_INSTANCE_ID",
         "STAGING_DEPLOY_REGION",

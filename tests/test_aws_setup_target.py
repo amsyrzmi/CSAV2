@@ -451,11 +451,24 @@ def test_an_unexpected_aws_error_stops_the_run_and_names_the_step(aws: Aws) -> N
     assert "AccessDenied" in result.stderr
     # The real CLI's text starts with a blank line; the reason is its first non-blank line.
     assert re.search(r"failed: An error occurred", result.stderr), result.stderr
-    # The provider step finished before the failing role step; nothing after it ran.
-    assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == [
-        "iam create-open-id-connect-provider"
-    ]
+    # The live trusts are read before the first write (the removal guard), so a failing read
+    # stops the run with nothing written, not even the provider.
+    assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == []
     assert aws.commands()[-1] == "iam get-role"
+
+
+def test_a_later_unexpected_aws_error_names_its_step_after_the_earlier_ones_finished(
+    aws: Aws,
+) -> None:
+    result = aws.apply("staging", env={"FAKE_AWS_DENY": "iam put-role-policy"})
+    assert result.returncode == 1
+    assert "[3/5] role csa-staging-deploy policy send-staging-documents: failed:" in result.stderr
+    # The provider and the role were written before the failing policy step; nothing after it ran.
+    assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == [
+        "iam create-open-id-connect-provider",
+        "iam create-role",
+        "iam put-role-policy",
+    ]
 
 
 def test_an_aws_error_with_no_text_still_says_something(aws: Aws) -> None:
@@ -926,6 +939,802 @@ def test_activate_node_role_names_match_the_runbook() -> None:
     assert '"aws:SourceAccount"' in step1 and '"aws:SourceArn"' in step1
 
 
+# --- several subjects (an organisation move) ------------------------------------------------
+
+SUBJECT_A = SUBJECT
+SUBJECT_B = "repo:example-org@3003/CSAV2@2002"
+SUBJECT_C = "repo:example-org@3003/example-repo@2002"
+SUB_KEY = f"{OIDC_HOST}:sub"
+ENVIRONMENTS = {
+    "csa-prod-deploy-plan": "production-plan",
+    "csa-prod-deploy-apply": "production",
+    "csa-staging-deploy": "staging",
+}
+
+
+def with_subjects(
+    aws: Aws,
+    target: str,
+    action: str,
+    *subjects: str,
+    env: dict[str, str] | None = None,
+    allow_removal: bool = False,
+    script: Path = SCRIPT,
+) -> subprocess.CompletedProcess[str]:
+    args = ["--region", REGION, "--node", NODE]
+    for subject in subjects:
+        args += ["--subject", subject]
+    if allow_removal:
+        args.append("--allow-subject-removal")
+    return aws.run(target, action, *args, env=env, script=script)
+
+
+def stored_sub(aws: Aws, role: str) -> Any:
+    trust = aws.state()["roles"][role]["trust"]
+    return trust["Statement"][0]["Condition"]["StringEquals"][SUB_KEY]
+
+
+def set_stored_sub(aws: Aws, role: str, value: Any) -> None:
+    state = aws.state()
+    state["roles"][role]["trust"]["Statement"][0]["Condition"]["StringEquals"][SUB_KEY] = value
+    aws.save(state)
+
+
+def expected_list(role: str, *subjects: str) -> list[str]:
+    return [f"{subject}:environment:{ENVIRONMENTS[role]}" for subject in subjects]
+
+
+def trust_result(result: subprocess.CompletedProcess[str], role: str) -> str:
+    lines = [m for m in step_lines(result) if m.group(3) == f"role {role} trust"]
+    assert len(lines) == 2, lines
+    return lines[-1].group(4)
+
+
+@pytest.mark.parametrize("action", ["apply", "check"])
+@pytest.mark.parametrize(
+    "subjects",
+    [
+        (SUBJECT_A, SUBJECT_A),
+        (SUBJECT_A, SUBJECT_B, SUBJECT_A),
+        (SUBJECT_A, SUBJECT_B, SUBJECT_C, SUBJECT_A + "x", SUBJECT_B + "x", SUBJECT_C + "x"),
+        (SUBJECT_A, SUBJECT_B, "repo:a b"),
+        (SUBJECT_A, "repo:a|b", SUBJECT_C),
+        (SUBJECT_A, ""),
+        ("example-owner/CSAV2", SUBJECT_B),
+    ],
+    ids=["twice", "duplicate-among-three", "six", "bad-last", "bad-middle", "empty", "bad-first"],
+)
+def test_several_subjects_are_validated_before_any_aws_call(
+    aws: Aws, action: str, subjects: tuple[str, ...]
+) -> None:
+    result = with_subjects(aws, "production", action, *subjects)
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("--subject ")
+    assert aws.calls() == []
+
+
+def test_five_subjects_are_accepted_and_the_refusals_name_the_problem(aws: Aws) -> None:
+    five = [f"repo:example-org@{n}/CSAV2@2002" for n in range(5)]
+    assert with_subjects(aws, "staging", "check", *five).returncode == 1  # ran; nothing exists
+    assert aws.calls()
+    aws.reset_log()
+
+    duplicate = with_subjects(aws, "staging", "check", SUBJECT_A, SUBJECT_A)
+    assert "twice" in duplicate.stderr
+    too_many = with_subjects(aws, "staging", "check", *five, SUBJECT_A)
+    assert "at most 5" in too_many.stderr
+    assert aws.calls() == []
+
+
+def test_activate_checks_every_subject_it_is_given(aws: Aws) -> None:
+    ok = activate(aws, "staging", "--subject", SUBJECT_A, "--subject", SUBJECT_B)
+    assert ok.returncode == 0, ok.stderr
+    aws.reset_log()
+    for extra in (
+        ("--subject", SUBJECT_A, "--subject", "repo:a b"),
+        ("--subject", SUBJECT_A, "--subject", SUBJECT_A),
+    ):
+        assert activate(aws, "staging", *extra).returncode == 2
+    assert aws.calls() == []
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_apply_on_an_empty_account_with_three_subjects_writes_the_list(
+    aws: Aws, target: str
+) -> None:
+    subjects = (SUBJECT_A, SUBJECT_B, SUBJECT_C)
+
+    result = with_subjects(aws, target, "apply", *subjects)
+
+    assert result.returncode == 0, result.stderr
+    creates = [c for c in aws.calls() if c["argv"][:2] == ["iam", "create-role"]]
+    assert len(creates) == len(TARGETS[target]["roles"])
+    for create in creates:
+        role = create["argv"][create["argv"].index("--role-name") + 1]
+        text = create["files"]["assume-role-policy-document"]
+        assert not re.search(r"<[^>]*>", text)
+        [statement] = json.loads(text)["Statement"]
+        assert statement["Principal"] == {"Federated": OIDC_ARN}
+        assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
+        assert statement["Condition"]["StringEquals"] == {
+            f"{OIDC_HOST}:aud": "sts.amazonaws.com",
+            SUB_KEY: expected_list(role, *subjects),
+        }
+        assert stored_sub(aws, role) == expected_list(role, *subjects)
+    # Nothing but the trust documents carries a subject.
+    for call in aws.calls():
+        for name, text in call["files"].items():
+            if name != "assume-role-policy-document":
+                assert "repo:" not in text
+
+
+def test_a_single_subject_still_writes_a_plain_string_and_the_same_document(aws: Aws) -> None:
+    assert with_subjects(aws, "production", "apply", SUBJECT_A).returncode == 0
+
+    for role in TARGETS["production"]["roles"]:
+        assert stored_sub(aws, role) == f"{SUBJECT_A}:environment:{ENVIRONMENTS[role]}"
+    [plan] = [
+        c
+        for c in aws.calls()
+        if c["argv"][:2] == ["iam", "create-role"] and "csa-prod-deploy-plan" in c["argv"]
+    ]
+    template = (ROOT / "deploy" / "production" / "iam" / "plan-trust-policy.json").read_text()
+    expected = template.replace("<repo-subject>", SUBJECT_A).replace(
+        "<oidc-provider-arn>", OIDC_ARN
+    )
+    assert plan["files"]["assume-role-policy-document"] == expected
+
+
+def test_two_subjects_on_the_staging_role(aws: Aws) -> None:
+    assert with_subjects(aws, "staging", "apply", SUBJECT_B, SUBJECT_A).returncode == 0
+
+    assert stored_sub(aws, "csa-staging-deploy") == [
+        f"{SUBJECT_B}:environment:staging",
+        f"{SUBJECT_A}:environment:staging",
+    ]
+    assert with_subjects(aws, "staging", "check", SUBJECT_B, SUBJECT_A).returncode == 0
+    assert with_subjects(aws, "staging", "check", SUBJECT_A).returncode == 1
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_check_treats_the_live_list_as_a_set(aws: Aws, target: str) -> None:
+    subjects = (SUBJECT_A, SUBJECT_B, SUBJECT_C)
+    assert with_subjects(aws, target, "apply", *subjects).returncode == 0
+    for role in TARGETS[target]["roles"]:
+        set_stored_sub(aws, role, list(reversed(expected_list(role, *subjects))))
+    aws.reset_log()
+
+    same_order = with_subjects(aws, target, "check", *subjects)
+    other_order = with_subjects(aws, target, "check", SUBJECT_C, SUBJECT_A, SUBJECT_B)
+
+    for result in (same_order, other_order):
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert {m.group(4) for m in step_lines(result)} == {"checking", "ok"}
+    assert all(READ_ONLY.match(command) for command in aws.commands())
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        (SUBJECT_A, SUBJECT_B),
+        (SUBJECT_A, SUBJECT_B, SUBJECT_C, "repo:example-org@4004/CSAV2@2002"),
+        (SUBJECT_A, SUBJECT_B, "repo:example-org@4004/CSAV2@2002"),
+        (SUBJECT_A,),
+        (SUBJECT_C, SUBJECT_B),
+    ],
+    ids=["missing-one", "extra-one", "one-swapped", "only-one-given", "other-pair"],
+)
+def test_check_says_differs_for_a_missing_or_extra_subject(
+    aws: Aws, given: tuple[str, ...]
+) -> None:
+    assert (
+        with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B, SUBJECT_C).returncode == 0
+    )
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "check", *given)
+
+    assert result.returncode == 1
+    for role in TARGETS["production"]["roles"]:
+        assert trust_result(result, role) == "differs"
+    assert all(READ_ONLY.match(command) for command in aws.commands())
+
+
+def test_a_string_is_not_the_same_as_a_one_element_list(aws: Aws) -> None:
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    set_stored_sub(aws, "csa-staging-deploy", [f"{SUBJECT_A}:environment:staging"])
+    aws.reset_log()
+
+    check = with_subjects(aws, "staging", "check", SUBJECT_A)
+    assert check.returncode == 1
+    assert trust_result(check, "csa-staging-deploy") == "differs"
+
+    # And apply turns it back into the plain string.
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    assert stored_sub(aws, "csa-staging-deploy") == f"{SUBJECT_A}:environment:staging"
+    # A stored string against two given subjects is a difference too.
+    assert with_subjects(aws, "staging", "check", SUBJECT_A, SUBJECT_B).returncode == 1
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_apply_twice_with_several_subjects_makes_no_write(aws: Aws, target: str) -> None:
+    subjects = (SUBJECT_A, SUBJECT_B, SUBJECT_C)
+    assert with_subjects(aws, target, "apply", *subjects).returncode == 0
+    state_after_first = aws.state()
+    aws.reset_log()
+
+    second = with_subjects(aws, target, "apply", *subjects)
+
+    assert second.returncode == 0, second.stderr
+    assert aws.commands()
+    assert not [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)]
+    assert aws.state() == state_after_first
+    assert not {m.group(4) for m in step_lines(second)} & {"created", "updated"}
+
+
+def test_apply_leaves_a_live_list_in_another_order_alone_when_the_set_is_equal(aws: Aws) -> None:
+    # Decision: the order stored in AWS is not significant, so apply does not rewrite it.
+    subjects = (SUBJECT_A, SUBJECT_B, SUBJECT_C)
+    assert with_subjects(aws, "production", "apply", *subjects).returncode == 0
+    reordered = list(reversed(expected_list("csa-prod-deploy-plan", *subjects)))
+    set_stored_sub(aws, "csa-prod-deploy-plan", reordered)
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", *subjects)
+
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)]
+    assert stored_sub(aws, "csa-prod-deploy-plan") == reordered
+    assert trust_result(result, "csa-prod-deploy-plan") == "unchanged"
+
+
+def test_apply_updates_the_trust_when_the_set_differs_and_writes_the_given_order(
+    aws: Aws,
+) -> None:
+    assert with_subjects(aws, "production", "apply", SUBJECT_A).returncode == 0
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", SUBJECT_C, SUBJECT_A, SUBJECT_B)
+
+    assert result.returncode == 0, result.stderr
+    assert [c for c in aws.commands() if CREATE_OR_UPDATE.match(c)] == [
+        "iam update-assume-role-policy",
+        "iam update-assume-role-policy",
+    ]
+    for role in TARGETS["production"]["roles"]:
+        assert stored_sub(aws, role) == expected_list(role, SUBJECT_C, SUBJECT_A, SUBJECT_B)
+        assert trust_result(result, role) == "updated"
+    # Shrinking back to one subject turns the list into a string again; that removes two live
+    # subjects, so it needs --allow-subject-removal (see the removal guard tests below).
+    assert with_subjects(aws, "production", "apply", SUBJECT_A, allow_removal=True).returncode == 0
+    assert stored_sub(aws, "csa-prod-deploy-plan") == f"{SUBJECT_A}:environment:production-plan"
+
+
+def test_the_subject_list_is_built_with_jq_and_keeps_each_roles_environment(aws: Aws) -> None:
+    code = "\n".join(
+        line for line in SCRIPT.read_text().splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "--args" in code
+    assert with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B).returncode == 0
+    assert stored_sub(aws, "csa-prod-deploy-plan") == [
+        f"{SUBJECT_A}:environment:production-plan",
+        f"{SUBJECT_B}:environment:production-plan",
+    ]
+    assert stored_sub(aws, "csa-prod-deploy-apply") == [
+        f"{SUBJECT_A}:environment:production",
+        f"{SUBJECT_B}:environment:production",
+    ]
+
+
+SEVERAL_SUBJECTS_SENTENCE = (
+    "production's live roles trust several subjects, so `production check` must be given all "
+    "of them (and `production apply` is never run with fewer)"
+)
+
+
+def test_the_header_and_the_runbooks_say_that_subject_may_be_repeated() -> None:
+    header = SCRIPT.read_text().split("set -euo pipefail")[0]
+    assert (
+        "may be repeated: pass every subject the role must trust, including the subjects of a "
+        "planned repository or organisation move"
+    ) in " ".join(header.replace("#", " ").split())
+    staging_doc = " ".join((ROOT / "deploy" / "STAGING_PIPELINE.md").read_text().split())
+    production_doc = " ".join(PRODUCTION_DOC.read_text().split())
+    assert SEVERAL_SUBJECTS_SENTENCE in staging_doc.lower()
+    assert SEVERAL_SUBJECTS_SENTENCE in production_doc.lower()
+
+
+# --- apply refuses to remove subjects a live role trusts ------------------------------------
+
+REFUSAL_HINT = (
+    "give them with --subject, or pass --allow-subject-removal if the removal is intended"
+)
+THREE = (SUBJECT_A, SUBJECT_B, SUBJECT_C)
+SUBJECT_D = "repo:example-org@4004/CSAV2@2002"
+
+
+def listed(role: str, *subjects: str) -> str:
+    return ", ".join(expected_list(role, *subjects))
+
+
+def refusal(role: str, count: int, *subjects: str) -> str:
+    return f"refused: role {role} trusts {count} subject(s) not given: {listed(role, *subjects)}"
+
+
+def removal_note(role: str, count: int, *subjects: str) -> str:
+    return f"removing {count} subject(s) from role {role} trust: {listed(role, *subjects)}"
+
+
+def adding_note(role: str, count: int, *subjects: str) -> str:
+    return f"adding {count} subject(s) to role {role} trust: {listed(role, *subjects)}"
+
+
+def writes(aws: Aws) -> list[str]:
+    return [c for c in aws.commands() if not READ_ONLY.match(c)]
+
+
+def set_trust(aws: Aws, role: str, trust: Any) -> None:
+    state = aws.state()
+    state["roles"][role]["trust"] = trust
+    aws.save(state)
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_apply_refuses_to_remove_live_subjects_and_writes_nothing(aws: Aws, target: str) -> None:
+    assert with_subjects(aws, target, "apply", *THREE).returncode == 0
+    before = aws.state()
+    aws.reset_log()
+
+    result = with_subjects(aws, target, "apply", SUBJECT_A)
+
+    assert result.returncode == 1
+    expected = [refusal(role, 2, SUBJECT_B, SUBJECT_C) for role in TARGETS[target]["roles"]]
+    assert result.stderr.splitlines() == [*expected, REFUSAL_HINT]
+    assert MARKER not in result.stdout + result.stderr
+    # The refusal comes before step 1: the existing apply note, and no step line.
+    assert step_lines(result) == []
+    assert [line for line in result.stdout.splitlines() if line] == [
+        next(
+            line for line in result.stdout.splitlines() if line.startswith("apply note: run check")
+        )
+    ]
+    assert aws.state() == before
+    assert aws.commands() and writes(aws) == []
+    assert "iam create-open-id-connect-provider" not in aws.commands()
+
+
+def test_apply_with_the_flag_removes_the_subjects_and_says_so_before_the_steps(aws: Aws) -> None:
+    assert with_subjects(aws, "production", "apply", *THREE).returncode == 0
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", SUBJECT_A, allow_removal=True)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    plan, apply_ = "csa-prod-deploy-plan", "csa-prod-deploy-apply"
+    notes = [
+        removal_note(plan, 2, SUBJECT_B, SUBJECT_C),
+        removal_note(apply_, 2, SUBJECT_B, SUBJECT_C),
+    ]
+    assert all(note in lines for note in notes)
+    first_step = next(i for i, line in enumerate(lines) if STEP_LINE.match(line))
+    assert max(lines.index(note) for note in notes) < first_step
+    assert not [line for line in lines if line.startswith("adding ")]
+    for role in (plan, apply_):
+        assert stored_sub(aws, role) == f"{SUBJECT_A}:environment:{ENVIRONMENTS[role]}"
+        assert trust_result(result, role) == "updated"
+    assert result.stderr == ""
+
+
+def test_a_swap_is_a_removal_and_is_refused(aws: Aws) -> None:
+    assert with_subjects(aws, "production", "apply", *THREE).returncode == 0
+    before = aws.state()
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B, SUBJECT_D)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        refusal("csa-prod-deploy-plan", 1, SUBJECT_C),
+        refusal("csa-prod-deploy-apply", 1, SUBJECT_C),
+        REFUSAL_HINT,
+    ]
+    assert aws.state() == before
+    assert writes(aws) == []
+
+    # With the flag the swap goes through, and both the removal and the addition are announced.
+    swapped = with_subjects(
+        aws, "production", "apply", SUBJECT_A, SUBJECT_B, SUBJECT_D, allow_removal=True
+    )
+    assert swapped.returncode == 0, swapped.stderr
+    for role in TARGETS["production"]["roles"]:
+        assert removal_note(role, 1, SUBJECT_C) in swapped.stdout.splitlines()
+        assert adding_note(role, 1, SUBJECT_D) in swapped.stdout.splitlines()
+        assert stored_sub(aws, role) == expected_list(role, SUBJECT_A, SUBJECT_B, SUBJECT_D)
+
+
+def test_growing_from_one_subject_to_three_is_allowed_and_says_adding(aws: Aws) -> None:
+    assert with_subjects(aws, "production", "apply", SUBJECT_A).returncode == 0
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", *THREE)
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    for role in TARGETS["production"]["roles"]:
+        assert adding_note(role, 2, SUBJECT_B, SUBJECT_C) in lines
+        assert stored_sub(aws, role) == expected_list(role, *THREE)
+    assert not [line for line in lines if line.startswith("removing ")]
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "live_as_string",
+    [False, True],
+    ids=["list-reordered", "string-equals-one-element-list"],
+)
+def test_set_equal_trusts_are_not_a_removal(aws: Aws, live_as_string: bool) -> None:
+    given = (SUBJECT_A,) if live_as_string else THREE
+    assert with_subjects(aws, "production", "apply", *given).returncode == 0
+    for role in TARGETS["production"]["roles"]:
+        live = expected_list(role, *given)
+        set_stored_sub(aws, role, live if live_as_string else list(reversed(live)))
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", *given)
+
+    assert result.returncode == 0, result.stderr
+    assert not [
+        line for line in result.stdout.splitlines() if line.startswith(("removing", "adding"))
+    ]
+    if live_as_string:
+        # A one-element list is not the plain string the template gives: that is a rewrite
+        # (an update), but never a removal.
+        assert writes(aws) == ["iam update-assume-role-policy"] * 2
+    else:
+        assert writes(aws) == []
+
+
+def test_a_live_list_with_a_repeated_entry_is_the_same_set(aws: Aws) -> None:
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A, SUBJECT_B).returncode == 0
+    role = "csa-staging-deploy"
+    live = expected_list(role, SUBJECT_A, SUBJECT_B)
+    set_stored_sub(aws, role, [live[1], live[0], live[1]])
+    aws.reset_log()
+
+    assert with_subjects(aws, "staging", "check", SUBJECT_A, SUBJECT_B).returncode == 0
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A, SUBJECT_B)
+
+    assert result.returncode == 0, result.stderr
+    assert writes(aws) == []
+
+
+def test_the_guard_runs_before_any_write_so_a_later_role_cannot_leave_a_half_apply(
+    aws: Aws,
+) -> None:
+    # The plan role (updated first) would only grow; the apply role (second) would shrink.
+    # Nothing, not even the plan role or the missing provider, may be written.
+    assert with_subjects(aws, "production", "apply", SUBJECT_A).returncode == 0
+    apply_role = "csa-prod-deploy-apply"
+    set_stored_sub(aws, apply_role, expected_list(apply_role, *THREE))
+    state = aws.state()
+    state["providers"] = []
+    aws.save(state)
+    before = aws.state()
+    aws.reset_log()
+
+    result = with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [refusal(apply_role, 1, SUBJECT_C), REFUSAL_HINT]
+    assert aws.state() == before
+    assert writes(aws) == []
+    assert stored_sub(aws, "csa-prod-deploy-plan") == f"{SUBJECT_A}:environment:production-plan"
+    # And with the flag everything goes through, the plan role growing and the apply role shrinking.
+    done = with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B, allow_removal=True)
+    assert done.returncode == 0, done.stderr
+    assert stored_sub(aws, apply_role) == expected_list(apply_role, SUBJECT_A, SUBJECT_B)
+    assert aws.state()["providers"] == [OIDC_ARN]
+
+
+def test_roles_that_do_not_exist_yet_are_not_part_of_the_guard(aws: Aws) -> None:
+    # No live role at all (a first apply), then only the plan role live and growing.
+    first = with_subjects(aws, "production", "apply", *THREE)
+    assert first.returncode == 0, first.stderr
+    assert not [
+        line for line in first.stdout.splitlines() if line.startswith(("removing", "adding"))
+    ]
+
+    state = aws.state()
+    del state["roles"]["csa-prod-deploy-apply"]
+    aws.save(state)
+    aws.reset_log()
+    second = with_subjects(aws, "production", "apply", SUBJECT_A, SUBJECT_B)
+    assert second.returncode == 1  # the plan role still trusts three subjects
+    assert second.stderr.count("refused:") == 1
+    assert "csa-prod-deploy-apply" not in second.stderr
+
+
+def test_the_guard_reads_every_statement_and_counts_strings_and_lists(aws: Aws) -> None:
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    role = "csa-staging-deploy"
+    trust = aws.state()["roles"][role]["trust"]
+    [first] = trust["Statement"]
+    second = json.loads(json.dumps(first))
+    second["Condition"]["StringEquals"][SUB_KEY] = expected_list(role, SUBJECT_B, SUBJECT_C)
+    trust["Statement"] = [first, second]
+    set_trust(aws, role, trust)
+    aws.reset_log()
+
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [refusal(role, 2, SUBJECT_B, SUBJECT_C), REFUSAL_HINT]
+    assert writes(aws) == []
+
+
+def test_only_subject_shaped_values_are_printed_from_the_live_trust(aws: Aws) -> None:
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    role = "csa-staging-deploy"
+    set_stored_sub(
+        aws,
+        role,
+        [
+            f"{SUBJECT_A}:environment:staging",
+            "evil\nwords $(x) FAKE-AWS-TEXT",
+            SUBJECT_B + ":environment:staging",
+        ],
+    )
+    aws.reset_log()
+
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"refused: role {role} trusts 2 subject(s) not given: "
+        f"<unrecognised value>, {SUBJECT_B}:environment:staging",
+        REFUSAL_HINT,
+    ]
+    assert "FAKE-AWS-TEXT" not in result.stdout + result.stderr
+    assert writes(aws) == []
+
+
+STAGING_ROLE = "csa-staging-deploy"
+
+
+def stage_live_trust(aws: Aws, statements: list[dict[str, Any]]) -> None:
+    """Applies subject A to staging, then replaces the live trust's statements."""
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    trust = aws.state()["roles"][STAGING_ROLE]["trust"]
+    trust["Statement"] = statements
+    set_trust(aws, STAGING_ROLE, trust)
+    aws.reset_log()
+
+
+def live_statement(condition: dict[str, Any], action: str = "sts:AssumeRoleWithWebIdentity") -> Any:
+    return {
+        "Effect": "Allow",
+        "Principal": {"Federated": OIDC_ARN},
+        "Action": action,
+        "Condition": condition,
+    }
+
+
+def assert_staging_refusal_for_b(aws: Aws) -> None:
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        refusal(STAGING_ROLE, 1, SUBJECT_B),
+        REFUSAL_HINT,
+    ]
+    assert writes(aws) == []
+
+
+@pytest.mark.parametrize(
+    "operator", ["StringLike", "ForAnyValue:StringLike", "ForAllValues:StringEquals"]
+)
+def test_the_guard_reads_the_sub_under_any_condition_operator(aws: Aws, operator: str) -> None:
+    both = [f"{SUBJECT_A}:environment:staging", f"{SUBJECT_B}:environment:staging"]
+    stage_live_trust(aws, [live_statement({operator: {SUB_KEY: both}})])
+
+    assert_staging_refusal_for_b(aws)
+
+
+def test_the_guard_reads_a_second_statement_with_another_action(aws: Aws) -> None:
+    mine = {"StringEquals": {SUB_KEY: f"{SUBJECT_A}:environment:staging"}}
+    other = {"StringLike": {SUB_KEY: f"{SUBJECT_B}:environment:staging"}}
+    stage_live_trust(aws, [live_statement(mine), live_statement(other, action="sts:TagSession")])
+
+    assert_staging_refusal_for_b(aws)
+
+
+def test_the_guard_reads_the_sub_key_in_any_letter_case(aws: Aws) -> None:
+    # IAM condition keys are case-insensitive: a live trust may spell the key differently.
+    key = "Token.Actions.GithubUsercontent.Com:Sub"
+    both = [f"{SUBJECT_A}:environment:staging", f"{SUBJECT_B}:environment:staging"]
+    stage_live_trust(aws, [live_statement({"StringEquals": {key: both}})])
+
+    assert_staging_refusal_for_b(aws)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"{SUBJECT_B}:environment:staging\n",
+        f"FAKE-AWS-TEXT\n{SUBJECT_B}:environment:staging",
+        f"{SUBJECT_B}:environment:staging\nFAKE-AWS-TEXT",
+    ],
+    ids=["trailing-newline", "leading-line", "trailing-line"],
+)
+def test_a_value_with_a_newline_is_never_shown_even_if_a_line_looks_like_a_subject(
+    aws: Aws, value: str
+) -> None:
+    stage_live_trust(
+        aws,
+        [live_statement({"StringEquals": {SUB_KEY: [f"{SUBJECT_A}:environment:staging", value]}})],
+    )
+
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"refused: role {STAGING_ROLE} trusts 1 subject(s) not given: <unrecognised value>",
+        REFUSAL_HINT,
+    ]
+    assert "FAKE-AWS-TEXT" not in result.stdout + result.stderr
+    assert writes(aws) == []
+
+
+def test_apply_replaces_the_whole_trust_and_check_reports_an_extra_statement(aws: Aws) -> None:
+    mine = {"StringEquals": {SUB_KEY: f"{SUBJECT_A}:environment:staging"}}
+    extra = {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::000000000000:root"}}
+    stage_live_trust(aws, [live_statement(mine), {**extra, "Action": "sts:AssumeRole"}])
+
+    check = with_subjects(aws, "staging", "check", SUBJECT_A)
+    assert check.returncode == 1
+    assert trust_result(check, STAGING_ROLE) == "differs"
+
+    applied = with_subjects(aws, "staging", "apply", SUBJECT_A)
+    assert applied.returncode == 0, applied.stderr
+    assert len(aws.state()["roles"][STAGING_ROLE]["trust"]["Statement"]) == 1
+    assert with_subjects(aws, "staging", "check", SUBJECT_A).returncode == 0
+
+
+WHOLE_TRUST_SENTENCE = (
+    "`apply` replaces the whole trust document of a role, not only its subject: any extra "
+    "statement or condition in a live trust is overwritten, and `check` reports it as `differs`"
+)
+
+
+def test_the_header_and_the_production_runbook_say_apply_replaces_the_whole_trust() -> None:
+    header = " ".join(SCRIPT.read_text().split("set -euo pipefail")[0].replace("#", " ").split())
+    assert WHOLE_TRUST_SENTENCE in header
+    assert WHOLE_TRUST_SENTENCE in " ".join(PRODUCTION_DOC.read_text().split())
+    assert "in a refusal, the live subjects" not in header
+
+
+def test_the_removal_flag_is_valueless_and_accepted_anywhere_and_by_every_action(aws: Aws) -> None:
+    base = ["--region", REGION, "--node", NODE, "--subject", SUBJECT_A]
+    for args in (
+        ["--allow-subject-removal", *base],
+        [*base, "--allow-subject-removal"],
+        ["--region", REGION, "--allow-subject-removal", "--node", NODE, "--subject", SUBJECT_A],
+        [*base, "--allow-subject-removal", "--allow-subject-removal"],
+    ):
+        result = aws.run("staging", "check", *args)
+        assert result.returncode == 1, result.stderr  # it ran; nothing exists yet
+        assert aws.calls() and all(READ_ONLY.match(c) for c in aws.commands())
+        aws.reset_log()
+    # activate and check take it as a no-op (the guard concerns apply only).
+    assert activate(aws, "staging", "--allow-subject-removal").returncode == 0
+    assert aws.calls()
+    aws.reset_log()
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A, allow_removal=True).returncode == 0
+    assert with_subjects(aws, "staging", "check", SUBJECT_A, allow_removal=True).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--allow-subject-removal=x"],
+        ["--allow-subject-removal=1"],
+        ["--allow-subject-removal="],
+        ["--allow-subject-removal", "yes"],
+        ["--subject"],
+        ["--subject", "--allow-subject-removal"],
+        ["--subject", "--region", REGION],
+        [f"--subject={SUBJECT_B}"],
+        ["--subject", "--node", NODE],
+    ],
+    ids=[
+        "equals-x",
+        "equals-1",
+        "equals-empty",
+        "value-given",
+        "subject-last",
+        "subject-then-flag",
+        "subject-then-region",
+        "subject-equals-form",
+        "subject-then-node",
+    ],
+)
+def test_malformed_flag_forms_are_refused_before_any_aws_call(aws: Aws, extra: list[str]) -> None:
+    base = ["--region", REGION, "--node", NODE, "--subject", SUBJECT_A]
+    for action in ("apply", "check"):
+        result = aws.run("production", action, *base, *extra)
+        assert result.returncode == 2, (extra, result.stdout, result.stderr)
+        assert result.stderr
+        assert aws.calls() == []
+
+
+def test_the_subject_builder_fails_closed_on_an_unexpected_template_shape(
+    aws: Aws, tmp_path: Path
+) -> None:
+    copy = tmp_path / "repo"
+    (copy / "deploy" / "aws").mkdir(parents=True)
+    (copy / "deploy" / "aws" / "setup-target.sh").write_bytes(SCRIPT.read_bytes())
+    (copy / "deploy" / "aws" / "setup-target.sh").chmod(0o755)
+    for source in (ROOT / "deploy" / "staging").rglob("*.json"):
+        target = copy / "deploy" / "staging" / source.relative_to(ROOT / "deploy" / "staging")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text())
+    trust = copy / "deploy" / "staging" / "iam" / "trust-policy.json"
+    assert "<repo-subject>:environment:staging" in trust.read_text()
+    trust.write_text(
+        trust.read_text().replace(
+            "<repo-subject>:environment:staging", "repo:fixed:environment:staging"
+        )
+    )
+
+    result = with_subjects(
+        aws,
+        "staging",
+        "apply",
+        SUBJECT_A,
+        SUBJECT_B,
+        script=copy / "deploy" / "aws" / "setup-target.sh",
+    )
+
+    assert result.returncode == 1
+    assert "could not put the subjects into a trust template; nothing was changed" in result.stderr
+    assert writes(aws) == []
+    assert list(aws.tmp.iterdir()) == []
+
+
+def test_the_usage_text_and_the_header_show_that_subject_repeats(aws: Aws) -> None:
+    result = aws.run("staging", "bogus")
+    assert result.returncode == 2
+    assert "[--subject <prefix> ...]" in result.stderr
+    assert "[--allow-subject-removal]" in result.stderr
+    header = " ".join(SCRIPT.read_text().split("set -euo pipefail")[0].replace("#", " ").split())
+    assert "[--subject <prefix> ...]" in header
+    assert "--allow-subject-removal" in header
+
+
+REMOVAL_SENTENCE = (
+    "`production apply` refuses to remove a subject that a live role trusts unless it is given "
+    "`--allow-subject-removal`"
+)
+STAGING_REMOVAL_SENTENCE = (
+    "`apply` refuses to remove a subject that a live role trusts unless it is given "
+    "`--allow-subject-removal`"
+)
+MANUAL_STEP_SENTENCE = (
+    "if the roles already trust several subjects, do not run the manual commands below as "
+    "written (they fill one subject): use `deploy/aws/setup-target.sh production check` and "
+    "`apply` with every subject instead"
+)
+
+
+def test_the_runbooks_document_the_removal_flag_and_the_manual_step_warning() -> None:
+    staging_doc = " ".join((ROOT / "deploy" / "STAGING_PIPELINE.md").read_text().split()).lower()
+    production_doc = " ".join(PRODUCTION_DOC.read_text().split()).lower()
+    assert REMOVAL_SENTENCE in production_doc
+    assert STAGING_REMOVAL_SENTENCE in staging_doc
+    assert MANUAL_STEP_SENTENCE in production_doc
+
+
 # --- the filled files and the names ---------------------------------------------------------
 
 
@@ -1148,6 +1957,7 @@ def test_every_step_is_printed_and_nothing_else_from_aws(aws: Aws, target: str) 
         for line in result.stdout.splitlines()
         if not STEP_LINE.match(line) and not line.startswith("Role ARN ")
     ]
+    # A first apply on an empty account changes no live trust, so no removing/adding line either.
     assert all(line == "" or line.startswith("apply ") for line in others), others
     notes = [line for line in others if line.startswith("apply note: ")]
     assert any("run check before apply" in line and "--subject" in line for line in notes), notes

@@ -3108,6 +3108,10 @@ def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the
     # The setup script verifies steps 3 and 4 (and step 2 through the ping status) and never
     # applies production by itself.
     assert "deploy/aws/setup-target.sh production check" in " ".join(setup.split())
+    assert (
+        "production's live roles trust several subjects, so `production check` must be given all "
+        "of them (and `production apply` is never run with fewer)"
+    ) in " ".join(setup.split())
     # Both existing install lines install the config first; the script exits 78 without it.
     for section in (setup, after):
         flat = " ".join(section.split())
