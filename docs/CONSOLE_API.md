@@ -903,7 +903,7 @@ All paths use `/console/v1/inbox` with the existing tenant-selection query.
 
 | Method/path | Request | Result |
 |---|---|---|
-| `GET /conversations` | `before` (opaque cursor; a bare conversation UUID is still accepted), `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters), and the queue filters `state`, `assignee`, `priority_min`, `reason`, `topic`, `overdue`, `waiting_over`, `order` (see [Inbox work queue](#inbox-work-queue)) | `{items,next_cursor,needs_review_count,counts}` |
+| `GET /conversations` | `before` (opaque cursor; a bare conversation UUID is still accepted), `limit=1..50` (20 default), `channel`, `needs_review=true`, `sender=known\|new`, `q` (2..64 characters), and the queue filters `state`, `assignee`, `priority_min`, `reason`, `topic`, `handled_by`, `overdue`, `waiting_over`, `order` (see [Inbox work queue](#inbox-work-queue)) | `{items,next_cursor,needs_review_count,counts}` |
 | `GET /queue/counts`, `GET /assignees`, `GET`/`PUT /settings` | see [Inbox work queue](#inbox-work-queue) | Tab counts; people a chat can go to; the company's response targets |
 | `POST /conversations/{id}/queue/{claim,unclaim,assign,snooze,resolve,priority,topic}`, `POST /bulk`, `GET`/`POST /views`, `PUT`/`DELETE /views/{id}` | see [Inbox work queue](#inbox-work-queue) | Queue actions, bulk actions and saved views |
 | `GET /conversations/{id}` | — | Ownership, mute and version metadata, the queue fields and `assignee`, plus `contact` with the full `phone` |
@@ -1215,11 +1215,19 @@ parameter, as `state=needs_staff&state=snoozed`, is OR within itself):
 | `topic` | repeatable: the seven topics above |
 | `channel` | `telegram` or `whatsapp` |
 | `sender` | `known` or `new`, as before |
+| `handled_by` | `person` or `assistant`: who handles the chat (below) |
 | `overdue` | `true`: `needs_staff` with `due_at` in the past |
 | `waiting_over` | minutes (1 to 525600): `needs_staff` waiting longer than that |
 | `needs_review` | `true`: a live pending held reply, as before |
 | `q` | contact search, as before |
 | `order` | `activity`, `waiting`, `due`, `priority` |
+
+`handled_by=person` keeps the chats whose `human_muted` flag is true: `owned_by` is `human_support` and
+the assistant's mute has not ended (no end, or an end in the future); `handled_by=assistant` keeps all
+the others (the assistant owns the chat, or the mute has ended). A bot escalation also pauses the
+assistant for 24 hours, so an escalated chat nobody has opened yet counts as `person` until that mute
+ends. The console words this "Assistant paused". The filter is not part of the search and does not
+change the tab counts (`counts`), which stay unfiltered; a saved view may carry it.
 
 Any other value is 422. A repeatable parameter holds each value once (repeats are dropped) and at
 most as many values as it has (5 states, 4 reasons, 7 topics); more is 422. The fixed tabs of the design are filter sets: Needs us is
@@ -1287,7 +1295,7 @@ save the response is the defaults with `version: 0`. The PUT must carry every fi
 | `version` | 0 | the version read; 409 `version_conflict` if it is not the stored one |
 
 The four targets are minutes of waiting before a `needs_staff` item is due, by priority (wall clock).
-The last five fields are for the reminders of a later change and have no effect yet. A save changes
+The last five fields drive the reminders (see Reminders below). A save changes
 only items that enter `needs_staff` afterwards: an item already waiting keeps its due time (a person
 changing an item's priority recomputes that item's due time from its clock). Each save is audited
 (`inbox.settings.updated`).
@@ -1362,7 +1370,7 @@ creates one (201); `PUT /inbox/views/{id}` with `{name?, filters?}` (at least on
 filters or both; `DELETE /inbox/views/{id}` is 204. `name` is 1 to 60 characters once trimmed and unique
 per person ignoring case (409 otherwise); a person keeps at most 20 (409 `you can keep at most 20 saved
 views`). `filters` accepts `state`, `assignee`, `priority_min`, `reason`, `topic`, `overdue`,
-`waiting_over`, `channel`, `sender` and `order`, validated by the list's own rules (including the
+`waiting_over`, `channel`, `sender`, `handled_by` and `order`, validated by the list's own rules (including the
 `order=priority` restriction and the list bounds, 422); it never holds the search text, a cursor or a
 limit. A POST or PUT body over 32 KiB is 413. Create, rename and delete are audited by id only. Read-only members get 403.
 
@@ -1370,7 +1378,29 @@ limit. A POST or PUT body over 32 KiB is 413. Create, rename and delete are audi
 whose `snoozed_until` has passed (up to 100 per run) to `needs_staff`: a fresh clock, `due_at` from the
 company's current target for the item's priority, the claim kept, reason `customer_message` when the
 customer wrote after the last staff reply and `manual` otherwise (history event `woke`, no actor, no
-version change). No reminder or notification goes out yet.
+version change). It returns `{"woken_count": n}`. It does not notify anyone: the `inbox.snooze_due`
+reminder (below) tells the holder, or the team when nobody holds the item, that the snooze ended (and
+wakes the item itself if the job has not yet).
+
+**Reminders.** Six kinds notify staff about Inbox work that waits; each is a row of the generic reminder
+table (`csa.reminders`) and fires from the `reminders_fire` job, which runs every minute for each company,
+so a reminder is on time to the minute (not to the second), and a reminder that has become stale (the
+customer wrote, the item was resolved, snoozed, handed back or reassigned, the setting was turned off)
+is dropped without a message, while a priority change moves an unfired overdue reminder to the new due time. `inbox.overdue`: a `needs_staff` item is past its
+response target; it repeats every `repeat_minutes` up to `max_repeats` times, one priority level higher
+from the second notice, and the last one also names every tenant admin. `inbox.stale_claim`: a claimed
+item saw no action for `stale_claim_hours`; the holder first, the tenant admins `repeat_minutes` later.
+`inbox.snooze_due`: the snooze ended. `inbox.follow_up`: a person answered and the customer has been quiet
+for `follow_up_hours`. `inbox.handback`: the same quiet for `handback_prompt_hours` while a person still
+holds the chat (the assistant is paused for it), a prompt to hand the chat back. `inbox.assigned`: sent at
+once to the person someone else assigned an item to; it has no reminder row. The holder is told when they
+are still an enabled admin or staff member, else the whole team (every enabled tenant admin and tenant
+staff member; never read-only); a company with nobody to tell gets nothing. The per-minute
+`inbox_reminders_sweep` job schedules the reminders the database triggers cannot (overdue, stale claim,
+and snoozes from before the reminders existed); replies and snoozes schedule theirs in the same
+transaction. Every kind writes a console notification per recipient (see [Notifications](#notifications));
+only `inbox.overdue` also goes to the company's staff chat, to targets that carry the event. Messages name
+the customer by display name only and never carry message text.
 
 **Roles.** Every inbox route needs tenant staff, tenant admin or a platform admin; read-only members
 and machine principals get 403 on all of them, and the Customer Support package must not be
@@ -1386,13 +1416,49 @@ could not use one under row security): the company's conversations are read alon
 until a page fills, which at 50,000 conversations takes up to about
 0.5 s when few rows match (the typed search should be debounced). `sender` is computed per scanned
 row. The Mine tab's later pages re-read the person's own rows (bounded by them). `order=due` and
-`order=waiting` outside the Needs us tabs sort the company's rows in scope. Reminders and
-notifications (overdue, follow-up, stale claim) arrive in a later change; the settings that drive
-them are stored already. A `waiting_customer` item never leaves on its own: it stays until the
-customer writes or a person acts (the follow-up reminders of a later change will point at it). The
+`order=waiting` outside the Needs us tabs sort the company's rows in scope. A `waiting_customer` item
+never leaves on its own: it stays until the customer writes or a person acts (the follow-up and
+handback reminders point at it). The
 operations script `db/sql/ops/expire_stuck_approvals.sql` settles approvals without the queue code,
 so after such a run a `held_reply` item can keep that reason with no pending reply; a person resolves
 it or changes it by acting (see `docs/INBOX_RETEST.md`, Operations).
+
+## Notifications
+
+Per-person console notifications, written by the Inbox reminders (see **Reminders** above) and later by
+other areas. Routes under `/console/v1/notifications`; every one answers for the signed-in person only:
+`user_id` comes from the session, no parameter or body field can name another person, and a row is only
+ever read or changed together with that filter and the company's row security.
+
+| Route | Parameters | Answer |
+|---|---|---|
+| `GET /notifications` | `limit` 1 to 50 (default 50; otherwise 422), `unread=true` to keep unread rows (default false) | `{"items": [...], "unread": n}`: newest first; `unread` is the person's whole unread count, not the page's |
+| `GET /notifications/count` | none | `{"unread": n}` |
+| `POST /notifications/read` | body `{"ids": ["<uuid>", ...]}` (up to 200) or `{"all": true}`, exactly one of the two (both, neither, `all: false` or an unknown field is 422) | `{"updated": n}`: the caller's unread rows that were marked |
+
+An item is `{id, kind, priority, message_key, params, link, read_at, created_at}`; `read_at` is `null` while
+unread. Ids in `ids` that are not the caller's, or unknown, are ignored: no error, they are not counted in
+`updated`, and nobody else's row is touched. Marking a read row again changes nothing (`read_at` stays).
+Rows older than 30 days are deleted, read or not, by the `console_notifications_purge` job (every six
+hours, per company, in batches of 1000).
+
+**Who may call.** Any active member of the company, `read_only` included: a read-only member reads their
+own rows and may call the POST (the only write they have besides the training summary). There is no
+package gate. A platform admin is not a member and has no rows: `GET /notifications` is
+`{"items": [], "unread": 0}`, `/count` is `{"unread": 0}`, and `POST /read` is `{"updated": 0}` (they
+still select a company with `client_id`, else 400). The POST needs the CSRF token like every other
+POST (403 without it); no session is 401; a machine principal is 403.
+
+**What the browser renders.** The server stores no finished text: `message_key` names the message (for
+the Inbox kinds it is the kind itself: `inbox.overdue`, `inbox.snooze_due`, `inbox.stale_claim`,
+`inbox.follow_up`, `inbox.handback`, `inbox.assigned`) and `params` fills it; the browser renders the
+text in its own language, as console users have no language setting. Inbox params are
+`conversation_id`, `customer` (display name; never message text) and `priority`, plus `waited_minutes`
+(overdue, stale claim, follow-up and handback: how long the wait has lasted), `repeat` (overdue only:
+the notice's number, from 1) and `assigned_by` (the user id of the assigner, for
+`inbox.assigned`). `priority` is `low`, `normal`, `high` or `urgent`. `link` says where the item leads and
+holds ids only: `{"route": "inbox", "conversation": "<conversation id>"}`; a client that does not know a
+route shows the text without a link.
 
 ## Workspace assistant
 
@@ -2666,10 +2732,11 @@ Who may call:
   [TRAINING_LIBRARY.md](./TRAINING_LIBRARY.md#the-hr-owner-dependency)). `can_manage` on the list
   says which a caller is. A plain staff member gets 403 `training_forbidden`.
 - A `read_only` member is refused every `POST`, `PUT`, `PATCH` and `DELETE` by the console's write rule
-  with 403 `write permission required` before the route runs, with one exception: `POST
-  /training/items/{id}/summary`. That exemption (`reader_may_post` in `csa/console/access.py`) holds
-  only when the matched route is that one and the decoded path is exactly that route with a
-  canonical UUID. CSRF and origin checks still apply to it. `read_only` asking for `regenerate: true`
+  with 403 `write permission required` before the route runs, with two exceptions: `POST
+  /training/items/{id}/summary` and `POST /notifications/read` (marking their own console
+  notifications read). Those exemptions (`reader_may_post` in `csa/console/access.py`) hold
+  only when the matched route is that route and the decoded path is exactly that route (with a
+  canonical UUID for the summary); a route is never paired with the other route's path. CSRF and origin checks still apply to it. `read_only` asking for `regenerate: true`
   gets 403 `training_forbidden`.
 
 | Method/path | Who | Result |
@@ -2850,7 +2917,7 @@ a plain sentence (see below).
 | 403 | `package_inactive` | The company's `training_library` package is not `active`. Every route, every role |
 | 403 | `human session required` | A machine token on a `GET` route |
 | 403 | `machine principal has read-only access` | A machine token on `POST`, `PUT`, `PATCH` or `DELETE` (the console's authentication, before the route runs) |
-| 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` |
+| 403 | `write permission required` | A `read_only` member on `POST`, `PUT`, `PATCH` or `DELETE`, except the summary `POST` and `POST /notifications/read` |
 | 403 | `training_forbidden` | A caller who may not manage (plain staff who is not the HR owner) on add, edit, remove or retry; anyone but a manager sending `regenerate: true` |
 | 404 | `training_not_found` | No item with that id in this company (another company's id too), also an item removed while its summary was being made; a video a reader may not see yet (not `ready`); `playback` or `video` of a manager's video with no file to play; `file` of a video, or `playback`, `video` and `transcript` of a PDF |
 | 409 | `training_key_conflict` | The `Idempotency-Key` was used for different content or a different name |

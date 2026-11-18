@@ -24,13 +24,16 @@ from csa.jobs.bookings import (
     run_turn_action_retention,
 )
 from csa.jobs.clock import Clock, SystemClock
+from csa.jobs.console_notifications import run_console_notifications_purge
 from csa.jobs.inbox_queue import run_inbox_snooze_wake
+from csa.jobs.inbox_reminders import run_inbox_reminders_sweep
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
 from csa.jobs.payments import run_payments_due
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
+from csa.jobs.reminders import run_reminders_fire
 from csa.jobs.subscriptions import run_subscriptions_due
 from csa.marketplace.retention import run_marketplace_catch_up, run_marketplace_purge
 
@@ -96,6 +99,41 @@ def build_default_registry(
             every=timedelta(minutes=1),
             fn=run_inbox_snooze_wake,
             per_client=True,
+        )
+    )
+    # Per company, the Inbox reminders the queue's SQL triggers could not schedule (overdue, stale
+    # claim, snoozes from before the reminders), up to 100 of each kind a run.
+    registry.register(
+        Job(
+            name="inbox_reminders_sweep",
+            every=timedelta(minutes=1),
+            fn=run_inbox_reminders_sweep,
+            per_client=True,
+        )
+    )
+    # Per company, each due reminder claimed, fired and settled in its own transaction on the app
+    # pool (one bad reminder does not undo the others), up to 500 a run.
+    registry.register(
+        Job(
+            name="reminders_fire",
+            every=timedelta(minutes=1),
+            fn=run_reminders_fire,
+            per_client=True,
+            own_transactions=True,
+            timeout=120.0,
+            batch_size=500,
+        )
+    )
+    # Per company, console notifications older than 30 days, deleted in batches of 1000 that each
+    # commit in a company transaction of their own on the app pool.
+    registry.register(
+        Job(
+            name="console_notifications_purge",
+            every=timedelta(hours=6),
+            fn=run_console_notifications_purge,
+            per_client=True,
+            own_transactions=True,
+            batch_size=1000,
         )
     )
     registry.register(

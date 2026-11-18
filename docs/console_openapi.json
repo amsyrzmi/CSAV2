@@ -8805,7 +8805,7 @@
       },
       "InboxFilters": {
         "additionalProperties": false,
-        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is due-first\nwhen every row in scope needs staff (`needs_staff_only`), newest activity first otherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
+        "description": "The list's filters and order, as a saved view stores them (never the search, a cursor\nor a limit). Empty lists, None and False filter nothing.\n\n`state`, `reason` and `topic` hold each value once (repeats are dropped) and at most as many\nvalues as there are (5, 4 and 7). `assignee` is ``me`` (the person asking), ``none`` (no\nassignee) or a user id (any id is accepted: one that holds nothing matches nothing).\n`handled_by` is ``person`` when the assistant is paused for the chat (``human_muted``: owned by\nsupport and the mute not ended, which a bot escalation also sets for a day) and ``assistant``\notherwise. `overdue` and `waiting_over` imply ``needs_staff``. Without `order` the list is\ndue-first when every row in scope needs staff (`needs_staff_only`), newest activity first\notherwise.\n`order=priority` sorts the rows in scope (no index holds the rank), so it is allowed only\nwhere they are the needs_staff rows.",
         "properties": {
           "assignee": {
             "anyOf": [
@@ -8840,6 +8840,21 @@
               }
             ],
             "title": "Channel"
+          },
+          "handled_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "assistant",
+                  "person"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handled By"
           },
           "order": {
             "anyOf": [
@@ -12893,6 +12908,106 @@
         "title": "NoSummary",
         "type": "object"
       },
+      "NotificationCount": {
+        "additionalProperties": false,
+        "description": "The person's unread count.",
+        "properties": {
+          "unread": {
+            "title": "Unread",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unread"
+        ],
+        "title": "NotificationCount",
+        "type": "object"
+      },
+      "NotificationList": {
+        "additionalProperties": false,
+        "description": "The newest notifications and the person's whole unread count (not the page's).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unread": {
+            "title": "Unread",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "unread"
+        ],
+        "title": "NotificationList",
+        "type": "object"
+      },
+      "NotificationOut": {
+        "additionalProperties": false,
+        "description": "One notification as the browser renders it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "link": {
+            "additionalProperties": true,
+            "title": "Link",
+            "type": "object"
+          },
+          "message_key": {
+            "title": "Message Key",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "priority": {
+            "title": "Priority",
+            "type": "string"
+          },
+          "read_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read At"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "priority",
+          "message_key",
+          "params",
+          "link",
+          "read_at",
+          "created_at"
+        ],
+        "title": "NotificationOut",
+        "type": "object"
+      },
       "NotificationRead": {
         "additionalProperties": false,
         "properties": {
@@ -12991,6 +13106,56 @@
           "read_at"
         ],
         "title": "NotificationRecord",
+        "type": "object"
+      },
+      "NotificationsMarked": {
+        "additionalProperties": false,
+        "description": "How many of the caller's unread rows were marked.",
+        "properties": {
+          "updated": {
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated"
+        ],
+        "title": "NotificationsMarked",
+        "type": "object"
+      },
+      "NotificationsRead": {
+        "additionalProperties": false,
+        "description": "What to mark read: a list of ids, or everything; exactly one of the two.",
+        "properties": {
+          "all": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All"
+          },
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids"
+          }
+        },
+        "title": "NotificationsRead",
         "type": "object"
       },
       "OperationReceipt": {
@@ -36993,6 +37158,26 @@
           },
           {
             "in": "query",
+            "name": "handled_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "assistant",
+                    "person"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Handled By"
+            }
+          },
+          {
+            "in": "query",
             "name": "q",
             "required": false,
             "schema": {
@@ -40274,6 +40459,242 @@
         "summary": "Read Picture",
         "tags": [
           "Media"
+        ]
+      }
+    },
+    "/console/v1/notifications": {
+      "get": {
+        "description": "The asking person's notifications, newest first; ``unread=true`` keeps the unread.",
+        "operationId": "list_notifications_console_v1_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "unread",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unread",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/count": {
+      "get": {
+        "description": "The asking person's unread count.",
+        "operationId": "count_notifications_console_v1_notifications_count_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationCount"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Count Notifications",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/read": {
+      "post": {
+        "description": "Mark the caller's notifications read, by ``ids`` or all; others' ids are ignored.",
+        "operationId": "mark_notifications_read_console_v1_notifications_read_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationsRead"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsMarked"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Notifications Read",
+        "tags": [
+          "notifications"
         ]
       }
     },

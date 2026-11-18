@@ -8,4 +8,4 @@ SET queue_status = 'snoozed',
     resolved_at = NULL,
     inbox_version = inbox_version + 1
 WHERE client_id = %s AND id = %s
-RETURNING id;
+RETURNING id, snoozed_until;

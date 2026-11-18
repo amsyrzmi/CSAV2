@@ -6,10 +6,11 @@ States (``conversations.queue_status``):
   stay here for good: :func:`enter`, :func:`replied` and :func:`held_reply_closed` do nothing for
   them and every staff action raises ``QueueError("not_in_queue")``.
 - ``needs_staff``: a person has to act. Only :func:`enter` (``public.inbox_queue_enter``, 0622, also
-  used by the message and escalation triggers) and :func:`wake_snoozed` put an item here; a
-  needs_staff row always has a reason, ``needs_staff_since`` and ``due_at``.
+  used by the message and escalation triggers), :func:`wake_snoozed` and :func:`wake_one` put an
+  item here; a needs_staff row always has a reason, ``needs_staff_since`` and ``due_at``.
 - ``waiting_customer``: a person answered (:func:`replied`).
-- ``snoozed``: hidden until ``snoozed_until`` (:func:`snooze`); :func:`wake_snoozed` returns it.
+- ``snoozed``: hidden until ``snoozed_until`` (:func:`snooze`); :func:`wake_snoozed` (the wake
+  job) or :func:`wake_one` (the ``inbox.snooze_due`` reminder) returns it.
 - ``resolved``: a person resolved it (:func:`resolve`) and the bot has the conversation again.
   It differs from ``bot`` for the Resolved tab only. A later customer message moves it to ``bot``
   through the 0622 trigger when the AI owns the conversation (``needs_staff`` when a person owns
@@ -38,9 +39,20 @@ Rules shared by every function here:
   the conversation row; a call that changes nothing writes nothing.
 - The staff actions (:func:`claim`, :func:`unclaim`, :func:`assign`, :func:`snooze`,
   :func:`resolve`, :func:`set_priority`, :func:`set_topic`, :func:`hand_back`) and a person's
-  answer (:func:`replied`) bump ``inbox_version`` once. :func:`enter`, :func:`held_reply_closed`
-  and :func:`wake_snoozed` do not: they are system moves (a bump there would make the next staff
-  action fail with 409), or the caller's own writes cover them (takeover).
+  answer (:func:`replied`) bump ``inbox_version`` once. :func:`enter`, :func:`held_reply_closed`,
+  :func:`wake_snoozed` and :func:`wake_one` do not: they are system moves (a bump there would make
+  the next staff action fail with 409), or the caller's own writes cover them (takeover).
+
+Reminders (plan 2a, decisions 2 and 4; :mod:`csa.inbox_queue.reminders`), on the same transaction
+and only when the transition changed something: :func:`replied` schedules ``inbox.follow_up`` and
+``inbox.handback`` and cancels the item's other pending reminders; :func:`snooze` schedules
+``inbox.snooze_due`` and cancels the rest; :func:`resolve` and :func:`hand_back` cancel all of
+them; a release, reassignment or takeover of a claim cancels ``inbox.stale_claim``. An
+assignment to someone other than the actor tells the new holder at once (``inbox.assigned``, a
+console notification). The SQL-made entries (:func:`enter`, the 0622 triggers) and the wakes
+schedule nothing here: the sweep does. A cancel never waits for a reminder row the fire job holds
+(:func:`csa.inbox_queue.reminders.cancel_pending`), so the lock order conversation, then
+reminder, cannot deadlock with the job's reminder, then conversation.
 """
 
 from __future__ import annotations
@@ -53,6 +65,10 @@ from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
 from csa.core import db
+
+# A module import, read at call time: csa.inbox_queue.reminders imports this module too, so
+# either may be imported first without touching a half-initialised name.
+from csa.inbox_queue import reminders as inbox_reminders
 from csa.inbox_queue import settings as inbox_settings
 from csa.staff.ownership import lock_conversation
 
@@ -134,10 +150,12 @@ async def _event(
         raise RuntimeError("inbox_queue_event_not_written")
 
 
-async def _changed(path: str, params: Any, conn: AsyncConnection[Any]) -> None:
-    """Run an UPDATE that must hit the locked row."""
-    if await db.q.fetch_one(path, params, conn=conn) is None:
+async def _changed(path: str, params: Any, conn: AsyncConnection[Any]) -> dict[str, Any]:
+    """Run an UPDATE that must hit the locked row; its RETURNING row."""
+    row = await db.q.fetch_one(path, params, conn=conn)
+    if row is None:
         raise RuntimeError(f"inbox_queue_update_missed: {path}")
+    return row
 
 
 def _refuse_if_unsafe(item: dict[str, Any], seen_customer_at: datetime | None) -> None:
@@ -230,6 +248,7 @@ async def _hand_back(
     )
     if not (human_muted or queue_changed or escalations or tickets):
         return False
+    await inbox_reminders.cancel_pending(conn, client_id, conversation_id)
     if human_muted:
         # The release of the /release route, inbox_version + 1 included.
         await db.q.execute(
@@ -268,14 +287,29 @@ async def _set_assignee(
     actor_user_id: UUID,
     action: str,
 ) -> None:
+    """Change the holder. Ends the old claim's stale-claim reminder; tells a holder chosen by
+    someone else (``inbox.assigned``), never a person who took it themselves."""
     previous: UUID | None = item["assignee_user_id"]
     if previous == assignee:
         return
-    await _changed(
+    row = await _changed(
         "inbox_queue/set_assignee.sql",
         {"assignee_user_id": assignee, "client_id": client_id, "conversation_id": conversation_id},
         conn,
     )
+    if previous is not None:  # released, reassigned or taken over: that claim's clock ends
+        await inbox_reminders.cancel_pending(
+            conn, client_id, conversation_id, (inbox_reminders.STALE_CLAIM,)
+        )
+    if assignee is not None and assignee != actor_user_id:
+        await inbox_reminders.notify_assigned(
+            conn,
+            client_id,
+            conversation_id,
+            assignee=assignee,
+            actor=actor_user_id,
+            claimed_at=row["claimed_at"],
+        )
     details: dict[str, Any] = {}
     if assignee is not None:
         details["assignee_user_id"] = str(assignee)
@@ -332,6 +366,9 @@ async def replied(
     conversation outside the queue. Bumps ``inbox_version`` once: only a person's answer reaches
     it (a customer message never does), so the version cannot be moved by the customer, and a
     person who read the item before the reply gets 409 instead of resolving over it.
+
+    Schedules the reply's follow-up and (while a person holds the chat) handback prompts and
+    cancels the item's other pending reminders. Its own claim for ``user_id`` announces nothing.
     """
     item = await _locked(conn, client_id, conversation_id)
     if not item["in_queue"]:
@@ -353,6 +390,13 @@ async def replied(
         from_status=item["queue_status"],
         to_status="waiting_customer",
         details={"assignee_user_id": str(row["assignee_user_id"])} if claimed else None,
+    )
+    await inbox_reminders.schedule_follow_up(
+        conn,
+        client_id,
+        conversation_id,
+        row["last_staff_reply_at"],
+        human_muted=bool(item["human_muted"]),
     )
 
 
@@ -408,34 +452,56 @@ async def wake_snoozed(conn: AsyncConnection[Any], client_id: UUID, *, limit: in
     targets = await inbox_settings.load(conn, client_id)
     woke = 0
     for candidate in sorted(candidates, key=lambda r: r["id"]):
-        conversation_id: UUID = candidate["id"]
-        item = await _locked(conn, client_id, conversation_id)
-        if not item["in_queue"] or item["queue_status"] != "snoozed":
-            continue
-        last_customer, last_staff = item["last_customer_at"], item["last_staff_reply_at"]
-        customer_wrote_last = last_customer is not None and (
-            last_staff is None or last_customer > last_staff
-        )
-        reason = "customer_message" if customer_wrote_last else "manual"
-        row = await db.q.fetch_one(
-            "inbox_queue/wake.sql",
-            (reason, targets.target_minutes(item["priority"]), client_id, conversation_id),
-            conn=conn,
-        )
-        if row is None:  # its time moved on meanwhile
-            continue
-        await _event(
-            conn,
-            client_id,
-            conversation_id,
-            actor_user_id=None,
-            action="woke",
-            from_status="snoozed",
-            to_status="needs_staff",
-            details={"reason": reason, "priority": item["priority"]},
-        )
-        woke += 1
+        woke += await _wake(conn, client_id, candidate["id"], targets)
     return woke
+
+
+async def wake_one(conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID) -> bool:
+    """Wake one snoozed item whose time has come, as :func:`wake_snoozed` does; True if it woke.
+
+    The ``inbox.snooze_due`` reminder calls it when it fires (plan 2a, decision 12). The same
+    effect as the wake job for this row: reason, fresh clock, claim kept, event ``woke`` with no
+    actor, no version bump. False when the item is not snoozed (the wake job or a customer
+    message moved it first), is outside the queue, or its ``snoozed_until`` has not passed by the
+    database clock. An unknown conversation raises ``QueueError("not_in_queue")``.
+    """
+    targets = await inbox_settings.load(conn, client_id)
+    return await _wake(conn, client_id, conversation_id, targets)
+
+
+async def _wake(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    conversation_id: UUID,
+    targets: inbox_settings.InboxSettings,
+) -> bool:
+    """Lock the item, and wake it when it is still snoozed and due; True when it woke."""
+    item = await _locked(conn, client_id, conversation_id)
+    if not item["in_queue"] or item["queue_status"] != "snoozed":
+        return False
+    last_customer, last_staff = item["last_customer_at"], item["last_staff_reply_at"]
+    customer_wrote_last = last_customer is not None and (
+        last_staff is None or last_customer > last_staff
+    )
+    reason = "customer_message" if customer_wrote_last else "manual"
+    row = await db.q.fetch_one(
+        "inbox_queue/wake.sql",
+        (reason, targets.target_minutes(item["priority"]), client_id, conversation_id),
+        conn=conn,
+    )
+    if row is None:  # its time moved on meanwhile
+        return False
+    await _event(
+        conn,
+        client_id,
+        conversation_id,
+        actor_user_id=None,
+        action="woke",
+        from_status="snoozed",
+        to_status="needs_staff",
+        details={"reason": reason, "priority": item["priority"]},
+    )
+    return True
 
 
 # --- staff actions (each bumps inbox_version once) ------------------------------------------------
@@ -492,7 +558,8 @@ async def snooze(
 ) -> None:
     """Hide the item until ``until`` (timezone-aware, in the future); the claim stays.
 
-    Refusals: ``until_in_past``, then those of :func:`resolve`.
+    Refusals: ``until_in_past``, then those of :func:`resolve`. Schedules ``inbox.snooze_due`` at
+    ``until`` and cancels the item's other pending reminders.
     """
     if until.tzinfo is None:
         raise ValueError("until must be timezone-aware")
@@ -500,7 +567,10 @@ async def snooze(
     if until <= datetime.now(UTC):
         raise QueueError("until_in_past")
     _refuse_if_unsafe(item, seen_customer_at)
-    await _changed("inbox_queue/snooze.sql", (until, client_id, conversation_id), conn)
+    row = await _changed("inbox_queue/snooze.sql", (until, client_id, conversation_id), conn)
+    await inbox_reminders.schedule_snooze_due(
+        conn, client_id, conversation_id, row["snoozed_until"]
+    )
     await _event(
         conn,
         client_id,

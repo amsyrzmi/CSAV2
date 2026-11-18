@@ -28,6 +28,7 @@ from csa.console.kb_contracts import JobCancelledOut, JobOut, JobsDismissedOut, 
 from csa.console.kb_uploads import RemovedOut, build_upload_router, cleanup_after_remove, removed
 from csa.console.kb_uploads import audit as kb_audit
 from csa.console.kb_uploads import writer as kb_writer
+from csa.console.notifications import build_notifications_router
 from csa.console.services import build_services_router, package_gate
 from csa.console.voice import build_voice_router
 from csa.console.voice_sessions import build_voice_sessions_router
@@ -148,6 +149,7 @@ def build_router(
     router.include_router(build_voice_sessions_router())
     router.include_router(build_workspace_router())
     router.include_router(build_inbox_router())
+    router.include_router(build_notifications_router())
     router.include_router(build_business_router())
     router.include_router(build_billing_router())
     router.include_router(build_billing_admin_router())

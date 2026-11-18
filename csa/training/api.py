@@ -2,9 +2,10 @@
 
 Every route belongs to the ``training_library`` package and to human sessions only. Who may
 manage is decided per request in ``access.can_manage``; reading is open to every member of the
-company, ``read_only`` included. Asking for a summary counts as reading (the console's write rule
-lets ``read_only`` make that one POST, see ``csa.console.access.reader_may_post``); regenerating
-one is managing.
+company, ``read_only`` included. Asking for a summary counts as reading: the console's write rule
+has two read-only exemptions, the training summary POST (this module) and ``POST
+/notifications/read``, which marks a person's own notifications read (see
+``csa.console.access.reader_may_post``); regenerating a summary is managing.
 """
 
 # No ``from __future__ import annotations``: the store dependency is a closure here, and FastAPI

@@ -21,6 +21,7 @@ from csa.inbox_queue.transitions import QueueError
 
 from tests.conftest import requires_docker
 from tests.test_bookings_schema import _owner
+from tests.test_console_notifications_schema import member
 from tests.test_inbox_queue_triggers import (
     Seeded,
     _approval,
@@ -924,3 +925,60 @@ def test_settings_defaults_equal_the_column_defaults(migrated_dsn: str) -> None:
     columns = {r["column_name"]: int(r["column_default"]) for r in rows}
     assert columns == inbox_settings.InboxSettings().model_dump()
     assert len(columns) == 9
+
+
+# --- reminders and announcements (plan 2a, task 6) ------------------------------------------------
+
+
+def _reminder_states(dsn: str, s: Seeded) -> dict[str, str]:
+    with _owner(dsn) as conn:
+        rows = conn.execute(
+            "SELECT kind, state FROM reminders WHERE subject_id = %s ORDER BY created_at",
+            (s.conversation_id,),
+        ).fetchall()
+    return {r["kind"]: r["state"] for r in rows}
+
+
+async def test_snooze_reply_and_resolve_keep_the_reminders_in_step(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c, "tenant_staff")
+    s = _taken_over(migrated_dsn, c, **_needs_staff("manual"))
+    until = datetime.now(UTC) + timedelta(hours=1)
+    await _on(
+        app_dsn,
+        s,
+        queue.snooze,
+        actor_user_id=uuid.UUID(person),
+        until=until,
+        seen_customer_at=None,
+    )
+    assert _reminder_states(migrated_dsn, s) == {"inbox.snooze_due": "scheduled"}
+    await _on(app_dsn, s, queue.replied, user_id=uuid.UUID(person))
+    assert _reminder_states(migrated_dsn, s) == {
+        "inbox.snooze_due": "cancelled",
+        "inbox.follow_up": "scheduled",
+        "inbox.handback": "scheduled",
+    }
+    await _on(app_dsn, s, queue.resolve, actor_user_id=uuid.UUID(person), seen_customer_at=None)
+    assert set(_reminder_states(migrated_dsn, s).values()) == {"cancelled"}
+
+
+async def test_assign_tells_the_assignee_and_claim_tells_nobody(
+    migrated_dsn: str, app_dsn: str
+) -> None:
+    c = _company(migrated_dsn)
+    admin = member(migrated_dsn, c, "tenant_admin")
+    staff = member(migrated_dsn, c, "tenant_staff")
+    s = _seed(migrated_dsn, c, owned_by="human_support", **_needs_staff("manual"))
+    await _on(app_dsn, s, queue.claim, user_id=uuid.UUID(admin))
+    await _on(
+        app_dsn, s, queue.assign, assignee_id=uuid.UUID(staff), actor_user_id=uuid.UUID(admin)
+    )
+    with _owner(migrated_dsn) as conn:
+        rows = conn.execute(
+            "SELECT user_id::text AS user_id, kind FROM console_notifications WHERE client_id = %s",
+            (c,),
+        ).fetchall()
+    assert rows == [{"user_id": staff, "kind": "inbox.assigned"}]

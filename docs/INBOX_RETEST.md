@@ -18,8 +18,8 @@ An action looks like `POST /console/v1/inbox/conversations/<id>/queue/resolve` w
 new `request_key` for every action you want to run.
 
 You need, in the test company: a tenant admin, a plain `tenant_staff` member, a `read_only` member, and
-a Telegram customer you control (a second Telegram account, or the test chat). Nothing here sends a
-reminder or a notification: those arrive in a later change.
+a Telegram customer you control (a second Telegram account, or the test chat). Nothing in the rows above sends a
+reminder or a notification: those are in "Reminder rows (plan 2a)" below.
 
 ## Rows
 
@@ -60,14 +60,37 @@ held reply waiting for a decision. Every row is "manual, not yet run by the owne
 | Empty states per tab | Resolve or snooze everything until each tab is empty, with no filter and no search. Then switch to a company with no conversations at all (platform admin, Tenant) | Needs us: "Nothing needs your team right now" with the assistant's resting avatar and a "See all conversations" button that opens All. Mine "Nothing is assigned to you", Unassigned "Nothing is waiting for someone to take it", Overdue "Nothing is overdue", Waiting on customer "No one is waiting on a customer", Snoozed "Nothing is snoozed", Resolved "No resolved conversations yet". A company with no conversations shows "No conversations yet" with Connect WhatsApp (an administrator) or "Ask your administrator to connect WhatsApp." (staff), on any tab. With a filter or search on, an empty list says nothing matched and offers to clear it instead | manual, not yet run by the owner |
 | Three themes and 390 px | Repeat the tabs, a row, the thread actions, the bulk bar, Views and Response times in the Cobalt, Night and Bureau themes. Then on a phone (or a 390 px wide window) | Every label, count and button is readable in all three themes, meaning is always in words, and no colour is the only signal. At 390 px the tabs scroll sideways inside their own strip while the page does not; search is one line; Filters opens as a full-width sheet; Views and Response times fit the screen; the thread opens full width with Back; Select mode shows the boxes; nothing scrolls the page sideways | manual, not yet run by the owner |
 
+## Reminder rows (plan 2a)
+
+Run these on staging after the rollout that brings plan 2a (branch `feat/inbox-reminders`: migrations
+`0623`, `0624` and `0625`, backend only, no screen). Same company, members and Telegram customer as
+above, plus the company's staff chat connected as a notification target. Set `repeat_minutes` to 15,
+`target_high_min` to 5 and `target_normal_min` to 5 (all three are at their minimum) in
+`PUT /inbox/settings` first, and put them back afterwards (60 and 240 for the targets, and the
+`repeat_minutes` you read first). An escalation is priority high and a takeover is normal, so both
+targets are set: each row below waits the target of its own item's priority. Notifications are read with `GET /console/v1/notifications` and
+`GET /console/v1/notifications/count` as the signed-in person; the bell and panel come with plan 2b.
+The staff-chat target needs the `inbox.overdue` event: 0625 adds it to every target that was enabled at
+the rollout, so a chat connected afterwards must have it added by hand. Every row is "manual, not yet
+run by the owner".
+
+| Check | Setup | Expected | Kind |
+| --- | --- | --- | --- |
+| An overdue alert reaches the staff chat in English and Malay | As the Telegram customer make an escalation and leave it alone for about 6 minutes (the high target of 5 plus a minute for the job). Read the chat. Then set the target's `language` to `ms` (an operator sets it in the database: no route or page does until PR 3) and let a second escalation go overdue | The staff chat receives one message that the conversation is overdue, naming the customer by display name only (no message text), in English; after the change the next one is in Malay. Each team member also has one `inbox.overdue` console notification, `GET /notifications/count` is one higher, and no one sees a duplicate after a minute | manual, not yet run by the owner |
+| The repeat and the third repeat reach the admins | Leave that item untouched through the repeats (`repeat_minutes` 15; `max_repeats` is 3 by default) | The first repeat comes about 15 minutes after the first notice and is one priority level higher; the last one (the third repeat) also names every tenant admin, who each get a console notification even when they did not hold the item. Nothing is sent after the last | manual, not yet run by the owner |
+| A snoozed chat comes back and the assignee is notified once | Take an item as the tenant admin, then `POST .../queue/snooze` with `until` about three minutes ahead. Wait until a few minutes past `until`, then read `GET /notifications` as that admin | The item is `needs_staff` again (the wake job or the reminder did it) and the admin has exactly one `inbox.snooze_due` notification for it, not two | manual, not yet run by the owner |
+| Assigning to a colleague notifies them | As the tenant admin `POST .../queue/assign` an item to `tenant_staff`; read `GET /notifications` as that staff member. Assign it to yourself and read yours | The staff member has one `inbox.assigned` notification linking to the conversation, naming the customer by display name only. Assigning to yourself sends nothing. Sending the same assign again with the same `request_key` adds no second notification | manual, not yet run by the owner |
+| Quiet hours hold a chat alert but not the console row | Give the staff-chat target quiet hours that cover now (one hour either side, in the company's timezone) with `min_priority` low, then make an escalation, set its priority to Normal (More, Set priority…) and leave it unclaimed for about 6 minutes so it goes overdue as a normal priority item | The console notification appears at once for the team; the staff-chat message does not arrive until the quiet hours end. Only the first notice (normal) and the first repeat (high) are held: a message that reaches urgent, which the second repeat does from normal, is not held. Remove the quiet hours afterwards | manual, not yet run by the owner |
+| Filter by who handles the chat | `GET /inbox/conversations?handled_by=person`, then `?handled_by=assistant`; then save a view whose `filters` carry `"handled_by":"person"` and apply it | `person` returns the chats where a person owns the conversation and the assistant is paused (including an escalation that is still unopened, as the assistant pauses for a day); `assistant` returns the rest; together they cover every chat once. The saved view keeps the filter; any other value is 422 | manual, not yet run by the owner |
+
 ## Operations
 
 - `db/sql/ops/expire_stuck_approvals.sql` (the runbook's way to expire stuck approvals) settles them
   without the queue code. After such a run a `held_reply` item can keep that reason although no reply is
   pending any more; resolve it (resolve is no longer refused, as nothing is pending) or act on it.
 - A `waiting_customer` item never leaves on its own: it stays in Waiting on customer until the customer
-  writes or a person resolves or hands it back. The follow-up reminders of a later change will point at
-  old ones.
+  writes or a person resolves or hands it back. The follow-up and handback reminders (plan 2a) point at
+  old ones, at the hours set in Response times.
 - At rollout the migration queues only escalations whose conversation is still held and unanswered,
   and only within the last 30 days; older ones, and conversations the assistant owns again, stay `bot`
   (reachable in All). A person-owned conversation left `bot` this way (waiting on the customer for more
@@ -77,7 +100,7 @@ held reply waiting for a decision. Every row is "manual, not yet run by the owne
 ## Notes
 
 - The history of every move is stored (who, from, to), but no route reads it yet: it is for the later
-  history line and reminders.
+  history line (the reminders read the item itself, not this history).
 - Contact search (`q`) reads the company's conversations until a page fills (no trigram index); with the
   test company's few conversations it is instant. The scale limit is in CONSOLE_API.md.
 - Rows that need the assistant to escalate or hold a reply depend on the test company's replies setup

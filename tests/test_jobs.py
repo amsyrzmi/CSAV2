@@ -19,11 +19,13 @@ from csa.jobs.bookings import (
     run_turn_action_retention,
 )
 from csa.jobs.clock import FakeClock
+from csa.jobs.console_notifications import run_console_notifications_purge
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
+from csa.jobs.reminders import run_reminders_fire
 from csa.jobs.runner import JobRunner, build_default_registry
 
 from tests.conftest import owner_dsn_for, requires_docker
@@ -544,6 +546,23 @@ async def test_registry_queues_payment_reminders_every_fifteen_minutes_per_compa
     assert job.timeout == 120.0
     due = build_default_registry().get("payments_due")
     assert due is not None and due.timeout == 120.0
+
+
+async def test_registry_fires_due_reminders_every_minute_per_company() -> None:
+    job = build_default_registry().get("reminders_fire")
+    assert job is not None and job.fn is run_reminders_fire
+    assert job.every == timedelta(minutes=1)
+    # Per company, each reminder in its own transaction on the app pool, up to 500 a run.
+    assert job.per_client is True and job.own_transactions is True
+    assert job.timeout == 120.0 and job.batch_size == 500
+
+
+async def test_registry_purges_old_console_notifications_every_six_hours_per_company() -> None:
+    job = build_default_registry().get("console_notifications_purge")
+    assert job is not None and job.fn is run_console_notifications_purge
+    assert job.every == timedelta(hours=6)
+    # Per company, each batch of 1000 rows in its own transaction on the app pool.
+    assert job.per_client is True and job.own_transactions is True and job.batch_size == 1000
 
 
 async def test_registry_sends_payment_reminder_mail_every_five_minutes_for_everyone() -> None:

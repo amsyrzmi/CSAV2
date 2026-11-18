@@ -415,6 +415,14 @@ plus parameters) so each surface renders it in its own language:
 
 Per-person Telegram messages are out of scope (the console user has no Telegram identity).
 
+Note (plan 2a, 2026-11-18): migration 0625 as built is "target language and the overdue opt-in"
+(`staff_notification_targets.language`, and `inbox.overdue` appended to the events of every enabled
+target), because the language-aware formatter ships in PR 2. The per-person preferences
+(`console_notification_prefs`) move to 0626, in PR 3. Plan 2a's decision 13 records one deviation from
+scenario 3 (section 10): the owner of a chat is not notified the instant the customer writes again,
+since section 7.3 defines no kind for it and the return to Needs us happens in a SQL trigger; the owner
+is reminded by the new clock's `inbox.overdue` instead.
+
 ### 7.3 Inbox reminders
 
 | Kind | Fires | To | Notes |
@@ -428,6 +436,11 @@ Per-person Telegram messages are out of scope (the console user has no Telegram 
 
 The existing immediate events (`escalation`, `approval_needed`, `booking_pending`) stay as they are and
 are not duplicated; the inbox reminders cover waiting time.
+
+Plan 2a decisions on this table: the overdue priority raise starts at the first repeat (the second
+fire, `fire_count >= 1` in `csa/inbox_queue/reminders.py`), not at the second repeat as the row above
+says. A staff-chat message held by quiet hours is delivered when they end even if the item has moved on
+by then (the console rows are unaffected); this is a known limit until PR 3.
 
 - **Existing items at rollout.** A one-time job in PR 2 schedules the overdue reminder for each
   backfilled `needs_staff` item with a fresh clock (due one response target after rollout), so no company
@@ -476,9 +489,12 @@ of HR is not part of this project.
    `csa/reminders`, the firing job, the Inbox reminder kinds, the one-time schedule for existing items,
    `console_notifications`, the bell and panel, the Overview strip and navigation badge, the
    language-aware staff-chat formatter with the new events, and the migration that opts existing
-   targets into `inbox.overdue`.
-3. **Targets page and delivery options (0625 target language and per-person preferences).** The
-   notification targets page, the email sender and per-person email preferences.
+   targets into `inbox.overdue`. Note: PR 2 is built as plan 2a, the backend (everything above except
+   the bell, panel, Overview strip and navigation badge, which also covers 0623 to 0625 and the
+   `handled_by` filter), and plan 2b, the screen.
+3. **Targets page and delivery options (0626 per-person preferences).** The notification targets page,
+   the email sender and per-person email preferences. Note: 0625 became "target language and the
+   overdue opt-in" and ships in PR 2 (see section 7.2); PR 3 takes 0626.
 
 Each PR is independently shippable. Migrations stop all four services during a staging rollout; the
 columns are additive and defaulted, so old code keeps working against the new schema.

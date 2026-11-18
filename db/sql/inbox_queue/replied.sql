@@ -15,4 +15,4 @@ SET queue_status = 'waiting_customer',
     claimed_at = CASE WHEN c.assignee_user_id IS NULL AND %(user_id)s::uuid IS NOT NULL
                       THEN now() ELSE c.claimed_at END
 WHERE c.client_id = %(client_id)s AND c.id = %(conversation_id)s
-RETURNING c.assignee_user_id;
+RETURNING c.assignee_user_id, c.last_staff_reply_at;

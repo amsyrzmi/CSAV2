@@ -223,6 +223,9 @@ BAD_FILTERS: tuple[dict[str, Any], ...] = (
     {"topic": ["weather"]},
     {"channel": "web"},
     {"sender": "vip"},
+    {"handled_by": "robot"},
+    {"handled_by": ""},
+    {"handled_by": ["person"]},
     {"overdue": "perhaps"},
     {"waiting_over": 0},
     {"waiting_over": 525601},
@@ -312,6 +315,7 @@ async def test_the_stored_filter_model_is_the_lists_model() -> None:
         "topic",
         "channel",
         "sender",
+        "handled_by",
         "overdue",
         "waiting_over",
         "order",
@@ -325,6 +329,36 @@ async def test_the_stored_filter_model_is_the_lists_model() -> None:
         InboxFilters.model_validate({"order": "priority"})
     loaded = InboxFilters.model_validate({"state": ["needs_staff"], "order": "priority"})
     assert QueueFilter(**loaded.model_dump()).effective_order() == "priority"
+
+
+async def test_a_view_keeps_handled_by_and_returns_it(sessions: SessionWorld) -> None:
+    w = sessions
+    filters = {"handled_by": "person", "state": ["needs_staff"]}
+    created = await _create(w, "Assistant paused", filters)
+    assert created.status_code == 201, created.text
+    view = created.json()
+    assert view["filters"]["handled_by"] == "person"
+    [stored] = await w.q("SELECT filters FROM inbox_saved_views WHERE id = %s", UUID(view["id"]))
+    assert stored["filters"] == {"handled_by": "person", "state": ["needs_staff"]}
+    listed = (await w.admin.get(views_path(w))).json()
+    assert [v["filters"]["handled_by"] for v in listed] == ["person"]
+    replaced = await w.mutate(
+        w.admin, views_path(w, view["id"]), {"filters": {"handled_by": "assistant"}}, method="PUT"
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["filters"]["handled_by"] == "assistant"
+    cleared = await w.mutate(w.admin, views_path(w, view["id"]), {"filters": {}}, method="PUT")
+    assert cleared.json()["filters"]["handled_by"] is None
+    [stored] = await w.q("SELECT filters FROM inbox_saved_views WHERE id = %s", UUID(view["id"]))
+    assert stored["filters"] == {}
+    # A view made before this filter existed has no key and still reads back.
+    await w.q(
+        "UPDATE inbox_saved_views SET filters = %s::jsonb WHERE id = %s",
+        '{"state": ["snoozed"]}',
+        UUID(view["id"]),
+    )
+    [old] = (await w.admin.get(views_path(w))).json()
+    assert old["filters"]["handled_by"] is None and old["filters"]["state"] == ["snoozed"]
 
 
 async def test_staff_and_admins_may_keep_views_and_read_only_may_not(
