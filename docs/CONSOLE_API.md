@@ -215,7 +215,12 @@ people with basic fields only. The HR-only fields (`employment_profile`, `versio
   `account` (`{user_id, display_name}` or `null`), the `on` switches, the `custom` rows and
   `is_owner`.
 - `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
-  manager loop (shown flat). `directory` viewers see active and starting people.
+  manager loop (shown flat). `directory` viewers see active and starting people. Each node is
+  `{employee_id, display_name, job_title, department, manager_id}` plus `department_id`, `status`
+  (`active`, `starting` or `leaving`; never `left`), `start_date`, `last_day` and
+  `legal_entity_reference`. The last four come from the same row rules as the People list: only
+  HR, the person and their direct manager get `last_day` (a leaving person reads `active` to
+  everyone else), and only HR gets `legal_entity_reference`; otherwise they are `null`.
 - `GET /departments` returns `DepartmentList`: each `{department_id, name, archived, version,
   people}`. `hr` and `directory` viewers only.
 - `GET /home` returns `HrHome` (`training_waiting`, `requests_waiting`): counts of what waits for

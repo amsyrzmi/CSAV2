@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import Any, Literal, get_args
+from typing import Any, Literal, cast, get_args
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -16,6 +16,7 @@ from csa.hr.people_contracts import (
     LeavingOut,
     OrgChart,
     OrgNode,
+    OrgStatus,
     PeoplePage,
     PersonStatus,
     ProfileSection,
@@ -186,6 +187,13 @@ def org_chart(people: Sequence[HrPersonOut]) -> OrgChart:
             job_title=p.job_title,
             department=p.department,
             manager_id=None if p.employee_id in looped else parent[p.employee_id],
+            department_id=p.department_id,
+            status=cast(OrgStatus, p.status),  # `left` was filtered out above
+            start_date=p.start_date,
+            last_day=p.last_day,
+            legal_entity_reference=(
+                p.employment_profile.legal_entity_reference if p.employment_profile else None
+            ),
         )
         for p in present
     ]

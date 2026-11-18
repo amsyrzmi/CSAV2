@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 PersonStatus = Literal["active", "starting", "leaving", "left"]
+OrgStatus = Literal["active", "starting", "leaving"]
 ProfileSection = Literal["overview", "personal", "documents", "access", "history"]
 HistoryField = Literal[
     "display_name",
@@ -148,6 +149,14 @@ class OrgNode(HrModel):
     job_title: str | None
     department: str | None
     manager_id: UUID | None
+    department_id: UUID | None = None
+    # `left` people are never nodes. A viewer whose row hides the last day reads `active`.
+    status: OrgStatus
+    start_date: date | None = None
+    # Both follow the existing people row rules: HR, the person and their direct manager for the
+    # last day; HR only for the legal entity. Anyone else gets null.
+    last_day: date | None = None
+    legal_entity_reference: str | None = None
 
 
 class OrgChart(HrModel):

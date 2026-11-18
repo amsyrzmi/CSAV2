@@ -13138,6 +13138,18 @@
             ],
             "title": "Department"
           },
+          "department_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department Id"
+          },
           "display_name": {
             "title": "Display Name",
             "type": "string"
@@ -13158,6 +13170,29 @@
             ],
             "title": "Job Title"
           },
+          "last_day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day"
+          },
+          "legal_entity_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Entity Reference"
+          },
           "manager_id": {
             "anyOf": [
               {
@@ -13169,6 +13204,27 @@
               }
             ],
             "title": "Manager Id"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "starting",
+              "leaving"
+            ],
+            "title": "Status",
+            "type": "string"
           }
         },
         "required": [
@@ -13176,7 +13232,8 @@
           "display_name",
           "job_title",
           "department",
-          "manager_id"
+          "manager_id",
+          "status"
         ],
         "title": "OrgNode",
         "type": "object"

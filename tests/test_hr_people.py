@@ -1823,6 +1823,56 @@ async def test_history_is_cut_at_two_hundred(world: HrWorld) -> None:
     ]
 
 
+ORG_NODE_KEYS = {
+    "employee_id",
+    "display_name",
+    "job_title",
+    "department",
+    "manager_id",
+    "department_id",
+    "status",
+    "start_date",
+    "last_day",
+    "legal_entity_reference",
+}
+
+
+async def org_nodes(world: HrWorld, who: str) -> dict[str, dict[str, Any]]:
+    chart = await get_ok(world, who, f"{BASE}/org-chart")
+    return {n["employee_id"]: n for n in chart["nodes"]}
+
+
+async def test_org_chart_nodes_by_viewer(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await world.q(
+        "UPDATE hr_employees SET last_day=current_date + 5, leaving_reason='resigned', "
+        "region='sabah', legal_entity_reference='Synthetic Sdn Bhd', "
+        "employment_category='permanent', start_date='2020-01-01' WHERE client_id=%s AND id=%s",
+        (world.tenant, staff),
+    )
+    learning = (await departments(world))["Learning"]
+
+    hr_nodes = await org_nodes(world, "owner")
+    for node in hr_nodes.values():
+        assert set(node) == ORG_NODE_KEYS
+    seen = hr_nodes[str(staff)]
+    assert seen["status"] == "leaving"
+    assert seen["last_day"] is not None and seen["legal_entity_reference"] == "Synthetic Sdn Bhd"
+    assert seen["start_date"] == "2020-01-01" and seen["department_id"] == str(learning)
+
+    # A directory viewer sees neither the last day nor the legal entity; the person reads active.
+    colleague = (await org_nodes(world, "operator"))[str(staff)]
+    assert colleague["status"] == "active"
+    assert colleague["last_day"] is None and colleague["legal_entity_reference"] is None
+    assert colleague["department_id"] == str(learning)
+
+    # The person's direct manager sees the last day (the row rule) but never the legal entity.
+    await world.grant("manager", "directory.read", "hr_operator")
+    managed = (await org_nodes(world, "manager"))[str(staff)]
+    assert managed["status"] == "leaving" and managed["last_day"] == seen["last_day"]
+    assert managed["legal_entity_reference"] is None
+
+
 async def test_org_chart_and_departments(world: HrWorld) -> None:
     await deactivate(world, "outsider")
     chart = await get_ok(world, "operator", f"{BASE}/org-chart")
@@ -1832,7 +1882,7 @@ async def test_org_chart_and_departments(world: HrWorld) -> None:
     }
     assert str(world.employees["outsider"]) not in {n["employee_id"] for n in chart["nodes"]}
     for node in chart["nodes"]:
-        assert set(node) == {"employee_id", "display_name", "job_title", "department", "manager_id"}
+        assert set(node) == ORG_NODE_KEYS
     parents = {n["employee_id"]: n["manager_id"] for n in chart["nodes"]}
     assert parents[str(world.employees["staff"])] == str(world.employees["manager"])
     assert parents[str(world.employees["manager"])] is None
