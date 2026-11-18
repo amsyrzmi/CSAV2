@@ -842,6 +842,28 @@ def test_app_services_mount_nothing_from_the_checkout() -> None:
             for field in ("name", "external", "driver_opts"):
                 assert field not in (definition or {}), f"{path.name}: volume {name} sets {field}"
 
+    # Pinned names: a rename or a drop would make the next rollout create a new, empty volume.
+    assert declared == {
+        "staging-db",
+        "staging-embeddings",
+        "staging-hr-uploads",
+        "staging-training-uploads",
+        "staging-uploads",
+    }, "a staging volume was renamed, added or dropped: the next rollout would start it empty"
+
+    # Secrets are the only file-backed top-level resource, and each one stays under the secret
+    # directory (raw YAML text, before compose interpolates it).
+    for path, document in documents.items():
+        for name, definition in (document.get("secrets") or {}).items():
+            raw = str((definition or {}).get("file", ""))
+            assert raw.startswith("${CSA_STAGING_SECRET_DIR"), f"{path.name}: secret {name}: {raw}"
+            assert ".." not in raw, f"{path.name}: secret {name} climbs out: {raw}"
+        for field in ("configs", "include"):
+            assert field not in document, f"{path.name} declares top-level {field}"
+        for service, definition in (document.get("services") or {}).items():
+            for field in ("extends", "configs"):
+                assert field not in (definition or {}), f"{path.name}: {service} sets {field}"
+
     merged: dict[str, list[object]] = {}
     for document in documents.values():
         for service, definition in (document.get("services") or {}).items():
@@ -885,7 +907,9 @@ def _render_staging_stack(project_root: Path, secret_dir: Path) -> dict:
         text=True,
         env=env,
     )
-    return json.loads(result.stdout.replace(str(project_root), str(REPO_ROOT)))
+    # The render must not contain the checkout path at all (a checkout-relative mount would).
+    assert str(project_root) not in result.stdout, "the render contains the checkout path"
+    return json.loads(result.stdout)
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
