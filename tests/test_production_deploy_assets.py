@@ -1867,8 +1867,8 @@ JOB_PERMISSIONS = {
 PIN = re.compile(r"^\s*(?:- )?uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v\d+\.\d+\.\d+$")
 
 
-def _workflow() -> str:
-    return WORKFLOW.read_text(encoding="utf-8")
+def _workflow(path: Path = WORKFLOW) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def _children(text: str, header: str, *, direct: bool = True) -> list[str]:
@@ -1888,19 +1888,19 @@ def _children(text: str, header: str, *, direct: bool = True) -> list[str]:
     return nested
 
 
-def _jobs() -> dict[str, str]:
-    section = _workflow().split("\njobs:\n", 1)[1]
+def _jobs(path: Path = WORKFLOW) -> dict[str, str]:
+    section = _workflow(path).split("\njobs:\n", 1)[1]
     parts = re.split(r"^  ([a-z][a-z0-9_-]*):\n", section, flags=re.MULTILINE)
     return dict(zip(parts[1::2], parts[2::2], strict=True))
 
 
-def _steps(job: str) -> list[str]:
-    body = _jobs()[job].split("\n    steps:\n", 1)[1]
+def _steps(job: str, path: Path = WORKFLOW) -> list[str]:
+    body = _jobs(path)[job].split("\n    steps:\n", 1)[1]
     return re.split(r"^      - ", body, flags=re.MULTILINE)[1:]
 
 
-def _step(job: str, name: str) -> str:
-    (step,) = [step for step in _steps(job) if step.startswith(f"name: {name}\n")]
+def _step(job: str, name: str, path: Path = WORKFLOW) -> str:
+    (step,) = [step for step in _steps(job, path) if step.startswith(f"name: {name}\n")]
     return step
 
 
@@ -1928,9 +1928,9 @@ def _run_blocks(text: str) -> list[str]:
 
 
 def _run_step(
-    job: str, name: str, env: dict[str, str], cwd: Path
+    job: str, name: str, env: dict[str, str], cwd: Path, path: Path = WORKFLOW
 ) -> subprocess.CompletedProcess[bytes]:
-    (block,) = _run_blocks(_step(job, name))
+    (block,) = _run_blocks(_step(job, name, path))
     return subprocess.run(
         ["bash", "-c", block], env=env, cwd=cwd, capture_output=True, timeout=30, check=False
     )
@@ -2038,6 +2038,7 @@ def test_workflow_fails_closed_on_missing_variables(job: str, tmp_path: Path) ->
         f"ROLE_ARN: ${{{{ secrets.{role} }}}}",
         "AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}",
         "INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}",
+        "DEPLOY_TARGET: production",
     ]
     if job == "apply":
         expected_env.append("PROD_CONSOLE_ORIGIN: ${{ secrets.PROD_CONSOLE_ORIGIN }}")
@@ -2307,9 +2308,13 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
     work = _workspace(harness)
     summary = harness.root / "summary.md"
     output = harness.root / "github-output"
+    # The job's env supplies the target to every step; the steps run here outside a job, so the
+    # value passed is the one the workflow's job env sets (and it must set it).
+    job_env = _children("  job:\n" + _jobs()["plan"], "    env:")
+    assert "DEPLOY_TARGET: production" in job_env
+    (target,) = [line.split(": ", 1)[1] for line in job_env if line.startswith("DEPLOY_TARGET: ")]
     env = harness.env(
-        # The job's env supplies the target (Task 7 adds it to the workflow itself).
-        DEPLOY_TARGET="production",
+        DEPLOY_TARGET=target,
         SHA=SHA,
         PYTHON_DIGEST=PY_DIGEST,
         FRONTEND_DIGEST=FE_DIGEST,
@@ -2521,6 +2526,15 @@ def test_permissions_are_unchanged_except_actions_and_packages_read_on_plan() ->
     assert text.count("REGISTRY_USER") == 1
     assert text.count("REGISTRY_TOKEN") == 1
     assert "REGISTRY_" not in jobs["apply"]
+
+
+def test_deploy_production_sets_deploy_target_production() -> None:
+    for job in ("plan", "apply"):
+        env = _children("  job:\n" + _jobs()[job], "    env:")
+        assert env.count("DEPLOY_TARGET: production") == 1, job
+    # Set on the two jobs' env only: never per step, never a staging value.
+    assert _workflow().count("DEPLOY_TARGET") == 2
+    assert "DEPLOY_TARGET: staging" not in _workflow()
 
 
 # --- backup.sh: the instance's backup, kept in the repository ------------------------------------

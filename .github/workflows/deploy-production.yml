@@ -55,6 +55,7 @@ jobs:
       ROLE_ARN: ${{ secrets.PROD_PLAN_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
       INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
+      DEPLOY_TARGET: production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,6 +139,7 @@ jobs:
       ROLE_ARN: ${{ secrets.PROD_APPLY_ROLE_ARN }}
       AWS_REGION: ${{ vars.PROD_DEPLOY_REGION }}
       INSTANCE_ID: ${{ secrets.PROD_INSTANCE_ID }}
+      DEPLOY_TARGET: production
       PROD_CONSOLE_ORIGIN: ${{ secrets.PROD_CONSOLE_ORIGIN }}
     steps:
       - name: Require the deploy variables
