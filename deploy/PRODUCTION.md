@@ -329,7 +329,8 @@ ping status, step 2 (registration). It never verifies step 1: the node role is t
 `activate`. It reports
 `ok`, `missing` or `differs` per item and exits 0 only when everything is `ok`. It does not
 replace reading the steps, and never run its `apply` mode against production without the owner's
-decision.
+decision. `--subject` may be repeated, and production's live roles trust several subjects, so
+`production check` must be given all of them (and `production apply` is never run with fewer).
 
 ### 1. AWS (CloudShell, admin login): the agent's service role and an activation
 

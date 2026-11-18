@@ -24,7 +24,14 @@
 #          the node's ping status. Exits 0 only when everything is ok.
 #
 # <subject> is the OIDC subject prefix GitHub issues for the repository (docs: deploy/PRODUCTION.md,
-# step 3). Every input is validated before the first AWS call, and nothing is run through eval.
+# step 3). --subject may be repeated: pass every subject the role must trust, including the subjects
+# of a planned repository or organisation move (at most 5, no duplicates). With one subject each
+# role's `sub` condition is a plain string; with several it is a list of `<subject>:environment:<env>`
+# strings in the order given. check compares that list as a set (the order stored in AWS does not
+# matter, and apply leaves an equal set alone), but a string is never the same as a one-element
+# list. Production's live roles trust several subjects, so `production check` must be given all of
+# them, and `production apply` is never run with fewer.
+# Every input is validated before the first AWS call, and nothing is run through eval.
 # The templates are copied to a temporary directory (removed on exit), filled there, and refused
 # if any <placeholder> is left; nothing is written under the repository. Of AWS's own output only
 # the role ARNs are shown; each step prints `[n/total] what: result` before and after its calls.
@@ -99,7 +106,7 @@ esac
 
 REGION=""
 NODE=""
-SUBJECT=""
+SUBJECTS=()
 NODE_GIVEN=0
 SUBJECT_GIVEN=0
 while [[ "$#" -gt 0 ]]; do
@@ -107,7 +114,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --region) REGION="$2" ;;
         --node) NODE="$2"; NODE_GIVEN=1 ;;
-        --subject) SUBJECT="$2"; SUBJECT_GIVEN=1 ;;
+        --subject) SUBJECTS+=("$2"); SUBJECT_GIVEN=1 ;;
         *) usage ;;
     esac
     shift 2
@@ -119,8 +126,18 @@ if [[ "$ACTION" != "activate" || "$NODE_GIVEN" -eq 1 ]]; then
     valid '^mi-[0-9a-f]{17}$' "$NODE" || { echo "--node must be a managed node id (mi- and 17 lowercase hex characters)" >&2; exit 2; }
 fi
 if [[ "$ACTION" != "activate" || "$SUBJECT_GIVEN" -eq 1 ]]; then
-    valid '^repo:[A-Za-z0-9_.@/-]+$' "$SUBJECT" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    [[ "${#SUBJECTS[@]}" -ge 1 ]] || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    for subject in "${SUBJECTS[@]}"; do
+        valid '^repo:[A-Za-z0-9_.@/-]+$' "$subject" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    done
+    SEEN=$'\n'
+    for subject in "${SUBJECTS[@]}"; do
+        [[ "$SEEN" != *$'\n'"$subject"$'\n'* ]] || { echo "--subject given twice with the same value: $subject" >&2; exit 2; }
+        SEEN+="$subject"$'\n'
+    done
+    [[ "${#SUBJECTS[@]}" -le 5 ]] || { echo "--subject may be given at most 5 times" >&2; exit 2; }
 fi
+SUBJECT="${SUBJECTS[0]:-}"
 command -v jq > /dev/null || die "jq is required"
 command -v aws > /dev/null || die "the aws CLI is required"
 
@@ -224,12 +241,24 @@ copy_template() {
     cp "$TEMPLATE_DIR/$1" "$WORK/files/$1"
 }
 
+SUB_KEY="token.actions.githubusercontent.com:sub"
+
+# list_subjects <trust file>: with several subjects the template's `<repo-subject>:environment:<env>`
+# string becomes a JSON list of `<subject>:environment:<env>` strings, in the order given. Built
+# with jq (the subjects are positional arguments, never spliced into the filter); it runs before the
+# sed pass, which then finds no <repo-subject> left in the trust file.
+list_subjects() {
+    jq --arg key "$SUB_KEY" '(.Statement[].Condition.StringEquals[$key]) |= (if startswith("<repo-subject>:") then ltrimstr("<repo-subject>") as $suffix | [$ARGS.positional[] | . + $suffix] else error("not a <repo-subject> template") end)' "$1" --args "${SUBJECTS[@]}" > "$WORK/trust.tmp" || die "could not put the subjects into a trust template; nothing was changed"
+    mv "$WORK/trust.tmp" "$1"
+}
+
 fill_templates() {
     local entry name trust policy_name permissions file
     for entry in "${ROLES[@]}"; do
         IFS='|' read -r name trust policy_name permissions <<< "$entry"
         copy_template "$trust"
         copy_template "$permissions"
+        if [[ "${#SUBJECTS[@]}" -ge 2 ]]; then list_subjects "$WORK/files/$trust"; fi
     done
     for entry in "${DOCUMENTS[@]}"; do
         IFS='|' read -r name file <<< "$entry"
@@ -262,6 +291,10 @@ normalised() {
     jq -S . "$1"
 }
 
+# The role trust is compared with its `sub` list sorted, so the order stored in AWS does not matter
+# (a string stays a string: it is not the same as a one-element list).
+SORT_SUBJECTS='walk(if type == "object" and (.[$key] | type) == "array" then .[$key] |= sort else . end)'
+
 provider_state() {
     aws_must iam list-open-id-connect-providers
     if jq -e --arg arn "$OIDC_ARN" '[.OpenIDConnectProviderList[].Arn] | index($arn) != null' <<< "$AWS_OUT" > /dev/null; then
@@ -278,8 +311,8 @@ trust_state() {
         STATE=missing
         return 0
     fi
-    have="$(jq -S '.Role.AssumeRolePolicyDocument' <<< "$AWS_OUT")"
-    want="$(normalised "$WORK/files/$2")"
+    have="$(jq -S --arg key "$SUB_KEY" ".Role.AssumeRolePolicyDocument | $SORT_SUBJECTS" <<< "$AWS_OUT")"
+    want="$(jq -S --arg key "$SUB_KEY" "$SORT_SUBJECTS" "$WORK/files/$2")"
     if [[ "$have" == "$want" ]]; then STATE=ok; else STATE=differs; fi
 }
 
