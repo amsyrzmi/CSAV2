@@ -33,10 +33,10 @@ pytest_plugins = ["tests.test_console_sessions"]
 
 TRANSFER = {
     "bank_name": "Bank Contoh",
-    "account_name": "Kedai Mawar",
+    "account_name": "Kedai Contoh",
     "account_number": "5120000000",
 }
-QR = {"duitnow_id": "kedai-mawar-01", "account_name": "Kedai Mawar"}
+QR = {"duitnow_id": "kedai-contoh-01", "account_name": "Kedai Contoh"}
 SAVE = {
     "enabled": False,
     "lead_days": 7,

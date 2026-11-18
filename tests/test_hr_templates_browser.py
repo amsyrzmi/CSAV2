@@ -132,7 +132,7 @@ class TemplatesWorld(ProcessesWorld):
                 steps=("Sign the fixed-term contract",),
             ),
         ]
-        cekap, mawar = "Syarikat Cekap Sdn Bhd", "Kedai Mawar Enterprise"
+        cekap, mawar = "Contoh Satu Sdn Bhd", "Contoh Dua Enterprise"
         warehouse_id, operations = DEPARTMENT["warehouse"], DEPARTMENT["operations"]
         world.people = [
             {"department_id": d, "employment_type": t, "legal_entity_reference": e, "region": r}
@@ -151,7 +151,7 @@ class TemplatesWorld(ProcessesWorld):
     ) -> tuple[int, Any]:
         status, data = super().answer(caller, method, path, params, body)
         if path == "hr/people" and method == "GET" and status == 200:
-            entities = ("Syarikat Cekap Sdn Bhd", "Kedai Mawar Enterprise", None)
+            entities = ("Contoh Satu Sdn Bhd", "Contoh Dua Enterprise", None)
             for index, person in enumerate(data["items"]):
                 entity = entities[index % len(entities)]
                 person["employment_profile"] = entity and {
@@ -311,8 +311,8 @@ async def test_create_an_onboarding_template_with_three_steps(site: Site) -> Non
             values = await form.locator("datalist option").evaluate_all(
                 "(items) => items.map((item) => item.value)"
             )
-            assert values == ["Kedai Mawar Enterprise", "Syarikat Cekap Sdn Bhd"], values
-            await entity.fill("Syarikat Cekap Sdn Bhd")
+            assert values == ["Contoh Dua Enterprise", "Contoh Satu Sdn Bhd"], values
+            await entity.fill("Contoh Satu Sdn Bhd")
             first = step_row(page, 1)
             await fill_step(
                 first,
@@ -360,7 +360,7 @@ async def test_create_an_onboarding_template_with_three_steps(site: Site) -> Non
                     "rules": {
                         "department_id": DEPARTMENT["warehouse"],
                         "employment_type": "full_time",
-                        "legal_entity_reference": "Syarikat Cekap Sdn Bhd",
+                        "legal_entity_reference": "Contoh Satu Sdn Bhd",
                         "region": None,
                     },
                     "steps": [
