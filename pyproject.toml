@@ -98,6 +98,20 @@ forbidden_modules = [
     "csa.staff.callbacks",
 ]
 
+[[tool.importlinter.contracts]]
+name = "csa.reminders stays generic"
+type = "forbidden"
+source_modules = ["csa.reminders"]
+forbidden_modules = [
+    "csa.inbox_queue",
+    "csa.console",
+    "csa.approval",
+    "csa.agents",
+    "csa.workspace",
+    "csa.staff",
+    "csa.notify.sender",
+]
+
 [dependency-groups]
 dev = [
     "coverage==7.10.7",

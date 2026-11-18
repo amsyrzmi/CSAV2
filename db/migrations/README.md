@@ -136,8 +136,10 @@ Reserved ranges (client growth program, 2026-10-27):
   search is a bounded per-company scan); 0621 adds the tenant tables
   `inbox_settings`, `inbox_queue_events` (append-only for `csa_app`) and `inbox_saved_views`; 0622
   adds `inbox_queue_enter` (the only way into `needs_staff`) and the message and escalation triggers
-  that keep the queue state (one conversation update per message, never `inbox_version`); later
-  numbers are listed as they ship.
+  that keep the queue state (one conversation update per message, never `inbox_version`); 0623
+  adds `reminders`, the generic timer table behind `csa.reminders` (tenant row security, no
+  foreign key but the company; `(client_id, dedupe_key)` is unique); later numbers are listed as
+  they ship.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
