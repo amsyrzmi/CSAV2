@@ -146,6 +146,9 @@ RECORD_COMMAND = f"{MODULE_COMMAND} record-staged"
 TARGET_NAMES = ("staging", "production")
 HOST_DIGEST_RE = re.compile(r"^[0-9a-f]{12}$")
 GATE_ENVIRONMENT = "staging"
+# The description of the deployment record_staged writes; the gate counts only deployments with it.
+STAGED_DESCRIPTION = "staging rollout"
+WORKFLOW_RECORDS = "Staged record: written by the deploy-staging workflow after this run."
 # The backup taken before anything changes (deploy/production/backup.sh, installed by path).
 BACKUP_LOG = Path("/srv/csa-prod/backup/backup.log")
 BACKUP_INSTALLED = Path(BACKUP_SCRIPT)
@@ -562,7 +565,9 @@ def publish_state(runner: Runner, sha: str) -> str:
 def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
     """When ``sha`` first succeeded on staging, from GitHub Deployments; None if it never did.
 
-    Fails closed: a gh failure or any answer not of the expected shape is a stop, never a pass.
+    Only a deployment described ``STAGED_DESCRIPTION`` counts: GitHub's own deployments for a job
+    with an environment carry no description and are never a record. Fails closed: a gh failure
+    or any answer not of the expected shape is a stop, never a pass.
     """
     if not SHA_RE.fullmatch(sha):
         raise RolloutError("gate", "not a full 40-character SHA")
@@ -582,6 +587,8 @@ def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
             raise RolloutError("gate", "gh returned a deployment for another commit")
         if deployment.get("environment", GATE_ENVIRONMENT) != GATE_ENVIRONMENT:
             raise RolloutError("gate", f"gh returned a deployment outside {GATE_ENVIRONMENT}")
+        if deployment.get("description") != STAGED_DESCRIPTION:
+            continue
         statuses = _gh_json(
             runner, ["gh", "api", f"{deployments}/{number}/statuses?per_page=100"], "gate"
         )
@@ -626,7 +633,7 @@ def record_staged(runner: Runner, target: Target, sha: str) -> None:
             "required_contexts": [],
             "transient_environment": False,
             "production_environment": False,
-            "description": "staging rollout",
+            "description": STAGED_DESCRIPTION,
         },
     )
     number = created.get("id") if isinstance(created, dict) else None
@@ -1983,8 +1990,13 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             )
             if code == 0 and target.name == GATE_ENVIRONMENT:
                 # Not inside apply: a failed record must not turn a good rollout into a stop.
-                # Only a staging rollout is a staged record; no other target writes one.
-                _record_rollout(runner, args.sha, print)
+                # Only a staging rollout is a staged record; no other target writes one. A run
+                # given digests is the deploy-staging workflow's: it records after the instance
+                # reported success, so the host makes no gh call.
+                if image_digests is None:
+                    _record_rollout(runner, args.sha, print)
+                else:
+                    print(WORKFLOW_RECORDS)
             return code
         plan = build_plan(
             runner,

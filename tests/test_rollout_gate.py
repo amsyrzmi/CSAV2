@@ -16,6 +16,8 @@ from scripts.staging_rollout import Completed, RolloutError
 
 from tests.test_rollout_production import HOST_TEXT, PROD, HostedRig
 from tests.test_staging_rollout import (
+    DIGEST_A,
+    DIGEST_B,
     PREV_SHA,
     SHA,
     Answer,
@@ -91,7 +93,12 @@ def is_post(argv: Sequence[str], suffix: str) -> bool:
 
 
 def deployment(
-    number: int, sha: str, *states: str, created: str = STAGED_AT, environment: str = "staging"
+    number: int,
+    sha: str,
+    *states: str,
+    created: str = STAGED_AT,
+    environment: str = "staging",
+    description: str | None = "staging rollout",
 ) -> dict[str, Any]:
     statuses = [
         {"id": number * 10 + i, "state": s, "created_at": created} for i, s in enumerate(states)
@@ -100,6 +107,7 @@ def deployment(
         "id": number,
         "sha": sha,
         "environment": environment,
+        "description": description,
         "created_at": created,
         "statuses": statuses,
     }
@@ -158,6 +166,30 @@ def test_older_success_still_counts_after_a_newer_deployment() -> None:
 def test_a_production_deployment_is_not_a_staging_record() -> None:
     runner = gate_runner(deployment(11, SHA, "success", environment="production"))
     assert refusal(runner).message == REFUSAL
+
+
+def test_an_auto_created_deployment_without_the_description_is_not_staged() -> None:
+    # GitHub's own deployment for a job with an environment has no description; never a record.
+    runner = gate_runner(deployment(11, SHA, "success", description=None))
+    assert refusal(runner).message == REFUSAL
+    assert runner.argvs == [["gh", "api", LISTING]]
+    other = gate_runner(deployment(11, SHA, "success", description="Deployment"))
+    assert refusal(other).message == REFUSAL
+    assert other.argvs == [["gh", "api", LISTING]]
+
+
+def test_a_staging_rollout_deployment_still_counts() -> None:
+    runner = gate_runner(
+        deployment(11, SHA, "success", description=None, created="2026-11-08T09:30:00Z"),
+        deployment(12, SHA, "success", description="staging rollout"),
+    )
+    assert sr.staged_record(runner, GATED, SHA) == STAGED_AT
+    assert sr.STAGED_DESCRIPTION == "staging rollout"
+    # Only the matching deployment has its statuses fetched.
+    assert runner.argvs == [
+        ["gh", "api", LISTING],
+        ["gh", "api", f"{DEPLOYMENTS}/12/statuses?per_page=100"],
+    ]
 
 
 MALFORMED = [fail(1, "HTTP 502: Bad Gateway\nmore"), ok("not json"), ok("{}"), ok('["a", "b"]')]
@@ -411,6 +443,36 @@ def test_main_apply_on_staging_records_after_success(
         ["gh", "api", "--method", "POST", f"{DEPLOYMENTS}/42/statuses"],
     ]
     assert sum(argv[:4] == ["gh", "api", "--method", "POST"] for argv in argvs) == 2
+
+
+def test_staging_apply_with_digests_writes_no_record_and_calls_no_gh(
+    staging_rig: ApplyRig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_gh(argv: Sequence[str], env: Mapping[str, str] | None) -> Completed:
+        pytest.fail(f"unexpected gh call: {' '.join(argv)}")
+
+    staging_rig.runner.rules[:0] = [(lambda argv: argv[0] == "gh", no_gh), *record_rules()]
+    argv = ["apply", "--sha", SHA, "--python-digest", DIGEST_A, "--frontend-digest", DIGEST_B]
+    assert sr.main(argv, runner=staging_rig.runner) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-2:] == [
+        "Rollout of a1b2c3d finished.",
+        "Staged record: written by the deploy-staging workflow after this run.",
+    ]
+    assert not any(call[0][0] == "gh" for call in staging_rig.runner.calls)
+
+
+def test_staging_apply_without_digests_still_records(
+    staging_rig: ApplyRig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    staging_rig.runner.rules[:0] = record_rules()
+    assert sr.main(["apply", "--sha", SHA], runner=staging_rig.runner) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1] == "Recorded a1b2c3d as staged"
+    assert "deploy-staging workflow" not in out
+    assert (
+        sum(argv[:4] == ["gh", "api", "--method", "POST"] for argv in staging_rig.runner.argvs) == 2
+    )
 
 
 def test_main_apply_failure_records_nothing(

@@ -113,6 +113,7 @@ def staging_runner(
     *,
     dirty: bool = False,
     off_main: bool = False,
+    downgrade: bool = False,
     published: bool = True,
     run_status: str = "waiting",
     running: bool = True,
@@ -128,7 +129,9 @@ def staging_runner(
     rules: list[tuple[Predicate, Answer]] = [
         (has("rev-parse HEAD"), ok(SHA + "\n")),
         (has("status --porcelain"), ok(" M scripts/x.py\n" if dirty else "")),
-        (has("merge-base --is-ancestor"), fail(1) if off_main else ok()),
+        (has("merge-base --is-ancestor HEAD origin/main"), fail(1) if off_main else ok()),
+        # The downgrade check: is the target an ancestor of the running revision? Not by default.
+        (has("merge-base --is-ancestor"), ok() if downgrade else fail(1)),
         (has("csa-python/versions"), ok(versions_json(DIGEST_A, tags=py_tags))),
         (has("csa-frontend/versions"), ok(versions_json(DIGEST_B, tags=fe_tags))),
         (has("run list"), ok(json.dumps(run_list))),
