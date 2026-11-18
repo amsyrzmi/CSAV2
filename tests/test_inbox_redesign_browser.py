@@ -278,21 +278,22 @@ class Inbox:
     # Bulk requests the page sent ({"body", "query"}). Answers are scripted in order: (status, json)
     # or "abort"; with none left each id is applied as one action (`done`), unless `bulk_outcomes`
     # names its outcome, and an id that is not a row is `not_found`. `as_of` fixes the list's read
-    # time (otherwise it is the time of each read).
+    # time (otherwise it is the time of each read); `omit_as_of` answers without one, as an older
+    # server does.
     bulk_calls: list[dict[str, Any]] = field(default_factory=list)
     bulk_script: list[Any] = field(default_factory=list)
     bulk_outcomes: dict[str, str] = field(default_factory=dict)
     as_of: str | None = None
+    omit_as_of: bool = False
     # Saved views per person (user id -> views, newest first; `filters` as stored, only what is
     # set), the signed-in person (`inbox_page` signs this id in), the view calls the page made
     # ({"method", "path", "body", "query"}), scripted answers per method used in order ((status,
-    # json)), and how long the views read and each write take.
+    # json)), and gates per method: while a test holds one shut, that answer waits until it is set.
     views: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     viewer: str = ME_ID
     view_calls: list[dict[str, Any]] = field(default_factory=list)
     views_script: dict[str, list[Any]] = field(default_factory=dict)
-    views_delay: float = 0.0
-    views_write_delay: float = 0.0
+    views_gates: dict[str, asyncio.Event] = field(default_factory=dict)
     # The company's Inbox settings as the server stores them (the defaults with `version` 0 until a
     # first save), the settings calls the page made ({"method", "body", "query"}), scripted answers
     # per method used in order ((status, json)), and gates per method: while a test holds one shut,
@@ -423,7 +424,9 @@ class Inbox:
         method = request.method
         body = request.post_data_json if method in ("POST", "PUT") else None
         self.view_calls.append({"method": method, "path": path, "body": body, "query": query})
-        await asyncio.sleep(self.views_delay if method == "GET" else self.views_write_delay)
+        gate = self.views_gates.get(method)
+        if gate is not None:
+            await gate.wait()
         script = self.views_script.get(method) or []
         if script:
             return script.pop(0)
@@ -529,6 +532,8 @@ class Inbox:
                     "counts": self.queue_counts(),
                     "as_of": self.as_of or datetime.now(UTC).isoformat(),
                 }
+                if self.omit_as_of:
+                    del data["as_of"]
         elif path == "inbox/assignees" and request.method == "GET":
             self.assignee_calls += 1
             if self.assignees_status == 200:

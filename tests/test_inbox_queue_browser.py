@@ -707,6 +707,32 @@ async def test_phone_only_the_tab_strip_sticks_and_rows_stay_clear_of_it(
         assert seen["uncovered"] and seen["top"] >= sticky_bottom - 0.5, (size, seen)
 
 
+BAR_GAP_JS = """() => {
+    const bar = document.querySelector("[data-testid='inbox-queue-bar']").firstElementChild;
+    const bottoms = [...bar.children].map(el => el.getBoundingClientRect())
+        .filter(box => box.width > 1 && box.height > 1).map(box => box.bottom);
+    const list = document.querySelector("[data-inbox-list-scroll]").closest(".card");
+    return list.getBoundingClientRect().top - Math.max(...bottoms);
+}"""
+
+
+async def test_on_a_phone_the_list_sits_a_gap_below_the_bar(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page, 3)
+        # The bar's last row (search, Filters and Sort) to the list's card, at the top of the page:
+        # the same 1rem the column keeps under the bar on wider screens.
+        gap = await page.evaluate(BAR_GAP_JS)
+        assert 12 <= gap <= 20, gap
+        # With a chip line under it, the chips are the last row and the gap is still there.
+        panel = await open_filters(page)
+        await panel.get_by_role("checkbox", name="Escalated").check()
+        await page.get_by_role("button", name="Close").click()
+        await expect(page.get_by_test_id("inbox-queue-chips")).to_be_visible()
+        gap = await page.evaluate(BAR_GAP_JS)
+        assert 12 <= gap <= 20, gap
+
+
 async def test_filters_popover_never_passes_the_screen_edge(shell: Shell) -> None:
     state = Inbox()
     async with inbox_page(shell, state, width=768) as page:
@@ -872,6 +898,9 @@ CLOCK_ROW = "a0000000-0000-4000-8000-000000000101"
 QUIET_ROW = "a0000000-0000-4000-8000-000000000102"
 
 
+BOT_UNREAD = "a0000000-0000-4000-8000-000000000031"
+
+
 def fixed(minutes: int) -> str:
     return (NOW + timedelta(minutes=minutes)).isoformat()
 
@@ -920,11 +949,13 @@ def clock_rows() -> list[dict[str, Any]]:
 async def test_the_clock_is_the_servers_wait_in_queue_tabs_and_the_last_message_elsewhere(
     shell: Shell,
 ) -> None:
-    state = Inbox(items=clock_rows())
+    bot = conversation(BOT_UNREAD, "telegram", name="Rina Yap", preview="Open today?", minutes=4)
+    bot.update(last_customer_at=fixed(-4), last_staff_reply_at=None)
+    state = Inbox(items=[*clock_rows(), bot])
     async with inbox_page(shell, state) as page:
         await page.context.clock.set_fixed_time(NOW)
         await page.reload()
-        await rows_loaded(page, 2)
+        await rows_loaded(page, 3)
         clock = row(page, CLOCK_ROW).get_by_test_id("inbox-row-time")
         quiet = row(page, QUIET_ROW).get_by_test_id("inbox-row-time")
         # Needs us: how long it has waited since the server's needs_staff_since, not page open.
@@ -951,6 +982,9 @@ async def test_the_clock_is_the_servers_wait_in_queue_tabs_and_the_last_message_
 
         assert await weight(CLOCK_ROW) == "700"
         assert await weight(QUIET_ROW) == "600"
+        # The assistant's chat: the customer wrote last, but the assistant answers it: no emphasis.
+        assert row_of(state, BOT_UNREAD)["queue_status"] == "bot"
+        assert await weight(BOT_UNREAD) == "600"
 
         # Every other tab shows the last message time.
         await tab(page, "all").click()
@@ -2118,6 +2152,62 @@ async def test_bulk_sends_the_read_time_of_the_selection_not_the_latest_poll(she
         assert state.bulk_calls[-1]["body"]["seen_at"] == NEWEST, state.bulk_calls
 
 
+async def test_a_list_answer_without_a_read_time_keeps_the_selections_read_time(
+    shell: Shell,
+) -> None:
+    rows = many_rows(3)
+    ids = ids_of(rows)
+    state = Inbox(items=rows, as_of=AS_OF, bulk_outcomes={ids[1]: "customer_wrote"})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tick(page, ids[0])
+        await tick(page, ids[1])
+        bar = bulk_bar(page)
+        resolve = bar.get_by_role("button", name="Resolve", exact=True)
+        await resolve.click()
+        await expect(bulk_result(page).get_by_role("status")).to_have_text(
+            f"1 done. {CUSTOMER_WROTE}", timeout=WAIT
+        )
+        assert state.bulk_calls[-1]["body"]["seen_at"] == AS_OF, state.bulk_calls
+        # One list answer comes without a read time (an older server mid-rollout). A poll that
+        # leaves after it shows it has been taken in.
+        state.omit_as_of = True
+        before = len(state.list_queries)
+        await eventually(lambda: len(state.list_queries) >= before + 2, 20)
+        # Then the list answers with a new read time, and the refused row is acted on again.
+        state.omit_as_of = False
+        state.as_of = LATER
+        before = len(state.list_queries)
+        await eventually(lambda: len(state.list_queries) >= before + 2, 20)
+        state.bulk_outcomes = {}
+        await resolve.click()
+        await eventually(lambda: len(state.bulk_calls) == 2)
+        # The read time of the list on screen, never the moment of the click.
+        assert state.bulk_calls[-1]["body"]["seen_at"] == LATER, state.bulk_calls
+
+
+async def test_a_picked_row_that_left_the_list_is_not_picked_when_it_comes_back(
+    shell: Shell,
+) -> None:
+    rows = many_rows(3)
+    ids = ids_of(rows)
+    state = Inbox(items=rows)
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        await tick(page, ids[0])
+        await tick(page, ids[1])
+        bar = bulk_bar(page)
+        await expect(bar).to_contain_text("2 selected")
+        # The second row leaves the list (resolved on another screen), then comes back later.
+        gone = state.items.pop(1)
+        await rows_loaded(page, 2)
+        await expect(bar).to_contain_text("1 selected")
+        state.items.insert(1, gone)
+        await rows_loaded(page, 3)
+        await expect(bar).to_contain_text("1 selected")
+        assert await checked_ids(page) == {ids[0]}
+
+
 async def test_a_thread_action_after_a_bulk_shows_in_the_thread_without_the_bulk_list(
     shell: Shell,
 ) -> None:
@@ -2564,16 +2654,19 @@ async def test_a_view_this_screen_cannot_show_is_listed_disabled_with_why(shell:
             await expect(item).to_contain_text(UNSUPPORTED)
         ok = menu.get_by_role("menuitemradio", name="Telegram only")
         await expect(ok).not_to_have_attribute("aria-disabled", "true")
-        # Choosing it does nothing: the menu stays open, nothing is asked for.
+        # Choosing it does nothing: the menu stays open, and no other list is asked for (the 3 s
+        # polls repeat the same query, so the queries are compared, not counted).
         before = len(state.list_queries)
+        shown_query = state.list_queries[-1]
         # (Forced: Playwright waits for an aria-disabled item to become enabled.)
         await menu.get_by_role("menuitemradio", name="Held for review").click(force=True)
         await expect(menu).to_be_visible()
         await menu.get_by_role("menuitemradio", name="Assistant chats").focus()
         await page.keyboard.press("Enter")
         await expect(menu).to_be_visible()
-        await asyncio.sleep(0.5)
-        assert len(state.list_queries) == before
+        # Two polls after the presses: a list they asked for would have gone out by now.
+        await eventually(lambda: len(state.list_queries) >= before + 2, 20)
+        assert set(state.list_queries[before:]) == {shown_query}, state.list_queries[before:]
         await expect(tab(page, "needs_us")).to_have_attribute("aria-selected", "true")
         await expect(views_button(page)).to_have_text("Views")
 
@@ -2581,9 +2674,10 @@ async def test_a_view_this_screen_cannot_show_is_listed_disabled_with_why(shell:
 async def test_views_show_only_a_loading_line_until_read_and_a_failed_read_retries(
     shell: Shell,
 ) -> None:
+    gate = asyncio.Event()
     state = queue_inbox(
         views={ME_ID: [saved_view("Slow view", {"order": "activity"})]},
-        views_delay=1.5,
+        views_gates={"GET": gate},
     )
     async with inbox_page(shell, state) as page:
         await rows_loaded(page, 3)
@@ -2595,6 +2689,8 @@ async def test_views_show_only_a_loading_line_until_read_and_a_failed_read_retri
         await expect(items.first).to_have_attribute("aria-disabled", "true")
         await expect(items.first).to_be_focused()
         await expect(page.get_by_text(VIEWS_EMPTY)).to_have_count(0)
+        await eventually(lambda: len(view_calls(state, "GET")) == 1)
+        gate.set()
         await expect(menu.get_by_role("menuitemradio", name="Slow view")).to_be_visible(
             timeout=WAIT
         )
@@ -2744,7 +2840,10 @@ async def test_the_views_menu_works_by_keyboard_and_closes_on_tab_and_outside(
 async def test_manage_views_acts_on_one_row_while_a_change_is_pending(shell: Shell) -> None:
     alpha = saved_view("Alpha", {"order": "activity"})
     beta = saved_view("Beta", {"order": "waiting"})
-    state = queue_inbox(views={ME_ID: [alpha, beta]}, views_write_delay=1.5)
+    rename_gate, delete_gate = asyncio.Event(), asyncio.Event()
+    state = queue_inbox(
+        views={ME_ID: [alpha, beta]}, views_gates={"PUT": rename_gate, "DELETE": delete_gate}
+    )
     async with inbox_page(shell, state) as page:
         await rows_loaded(page, 3)
         menu = await open_views(page)
@@ -2767,6 +2866,7 @@ async def test_manage_views_acts_on_one_row_while_a_change_is_pending(shell: She
         await expect(dialog.get_by_label("New name for Beta", exact=True)).to_have_count(0)
         await expect(dialog.get_by_label("New name for Alpha", exact=True)).to_be_visible()
         # Alpha's answer lands on Alpha; Beta's controls work again afterwards.
+        rename_gate.set()
         await expect(dialog.get_by_text("Renamed to “Alpha two”.", exact=True)).to_be_visible(
             timeout=WAIT
         )
@@ -2787,6 +2887,7 @@ async def test_manage_views_acts_on_one_row_while_a_change_is_pending(shell: She
         await expect(alpha_rename).to_have_attribute("aria-disabled", "true")
         await alpha_rename.click(force=True)
         await expect(dialog.get_by_label("New name for Alpha two", exact=True)).to_have_count(0)
+        delete_gate.set()
         await expect(dialog.get_by_text("Deleted the view “Beta”.", exact=True)).to_be_visible(
             timeout=WAIT
         )
@@ -2797,9 +2898,10 @@ async def test_manage_views_acts_on_one_row_while_a_change_is_pending(shell: She
 async def test_a_failed_rename_puts_its_error_and_focus_on_its_own_row(shell: Shell) -> None:
     alpha = saved_view("Alpha", {"order": "activity"})
     beta = saved_view("Beta", {"order": "waiting"})
+    gate = asyncio.Event()
     state = queue_inbox(
         views={ME_ID: [alpha, beta]},
-        views_write_delay=1.5,
+        views_gates={"PUT": gate},
         views_script={"PUT": [(409, {"detail": "you already have a saved view with this name"})]},
     )
     async with inbox_page(shell, state) as page:
@@ -2814,6 +2916,7 @@ async def test_a_failed_rename_puts_its_error_and_focus_on_its_own_row(shell: Sh
         await expect(dialog.get_by_role("button", name="Saving…")).to_be_visible()
         # A press on another row while it is pending changes nothing.
         await dialog.get_by_role("button", name="Rename Beta", exact=True).click(force=True)
+        gate.set()
         error = dialog.get_by_text("You already have a view with that name.", exact=True)
         await expect(error).to_be_visible(timeout=WAIT)
         # (`has` is looked up inside each item, so it is rooted at the page, not the dialog.)
@@ -2829,6 +2932,103 @@ async def test_a_failed_rename_puts_its_error_and_focus_on_its_own_row(shell: Sh
             "You already have a view with that name."
         )
         await expect(dialog.get_by_label("New name for Beta", exact=True)).to_have_count(0)
+
+
+VIEW_GONE = "That view is not available any more. The list is refreshed."
+
+
+async def test_a_failed_delete_says_it_could_not_delete(shell: Shell) -> None:
+    alpha = saved_view("Alpha", {"order": "activity"})
+    state = queue_inbox(
+        views={ME_ID: [alpha]}, views_script={"DELETE": [(500, {"detail": "synthetic outage"})]}
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        dialog = page.get_by_role("dialog", name="Manage views")
+        await dialog.get_by_role("button", name="Delete Alpha", exact=True).click()
+        await dialog.get_by_role("button", name="Yes, delete").click()
+        await expect(
+            dialog.get_by_text("Could not delete the view. Try again.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        await expect(dialog.get_by_text("Could not save the view. Try again.")).to_have_count(0)
+        await expect(page.get_by_text("synthetic outage")).to_have_count(0)
+        await expect(dialog.get_by_role("button", name="Delete Alpha", exact=True)).to_be_focused()
+        assert len(view_calls(state, "DELETE")) == 1
+
+
+async def test_a_view_deleted_elsewhere_is_said_in_the_dialog_and_focus_stays_in_it(
+    shell: Shell,
+) -> None:
+    alpha = saved_view("Alpha", {"order": "activity"})
+    beta = saved_view("Beta", {"order": "waiting"})
+    gamma = saved_view("Gamma", {"order": "activity"})
+    state = queue_inbox(views={ME_ID: [alpha, beta, gamma]})
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        dialog = page.get_by_role("dialog", name="Manage views")
+        await expect(dialog.get_by_role("listitem")).to_have_count(3)
+        items = dialog.get_by_role("listitem")
+        # Alpha is deleted on another device; a rename of it here is answered 404.
+        state.views[ME_ID].remove(alpha)
+        await dialog.get_by_role("button", name="Rename Alpha", exact=True).click()
+        await dialog.get_by_label("New name for Alpha", exact=True).fill("Alpha two")
+        await page.keyboard.press("Enter")
+        # Alpha leaves the list; it is said at the top of the dialog (not on the row, which has
+        # gone), and focus is on the next view.
+        await expect(items).to_have_count(2, timeout=WAIT)
+        await expect(dialog.get_by_text(VIEW_GONE, exact=True)).to_be_visible()
+        await expect(items.get_by_text(VIEW_GONE)).to_have_count(0)
+        await expect(dialog.get_by_role("button", name="Rename Beta", exact=True)).to_be_focused()
+        assert [call["path"] for call in view_calls(state, "PUT")] == [f"inbox/views/{alpha['id']}"]
+        # The same for a delete: Beta went elsewhere, focus goes on to Gamma.
+        state.views[ME_ID].remove(beta)
+        await dialog.get_by_role("button", name="Delete Beta", exact=True).click()
+        await dialog.get_by_role("button", name="Yes, delete").click()
+        await expect(items).to_have_count(1, timeout=WAIT)
+        await expect(dialog.get_by_text(VIEW_GONE, exact=True)).to_be_visible()
+        await expect(dialog.get_by_role("button", name="Rename Gamma", exact=True)).to_be_focused()
+        # The last one: the dialog says it is empty and that line takes focus.
+        state.views[ME_ID].remove(gamma)
+        await dialog.get_by_role("button", name="Delete Gamma", exact=True).click()
+        await dialog.get_by_role("button", name="Yes, delete").click()
+        empty = dialog.get_by_text(VIEWS_EMPTY, exact=True)
+        await expect(empty).to_be_visible(timeout=WAIT)
+        await expect(dialog.get_by_text(VIEW_GONE, exact=True)).to_be_visible()
+        await expect(empty).to_be_focused()
+        assert len(view_calls(state, "DELETE")) == 2
+
+
+async def test_a_late_save_closes_only_its_own_dialog(shell: Shell) -> None:
+    gate = asyncio.Event()
+    state = queue_inbox(
+        views={ME_ID: [saved_view("Alpha", {"order": "activity"})]}, views_gates={"POST": gate}
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        save = page.get_by_role("dialog", name="Save this view")
+        await save.get_by_label("Name", exact=True).fill("Later")
+        await save.get_by_role("button", name="Save view").click()
+        await eventually(lambda: len(view_calls(state, "POST")) == 1)
+        # The person gives up waiting and opens Manage views while the save is still out.
+        await page.keyboard.press("Escape")
+        await expect(save).to_be_hidden()
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Manage views…").click()
+        manage = page.get_by_role("dialog", name="Manage views")
+        await expect(manage).to_be_visible()
+        gate.set()
+        # The save lands and says so, in the same update that would have closed a dialog.
+        await expect(page.get_by_text("Saved the view “Later”.", exact=True)).to_have_count(
+            1, timeout=WAIT
+        )
+        await expect(manage).to_be_visible()
+        await expect(manage.get_by_role("listitem")).to_have_count(2, timeout=WAIT)
 
 
 @pytest.mark.parametrize("width", (320, 390))
@@ -2912,8 +3112,10 @@ TIMES_SAVED = "Response times saved."
 TIMES_STAFF = "Only administrators can change these."
 TIMES_LATER = "Used by reminders, which come later."
 TIMES_CONFLICT = (
-    "Someone else changed these. The latest values are shown; check them and save again."
+    "Someone else changed these, so your change was not saved. The latest values are shown;"
+    " check them and save again."
 )
+TIMES_SAVE_FAILED = "Could not save the response times. Try again."
 TARGET_WORDS = "Enter a whole number of minutes, from 5 to 10080."
 TARGET_LABELS = ("Urgent", "High", "Normal", "Low")
 
@@ -3117,9 +3319,7 @@ async def test_other_save_failures_are_plain_sentences(shell: Shell) -> None:
             panel.get_by_text("You do not have permission to do that.", exact=True)
         ).to_be_visible(timeout=WAIT)
         await save.click()
-        await expect(
-            panel.get_by_text("Could not save the response times. Try again.", exact=True)
-        ).to_be_visible(timeout=WAIT)
+        await expect(panel.get_by_text(TIMES_SAVE_FAILED, exact=True)).to_be_visible(timeout=WAIT)
         await expect(page.get_by_text("synthetic outage")).to_have_count(0)
         await expect(panel.get_by_label("High", exact=True)).to_have_value("45")
 
@@ -3163,6 +3363,68 @@ async def test_one_save_at_a_time_and_a_late_answer_stays_out_of_a_closed_panel(
             "aria-disabled", "true"
         )
         assert len(settings_calls(state, "PUT")) == 1
+
+
+async def handled(page: Page) -> None:
+    """Two frames: the answer's handlers and the render they cause have run."""
+    await page.evaluate(
+        "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
+    )
+
+
+async def test_a_save_that_fails_after_the_panel_closed_is_said_when_it_reopens(
+    shell: Shell,
+) -> None:
+    put = asyncio.Event()
+    state = queue_inbox(
+        settings_gates={"PUT": put},
+        settings_script={"PUT": [(500, {"detail": "synthetic outage"})]},
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_times(page)
+        await times_loaded(panel)
+        await panel.get_by_label("Normal", exact=True).fill("30")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        await eventually(lambda: len(settings_calls(state, "PUT")) == 1)
+        # Closed while the save is out; the save then fails with nobody looking.
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        async with page.expect_response(lambda r: "/inbox/settings" in r.url):
+            put.set()
+        await handled(page)
+        panel = await open_times(page)
+        await expect(panel.get_by_text(TIMES_SAVE_FAILED, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_text("synthetic outage")).to_have_count(0)
+        # The edit was not kept: the stored value shows.
+        normal = panel.get_by_label("Normal", exact=True)
+        await expect(normal).to_have_value("240")
+        # Seen once: closed and opened again, the sentence is gone.
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        panel = await open_times(page)
+        await times_loaded(panel)
+        await expect(panel.get_by_text(TIMES_SAVE_FAILED, exact=True)).to_have_count(0)
+
+        # A conflict: someone else saved meanwhile; the reread is held so the test sees it go out.
+        state.settings = {**SETTINGS_DEFAULTS, "target_normal_min": 120, "version": 4}
+        state.settings_gates = {"PUT": asyncio.Event(), "GET": asyncio.Event()}
+        reads = len(settings_calls(state, "GET"))
+        normal = panel.get_by_label("Normal", exact=True)
+        await normal.fill("45")
+        await panel.get_by_role("button", name="Save", exact=True).click()
+        await eventually(lambda: len(settings_calls(state, "PUT")) == 2)
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        state.settings_gates["PUT"].set()
+        # The 409 has been handled with the panel closed: its reread is out.
+        await eventually(lambda: len(settings_calls(state, "GET")) == reads + 1)
+        async with page.expect_response(lambda r: "/inbox/settings" in r.url):
+            state.settings_gates["GET"].set()
+        await handled(page)
+        panel = await open_times(page)
+        await expect(panel.get_by_text(TIMES_CONFLICT, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(panel.get_by_label("Normal", exact=True)).to_have_value("120")
 
 
 async def test_escape_closes_the_times_panel_and_returns_focus(shell: Shell) -> None:
@@ -3509,7 +3771,73 @@ async def test_j_and_k_wait_while_the_filters_popover_is_open(shell: Shell) -> N
         await expect(panel).to_have_count(0)
         await page.keyboard.press("j")
         await expect(row(page, WAITING_ROW)).to_have_attribute("aria-current", "true")
+        await open_item(page, WAITING_ROW)
+        # C now takes the open item: the one claim is the first action sent, so the C pressed
+        # while the popover was open sent nothing (it would be a claim of the row
+        # that was open then, ahead of this one).
+        await page.keyboard.press("c")
+        await eventually(lambda: actions_sent(state) == ["claim"])
+        assert [call["id"] for call in state.queue_calls] == [WAITING_ROW], state.queue_calls
+
+
+QUEUED_HINT = "Use More, then Take over the chat, to reply as a team member."
+OLD_HINT = "Take over to reply as a team member."
+
+
+async def test_browser_shortcuts_pass_through_an_open_menu(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        # What the page did with each key: caught before any handler (the menu stops the keys it
+        # moves by) and read once every handler has run.
+        await page.evaluate(
+            """() => {
+                window.__keys = [];
+                window.addEventListener("keydown", (event) => setTimeout(() => window.__keys.push([
+                    event.key,
+                    event.ctrlKey || event.metaKey || event.altKey,
+                    event.defaultPrevented,
+                ])), true);
+            }"""
+        )
+        await page.get_by_test_id("inbox-snooze-menu").click()
+        menu = page.get_by_role("menu", name="Snooze")
+        items = menu.get_by_role("menuitem")
+        await expect(items.nth(0)).to_be_focused()
+        await page.keyboard.press("Control+f")
+        await page.keyboard.press("Alt+ArrowDown")
+        await page.keyboard.press("F2")
+        await page.keyboard.press("ArrowDown")
+        await expect(items.nth(1)).to_be_focused()
+        # A timeout of its own runs after the ones that recorded the keys.
+        keys = await page.evaluate("() => new Promise(r => setTimeout(() => r(window.__keys)))")
+        # Find and the other browser keys are the browser's; the menu keeps its plain keys.
+        assert ["f", True, False] in keys, keys
+        assert ["ArrowDown", True, False] in keys, keys
+        assert ["F2", False, False] in keys, keys
+        assert ["ArrowDown", False, True] in keys, keys
+        await expect(menu).to_be_visible()
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
         assert state.queue_calls == []
+
+
+async def test_the_reply_hint_points_at_where_take_over_is(shell: Shell) -> None:
+    state = queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        thread = page.get_by_test_id("inbox-thread")
+        # A queued item: Take over the chat lives under More.
+        await open_item(page, UNNAMED)
+        await expect(thread.get_by_text(QUEUED_HINT, exact=True)).to_be_visible()
+        await expect(thread.get_by_text(OLD_HINT, exact=True)).to_have_count(0)
+        assert "Take over the chat" in await menu_items(page, "inbox-more-menu")
+        # The assistant's chat keeps the old Take over button and the old words.
+        await open_item(page, BOT_ROW)
+        await expect(primary(page)).to_have_text("Take over")
+        await expect(thread.get_by_text(OLD_HINT, exact=True)).to_be_visible()
+        await expect(thread.get_by_text(QUEUED_HINT, exact=True)).to_have_count(0)
 
 
 EMPTY_TABS = {
@@ -3599,6 +3927,46 @@ async def test_first_run_copy_only_when_the_company_has_no_conversations(shell: 
         await eventually(lambda: state.probe_answers >= 2, 20)
         await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible()
         await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
+
+
+def is_probe(query: str) -> bool:
+    return parse_qs(query).get("limit") == ["1"]
+
+
+async def test_the_probe_is_never_sent_again_while_out_and_rests_after_none(shell: Shell) -> None:
+    # Work to show at first, so no page sends a probe before the clock is the test's.
+    work = [item for item in queue_rows() if item["id"] == UNNAMED]
+    state = GatedInbox(items=work, filter_state=True, probe_gate=asyncio.Event())
+    async with inbox_page(shell, state) as page:
+        # The page's clock is the test's from here: it runs on its own until the test jumps it.
+        await page.clock.install()
+        await page.goto(f"{shell.base}/portal/inbox")
+        await rows_loaded(page, 1)
+        # The work is done elsewhere: the tab empties, and nothing says the company has a chat.
+        state.items = []
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible(timeout=WAIT)
+        await eventually(lambda: state.probes_arrived >= 1)
+
+        def polls() -> int:
+            return len([query for query in state.list_queries if not is_probe(query)])
+
+        # Three list answers while the probe is held: it is neither cancelled nor sent again.
+        before = polls()
+        await eventually(lambda: polls() >= before + 3, 20)
+        assert state.probes_arrived == 1, state.probes_arrived
+        state.probe_gate.set()
+        first_run = page.get_by_test_id("inbox-list-state-empty")
+        await expect(first_run).to_be_visible(timeout=WAIT)
+        # "None" rests: three more answers, no new probe.
+        before = polls()
+        await eventually(lambda: polls() >= before + 3, 20)
+        assert state.probes_arrived == 1, state.probes_arrived
+        # About 30 s on, the next list answer asks again, and finds the assistant's first chat.
+        state.items = [item for item in queue_rows() if item["id"] == BOT_ROW]
+        await page.clock.fast_forward(31_000)
+        await expect(first_run).to_have_count(0, timeout=WAIT)
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible()
+        assert state.probes_arrived == 2, state.probes_arrived
 
 
 @pytest.mark.parametrize("width", (320, 390, 768))
