@@ -25,6 +25,7 @@ from csa.jobs.bookings import (
 )
 from csa.jobs.clock import Clock, SystemClock
 from csa.jobs.inbox_queue import run_inbox_snooze_wake
+from csa.jobs.inbox_reminders import run_inbox_reminders_sweep
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
 from csa.jobs.payment_reminders import run_payment_reminder_mail, run_payment_reminder_queue
 from csa.jobs.payments import run_payments_due
@@ -96,6 +97,16 @@ def build_default_registry(
             name="inbox_snooze_wake",
             every=timedelta(minutes=1),
             fn=run_inbox_snooze_wake,
+            per_client=True,
+        )
+    )
+    # Per company, the Inbox reminders the queue's SQL triggers could not schedule (overdue, stale
+    # claim, snoozes from before the reminders), up to 100 of each kind a run.
+    registry.register(
+        Job(
+            name="inbox_reminders_sweep",
+            every=timedelta(minutes=1),
+            fn=run_inbox_reminders_sweep,
             per_client=True,
         )
     )

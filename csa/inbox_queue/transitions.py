@@ -6,10 +6,11 @@ States (``conversations.queue_status``):
   stay here for good: :func:`enter`, :func:`replied` and :func:`held_reply_closed` do nothing for
   them and every staff action raises ``QueueError("not_in_queue")``.
 - ``needs_staff``: a person has to act. Only :func:`enter` (``public.inbox_queue_enter``, 0622, also
-  used by the message and escalation triggers) and :func:`wake_snoozed` put an item here; a
-  needs_staff row always has a reason, ``needs_staff_since`` and ``due_at``.
+  used by the message and escalation triggers), :func:`wake_snoozed` and :func:`wake_one` put an
+  item here; a needs_staff row always has a reason, ``needs_staff_since`` and ``due_at``.
 - ``waiting_customer``: a person answered (:func:`replied`).
-- ``snoozed``: hidden until ``snoozed_until`` (:func:`snooze`); :func:`wake_snoozed` returns it.
+- ``snoozed``: hidden until ``snoozed_until`` (:func:`snooze`); :func:`wake_snoozed` (the wake
+  job) or :func:`wake_one` (the ``inbox.snooze_due`` reminder) returns it.
 - ``resolved``: a person resolved it (:func:`resolve`) and the bot has the conversation again.
   It differs from ``bot`` for the Resolved tab only. A later customer message moves it to ``bot``
   through the 0622 trigger when the AI owns the conversation (``needs_staff`` when a person owns
@@ -38,9 +39,9 @@ Rules shared by every function here:
   the conversation row; a call that changes nothing writes nothing.
 - The staff actions (:func:`claim`, :func:`unclaim`, :func:`assign`, :func:`snooze`,
   :func:`resolve`, :func:`set_priority`, :func:`set_topic`, :func:`hand_back`) and a person's
-  answer (:func:`replied`) bump ``inbox_version`` once. :func:`enter`, :func:`held_reply_closed`
-  and :func:`wake_snoozed` do not: they are system moves (a bump there would make the next staff
-  action fail with 409), or the caller's own writes cover them (takeover).
+  answer (:func:`replied`) bump ``inbox_version`` once. :func:`enter`, :func:`held_reply_closed`,
+  :func:`wake_snoozed` and :func:`wake_one` do not: they are system moves (a bump there would make
+  the next staff action fail with 409), or the caller's own writes cover them (takeover).
 """
 
 from __future__ import annotations
@@ -408,34 +409,56 @@ async def wake_snoozed(conn: AsyncConnection[Any], client_id: UUID, *, limit: in
     targets = await inbox_settings.load(conn, client_id)
     woke = 0
     for candidate in sorted(candidates, key=lambda r: r["id"]):
-        conversation_id: UUID = candidate["id"]
-        item = await _locked(conn, client_id, conversation_id)
-        if not item["in_queue"] or item["queue_status"] != "snoozed":
-            continue
-        last_customer, last_staff = item["last_customer_at"], item["last_staff_reply_at"]
-        customer_wrote_last = last_customer is not None and (
-            last_staff is None or last_customer > last_staff
-        )
-        reason = "customer_message" if customer_wrote_last else "manual"
-        row = await db.q.fetch_one(
-            "inbox_queue/wake.sql",
-            (reason, targets.target_minutes(item["priority"]), client_id, conversation_id),
-            conn=conn,
-        )
-        if row is None:  # its time moved on meanwhile
-            continue
-        await _event(
-            conn,
-            client_id,
-            conversation_id,
-            actor_user_id=None,
-            action="woke",
-            from_status="snoozed",
-            to_status="needs_staff",
-            details={"reason": reason, "priority": item["priority"]},
-        )
-        woke += 1
+        woke += await _wake(conn, client_id, candidate["id"], targets)
     return woke
+
+
+async def wake_one(conn: AsyncConnection[Any], client_id: UUID, conversation_id: UUID) -> bool:
+    """Wake one snoozed item whose time has come, as :func:`wake_snoozed` does; True if it woke.
+
+    The ``inbox.snooze_due`` reminder calls it when it fires (plan 2a, decision 12). The same
+    effect as the wake job for this row: reason, fresh clock, claim kept, event ``woke`` with no
+    actor, no version bump. False when the item is not snoozed (the wake job or a customer
+    message moved it first), is outside the queue, or its ``snoozed_until`` has not passed by the
+    database clock. An unknown conversation raises ``QueueError("not_in_queue")``.
+    """
+    targets = await inbox_settings.load(conn, client_id)
+    return await _wake(conn, client_id, conversation_id, targets)
+
+
+async def _wake(
+    conn: AsyncConnection[Any],
+    client_id: UUID,
+    conversation_id: UUID,
+    targets: inbox_settings.InboxSettings,
+) -> bool:
+    """Lock the item, and wake it when it is still snoozed and due; True when it woke."""
+    item = await _locked(conn, client_id, conversation_id)
+    if not item["in_queue"] or item["queue_status"] != "snoozed":
+        return False
+    last_customer, last_staff = item["last_customer_at"], item["last_staff_reply_at"]
+    customer_wrote_last = last_customer is not None and (
+        last_staff is None or last_customer > last_staff
+    )
+    reason = "customer_message" if customer_wrote_last else "manual"
+    row = await db.q.fetch_one(
+        "inbox_queue/wake.sql",
+        (reason, targets.target_minutes(item["priority"]), client_id, conversation_id),
+        conn=conn,
+    )
+    if row is None:  # its time moved on meanwhile
+        return False
+    await _event(
+        conn,
+        client_id,
+        conversation_id,
+        actor_user_id=None,
+        action="woke",
+        from_status="snoozed",
+        to_status="needs_staff",
+        details={"reason": reason, "priority": item["priority"]},
+    )
+    return True
 
 
 # --- staff actions (each bumps inbox_version once) ------------------------------------------------
