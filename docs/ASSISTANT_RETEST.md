@@ -21,8 +21,9 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 106 model calls (95 cases, one planner call each, plus one drafting call per draft
-  case), up to about 201 when cases are re-planned (95 cases, up to about twice that with re-plans).
+- A run is about 106 model calls: one planner call for each of the 95 cases plus one drafting call
+  for each of the 11 draft cases. With re-plans it is up to about 201 (up to twice the cases, plus
+  the drafting calls).
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
 most two planner calls) with the checks the turn makes before it touches a database:
@@ -383,32 +384,35 @@ planner, decides what that member sees.
 | --- | --- | --- | --- |
 | What are my tasks? | Any member | An hr_process_read with view my_tasks | `hr_process-en-1` |
 | Apa tugasan saya? | Any member | The same read, from Malay | `hr_process-ms-1` |
-| What is still outstanding for Aina's onboarding? | Any member (not HR) | An hr_process_read with view person_process and person Aina, not an access refusal | `hr_process-en-2` |
-| Apa yang belum selesai untuk onboarding Aina? | Any member (not HR) | The same read, from Malay | `hr_process-ms-2` |
-| Who is onboarding at the moment? | HR owner | An hr_process_read with view who_onboarding | `hr_process-en-3` |
-| Siapa yang sedang onboarding sekarang? | HR owner | The same read, from Malay | `hr_process-ms-3` |
-| Who is leaving soon? | HR owner | An hr_process_read with view who_leaving | `hr_process-en-4` |
-| Siapa yang akan berhenti tidak lama lagi? | HR owner | The same read, from Malay | `hr_process-ms-4` |
-| What is overdue? | Any member | An hr_process_read with view overdue | `hr_process-en-5` |
-| Apa yang tertunggak? | Any member | The same read, from Malay | `hr_process-ms-5` |
+| What else is left on Aina's onboarding? | Any member (not HR) | An hr_process_read with view person_process and person Aina, not an access refusal | `hr_process-en-2` |
+| Apa lagi yang tinggal untuk onboarding Aina? | Any member (not HR) | The same read, from Malay | `hr_process-ms-2` |
+| Who is in onboarding right now? | HR owner (the message carries a People word, so the planner sees people access) | An hr_process_read with view who_onboarding | `hr_process-en-3` |
+| Siapa dalam onboarding sekarang? | HR owner (the message carries a People word, so the planner sees people access) | The same read, from Malay | `hr_process-ms-3` |
+| Which colleagues are leaving next month? | Member with only the directory view (the planner sees people access and must still choose who_leaving) | An hr_process_read with view who_leaving | `hr_process-en-4` |
+| Rakan sekerja mana yang akan berhenti bulan depan? | Member with only the directory view (the planner sees people access and must still choose who_leaving) | The same read, from Malay | `hr_process-ms-4` |
+| Is anything running late? | Any member | An hr_process_read with view overdue | `hr_process-en-5` |
+| Tugasan mana yang sudah lewat? | Any member | The same read, from Malay | `hr_process-ms-5` |
 | Mark Danial as leaving, last day 15 December 2026, he resigned | HR owner | A leave with person Danial and reason resigned, never hr_process_read | `hr_process_neg-en-1` |
 | Tandakan Danial akan berhenti, hari terakhir 15 Disember 2026, dia letak jawatan | HR owner | The same leave, from Malay | `hr_process_neg-ms-1` |
 | Show me Siti's profile page | Any People viewer | An open with person Siti, never hr_process_read | `hr_process_neg-en-2` |
-| Tolong buka profil Siti | Any People viewer | The same open, from Malay | `hr_process_neg-ms-2` |
+| Boleh tunjukkan halaman profil Siti? | Any People viewer | The same open, from Malay | `hr_process_neg-ms-2` |
 | Who reports to Razak at the moment? | Any People viewer | A people query with reports_to Razak, never hr_process_read | `hr_process_neg-en-3` |
 | Siapa yang melapor kepada Razak sekarang? | Any People viewer | The same query, from Malay | `hr_process_neg-ms-3` |
 | Please request a first aid training course for me | Staff linked with training access | A training request or a question, never hr_process_read | `hr_process_neg-en-4` |
-| Mohon kursus latihan pertolongan cemas untuk saya | Staff linked with training access | The same, from Malay | `hr_process_neg-ms-4` |
+| Saya hendak memohon latihan pertolongan cemas | Staff linked with training access | The same, from Malay | `hr_process_neg-ms-4` |
 | Mark my task done | Any member | An answer, no card and no hr_process_read | `hr_process_neg-en-5` |
 | Tandakan tugasan saya sebagai selesai | Any member | The same answer, from Malay | `hr_process_neg-ms-5` |
-| What are my tasks? | A new starter with an onboarding | Only their own tasks, with title, status and due date; nothing about anyone else | manual |
+| What are my tasks? | A new starter with an onboarding | Only their own open steps, each as "title — onboarding for <name>, due <date>" (a mark such as "waiting for approval" or "sent back" where it applies); nothing about anyone else | manual |
 | Apa tugasan saya? | A new starter with an onboarding | The same, in Malay, answered in Malay | manual |
 | What is still outstanding for Aina's onboarding? | A manager of Aina, who is in onboarding | Titles, status and dates only; no task notes, no HR-only detail | manual |
 | Apa yang belum selesai untuk onboarding Aina? | A manager of Aina, who is in onboarding | The same, in Malay, answered in Malay | manual |
-| Who is onboarding at the moment? | HR owner | Everyone in an onboarding, with the date and how many tasks are open | manual |
+| Who is onboarding at the moment? | HR owner | Everyone in an onboarding, each with "N of M steps done" and ", next step due <date>" | manual |
 | Siapa yang akan berhenti tidak lama lagi? | HR owner | Everyone in an offboarding, with the last day, answered in Malay | manual |
 | What is overdue? | HR owner | Overdue tasks across all processes; the same question from a manager lists only their reports' | manual |
-| What is still outstanding for Siti's onboarding? | HR owner, two people named Siti | A question with both, each as "name — title" (distinguishable); picking one gives that person's process | manual |
+| What is still outstanding for Siti's onboarding? | HR owner, two people named Siti | A question with both, each as "Siti Aminah — onboarding, started 3 November 2026" (name, kind, start day), with "(1 of 2)" added when two labels are still identical; picking one gives that person's process | manual |
+| Apa yang belum selesai untuk onboarding Siti? | HR owner, two people named Siti | The same question in Malay, each option as "name — onboarding, bermula <date>" | manual |
+| What is overdue? | HR owner, more than 10 overdue steps | Ten lines, then "N more not shown. See them all in <page>." | manual |
+| What is still outstanding for Aina's onboarding? | An onboarding that is completed or cancelled but still has an open step | "This process is completed" (or cancelled), and the open step reads "was due <date>", not "overdue" | manual |
 | Mark my task done | A new starter with an open task | A sentence pointing to My tasks; no card, and the task stays open | manual |
 | Tandakan tugasan saya sebagai selesai | A new starter with an open task | The same sentence in Malay; no card, and the task stays open | manual |
 
