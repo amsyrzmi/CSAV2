@@ -74,15 +74,14 @@ function ReadOnly({ data }: { data: InboxSettings }) {
  * An administrator's form: the four targets in minutes, each with its hours-and-minutes reading or,
  * when the server would refuse it, why. Save stays inert while nothing changed, a value is invalid
  * or a save is out (then every field is inert too). The form follows the stored settings again
- * when they were read anew after a conflict. It is unmounted with the panel, so an answer that
- * arrives after the panel closed changes nothing here.
+ * when they were read anew after a conflict. It is unmounted with the panel: a save's confirmation
+ * is said only while it is open, but a failure is the settings' own (`failure`), so one that
+ * arrives after the panel closed is said when it opens again.
  */
 function Editor({ settings, data }: { settings: InboxSettingsData; data: InboxSettings }) {
   const id = useId();
   const [draft, setDraft] = useState<SettingsDraft>(() => settingsDraft(data));
   const [seen, setSeen] = useState(data.version);
-  const [error, setError] = useState("");
-  const [conflict, setConflict] = useState(false);
   const [status, setStatus] = useState("");
   const inputs = useRef<Partial<Record<TargetKey, HTMLInputElement | null>>>({});
   const alive = useRef(true);
@@ -96,6 +95,7 @@ function Editor({ settings, data }: { settings: InboxSettingsData; data: InboxSe
   }
 
   const busy = settings.saving;
+  const failure = settings.failure;
   const inert = busy || undefined;
   const values = draftValues(draft);
   const changed = values !== null && TARGET_KEYS.some((key) => values[key] !== data[key]);
@@ -104,8 +104,7 @@ function Editor({ settings, data }: { settings: InboxSettingsData; data: InboxSe
     if (busy) return;
     setDraft({ ...draft, [key]: raw });
     setStatus("");
-    setError("");
-    setConflict(false);
+    settings.forget();
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -118,16 +117,8 @@ function Editor({ settings, data }: { settings: InboxSettingsData; data: InboxSe
     }
     if (!changed) return;
     setStatus("");
-    setError("");
-    setConflict(false);
     const result = await settings.save(values);
-    if (!alive.current) return;
-    if (result.ok) {
-      setStatus(SAVED);
-      return;
-    }
-    setConflict(result.conflict === true);
-    setError(result.error ?? "");
+    if (alive.current && result.ok) setStatus(SAVED);
   }
 
   return <form noValidate className="space-y-4" onSubmit={(event) => void submit(event)}>
@@ -153,7 +144,7 @@ function Editor({ settings, data }: { settings: InboxSettingsData; data: InboxSe
       })}
     </fieldset>
     <p className={muted}>{ONLY_NEW}</p>
-    {error && (conflict ? <Notice warning>{error}</Notice> : <Notice error>{error}</Notice>)}
+    {failure && (failure.conflict ? <Notice warning>{failure.error}</Notice> : <Notice error>{failure.error}</Notice>)}
     <p role="status" data-testid="inbox-response-times-status" className="text-sm">{status}</p>
     <button type="submit" className={`${action} ${inertLook}`}
       aria-disabled={busy || values === null || !changed || undefined}>{busy ? "Saving…" : "Save"}</button>
@@ -201,7 +192,11 @@ export function ResponseTimes({ settings, canEdit, onOpen }: {
     <button ref={button} type="button" className={secondary} data-testid="inbox-response-times"
       aria-haspopup="dialog" aria-expanded={open} onClick={() => { onOpen(); setOpen(true); }}>
       <Timer aria-hidden size={16} />Response times</button>
-    <SlideOver open={open} onClose={() => setOpen(false)} title="Response times" returnFocusTo={button}
+    <SlideOver open={open} onClose={() => {
+      setOpen(false);
+      // A failure on screen has been seen; one still to come (a save out) is kept for the next open.
+      if (!settings.saving) settings.forget();
+    }} title="Response times" returnFocusTo={button}
       widthClass="max-w-md" testId="inbox-response-times-panel">
       <TimesBody settings={settings} canEdit={canEdit} bodyRef={bodyRef} />
     </SlideOver>

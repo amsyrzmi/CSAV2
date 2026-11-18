@@ -81,7 +81,8 @@ export function ViewsMenu({ query, filters, order, active, onApply, onSaved }: {
   async function save(name: string): Promise<string | null> {
     const result = await views.create(name, filtersToView(filters, order));
     if (!result.ok) return result.error ?? "Could not save the view. Try again.";
-    setDialog(null);
+    // Only its own dialog closes: the person may have left it (Escape) and opened another meanwhile.
+    setDialog((open) => (open === "save" ? null : open));
     onSaved(result.view, name, screenKey);
     return null;
   }
@@ -161,6 +162,8 @@ function SaveViewBody({ onCancel, onSave }: { onCancel: () => void; onSave: (nam
  * Rename (an inline field: Enter saves, Escape cancels) and delete (a second "Delete …? Yes, delete /
  * Keep it" step) for each view. Each result is said in a notice at the top of the dialog (the page's
  * own notice is behind the modal dialog), an error next to its view; focus stays on the view's row.
+ * A view that is not there any more (deleted elsewhere) leaves the list: that is said in the notice
+ * and focus goes to the next view, or to the empty line when none is left.
  * One change at a time: while one is pending, only its own button says so ("Saving…", "Deleting…")
  * and every control in the list is `aria-disabled` and does nothing, so no other row can open,
  * close or take over an editor or a confirm step before the answer lands on its own row.
@@ -201,14 +204,29 @@ function ManageViewsBody({ views }: { views: Views }) {
     setDraft(view.name);
     focusNext.current = "edit";
   }
+  /** Where focus goes when `view` leaves the list: the next view, else the one before, else the empty line. */
+  function after(view: SavedView): string {
+    const index = list.findIndex((item) => item.id === view.id);
+    const neighbour = list[index + 1] ?? list[index - 1];
+    return neighbour ? `rename-${neighbour.id}` : "empty";
+  }
+  /** The view went elsewhere and has left the list: said at the top, focus on its neighbour. */
+  function gone(text: string, focus: string) {
+    setStatus(text);
+    setEditing(null);
+    setRowError(null);
+    focusNext.current = focus;
+  }
   async function rename(view: SavedView) {
     if (locked) return;
     const name = draft.trim();
     if (!name) { setRowError({ id: view.id, text: NAME_REQUIRED }); return; }
     if (name === view.name) { stopEditing(); return; }
+    const focus = after(view);
     setPending({ id: view.id, kind: "rename" });
     const result = await views.rename(view.id, name);
     setPending(null);
+    if (result.gone) { gone(result.error ?? "", focus); return; }
     if (!result.ok) {
       setRowError({ id: view.id, text: result.error ?? "Could not save the view. Try again." });
       focusNext.current = "edit";
@@ -221,12 +239,12 @@ function ManageViewsBody({ views }: { views: Views }) {
   }
   async function remove(view: SavedView) {
     if (locked) return;
-    const index = list.findIndex((item) => item.id === view.id);
-    const neighbour = list[index + 1] ?? list[index - 1];
+    const focus = after(view);
     setPending({ id: view.id, kind: "delete" });
     const result = await views.remove(view.id);
     setPending(null);
     setConfirming(null);
+    if (result.gone) { gone(result.error ?? "", focus); return; }
     if (!result.ok) {
       setRowError({ id: view.id, text: result.error ?? "Could not delete the view. Try again." });
       focusNext.current = `delete-${view.id}`;
@@ -234,7 +252,7 @@ function ManageViewsBody({ views }: { views: Views }) {
     }
     setStatus(`Deleted the view ${quoted(view.name)}.`);
     setRowError(null);
-    focusNext.current = neighbour ? `rename-${neighbour.id}` : "empty";
+    focusNext.current = focus;
   }
 
   return <div ref={root} className="space-y-3">

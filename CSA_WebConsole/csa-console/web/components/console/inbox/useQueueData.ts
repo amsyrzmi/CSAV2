@@ -12,6 +12,8 @@ import {
 } from "@/lib/inbox-queue";
 
 const READ_TIMEOUT_MS = 15_000;
+/** How long a "none" answer rests before the probe asks again. */
+const PROBE_REST_MS = 30_000;
 
 /** The status and plain-text detail of a failed call; null when no answer came. */
 function describe(cause: unknown): { status: number | null; code: string | null } {
@@ -22,30 +24,46 @@ function describe(cause: unknown): { status: number | null; code: string | null 
 
 /**
  * Whether the company has any conversation: one read of the All list for one row, asked while `ask`
- * (a tab came back empty and the counts could not tell) and again each time `tick` changes (each
- * list answer) until one is found; then never again for this company. Null while unknown: not asked
- * yet, the first read still out, or the last read failed, so the caller never shows "Connect
- * WhatsApp" on a guess. A later "none" keeps the last answer while its re-read is out.
+ * (a tab came back empty and the counts could not tell) and looked at again each time `tick`
+ * changes (each list answer) until one is found; then never again for this company. One read at a
+ * time: a list answer never cancels or repeats a read that is out (only leaving the company does),
+ * a failed read is asked again at the next list answer, and a "none" rests for PROBE_REST_MS before
+ * the next. Null while unknown: not asked yet, the first read still out, or the last read failed,
+ * so the caller never shows "Connect WhatsApp" on a guess. A later "none" keeps the last answer
+ * while its re-read is out.
  */
 export function useHasConversations(query: string, ask: boolean, tick: string | null): boolean | null {
   const [state, setState] = useState<{ query: string; value: boolean | null }>({ query, value: null });
   const current = state.query === query ? state.value : null;
   const found = current === true;
+  // The read that is out, and when the last "none" came back; both change only outside render.
+  const out = useRef<AbortController | null>(null);
+  const noneAt = useRef<{ query: string; at: number } | null>(null);
+  useEffect(() => () => {
+    out.current?.abort();
+    out.current = null;
+  }, [query]);
   useEffect(() => {
-    if (!ask || found) return;
+    if (!ask || found || out.current !== null) return;
+    if (noneAt.current?.query === query && Date.now() - noneAt.current.at < PROBE_REST_MS) return;
     const controller = new AbortController();
+    out.current = controller;
     async function read() {
       try {
         const page = await api<ConversationPage>(anyConversationQuery(query), {
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
         });
-        if (!controller.signal.aborted) setState({ query, value: page.items.length > 0 });
+        if (controller.signal.aborted) return;
+        const any = page.items.length > 0;
+        noneAt.current = any ? null : { query, at: Date.now() };
+        setState({ query, value: any });
       } catch {
         if (!controller.signal.aborted) setState({ query, value: null });
+      } finally {
+        if (out.current === controller) out.current = null;
       }
     }
     void read();
-    return () => controller.abort();
   }, [query, ask, found, tick]);
   return current;
 }
@@ -101,15 +119,19 @@ export function useAssignees(query: string, enabled: boolean) {
 
 /** The sentence for a failed views read: a refusal says so, anything else asks to try again. */
 export const VIEWS_READ_FAILED = "Could not load your saved views. Try again.";
+const VIEW_SAVE_FAILED = "Could not save the view. Try again.";
+const VIEW_DELETE_FAILED = "Could not delete the view. Try again.";
 
 type ViewsState = { path: string; views: SavedView[] | null; failed: boolean; error: string };
-export type ViewChange = { ok: boolean; error?: string; view?: SavedView };
+/** A change's outcome; `gone` when the view was not there any more (404) and has left the list. */
+export type ViewChange = { ok: boolean; error?: string; view?: SavedView; gone?: boolean };
 
 /**
  * The person's saved views, read when `enabled` first turns true (never before). A failed read sets
  * `failed` and `error` (one plain sentence, never the server's words) and keeps the last list; `retry`
  * clears both and reads again. Each change calls its route, puts its answer in the list at once,
- * re-reads the list whatever the outcome and says what went wrong in one plain sentence.
+ * re-reads the list whatever the outcome and says what went wrong in one plain sentence (its own
+ * for a failed delete). A view the server no longer has leaves the list at once.
  */
 export function useSavedViews(query: string, enabled = true) {
   const path = viewsPath(query);
@@ -138,19 +160,24 @@ export function useSavedViews(query: string, enabled = true) {
     return () => controller.abort();
   }, [enabled, path, revision]);
 
+  const edit = (update: (views: SavedView[]) => SavedView[]) => setState((previous) =>
+    previous.path === path && previous.views ? { ...previous, views: update(previous.views) } : previous);
+
   async function change(
     call: () => Promise<SavedView | undefined>, update: (views: SavedView[], view?: SavedView) => SavedView[],
+    fallback: string, id?: string,
   ): Promise<ViewChange> {
     try {
       const view = await call();
-      setState((previous) => previous.path === path && previous.views
-        ? { ...previous, views: update(previous.views, view) } : previous);
+      edit((views) => update(views, view));
       setRevision((value) => value + 1);
       return { ok: true, view };
     } catch (cause) {
-      setRevision((value) => value + 1);
       const { status, code } = describe(cause);
-      return { ok: false, error: viewErrorText(status, code, "Could not save the view. Try again.") };
+      const gone = status === 404 && id !== undefined;
+      if (gone) edit((views) => views.filter((item) => item.id !== id));
+      setRevision((value) => value + 1);
+      return { ok: false, gone, error: viewErrorText(status, code, fallback) };
     }
   }
   const write = (target: string, method: "POST" | "PUT" | "DELETE", body?: unknown) =>
@@ -168,12 +195,15 @@ export function useSavedViews(query: string, enabled = true) {
       setRevision((value) => value + 1);
     },
     create: (name: string, filters: ViewFilters) => change(
-      () => write(path, "POST", { name, filters }), (views, view) => (view ? [view, ...views] : views)),
-    rename: (id: string, name: string) => change(() => write(viewsPath(query, id), "PUT", { name }), swap),
+      () => write(path, "POST", { name, filters }), (views, view) => (view ? [view, ...views] : views),
+      VIEW_SAVE_FAILED),
+    rename: (id: string, name: string) =>
+      change(() => write(viewsPath(query, id), "PUT", { name }), swap, VIEW_SAVE_FAILED, id),
     replace: (id: string, filters: ViewFilters) =>
-      change(() => write(viewsPath(query, id), "PUT", { filters }), swap),
+      change(() => write(viewsPath(query, id), "PUT", { filters }), swap, VIEW_SAVE_FAILED, id),
     remove: (id: string) => change(
-      () => write(viewsPath(query, id), "DELETE"), (views) => views.filter((item) => item.id !== id)),
+      () => write(viewsPath(query, id), "DELETE"), (views) => views.filter((item) => item.id !== id),
+      VIEW_DELETE_FAILED, id),
   };
 }
 
@@ -187,6 +217,8 @@ const SETTINGS_SAVE_FAILED = "Could not save the response times. Try again.";
 type SettingsState = { path: string; settings: InboxSettings | null; failed: boolean; error: string };
 /** A save's outcome: `conflict` when someone else saved first and the latest values were read anew. */
 export type SettingsSave = { ok: boolean; conflict?: boolean; error?: string };
+/** The sentence of the last failed save, for the company it was made for. */
+type SaveFailure = { path: string; error: string; conflict: boolean };
 
 const readFailure = (cause: unknown) =>
   describe(cause).status === 403 ? viewErrorText(403, null, SETTINGS_READ_FAILED) : SETTINGS_READ_FAILED;
@@ -196,7 +228,9 @@ const readFailure = (cause: unknown) =>
  * company the query names. A failed read sets `failed` and `error` (one plain sentence) and keeps
  * what was read before; `retry` reads again. `save` sends every field with the version that was read,
  * one save at a time per company (`saving`); a version conflict reads the settings anew, so the
- * form shows the latest values. Stale answers never win: every read or save answer takes a ticket,
+ * form shows the latest values. A failed save's sentence is kept here (`failure`), not in the
+ * form, so a save that fails after the panel closed is still said when it opens again; `forget`
+ * drops it once it has been seen (a new save or an edit drops it too). Stale answers never win: every read or save answer takes a ticket,
  * and a read that started before a newer answer arrived is dropped, as is any answer for a company
  * the screen has left.
  */
@@ -205,6 +239,7 @@ export function useInboxSettings(query: string, enabled: boolean) {
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<SettingsState>({ path, settings: null, failed: false, error: "" });
   const [saving, setSaving] = useState<string | null>(null);
+  const [failure, setFailure] = useState<SaveFailure | null>(null);
   const current: SettingsState = state.path === path ? state : { path, settings: null, failed: false, error: "" };
   // The company on screen and the newest ticket; both change only outside render.
   const live = useRef(path);
@@ -244,6 +279,8 @@ export function useInboxSettings(query: string, enabled: boolean) {
     if (before === null || inFlight.current === target) return { ok: false };
     inFlight.current = target;
     setSaving(target);
+    setFailure(null);
+    const fail = (error: string, conflict: boolean) => setFailure({ path: target, error, conflict });
     try {
       const saved = await api<InboxSettings>(target, {
         method: "PUT", body: JSON.stringify(settingsBody(values, before.version)),
@@ -258,7 +295,9 @@ export function useInboxSettings(query: string, enabled: boolean) {
     } catch (cause) {
       const { status, code } = describe(cause);
       if (status !== 409 || code !== "version_conflict") {
-        return { ok: false, error: settingsErrorText(status, code, SETTINGS_SAVE_FAILED) };
+        const error = settingsErrorText(status, code, SETTINGS_SAVE_FAILED);
+        fail(error, false);
+        return { ok: false, error };
       }
       // Someone else saved first: read what is stored now before the person tries again.
       const mine = ++ticket.current;
@@ -266,7 +305,9 @@ export function useInboxSettings(query: string, enabled: boolean) {
       try {
         const latest = await read(target, new AbortController().signal);
         if (fresh()) setState({ path: target, settings: latest, failed: false, error: "" });
-        return { ok: false, conflict: true, error: settingsErrorText(status, code, SETTINGS_SAVE_FAILED) };
+        const error = settingsErrorText(status, code, SETTINGS_SAVE_FAILED);
+        fail(error, true);
+        return { ok: false, conflict: true, error };
       } catch (failure) {
         // Never leave the older values editable: the panel shows the failed read and Try again.
         if (fresh()) setState({ path: target, settings: null, failed: true, error: readFailure(failure) });
@@ -281,6 +322,8 @@ export function useInboxSettings(query: string, enabled: boolean) {
   return {
     path, settings: current.settings, loaded: current.settings !== null, failed: current.failed,
     error: current.error, saving: saving === path, save,
+    failure: failure?.path === path ? failure : null,
+    forget: () => setFailure(null),
     retry: () => {
       setState({ path, settings: current.settings, failed: false, error: "" });
       setRevision((value) => value + 1);
