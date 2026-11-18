@@ -29,13 +29,13 @@
   Production keeps its paths, and its config later holds today's defaults.
 - **Config format:** `KEY=value` lines, parsed and never sourced, exactly six keys, all required: `TARGET`, `DEPLOY_USER`, `CHECKOUT`, `PYTHON`, `LOCK`, `LOG_DIR`. The file must be a regular file (not a symlink), owned by the uid that owns the script, and not writable by group or others. Environment variables no longer override anything. The tests run a copy of the script with a config next to it, so no root is needed.
 - **Production is unaffected by this PR on the host.** Its documents do not change, and the installed `csa-prod-deploy` keeps working. Reinstalling the shared script there needs a config file. `deploy/PRODUCTION.md` gains that procedure for the next time the entry script changes; it is not a prerequisite.
-- **A rollout lock in the core**, `/run/lock/<project>-rollout.lock`, taken by `plan` and `apply` and not by `record-staged`. Today's entry-script lock does not cover the owner's manual staging runs from `/home/amsyrzmi/CSAV2`, which take no lock. The file is opened read-only with create, so a file created by the other user can still be locked (`/run/lock` is mode 1777 on the host).
+- **A rollout lock in the core**, `/run/lock/<project>-rollout.lock`, taken by `plan` and `apply` and not by `record-staged`. Today's entry-script lock does not cover the owner's manual staging runs from `/home/amsyrzmi/CSAV2`, which take no lock. The file is opened read-only, and `O_CREAT` is passed **only when the file does not exist yet**. `/run/lock` is mode 1777 and the host has `fs.protected_regular = 2`, so the kernel refuses `open(O_CREAT)` on an existing file in that directory when the opener is not the file's owner, even with `O_RDONLY`. Whichever user (the owner or `csa-deploy`) creates the file first would otherwise lock the other out. A plain read-only open of a 0644 file by another user works, and `flock` works on a read-only descriptor.
 - **The staged record.** The record job writes it with the workflow token. On staging, the rollout core writes it only when it was **not** given digests, which means the owner's manual run with its own `gh` login. The production gate (`resolve_commit.sh`) and the core's break-glass gate count a deployment only when its description is `staging rollout`. GitHub's auto-created deployments therefore never count, even if `deployment: false` does not behave as documented.
 - **Shared scripts stay in `deploy/production/`**: no file moves, so production paths, docs and installed copies are untouched. Staging-only files go in `deploy/staging/`, and the AWS script in `deploy/aws/`. PR 3's runbook may move them.
 - **`resolve_commit.sh` exits 3** for "not ready yet" (ci not succeeded, images not published) and 1 for every other refusal. Production treats both as a failure; staging's automatic runs treat 3 as `nothing to roll out`.
 - **The staging region is its own repository variable, `STAGING_DEPLOY_REGION`**, so the target stays replaceable. Its value equals `PROD_DEPLOY_REGION` today.
 - **Noted for PR 3, not changed here:**
-  - GitHub runs at most three levels of `workflow_run` chains. ci → publish → deploy-staging is three, so `PROD_AUTO_PLAN` cannot be a fourth `workflow_run` level. deploy-staging would have to dispatch deploy-production with its token (a `workflow_dispatch` from `GITHUB_TOKEN` is allowed).
+  - GitHub's rule: "You can't use `workflow_run` to chain together more than three levels of workflows." In its example A → B → C → D → E → F, `E` and `F` do not run, so A → B → C → D is allowed. ci → publish → deploy-staging is A → B → C, so a `PROD_AUTO_PLAN` workflow started by `workflow_run` of deploy-staging would be the fourth and last allowed link, and nothing may be chained after it. Prefer a `workflow_dispatch` from deploy-staging's token (allowed) so the chain stays short.
   - `publish-staging-images.yml` still uses unpinned `@v4` actions.
 
 ## Global Constraints
@@ -49,7 +49,10 @@
 - `scripts/staging_rollout.py` and `scripts/rollout_targets.py` are shared by both targets. Every existing staging and production test keeps passing; a test changes only where this plan changes behaviour, and the task says which.
 - Run only the changed files' tests: `.venv/bin/python -m pytest <files> -q`. Run `uv sync --frozen` first if `.venv` is missing. If the session guard refuses `ENV=` prefixes or compound commands, use the `ci.sh` wrapper. Then run `.venv/bin/ruff format`, `.venv/bin/ruff check` and `.venv/bin/pyright <touched python files>`, plus `bash -n` on every touched shell script, and `make lint` before the final review. `tests/test_production_deploy_assets.py` takes about 3 minutes: run it in the background. CI runs the full suite.
 - Commit trailers: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` and the session line the controller gives.
-- The builder never touches the home server's stack, AWS or GitHub settings. Every host, AWS or GitHub step is in Part B for the owner.
+- The builder never touches the home server's stack, AWS or GitHub settings. Every host, AWS or GitHub step is in Part B for the owner. The only exceptions are the read-only commands that Task 3 Step 4 and Task 9 Step 3 name, and **the controller runs those, not a builder**: a builder subagent never runs `gh auth token`, `docker` or `docker inspect`. The controller reports the output.
+- The `ci.sh` wrapper is not in the repository. The controller creates it in the scratchpad (`/tmp/claude-1000/-home-amsyrzmi-CSAV2--claude-worktrees-feat-cd-staging/0b429d2f-9061-4b82-9e30-e378a45a8971/scratchpad/ci.sh`: it exports `NO_LOCAL_ENV=1 ENV=ci` and `PATH=/tmp/fourstacks-toolbin:$PATH`, then `exec "$@"`) and gives builders its path. Run tests as `bash <that path> .venv/bin/python -m pytest <files> -q`, one plain command per call.
+- Test stand-ins: `test-region-1` for the Systems Manager runner and documents (pattern `^[a-z0-9-]+$`); `zz-test-1` for `setup-target.sh` (it matches that script's region pattern and the repository's no-real-region scan).
+- Reusing test helpers: `harness` is a pytest fixture defined separately in `tests/test_production_deploy_assets.py` and `tests/test_production_resolve.py`. A new test file imports the class (`Harness`) and the helpers, and defines its own fixture where it needs one, rather than importing a fixture (ruff `F811` would fail `make lint`).
 
 ## Review Focus
 
@@ -97,7 +100,7 @@
 **Interfaces:**
 - Produces:
   - `STAGED_DESCRIPTION = "staging rollout"`, used by `record_staged` and `staged_record`;
-  - `staged_record` skips, without error, any deployment whose `description` is not exactly `STAGED_DESCRIPTION`. Its other shape checks stay fail-closed;
+  - `staged_record` skips, without error, any deployment whose `description` is not exactly `STAGED_DESCRIPTION`. The shape checks (id, sha, environment) still run **first**, so a malformed entry still fails closed, and the statuses of a skipped deployment are never fetched (the expected `gh` argv sequences in the gate tests change accordingly);
   - in `main`, the staging record after a successful apply is written only when `image_digests is None`. With digests it prints `Staged record: written by the deploy-staging workflow after this run.` and makes no `gh` call;
   - `STAGING.downgrade_warning` becomes `True`, so a staging plan prints the existing `WARNING: <sha7> is older than the running <rev7>; this is a downgrade. ...` line. It never stops a manual plan by itself.
 
@@ -109,7 +112,10 @@
   - `test_staging_plan_warns_on_a_downgrade`;
   - `test_staging_targets_downgrade_warning_is_on`.
 - [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_rollout_gate.py tests/test_rollout_targets.py -q`; expect the new tests to fail.
-- [ ] **Step 3: Implement** the interface. Update the staging fakes in `tests/test_staging_rollout.py` that now see the extra `merge-base` call, and no other assertion.
+- [ ] **Step 3: Implement** the interface. Tests that change, and nothing else:
+  - the staging fakes in `tests/test_staging_rollout.py` (`staging_runner` answers `merge-base --is-ancestor` with a blanket `ok()`, so every staging plan would now print a downgrade warning: answer it per case);
+  - the deployment fixtures, which gain `description="staging rollout"` by default: `deployment()` in `tests/test_rollout_gate.py` (about line 93, and the inline ones near lines 180-182), the inline fixture in `tests/test_rollout_digests.py` (about line 203), and `tests/test_rollout_targets.py` (about line 369, via `deployment`);
+  - the expected `gh` argv sequences in the gate tests where a skipped deployment no longer has its statuses fetched.
 - [ ] **Step 4: Run** `tests/test_rollout_gate.py tests/test_rollout_targets.py tests/test_staging_rollout.py tests/test_rollout_digests.py tests/test_rollout_production.py tests/test_rollout_smoke_rollback.py -q`; all pass. Format, lint, pyright.
 - [ ] **Step 5: Commit** `feat(rollout): only a staging rollout counts as staged; the workflow records digest runs`.
 
@@ -122,7 +128,7 @@
 **Interfaces:**
 - Produces:
   - `ROLLOUT_LOCK_DIR = Path("/run/lock")`; the lock file is `ROLLOUT_LOCK_DIR / f"{target.project}-rollout.lock"`, which gives `csa-staging-rollout.lock` and `csa-prod-rollout.lock`;
-  - `hold_rollout_lock(target: Target) -> contextlib.AbstractContextManager[None]`. It opens the file `O_RDONLY | O_CREAT | O_CLOEXEC`, mode `0o644`, then `fcntl.flock(LOCK_EX | LOCK_NB)`;
+  - `hold_rollout_lock(target: Target) -> contextlib.AbstractContextManager[None]`. It opens the file with `O_RDONLY | O_CLOEXEC` and **no** `O_CREAT`. Only on `FileNotFoundError` does it create it with `O_RDONLY | O_CREAT | O_EXCL | O_CLOEXEC`, mode `0o644`, and on `FileExistsError` (another process won the race) it retries the plain open. Then `fcntl.flock(LOCK_EX | LOCK_NB)`. `O_CREAT` is never passed for a file that exists (see the `fs.protected_regular` decision above);
   - when the lock is held, it raises `RolloutError("lock", f"another rollout of {target.name} is running; nothing was changed")`;
   - when the file cannot be opened, it raises `RolloutError("lock", f"cannot open the rollout lock {path}")`;
   - `main` holds the lock around everything after argument parsing, for `plan` and `apply` (the record write included), and not for `record-staged`. A lock stop prints `Stopped at lock: ...` and returns 1, before any runner call.
@@ -130,7 +136,8 @@
 - [ ] **Step 1: Write the failing tests:**
   - `test_plan_and_apply_stop_at_lock_when_another_process_holds_it` (hold the lock from a subprocess; the fake runner records zero calls; exit 1; exact message);
   - `test_the_lock_is_released_after_a_run_and_after_a_stop`;
-  - `test_a_lock_file_another_user_created_read_only_can_still_be_locked` (chmod 0444 first);
+  - `test_an_existing_lock_file_is_opened_without_o_creat` (monkeypatch `os.open` to record the flags: an existing file is opened with no `O_CREAT`; a missing one is created with `O_CREAT | O_EXCL`; a `FileExistsError` on create retries the plain open). A pytest tmp directory is not sticky, so the flags are the only thing the test can observe of the `fs.protected_regular` rule;
+  - `test_a_read_only_existing_lock_file_can_still_be_locked` (chmod 0444 first);
   - `test_an_unopenable_lock_directory_stops_without_runner_calls`;
   - `test_record_staged_takes_no_lock`;
   - `test_staging_and_production_use_different_lock_files`.
@@ -152,6 +159,7 @@
   - step 4 selects only deployments with `.description == "staging rollout"`;
   - on `production`, step 4 refuses exactly as today;
   - on `staging`, step 4 never refuses: `staged_on` is the earliest such success, or empty;
+  - the test fixtures change: `_defaults()["deployments.json"]` in `tests/test_production_resolve.py` carries `description: "staging rollout"`, and `Harness.run` (its `env=`, about line 220) is the single place that gains `DEPLOY_TARGET=production` for the existing tests;
   - step 3 (`the ci run for <sha7> has not succeeded on main`) and the "not published" case of step 5 (`images for <sha7> are not published (csa-<app>)`) exit **3**; every other failure exits 1, with the messages unchanged;
   - the stdout keys are unchanged.
 
@@ -163,7 +171,7 @@
   - `test_staging_still_runs_checks_1_2_3_and_5`.
 - [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_production_resolve.py -q`; expect failures.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the file; pass. Then make two read-only checks against the real repository from this machine (the owner's `gh` login, nothing written):
+- [ ] **Step 4: Run** the file; pass. Then **the controller** (not the builder) makes two read-only checks against the real repository from this machine (the owner's `gh` login, nothing written; the session guard refuses an inline `GH_TOKEN=$(...)`, so export the token inside a small scratchpad script):
   - run the script once for each target: `GH_TOKEN="$(gh auth token)" REPOSITORY=amsyrzmi/CSAV2 IMAGE_NAMESPACE=ghcr.io/amsyrzmi DEPLOY_TARGET=<target>`, no input;
   - run `gh api "repos/amsyrzmi/CSAV2/deployments?environment=staging&per_page=50" --jq '.[].description' | sort | uniq -c`, which must show only `staging rollout`.
 
@@ -174,11 +182,16 @@
 
 **Files:**
 - Modify: `deploy/production/deploy_entry.sh`
-- Create: `deploy/production/deploy.conf.example`, `deploy/staging/deploy.conf.example` (placeholders only)
-- Test: `tests/test_production_deploy_assets.py` (`Harness` installs a copy of the script as `<tmp>/sbin/csa-<target>-deploy` with `<name>.conf` next to it, instead of setting `CHECKOUT`/`PYTHON`/`LOCK`/`LOG_DIR` in the environment; every existing entry test keeps its assertion)
+- Create: `deploy/production/deploy.conf.example`, `deploy/staging/deploy.conf.example`. They hold the **real, non-secret values** (the six keys with the paths and user names from Part B step 10 for staging, and today's installed values for production), and they parse under the entry script's own rules. They are the documented source for the config files.
+- Test: `tests/test_production_deploy_assets.py`. `Harness` gains a `target` argument (default `production`) and installs a copy of the script as `<tmp>/sbin/csa-prod-deploy` or `<tmp>/sbin/csa-staging-deploy`, with `<name>.conf` next to it, instead of setting `CHECKOUT`/`PYTHON`/`LOCK`/`LOG_DIR` in the environment. The harness writes `DEPLOY_USER` = the current user (`id -un`) and installs the config mode 0644, owned by the current user. The file gets a `staging_harness` fixture next to the existing `harness`. Existing entry tests keep their assertions, **except these three, which change because the behaviour changes**:
+  - the test near line 566 that asserts the `: "${CHECKOUT:=...}"` default lines becomes "the script has no defaults; its paths come from the config";
+  - the log-directory test near line 543 passes `LOG_DIR=str(log_dir)` through the environment: it rewrites the config's `LOG_DIR` instead;
+  - the test near line 549 asserts the prefix `csa-prod-deploy: cannot write the log file`: the production copy keeps the name `csa-prod-deploy`, so it holds, and the staging copy's prefix is `csa-staging-deploy`.
+
+  `test_entry_script_first_leaves_the_working_directory` (near line 500) still requires the first two code lines to be `set -euo pipefail` and `cd /`: the config parsing comes after `export LC_ALL=C`.
 
 **Interfaces:**
-- Produces: `csa-<target>-deploy <plan|apply> <sha> [<migrations>] [<host_digest>] [<python_digest> <frontend_digest>]`. The argument rules are unchanged, except:
+- Produces: `csa-staging-deploy` / `csa-prod-deploy` (installed names; the script is the same file) `<plan|apply> <sha> [<migrations>] [<host_digest>] [<python_digest> <frontend_digest>]`. The argument rules are unchanged, except:
   - on `staging`, `apply` requires the host digest to be **empty** (`staging takes no host digest`);
   - on `production`, `apply` still requires it.
 
@@ -201,7 +214,7 @@
   - `test_staging_entry_runs_the_staging_target_without_a_host_digest`;
   - `test_staging_entry_refuses_a_host_digest_on_apply`;
   - `test_production_entry_is_unchanged_with_the_production_config` (the existing production argv assertions);
-  - `test_the_example_configs_hold_placeholders_and_parse`.
+  - `test_the_example_configs_parse_and_match_the_runbook_values` (each example parses under the entry script's rules, holds no secret, and the staging example's six key/value pairs equal the `printf` line in Part B step 10 as recorded in `deploy/STAGING_PIPELINE.md`: assert it in Task 10 once that file has the section).
 
   Extend `NEW_FILES` in the no-ids test with the two example files.
 - [ ] **Step 2: Run** the file in the background; expect the new tests to fail.
@@ -212,7 +225,7 @@
 ### Task 5: Staging documents and role template; `ssm_run.sh` and `parse_plan.sh` per target
 
 **Files:**
-- Create: `deploy/staging/ssm-document-plan.json`, `deploy/staging/ssm-document-apply.json`, `deploy/staging/iam/trust-policy.json`, `deploy/staging/iam/permissions-policy.json`, `tests/test_staging_deploy_assets.py` (imports `Harness`, `BAD_VALUES`, `_filled_policy`, `_trust_allows` and the quote checker from `tests.test_production_deploy_assets`)
+- Create: `deploy/staging/ssm-document-plan.json`, `deploy/staging/ssm-document-apply.json`, `deploy/staging/iam/trust-policy.json`, `deploy/staging/iam/permissions-policy.json`, `tests/test_staging_deploy_assets.py` (imports `Harness`, `BAD_VALUES`, `_filled_policy`, `_trust_allows`, `_plan_output`, `SSM_ENV` and the quote checker `_unquoted_expansions` from `tests.test_production_deploy_assets`, and defines its own fixture for `Harness`)
 - Modify: `deploy/production/ssm_run.sh`, `deploy/production/parse_plan.sh`, `tests/test_production_deploy_assets.py` (`SSM_ENV` and the parse helpers gain `DEPLOY_TARGET=production`)
 
 **Interfaces:**
@@ -259,7 +272,7 @@
 
 **Files:**
 - Create: `deploy/staging/rollout_gate.sh`, `deploy/staging/record_staged.sh` (both mode 755, `set -euo pipefail`, `LC_ALL=C`, `valid` helper, `jq` for every JSON read and write)
-- Test: create `tests/test_staging_gate_scripts.py` (reuse the `gh`/`curl` stubs and fixtures of `tests/test_production_resolve.py` by import)
+- Test: create `tests/test_staging_gate_scripts.py` (reuse the `gh`/`curl` stubs and fixtures of `tests/test_production_resolve.py` by import for `start`; the `current` command calls `gh api repos/$REPOSITORY/commits/main --jq .sha`, which has four arguments, while the existing `GH_STUB` there accepts only `$# -eq 2`, so write a small `current`-specific `gh` stub in this file)
 
 **Interfaces:**
 - Produces `rollout_gate.sh start`. Environment: `EVENT_NAME` (`workflow_run|workflow_dispatch`, else exit 1), `INPUT_SHA` (may be empty), and the environment `resolve_commit.sh` needs. It runs `DEPLOY_TARGET=staging deploy/production/resolve_commit.sh "$INPUT_SHA"` from its own directory's `../production`. It prints the resolver's five keys plus `proceed=true|false` and `reason=<one line>`:
@@ -302,7 +315,7 @@
 ### Task 7: The `deploy-staging` workflow
 
 **Files:**
-- Create: `.github/workflows/deploy-staging.yml`, `tests/test_deploy_staging_workflow.py` (import `_children`, `_jobs`-style helpers, `PIN`, `_run_blocks`, `_run_step` and the stubs from `tests.test_production_deploy_assets`; generalise a helper there to take the workflow path if needed, without changing its production assertions)
+- Create: `.github/workflows/deploy-staging.yml`, `tests/test_deploy_staging_workflow.py` (import `_children`, `_jobs`, `_steps`, `_step`, `_run_blocks`, `_run_step`, `PIN` and the stubs from `tests.test_production_deploy_assets`. Those helpers read the module-level `WORKFLOW` through `_workflow()`: give `_workflow` and the helpers an optional `path` parameter that defaults to the production file, so no production assertion changes. `_step()` requires a step to start with `name: <name>` on its first line, so in the new workflow `name:` comes before `id:`. The `paused` job's `permissions: {}` is not found by `_children(... "    permissions:")`: handle that case in the test itself.)
 - Modify: `.github/workflows/deploy-production.yml` (`DEPLOY_TARGET: production` in both jobs' `env`), `tests/test_production_deploy_assets.py` (the new env entry)
 
 **Interfaces:**
@@ -367,6 +380,8 @@
 
 **Interfaces:**
 - Produces `setup-target.sh <staging|production> <activate|apply|check> --region <region> [--node <mi-id>] [--subject <prefix>]`. It is run in CloudShell from a `git clone --depth 1` of the repository and reads its templates relative to its own path.
+- **Build order:** this is the largest task, so it is two commits, still one task review: (a) the fake `aws`, validation, `apply` and `check` with their tests; (b) `activate` with its tests.
+- The tests use the region stand-in `zz-test-1` (it matches the pattern below and the no-real-region scan; `test-region-1` does not match).
 - Validation runs before any AWS call:
   - region `^[a-z]{2}(-[a-z]+)+-[0-9]$`;
   - node `^mi-[0-9a-f]{17}$` (required for `apply` and `check`);
@@ -419,12 +434,12 @@
 
 **Interfaces:**
 - Produces two guards:
-  - `test_app_services_mount_nothing_from_the_checkout` (YAML only, no docker): for every service in `STAGING.app_services`, across the three staging compose files, every `volumes:` entry is a named volume declared at the top level, with no `./`, `../` or absolute host source. No declared volume has a `name:` override, so compose names it `<project>_<volume>` whatever the directory. The only relative bind mounts in the three files belong to `staging-bot-setup`, which the rollout never recreates. Secrets are `file:` entries under `${CSA_STAGING_SECRET_DIR}`, absolute by construction;
+  - `test_app_services_mount_nothing_from_the_checkout` (YAML only, no docker). `deploy/compose.staging-shared-caddy.yml` uses `profiles: !override [...]`, which `yaml.safe_load` rejects. Load with a `SafeLoader` subclass that accepts any `!tag` as its plain value, and merge per service across the three files in `--file` order. Only `profiles` uses `!override` today; the test fails if a `volumes` list ever carries `!override` or `!reset`, so the merge rule for volumes stays a plain append. For every service in `STAGING.app_services`, across the three staging compose files, every `volumes:` entry is a named volume declared at the top level, with no `./`, `../` or absolute host source. No declared volume has a `name:` override, so compose names it `<project>_<volume>` whatever the directory. The only relative bind mounts in the three files belong to `staging-bot-setup`, which the rollout never recreates. Secrets are `file:` entries under `${CSA_STAGING_SECRET_DIR}`, absolute by construction;
   - `test_the_staging_stack_renders_the_same_from_a_copy_of_the_checkout` (docker CLI): render `docker compose --env-file /dev/null --project-name csa-staging -f ... --profile staging-approved --profile pipeline-approved config --format json` from the repository and from a copy in `tmp_path`. The copy holds `deploy/`, `scripts/staging_test_bot.py` and `db/sql/staging`. Both renders use `_compose_env` with `_make_synthetic_secrets`, and stand-in image refs. Replace the copy's root with the repository's root, then assert the two documents are equal, and that the volume names are exactly `csa-staging_<name>` for every declared volume.
 
 - [ ] **Step 1: Write both tests**; they should pass on the current files. If one fails, stop and report: the move is not safe as designed.
 - [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_staging_compose.py -q`.
-- [ ] **Step 3: Read-only check on this host** (it is the home server). For each of `gateway`, `worker`, `delivery`, `frontend` and `training-worker`, run `docker inspect --format '{{.Name}} {{range .Mounts}}{{.Type}}:{{.Name}}->{{.Destination}} {{end}}' csa-staging-<service>-1` and `docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}'`. Put the output in the task report. Every mount must be `volume` with a `csa-staging_` name, or a `bind` of a secret file whose destination is under `/run/secrets`. No source path may be printed or read beyond what `inspect` shows. Do not run anything else against the stack.
+- [ ] **Step 3: Read-only check on this host** (it is the home server; **the controller runs it**, not the builder). For each of `gateway`, `worker`, `delivery`, `frontend` and `training-worker`, run `docker inspect --format '{{.Name}} {{range .Mounts}}{{.Type}}:{{.Name}}->{{.Destination}} {{end}}' csa-staging-<service>-1` and `docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}'`. Put the output in the task report. Every mount must be `volume` with a `csa-staging_` name, or a `bind` of a secret file whose destination is under `/run/secrets`. No source path may be printed or read beyond what `inspect` shows. Do not run anything else against the stack.
 - [ ] **Step 4:** If Step 3 shows a mount the tests did not predict, stop and report it.
 - [ ] **Step 5: Commit** `test(staging): the stack renders the same from any checkout and mounts no checkout path`.
 
@@ -437,18 +452,25 @@
 
 **Interfaces:** none produced.
 
-- [ ] **Step 1: Write failing assertions:**
-  - `deploy/STAGING_PIPELINE.md`'s new opening subsection under "Routine rollouts", "Automatic rollouts (deploy-staging)", must say:
+- [ ] **Step 1: Write failing assertions.** Heading levels matter, because the existing tests read the `## Routine rollouts` section by name (`_section(PIPELINE_DOC, "Routine rollouts")`) and need the retry command, "GitHub Deployment", `staging` and `production` inside it:
+  - `deploy/STAGING_PIPELINE.md` keeps exactly one `## Routine rollouts` heading. "Automatic rollouts (deploy-staging)" and "Manual rollout (break-glass)" are `###` subsections **inside** it. The manual text keeps the `RECORD_COMMAND --sha` line and the staged-record paragraph. "Host setup for automatic rollouts" is a new `##` section after it.
+  - The staging skill keeps the `RECORD_COMMAND --sha` and "GitHub Deployment" needles (near line 2429 of `tests/test_production_deploy_assets.py`).
+  - Every needle that is already asserted for `deploy/PRODUCTION.md` survives: `/usr/local/sbin/csa-prod-deploy`, `/opt/csa-deploy/venv`, `/var/log/csa-prod-deploy`, `/var/lock/csa-prod-deploy.lock`.
+  - `deploy/STAGING_PIPELINE.md`'s opening subsection under "Routine rollouts", "Automatic rollouts (deploy-staging)", must say:
     - every green merge rolls out by itself;
     - what each run outcome means: `nothing to roll out`, `already staged`, `superseded`, `paused`, `Stopped at lock`, a missing secret file, a downgrade refusal, `Recorded <sha7> as staged`, the record retry (`Re-run failed jobs`);
     - how to pause and unpause (`gh variable set STAGING_AUTO_PAUSED --body true|false`) and to catch up after a pause (dispatch with an empty `sha`);
     - that the record is written by the workflow;
-    - that a migration stops all services on every such merge.
+    - that a migration stops all services on every such merge;
+    - that a failed record job leaves staging updated but unrecorded, so the next automatic run sees the tip as "not staged" and rolls it out again (stopping services again if migrations are pending): re-run the failed record job promptly;
+    - that a pending dispatch run is replaced by a newer automatic run in the same concurrency group, and that a green commit whose successor's ci is red when its run starts is not rolled out until the next green merge (tip-only rule);
+    - that if GitHub did create extra deployments (the Part C2 fallback), they never count as staged, and `scripts/image_keep_list.py` (newest 15 staging deployments with a success status, no description filter) would keep more images, not fewer.
   - A new section "Host setup for automatic rollouts" holds Part B steps 3 to 14, as the permanent record.
   - The manual steps stay, retitled "Manual rollout (break-glass)", with "pause first, unpause after", and the note that a manual run writes the record with the owner's `gh` login.
   - `deploy/PRODUCTION.md`:
     - "Deploying from GitHub" says the staged record comes from `deploy-staging` and only a `staging rollout` description counts;
     - "One-time setup" says `deploy/aws/setup-target.sh production check` verifies steps 1, 3 and 4;
+    - the two existing lines that install the entry script (one-time step 5d, near line 473, and the digest-change section, near line 670) now say "install the config first (see Reinstalling the shared entry script), then the script", because the script exits 78 without its config;
     - a new section "Reinstalling the shared entry script" gives the config file (the six keys with today's production values from `deploy/production/deploy.conf.example`), `sudo install -m 0644 -o root -g root`, then the script install, in that order;
     - it mentions the core lock `/run/lock/csa-prod-rollout.lock`.
   - Both skills:
@@ -456,7 +478,7 @@
     - the production skill says `not staged yet; wait for deploy-staging` means: check the latest deploy-staging run.
   - The PR template has a line `- [ ] Needs host preparation before merge (new secret file, switch or host step): <what>`.
 - [ ] **Step 2: Run** the three test files (production in the background); expect failures.
-- [ ] **Step 3: Edit.** Leave the publish-approval sentences as they are (PR 3). In the spec, add a "Changes made while building PR 2" list: every item of "Plan decisions" above, including the three-level `workflow_run` limit for PR 3.
+- [ ] **Step 3: Edit.** Leave the publish-approval sentences as they are (PR 3). In the spec, add a "Changes made while building PR 2" list: every item of "Plan decisions" above, including the `workflow_run` chain limit for PR 3 (at most three levels: a fifth workflow in a chain does not run; ci → publish → deploy-staging is three of them).
 - [ ] **Step 4: Run** the files; pass. Run `make lint`.
 - [ ] **Step 5: Commit** `docs(deploy): automatic staging rollouts, host setup, entry config, skills`.
 
@@ -464,7 +486,7 @@
 
 # Part B: Owner host preparation (handed to the owner by the controller)
 
-Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the other developer, who owns the home server, and who must be present for every home-server step. Placeholders: `<region>` is the production region, `<node-id>` is the `mi-...` id from step 6, and `<subject>` comes from step 8. Nothing printed here goes into the repository or a chat, apart from yes/no results and sha7 values. In every block, `REPO=amsyrzmi/CSAV2` (change it if the repository moves).
+Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the other developer, who owns the home server, and who must be present for every home-server step. Placeholders: `<region>` is the production region, `<node-id>` is the `mi-...` id from step 6, and `<subject>` comes from step 8. Nothing printed here goes into the repository or a chat, apart from yes/no results and sha7 values. The commands name the repository `amsyrzmi/CSAV2` literally (change it if the repository moves).
 
 **Before PR 2 merges**
 
@@ -478,7 +500,7 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
    gh api repos/amsyrzmi/CSAV2/environments/staging --jq '{protection_rules, deployment_branch_policy}'
    gh api repos/amsyrzmi/CSAV2/environments/staging/deployment-branch-policies --jq '.branch_policies[].name'
    ```
-   The second command must print only `main`.
+   The second command must print only `main`. The policy is what stops a workflow on any other branch from using `environment: staging` and assuming the role. One unverified risk: the record job creates a deployment whose `ref` is a commit SHA, and a custom branch policy might refuse that with a 422. If the first record job fails with a 422 naming the deployment branch policy, tell the controller: the fallback is to remove the branch policy from `staging` (every job already has `if: github.ref == 'refs/heads/main'`) and re-run the record job. Part C2 finds this out on the first run, with staging already updated.
 
 **After PR 2 merges (pause still on)**
 
@@ -486,15 +508,16 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
    ```bash
    free -m
    stat -c '%a %U' /run/lock
+   sysctl fs.protected_regular
    command -v snap docker setfacl || true
    ```
-   `/run/lock` must be `1777 root`. If `setfacl` is missing: `sudo apt-get install -y acl`.
+   `/run/lock` must be `1777 root`. Report the `fs.protected_regular` value (it is 2 on this host); the rollout lock is written to cope with it. If `setfacl` is missing: `sudo apt-get install -y acl`.
 4. **Owner, AWS CloudShell (admin login):** create the node role and a single-use activation.
    ```bash
    git clone --depth 1 https://github.com/amsyrzmi/CSAV2.git ~/csa-setup && cd ~/csa-setup
    deploy/aws/setup-target.sh staging activate --region <region>
    ```
-   Keep the tab open. The activation id and code are valid for 4 hours and for one registration.
+   Keep the tab open. The activation id and code are valid for 4 hours and for one registration. While step 5's `-register` command runs, the code is visible in `ps` and the sudo auth log on that host (as `deploy/PRODUCTION.md` also says); the activation is single-use and step 6 deletes it.
 5. **Dev (or Owner with Dev present), home server (sudo):** install and register the agent. Type the code at the hidden prompt.
    ```bash
    snap list amazon-ssm-agent || sudo snap install amazon-ssm-agent --classic
@@ -517,13 +540,15 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
    ```bash
    sudo adduser --system --group --home /srv/csa-staging-deploy --shell /usr/sbin/nologin csa-deploy
    sudo usermod -aG docker csa-deploy
+   sudo install -d -o csa-deploy -g csa-deploy -m 0750 /srv/csa-staging-deploy
    sudo setfacl -m u:csa-deploy:x /srv/csa-staging
    sudo find /srv/csa-staging/secrets -type d -exec setfacl -m u:csa-deploy:x {} +
    sudo -u csa-deploy test -e /srv/csa-staging/secrets/database/staging_owner_password && echo "exists: ok"
    sudo -u csa-deploy test -r /srv/csa-staging/secrets/database/staging_owner_password && echo "READABLE: stop" || echo "not readable: ok"
    ls -l /srv/csa-staging/registry/config.json 2>&1 | cut -c1-10
+   stat -c '%a %U' /srv/csa-staging/registry 2>&1
    ```
-   The last line must say `No such file` (it did on 2026-11-17; the images are public). If the file exists, stop and tell the controller. Later, whenever you create a new secret **directory**, re-run the `find` line. A forgotten one shows up as a red run with `Missing secret files`.
+   The `ls` line must say `No such file` (it did on 2026-11-17; the images are public). If the file exists, stop and tell the controller. The rollout core reads that path on every plan and treats any error other than "not found" (a permission error on the directory included) as "registry auth file is not usable". So: if `stat` shows the `registry` directory exists, also run `sudo setfacl -m u:csa-deploy:x /srv/csa-staging/registry`; if it says `No such file`, nothing is needed. Step 11's plan must show no `registry auth` stop. Later, whenever you create a new secret **directory**, re-run the `find` line. A forgotten one shows up as a red run with `Missing secret files`.
 8. **Owner, own terminal:** read the OIDC subject prefix for step 12.
    ```bash
    gh api repos/amsyrzmi/CSAV2/actions/oidc/customization/sub --jq .sub_claim_prefix
@@ -552,7 +577,7 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
     GH_TOKEN="$(gh auth token)" REPOSITORY=amsyrzmi/CSAV2 IMAGE_NAMESPACE=ghcr.io/amsyrzmi DEPLOY_TARGET=staging deploy/production/resolve_commit.sh
     sudo runuser -u csa-deploy -- /usr/local/sbin/csa-staging-deploy plan <sha> "" "" <python_digest> <frontend_digest>
     ```
-    The plan must end with the apply command line, with no `Stopped at` and no `Missing secret files` line. Then record the volumes and mounts for comparison after the first run:
+    The plan must end with the apply command line, with no `Stopped at` (a `registry auth file ... is not usable` stop means step 7's `registry` ACL is missing) and no `Missing secret files` line. Then record the volumes and mounts for comparison after the first run:
     ```bash
     docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}' | sort > ~/csa-volumes-before.txt
     for s in gateway worker delivery frontend training-worker; do docker inspect --format '{{.Name}} {{range .Mounts}}{{.Type}}:{{.Name}}->{{.Destination}} {{end}}' "csa-staging-$s-1"; done > ~/csa-mounts-before.txt
@@ -585,7 +610,7 @@ Owner and Dev together. The pause stays **on** until C4.
   - the record job prints `Recorded <sha7> as staged`;
   - then `gh api "repos/amsyrzmi/CSAV2/deployments?environment=staging&sha=<sha>" --jq '.[] | [.description, .creator.login] | @tsv'` shows exactly one `staging rollout` from `github-actions[bot]`, and no other deployment for that sha (this proves `deployment: false`).
 
-  If GitHub created extra deployments, the gate is still correct, but tell the controller.
+  If GitHub created extra deployments, the gate is still correct, but tell the controller. Also check that the run was allowed to assume the role at all: the OIDC `sub` of a job with `deployment: false` is not documented to still carry `environment:staging`, and the trust policy requires it. If the credentials step fails with an access error, tell the controller before changing anything.
 - **C3. Owner + Dev, home server:** redo the two commands from step 11 into `~/csa-volumes-after.txt` and `~/csa-mounts-after.txt`; `diff` against the before files must print nothing. Then run `docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' csa-staging-gateway-1`; it now names the dedicated checkout's `deploy` directory, which is expected. Check the agent memory again (`ps -eo rss=,args= | grep -E '[s]sm-agent'`).
 - **C4. Owner:** unpause with `gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body false`. Watch the run the next merge starts by itself. It proves the three-level `workflow_run` chain, ci → publish → deploy-staging.
 - **C5 (optional). Owner:** start `deploy-production` with an empty `sha`, read the plan (the tip is now staged by the workflow's record), and **reject** the approval.
