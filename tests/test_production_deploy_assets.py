@@ -2742,6 +2742,7 @@ def test_backup_refuses_an_unreadable_host_file(tmp_path: Path) -> None:
 # --- the runbook and the skills -----------------------------------------------------------------
 
 PRODUCTION_DOC = ROOT / "deploy" / "PRODUCTION.md"
+DEPLOY_DOC = ROOT / "deploy" / "DEPLOY.md"
 PIPELINE_DOC = ROOT / "deploy" / "STAGING_PIPELINE.md"
 STAGING_SKILL = ROOT / ".claude" / "skills" / "staging-rollout" / "SKILL.md"
 PRODUCTION_SKILL = ROOT / ".claude" / "skills" / "production-deploy" / "SKILL.md"
@@ -2761,9 +2762,19 @@ def _production_doc() -> str:
     return PRODUCTION_DOC.read_text(encoding="utf-8")
 
 
+def _deploy_doc() -> str:
+    return DEPLOY_DOC.read_text(encoding="utf-8")
+
+
+# The generic production sections (the workflow, the steps, what a smoke stop, a failure and each
+# refusal mean) live in deploy/DEPLOY.md; the host-specific setup, restore and break-glass stay in
+# deploy/PRODUCTION.md. The tests below read each needle from the file that now holds its sentence.
+DEPLOYING_HEADING = "Production: deploying from GitHub"
+
+
 def test_production_doc_mentions_every_one_time_step() -> None:
     text = _production_doc()
-    deploying = _section(text, "Deploying from GitHub")
+    deploying = _section(_deploy_doc(), DEPLOYING_HEADING)
     setup = _section(text, "One-time setup")
     break_glass = _section(text, "Break-glass")
 
@@ -2857,7 +2868,13 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
     assert "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production" in github
 
 
-SCANNED_DOCS = ("PRODUCTION.md", "production skill", "staging skill", "pipeline routine")
+SCANNED_DOCS = (
+    "PRODUCTION.md",
+    "DEPLOY.md",
+    "production skill",
+    "staging skill",
+    "pipeline routine",
+)
 
 
 def _scanned_doc(name: str) -> str:
@@ -2866,6 +2883,7 @@ def _scanned_doc(name: str) -> str:
         return _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
     path = {
         "PRODUCTION.md": PRODUCTION_DOC,
+        "DEPLOY.md": DEPLOY_DOC,
         "production skill": PRODUCTION_SKILL,
         "staging skill": STAGING_SKILL,
     }[name]
@@ -2958,7 +2976,7 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
 def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -> None:
     text = _production_doc()
     # Prose needles are matched with line breaks and runs of spaces collapsed.
-    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    deploying = " ".join(_section(_deploy_doc(), DEPLOYING_HEADING).split())
     setup_raw = _section(text, "One-time setup")
     setup = " ".join(setup_raw.split())
     break_glass = " ".join(_section(text, "Break-glass").split())
@@ -2999,6 +3017,7 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
     assert "130 minutes" in deploying
     assert "rolls back" in deploying
     assert "40-minute" not in flat_text
+    assert "40-minute" not in " ".join(_deploy_doc().split())
     # The secret, listed in step 6 with what it is.
     assert (
         "`PROD_CONSOLE_ORIGIN`" in setup_raw[setup_raw.index("### 6.") : setup_raw.index("### 7.")]
@@ -3047,16 +3066,19 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
 
 def test_production_doc_review_fixes() -> None:
     text = _production_doc()
-    deploying = _section(text, "Deploying from GitHub")
+    deploy_text = _deploy_doc()
+    deploying = _section(deploy_text, DEPLOYING_HEADING)
     setup = _section(text, "One-time setup")
 
     # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
     assert "`TimedOut`" in deploying
     assert "120 minutes" in deploying
-    assert not re.search(r"(?<![0-9])30 minutes", text)
+    for both in (text, deploy_text):
+        assert not re.search(r"(?<![0-9])30 minutes", both)
     # The runner's wait is 115 minutes of elapsed time since the send, not an estimate from polls.
     assert "115 minutes (by the clock, not a count of polls)" in deploying
-    assert "about 115 minutes" not in text
+    for both in (text, deploy_text):
+        assert "about 115 minutes" not in both
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
     guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}"'
     assert guard in setup
@@ -3099,7 +3121,8 @@ def test_production_doc_review_fixes() -> None:
 
 def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the_lock() -> None:
     text = _production_doc()
-    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    deploying = " ".join(_section(_deploy_doc(), DEPLOYING_HEADING).split())
+    stub = " ".join(_section(text, "Deploying from GitHub").split())
     setup = _section(text, "One-time setup")
     after = _section(text, "After the digest change merges")
     reinstall = _section(text, "Reinstalling the shared entry script")
@@ -3141,9 +3164,45 @@ def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the
         "sudo install -m 0755 -o root -g root"
     )
     assert "/run/lock/csa-prod-rollout.lock" in deploying
+    assert "/run/lock/csa-prod-rollout.lock" in stub  # the stub states the lock for this host
     # resolve_commit.sh: its target setting and its "not ready yet" exit code.
     assert "DEPLOY_TARGET" in deploying
     assert "exits 3" in deploying
+
+
+def test_production_doc_stub_names_this_hosts_facts_and_points_at_deploy_md() -> None:
+    section = _section(_production_doc(), "Deploying from GitHub")
+    stub = " ".join(section.split("\n### ")[0].split())  # above the registry login subsection
+
+    for needle in (
+        'Moved to deploy/DEPLOY.md, "Production: deploying from GitHub".',
+        "/usr/local/sbin/csa-prod-deploy",
+        "/home/ubuntu/CSAV2",
+        "/opt/csa-deploy/venv",
+        "/var/log/csa-prod-deploy",
+        "/run/lock/csa-prod-rollout.lock",
+    ):
+        assert needle in stub, needle
+    # The registry login file (a fact of this host) stays here, under the stub.
+    assert "### Optional registry login on the instance" in section
+
+
+def test_production_doc_pointers_into_moved_sections_name_deploy_md() -> None:
+    flat = " ".join(_production_doc().split())
+    base = '`deploy/DEPLOY.md`, "Production: deploying from GitHub"'
+
+    assert f'{base}, "What a failure means"' in flat
+    assert flat.count(f"{base}, step 2") == 2  # the first-plan step and the picture-messages order
+    # The old wordings pointed at headings and steps that are no longer in this file.
+    assert not re.search(r"Deploying from GitHub, step", flat)
+    assert "see What a failure means" not in flat
+
+
+def test_production_doc_manual_step_6_says_to_leave_admin_bypass_off() -> None:
+    setup = _section(_production_doc(), "One-time setup")
+    github = setup[setup.index("### 6.") : setup.index("### 7.")]
+
+    assert 'Allow administrators to bypass" off' in " ".join(github.split())
 
 
 def test_release_doc_names_the_resolver_target_and_exit_code() -> None:

@@ -34,13 +34,24 @@ PRODUCTION_NAME = "deploy/PRODUCTION.md"
 PIPELINE_NAME = "deploy/STAGING_PIPELINE.md"
 
 # (file, heading with its marks) of an old document -> (file, heading with its marks) of its new
-# home. Empty until the sections move (the next two changes of this series fill it).
-MOVED: dict[tuple[str, str], tuple[str, str]] = {}
+# home. Production's generic sections are here; staging's follow in the next change of the series.
+MOVED: dict[tuple[str, str], tuple[str, str]] = {
+    (PRODUCTION_NAME, "## Deploying from GitHub"): (
+        DEPLOY_NAME,
+        "## Production: deploying from GitHub",
+    ),
+    (PRODUCTION_NAME, "### What a smoke stop or a rollback means"): (
+        DEPLOY_NAME,
+        "### What a smoke stop or a rollback means",
+    ),
+    (PRODUCTION_NAME, "### What a failure means"): (DEPLOY_NAME, "### What a failure means"),
+    (PRODUCTION_NAME, "### What each refusal means"): (DEPLOY_NAME, "### What each refusal means"),
+}
 
 # Old headings that stay in the old file, with a pointer line, because code, tests or other
 # documents point at them. A heading that stays unchanged needs no stub and is in neither set; one
 # that moves and is pointed at is in MOVED and here; one that moves unpointed is only in MOVED.
-KEEP_STUB: set[tuple[str, str]] = set()
+KEEP_STUB: set[tuple[str, str]] = {(PRODUCTION_NAME, "## Deploying from GitHub")}
 
 RELEASE_HISTORY_HEADING = "#### First publication: PR #11 merge images (2026-10-22)"
 
@@ -110,6 +121,20 @@ def test_moved_headings_exist_at_their_destination_and_stubbed_ones_keep_a_point
         # fence or an HTML comment) would also pass. Accepted: the pointers are written by hand
         # and read in review; this test keeps the heading and the pointer from vanishing.
         assert pointer in _section(text, old_heading), (old_file, old_heading, pointer)
+
+
+def test_the_manual_setup_steps_the_script_tests_read_still_exist() -> None:
+    # tests/test_aws_setup_target.py cuts PRODUCTION.md between these heading prefixes and compares
+    # the manual commands with setup-target.sh, so a later edit cannot orphan the steps silently.
+    titles = [title for level, title, _ in _headings(_read(PRODUCTION_NAME)) if level == 3]
+    for prefix in (
+        "1. AWS (CloudShell, admin login)",
+        "2. Instance",
+        "3. AWS (CloudShell)",
+        "4. AWS (CloudShell)",
+        "5. Instance",
+    ):
+        assert sum(title.startswith(prefix) for title in titles) == 1, prefix
 
 
 # --- DEPLOY.md ----------------------------------------------------------------------------------

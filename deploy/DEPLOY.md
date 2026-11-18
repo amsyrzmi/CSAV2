@@ -78,19 +78,272 @@ This section is completed by the next change in this series.
 
 ## Production: deploying from GitHub
 
-This section is completed by the next change in this series.
+A deploy is the manually started workflow `deploy-production` (`.github/workflows/deploy-production.yml`).
+It has two jobs. `plan` runs in the environment `production-plan`, which has no reviewer on
+purpose: it is read-only, and its AWS role can send only the plan document, whose action is fixed
+to `plan`. `apply` runs in the environment `production` and waits for one approval from either
+reviewer (`<login-1>` or `<login-2>`). Each job gets a short-lived AWS role session through GitHub
+OIDC and sends a Systems Manager command to the instance; no port is open and no key is stored.
+On the instance the root-owned entry script `/usr/local/sbin/csa-prod-deploy` checks out the
+commit in `/home/ubuntu/CSAV2` and runs
+`python -m scripts.staging_rollout --target production plan` (or `apply`) as `ubuntu`.
+The workflow can also be started by `deploy-production-auto` when the repository variable
+`PROD_AUTO_PLAN` is `true` (see "Auto-planned production runs (PROD_AUTO_PLAN)"): that starts the plan
+only, and the approval is unchanged. The header of `deploy-production.yml` still reads "Manual dispatch
+only", which describes its own triggers: the auto workflow starts it by a `workflow_dispatch`.
+
+The workflow, not the instance, talks to GitHub. The `plan` job first runs
+`deploy/production/resolve_commit.sh`, which picks the commit, checks it (refusals below) and reads
+both image digests from the registry's manifest API. Its pull token is requested with the
+workflow's own token (the `plan` job has `packages: read`); if the registry refuses that, the
+script asks once more anonymously (the images are public). The script is shared with
+`deploy-staging` and needs `DEPLOY_TARGET` (`production` or `staging`) in its environment: the
+workflow sets `DEPLOY_TARGET: production`, and only production enforces the staged check.
+The rollout core on the instance also takes a per-target lock, `/run/lock/csa-prod-rollout.lock`, in
+`plan` and `apply`, shared with break-glass runs by hand (see `deploy/PRODUCTION.md`, "Reinstalling the shared entry script"). The two digests go to the
+instance with the plan and the apply. The instance still pulls by digest with an empty Docker
+config and checks each pulled image's digest and revision label against the commit. A host run by
+hand without digests keeps the old path (see `deploy/PRODUCTION.md`, "Break-glass: manual deploy (owner only)").
+
+The registry prefix of the images is the repository variable `IMAGE_NAMESPACE` (Settings, Secrets
+and variables, Actions, Variables), for example `ghcr.io/example-owner`: lowercase, no scheme, no
+trailing slash. The repository owner sets it. `publish-staging-images` and `resolve_commit.sh`
+read it and refuse with `IMAGE_NAMESPACE must be set to ghcr.io/<lowercase owner>` before any
+registry call when it is unset or malformed. CI reads it too, but has no such check: with the
+variable unset, the `gate` and `tests` jobs fail at container initialisation with a Docker
+image-reference error (the image reference becomes `/csa-pg16-postgis-vector@sha256:...`).
+
+1. **Before you start.** The commit must be on `main`, its images published (the normal
+   `publish-staging-images` run), and it must have been rolled out to staging by the
+   `deploy-staging` workflow, whose `record` job writes the staged record (a manual staging
+   rollout writes it too; see `deploy/STAGING_PIPELINE.md`). Only a deployment described
+   `staging rollout` counts. If the tip is not staged yet, check the latest `deploy-staging` run
+   (`gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5`).
+2. **Start it.** GitHub, Actions, `deploy-production`, "Run workflow", branch `main`. Leave `sha`
+   empty to deploy the tip of `main`, the commit you just merged, and only that commit: if its
+   staging rollout has not finished, the run fails and nothing older is picked. Or give the full
+   40-character SHA of an older staged commit on `main` (a deliberate rollback; the plan shows the
+   downgrade warning). The commit must be one that includes the digest change (it runs that
+   commit's own rollout CLI, which must accept the digests the workflow sends); an older revision
+   can only be restored with break-glass, see `deploy/PRODUCTION.md`, "Rolling back to a revision older than the digest
+   change". From a terminal:
+
+   ```bash
+   gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main
+   gh workflow run deploy-production --repo amsyrzmi/CSAV2 --ref main -f sha=<full 40-character sha>
+   ```
+
+   Both jobs run only for `main`, and their runner scripts always come from a checkout of `main`,
+   never from the commit being deployed.
+   A run may already exist: when `PROD_AUTO_PLAN` is `true`, the `deploy-production-auto` workflow
+   starts the plan by itself after a staged merge. Look at the latest runs before starting another
+   one (`gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production.yml --limit 5`). The
+   `triggering_actor` of an auto-started run is `github-actions[bot]` (expected, and unverified until
+   the first auto run; see "Auto-planned production runs (PROD_AUTO_PLAN)").
+3. **Read the plan** in the `plan` job's summary. It lists `Target SHA:`, both image digests
+   (the staged check already ran in the `Resolve and check the commit` step; `Staged on:` appears
+   only when a host run by hand did the check itself), any `WARNING:` lines, the rollback
+   references (the images running now), `Pending migrations:`, any missing secret files,
+   `Host overrides:` (which `CSA_PROD_*` keys `/srv/csa-prod/host.env` sets; values are never
+   printed), `Host settings digest:`, the steps, the downtime line when a migration is pending, and
+   the apply command line. The workflow sends exactly the target SHA, migrations, host digest and
+   image digests from the plan job; you never type them. The printed command line (`.venv/bin/python -m
+   scripts.staging_rollout --target production apply ...`) is for reference only: the instance
+   runs the rollout with `/opt/csa-deploy/venv/bin/python` through `csa-prod-deploy`.
+4. **Approve or reject** the `production` deployment on the run page ("Review deployments"). One
+   approval from either reviewer is enough; self-approval is allowed. Approval is the decision,
+   so read the plan first: a migration stops gateway, frontend, both workers, delivery and the
+   training worker (console unavailable, bot replies delayed, not lost), and a downgrade warning
+   means the target is older than what runs now. Reject to cancel; nothing on production has changed (only
+   the deploy checkout moved to the commit). A run waiting for approval holds the workflow's
+   concurrency group: a new dispatch queues behind it, and a third dispatch cancels the queued
+   second. A dispatch made by `deploy-production-auto` counts as a dispatch here and can replace a
+   person's *pending* run (an accepted limit; see "Auto-planned production runs (PROD_AUTO_PLAN)"). Reject a stale waiting run before you start a new one (the common case now that the
+   default is the tip of `main`), and after the digest change merges, reject any run still
+   waiting from before it.
+5. **Read the result** in the `apply` job's summary. `apply` first checks that `main` is still at
+   the planned commit (a default run only; an explicit `sha` is not checked), checks out `main`
+   again for its runner scripts, then sends the planned values; on the instance the rollout
+   re-derives the plan and refuses if anything changed. It checks the compose config, takes and
+   verifies a backup (`Backup taken: backups/csa_staging-<timestamp>.dump`), pulls and verifies
+   the images by digest, applies the pending migrations (services stopped), recreates gateway,
+   worker (both replicas), delivery, frontend and training worker, waits for `/readyz`, runs the check files, runs
+   the smoke test and ends with `Rollout of <sha7> finished.`. On a stop it prints `Stopped at <step>: ...`, the state
+   production is in, the recovery lines for how far it got, and
+   `Re-run plan, then apply, once the cause is fixed.` It never retries or restarts by itself, and
+   rolls back only in the one case described under "What a smoke stop or a rollback means". Every run is also logged on the instance in
+   `/var/log/csa-prod-deploy/<timestamp>-<action>-<sha7>.log`. Systems Manager's
+   `GetCommandInvocation` returns at most 24,000 characters of output, so a long apply loses its
+   tail (the recovery lines) from the workflow log and summary: the complete log is always the
+   one on the instance in `/var/log/csa-prod-deploy/`.
+6. **The public smoke test** is the last step of the `apply` job and runs only when the apply
+   succeeded. It asks the console origin (the environment secret `PROD_CONSOLE_ORIGIN`) for `/` and
+   passes on a 2xx or 3xx status (a login redirect counts and is not followed), retrying a failed
+   request up to 3 times, 5 s apart; the worst case is about 75 seconds. It never prints the origin.
 
 ### What a smoke stop or a rollback means
 
-This section is completed by the next change in this series.
+The smoke test runs on the instance after the check files, and a failure of it, or of `/readyz`,
+stops the rollout. In order, it checks: the migrations recorded in the database equal the
+checkout's; every replica of gateway, worker, delivery, frontend and training worker is healthy on
+the planned image; the console origin and the hooks origin from `host.env` each answer below 500 when
+requested from the instance (up to 3 attempts, 5 s apart); the frontend answers over HTTP from
+the gateway container. It prints one `smoke <name>: ok` line per passing check and stops at the
+first failure with `Stopped at smoke: <reason>`.
+
+When the failure was at readiness or smoke, the rollout puts the previous images back, but only if
+all of this holds: no migration was pending or applied by this run, every replica of every
+previous app container was running, all of them were on known registry image refs that agree
+per app, and those refs differ from the images just deployed (a re-run of a failed deploy never
+rolls back onto the same images). Anything else gets the ordinary recovery lines instead. A rollback always leaves the run
+red (exit 1), so nothing is recorded as deployed. What you see and what to do:
+
+- `Rolling back to <ref>…` (one line per app), then
+  `Rolled back: the previous images are running; <sha7> is not.` and
+  `Fix forward, then re-run plan and apply.`: production is back on the previous images and
+  `/readyz` answers. Read the `Stopped at smoke:` or `Stopped at readiness:` line above to see why
+  the new commit failed. Fix forward in a new commit, and start a new run once it is on `main`
+  and staged. Nothing else is needed on the host. The rollback does not run the smoke test or the
+  check files for the previous version, which was running before this deploy.
+- `Stopped at smoke: <reason>` with no `Rolling back` line: the failure is real but the rollback
+  was not allowed (a migration was applied, or the previous images are unknown or not all
+  running). The new images are still running. The recovery lines that follow say which case it is:
+  with migrations applied the output says not to roll back the schema, and to investigate and fix
+  forward (it also names the backup taken at the start, for an owner decision, not as a step to
+  take); for the first deploy from local image tags, follow `deploy/PRODUCTION.md`, "Rolling back to the local images" (under "Break-glass: manual deploy (owner only)").
+- `Stopped at rollback: <reason>` after `Rolling back to ...`: the rollback itself did not
+  come up healthy. Do not start another run. Check the host (`docker ps` as `ubuntu`, the
+  newest log in `/var/log/csa-prod-deploy/`) and decide by hand whether to fix forward or use the
+  break-glass procedure. The ordinary recovery lines follow it.
+
+A failed public smoke test comes after a successful apply: the services are up on the new commit
+and the instance's own smoke test passed, but the console origin did not answer as expected from
+outside. Check the tunnel and the console origin before anything else; nothing was rolled back.
 
 ### What a failure means
 
-This section is completed by the next change in this series.
+The runner (`deploy/production/ssm_run.sh`) exits with:
+
+- **0**: the command succeeded on the instance.
+- **124**: the command was still `Pending`, `InProgress` or `Delayed` when the runner stopped
+  waiting, 115 minutes (by the clock, not a count of polls) after it sent the command. The command
+  may still be running or may still start. **Check the
+  host; do not start the workflow again.** On the instance: `ls -t /var/log/csa-prod-deploy | head -n 3`,
+  read the newest log, and `pgrep -af csa-prod-deploy`. In AWS: Systems Manager, Run Command,
+  Command history, the command id from the line `ssm_run: sent <action> for <sha> as command <id>`.
+  Systems Manager itself stops a command that runs longer than 120 minutes (the documents'
+  `timeoutSeconds`, longer than the runner waits), so a command still running at 124 may yet
+  finish or be stopped. Each job is limited to 130 minutes, longer than both. The waits are sized
+  for the worst case of a deploy that fails and rolls back, which runs two passes of the five
+  recreates (gateway, worker, delivery, frontend, training worker; each up to 300 s up plus 300 s
+  health, 100 minutes in all); a deploy that rolls back needs the longer budget.
+- **64**: the runner refused an argument or setting; nothing was sent.
+- **1**: anything else, including a command that failed on the instance. The line
+  `ssm_run: command <id> finished with status <status> (exit code <N>)` gives the instance's exit
+  code: **75** means another deploy holds the lock (`another deploy is running`); wait for it to
+  finish and start again. **64** means `csa-prod-deploy` refused its arguments. **73** means it
+could not write its log in `/var/log/csa-prod-deploy` (`cannot write the log file`); nothing ran,
+and the directory must be owned by `ubuntu`. **78** is a refused config: see `deploy/PRODUCTION.md`, "Reinstalling the shared
+entry script". **2** is a plan
+  that found missing secret files or, with `unrecognized arguments` in the output, a commit older
+  than the digest change (its rollout CLI has no digest options): see `deploy/PRODUCTION.md`, "Break-glass: manual deploy (owner only)", "Rolling back
+  to a revision older than the digest change". **1** is a rollout stop, `commit is not on main`, or a failed
+  `git fetch`. A `TimedOut` status also arrives as runner exit 1, not 124: either the instance did
+  not pick the command up within 10 minutes (it never ran), or Systems Manager stopped it at its
+  120-minute limit (an apply may have stopped part-way). Check the host as for 124 before any new
+  run; the instance's log shows which.
+
+A `Configure AWS credentials` step that fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity` means the role's trust policy does not match the token the job
+presented: the subject (see `deploy/PRODUCTION.md`, "One-time setup", step 3, for how to look up the prefix GitHub issues for
+this repository) or the environment name. Nothing was sent to the instance.
+Fix it with `aws iam update-assume-role-policy --role-name <role> --policy-document file://<policy>`
+and start the workflow again.
+
+A `Require the deploy variables` step that fails names the secret or variable that is not set
+(see `deploy/PRODUCTION.md`, "One-time setup", step 6); the apply job also needs `PROD_CONSOLE_ORIGIN`. A failed `Read the plan` step (`parse_plan: ...`) means the
+plan output lacked one of its `Target SHA:`, `Pending migrations:` or `Host settings digest:`
+lines, or named another commit; `apply` does not run.
 
 ### What each refusal means
 
-This section is completed by the next change in this series.
+The `Resolve and check the commit` step of the `plan` job runs five checks in this order. The first
+that fails prints one line and fails the run; nothing was sent to the instance. Start again once
+the cause is fixed. `resolve_commit.sh` exits 3 for "not ready yet" (the `ci` run has not
+succeeded, or the images are not published) and 1 for every other refusal. Production treats both
+as a failure; `deploy-staging`'s automatic runs treat exit 3 as `nothing to roll out`.
+
+1. `sha must be the full 40 character lowercase commit SHA`: the `sha` input is not a full lowercase
+   SHA. Fix the input, or leave it empty.
+2. `commit <sha7> is not on main`: the commit is not an ancestor of `main`. Only commits on `main`
+   deploy.
+3. `the ci run for <sha7> has not succeeded on main`: no completed `ci` run on `main` for this
+   commit concluded success. Wait for it, or fix the failure.
+4. `main's tip <sha7> is not staged yet; wait for deploy-staging` (an empty `sha`) or
+   `commit <sha7> has not been rolled out to staging` (an explicit `sha`): staging has no success
+   record for this commit. Wait for `deploy-staging` (check its latest run), or roll it out to
+   staging first. There is no bypass. If the `deploy-staging` run's `record` job failed, staging
+   is fine: use "Re-run failed jobs" on that run. If a manual staging rollout succeeded but
+   printed `WARNING: staging is fine but the staged record was not written`,
+   run its `Retry:` line on the home server:
+   `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`. It refuses a
+   commit that is not on `origin/main` in that checkout.
+5. `images for <sha7> are not published (csa-<app>)`: the registry has no image tagged with the
+   full SHA. Wait for the `publish-staging-images` run for that commit to finish. Other messages
+   from this step (`could not get a registry token`, `the registry answered HTTP <n>`, `the
+   registry returned no single digest`, a failed GitHub read) mean the answer could not be
+   trusted; the run fails closed. Start again.
+
+Refusals at the later steps:
+
+- `main moved to <sha7> since this run's plan; start the workflow again`: the `apply` job's first
+  step, after approval, found a newer commit on `main` than the one planned (a default run only).
+  Nothing was sent. Start the workflow again to plan the new tip. An explicit `sha` skips this
+  check.
+- On a host run by hand with no digests: `Stopped at gate: commit <sha7> has not been rolled out
+  to staging` and `images for <sha7> are not published yet (<state>)` come from the instance's
+  own `gh` lookup (`deploy/PRODUCTION.md`, "Break-glass: manual deploy (owner only)").
+- `Stopped at confirm: host settings changed since plan; run plan again`: `/srv/csa-prod/host.env`
+  changed between plan and approval. Start the workflow again.
+- `HEAD changed since plan` or `pending migrations changed since plan`: production or `main`
+  moved between plan and approval. Start the workflow again.
+- `WARNING: <sha7> is older than the running <sha7>; this is a downgrade. A downgrade across a
+  migration is refused.`: a warning, not a stop. Approve only if you mean to go back.
+  `WARNING: could not compare <sha7> with the running revision` is expected on the first deploy,
+  when the running images are local tags.
+- `<target> has migrations this checkout lacks: ...; update the checkout before rolling out`
+  (`production has migrations ...`): the target commit is older than the database schema, a
+  downgrade across a migration. It is refused; fix forward instead.
+- Host file stops (`Stopped at flags: ...`): `cannot read host.env`, `host.env is missing: <keys>`,
+  `host.env line <n>: unknown key <KEY>`, `duplicate key`,
+  `quoted value; write KEY=value without quotes`, or
+  `set in both the repo file and the host file: <keys>` (a switch belongs in
+  `deploy/production-rollout.env` only). Fix the file on the instance and start again.
+- Backup stops (`Stopped at backup: ...`, always followed by
+  `Nothing on production was changed. The backup step failed; the deploy stopped before any change.`):
+  - `/srv/csa-prod/backup/backup.sh is missing; reinstall it: install -m 0755 deploy/production/backup.sh /srv/csa-prod/backup/backup.sh`
+    or `... differs from deploy/production/backup.sh; reinstall it: ...`: the commit changed the
+    backup script. As `ubuntu`, run `cd ~/CSAV2 && install -m 0755 deploy/production/backup.sh /srv/csa-prod/backup/backup.sh`
+    (the plan left the checkout at the target commit), then start the workflow again.
+  - `the backup did not report ok: <timestamp> skipped: previous backup still running`: the
+    6-hourly cron backup held the lock. Wait a minute and start again.
+  - `/srv/csa-prod/backup/backup.sh failed (exit <n>); run it on the instance to see why`, or a
+    log line that is old or has no timestamp: run `/srv/csa-prod/backup/backup.sh` as `ubuntu`
+    (no `sudo`) and read its error. The deploy does not print the script's output, because an AWS
+    error can carry the bucket name.
+- `missing secret files: ...`: create the files (`deploy/PRODUCTION.md`, "Secret files the overlay needs"), then start again.
+- After a stop with migrations applied, the recovery text names the backup taken at the start
+  (`The backup taken at the start of this deploy is backups/csa_staging-<timestamp>.dump`); fix
+  forward, or restore it (`deploy/PRODUCTION.md`, "Restoring a backup").
+- Image-only stop after the recreate that was not rolled back automatically (see What a smoke
+  stop or a rollback means): `To roll back: git checkout <sha> in /home/ubuntu/CSAV2, run
+  plan and apply, then git checkout main.` On production that means: start `deploy-production`
+  with `sha` set to that revision (it is a staged commit); do not touch the checkout. This works
+  only for a revision that includes the digest change; for an older one (what production runs
+  before its first deploy after that change) use break-glass, `deploy/PRODUCTION.md`, "Rolling back to a revision older
+  than the digest change". On the first
+  deploy the previous images are local tags: the text says `follow the manual rollback runbook`,
+  which is `deploy/PRODUCTION.md`, "Rolling back to the local images" under "Break-glass: manual deploy (owner only)".
 
 ## Auto-planned production runs (PROD_AUTO_PLAN)
 
