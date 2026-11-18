@@ -45,6 +45,12 @@ MONEY = re.compile(
     re.IGNORECASE,
 )
 URL = re.compile(r"https?://\S+")
+# A note that states a due period: the wording of a statutory timing.
+PERIOD = re.compile(
+    r"\b(?:within|not later than|no later than|not less than|not more than|on or before)\b"
+    r"|\b\d+(?:st|nd|rd|th)? day|\bdays\b",
+    re.IGNORECASE,
+)
 ALLOWED_CHECKS = {
     "account_linked",
     "personal_details_complete",
@@ -121,6 +127,71 @@ def test_no_step_rests_on_a_secondary_source_and_unconfirmed_timings_say_so() ->
     assert UNCONFIRMED == "Timing not confirmed on an official page: reviewer to confirm."
 
 
+def test_a_weak_source_says_unconfirmed_and_never_states_a_period() -> None:
+    # An "unclear" or "official_excerpt" source cannot carry a timing: its note says the exact
+    # unconfirmed sentence, and an unclear source never states a due period at all.
+    for template, ordinal, step in _steps():
+        key = f"{template.kind}:{ordinal}"
+        note = DEFAULT_TEMPLATE_SOURCES[key]
+        reference = step.reference_note or ""
+        if note.confidence in {"unclear", "official_excerpt"}:
+            assert UNCONFIRMED in reference, key
+        if PERIOD.search(reference):
+            assert note.confidence != "unclear", key
+
+
+def _research_confidence() -> dict[str, str]:
+    """Each research row id (a1, b3, i3, ...) and the leading label of its confidence column."""
+    rows: dict[str, str] = {}
+    for line in SOURCES_DOC.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\| ([a-z]\d{0,2})\. ", line)
+        if match:
+            label = line.rstrip(" |").rsplit("|", 1)[1].strip()
+            if label.startswith("Official (read"):
+                rows[match.group(1)] = "official_read"
+            elif label.startswith("Official (excerpt"):
+                rows[match.group(1)] = "official_excerpt"
+            else:
+                rows[match.group(1)] = "unclear"
+    return rows
+
+
+def test_a_source_note_is_never_stronger_than_the_research_rows_it_cites() -> None:
+    # A note citing an "Unclear" or excerpt-only research row cannot be labelled official_read.
+    strength = {"official_read": 2, "official_excerpt": 1, "unclear": 0, "secondary": 0}
+    rows = _research_confidence()
+    assert {"a2", "i1", "i2", "i3"} <= set(rows), "research table not parsed"
+    for key, note in DEFAULT_TEMPLATE_SOURCES.items():
+        if note.confidence == "practice":
+            continue
+        cited = re.findall(r"research rows? ([^)]*)", note.body)
+        ids = {i for part in cited for i in re.findall(r"\b([a-z]\d{0,2})\b", part) if i in rows}
+        assert ids, f"{key}: cites no research row"
+        weakest = min(strength[rows[i]] for i in ids)
+        assert strength[note.confidence] <= weakest, (key, sorted(ids))
+
+
+@pytest.mark.parametrize("text", ["within 30 days", "no later than the 15th day", "7 days"])
+def test_the_period_pattern_catches_timings(text: str) -> None:
+    assert PERIOD.search(text)
+
+
+def test_final_contributions_split_by_scheme_and_eis_is_unconfirmed() -> None:
+    titles = [s.title_en for s in _template("offboarding").steps]
+    socso = titles.index("SOCSO: final month's contribution paid") + 1
+    eis = titles.index("EIS: final month's contribution paid") + 1
+    assert DEFAULT_TEMPLATE_SOURCES[f"offboarding:{socso}"].confidence == "official_read"
+    assert DEFAULT_TEMPLATE_SOURCES[f"offboarding:{eis}"].confidence == "unclear"
+    assert len(titles) == 15
+
+
+def test_the_leavers_records_step_is_required() -> None:
+    # Employment Act s.61 register (date of leaving, benefits paid): optional steps are
+    # skipped automatically when the process completes, so this one must be required.
+    (step,) = [s for s in _template("offboarding").steps if "records" in s.title_en.lower()]
+    assert step.required is True
+
+
 def test_every_step_has_a_reference_note_with_its_checked_date() -> None:
     for template, ordinal, step in _steps():
         note = DEFAULT_TEMPLATE_SOURCES[f"{template.kind}:{ordinal}"]
@@ -179,7 +250,7 @@ def test_owners_anchors_and_checks_are_in_the_allowed_sets() -> None:
 def test_the_leavers_own_steps_are_due_on_or_before_the_last_day() -> None:
     # 0631 hr_template_warnings warns step_after_last_day only for these; HR and manager steps
     # may fall after the last day where an official period runs after it.
-    for _, step in enumerate(_template("offboarding").steps, start=1):
+    for step in _template("offboarding").steps:
         if step.owner_role == "employee":
             assert step.due_offset_days <= 0, step.title_en
 

@@ -6,8 +6,9 @@ python -m scripts.render_default_templates_review. -->
 
 This document is a checklist of reminders with references. It is not legal advice and not a
 filing: no step files anything with an authority or calculates any amount, and no rate, ceiling,
-threshold or amount appears in the templates. Each step names the official body, form or portal
-and the timing wording as the official source states it, with the date it was checked. Where the
+threshold or amount appears in the templates. Each statutory step names the official body, form
+or portal and the timing wording as the official source states it, with the date it was checked;
+a company-practice step says it has no statutory source. Where the
 research could not confirm a timing on an official page, the note says so and the reviewer
 decides. The research behind every step, with the full wording and its confidence, is in
 [default-templates-sources.md](./default-templates-sources.md).
@@ -23,7 +24,7 @@ The text is English only.
 
 | # | Step | Who does it | When it is due | Required | Approval | Note | Source | URL | Checked | Confidence |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | Employment contract and written terms given, signed copy on file | HR team | On the start date | Required | none | Employment Act 1955 s.10(1): a contract for a specified period exceeding one month, or for specified piece work that may take over one month, shall be in writing; s.10(2): every written contract has a termination clause. Employment Regulations 1957 reg 8(1): a certified copy of the terms 'on or before the date of his commencing employment'. JTKSM-hosted texts. Checked 2026-11-18. | Employment Act 1955 (Act 265) s.10 and Employment Regulations 1957 reg 8(1), JTKSM-hosted texts (research rows d1, d2) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
+| 1 | Employment contract and written terms given, signed copy on file | HR team | On the start date | Required | none | Employment Regulations 1957 reg 8(1): each employee gets a certified copy of the terms 'on or before the date of his commencing employment'. Employment Act 1955 s.10(1): a contract for a specified period exceeding one month, or for specified piece work that may take over one month, shall be in writing; s.10(2): every written contract has a termination clause. JTKSM-hosted texts. Checked 2026-11-18. | Employment Act 1955 (Act 265) s.10 and Employment Regulations 1957 reg 8(1), JTKSM-hosted texts (research rows d1, d2) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
 | 2 | Privacy notice given to the new hire | HR team | On the start date | Required | none | Personal Data Protection Act 2010, Notice and Choice Principle, as PDP summarises it: 'prior information and purposes are communicated to the data subject'. No prescribed form. Timing not confirmed on an official page: reviewer to confirm. PDP principles page. Checked 2026-11-18. | PDP, principles of personal data protection page (research rows f, m5) | https://www.pdp.gov.my/ppdpv1/en/principles-of-personal-data-protection/ | 2026-11-18 | Official (read) |
 | 3 | Workplace equipment and accounts ready | The person's manager | On the start date | Required | none | Company practice, no statutory source. Checked 2026-11-18. | Company practice, no statutory source. | none | 2026-11-18 | Company practice |
 | 4 | Personal details completed by the new hire | The new hire | 7 days after the start date | Required | none | Company practice, no statutory source. Checked 2026-11-18. | Company practice, no statutory source. | none | 2026-11-18 | Company practice |
@@ -40,10 +41,10 @@ The text is English only.
 
 ### Onboarding (Malaysia default): what each step asks
 
-1. **Employment contract and written terms given, signed copy on file.** Give the new hire their offer or contract and the written particulars of their terms (the particulars reg 5 lists, such as occupation, wages, hours, notice period, leave and wage period), and keep a signed copy. The Act requires a written contract only for the contracts s.10(1) names; for every other contract this step is good practice. Every written contract needs a termination clause (s.10(2)).
+1. **Employment contract and written terms given, signed copy on file.** Give the new hire the written particulars of their terms (the particulars reg 5 lists, such as occupation, wages, hours, notice period, leave and wage period) and their offer or contract, and keep a signed copy. The particulars are due for every employee the Employment Act covers: reg 8(1) requires a certified copy on or before the date they start. A written contract is required by s.10(1) only for the contracts it names; for other contracts it is good practice. Any written contract needs a termination clause (s.10(2)). The step follows the Peninsular Malaysia and Labuan rule; Sabah and Sarawak have their own labour ordinances.
 2. **Privacy notice given to the new hire.** Give the new hire a written notice of the personal data the company collects about them and why, and keep their acknowledgement. The Act sets no fixed retention period: personal data is kept only as long as necessary.
 3. **Workplace equipment and accounts ready.** Have the new hire's equipment, workspace and work accounts ready on their first day.
-4. **Personal details completed by the new hire.** The new hire fills in their home address, personal phone and emergency contact in My HR. The step checks that those five contact fields are set; it does not check bank or statutory numbers.
+4. **Personal details completed by the new hire.** The new hire fills in their home address, personal phone, emergency name, emergency relationship and emergency phone in My HR. The step checks that those five fields are set; it does not check bank or statutory numbers.
 5. **Bank and statutory numbers recorded.** Record the bank account for wages and the identity card or passport, income tax, EPF and SOCSO numbers in the person's personal details. Nothing checks this automatically: complete the step once they are recorded.
 6. **Orientation and company policies acknowledged.** Walk the new hire through the company's policies and keep their signed acknowledgement.
 7. **Manager's welcome and 30-day goals.** Meet the new hire, explain the role and agree goals for their first 30 days.
@@ -53,7 +54,7 @@ The text is English only.
 11. **SOCSO: new hire registered with PERKESO.** Register the new hire with PERKESO using Form 2 on the ASSIST portal (an employer registering for the first time also files Form 1). For a foreign worker, PERKESO's Employers' Circular 3/2018 describes registration through ASSIST or the Foreign Worker Registration Form and states no registration deadline.
 12. **EIS: new hire registered for Employment Insurance.** Register the new hire for the Employment Insurance System with Form SIP 2 through the ASSIST portal. Foreign employees are excluded by the Act's First Schedule, except non-citizens residing permanently in Malaysia with the required identity card: HR skips the step for an excluded employee. The Act text read is as at 1 September 2022; a later amendment was not read.
 13. **LHDN: new employee notified (Form CP22).** Notify LHDN of the new hire with Form CP22 through e-CP22 on MyTax. LHDN's employer page applies this to employees who are or may become chargeable to tax: HR may skip it for others.
-14. **Probation review.** Review the new hire's probation before it ends and record the outcome as the contract allows (confirm, extend or end it); HR approves. The step waits for a date until HR sets the probation end date.
+14. **Probation review.** Review the new hire's probation before it ends and record the outcome as the contract allows (confirm, extend or end it); HR approves. The step waits for a date until HR sets the probation end date. HR skips this step when the person has no probation.
 
 ## Offboarding (Malaysia default)
 
@@ -66,18 +67,19 @@ The text is English only.
 | 5 | Knowledge and files handed over | The leaver | 3 days before the last day | Required | none | Company practice, no statutory source. Checked 2026-11-18. | Company practice, no statutory source. | none | 2026-11-18 | Company practice |
 | 6 | Exit conversation | The person's manager | 3 days before the last day | Required | none | Company practice, no statutory source. Checked 2026-11-18. | Company practice, no statutory source. | none | 2026-11-18 | Company practice |
 | 7 | Company equipment returned | The leaver | On the last day | Required | none | Company practice, no statutory source: no provision on returning company property was found in the Employment Act. s.24(1): no deductions from wages 'otherwise than in accordance with this Act'. Checked 2026-11-18. | Company practice, no statutory source: a text search of the Employment Act 1955 found no provision on returning company property; s.24(1) governs deductions from wages (research rows k, j1) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Company practice |
-| 8 | Final pay and annual leave balance | HR team | On the last day | Required | none | Employment Act 1955 s.20: wages due 'not later than the day on which such contract of service so terminates'; s.21(2): where the employee ends it without notice, 'not later than the third day after'. s.60E(3A): unused paid annual leave is paid at the ordinary rate of pay, except on dismissal under s.14(1)(a). Checked 2026-11-18. | Employment Act 1955 ss.20, 21, 24 and 60E, JTKSM-hosted text; HASiL cessation of employment page for the withholding rule (research rows j1, l, h2) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
+| 8 | Final pay and annual leave balance | HR team | On the last day | Required | none | Employment Act 1955 s.20 (termination under s.11(1) or s.12): wages due 'not later than the day on which such contract of service so terminates'; s.21(1), the employer ends it without notice: 'not later than the day on which such contract of service is so terminated'; s.21(2), the employee ends it without notice: 'not later than the third day after'. s.60E(3A): unused paid annual leave at the ordinary rate of pay, except on dismissal under s.14(1)(a). Checked 2026-11-18. | Employment Act 1955 ss.20, 21, 24 and 60E, JTKSM-hosted text; HASiL cessation of employment page for the withholding rule (research rows j1, l, h2) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
 | 9 | Access removed | The system (when the leaver is finished, the day after the last day) | 1 day after the last day | Required | none | Company practice, no statutory source. Checked 2026-11-18. | Company practice, no statutory source. | none | 2026-11-18 | Company practice |
 | 10 | Termination or lay-off benefits paid, where they apply | HR team | 7 days after the last day | Optional | none | Employment (Termination and Lay-Off Benefits) Regulations 1980 reg 11(1): paid 'not later than seven days after the relevant date'; reg 12: a written statement of the amount and how it was calculated. JTKSM-hosted text. Checked 2026-11-18. | Employment (Termination and Lay-Off Benefits) Regulations 1980, JTKSM-hosted text; Employment Act 1955 s.60J (research row j3) | https://jtksm.gov.my/sites/default/files/2023-03/8.%20EMPLOYMENT%20(TERMINATION%20&%20LAY%20OFF%20BENEFITS)%20REGULATIONS%201980.pdf | 2026-11-18 | Official (read) |
-| 11 | Personnel records updated and kept | HR team | 7 days after the last day | Optional | none | Employment Act 1955 s.61(2): every particular in the register stays available 'for not less than six years after the recording thereof'. LHDN: records kept for 7 years. PERKESO: employee records 'maintained for seven (7) years from last entry date'. Checked 2026-11-18. | Employment Act 1955 s.61(2) and Employment Regulations 1957 reg 5, JTKSM-hosted texts; HASiL employer responsibilities page; PERKESO registration page (research rows m1, m3, m4) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
+| 11 | Personnel records updated and kept | HR team | 7 days after the last day | Required | none | Employment Act 1955 s.61(2): every particular in the register stays available 'for not less than six years after the recording thereof'. LHDN: records kept for 7 years. PERKESO: employee records 'maintained for seven (7) years from last entry date'. Checked 2026-11-18. | Employment Act 1955 s.61(2) and Employment Regulations 1957 reg 5, JTKSM-hosted texts; HASiL employer responsibilities page; PERKESO registration page (research rows m1, m3, m4) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
 | 12 | Foreign employee: end of service reported to JTKSM | HR team | 14 days after the last day | Optional | none | Employment Act 1955 s.60KA(1): inform the Director General 'within thirty days of the termination of service'; s.60KA(2), where the employee ends it or absconds: 'within fourteen days of the termination of service or after the foreign employee's absence'. JTKSM ePPAx. Checked 2026-11-18. | Employment Act 1955 s.60KA, JTKSM-hosted text; JTKSM foreign workers employment page for ePPAx (research row x2) | https://jtksm.mohr.gov.my/sites/default/files/2023-11/Akta%20Kerja%201955%20(Akta%20265).pdf | 2026-11-18 | Official (read) |
 | 13 | EPF: final month's contribution paid | HR team | 15 days after the last day | Required | none | EPF (KWSP): pay the contribution for the last month's wages, through Form A or i-Akaun (Employer). KWSP pages could not be read directly (search excerpts only). Timing not confirmed on an official page: reviewer to confirm. Checked 2026-11-18. | KWSP employer pages, mandatory contribution and non-Malaysian employees (search excerpts only, the pages returned HTTP 403; research row i1) | https://www.kwsp.gov.my/en/employer/responsibilities/mandatory-contribution | 2026-11-18 | Official (excerpt) |
-| 14 | SOCSO and EIS: final month's contributions paid | HR team | 15 days after the last day | Required | none | PERKESO: contribution due 'no later than the 15th day of each succeeding month'. No per-employee leaving notice found. PERKESO registration page. Checked 2026-11-18. | PERKESO registration page (research row i2; the EIS leaver row i3 is a gap) | https://www.perkeso.gov.my/en/?view=article&id=775%3Aregistration&catid=184 | 2026-11-18 | Official (read) |
+| 14 | SOCSO: final month's contribution paid | HR team | 15 days after the last day | Required | none | PERKESO: contribution due 'no later than the 15th day of each succeeding month'. No per-employee leaving notice found. PERKESO registration page. Checked 2026-11-18. | PERKESO registration page (research row i2) | https://www.perkeso.gov.my/en/?view=article&id=775%3Aregistration&catid=184 | 2026-11-18 | Official (read) |
+| 15 | EIS: final month's contribution paid | HR team | 15 days after the last day | Required | none | PERKESO, Employment Insurance System: pay the EIS contribution for the last wage month. No employer duty to report a leaver was found in the Act 800 text read. Timing not confirmed on an official page: reviewer to confirm. Checked 2026-11-18. | Employment Insurance System Act 2017 (Act 800), PERKESO-hosted text as at 1 September 2022: no employer leaver duty or contribution timing found (research row i3) | https://perkeso.gov.my/images/akta/ACT%20800/Akta%20800_EMPLOYMENT%20INSURANCE%20SYSTEM%20ACT%202017.pdf | 2026-11-18 | Unclear |
 
 ### Offboarding (Malaysia default): what each step asks
 
 1. **Resignation or termination letter on file.** Keep the written resignation or termination letter and the notice period it gives. Either party may waive notice, and under s.13(1) either may end the contract without notice by paying an indemnity equal to the wages for the notice period: check before agreeing. Before an employer-initiated termination, check the restrictions that apply; JTKSM's FAQ notes that an employer must not terminate a pregnant employee's service except in limited cases. The due date is a company reminder, not a statutory deadline.
-2. **LHDN: employee leaving notified (Form CP22A).** Notify LHDN that the employment ends, with Form CP22A through e-SPC on MyTax. Not required where the employee's income is already subject to monthly tax deduction, where remuneration is below the monthly tax deduction minimum, or where the company knows the employee will be employed elsewhere in Malaysia: HR may skip it then. If the employee has died, the wording is not more than 30 days after being informed of the death. Where the form is filed, HASiL's page says to withhold any money payable to the employee for 90 days or until a tax clearance letter is received (see the final pay step).
+2. **LHDN: employee leaving notified (Form CP22A).** Notify LHDN that the employment ends, with Form CP22A through e-SPC on MyTax. Not required where the employee's income is already subject to monthly tax deduction, where remuneration is below the monthly tax deduction minimum, or where the company knows the employee will be employed elsewhere in Malaysia. HASiL's employer pages list these exemptions; HASiL's individual termination page words them differently, so the reviewer confirms them against that page before HR skips the step on that basis. If the employee has died, the wording is not more than 30 days after being informed of the death. Where the form is filed, HASiL's page says to withhold any money payable to the employee for 90 days or until a tax clearance letter is received (see the final pay step).
 3. **LHDN: employee leaving Malaysia notified (Form CP21).** Only when the employee will leave Malaysia for more than three months; not needed where the Director General is satisfied the employee must leave Malaysia frequently for work. The period counts from the expected departure date, not the last day: move the due date if they differ. Money payable to an employee leaving without intent to return is withheld as for CP22A. HR skips the step for everyone else.
 4. **Notice period and handover plan agreed.** Agree with the leaver how the notice period is used: who takes over their work, what they hand over and by when.
 5. **Knowledge and files handed over.** The leaver hands over their work, files and contacts as the handover plan sets out.
@@ -89,7 +91,8 @@ The text is English only.
 11. **Personnel records updated and kept.** Record the date of leaving and any termination benefits paid in the employee register, and file the leaver's records. The periods in the note are how long records are kept, not a deadline for this step. The due date is a company reminder.
 12. **Foreign employee: end of service reported to JTKSM.** Only for a foreign employee; report through ePPAx (Termination Reporting). The period is thirty days where the company ends the service, the work pass expires or the employee is repatriated or deported, and fourteen days where the foreign employee ends the service or absconds (counted from the termination or their absence); the due date uses the shorter period. HR skips the step for everyone else.
 13. **EPF: final month's contribution paid.** Pay the EPF contribution for the wages of the last month in service. No per-employee leaving notice to EPF was found on the KWSP excerpts. The due date is a company reminder, not a statutory deadline.
-14. **SOCSO and EIS: final month's contributions paid.** Pay the PERKESO contributions for the last wage month. No official page was found that requires a separate leaving notice to PERKESO for a normal resignation, and the timing of the EIS contribution was not confirmed separately. The due date, 15 days after the last day, is never later than the 15th of the following month.
+14. **SOCSO: final month's contribution paid.** Pay the PERKESO (SOCSO) contribution for the last wage month. No official page was found that requires a separate leaving notice to PERKESO for a normal resignation. The due date, 15 days after the last day, is never later than the 15th of the following month.
+15. **EIS: final month's contribution paid.** Pay the EIS contribution for the last wage month. HR skips the step for an employee who was not registered for EIS (an excluded foreign employee). The due date is a company reminder, not a statutory deadline.
 
 ## Left out on purpose
 
@@ -133,8 +136,16 @@ These duties are real but are not per-person steps, so the templates do not carr
   the Act for Peninsular Malaysia and Labuan.
 - Leaving notices to PERKESO and for the Employment Insurance System: no official page was found
   that requires a per-employee leaving notice for a normal resignation (rows i2, i3); the final
-  contributions step says so. The timing of the final EIS contribution was not confirmed
-  separately.
+  SOCSO and EIS contribution steps say so. No employer leaver duty or contribution timing for
+  EIS was found in the Act 800 text read (row i3, unclear), so the final EIS step carries
+  "Timing not confirmed on an official page: reviewer to confirm."
+- CP22A exemptions: the step lists the exemptions from HASiL's employer pages; HASiL's individual
+  termination page words the exemption categories differently and uses older timing wording
+  (row h1).
+- e-CP22: the HASiL page states that CP22 goes through e-CP22 on MyTax; third-party sources give
+  conflicting dates from which that became mandatory (row c1), so no step states one.
+- PERKESO's FAQ on advertising expatriate vacancies on MYFutureJobs before hiring expatriates was
+  seen as a search excerpt only (end of row x5); no step relies on it.
 - HRD Corp: the 30-day registration wording was seen as an excerpt only (row g); HRD Corp
   registration is left out anyway.
 - PDPA: the 2024 amendments (for example breach notification and a data protection officer)
@@ -174,29 +185,43 @@ These duties are real but are not per-person steps, so the templates do not carr
    Labuan text. Should the company add region templates, or should the text change?
 4. The contract step. Should the company add its own contract clause check, and should the step
    require a contract document on file (the automatic check "a contract document is uploaded")?
-5. Company-chosen offsets. These are reminders, not statutory deadlines: EPF registration 14
-   days after the start date; the income tax number check 14 days after; the letter on file 30
-   days before the last day; the handover plan 14 days before; the knowledge handover and exit
-   conversation 3 days before; the probation review 7 days before the probation end date;
-   records 7 days after the last day; the final EPF contribution 15 days after. Access removed is
-   due 1 day after the last day because the system completes it when the person is finished,
-   the day after the last day; due on the last day it would show as overdue in between.
+5. Company-chosen offsets. These are reminders, not statutory deadlines: the contract and the
+   privacy notice on the start date (for the written particulars reg 8(1) says "on or before" the
+   start date, so the start date is the limit; no timing was found for the privacy notice); EPF
+   registration 14 days after the start date; the income tax number check 14 days after; the letter
+   on file 30 days before the last day; the handover plan 14 days before; the knowledge handover
+   and exit conversation 3 days before; the probation review 7 days before the probation end date;
+   records 7 days after the last day; the final EPF and EIS contributions 15 days after. Access
+   removed is due 1 day after the last day because the system completes it when the person is
+   finished, the day after the last day; due on the last day it would show as overdue in between.
 6. Steps due on the statutory limit. SOCSO, EIS and CP22 are due 30 days after the start date,
-   which is the end of the statutory period when the start date is the hiring date. Should they
-   be due earlier?
+   and the foreign employee hiring report 14 days after it (s.60K(3)), which is the end of each
+   statutory period when the start date is the hiring or employment date. Should they be due
+   earlier?
 7. Termination benefits: the due date (7 days after the last day) assumes the Regulations'
    "relevant date" is the last day.
-8. Final PERKESO contributions: the due date is 15 days after the last day, which never falls
+8. Final SOCSO contribution: the due date is 15 days after the last day, which never falls
    after the 15th of the following month; it is earlier than needed when the last day is early in
    a month.
 9. Foreign employee leaving: the step is due 14 days after the last day (the shorter of the two
    periods in s.60KA). Where the employee absconds, the period counts from their absence.
 10. CP21: the statutory period counts from the expected departure date, but the step can only
     count from the last day; HR moves the due date when they differ.
-11. Required or optional. EIS, CP22 and CP22A are required with a sentence saying when HR may
-    skip them (an excluded employee, a person not chargeable to tax, an exemption); the income
-    tax number check, the foreign employee reports, CP21, termination benefits and records are
-    optional. Optional steps are skipped automatically when the required ones are done.
+11. Required or optional. EIS registration, CP22, CP22A and the final EIS contribution are
+    required with a sentence saying when HR may skip them (an excluded employee, a person not
+    chargeable to tax, an exemption); the records step is required because the Employment Act
+    register (s.61) records the date of leaving and any termination benefits paid. The income
+    tax number check, the foreign employee reports, CP21 and termination benefits are optional.
+    Optional steps are skipped automatically when the required ones are done. The privacy notice
+    is required although the plan text listed "a PDPA notice" among the optional steps, because
+    the Notice and Choice Principle applies to every employee: the owner ratifies or reverses
+    this.
+12. CP22A exemptions. Confirm the exemptions the step lists (from HASiL's employer pages)
+    against HASiL's individual termination page, which words them differently, before HR skips
+    CP22A on that basis.
+13. Final-month contributions. Monthly EPF, SOCSO and EIS contributions are payroll duties left
+    out of the templates; should the final month's contributions stay as per-person offboarding
+    steps at all?
 
 ## Sign-off
 

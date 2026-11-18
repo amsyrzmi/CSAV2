@@ -66,7 +66,10 @@ _REGS_1980 = (
     "https://jtksm.gov.my/sites/default/files/2023-03/"
     "8.%20EMPLOYMENT%20(TERMINATION%20&%20LAY%20OFF%20BENEFITS)%20REGULATIONS%201980.pdf"
 )
-_ACT_800 = "https://perkeso.gov.my/images/akta/ACT%20800/Akta%20800_EMPLOYMENT%20INSURANCE%20SYSTEM%20ACT%202017.pdf"
+_ACT_800 = (
+    "https://perkeso.gov.my/images/akta/ACT%20800/"
+    "Akta%20800_EMPLOYMENT%20INSURANCE%20SYSTEM%20ACT%202017.pdf"
+)
 _PDP = "https://www.pdp.gov.my/ppdpv1/en/principles-of-personal-data-protection/"
 _KWSP_REGISTER = "https://www.kwsp.gov.my/en/employer/responsibilities/register-employee"
 _KWSP_CONTRIBUTION = "https://www.kwsp.gov.my/en/employer/responsibilities/mandatory-contribution"
@@ -117,21 +120,24 @@ _ONBOARDING = (
         "hr",
         "start_date",
         0,
-        "Employment Act 1955 s.10(1): a contract for a specified period exceeding one month, or "
-        "for specified piece work that may take over one month, shall be in writing; s.10(2): "
-        "every written contract has a termination clause. Employment Regulations 1957 reg 8(1): "
-        "a certified copy of the terms 'on or before the date of his commencing employment'. "
-        f"JTKSM-hosted texts. {_CHECKED}",
+        "Employment Regulations 1957 reg 8(1): each employee gets a certified copy of the terms "
+        "'on or before the date of his commencing employment'. Employment Act 1955 s.10(1): a "
+        "contract for a specified period exceeding one month, or for specified piece work that "
+        "may take over one month, shall be in writing; s.10(2): every written contract has a "
+        f"termination clause. JTKSM-hosted texts. {_CHECKED}",
         _read(
             "Employment Act 1955 (Act 265) s.10 and Employment Regulations 1957 reg 8(1), "
             "JTKSM-hosted texts (research rows d1, d2)",
             _ACT_265,
         ),
-        "Give the new hire their offer or contract and the written particulars of their terms "
-        "(the particulars reg 5 lists, such as occupation, wages, hours, notice period, leave "
-        "and wage period), and keep a signed copy. The Act requires a written contract only for "
-        "the contracts s.10(1) names; for every other contract this step is good practice. "
-        "Every written contract needs a termination clause (s.10(2)).",
+        "Give the new hire the written particulars of their terms (the particulars reg 5 lists, "
+        "such as occupation, wages, hours, notice period, leave and wage period) and their offer "
+        "or contract, and keep a signed copy. The particulars are due for every employee the "
+        "Employment Act covers: reg 8(1) requires a certified copy on or before the date they "
+        "start. A written contract is required by s.10(1) only for the contracts it names; for "
+        "other contracts it is good practice. Any written contract needs a termination clause "
+        "(s.10(2)). The step follows the Peninsular Malaysia and Labuan rule; Sabah and Sarawak "
+        "have their own labour ordinances.",
     ),
     _Step(
         "Privacy notice given to the new hire",
@@ -162,9 +168,9 @@ _ONBOARDING = (
         7,
         _PRACTICE_NOTE,
         _PRACTICE_SOURCE,
-        "The new hire fills in their home address, personal phone and emergency contact in My "
-        "HR. The step checks that those five contact fields are set; it does not check bank or "
-        "statutory numbers.",
+        "The new hire fills in their home address, personal phone, emergency name, emergency "
+        "relationship and emergency phone in My HR. The step checks that those five fields are "
+        "set; it does not check bank or statutory numbers.",
         auto_check="personal_details_complete",
     ),
     _Step(
@@ -313,7 +319,7 @@ _ONBOARDING = (
         ),
         "Review the new hire's probation before it ends and record the outcome as the contract "
         "allows (confirm, extend or end it); HR approves. The step waits for a date until HR "
-        "sets the probation end date.",
+        "sets the probation end date. HR skips this step when the person has no probation.",
         approval_by="hr",
     ),
 )
@@ -338,10 +344,9 @@ _OFFBOARDING = (
         "Keep the written resignation or termination letter and the notice period it gives. "
         "Either party may waive notice, and under s.13(1) either may end the contract without "
         "notice by paying an indemnity equal to the wages for the notice period: check before "
-        "agreeing. Before an employer-initiated "
-        "termination, check the restrictions that apply; JTKSM's FAQ notes that an employer must "
-        "not terminate a pregnant employee's service except in limited cases. The due date is "
-        "a company reminder, not a statutory deadline.",
+        "agreeing. Before an employer-initiated termination, check the restrictions that apply; "
+        "JTKSM's FAQ notes that an employer must not terminate a pregnant employee's service "
+        "except in limited cases. The due date is a company reminder, not a statutory deadline.",
     ),
     _Step(
         "LHDN: employee leaving notified (Form CP22A)",
@@ -359,7 +364,9 @@ _OFFBOARDING = (
         "Notify LHDN that the employment ends, with Form CP22A through e-SPC on MyTax. Not "
         "required where the employee's income is already subject to monthly tax deduction, "
         "where remuneration is below the monthly tax deduction minimum, or where the company "
-        "knows the employee will be employed elsewhere in Malaysia: HR may skip it then. If the "
+        "knows the employee will be employed elsewhere in Malaysia. HASiL's employer pages list "
+        "these exemptions; HASiL's individual termination page words them differently, so the "
+        "reviewer confirms them against that page before HR skips the step on that basis. If the "
         "employee has died, the wording is not more than 30 days after being informed of the "
         "death. Where the form is filed, HASiL's page says to withhold any money payable to the "
         "employee for 90 days or until a tax clearance letter is received (see the final pay "
@@ -423,8 +430,7 @@ _OFFBOARDING = (
         "last_day",
         0,
         f"{PRACTICE}: no provision on returning company property was found in the Employment "
-        "Act. "
-        "s.24(1): no deductions from wages 'otherwise than in accordance with this Act'. "
+        "Act. s.24(1): no deductions from wages 'otherwise than in accordance with this Act'. "
         f"{_CHECKED}",
         _practice(
             "a text search of the Employment Act 1955 found no provision on returning company "
@@ -440,10 +446,12 @@ _OFFBOARDING = (
         "hr",
         "last_day",
         0,
-        "Employment Act 1955 s.20: wages due 'not later than the day on which such contract of "
-        "service so terminates'; s.21(2): where the employee ends it without notice, 'not later "
-        "than the third day after'. s.60E(3A): unused paid annual leave is paid at the ordinary "
-        f"rate of pay, except on dismissal under s.14(1)(a). {_CHECKED}",
+        "Employment Act 1955 s.20 (termination under s.11(1) or s.12): wages due 'not later than "
+        "the day on which such contract of service so terminates'; s.21(1), the employer ends it "
+        "without notice: 'not later than the day on which such contract of service is so "
+        "terminated'; s.21(2), the employee ends it without notice: 'not later than the third "
+        "day after'. s.60E(3A): unused paid annual leave at the ordinary rate of pay, except on "
+        f"dismissal under s.14(1)(a). {_CHECKED}",
         _read(
             "Employment Act 1955 ss.20, 21, 24 and 60E, JTKSM-hosted text; HASiL cessation of "
             "employment page for the withholding rule (research rows j1, l, h2)",
@@ -509,7 +517,6 @@ _OFFBOARDING = (
         "Record the date of leaving and any termination benefits paid in the employee register, "
         "and file the leaver's records. The periods in the note are how long records are kept, "
         "not a deadline for this step. The due date is a company reminder.",
-        required=False,
     ),
     _Step(
         "Foreign employee: end of service reported to JTKSM",
@@ -550,20 +557,37 @@ _OFFBOARDING = (
         "reminder, not a statutory deadline.",
     ),
     _Step(
-        "SOCSO and EIS: final month's contributions paid",
+        "SOCSO: final month's contribution paid",
         "hr",
         "last_day",
         15,
         "PERKESO: contribution due 'no later than the 15th day of each succeeding month'. No "
         f"per-employee leaving notice found. PERKESO registration page. {_CHECKED}",
-        _read(
-            "PERKESO registration page (research row i2; the EIS leaver row i3 is a gap)",
-            _PERKESO_REGISTRATION,
+        _read("PERKESO registration page (research row i2)", _PERKESO_REGISTRATION),
+        "Pay the PERKESO (SOCSO) contribution for the last wage month. No official page was "
+        "found that requires a separate leaving notice to PERKESO for a normal resignation. The "
+        "due date, 15 days after the last day, is never later than the 15th of the following "
+        "month.",
+    ),
+    _Step(
+        "EIS: final month's contribution paid",
+        "hr",
+        "last_day",
+        15,
+        "PERKESO, Employment Insurance System: pay the EIS contribution for the last wage month. "
+        f"No employer duty to report a leaver was found in the Act 800 text read. {UNCONFIRMED} "
+        f"{_CHECKED}",
+        SourceNote(
+            "Employment Insurance System Act 2017 (Act 800), PERKESO-hosted text as at "
+            "1 September 2022: no employer leaver duty or contribution timing found (research row "
+            "i3)",
+            _ACT_800,
+            CHECKED_ON,
+            "unclear",
         ),
-        "Pay the PERKESO contributions for the last wage month. No official page was found that "
-        "requires a separate leaving notice to PERKESO for a normal resignation, and the timing "
-        "of the EIS contribution was not confirmed separately. The due date, 15 days after the "
-        "last day, is never later than the 15th of the following month.",
+        "Pay the EIS contribution for the last wage month. HR skips the step for an employee who "
+        "was not registered for EIS (an excluded foreign employee). The due date is a company "
+        "reminder, not a statutory deadline.",
     ),
 )
 

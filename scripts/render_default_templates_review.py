@@ -38,8 +38,9 @@ python -m scripts.render_default_templates_review. -->
 
 This document is a checklist of reminders with references. It is not legal advice and not a
 filing: no step files anything with an authority or calculates any amount, and no rate, ceiling,
-threshold or amount appears in the templates. Each step names the official body, form or portal
-and the timing wording as the official source states it, with the date it was checked. Where the
+threshold or amount appears in the templates. Each statutory step names the official body, form
+or portal and the timing wording as the official source states it, with the date it was checked;
+a company-practice step says it has no statutory source. Where the
 research could not confirm a timing on an official page, the note says so and the reviewer
 decides. The research behind every step, with the full wording and its confidence, is in
 [default-templates-sources.md](./default-templates-sources.md).
@@ -97,8 +98,16 @@ _UNCONFIRMED = """\
   the Act for Peninsular Malaysia and Labuan.
 - Leaving notices to PERKESO and for the Employment Insurance System: no official page was found
   that requires a per-employee leaving notice for a normal resignation (rows i2, i3); the final
-  contributions step says so. The timing of the final EIS contribution was not confirmed
-  separately.
+  SOCSO and EIS contribution steps say so. No employer leaver duty or contribution timing for
+  EIS was found in the Act 800 text read (row i3, unclear), so the final EIS step carries
+  "Timing not confirmed on an official page: reviewer to confirm."
+- CP22A exemptions: the step lists the exemptions from HASiL's employer pages; HASiL's individual
+  termination page words the exemption categories differently and uses older timing wording
+  (row h1).
+- e-CP22: the HASiL page states that CP22 goes through e-CP22 on MyTax; third-party sources give
+  conflicting dates from which that became mandatory (row c1), so no step states one.
+- PERKESO's FAQ on advertising expatriate vacancies on MYFutureJobs before hiring expatriates was
+  seen as a search excerpt only (end of row x5); no step relies on it.
 - HRD Corp: the 30-day registration wording was seen as an excerpt only (row g); HRD Corp
   registration is left out anyway.
 - PDPA: the 2024 amendments (for example breach notification and a data protection officer)
@@ -140,29 +149,43 @@ _QUESTIONS = """\
    Labuan text. Should the company add region templates, or should the text change?
 4. The contract step. Should the company add its own contract clause check, and should the step
    require a contract document on file (the automatic check "a contract document is uploaded")?
-5. Company-chosen offsets. These are reminders, not statutory deadlines: EPF registration 14
-   days after the start date; the income tax number check 14 days after; the letter on file 30
-   days before the last day; the handover plan 14 days before; the knowledge handover and exit
-   conversation 3 days before; the probation review 7 days before the probation end date;
-   records 7 days after the last day; the final EPF contribution 15 days after. Access removed is
-   due 1 day after the last day because the system completes it when the person is finished,
-   the day after the last day; due on the last day it would show as overdue in between.
+5. Company-chosen offsets. These are reminders, not statutory deadlines: the contract and the
+   privacy notice on the start date (for the written particulars reg 8(1) says "on or before" the
+   start date, so the start date is the limit; no timing was found for the privacy notice); EPF
+   registration 14 days after the start date; the income tax number check 14 days after; the letter
+   on file 30 days before the last day; the handover plan 14 days before; the knowledge handover
+   and exit conversation 3 days before; the probation review 7 days before the probation end date;
+   records 7 days after the last day; the final EPF and EIS contributions 15 days after. Access
+   removed is due 1 day after the last day because the system completes it when the person is
+   finished, the day after the last day; due on the last day it would show as overdue in between.
 6. Steps due on the statutory limit. SOCSO, EIS and CP22 are due 30 days after the start date,
-   which is the end of the statutory period when the start date is the hiring date. Should they
-   be due earlier?
+   and the foreign employee hiring report 14 days after it (s.60K(3)), which is the end of each
+   statutory period when the start date is the hiring or employment date. Should they be due
+   earlier?
 7. Termination benefits: the due date (7 days after the last day) assumes the Regulations'
    "relevant date" is the last day.
-8. Final PERKESO contributions: the due date is 15 days after the last day, which never falls
+8. Final SOCSO contribution: the due date is 15 days after the last day, which never falls
    after the 15th of the following month; it is earlier than needed when the last day is early in
    a month.
 9. Foreign employee leaving: the step is due 14 days after the last day (the shorter of the two
    periods in s.60KA). Where the employee absconds, the period counts from their absence.
 10. CP21: the statutory period counts from the expected departure date, but the step can only
     count from the last day; HR moves the due date when they differ.
-11. Required or optional. EIS, CP22 and CP22A are required with a sentence saying when HR may
-    skip them (an excluded employee, a person not chargeable to tax, an exemption); the income
-    tax number check, the foreign employee reports, CP21, termination benefits and records are
-    optional. Optional steps are skipped automatically when the required ones are done.
+11. Required or optional. EIS registration, CP22, CP22A and the final EIS contribution are
+    required with a sentence saying when HR may skip them (an excluded employee, a person not
+    chargeable to tax, an exemption); the records step is required because the Employment Act
+    register (s.61) records the date of leaving and any termination benefits paid. The income
+    tax number check, the foreign employee reports, CP21 and termination benefits are optional.
+    Optional steps are skipped automatically when the required ones are done. The privacy notice
+    is required although the plan text listed "a PDPA notice" among the optional steps, because
+    the Notice and Choice Principle applies to every employee: the owner ratifies or reverses
+    this.
+12. CP22A exemptions. Confirm the exemptions the step lists (from HASiL's employer pages)
+    against HASiL's individual termination page, which words them differently, before HR skips
+    CP22A on that basis.
+13. Final-month contributions. Monthly EPF, SOCSO and EIS contributions are payroll duties left
+    out of the templates; should the final month's contributions stay as per-person offboarding
+    steps at all?
 """
 
 _SIGN_OFF = """\
