@@ -3265,6 +3265,87 @@ def test_spec_lists_the_changes_made_while_building_pr_2() -> None:
         assert needle in flat, needle
 
 
+SPEC_PATH = ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md"
+SPEC_PR2_NEEDLES = (
+    "tip of `main`",
+    "`workflow_run`",
+    "STAGING_AUTO_PAUSED",
+    "csa-deploy",
+    "/usr/local/sbin/csa-staging-deploy",
+    "six keys",
+    "/run/lock/<project>-rollout.lock",
+    "fs.protected_regular",
+    "`staging rollout`",
+    "exits 3",
+    "STAGING_DEPLOY_REGION",
+    "three levels",
+    "unpinned",
+)
+
+
+def test_spec_lists_the_changes_made_while_building_pr_3() -> None:
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    pr2 = " ".join(_section(spec, "Changes made while building PR 2").split())
+    # The PR 3 section is new text after the PR 2 one: nothing inside the PR 2 section was edited.
+    for needle in SPEC_PR2_NEEDLES:
+        assert needle in pr2, needle
+    headings = [line for line in spec.splitlines() if line.startswith("## ")]
+    pr2_at = next(
+        n for n, h in enumerate(headings) if h.startswith("## Changes made while building PR 2")
+    )
+    assert headings[pr2_at + 1] == "## Changes made while building PR 3"
+
+    flat = " ".join(_section(spec, "Changes made while building PR 3").split())
+    for needle in (
+        "deploy-production-auto",
+        "`workflow_dispatch`",
+        "`GITHUB_TOKEN`",
+        "three `workflow_run` links",
+        "the dispatch comes last",
+        "`auto_plan.sh check`",
+        "`waiting`",
+        "`in_progress`",
+        "never knowingly",
+        "never approve",
+        "`deploy-production.yml` is untouched",
+        "Manual dispatch only",
+        "`PUT .../environments/<env>`",
+        "re-read",
+        "not documented",
+        "did not reset",
+        "reviewers",
+        "`can_admins_bypass`",
+        "`false` on `production` and `production-plan` on 2026-11-18",
+        "`prevent_self_review` stays `false`",
+        "`staging-images`",
+        "no branch",
+        "deployment-branch-policies",
+        "never prints a secret",
+        "`--check`",
+        "moved-heading test",
+        "pin",
+        "PRODUCTION.md had no",
+        "one `deploy` skill",
+        "The image publish needs no approval today (the `staging-images` environment has no"
+        " reviewer). If a reviewer is added to `staging-images`, every merge waits on that click.",
+    ):
+        assert needle in flat, needle
+
+
+def test_spec_design_text_no_longer_states_what_pr_3_changed() -> None:
+    flat = " ".join(SPEC_PATH.read_text(encoding="utf-8").split())
+    assert "A second trigger, `workflow_run` of `deploy-staging` succeeding" not in flat
+    assert "A new auto-started run cancels earlier runs" not in flat
+    assert "is `in_progress` is never cancelled" not in flat
+    assert "is `in_progress` is never knowingly cancelled" in flat
+
+
+def test_project_overview_links_the_deploy_runbook() -> None:
+    text = (ROOT / "docs" / "PROJECT_OVERVIEW.md").read_text(encoding="utf-8")
+    assert "| Deploying staging and production | [Deploy runbook](../deploy/DEPLOY.md) |" in text
+    assert (ROOT / "deploy" / "DEPLOY.md").is_file()
+
+
 def test_spec_matches_the_tip_default_and_the_registry_method() -> None:
     spec = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md").read_text(
         encoding="utf-8"
