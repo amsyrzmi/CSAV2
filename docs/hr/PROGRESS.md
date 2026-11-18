@@ -63,6 +63,22 @@ of [PROCESSES_RETEST.md](./PROCESSES_RETEST.md). The research is in
 second official URL for steps whose rule sits in a different instrument (Employment Regulations 1957
 for onboarding step 1 reg 8(1) and offboarding step 11 reg 5) in DEFAULT_TEMPLATES_REVIEW.md.
 
+HR assistant slice 1c-i (2026-11-18, branch `feat/hr-assistant-read`, no migration, images-only
+rollout) is the top entry of [../PROGRESS.md](../PROGRESS.md). The workspace assistant now answers
+five read-only questions about processes in English and Malay: the member's own tasks, what is left
+for one person's onboarding or offboarding, who is onboarding, who is leaving and what is overdue.
+It reads through the same process reads as the console with the member's own session, so the HR team
+sees all, a manager sees direct reports' step titles, owner role, status and dates only, a person
+sees their own onboarding, offboarding and tasks, and a task owner sees their own tasks; it needs
+the HR service on but not People access. It never completes, approves, sends back, skips,
+reschedules, reassigns, cancels or closes a step: "mark my task done" is answered with a pointer to
+My tasks (slice 1c-ii, a confirm card, is next). Lists show ten rows; step titles are English in
+Malay answers while the templates have no Malay text. Still to do by the owner: the full
+`assistant_smoke` run on staging (95 cases, about 106 model calls; not run yet), the manual rows
+under "HR process questions" in [../ASSISTANT_RETEST.md](../ASSISTANT_RETEST.md), and a read of the
+Malay wording listed in the entry. The operating note is
+[SETUP.md](./SETUP.md#ask-the-assistant-about-onboarding-and-offboarding).
+
 ## HR chat retired (project 1b)
 
 The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace

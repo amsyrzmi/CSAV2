@@ -406,8 +406,8 @@ planner, decides what that member sees.
 | Apa tugasan saya? | A new starter with an onboarding | The same, in Malay, answered in Malay | manual |
 | What is still outstanding for Aina's onboarding? | A manager of Aina, who is in onboarding | Titles, status and dates only; no task notes, no HR-only detail | manual |
 | Apa yang belum selesai untuk onboarding Aina? | A manager of Aina, who is in onboarding | The same, in Malay, answered in Malay | manual |
-| Who is onboarding at the moment? | HR owner | Everyone in an onboarding, each with "N of M steps done" and ", next step due <date>" | manual |
-| Siapa yang akan berhenti tidak lama lagi? | HR owner | Everyone in an offboarding, with the last day, answered in Malay | manual |
+| Who is onboarding at the moment? | HR owner | Everyone in an active onboarding (ten lines at most), each with "N of M steps done" and ", next step due <date>" | manual |
+| Siapa yang akan berhenti tidak lama lagi? | HR owner | Everyone in an active offboarding, each with "N daripada M langkah selesai" and ", langkah seterusnya <date>", answered in Malay | manual |
 | What is overdue? | HR owner | Overdue tasks across all processes; the same question from a manager lists only their reports' | manual |
 | What is still outstanding for Siti's onboarding? | HR owner, two people named Siti | A question with both, each as "Siti Aminah — onboarding, started 3 November 2026" (name, kind, start day), with "(1 of 2)" added when two labels are still identical; picking one gives that person's process | manual |
 | Apa yang belum selesai untuk onboarding Siti? | HR owner, two people named Siti | The same question in Malay, each option as "name — onboarding, bermula <date>" | manual |

@@ -1,6 +1,7 @@
 # HR assistant slice 1c-i: the assistant answers HR process questions in English and Malay (design)
 
-Status: design, 2026-11-18. Builds on `2026-11-16-hr-processes-design.md` section 9 ("slice 1c, own small PR")
+Status: design, 2026-11-18; built the same day (branch `feat/hr-assistant-read`; the "As built" notes in
+sections 4 and 6 say where the build differs from the first wording). Builds on `2026-11-16-hr-processes-design.md` section 9 ("slice 1c, own small PR")
 and the assistant designs of 2026-10-26 (workspace assistant), 2026-10-31 (Malay) and 2026-11-09 (engine).
 
 ## 1. Intent and why
@@ -64,12 +65,18 @@ untouched.
 
 - **my_tasks**: open tasks assigned to the caller, soonest first, up to 10, each with title, the process and person
   it belongs to, and a due phrase in words ("due tomorrow", "overdue by 3 days"; Malay equivalents). "Nothing waiting
-  for you." when none. HR team members also have pool tasks; they are listed as "HR team" tasks.
+  for you." when none. HR team members also have pool tasks; they are listed as "HR team" tasks. As built, the
+  list is the console's My tasks as the database returns it, so it also holds the steps waiting for the
+  caller's approval ("waiting for your approval"); who_onboarding and who_leaving list active processes only;
+  the overdue view opens at most 50 overdue processes (past that the count reads "N+") and no read scans more
+  than 1000 rows.
 - **person_process**: the person is resolved from the visible process rows (`employee_name`), not from `HrPeople`
   (a manager or a person is refused the People list but may see their own processes). One match: progress ("5 of 9
   steps done") and the open steps with owner and due phrase (a manager sees titles, owner role, status and dates
   only, because the database returns nothing more). Several matches: the usual clarification (up to 5 options,
-  "Name, Job title"). No match: "I can't find a process for that person that you can see." (never revealing whether
+  "Name — onboarding, started 3 November 2026"; as built the label carries the kind and the process start date,
+  not the job title: process rows have no job title, and reading it from People would refuse a manager or a
+  new starter; the option value is the process id and comes back in `person`). No match: "I can't find a process for that person that you can see." (never revealing whether
   the person exists).
 - **who_onboarding / who_leaving**: active onboarding or offboarding processes the caller can see, soonest next
   due first, up to 10, with progress and "overdue" marks; a count line when more.
@@ -108,9 +115,10 @@ stores.
   training, "mark my task done", a non-HR staff member), added to `csa/workspace/smoke_cases.json`,
   `FEATURES` in `tests/test_assistant_smoke.py`, `docs/ASSISTANT_RETEST.md`, and the Jev label set decision (the new
   cases go in `SMOKE_LEFT_OUT` with the reason "no routing question").
-- **A planner prompt change forces a full `assistant_smoke` run before merge** (about 75 planner calls plus the new
-  cases, with the owner's model key and the owner's yes). The controller asks first and reports the failures as
-  printed.
+- **A planner prompt change forces a full `assistant_smoke` run before merge** (as built, 95 cases: about 106
+  model calls, up to about 201 with re-plans, with the owner's model key and the owner's yes). The controller asks
+  first and reports the failures as printed. As built there are 20 new cases (ten positive, ten negative), and the
+  run has not been made yet.
 
 ## 7. Risks
 
