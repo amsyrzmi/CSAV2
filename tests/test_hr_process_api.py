@@ -685,8 +685,11 @@ async def test_every_route_requires_csrf_and_idempotency_where_it_writes(world: 
     probation = await versioned(
         world, "person.probation_set", world.employees["staff"], probation_end="2027-03-01"
     )
+    # The create-defaults route answers 404 while its switch is off (test_hr_process_defaults.py).
+    world.app.state.hr_default_templates_enabled = True
     writes: list[tuple[str, str, Any]] = [
         ("POST", TEMPLATES, template_body(name="Another")),
+        ("POST", f"{TEMPLATES}/defaults", {}),
         ("PUT", f"{TEMPLATES}/{template}", update),
         ("POST", f"{TEMPLATES}/{template}/deactivate", {"expected_version": 1}),
         ("POST", PROCESSES, {"employee_id": str(world.employees["staff"]), "kind": "onboarding"}),

@@ -38,6 +38,11 @@ __all__ = [
     "AnchorDates",
     "ApprovalBy",
     "AutoCheck",
+    "DefaultKind",
+    "DefaultTemplateCreated",
+    "DefaultTemplateSkipped",
+    "DefaultTemplatesCreate",
+    "DefaultTemplatesReceipt",
     "MyTask",
     "MyTaskPage",
     "NoMatchingTemplate",
@@ -72,6 +77,7 @@ __all__ = [
     "TaskStatus",
     "TemplateCreate",
     "TemplateDeactivate",
+    "TemplateDefaults",
     "TemplateList",
     "TemplateOut",
     "TemplatePreview",
@@ -249,8 +255,50 @@ class TemplateSummary(HrModel):
     updated_at: AwareDatetime
 
 
+class TemplateDefaults(HrModel):
+    """Whether the create-defaults action applies (`POST /templates/defaults`).
+
+    `available`: the deploy switch is on and the caller is a signed-in member of the HR team (the
+    list is for the HR team only; an assistant or capability session gets false). A read-only
+    session still gets true: like every write, its POST is 403 `read_only_session`.
+    `created`: every default kind (onboarding and offboarding) already has an active template, made
+    by the action or by hand, so the action would create nothing.
+    """
+
+    available: bool
+    created: bool
+
+
 class TemplateList(HrModel):
     items: list[TemplateSummary] = Field(max_length=500)
+    defaults: TemplateDefaults
+
+
+DefaultKind = Literal["onboarding", "offboarding"]
+
+
+class DefaultTemplatesCreate(HrModel):
+    """The create-defaults body: nothing. The content is the server's (`csa.hr.default_templates`),
+    so a client can neither choose nor change it."""
+
+
+class DefaultTemplateCreated(HrModel):
+    kind: DefaultKind
+    template_id: UUID
+    version: Version
+    name: str
+
+
+class DefaultTemplateSkipped(HrModel):
+    kind: DefaultKind
+    # The company already has an active template of the kind: a second one would tie with it.
+    reason: Literal["already_present"]
+
+
+class DefaultTemplatesReceipt(HrModel):
+    created: list[DefaultTemplateCreated]
+    skipped: list[DefaultTemplateSkipped]
+    duplicate: bool
 
 
 class TemplateStepOut(_StepText):

@@ -6172,6 +6172,103 @@
         "title": "DeclineIn",
         "type": "object"
       },
+      "DefaultTemplateCreated": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "template_id": {
+            "format": "uuid",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "template_id",
+          "version",
+          "name"
+        ],
+        "title": "DefaultTemplateCreated",
+        "type": "object"
+      },
+      "DefaultTemplateSkipped": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "onboarding",
+              "offboarding"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "const": "already_present",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "title": "DefaultTemplateSkipped",
+        "type": "object"
+      },
+      "DefaultTemplatesCreate": {
+        "additionalProperties": false,
+        "description": "The create-defaults body: nothing. The content is the server's (`csa.hr.default_templates`),\nso a client can neither choose nor change it.",
+        "properties": {},
+        "title": "DefaultTemplatesCreate",
+        "type": "object"
+      },
+      "DefaultTemplatesReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/DefaultTemplateCreated"
+            },
+            "title": "Created",
+            "type": "array"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/DefaultTemplateSkipped"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "created",
+          "skipped",
+          "duplicate"
+        ],
+        "title": "DefaultTemplatesReceipt",
+        "type": "object"
+      },
       "DepartmentList": {
         "additionalProperties": false,
         "properties": {
@@ -20074,9 +20171,32 @@
         "title": "TemplateDeactivate",
         "type": "object"
       },
+      "TemplateDefaults": {
+        "additionalProperties": false,
+        "description": "Whether the create-defaults action applies (`POST /templates/defaults`).\n\n`available`: the deploy switch is on and the caller is a signed-in member of the HR team (the\nlist is for the HR team only; an assistant or capability session gets false). A read-only\nsession still gets true: like every write, its POST is 403 `read_only_session`.\n`created`: every default kind (onboarding and offboarding) already has an active template, made\nby the action or by hand, so the action would create nothing.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available",
+          "created"
+        ],
+        "title": "TemplateDefaults",
+        "type": "object"
+      },
       "TemplateList": {
         "additionalProperties": false,
         "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/TemplateDefaults"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/TemplateSummary"
@@ -20087,7 +20207,8 @@
           }
         },
         "required": [
-          "items"
+          "items",
+          "defaults"
         ],
         "title": "TemplateList",
         "type": "object"
@@ -35479,6 +35600,83 @@
           }
         },
         "summary": "Create Template",
+        "tags": [
+          "HR"
+        ]
+      }
+    },
+    "/console/v1/hr/templates/defaults": {
+      "post": {
+        "operationId": "create_default_templates_console_v1_hr_templates_defaults_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DefaultTemplatesCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefaultTemplatesReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Default Templates",
         "tags": [
           "HR"
         ]

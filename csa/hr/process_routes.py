@@ -4,6 +4,9 @@ Registered by `build_hr_router` on the HR router, so they share its session, CSR
 no-store and error handling (`HrRoute`). Writes need CSRF and an `Idempotency-Key`, and a
 read-only session's write is refused by the session dependency (403 `read_only_session`).
 `POST /templates/preview` is a read with a body: CSRF as a write, no `Idempotency-Key`.
+`POST /templates/defaults` creates the default templates once; while the deploy switch
+`HR_DEFAULT_TEMPLATES_ENABLED` (`app.state.hr_default_templates_enabled`) is off it answers 404
+`resource_unavailable` before any other check, so the route cannot be told apart from a missing one.
 Template reads and the template and process writes are for the HR team; a task action is for the
 assignee, the approver or the HR team, as the database decides (0634). The process reads answer
 with `response_model_exclude_unset`: a field the caller may not see is absent, an empty one is
@@ -17,9 +20,11 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from csa.hr.process_models import (
+    DefaultTemplatesCreate,
+    DefaultTemplatesReceipt,
     MyTaskPage,
     PersonProcesses,
     ProcessCancelReceipt,
@@ -68,6 +73,16 @@ TEMPLATE_BODY_LIMIT = 262144
 RequestKey = Annotated[UUID, Header(alias="Idempotency-Key")]
 
 
+def _defaults_enabled(request: Request) -> bool:
+    """The create-defaults deploy switch; anything but True (unset, a string) is off."""
+    return getattr(request.app.state, "hr_default_templates_enabled", False) is True
+
+
+def _defaults_switch(request: Request) -> None:
+    if not _defaults_enabled(request):
+        raise HTTPException(404, "resource_unavailable")
+
+
 def register_process_routes(
     router: APIRouter,
     session_dep: Callable[..., Awaitable[HrSession]],
@@ -75,10 +90,13 @@ def register_process_routes(
 ) -> None:
     @router.get("/templates", response_model=TemplateList, response_model_exclude_none=False)
     async def templates(
+        request: Request,
         session: Annotated[HrSession, Depends(session_dep)],
         service: Annotated[HrService, Depends(service_dep)],
     ) -> TemplateList:
-        return await HrProcesses(service).templates(session)
+        return await HrProcesses(service).templates(
+            session, defaults_enabled=_defaults_enabled(request)
+        )
 
     @router.get(
         "/templates/{template_id}", response_model=TemplateOut, response_model_exclude_none=False
@@ -103,6 +121,22 @@ def register_process_routes(
         request_key: RequestKey,
     ) -> TemplateReceipt:
         return await HrProcesses(service).create_template(session, body, request_key)
+
+    @router.post(
+        "/templates/defaults",
+        response_model=DefaultTemplatesReceipt,
+        response_model_exclude_none=False,
+        status_code=201,
+        # Route dependencies run first: with the switch off nothing else is looked at.
+        dependencies=[Depends(_defaults_switch)],
+    )
+    async def create_default_templates(
+        session: Annotated[HrSession, Depends(session_dep)],
+        service: Annotated[HrService, Depends(service_dep)],
+        request_key: RequestKey,
+        body: DefaultTemplatesCreate | None = None,
+    ) -> DefaultTemplatesReceipt:
+        return await HrProcesses(service).create_default_templates(session, request_key)
 
     @router.post(
         "/templates/preview", response_model=TemplatePreview, response_model_exclude_none=False

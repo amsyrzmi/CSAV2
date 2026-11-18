@@ -14,7 +14,7 @@ refusal is re-raised and the HR route answers 503 `hr_database_unavailable`.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import psycopg
 from psycopg import AsyncConnection
@@ -22,9 +22,13 @@ from psycopg.types.json import Jsonb
 
 from csa.core.db import q as sql
 from csa.core.tenancy import tx
+from csa.hr.default_templates import DEFAULT_TEMPLATES
 from csa.hr.operations import HrOperations
 from csa.hr.policy import HrPolicyError
 from csa.hr.process_models import (
+    DefaultTemplateCreated,
+    DefaultTemplateSkipped,
+    DefaultTemplatesReceipt,
     MyTask,
     MyTaskPage,
     PersonProcesses,
@@ -49,6 +53,7 @@ from csa.hr.process_models import (
     TaskStatus,
     TemplateCreate,
     TemplateDeactivate,
+    TemplateDefaults,
     TemplateList,
     TemplateOut,
     TemplatePreview,
@@ -169,12 +174,25 @@ PROBLEMS: dict[str, str] = {
 }
 _WARNINGS = {"hr_template_step_after_last_day": "step_after_last_day"}
 _PAGE = 200  # rows per page at most; the read returns one more to tell it was cut
+# hr_template_rows (0631) returns at most this many templates, by kind then name.
+_TEMPLATE_ROWS = 500
+# The create-defaults action's own receipt in hr_operations; each template it creates also gets
+# the receipt of hr_template_apply under a key derived from the request key.
+_DEFAULTS_OPERATION = "template.create_defaults"
 TaskBody = TaskComplete | TaskApprove | TaskReason | TaskNote | TaskReschedule | TaskReassign
 
 
 def _rules(row: dict[str, Any]) -> dict[str, Any]:
     keys = ("department_id", "employment_type", "legal_entity_reference", "region")
     return {key: row[key] for key in keys}
+
+
+def _present_kinds(rows: list[dict[str, Any]]) -> set[str]:
+    """The kinds with an active template. A list cut at the read's limit may hide one, so then
+    every default kind counts as present: the action never risks a second template of a kind."""
+    if len(rows) >= _TEMPLATE_ROWS:
+        return {template.kind for template in DEFAULT_TEMPLATES}
+    return {row["kind"] for row in rows if row["is_active"]}
 
 
 def _warnings(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -236,11 +254,21 @@ class HrProcesses:
 
     # ---- Templates --------------------------------------------------------------------------
 
-    async def templates(self, session: HrSession) -> TemplateList:
+    async def templates(
+        self, session: HrSession, *, defaults_enabled: bool = False
+    ) -> TemplateList:
+        """The templates, and whether the create-defaults action applies (`TemplateDefaults`):
+        `defaults_enabled` is the deploy switch the route read."""
         rows = await self._read(
             session, "hr/process_template_rows.sql", (session.tenant_id,), team=True
         )
+        human = session.capability is None and not session.assistant
+        present = _present_kinds(rows)
         return TemplateList(
+            defaults=TemplateDefaults(
+                available=defaults_enabled and human,
+                created=all(template.kind in present for template in DEFAULT_TEMPLATES),
+            ),
             items=[
                 TemplateSummary.model_validate(
                     {
@@ -256,7 +284,7 @@ class HrProcesses:
                     }
                 )
                 for row in rows
-            ]
+            ],
         )
 
     async def template(self, session: HrSession, template_id: UUID) -> TemplateOut:
@@ -304,6 +332,92 @@ class HrProcesses:
     ) -> TemplateReceipt:
         payload = {"operation": "template.create", **body.model_dump(mode="json")}
         return await self._template_write(session, payload, key)
+
+    async def create_default_templates(
+        self, session: HrSession, key: UUID
+    ) -> DefaultTemplatesReceipt:
+        """Create the default templates (`DEFAULT_TEMPLATES`) a company has no active template of
+        yet, in one transaction: all of them or none.
+
+        Under the tenant's hr-operations lock (the one hr_template_apply takes, re-entrant within
+        the transaction), so a second request waits for the first to commit and then finds the
+        kinds present. A kind with any active template is skipped (`already_present`): a second
+        company default would tie with it. Each template is written by hr_template_apply (0631:
+        validation, its receipt and its `hr.template_created` audit row) under a key derived from
+        `key`; the action's own receipt is stored under `key`, so a retry returns the first result
+        with `duplicate: true` even after the templates changed. The deploy switch is checked by
+        the route."""
+        if session.csrf_hash is None or session.capability is not None or session.assistant:
+            raise HrPolicyError("human_operation_required")
+        fingerprint = _fingerprint(_DEFAULTS_OPERATION, {"operation": _DEFAULTS_OPERATION})
+        async with tx(self.core.pool, str(session.tenant_id)) as conn:
+            access = await self.core._access(conn, session)
+            HrOperations.people_manager(access)
+            await sql.execute("hr/key_lock.sql", (f"{session.tenant_id}:hr-operations",), conn=conn)
+            old = await sql.fetch_one(
+                "hr/op_get.sql", (session.tenant_id, session.subject_id, key), conn=conn
+            )
+            if old is not None:
+                if old["fingerprint"] != fingerprint:
+                    raise HrPolicyError("idempotency_conflict")
+                await self.core._session(conn, session)
+                return DefaultTemplatesReceipt.model_validate({**old["receipt"], "duplicate": True})
+            rows = await sql.fetch_all(
+                "hr/process_template_rows.sql", (session.tenant_id,), conn=conn
+            )
+            present = _present_kinds(rows)
+            created: list[DefaultTemplateCreated] = []
+            skipped: list[DefaultTemplateSkipped] = []
+            for template in DEFAULT_TEMPLATES:
+                if template.kind in present:
+                    skipped.append(
+                        DefaultTemplateSkipped.model_validate(
+                            {"kind": template.kind, "reason": "already_present"}
+                        )
+                    )
+                    continue
+                payload = {"operation": "template.create", **template.model_dump(mode="json")}
+                row = await self._call(
+                    conn,
+                    "hr/process_template_apply.sql",
+                    (
+                        session.tenant_id,
+                        uuid5(key, f"{_DEFAULTS_OPERATION}:{template.kind}"),
+                        _fingerprint("template.create", payload),
+                        Jsonb(payload),
+                    ),
+                )
+                assert row is not None
+                receipt = row["receipt"]
+                if receipt["duplicate"]:
+                    # Only a client that sent the derived key itself can get here; nothing was
+                    # created now, so the request key cannot record a creation.
+                    raise HrPolicyError("idempotency_conflict")
+                created.append(
+                    DefaultTemplateCreated.model_validate(
+                        {
+                            "kind": template.kind,
+                            "template_id": receipt["template_id"],
+                            "version": receipt["version"],
+                            "name": template.name,
+                        }
+                    )
+                )
+            result = DefaultTemplatesReceipt(created=created, skipped=skipped, duplicate=False)
+            await sql.execute(
+                "hr/op_record.sql",
+                (
+                    session.tenant_id,
+                    session.subject_id,
+                    key,
+                    _DEFAULTS_OPERATION,
+                    fingerprint,
+                    Jsonb(result.model_dump(mode="json")),
+                ),
+                conn=conn,
+            )
+            await self.core._session(conn, session)
+        return result
 
     async def update_template(
         self, session: HrSession, template_id: UUID, body: TemplateUpdate, key: UUID
