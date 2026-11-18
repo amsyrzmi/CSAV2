@@ -1500,6 +1500,120 @@ def test_only_subject_shaped_values_are_printed_from_the_live_trust(aws: Aws) ->
     assert writes(aws) == []
 
 
+STAGING_ROLE = "csa-staging-deploy"
+
+
+def stage_live_trust(aws: Aws, statements: list[dict[str, Any]]) -> None:
+    """Applies subject A to staging, then replaces the live trust's statements."""
+    assert with_subjects(aws, "staging", "apply", SUBJECT_A).returncode == 0
+    trust = aws.state()["roles"][STAGING_ROLE]["trust"]
+    trust["Statement"] = statements
+    set_trust(aws, STAGING_ROLE, trust)
+    aws.reset_log()
+
+
+def live_statement(condition: dict[str, Any], action: str = "sts:AssumeRoleWithWebIdentity") -> Any:
+    return {
+        "Effect": "Allow",
+        "Principal": {"Federated": OIDC_ARN},
+        "Action": action,
+        "Condition": condition,
+    }
+
+
+def assert_staging_refusal_for_b(aws: Aws) -> None:
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        refusal(STAGING_ROLE, 1, SUBJECT_B),
+        REFUSAL_HINT,
+    ]
+    assert writes(aws) == []
+
+
+@pytest.mark.parametrize(
+    "operator", ["StringLike", "ForAnyValue:StringLike", "ForAllValues:StringEquals"]
+)
+def test_the_guard_reads_the_sub_under_any_condition_operator(aws: Aws, operator: str) -> None:
+    both = [f"{SUBJECT_A}:environment:staging", f"{SUBJECT_B}:environment:staging"]
+    stage_live_trust(aws, [live_statement({operator: {SUB_KEY: both}})])
+
+    assert_staging_refusal_for_b(aws)
+
+
+def test_the_guard_reads_a_second_statement_with_another_action(aws: Aws) -> None:
+    mine = {"StringEquals": {SUB_KEY: f"{SUBJECT_A}:environment:staging"}}
+    other = {"StringLike": {SUB_KEY: f"{SUBJECT_B}:environment:staging"}}
+    stage_live_trust(aws, [live_statement(mine), live_statement(other, action="sts:TagSession")])
+
+    assert_staging_refusal_for_b(aws)
+
+
+def test_the_guard_reads_the_sub_key_in_any_letter_case(aws: Aws) -> None:
+    # IAM condition keys are case-insensitive: a live trust may spell the key differently.
+    key = "Token.Actions.GithubUsercontent.Com:Sub"
+    both = [f"{SUBJECT_A}:environment:staging", f"{SUBJECT_B}:environment:staging"]
+    stage_live_trust(aws, [live_statement({"StringEquals": {key: both}})])
+
+    assert_staging_refusal_for_b(aws)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"{SUBJECT_B}:environment:staging\n",
+        f"FAKE-AWS-TEXT\n{SUBJECT_B}:environment:staging",
+        f"{SUBJECT_B}:environment:staging\nFAKE-AWS-TEXT",
+    ],
+    ids=["trailing-newline", "leading-line", "trailing-line"],
+)
+def test_a_value_with_a_newline_is_never_shown_even_if_a_line_looks_like_a_subject(
+    aws: Aws, value: str
+) -> None:
+    stage_live_trust(
+        aws,
+        [live_statement({"StringEquals": {SUB_KEY: [f"{SUBJECT_A}:environment:staging", value]}})],
+    )
+
+    result = with_subjects(aws, "staging", "apply", SUBJECT_A)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines() == [
+        f"refused: role {STAGING_ROLE} trusts 1 subject(s) not given: <unrecognised value>",
+        REFUSAL_HINT,
+    ]
+    assert "FAKE-AWS-TEXT" not in result.stdout + result.stderr
+    assert writes(aws) == []
+
+
+def test_apply_replaces_the_whole_trust_and_check_reports_an_extra_statement(aws: Aws) -> None:
+    mine = {"StringEquals": {SUB_KEY: f"{SUBJECT_A}:environment:staging"}}
+    extra = {"Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::000000000000:root"}}
+    stage_live_trust(aws, [live_statement(mine), {**extra, "Action": "sts:AssumeRole"}])
+
+    check = with_subjects(aws, "staging", "check", SUBJECT_A)
+    assert check.returncode == 1
+    assert trust_result(check, STAGING_ROLE) == "differs"
+
+    applied = with_subjects(aws, "staging", "apply", SUBJECT_A)
+    assert applied.returncode == 0, applied.stderr
+    assert len(aws.state()["roles"][STAGING_ROLE]["trust"]["Statement"]) == 1
+    assert with_subjects(aws, "staging", "check", SUBJECT_A).returncode == 0
+
+
+WHOLE_TRUST_SENTENCE = (
+    "`apply` replaces the whole trust document of a role, not only its subject: any extra "
+    "statement or condition in a live trust is overwritten, and `check` reports it as `differs`"
+)
+
+
+def test_the_header_and_the_production_runbook_say_apply_replaces_the_whole_trust() -> None:
+    header = " ".join(SCRIPT.read_text().split("set -euo pipefail")[0].replace("#", " ").split())
+    assert WHOLE_TRUST_SENTENCE in header
+    assert WHOLE_TRUST_SENTENCE in " ".join(PRODUCTION_DOC.read_text().split())
+    assert "in a refusal, the live subjects" not in header
+
+
 def test_the_removal_flag_is_valueless_and_accepted_anywhere_and_by_every_action(aws: Aws) -> None:
     base = ["--region", REGION, "--node", NODE, "--subject", SUBJECT_A]
     for args in (

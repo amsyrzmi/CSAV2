@@ -332,7 +332,9 @@ replace reading the steps, and never run its `apply` mode against production wit
 decision. `--subject` may be repeated, and production's live roles trust several subjects, so
 `production check` must be given all of them (and `production apply` is never run with fewer).
 `production apply` refuses to remove a subject that a live role trusts unless it is given
-`--allow-subject-removal`.
+`--allow-subject-removal`. `apply` replaces the whole trust document of a role, not only its
+subject: any extra statement or condition in a live trust is overwritten, and `check` reports it
+as `differs`.
 
 ### 1. AWS (CloudShell, admin login): the agent's service role and an activation
 

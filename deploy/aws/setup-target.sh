@@ -39,10 +39,15 @@
 # --allow-subject-removal (apply only; activate and check accept it and ignore it) when the removal
 # is intended; apply then prints a `removing` line per role before its steps. Subjects the live role
 # lacks are announced with an `adding` line (with or without the flag).
+# `apply` replaces the whole trust document of a role, not only its subject: any extra
+# statement or condition in a live trust is overwritten, and `check` reports it as `differs`.
+# The guard reads the `sub` key in any letter case (IAM condition keys are case-insensitive), under
+# any statement and any condition operator.
 # Every input is validated before the first AWS call, and nothing is run through eval.
 # The templates are copied to a temporary directory (removed on exit), filled there, and refused
 # if any <placeholder> is left; nothing is written under the repository. Of AWS's own output only
-# the role ARNs are shown (and, in a refusal, the live subjects that match the subject shape);
+# the role ARNs are shown, and the live subjects that match the subject shape (in the `refused`,
+# `removing` and `adding` lines; any other live value is shown as `<unrecognised value>`);
 # each step prints `[n/total] what: result` before and after its calls.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
@@ -389,10 +394,13 @@ node_state() {
 # ---- apply: the live role trusts are read before anything is written -------------------------
 # The subjects of a trust document: every `sub` value under any statement and operator, a string
 # as one element and a list as its elements, as a sorted list without duplicates.
-SUBJECTS_OF='[.. | objects | select(has($key)) | .[$key] | if type == "array" then .[] else . end | strings] | unique'
+# IAM condition keys are case-insensitive, so the key is matched in lower case ($key is given in
+# lower case).
+SUBJECTS_OF='[.. | objects | to_entries[] | select(.key | ascii_downcase == $key) | .value | if type == "array" then .[] else . end | strings] | unique'
 # Four lines: how many live subjects are not wanted, which (only values of the subject shape are
 # shown, anything else becomes a fixed text), how many wanted subjects the live role lacks, which.
-SUBJECT_CHANGES='def shown: map(if test("^repo:[A-Za-z0-9_.@/-]+:environment:[A-Za-z0-9_.-]+$") then . else "<unrecognised value>" end) | join(", "); ($live - $want) as $gone | ($want - $live) as $new | ($gone | length), ($gone | shown), ($new | length), ($new | shown)'
+# \A and \z anchor the whole value: ^ and $ would also match around a newline inside it.
+SUBJECT_CHANGES='def shown: map(if test("\\Arepo:[A-Za-z0-9_.@/-]+:environment:[A-Za-z0-9_.-]+\\z") then . else "<unrecognised value>" end) | join(", "); ($live - $want) as $gone | ($want - $live) as $new | ($gone | length), ($gone | shown), ($new | length), ($new | shown)'
 
 # preflight_subjects: for each role that already exists, compares its live subjects with the wanted
 # ones. A removal is refused (stderr, exit 1) unless --allow-subject-removal was given; this runs
