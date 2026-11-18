@@ -63,6 +63,13 @@ export interface OrgNode {
   job_title: string | null;
   department: string | null;
   manager_id: string | null;
+  department_id: string | null;
+  status: "active" | "starting" | "leaving";
+  /** `YYYY-MM-DD`. */
+  start_date: string | null;
+  /** The last working day, `YYYY-MM-DD`. */
+  last_day: string | null;
+  legal_entity_reference: string | null;
 }
 export interface OrgChart { nodes: OrgNode[]; looped: string[] }
 export interface Department {
