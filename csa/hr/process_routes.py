@@ -3,6 +3,7 @@
 Registered by `build_hr_router` on the HR router, so they share its session, CSRF, tenant,
 no-store and error handling (`HrRoute`). Writes need CSRF and an `Idempotency-Key`, and a
 read-only session's write is refused by the session dependency (403 `read_only_session`).
+`POST /templates/preview` is a read with a body: CSRF as a write, no `Idempotency-Key`.
 Template reads and the template and process writes are for the HR team; a task action is for the
 assignee, the approver or the HR team, as the database decides (0634). The process reads answer
 with `response_model_exclude_unset`: a field the caller may not see is absent, an empty one is
@@ -42,6 +43,8 @@ from csa.hr.process_models import (
     TemplateDeactivate,
     TemplateList,
     TemplateOut,
+    TemplatePreview,
+    TemplatePreviewRequest,
     TemplateReceipt,
     TemplateUpdate,
 )
@@ -100,6 +103,16 @@ def register_process_routes(
         request_key: RequestKey,
     ) -> TemplateReceipt:
         return await HrProcesses(service).create_template(session, body, request_key)
+
+    @router.post(
+        "/templates/preview", response_model=TemplatePreview, response_model_exclude_none=False
+    )
+    async def preview_template(
+        body: TemplatePreviewRequest,
+        session: Annotated[HrSession, Depends(session_dep)],
+        service: Annotated[HrService, Depends(service_dep)],
+    ) -> TemplatePreview:
+        return await HrProcesses(service).preview(session, body)
 
     @router.put(
         "/templates/{template_id}",

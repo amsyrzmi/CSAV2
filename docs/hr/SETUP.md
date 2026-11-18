@@ -210,6 +210,23 @@ use **Mark as leaving** on a person's Overview.
   an active person with no manager if their old manager has left. No access comes back: invite
   them again from **Settings** to give console access.
 
+## First templates
+
+The HR owner, or anyone with Manage people, opens **People & HR**, then **Processes**, then
+**Templates**, and chooses **New template**. Start with an onboarding template: give it a name, leave
+**Applies to** empty (empty means everyone), add the steps with their owner, the date to count from
+and the days after it, and save. The line under the rules says how many people the template applies
+to now. Once it is saved and active, a new person with a start date gets the process automatically.
+Staff then see their own steps under **My tasks** on Home (or on **My HR**) and, from the next worker
+round (every 15 minutes), reminders on Home (the HR team in **Local HR reminders**, everyone else on
+**My HR** under **My tasks**). The process machinery is on production, but the **Processes** tab and
+the template editor reach production only with the deploy of the HR processes console (PR 3,
+migration 0636); until then there is no tab to create templates from. Create templates there only
+when you are ready for staff to receive tasks, because a template starts a process for the
+next person added and sends real reminders. The Malaysian default templates arrive in a later
+release; until then a company starts with none. The checks to run on staging first are in
+[PROCESSES_RETEST.md](./PROCESSES_RETEST.md).
+
 ## Private recruitment and scheduling
 
 Intake records the authorized operator’s consent evidence and a retention deadline

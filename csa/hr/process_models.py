@@ -1,4 +1,4 @@
-"""Contracts for HR process templates and processes (migrations 0630-0633).
+"""Contracts for HR process templates and processes (migrations 0630-0636).
 
 Inputs mirror the limits of the database validators (`hr_template_apply`, `hr_process_start_apply`),
 so a request the database would refuse for its shape is a 422 here first; rules that need stored
@@ -74,6 +74,9 @@ __all__ = [
     "TemplateDeactivate",
     "TemplateList",
     "TemplateOut",
+    "TemplatePreview",
+    "TemplatePreviewRequest",
+    "TemplatePreviewTie",
     "TemplateReceipt",
     "TemplateRules",
     "TemplateStep",
@@ -280,16 +283,41 @@ class TemplateOut(HrModel):
     warnings: list[TemplateWarning]
 
 
+class TemplatePreviewRequest(HrModel):
+    """A draft rule set of the template editor (0636 `hr_template_preview`); nothing is written."""
+
+    kind: ProcessKind
+    rules: TemplateRules | None = None
+
+
+class TemplatePreviewTie(HrModel):
+    template_id: UUID
+    name: str
+
+
+class TemplatePreview(HrModel):
+    """`matching`: the active people the rules apply to now (as a template's rules match a person);
+    `ties`: the other active templates of the kind one person could match as well (the conflicts a
+    save reports; none for custom), oldest first; `total_active`: the active people."""
+
+    matching: int
+    ties: list[TemplatePreviewTie]
+    total_active: int
+
+
 # ---- Processes: input and receipts ------------------------------------------------------------
 
 
 class ProcessStart(HrModel):
     """Start a process by hand: a custom one (`template_id` required) or an onboarding or
-    offboarding of an existing person (`template_id` optional: the matching template)."""
+    offboarding of an existing person (`template_id` optional: the matching template). An active
+    onboarding or offboarding of the person is replaced (cancelled) only with `replace` true,
+    else the start is refused (`process_already_active`, 0636)."""
 
     employee_id: UUID
     kind: ProcessKind
     template_id: UUID | None = None
+    replace: StrictBool = False
 
 
 class ProcessStartReceipt(HrModel):

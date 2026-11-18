@@ -30,7 +30,7 @@ export const NO_MANAGER = "";
 /** The department select's value for a department typed into the form. */
 export const NEW_DEPARTMENT = "__new__";
 
-const REGION_LABELS: Record<Region, string> = {
+export const REGION_LABELS: Record<Region, string> = {
   peninsular_labuan: "Peninsular Malaysia / Labuan", sabah: "Sabah", sarawak: "Sarawak",
 };
 

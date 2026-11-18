@@ -41,6 +41,7 @@ pytestmark = [requires_docker, pytest.mark.asyncio]
 
 HR = "/console/v1/hr"
 TEMPLATES = f"{HR}/templates"
+PREVIEW = f"{TEMPLATES}/preview"
 PROCESSES = f"{HR}/processes"
 OPERATIONS = f"{HR}/operations"
 MIGRATIONS = Path(__file__).resolve().parents[1] / "db/migrations"
@@ -913,12 +914,115 @@ async def test_manager_person_and_assignee_views_omit_hidden_fields(world: HrWor
     }
 
 
+async def test_template_preview_route(world: HrWorld) -> None:
+    """A read with a body (migration 0636): CSRF as a write, no Idempotency-Key, nothing written."""
+    ops = await department(world, "Operations")
+    staff, manager = world.employees["staff"], world.employees["manager"]
+    await world.q(
+        "UPDATE hr_employees SET department_id=%s WHERE client_id=%s AND id = ANY(%s)",
+        (ops, world.tenant, [staff, manager]),
+    )
+    tied = (await post_template(world, name="By type", rules={"employment_type": "full_time"}))[
+        "template_id"
+    ]
+    before = await counts(world)
+    body = {"kind": "onboarding", "rules": {"department_id": str(ops)}}
+    without = await without_key(world, "owner", "POST", PREVIEW, body)
+    assert without.status_code == 200, without.text
+    assert without.headers["cache-control"] == "no-store"
+    assert without.json() == {
+        "matching": 2,
+        "ties": [{"template_id": tied, "name": "By type"}],
+        "total_active": 4,
+    }
+    everyone = await world.call("owner", "POST", PREVIEW, {"kind": "custom"})
+    assert everyone.status_code == 200, everyone.text
+    assert everyone.json() == {"matching": 4, "ties": [], "total_active": 4}
+    await make_people_manager(world)
+    by_operator = await world.call("operator", "POST", PREVIEW, body)
+    assert (by_operator.status_code, by_operator.json()) == (200, without.json())
+
+    wrong_csrf = await world.call(
+        "owner", "POST", PREVIEW, body, headers={"X-CSRF-Token": "synthetic-wrong"}
+    )
+    problem(wrong_csrf, 403, "invalid csrf token")
+    problem(await without_csrf(world, "owner", "POST", PREVIEW, body), 403, "invalid csrf token")
+    problem(await world.call("reader", "POST", PREVIEW, body), 403, "read_only_session")
+    for who in ("staff", "manager", "outsider", "admin"):
+        problem(await world.call(who, "POST", PREVIEW, body), 404, "resource_unavailable")
+    problem(
+        await world.call("owner", "POST", f"{PREVIEW}?client_id={world.other_tenant}", body),
+        403,
+        "tenant_not_authorized",
+    )
+    foreign = await department(world, "Foreign", world.other_tenant)
+    problem(
+        await world.call(
+            "owner",
+            "POST",
+            PREVIEW,
+            {"kind": "onboarding", "rules": {"department_id": str(foreign)}},
+        ),
+        409,
+        "department_unavailable",
+    )
+    for bad in (
+        {"kind": "probation"},
+        {"rules": {}},
+        {"kind": "onboarding", "rules": {"region": "mars"}},
+        {"kind": "onboarding", "rules": {"colour": "red"}},
+        {"kind": "onboarding", "rules": {}, "steps": []},
+    ):
+        response = await world.call("owner", "POST", PREVIEW, bad)
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_hr_input"), bad
+    assert await counts(world) == before
+
+
+async def test_manual_start_asks_before_replacing_an_active_process(world: HrWorld) -> None:
+    staff = world.employees["staff"]
+    await post_template(world, steps=ONBOARDING_STEPS)
+    old = (await start(world, staff))["process_id"]
+    before = await counts(world)
+    for body in (
+        {"employee_id": str(staff), "kind": "onboarding"},
+        {"employee_id": str(staff), "kind": "onboarding", "replace": False},
+    ):
+        problem(await world.call("owner", "POST", PROCESSES, body), 409, "process_already_active")
+    assert PROBLEMS["process_already_active"] == (
+        "This person already has an active process of this kind."
+    )
+    for bad in ("yes", 1, None):
+        response = await world.call(
+            "owner",
+            "POST",
+            PROCESSES,
+            {"employee_id": str(staff), "kind": "onboarding", "replace": bad},
+        )
+        assert (response.status_code, response.json()["detail"]) == (422, "invalid_hr_input"), bad
+    assert await counts(world) == before
+    replaced = await world.call(
+        "owner",
+        "POST",
+        PROCESSES,
+        {"employee_id": str(staff), "kind": "onboarding", "replace": True},
+    )
+    assert replaced.status_code == 201, replaced.text
+    new = replaced.json()["process_id"]
+    assert new != old
+    detail = await get_ok(world, "owner", f"{PROCESSES}/{old}")
+    assert detail["process"]["status"] == "cancelled"
+    assert [e["detail"] for e in detail["events"] if e["action"] == "process.cancelled"] == [
+        {"reason": "superseded"}
+    ]
+    assert (await get_ok(world, "owner", f"{PROCESSES}/{new}"))["process"]["status"] == "active"
+
+
 # ---- No database text -------------------------------------------------------------------------
 
 
 def _raised_codes() -> set[str]:
     found: set[str] = set()
-    for number in ("0631", "0632", "0633", "0634"):
+    for number in ("0631", "0632", "0633", "0634", "0636"):
         [path] = MIGRATIONS.glob(f"{number}_*.sql")
         found |= set(re.findall(r"RAISE EXCEPTION '([a-z_]+)'", path.read_text()))
     return found

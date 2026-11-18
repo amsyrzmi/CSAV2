@@ -461,8 +461,10 @@ async def test_starting_again_supersedes_the_active_process(world: HrWorld) -> N
     assert event(logged, "process.cancelled")["detail"] == {"reason": "rehired"}
     assert event(logged, "task.skipped", 2)["detail"] == {"reason": "process_cancelled"}
     assert event(logged, "process.cancelled")["actor"] == world.users["owner"]
-    # A manual onboarding start for the same person supersedes the rehire's one.
-    started = await run(world, "owner", START_SQL, start_body(person, "onboarding"))
+    # A manual onboarding start for the same person replaces the rehire's one when asked to
+    # (0636: without replace it is refused, tests/test_hr_template_preview.py).
+    replace = {**start_body(person, "onboarding"), "replace": True}
+    started = await run(world, "owner", START_SQL, replace)
     statuses = [(p["id"], p["status"]) for p in await processes(world, person)]
     assert statuses == [
         (old["id"], "cancelled"),

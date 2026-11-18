@@ -9,7 +9,7 @@ function moduleUrl(source) {
   } }).outputText;
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
-const { personLabel, loadPeopleOptions, memberOptions, isDenied, scheduledOptions, payrollRequestOptions, shortWhen } =
+const { personLabel, loadPeopleOptions, memberOptions, isDenied, scheduledOptions, payrollRequestOptions, shortWhen, optionName } =
   await import(moduleUrl(await readFile(new URL("../lib/hr-pickers.ts", import.meta.url), "utf8")));
 
 const person = (id, name, title = null) => ({ employee_id: id, display_name: name, job_title: title });
@@ -89,4 +89,11 @@ test("payrollRequestOptions keeps payroll requests and labels them with the peri
 test("shortWhen writes day, short month, year and 24-hour Malaysia time", () => {
   assert.equal(shortWhen("2026-10-27T01:15:00Z"), "27 Oct 2026, 09:15");
   assert.equal(shortWhen("2026-11-02T14:05:00Z"), "2 Nov 2026, 22:05");
+});
+
+test("optionName is the person's name from a people option, or null", () => {
+  const options = [["a", "Aina Rahman · Engineer"], ["b", "Ben Tan"]];
+  assert.equal(optionName(options, "a"), "Aina Rahman");
+  assert.equal(optionName(options, "b"), "Ben Tan");
+  assert.equal(optionName(options, "c"), null);
 });

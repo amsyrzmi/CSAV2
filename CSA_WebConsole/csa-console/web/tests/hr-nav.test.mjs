@@ -34,6 +34,16 @@ test("hrNavItems people links to the list", () => {
   assert.equal(people.testId, "hr-nav-people");
 });
 
+test("hrNavItems processes links to its list, right after People", () => {
+  const items = hrNavItems(ALL, false, TENANT);
+  const keys = items.map((item) => item.key);
+  assert.equal(keys.indexOf("hr_processes"), keys.indexOf("hr_people") + 1);
+  const processes = items.find((item) => item.key === "hr_processes");
+  assert.deepEqual(processes, { key: "hr_processes", label: "Processes", href: "/portal/hr/processes", testId: "hr-nav-processes" });
+  assert.equal(hrNavItems(["processes"], true, TENANT)[0].href, `/hr/processes?client_id=${TENANT}`);
+  assert.equal(hrNavItems(["home", "people"], false, TENANT).some((item) => item.key === "hr_processes"), false);
+});
+
 test("hrNavItems keeps the admin tenant in client_id", () => {
   const items = hrNavItems(ALL, true, TENANT);
   for (const item of items) assert.ok(item.href.endsWith(`?client_id=${TENANT}`), item.href);

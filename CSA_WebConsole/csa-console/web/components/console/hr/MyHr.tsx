@@ -6,11 +6,17 @@ import { hrHref } from "@/lib/hr-paths";
 import { emptyText, myBalanceLines, myTrainingLines, PEOPLE_COPY } from "@/lib/hr-people";
 import { peopleClient, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
+import type { OpenTasks } from "@/lib/hr-process-view";
 import { action, Notice, Panel } from "../ui";
 import { DocumentsSection } from "./DocumentsSection";
+import { MyReminders } from "./HomeReminders";
+import { MyTasks } from "./MyTasks";
 import { PersonalSection } from "./PersonalSection";
+import { PersonProcesses } from "./PersonProcesses";
 import { PersonOverview } from "./PersonProfile";
 
+/** My HR changes nothing the person section reads. */
+const noReload = async () => {};
 type Balance = { employee_id: string; year: number; leave_type: string; remaining: string; days: string };
 /** `null` while loading; `hidden` when the read is not for this viewer (404). */
 type Read<T> = { items: T } | { hidden: true } | { failed: true } | null;
@@ -28,8 +34,8 @@ function useRead<T>(load: (() => Promise<T>) | null): Read<T> {
 }
 
 /**
- * Home for staff without HR duties: their own profile, personal details (contact fields only), documents
- * (read-only), leave balances and training requests.
+ * Home for staff without HR duties: My tasks and their reminders, their own profile, their onboarding or offboarding, personal details
+ * (contact fields only), documents (read-only), leave balances and training requests.
  */
 export function MyHr({ tenant, context, readonly, platform }: {
   tenant: string; context: HrContext; readonly: boolean; platform: boolean;
@@ -44,17 +50,23 @@ export function MyHr({ tenant, context, readonly, platform }: {
   const training = useRead<Training[]>(useMemo(() => own && canTrain ? async () => (await client.training()).items : null,
     [client, own, canTrain]));
   const canRequest = !readonly && context.actions.includes("training.draft");
+  // The open steps My tasks holds: a reminder of any other step is done.
+  const [openTasks, setOpenTasks] = useState<OpenTasks | null>(null);
 
   if (!own) return <Panel title="My profile"><p className="text-sm">{emptyText("unlinked")}</p></Panel>;
   const balanceLines = balances && "items" in balances ? myBalanceLines(balances.items, own) : [];
   const trainingLines = training && "items" in training ? myTrainingLines(training.items, own) : [];
   return <div className="space-y-5">
+    <MyTasks tenant={tenant} readonly={readonly} onOpenTasks={setOpenTasks} />
+    <MyReminders client={client} open={openTasks} readonly={readonly} />
     <Panel title="My profile">
       {!profile ? <Notice>Loading your profile…</Notice>
         : "items" in profile ? <PersonOverview person={profile.items} />
           : "hidden" in profile ? <p className="text-sm">{PEOPLE_COPY.profileUnavailable}</p>
             : <Notice error>We could not load your profile. Reload the page and try again.</Notice>}
     </Panel>
+    <PersonProcesses tenant={tenant} employeeId={own} version={null} readonly={readonly} platform={platform}
+      onChanged={noReload} />
     <PersonalSection tenant={tenant} employeeId={own} readonly={readonly} title="My personal details" />
     <DocumentsSection tenant={tenant} employeeId={own} canManage={false} title="My documents" />
     {!(balances && "hidden" in balances) && <Panel title="My leave balances">

@@ -34,6 +34,12 @@ export async function loadPeopleOptions(
   return { options, denied: false };
 }
 
+/** The person's name from a people option ("Aina Rahman · Engineer"), or null when `id` is not one of them. */
+export function optionName(options: Option[], id: string): string | null {
+  const option = options.find(([value]) => value === id);
+  return option ? option[1].split(" · ")[0] : null;
+}
+
 export function memberOptions(items: { user_id: string; display_name: string | null }[]): Option[] {
   return items.map((member) => [member.user_id, member.display_name ?? member.user_id]);
 }
