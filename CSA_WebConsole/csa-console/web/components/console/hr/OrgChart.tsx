@@ -98,7 +98,11 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
   const prefix = useId();
   const result = useRef<HTMLHeadingElement>(null);
   const [filter, setFilter] = useState<OrgChartFilter>({});
+  // Two sets of folds. `folds` is what the person set on the full chart and comes back when the
+  // filter clears; `narrowFolds` is what they set while narrowed, and starts over whenever the
+  // filter changes, so a match is never left tucked away by an earlier choice.
   const [folds, setFolds] = useState<Folds>(new Map());
+  const [narrowFolds, setNarrowFolds] = useState<Folds>(new Map());
   const filtered = Boolean(filter.department_id || filter.legal_entity || filter.query?.trim());
   const shown = useMemo(() => filterOrgChart(chart, filter), [chart, filter]);
   const tree = useMemo(() => orgTree(shown), [shown]);
@@ -108,25 +112,27 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
   }, [chart, canSeeLegalEntity]);
   const names = new Map(chart.nodes.map(node => [node.employee_id, node.display_name]));
   const looped = chart.looped.flatMap(id => names.get(id) ?? []);
-  // Narrowing opens every branch so a match is never tucked away, but a fold the person chose stays.
-  const open = (id: string, depth: number) => folds.get(id) ?? (filtered || depth < OPEN_DEPTH);
+  // Narrowed, every person on the tree is a match or above one, so every branch opens: the
+  // full-chart folds are left alone and apply again once the filter is cleared.
+  const open = (id: string, depth: number) => (filtered ? narrowFolds : folds).get(id) ?? (filtered || depth < OPEN_DEPTH);
   const folded = shown.nodes.length - seen(tree, 0, open);
   const loopIds = useMemo(() => new Set(chart.looped), [chart]);
-  const setAll = (value: boolean) => setFolds(new Map(chart.nodes.map(node => [node.employee_id, value])));
-  const clear = () => { setFilter({}); result.current?.focus(); };
+  const setFoldsNow = filtered ? setNarrowFolds : setFolds;
+  const setAll = (value: boolean) => setFoldsNow(new Map(shown.nodes.map(node => [node.employee_id, value])));
+  const narrow = (change: Partial<OrgChartFilter>) => { setNarrowFolds(new Map()); setFilter(old => ({ ...old, ...change })); };
+  const clear = () => { setNarrowFolds(new Map()); setFilter({}); result.current?.focus(); };
 
   return <div className="space-y-4">
     {owner && looped.length > 0 && <Notice error>
       These people are each other&apos;s managers in a loop: {looped.join(", ")}. Change a manager on their profile to fix it.
     </Notice>}
-    <OrgChartToolbar shown={shown} choices={choices} filter={filter}
-      onFilter={change => setFilter(old => ({ ...old, ...change }))} onClear={clear}
+    <OrgChartToolbar shown={shown} choices={choices} filter={filter} onFilter={narrow} onClear={clear}
       onExpandAll={() => setAll(true)} onCollapseAll={() => setAll(false)} />
     <div data-org-print className="space-y-3">
       <p className="hidden font-semibold print:block">Org chart</p>
       <h3 ref={result} tabIndex={-1} className="font-(family-name:--fs-font-heading) text-sm font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Reporting lines</h3>
-      <p className="text-sm text-[color:var(--fs-text-secondary)]">
-        <span data-testid="org-count" aria-live="polite">{shown.nodes.length} {shown.nodes.length === 1 ? "person" : "people"} shown</span>
+      <p className="text-sm text-[color:var(--fs-text-secondary)]" aria-live="polite">
+        <span data-testid="org-count">{shown.nodes.length} {shown.nodes.length === 1 ? "person" : "people"} shown</span>
         {folded > 0 && <span data-org-screen data-testid="org-folded">{" "}({folded} inside folded teams)</span>}
       </p>
       {shown.nodes.length === 0
@@ -134,7 +140,7 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
           <p className="text-sm">No one matches the search or the filters.</p>
           <button type="button" className={secondary} onClick={clear}>Clear filters</button>
         </div>
-        : <div className="max-w-full overflow-x-auto"><Branch nodes={tree} depth={0} prefix={prefix} loopIds={loopIds} hrefFor={hrefFor} open={open} onToggle={(id, now) => setFolds(old => new Map(old).set(id, now))} /></div>}
+        : <div className="max-w-full overflow-x-auto"><Branch nodes={tree} depth={0} prefix={prefix} loopIds={loopIds} hrefFor={hrefFor} open={open} onToggle={(id, now) => setFoldsNow(old => new Map(old).set(id, now))} /></div>}
     </div>
   </div>;
 }

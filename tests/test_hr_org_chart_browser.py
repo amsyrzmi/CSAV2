@@ -349,6 +349,45 @@ async def test_filters_keep_the_manager_chain_and_the_fold_state(site: Site) -> 
     await with_browser(body)
 
 
+async def test_filtering_opens_branches_without_touching_the_folds(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = OrgWorld()
+        async with org_page(browser, site, world) as page:
+            visible = tree(page).get_by_role("link").and_(page.locator(":visible"))
+            await page.get_by_role("button", name="Collapse all").click()
+            await expect(visible).to_have_count(4)
+
+            # A match deep in a folded team is shown with the people above it, and nobody is told
+            # "N shown" about people they cannot see.
+            await page.get_by_label("Search people").fill("Associate 039")
+            await expect(count_text(page)).to_have_text("3 people shown")
+            for name in ("Nadia Hassan", "Farid Ismail", "Associate 039"):
+                await expect(row(page, name)).to_be_visible()
+            await expect(page.get_by_test_id("org-folded")).to_have_count(0)
+            await expect(branch_button(page, "Farid Ismail")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+
+            # A fold chosen while narrowed hides the match, and the live text says so.
+            await branch_button(page, "Farid Ismail").click()
+            await expect(row(page, "Associate 039")).to_be_hidden()
+            live = page.locator("[aria-live=polite]").filter(has=count_text(page))
+            await expect(live).to_contain_text("3 people shown (1 inside folded teams)")
+            # Changing the filter starts the narrowed view over, so the match comes back.
+            await page.get_by_label("Search people").fill("Associate 038")
+            await expect(row(page, "Associate 038")).to_be_visible()
+
+            # Clearing brings back the folds from before: only the roots.
+            await page.get_by_role("button", name="Clear filters").first.click()
+            await expect(count_text(page)).to_have_text(f"{len(world.nodes)} people shown")
+            await expect(visible).to_have_count(4)
+            await expect(branch_button(page, "Nadia Hassan")).to_have_attribute(
+                "aria-expanded", "false"
+            )
+
+    await with_browser(body)
+
+
 async def test_print_rules_leave_a_page_without_the_chart_alone(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = OrgWorld()
