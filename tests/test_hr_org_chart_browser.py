@@ -340,6 +340,30 @@ async def test_filters_keep_the_manager_chain_and_the_fold_state(site: Site) -> 
     await with_browser(body)
 
 
+async def test_print_rules_leave_a_page_without_the_chart_alone(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = OrgWorld()
+        async with org_page(browser, site, world, theme="night") as page:
+            await page.goto(f"{site.base}/portal/hr/people")
+            await expect(page.get_by_role("heading", name="People", exact=True)).to_be_visible()
+            await page.emulate_media(media="print")
+            shown = await page.evaluate(
+                """() => ['header', 'aside', 'nav', 'main'].map(selector => {
+                    const element = document.querySelector(selector);
+                    return [selector, element && getComputedStyle(element).display];
+                })"""
+            )
+            assert all(display not in (None, "none") for _, display in shown), shown
+            await expect(page.get_by_role("heading", name="People", exact=True)).to_be_visible()
+            # Night stays Night: no page-wide switch to a light scheme.
+            scheme = await page.evaluate(
+                "() => getComputedStyle(document.documentElement).colorScheme"
+            )
+            assert scheme == "dark", scheme
+
+    await with_browser(body)
+
+
 async def test_a_filter_with_no_match_says_so_and_clearing_moves_focus_to_the_result(
     site: Site,
 ) -> None:
