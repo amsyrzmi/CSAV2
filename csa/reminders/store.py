@@ -34,20 +34,23 @@ async def schedule(
     ``scheduled`` and has not fired (``fire_count = 0``). A fired, cancelled or done row is left
     as it is and its id is returned.
     """
-    row = await db.q.fetch_one(
-        "reminders/schedule.sql",
-        {
-            "client_id": client_id,
-            "kind": kind,
-            "subject_type": subject_type,
-            "subject_id": subject_id,
-            "due_at": due_at,
-            "payload": Jsonb(payload),
-            "dedupe_key": dedupe_key,
-        },
-        conn=conn,
-    )
-    return row["id"]
+    params = {
+        "client_id": client_id,
+        "kind": kind,
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "due_at": due_at,
+        "payload": Jsonb(payload),
+        "dedupe_key": dedupe_key,
+    }
+    # The fallback read runs on the statement's snapshot, so a row with the key that another
+    # transaction committed after the snapshot and that the upsert may not move is not seen:
+    # once more, on a fresh snapshot, it is.
+    for _ in range(2):
+        row = await db.q.fetch_one("reminders/schedule.sql", params, conn=conn)
+        if row is not None:
+            return row["id"]
+    raise RuntimeError("reminder schedule returned no row")
 
 
 async def cancel(

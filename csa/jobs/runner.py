@@ -31,6 +31,7 @@ from csa.jobs.payments import run_payments_due
 from csa.jobs.reapers import run_mute_expiry, run_pending_actions_expiry
 from csa.jobs.reconcile import run_reservation_reconcile
 from csa.jobs.registry import Job, JobRegistry
+from csa.jobs.reminders import run_reminders_fire
 from csa.jobs.subscriptions import run_subscriptions_due
 from csa.marketplace.retention import run_marketplace_catch_up, run_marketplace_purge
 
@@ -96,6 +97,19 @@ def build_default_registry(
             every=timedelta(minutes=1),
             fn=run_inbox_snooze_wake,
             per_client=True,
+        )
+    )
+    # Per company, each due reminder claimed, fired and settled in its own transaction on the app
+    # pool (one bad reminder does not undo the others), up to 500 a run.
+    registry.register(
+        Job(
+            name="reminders_fire",
+            every=timedelta(minutes=1),
+            fn=run_reminders_fire,
+            per_client=True,
+            own_transactions=True,
+            timeout=120.0,
+            batch_size=500,
         )
     )
     registry.register(

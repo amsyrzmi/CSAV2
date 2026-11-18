@@ -37,6 +37,7 @@ from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.hr.reminders import hr_tasks_round
+from csa.inbox_queue.reminders import register_inbox_reminder_kinds
 from csa.jobs.runner import JobRunner, build_default_registry, jobs_loop
 from csa.marketplace.processor import (
     SYNC_POLL_SECONDS,
@@ -826,6 +827,8 @@ async def main() -> None:  # pragma: no cover - process entrypoint
     )
     hr_leavers = register_hr_leavers_task(app_pool)
     hr_tasks = register_hr_tasks_task(app_pool)
+    # The Inbox's reminder kinds, in the registry before the first reminders_fire run.
+    register_inbox_reminder_kinds()
     jobs_task = asyncio.create_task(jobs_loop(job_runner))
     background = [jobs_task, retention, hr_leavers, hr_tasks]
     if settings.KB_INGEST_ENABLED:
