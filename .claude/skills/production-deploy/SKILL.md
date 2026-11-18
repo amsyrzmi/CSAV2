@@ -29,10 +29,14 @@ an explicit `sha` (`deploy/PRODUCTION.md`, "Pictures (PR 2b): before the first p
 
 1. Pick the commit. Leave `sha` empty when no commit is named: an empty `sha` means the tip of
    `main`, the commit just merged, and only that one. If the tip is not staged yet the run fails
-   with `main's tip <sha7> is not staged yet; wait for deploy-staging`; say so, and offer the
-   `staging-rollout` skill or a wait; never pick an older commit instead. A named commit must be
-   the full 40-character SHA of a commit on `main` that staging has run (its staging rollout
-   printed `Recorded <sha7> as staged`); naming an older one is a deliberate rollback. A commit
+   with `main's tip <sha7> is not staged yet; wait for deploy-staging`: it means staging has not been
+   rolled out and recorded for the tip yet, so check the latest `deploy-staging` run
+   (`gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5`, then
+   `gh run view --repo amsyrzmi/CSAV2 <id> --log-failed` for a red one). Say what it shows (still
+   running, `nothing to roll out`, a failed record job) and offer the `staging-rollout` skill or a
+   wait; never pick an older commit instead. A named commit must be
+   the full 40-character SHA of a commit on `main` that staging has run (its `deploy-staging` run, or a manual
+   staging rollout, printed `Recorded <sha7> as staged`); naming an older one is a deliberate rollback. A commit
    staging has not run goes through the `staging-rollout` skill first.
 2. Start the run, then find it:
 

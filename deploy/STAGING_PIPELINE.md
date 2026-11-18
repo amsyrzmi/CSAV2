@@ -15,10 +15,105 @@ webhook path. None of that is a code defect; the pipeline was never started.
 
 ## Routine rollouts
 
-After a merge, `publish-staging-images` starts by itself once the push-to-main `ci` run is green
-and waits for the owner's approval on the `staging-images` environment. Once the owner has
-approved it and it has finished, the images of that commit are rolled out with
-`scripts/staging_rollout.py`. The first-time setup in the sections below stays manual.
+After a merge, `publish-staging-images` starts by itself once the push-to-main `ci` run is green.
+Its images of that commit are then rolled out to staging by the `deploy-staging` workflow
+(automatic, below). The same rollout can still be run by hand with `scripts/staging_rollout.py`
+(break-glass, further down). The first-time setup in the sections below stays manual; the host
+preparation that automatic rollouts need is recorded in "Host setup for automatic rollouts".
+
+### Automatic rollouts (deploy-staging)
+
+Every green merge to `main` rolls out to staging by itself. The workflow
+`.github/workflows/deploy-staging.yml` starts when `publish-staging-images` completes (that run is
+only a wake-up) and by manual dispatch. It always resolves the tip of `main` itself: the commit
+GitHub attaches to the publish run can be a later commit than the one it published, so it is never
+read. It has four jobs. `paused` writes a notice. `plan` and `apply` send the read-only plan and
+then exactly that plan's apply to the staging host through AWS Systems Manager, as the host user
+`csa-deploy` (the entry script `/usr/local/sbin/csa-staging-deploy` and its config
+`/usr/local/sbin/csa-staging-deploy.conf`; each run is also logged in
+`/var/log/csa-staging-deploy/` on the host). `record` writes the staged record. The newest commit
+wins in three places: GitHub's concurrency drops an older pending run, a run whose tip is not
+ready yet ends green, and an apply whose plan was overtaken ends green without sending anything.
+Read the outcome from the run page (the job summary has the plan and apply output):
+
+| What you see | What it means |
+| --- | --- |
+| `nothing to roll out` (green) | The tip's `ci` is not green yet, or its images are not published yet. That commit's own publish run starts the next rollout. |
+| `already staged` (green) | The tip already has a staged record, so a late duplicate run does not restart staging. |
+| `superseded` (green) | `main` moved after this run's plan. Nothing was sent; the run for the newer commit rolls it out. |
+| `paused` (green) | `STAGING_AUTO_PAUSED` is `true`. Nothing was sent. |
+| `Stopped at lock: another rollout of staging is running; nothing was changed` (red) | The core's per-target lock (`/run/lock/csa-staging-rollout.lock`) is held, for example by a manual rollout. Nothing was pulled or recreated. Start the workflow again when the other run ends. |
+| `Missing secret files:` (red, plan exit 2) | A secret file the stack needs does not exist for `csa-deploy`. Nothing was sent to apply. After a new secret directory, re-run the `find ... setfacl` line of step 7 below. |
+| `the plan is a downgrade; staging never goes back by itself (roll back by hand, deploy/STAGING_PIPELINE.md)` (red) | The plan's target is older than what runs now. The workflow never moves staging back, not even for an explicit `sha`; use "Manual rollout (break-glass)" below. |
+| `Stopped at <step>: ...` (red) | The rollout stopped on the host. The recovery lines under "Recovery" below apply unchanged. The Systems Manager output holds at most 24,000 characters, so the complete log is the one on the host. |
+| `Recorded <sha7> as staged` (green) | The record job wrote the staged record, after the host reported success (smoke test included). |
+| the record job is red, with `staging is fine but the staged record was not written; use Re-run failed jobs on this run` | Staging was updated but the record was not written. Use "Re-run failed jobs" on that run now. |
+
+**The record is written by the workflow.** The workflow writes the staged record, not the host:
+the `record` job runs only after the apply job reported success on the host, and uses the
+workflow's token; the host's own
+rollout writes none when it is given digests. If the record job fails, staging is already updated
+but unrecorded, so production's gate does not see the commit and the next automatic run sees the
+tip as "not staged" and rolls it out again (stopping the services again when migrations are
+pending). Re-run the failed record job promptly. `record_staged.sh` prints a usage line for a bad
+argument or a missing credential; for a failed write it prints the retry line above, and may print
+`gh answered HTTP <code>` (the code only, never `gh`'s own text) on the line before it. A 403 or
+404 will not go away on a re-run: tell the owner. A run given digests is treated as the
+workflow's run, which is a proxy: a manual run must therefore use no digests (the manual
+commands below pass none), or its record is skipped.
+
+**What counts as staged.** Production's gate (`deploy/production/resolve_commit.sh`) and the
+core's break-glass gate count a deployment only when its description is `staging rollout`. The
+plan and apply jobs use the `staging` environment with `deployment: false` so GitHub creates no
+deployment object of its own, and the record job names no environment. If GitHub did create
+extra deployments anyway (see "First run" below), they never count as staged, and
+`scripts/image_keep_list.py` (newest 15 staging deployments with a success status, no
+description filter) would keep more images, not fewer.
+
+**A migration stops all four services on every such merge.** When a merge carries migrations,
+the rollout stops `gateway`, `frontend`, `worker` and `delivery` before `migrate` runs, as
+described under "A migration rollout stops all four services". That now happens on every merge
+that has migrations, without anyone watching.
+
+**Pause and catch up.** The repository variable `STAGING_AUTO_PAUSED` is the switch: `true` turns
+automatic runs into a green `paused` notice; unset or any other value means automatic. A manual
+dispatch ignores the pause.
+
+```bash
+gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body true
+gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body false
+gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main
+```
+
+The first line pauses, the second resumes. After a pause, catch up with the third: a dispatch with
+an empty `sha` rolls out the tip of `main` (add `-f sha=<full 40-character sha>` to roll out a
+named commit; the downgrade refusal still applies).
+
+**Limits to know about.**
+
+- A pending dispatch run is replaced by a newer automatic run in the same concurrency group
+  (`deploy-staging`): GitHub keeps only one pending run. If a dispatch seems to vanish, look at
+  the newer run; it rolls out the tip anyway.
+- The tip-only rule: only the tip of `main` is rolled out. A green commit whose successor's `ci` is
+  still red when its run starts is not rolled out until the next green merge.
+- A failed or skipped publish run gets its own concurrency group, so it cannot cancel a pending
+  good run.
+
+**Access.** Each run takes a short-lived AWS role session through GitHub OIDC. One role serves
+both the plan and apply sessions (`deploy-staging-plan` and `deploy-staging-apply` are the session
+names, so the audit log tells them apart), and it can send only the two staging documents. Its
+trust policy accepts only the subject for the environment `staging`. That subject contains the
+environment but no ref, so the `staging` environment's main-only deployment-branch policy is the
+only restriction by branch (and every job also has `if: github.ref == 'refs/heads/main'`).
+Without that policy a workflow on another branch could use `environment: staging` and assume the
+role: check it as "Host setup for automatic rollouts" says.
+
+### Manual rollout (break-glass)
+
+Use this when the workflow cannot (a downgrade, a workflow outage) or when the owner asks for it:
+pause first, unpause after, so that an automatic run does not start while the manual one holds the
+host. The manual and the automatic run share the core's lock, so the second one stops with
+`Stopped at lock` rather than racing.
 
 1. In the main checkout `/home/amsyrzmi/CSAV2` (never a worktree), bring it to the commit to roll
    out: `git pull --ff-only origin main`.
@@ -56,13 +151,17 @@ and runs every check file in `deploy/rollout_checks/`. A service that reports un
 counts as started once it is healthy on the new image within 300 seconds (the gateway can take
 about 45 seconds on a memory-starved host).
 
-**Staged record for production.** A successful `apply` ends by recording the commit as a
-successful GitHub Deployment in the environment `staging` (`Recorded <sha7> as staged`), using
-the host's `gh` login. Production (`deploy-production`, `deploy/PRODUCTION.md`) refuses any commit
+**Staged record for production.** A manual run (the owner's, given no digests) writes the record
+itself: a successful `apply` ends by recording the commit as a successful GitHub Deployment
+described `staging rollout` in the environment `staging` (`Recorded <sha7> as staged`), using
+the owner's `gh` login. (The workflow's runs pass digests and leave the record to the `record`
+job.) Production (`deploy-production`, `deploy/PRODUCTION.md`) refuses any commit
 without that record. A failed rollout records nothing. If the write fails after a good rollout,
 `apply` still exits 0 and prints `WARNING: staging is fine but the staged record was not written:
 ...` and a `Retry:` line; run it from the same checkout:
 `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full 40-character sha>`.
+
+### Recovery, retest and switches (automatic and manual rollouts)
 
 **A migration rollout stops all four services.** Owner decision of 2026-10-30, for every
 migration: `gateway`, `frontend`, `worker` and `delivery` are stopped before `migrate` runs, so no
@@ -165,6 +264,230 @@ It is needed only once the images are private.
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose
 reads them.
+
+## Host setup for automatic rollouts
+
+The permanent record of how the staging host and the AWS and GitHub sides were prepared for the
+`deploy-staging` workflow (done once, on the owner's side, with the other developer who owns the
+home server present for every host step). Placeholders: `<region>` is the AWS region used for
+staging, `<node-id>` is the `mi-...` id from step 6, and `<subject>` comes from step 8. Nothing
+printed by these commands goes into the repository or a chat, apart from yes/no results and sha7
+values. The commands name the repository `amsyrzmi/CSAV2` literally (change it if the repository
+moves). Steps are numbered as in the build plan; steps 1 and 2, which come first, are the GitHub
+settings below.
+
+**GitHub settings first (before the workflow's first run).**
+
+- Pause automatic rollouts, so merges made before the preparation do not each produce a red run:
+  `gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body true`. Check it with
+  `gh variable list --repo amsyrzmi/CSAV2 | grep STAGING_AUTO_PAUSED`. The pause stays on until
+  "First run" is accepted.
+- The `staging` environment (Settings, Environments) has no required reviewers, and it **must**
+  have the main-only deployment-branch policy: under "Deployment branches and tags", "Selected
+  branches and tags" with one rule for the branch `main`. The OIDC subject of a job contains the
+  environment but no ref, so this policy is the only ref restriction: it is what stops a workflow
+  on any other branch from using `environment: staging` and assuming the role. Check from a
+  terminal:
+
+  ```bash
+  gh api repos/amsyrzmi/CSAV2/environments/staging --jq '{protection_rules, deployment_branch_policy}'
+  gh api repos/amsyrzmi/CSAV2/environments/staging/deployment-branch-policies --jq '.branch_policies[].name'
+  ```
+
+  The second command must print only `main`. One unverified risk: the record job creates a
+  deployment whose `ref` is a commit SHA, and a custom branch policy might refuse that with a 422.
+  If the first record job fails with a 422 naming the deployment branch policy, tell the owner:
+  the fallback is to remove the branch policy from `staging` (every job already has
+  `if: github.ref == 'refs/heads/main'`) and re-run the record job. "First run" finds this out
+  with staging already updated. Removing the policy weakens the restriction above, so it is the
+  owner's decision.
+
+**On the home server and in AWS.**
+
+3. **Owner + Dev, home server (sudo):** take the baseline memory and check the prerequisites.
+
+   ```bash
+   free -m
+   stat -c '%a %U' /run/lock
+   sysctl fs.protected_regular
+   command -v snap docker setfacl || true
+   ```
+
+   `/run/lock` must be `1777 root`. Report the `fs.protected_regular` value (it is 2 on this
+   host); the rollout lock is written to cope with it (it opens the lock file read-only and passes
+   `O_CREAT` only when the file does not exist yet, because the kernel refuses `open(O_CREAT)` on
+   an existing file in that directory for a non-owner, even read-only). If `setfacl` is missing:
+   `sudo apt-get install -y acl`.
+4. **Owner, AWS CloudShell (admin login):** create the node role and a single-use activation.
+
+   ```bash
+   git clone --depth 1 https://github.com/amsyrzmi/CSAV2.git ~/csa-setup && cd ~/csa-setup
+   deploy/aws/setup-target.sh staging activate --region <region>
+   ```
+
+   Keep the tab open. The activation id and code are valid for 4 hours and for one registration.
+   While step 5's `-register` command runs, the code is visible in `ps` and the sudo auth log on
+   that host (as `deploy/PRODUCTION.md` also says); the activation is single-use and step 6
+   deletes it.
+5. **Dev (or Owner with Dev present), home server (sudo):** install and register the agent. Type
+   the code at the hidden prompt.
+
+   ```bash
+   snap list amazon-ssm-agent || sudo snap install amazon-ssm-agent --classic
+   sudo snap stop amazon-ssm-agent
+   read -rp "Activation id: " ACT_ID
+   read -rsp "Activation code: " ACT_CODE; echo
+   sudo /snap/amazon-ssm-agent/current/amazon-ssm-agent -register -id "$ACT_ID" -code "$ACT_CODE" -region <region>
+   unset ACT_ID ACT_CODE
+   sudo snap start amazon-ssm-agent
+   sleep 60; ps -eo rss=,args= | grep -E '[s]sm-agent'; free -m
+   ```
+
+   Stop, and tell the owner, if the agent processes together use more than 100 MB resident
+   (first column, in KB), or `available` dropped by more than 150 MB from step 3.
+6. **Owner, CloudShell:** find the node and delete the used activation.
+
+   ```bash
+   aws ssm describe-instance-information --region <region> --query 'InstanceInformationList[].[InstanceId,PingStatus,ComputerName]' --output table
+   aws ssm delete-activation --region <region> --activation-id <ActivationId from step 4>
+   ```
+
+   Note the new `mi-...` id with `PingStatus` `Online` as `<node-id>`.
+7. **Owner + Dev, home server (sudo):** create the deploy user and grant search-only access to the
+   secrets. The `x` bit lets `csa-deploy` see that a file exists; it cannot list a directory or
+   read any file. Joining `docker` is equivalent to root on this machine; Dev agrees to this.
+
+   ```bash
+   sudo adduser --system --group --home /srv/csa-staging-deploy --shell /usr/sbin/nologin csa-deploy
+   sudo usermod -aG docker csa-deploy
+   sudo install -d -o csa-deploy -g csa-deploy -m 0750 /srv/csa-staging-deploy
+   sudo setfacl -m u:csa-deploy:x /srv/csa-staging
+   sudo find /srv/csa-staging/secrets -type d -exec setfacl -m u:csa-deploy:x {} +
+   sudo -u csa-deploy test -e /srv/csa-staging/secrets/database/staging_owner_password && echo "exists: ok"
+   sudo -u csa-deploy test -r /srv/csa-staging/secrets/database/staging_owner_password && echo "READABLE: stop" || echo "not readable: ok"
+   ls -l /srv/csa-staging/registry/config.json 2>&1 | cut -c1-10
+   stat -c '%a %U' /srv/csa-staging/registry 2>&1
+   ```
+
+   The `ls` line must say `No such file` (it did on 2026-11-17; the images are public). If the
+   file exists, stop and tell the owner. The rollout core reads that path on every plan and treats
+   any error other than "not found" (a permission error on the directory included) as "registry
+   auth file is not usable". So: if `stat` shows the `registry` directory exists, also run
+   `sudo setfacl -m u:csa-deploy:x /srv/csa-staging/registry`; if it says `No such file`, nothing
+   is needed. Step 11's plan must show no `registry auth` stop. Later, whenever you create a new
+   secret **directory**, re-run the `find` line. A forgotten one shows up as a red run with
+   `Missing secret files`.
+8. **Owner, own terminal:** read the OIDC subject prefix for step 12.
+
+   ```bash
+   gh api repos/amsyrzmi/CSAV2/actions/oidc/customization/sub --jq .sub_claim_prefix
+   ```
+9. **Owner + Dev, home server (sudo):** create the dedicated checkout and the Python 3.12
+   environment. The host's `python3` is 3.14, so uv builds a 3.12 environment under `/opt`,
+   readable by `csa-deploy`.
+
+   ```bash
+   sudo -u csa-deploy git clone https://github.com/amsyrzmi/CSAV2.git /srv/csa-staging-deploy/CSAV2
+   sudo -u csa-deploy git -C /srv/csa-staging-deploy/CSAV2 checkout --detach origin/main
+   sudo -u csa-deploy git -C /srv/csa-staging-deploy/CSAV2 status --porcelain --untracked-files=no
+   sudo install -d -m 0755 -o root -g root /opt/csa-staging-deploy
+   sudo env UV_PYTHON_INSTALL_DIR=/opt/csa-staging-deploy/python /home/amsyrzmi/.local/bin/uv venv --python 3.12 /opt/csa-staging-deploy/venv
+   sudo env UV_PYTHON_INSTALL_DIR=/opt/csa-staging-deploy/python /home/amsyrzmi/.local/bin/uv pip install --python /opt/csa-staging-deploy/venv/bin/python -r /srv/csa-staging-deploy/CSAV2/deploy/production/requirements.txt
+   sudo -u csa-deploy /opt/csa-staging-deploy/venv/bin/python -c "import sys, psycopg; print(sys.version.split()[0], psycopg.__version__)"
+   ```
+
+   `status` must print nothing, and the last line must start with `3.12`.
+10. **Owner + Dev, home server (sudo):** install the entry script, its config and the log
+    directory. The config is the one in `deploy/staging/deploy.conf.example`; the script exits 78
+    without it, so the config goes in first.
+
+    ```bash
+    printf '%s\n' TARGET=staging DEPLOY_USER=csa-deploy CHECKOUT=/srv/csa-staging-deploy/CSAV2 PYTHON=/opt/csa-staging-deploy/venv/bin/python LOCK=/run/lock/csa-staging-deploy.lock LOG_DIR=/var/log/csa-staging-deploy | sudo tee /usr/local/sbin/csa-staging-deploy.conf > /dev/null
+    sudo chown root:root /usr/local/sbin/csa-staging-deploy.conf && sudo chmod 0644 /usr/local/sbin/csa-staging-deploy.conf
+    sudo install -m 0755 -o root -g root /srv/csa-staging-deploy/CSAV2/deploy/production/deploy_entry.sh /usr/local/sbin/csa-staging-deploy
+    sudo install -d -m 0750 -o csa-deploy -g csa-deploy /var/log/csa-staging-deploy
+    ```
+11. **Owner + Dev, home server:** run a plan by hand, as Systems Manager will. First, in
+    `/home/amsyrzmi/CSAV2` (pulled to the merged `main`), resolve the tip and its digests. This is
+    read-only:
+
+    ```bash
+    cd /home/amsyrzmi/CSAV2 && git pull --ff-only origin main
+    GH_TOKEN="$(gh auth token)" REPOSITORY=amsyrzmi/CSAV2 IMAGE_NAMESPACE=ghcr.io/amsyrzmi DEPLOY_TARGET=staging deploy/production/resolve_commit.sh
+    sudo runuser -u csa-deploy -- /usr/local/sbin/csa-staging-deploy plan <sha> "" "" <python_digest> <frontend_digest>
+    ```
+
+    The plan must end with the apply command line, with no `Stopped at` (a `registry auth file ...
+    is not usable` stop means step 7's `registry` ACL is missing) and no `Missing secret files`
+    line. Then record the volumes and mounts for comparison after the first run:
+
+    ```bash
+    docker volume ls --filter label=com.docker.compose.project=csa-staging --format '{{.Name}}' | sort > ~/csa-volumes-before.txt
+    for s in gateway worker delivery frontend training-worker; do docker inspect --format '{{.Name}} {{range .Mounts}}{{.Type}}:{{.Name}}->{{.Destination}} {{end}}' "csa-staging-$s-1"; done > ~/csa-mounts-before.txt
+    ```
+12. **Owner, CloudShell:** create the staging role and documents, then check both targets.
+
+    ```bash
+    cd ~/csa-setup && git pull --ff-only
+    deploy/aws/setup-target.sh staging apply --region <region> --node <node-id> --subject '<subject>'
+    deploy/aws/setup-target.sh staging check --region <region> --node <node-id> --subject '<subject>'
+    deploy/aws/setup-target.sh production check --region <region> --node <production node id> --subject '<subject>'
+    ```
+
+    The usage is `setup-target.sh <staging|production> <activate|apply|check> --region <region>
+    [--node <mi-id>] [--subject <prefix>]`. The staging check must say `ok` on every line; copy the
+    printed `csa-staging-deploy` ARN for step 13. The production check is read-only. If it shows
+    `differs` or `missing`, do **not** run `production apply`; tell the owner.
+13. **Owner, own terminal (GitHub):** set the secrets on `staging`, each typed at the hidden
+    prompt, and the region variable.
+
+    ```bash
+    gh secret set STAGING_DEPLOY_ROLE_ARN --repo amsyrzmi/CSAV2 --env staging
+    gh secret set STAGING_INSTANCE_ID --repo amsyrzmi/CSAV2 --env staging
+    gh variable set STAGING_DEPLOY_REGION --repo amsyrzmi/CSAV2 --body <region>
+    gh secret list --repo amsyrzmi/CSAV2 --env staging
+    ```
+14. **Owner, GitHub settings:** confirm that `IMAGE_NAMESPACE` is still `ghcr.io/amsyrzmi`
+    (`gh variable list --repo amsyrzmi/CSAV2`).
+
+### First run (acceptance), watched live
+
+Owner and Dev together, with the pause still **on**.
+
+- **Start.** Owner, own terminal: `gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main`,
+  then `gh run watch --repo amsyrzmi/CSAV2 <run id>` (the run id comes from
+  `gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 1 --json databaseId`).
+  Dev, home server: `sudo tail -f /var/log/csa-staging-deploy/*.log` and `watch -n 10 free -m`.
+  A dispatch ignores the pause, so this works while paused.
+- **Pass criteria.** The plan summary shows the tip, both images by digest, the pending
+  migrations, and no `Stopped at` or `Missing secret files`. Apply ends with the `smoke <name>:
+  ok` lines and `Rollout of <sha7> finished.`. The record job prints `Recorded <sha7> as staged`.
+  Then
+  `gh api "repos/amsyrzmi/CSAV2/deployments?environment=staging&sha=<sha>" --jq '.[] | [.description, .creator.login] | @tsv'`
+  shows exactly one `staging rollout` from `github-actions[bot]`, and no other deployment for that
+  sha (this proves `deployment: false`).
+- **The first dispatch also proves the OIDC subject.** The trust policy requires the subject to
+  carry `environment:staging`, and GitHub's documentation does not say that a job with
+  `deployment: false` still does. If it does not, the credentials step fails closed with an
+  AssumeRole (access) error. Then tell the owner before anything is changed: do not edit the trust
+  policy or the workflow on the spot.
+- **If GitHub created extra deployments**, the gate is still correct (only `staging rollout`
+  counts), but tell the owner.
+- **Volumes and mounts.** On the home server redo the two commands of step 11 into
+  `~/csa-volumes-after.txt` and `~/csa-mounts-after.txt`; `diff` against the before files must print
+  nothing. `docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' csa-staging-gateway-1`
+  now names the dedicated checkout's `deploy` directory, which is expected. Check the agent's
+  memory again (`ps -eo rss=,args= | grep -E '[s]sm-agent'`).
+- **Unpause.** Owner: `gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body false`. Watch
+  the run the next merge starts by itself: it proves the three-level `workflow_run` chain
+  (`ci`, `publish-staging-images`, `deploy-staging`). GitHub allows at most three levels of
+  `workflow_run` chaining, so nothing may be chained after `deploy-staging` by `workflow_run`.
+- **Optional.** Start `deploy-production` with an empty `sha`, read the plan (the tip is now
+  staged by the workflow's record) and **reject** the approval.
+- **If anything fails:** pause again, keep the red run's log, and roll staging out by hand as before
+  ("Manual rollout (break-glass)" above). To withdraw entirely: `sudo snap stop amazon-ssm-agent`
+  on the home server, and `aws ssm deregister-managed-instance --region <region> --instance-id <node-id>`
+  in CloudShell.
 
 ## 1. Secret files (owner runs; nothing is printed)
 

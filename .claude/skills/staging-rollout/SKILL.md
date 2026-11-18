@@ -5,16 +5,41 @@ description: Use when the owner asks to roll out, deploy or update staging (csa-
 
 # Staging rollout
 
-Rolls the published images of the latest `main` commit out to `csa-staging` with
-`scripts/staging_rollout.py`. The owner approves the image publish on GitHub and gives the go here;
-nothing reaches staging without both. Details: `deploy/STAGING_PIPELINE.md`, "Routine rollouts".
+Rollouts of `csa-staging` are automatic: every green merge to `main` is rolled out by the
+`deploy-staging` workflow (plan, apply, then a record job that writes the staged record). This
+skill checks that workflow, dispatches it when the owner says so, and keeps the manual
+`scripts/staging_rollout.py` steps for when the owner asks for them. Details:
+`deploy/STAGING_PIPELINE.md`, "Routine rollouts".
 
-## Where to run
+## Automatic rollouts (the default)
+
+1. Check the latest runs: `gh run list --workflow deploy-staging.yml --limit 5`, and for a red one
+   `gh run view <id> --log-failed`. Report the outcome verbatim: `nothing to roll out`,
+   `already staged`, `superseded` and `paused` are green and mean nothing was sent (the runbook
+   says why for each); `Stopped at lock`, `Missing secret files`, a downgrade refusal or any
+   `Stopped at <step>: ...` is red. Show the lines as printed, do not interpret a failure and do
+   not retry on your own.
+2. A green run ends with `Recorded <sha7> as staged`. If only the `record` job is red, staging is
+   updated but not recorded (production refuses the commit): tell the owner. After the owner's go,
+   re-run that job (`gh run rerun <id> --failed`).
+3. Dispatch only after the owner's go: `gh workflow run deploy-staging.yml --ref main`, or with a
+   named commit `gh workflow run deploy-staging.yml --ref main -f sha=<sha>`. An empty `sha` is the
+   tip of `main`. A dispatch ignores the pause. Staging never goes back through the workflow: a
+   downgrade is refused.
+4. Pausing is the repository variable `STAGING_AUTO_PAUSED` (`gh variable set STAGING_AUTO_PAUSED
+   --body true|false`); change it only on the owner's say-so.
+5. Use the manual steps below only when the owner asks (or when the workflow cannot do it, such as
+   a downgrade), and pause first, unpause after.
+
+## Manual rollout (break-glass)
+
+Pause first (`STAGING_AUTO_PAUSED` `true`), unpause after.
 
 Everything runs in `/home/amsyrzmi/CSAV2`, the main checkout, never in a worktree. The script
-refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
+refuses when HEAD is not on `origin/main` or the worktree has tracked changes. The owner approves
+the image publish on GitHub and gives the go here.
 
-## Steps
+### Steps
 
 1. Pull: `git pull --ff-only origin main`. If it is not a fast-forward, stop and tell the owner.
 2. Plan (read-only): `.venv/bin/python -m scripts.staging_rollout plan`. Summarise it in a few
@@ -33,9 +58,9 @@ refuses when HEAD is not on `origin/main` or the worktree has tracked changes.
    `plan`; then run `plan` again and ask again. Report the result: the final status lines, and
    any check output. If it stops, show its `Stopped at ...` line, the state line and the recovery
    lines verbatim, exactly as printed.
-   A successful `apply` then records the commit for production as a successful GitHub Deployment
-   in the environment `staging` and prints `Recorded <sha7> as staged`; production deploys only
-   recorded commits. If it prints `WARNING: staging is fine but the staged record was not
+   A successful manual `apply` (the owner's `gh` login, no digests) then records the commit for
+   production as a successful GitHub Deployment in the environment `staging` and prints
+   `Recorded <sha7> as staged`; production deploys only recorded commits. If it prints `WARNING: staging is fine but the staged record was not
    written: ...`, staging is fine: report it and, after the owner's go, run the printed `Retry:`
    line, `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`.
 5. After a successful `apply`, offer the owner the assistant retest: the checklist

@@ -1450,6 +1450,148 @@ def test_skill_requires_plan_then_owner_go_then_apply() -> None:
     assert text.index("plan") < text.index("apply")
 
 
+def _md_section(text: str, heading: str, level: int = 2) -> str:
+    """The section whose heading line is exactly ``heading`` at ``level``, up to the next heading
+    of the same or a higher level."""
+    marks = "#" * level
+    lines = text.splitlines()
+    starts = [n for n, line in enumerate(lines) if line.startswith(f"{marks} {heading}")]
+    assert len(starts) == 1, f"expected one '{marks} {heading}' heading, found {len(starts)}"
+    end = len(lines)
+    for n in range(starts[0] + 1, len(lines)):
+        match = re.match(r"(#+) ", lines[n])
+        if match and len(match.group(1)) <= level:
+            end = n
+            break
+    return "\n".join(lines[starts[0] : end])
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsections() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    routine = _md_section(text, "Routine rollouts")
+    # Exactly one level-two heading; both new subsections are level three inside it.
+    assert len(re.findall(r"^## Routine rollouts", text, re.MULTILINE)) == 1
+    subsections = re.findall(r"^### (.+)$", routine, re.MULTILINE)
+    assert subsections[:2] == [
+        "Automatic rollouts (deploy-staging)",
+        "Manual rollout (break-glass)",
+    ]
+    assert text.index("## Host setup for automatic rollouts") > text.index(routine)
+
+    automatic = _flat(_md_section(text, "Automatic rollouts (deploy-staging)", 3))
+    for needle in (
+        "Every green merge",
+        "`nothing to roll out`",
+        "`already staged`",
+        "`superseded`",
+        "`paused`",
+        "Stopped at lock: another rollout of staging is running; nothing was changed",
+        "Missing secret files",
+        "the plan is a downgrade; staging never goes back by itself "
+        "(roll back by hand, deploy/STAGING_PIPELINE.md)",
+        "Recorded <sha7> as staged",
+        "Re-run failed jobs",
+        "gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body true",
+        "--body false",
+        "empty `sha`",
+        "The workflow writes the staged record, not the host",
+        "stops all four services",
+        "unrecorded",
+        "concurrency group",
+        "tip-only rule",
+        "never count as staged",
+        "scripts/image_keep_list.py",
+        "may print `gh answered HTTP <code>`",
+        "A run given digests is treated as the workflow's run",
+        "must therefore use no digests",
+        "One role serves both",
+    ):
+        assert needle in automatic, needle
+
+    manual = _flat(_md_section(text, "Manual rollout (break-glass)", 3))
+    assert f"{sr.RECORD_COMMAND} --sha" in manual
+    assert "pause first, unpause after" in manual
+    assert "Staged record for production" in manual
+    assert "owner's `gh` login" in manual
+    # The existing needles live in the one level-two section.
+    for needle in ("GitHub Deployment", "`staging`", "production", f"{sr.RECORD_COMMAND} --sha"):
+        assert needle in routine, needle
+
+
+def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    setup = _md_section(text, "Host setup for automatic rollouts")
+    flat = _flat(setup)
+    for number in range(3, 15):
+        assert re.search(rf"^{number}\. \*\*", setup, re.MULTILINE), number
+    for needle in (
+        "fs.protected_regular",
+        "setfacl -m u:csa-deploy:x /srv/csa-staging/registry",
+        "registry auth",
+        "visible in `ps`",
+        "deploy/aws/setup-target.sh staging activate --region <region>",
+        "setup-target.sh staging apply --region <region> --node <node-id> --subject '<subject>'",
+        "setup-target.sh staging check",
+        "setup-target.sh production check",
+        "STAGING_DEPLOY_ROLE_ARN",
+        "STAGING_INSTANCE_ID",
+        "STAGING_DEPLOY_REGION",
+        "STAGING_AUTO_PAUSED",
+        "/usr/local/sbin/csa-staging-deploy.conf",
+        "csa-staging-deploy",
+        "422",
+        "main-only deployment-branch policy",
+        "contains the environment but no ref",
+        "environment:staging",
+        "deployment: false",
+        "AssumeRole",
+        "tell the owner before anything is changed",
+    ):
+        assert needle in flat, needle
+    # The ordering the steps depend on.
+    assert setup.index("staging activate") < setup.index("-register")
+    assert setup.index("-register") < setup.index("delete-activation")
+    assert setup.index("staging apply") < setup.index("gh secret set STAGING_DEPLOY_ROLE_ARN")
+    # Public repository: placeholders only.
+    assert not re.search(r"\b\d{12}\b", setup)
+    assert not re.search(r"\b(?:mi|i)-[0-9a-f]{8,17}\b", setup)
+    assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", setup)
+
+
+def test_staging_skill_checks_the_workflow_and_keeps_the_manual_steps() -> None:
+    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    flat = _flat(text)
+    for needle in (
+        "automatic",
+        "gh run list --workflow deploy-staging.yml --limit 5",
+        "gh run view <id> --log-failed",
+        "gh workflow run deploy-staging.yml --ref main",
+        "-f sha=<sha>",
+        "only after the owner's go",
+        "Manual rollout (break-glass)",
+        "pause first",
+        "STAGING_AUTO_PAUSED",
+        f"{sr.RECORD_COMMAND} --sha",
+        "GitHub Deployment",
+    ):
+        assert needle in flat, needle
+    assert text.index("plan") < text.index("apply")
+
+
+def test_pull_request_template_asks_about_host_preparation() -> None:
+    text = (REPO / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+    assert (
+        "- [ ] Needs host preparation before merge (new secret file, switch or host step): <what>"
+        in text
+    )
+
+
 # --- plan refusals added in the final review ------------------------------------------------
 
 

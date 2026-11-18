@@ -302,6 +302,72 @@ step; the owner and the other developer do them together, and the first run is w
 3. **GitHub setup script, auto-plan, the consolidated runbook and skill, and the stale approval wording.**
    Depends on 1 and 2.
 
+## Changes made while building PR 2
+
+The plan for PR 2 (`docs/superpowers/plans/2026-11-17-cd-pipeline-pr2.md`) changed or fixed these
+points of the design above. They are what the code and the runbooks now do.
+
+- **The trigger is a wake-up; the commit is the tip of `main`.** On 2026-11-17, real publish runs
+  showed that a `workflow_run`-started publish carries the tip of `main` at creation as its
+  `head_sha`, not the commit it published (a publish skipped for a cancelled `ci` run carried the
+  next commit's sha). The workflow never reads `github.event.workflow_run.head_sha`; every automatic
+  run resolves the tip of `main`. Newest wins in three places: GitHub's concurrency drops older
+  pending runs; an automatic run whose tip is not ready yet (ci not green, or images not published)
+  ends green with `nothing to roll out`; the apply job ends green with `superseded` when `main`
+  moved since its plan. An automatic run whose tip already has a staged record ends green with
+  `already staged`.
+- **An explicit `sha` (dispatch) skips the tip checks.** The plan's downgrade warning still stops
+  it, so staging never goes back through the workflow, even on purpose; taking staging back is the
+  manual script (break-glass).
+- **Pause switch: the repository variable `STAGING_AUTO_PAUSED`.** `true` turns automatic runs into
+  a green `paused` notice; unset or anything else means automatic. Dispatch ignores the pause. A
+  required reviewer on `staging` was rejected: it would hold every run, dispatch included, and
+  leave a queue of waiting runs. The owner sets the variable to `true` before PR 2 merges.
+- **A dedicated deploy user on the home server, `csa-deploy`** (system user, no login shell, member
+  of `docker`), owning its own checkout `/srv/csa-staging-deploy/CSAV2`. The owner's account was not
+  reused: its `gh` login has the `repo` scope and its home holds SSH keys and tool sessions.
+  `csa-deploy` passes through `/srv/csa-staging` and the secret directories with search-only ACLs
+  (`x` on directories, nothing on files).
+- **Install paths on the home server:** entry script `/usr/local/sbin/csa-staging-deploy` and its
+  config `/usr/local/sbin/csa-staging-deploy.conf` next to it; Python environment
+  `/opt/csa-staging-deploy/venv` (a uv-built 3.12 environment, because the host's `python3` is
+  3.14); log directory `/var/log/csa-staging-deploy`; entry lock `/run/lock/csa-staging-deploy.lock`.
+  Production keeps its paths.
+- **Config format:** `KEY=value` lines, parsed and never sourced, exactly six keys, all required
+  (`TARGET`, `DEPLOY_USER`, `CHECKOUT`, `PYTHON`, `LOCK`, `LOG_DIR`). The file must be a regular
+  file, owned by the uid that owns the script, and not writable by group or others. Environment
+  variables override nothing; a refused config exits 78.
+- **Production is unaffected on the host.** Its documents do not change and the installed
+  `csa-prod-deploy` keeps working; reinstalling the shared script there needs a config file
+  (`deploy/PRODUCTION.md`, "Reinstalling the shared entry script"), not a prerequisite.
+- **A rollout lock in the core**, `/run/lock/<project>-rollout.lock`, taken by `plan` and `apply`
+  and not by `record-staged`, so the owner's manual staging runs and the workflow's runs exclude
+  each other. The file is opened read-only and `O_CREAT` is passed only when it does not exist yet:
+  `/run/lock` is mode 1777 and the host has `fs.protected_regular = 2`, so the kernel refuses
+  `open(O_CREAT)` on an existing file there for a non-owner, even read-only.
+- **The staged record.** The record job writes it with the workflow token; the core writes it on
+  staging only when it was not given digests (the owner's manual run). The production gate
+  (`resolve_commit.sh`) and the core's break-glass gate count a deployment only when its
+  description is `staging rollout`, so GitHub's auto-created deployments never count, even if
+  `deployment: false` does not behave as documented.
+- **Shared scripts stay in `deploy/production/`** (no file moves); staging-only files go in
+  `deploy/staging/` and the AWS script in `deploy/aws/`.
+- **`resolve_commit.sh` exits 3** for "not ready yet" (ci not succeeded, images not published) and 1
+  for every other refusal. Production treats both as a failure; staging's automatic runs treat 3
+  as `nothing to roll out`. It needs `DEPLOY_TARGET` (`staging` or `production`).
+- **The staging region is its own repository variable, `STAGING_DEPLOY_REGION`**, so the target
+  stays replaceable; its value equals `PROD_DEPLOY_REGION` today.
+- **One role serves the plan and apply sessions** of staging (the session names differ for the
+  audit log). The OIDC subject carries the environment but no ref, so the `staging` environment's
+  main-only deployment-branch policy is the only ref restriction. Whether the subject still carries
+  `environment:staging` under `deployment: false` is not documented: the first dispatch proves it,
+  and it fails closed with an AssumeRole error.
+- **For PR 3, not changed here:** GitHub's rule is that `workflow_run` cannot chain more than three
+  levels of workflows. ci, publish and deploy-staging are three levels, so a `PROD_AUTO_PLAN`
+  workflow started by `workflow_run` of deploy-staging would be a fourth level and the last allowed
+  (a fifth does not run); prefer a `workflow_dispatch` from deploy-staging's token (allowed) so the
+  chain stays short. `publish-staging-images.yml` still uses unpinned `@v4` actions.
+
 ## Left to the builder
 
 - The exact smoke checks and their endpoints, within the constraints above.

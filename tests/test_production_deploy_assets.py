@@ -3093,6 +3093,100 @@ def test_production_doc_review_fixes() -> None:
         assert needle in first, needle
 
 
+def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the_lock() -> None:
+    text = _production_doc()
+    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    setup = _section(text, "One-time setup")
+    after = _section(text, "After the digest change merges")
+    reinstall = _section(text, "Reinstalling the shared entry script")
+    flat_reinstall = " ".join(reinstall.split())
+
+    # The staged record comes from the deploy-staging workflow, and only its description counts.
+    assert "deploy-staging" in deploying
+    assert "`staging rollout`" in deploying
+    # The setup script verifies steps 1, 3 and 4 and never applies production by itself.
+    assert "deploy/aws/setup-target.sh production check" in " ".join(setup.split())
+    # Both existing install lines install the config first; the script exits 78 without it.
+    for section in (setup, after):
+        flat = " ".join(section.split())
+        assert (
+            "install the config first (see Reinstalling the shared entry script), then the script"
+            in flat
+        )
+        assert "78" in flat
+    # The new section: the six keys with today's production values, then the install order.
+    for needle in (
+        "TARGET=production",
+        "DEPLOY_USER=ubuntu",
+        "CHECKOUT=/home/ubuntu/CSAV2",
+        "PYTHON=/opt/csa-deploy/venv/bin/python",
+        "LOCK=/var/lock/csa-prod-deploy.lock",
+        "LOG_DIR=/var/log/csa-prod-deploy",
+        "/usr/local/sbin/csa-prod-deploy.conf",
+        "sudo install -m 0644 -o root -g root",
+        "deploy/production/deploy.conf.example",
+        "/run/lock/csa-prod-rollout.lock",
+    ):
+        assert needle in reinstall or needle in flat_reinstall, needle
+    assert reinstall.index("sudo install -m 0644 -o root -g root") < reinstall.index(
+        "sudo install -m 0755 -o root -g root"
+    )
+    assert "/run/lock/csa-prod-rollout.lock" in deploying
+    # resolve_commit.sh: its target setting and its "not ready yet" exit code.
+    assert "DEPLOY_TARGET" in deploying
+    assert "exits 3" in deploying
+
+
+def test_release_doc_names_the_resolver_target_and_exit_code() -> None:
+    text = " ".join((ROOT / "deploy" / "RELEASE.md").read_text(encoding="utf-8").split())
+    assert "DEPLOY_TARGET" in text
+    assert "exit code 3" in text
+
+
+def test_production_skill_says_what_not_staged_yet_means() -> None:
+    flat = " ".join(PRODUCTION_SKILL.read_text(encoding="utf-8").split())
+    assert "not staged yet; wait for deploy-staging" in flat
+    assert "gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5" in flat
+    assert "deploy-staging" in flat
+
+
+def test_parse_plan_points_at_text_that_exists_in_the_pipeline_runbook() -> None:
+    script = (ROOT / "deploy" / "production" / "parse_plan.sh").read_text(encoding="utf-8")
+    refusal = (
+        "the plan is a downgrade; staging never goes back by itself "
+        "(roll back by hand, deploy/STAGING_PIPELINE.md)"
+    )
+    assert refusal in script
+    doc = " ".join(PIPELINE_DOC.read_text(encoding="utf-8").split())
+    assert "roll back by hand" in doc
+    assert refusal in doc
+    assert "Manual rollout (break-glass)" in doc
+
+
+def test_spec_lists_the_changes_made_while_building_pr_2() -> None:
+    spec = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md").read_text(
+        encoding="utf-8"
+    )
+    section = _section(spec, "Changes made while building PR 2")
+    flat = " ".join(section.split())
+    for needle in (
+        "tip of `main`",
+        "`workflow_run`",
+        "STAGING_AUTO_PAUSED",
+        "csa-deploy",
+        "/usr/local/sbin/csa-staging-deploy",
+        "six keys",
+        "/run/lock/<project>-rollout.lock",
+        "fs.protected_regular",
+        "`staging rollout`",
+        "exits 3",
+        "STAGING_DEPLOY_REGION",
+        "three levels",
+        "unpinned",
+    ):
+        assert needle in flat, needle
+
+
 def test_spec_matches_the_tip_default_and_the_registry_method() -> None:
     spec = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md").read_text(
         encoding="utf-8"
