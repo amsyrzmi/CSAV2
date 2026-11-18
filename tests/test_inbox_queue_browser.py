@@ -3143,7 +3143,7 @@ async def times_loaded(panel: Any) -> None:
     await expect(panel.get_by_label("Normal", exact=True)).to_be_visible(timeout=WAIT)
 
 
-def test_the_panels_ranges_are_the_apis() -> None:
+async def test_the_panels_ranges_are_the_apis() -> None:
     """The client's SETTINGS_RANGES (lib/inbox-api.ts) equal the API model's bounds."""
     source = (
         Path(__file__).resolve().parents[1] / "CSA_WebConsole/csa-console/web/lib/inbox-api.ts"
