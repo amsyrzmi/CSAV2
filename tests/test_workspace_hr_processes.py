@@ -18,12 +18,16 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from csa.hr.policy import HrPolicyError
+from csa.hr.processes import HrProcesses
+from csa.workspace import hr_processes
 from csa.workspace.hr_people import format_day
 
 from tests.conftest import requires_docker
 from tests.test_console_services import activate
 from tests.test_console_sessions import SessionWorld
 from tests.test_workspace_planner import (  # noqa: F401 - fixture import
+    THREADS,
     _proposal_count,
     _thread,
     _turn,
@@ -37,6 +41,7 @@ pytest_plugins = ["tests.test_console_sessions"]
 HR = "/console/v1/hr"
 TODAY = datetime.now(ZoneInfo("Asia/Kuala_Lumpur")).date()
 FAR = date(2099, 12, 1)  # a December date, so the Malay month differs from the English one
+STARTED = format_day(TODAY, "en")  # a process inserted now started today in Kuala Lumpur
 ENGLISH = "What are my HR tasks?"
 MALAY = "Apa tugasan tertunggak saya?"
 NOTES = (
@@ -71,7 +76,7 @@ NOT_FOUND = {
 }
 NOBODY_ONBOARDING = {
     "en": "Nobody is onboarding that you can see.",
-    "ms": "Tiada sesiapa yang sedang onboarding yang boleh anda lihat.",
+    "ms": "Tiada onboarding sedang berjalan yang boleh anda lihat.",
 }
 NOBODY_LEAVING = {
     "en": "Nobody is leaving that you can see.",
@@ -332,11 +337,13 @@ async def test_my_tasks_in_malay_uses_anda_malay_months_and_the_english_fallback
     head = "Langkah anda yang belum selesai dalam My tasks (1):\n"
     person = await _answer(w, model, c.person, "my_tasks", language="ms")
     assert person == head + (
-        "1. Hantar butiran bank — onboarding untuk Aina Rahman, perlu siap pada 1 Disember 2099"
+        "1. Hantar butiran bank — onboarding untuk Aina Rahman, tarikh akhir 1 Disember 2099"
     )
     # No Malay title: the English one, inside a Malay sentence.
     manager = await _answer(w, model, c.manager, "my_tasks", language="ms")
-    assert manager == head + "1. Introduce the team — onboarding untuk Aina Rahman, perlu siap esok"
+    assert manager == head + (
+        "1. Introduce the team — onboarding untuk Aina Rahman, tarikh akhir esok"
+    )
     assignee = await _answer(w, model, c.assignee, "my_tasks", language="ms")
     assert assignee == head + "1. Show the office — onboarding untuk Aina Rahman, lewat 1 hari"
     hr = await _answer(w, model, c.hr, "my_tasks", language="ms")
@@ -393,9 +400,9 @@ async def test_person_process_in_malay(planned) -> None:  # noqa: F811
         "Onboarding Aina Rahman: 1 daripada 5 langkah selesai.\n"
         "Langkah yang belum selesai (4):\n"
         "1. Prepare the laptop (HR), lewat 3 hari\n"
-        "2. Show the office (Orang yang dinamakan), lewat 1 hari\n"
-        "3. Introduce the team (Pengurus), perlu siap esok\n"
-        "4. Hantar butiran bank (Pekerja), perlu siap pada 1 Disember 2099"
+        "2. Show the office (Individu yang ditetapkan), lewat 1 hari\n"
+        "3. Introduce the team (Pengurus), tarikh akhir esok\n"
+        "4. Hantar butiran bank (Pekerja), tarikh akhir 1 Disember 2099"
     )
     missing = await _answer(w, model, c.manager, "person_process", person="Zul", language="ms")
     assert missing == NOT_FOUND["ms"]
@@ -419,12 +426,13 @@ async def test_person_process_with_several_matches_asks_which(planned) -> None: 
     second = await _process(w, yusof, "offboarding")
     await _task(w, second, 1, "Return the badge", due=FAR, anchor="last_day")
     result = await _ask(w, model, c.hr, "person_process", person="Aina")
+    aina = str(c.processes["aina"])
     assert result == {
         "action": "clarification",
         "question": "Which Aina do you mean?",
         "options": [
-            {"label": "Aina Rahman — onboarding", "value": str(c.processes["aina"])},
-            {"label": "Aina Yusof — offboarding", "value": str(second)},
+            {"label": f"Aina Rahman — onboarding, started {STARTED}", "value": aina},
+            {"label": f"Aina Yusof — offboarding, started {STARTED}", "value": str(second)},
         ],
     }
     # The pick comes back as the process id, which answers exactly that process.
@@ -489,7 +497,7 @@ async def test_who_is_onboarding_and_leaving_in_malay(planned) -> None:  # noqa:
     c = await _company(w)
     onboarding = await _answer(w, model, c.manager, "who_onboarding", language="ms")
     assert onboarding == (
-        "Onboarding yang sedang berjalan yang boleh anda lihat (1):\n"
+        "Onboarding sedang berjalan yang boleh anda lihat (1):\n"
         "1. Aina Rahman: 1 daripada 5 langkah selesai, langkah seterusnya lewat 3 hari"
     )
     leaving = await _answer(w, model, c.hr, "who_leaving", language="ms")
@@ -631,3 +639,109 @@ async def test_stored_turns_hold_counts_and_fixed_text_only(planned) -> None:  #
     after = await w.q("SELECT id, status, version, note FROM hr_process_tasks ORDER BY id")
     assert after == before
     assert await _proposal_count(w) == 0
+
+
+# ------------------------------------------------------------------------ review round 1 cases
+
+
+async def _closed(w: SessionWorld, employee: UUID, started: date) -> UUID:
+    """A completed onboarding that started on ``started`` (an earlier employment)."""
+    rows = await w.q(
+        "INSERT INTO hr_processes(client_id,employee_id,kind,status,started_at,closed_at)"
+        " VALUES (%s,%s,'onboarding','completed',%s,%s) RETURNING id",
+        w.tenants[0], employee, datetime(started.year, started.month, started.day, 9,
+        tzinfo=ZoneInfo("Asia/Kuala_Lumpur")), datetime.now(ZoneInfo("Asia/Kuala_Lumpur")),
+    )  # fmt: skip
+    return rows[0]["id"]
+
+
+async def test_same_names_and_a_rehire_get_distinct_options(planned) -> None:  # noqa: F811
+    w, model = planned
+    c = await _company(w)
+    # Two different people with one full name, each onboarding since today.
+    other = await _employee(w, "Siti Aminah")
+    first = await _process(w, c.people["siti"])
+    second = await _process(w, other)
+    result = await _ask(w, model, c.hr, "person_process", person="Siti Aminah")
+    assert result["question"] == "Which Siti Aminah do you mean?"
+    assert result["options"] == [
+        {"label": f"Siti Aminah — onboarding, started {STARTED} (1 of 2)", "value": str(first)},
+        {"label": f"Siti Aminah — onboarding, started {STARTED} (2 of 2)", "value": str(second)},
+    ]
+    malay = await _ask(w, model, c.hr, "person_process", person="Siti Aminah", language="ms")
+    assert malay["question"] == "Siti Aminah yang mana satu?"
+    started = format_day(TODAY, "ms")
+    assert [option["label"] for option in malay["options"]] == [
+        f"Siti Aminah — onboarding, bermula {started} (1 daripada 2)",
+        f"Siti Aminah — onboarding, bermula {started} (2 daripada 2)",
+    ]
+    # A rehired person: two completed onboardings of one kind, told apart by their start dates.
+    early = await _closed(w, c.people["razak"], date(2025, 3, 1))
+    late = await _closed(w, c.people["razak"], date(2026, 3, 1))
+    await _task(w, late, 1, "Collect the badge", due=date(2026, 3, 5))  # still open
+    rehired = await _ask(w, model, c.hr, "person_process", person="Razak")
+    assert rehired["options"] == [
+        {"label": "Razak Ali — onboarding (completed), started 1 March 2025", "value": str(early)},
+        {"label": "Razak Ali — onboarding (completed), started 1 March 2026", "value": str(late)},
+    ]
+    # A picked employee id never shows as the name in the question.
+    by_id = await _ask(w, model, c.hr, "person_process", person=str(c.people["razak"]))
+    assert by_id["question"] == "Which Razak Ali do you mean?"
+    # The open step of the closed process: a past date that the database does not call overdue.
+    picked = await _answer(w, model, c.hr, "person_process", person=str(late))
+    assert picked == (
+        "Razak Ali's onboarding: 0 of 1 step done.\n"
+        "This process is completed.\n"
+        "Open steps (1):\n"
+        "1. Collect the badge (HR), was due 5 March 2026"
+    )
+    malay_pick = await _answer(w, model, c.hr, "person_process", person=str(late), language="ms")
+    assert malay_pick.endswith("1. Collect the badge (HR), tarikh akhir 5 Mac 2026")
+
+
+async def test_a_read_only_member_gets_no_assistant_and_sees_no_process(planned) -> None:  # noqa: F811
+    w, model = planned
+    await _company(w)
+    reader, _ = await w.member(role="read_only")
+    calls = len(model.calls)
+    created = await w.mutate(reader, THREADS, {"request_key": str(uuid4())})
+    assert created.status_code == 403  # the assistant is not open to a read-only member at all
+    assert len(model.calls) == calls
+    # And the console shows them nothing either.
+    assert (await _get(reader, f"{HR}/tasks/mine"))["items"] == []
+    assert (await _get(reader, f"{HR}/processes"))["items"] == []
+
+
+async def test_overdue_marks_the_count_when_not_every_process_was_opened(
+    planned,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w, model = planned
+    c = await _company(w)
+    monkeypatch.setattr(hr_processes, "_DETAILS", 1)
+    # Two overdue processes; only the newest (Danial's) is opened, so Aina's step shown only in
+    # her process (Siti's "Show the office") is left out and the count says there may be more.
+    hr = await _answer(w, model, c.hr, "overdue")
+    assert hr == (
+        f"{OVERDUE_HEAD} (2+):\n"
+        "1. Prepare the laptop — onboarding for Aina Rahman, overdue by 3 days\n"
+        "2. Remove access — offboarding for Danial Hakim, overdue by 2 days"
+    )
+
+
+async def test_other_hr_refusals_become_the_usual_http_error(
+    planned,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    w, model = planned
+    c = await _company(w)
+
+    async def expired(*_: object, **__: object) -> None:
+        raise HrPolicyError("session_unavailable")
+
+    monkeypatch.setattr(HrProcesses, "my_tasks", expired)
+    model.reply({"action": "hr_process_read", "view": "my_tasks"})
+    thread = await _thread(w, c.manager)
+    response = await _turn(w, c.manager, thread, ENGLISH, "hr")
+    assert (response.status_code, response.json()) == (401, {"detail": "session_unavailable"})
+    assert await w.q("SELECT count(*) n FROM console_workspace_turns") == [{"n": 0}]

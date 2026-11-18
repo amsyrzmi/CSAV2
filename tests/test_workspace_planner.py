@@ -3659,3 +3659,19 @@ def test_the_new_malay_markers_are_not_english_markers() -> None:
     new = {"tugas", "tugasan", "selesai", "tertunggak", "lewat", "orientasi", "proses"}
     assert new <= _MALAY_MARKERS
     assert not new & _ENGLISH_MARKERS
+
+
+def test_planner_prompt_lets_a_picked_process_option_come_back_as_person() -> None:
+    """A clarification offers processes valued by process id; the pick must come back in
+    ``person``, not the name again (or the user is asked the same question in a loop)."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert (
+        "person_process with person, the name as written or the option value the user picked "
+        "from a list you offered"
+    ) in _process_bullet()
+    assert (
+        "In the people actions and hr_process_read, write names, job titles and departments as "
+        "the user wrote them. Use an employee id (for hr_process_read, a process id) only when "
+        "the user picked one from offered options."
+    ) in flat
+    assert len(_process_bullet()) < 900

@@ -98,7 +98,7 @@ _MONTHS_MS = (
 # --- Reads as the caller ---------------------------------------------------------------------
 
 
-def _hr_service(request: Request) -> HrService:
+def hr_service(request: Request) -> HrService:
     service = getattr(request.app.state, "hr_service", None)
     if not isinstance(service, HrService):
         raise HTTPException(503, "hr_service_unavailable")
@@ -129,7 +129,7 @@ async def people_access(
         return None
 
 
-def _as_id(text: str | None) -> UUID | None:
+def as_id(text: str | None) -> UUID | None:
     if text is None:
         return None
     try:
@@ -139,7 +139,7 @@ def _as_id(text: str | None) -> UUID | None:
 
 
 def _record_id(record: RecordRef | None) -> UUID | None:
-    return _as_id(record.id) if record is not None and record.kind == "employee" else None
+    return as_id(record.id) if record is not None and record.kind == "employee" else None
 
 
 async def _candidates(
@@ -147,7 +147,7 @@ async def _candidates(
 ) -> list[HrPersonOut]:
     """The people ``resolve_person`` chooses from: the one named by an id (a picked option)
     or the open record, else the People search for the name. Read as the caller."""
-    target = _as_id(name) if name is not None else _record_id(record)
+    target = as_id(name) if name is not None else _record_id(record)
     if name is None or target is not None:
         if target is None:
             return []
@@ -184,7 +184,7 @@ def resolve_person(
     that person; otherwise the S1 word search over name, title and work email among
     ``statuses``. None means nobody was named (the caller asks who).
     """
-    target = _as_id(name) if name is not None else _record_id(record)
+    target = as_id(name) if name is not None else _record_id(record)
     if name is None or target is not None:
         if target is None:
             return None
@@ -251,7 +251,7 @@ class _Turn:
     ) -> None:
         self.request, self.actor, self.client_id = request, actor, client_id
         self.turn, self.facts, self.registry, self.text = turn, facts, registry, text
-        self.service = _hr_service(request)
+        self.service = hr_service(request)
         self.session = hr_session_from(request, actor, client_id, mutation=False)
         self.people = HrPeople(self.service)
         context = facts.page_context
@@ -567,7 +567,7 @@ class HrPersonExecutor:
         if origin != "assistant":
             return
         try:
-            await _hr_service(request).require_capability(
+            await hr_service(request).require_capability(
                 self._session(request, actor, client_id, origin), "hr_assistant"
             )
         except HrPolicyError as exc:
@@ -592,7 +592,7 @@ class HrPersonExecutor:
     ) -> tuple[CardContent, str | None]:
         body = self._body(payload)
         await self.gate(request, actor, client_id, origin=origin)
-        service = _hr_service(request)
+        service = hr_service(request)
         session = self._session(request, actor, client_id, origin)
         card = _Card(HrPeople(service), session, _CARD_TEXT[language], language)
         try:
@@ -632,7 +632,7 @@ class HrPersonExecutor:
             body = body.model_copy(update={"expected_version": int(expected_version)})
         session = self._session(request, actor, client_id, origin)
         try:
-            receipt = await HrOperations(_hr_service(request)).apply(
+            receipt = await HrOperations(hr_service(request)).apply(
                 session, body, _key(proposal_id, "apply")
             )
         except HrPolicyError as exc:

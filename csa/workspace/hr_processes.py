@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
 from uuid import UUID
 
 from fastapi import Request
@@ -31,6 +30,7 @@ from csa.hr.process_models import (
     MyTask,
     ProcessKind,
     ProcessRow,
+    ProcessStatus,
     ProcessTask,
 )
 from csa.hr.processes import HrProcesses
@@ -42,7 +42,7 @@ from csa.workspace.contracts import (
     Language,
 )
 from csa.workspace.directory import search_words
-from csa.workspace.hr_people import MAX_OPTIONS, OPTION_LABEL, _as_id, _hr_service, format_day
+from csa.workspace.hr_people import MAX_OPTIONS, OPTION_LABEL, as_id, format_day, hr_service
 from csa.workspace.planner import PlannerFacts
 from csa.workspace.rules import TAB_GATES, unlocked
 
@@ -91,7 +91,7 @@ class _Reader:
         language: Language,
         text: dict[str, str],
     ) -> None:
-        service = _hr_service(request)
+        service = hr_service(request)
         self.processes = HrProcesses(service)
         self.session = hr_session_from(request, actor, client_id, mutation=False)
         self.today = kl_today(service.now())
@@ -112,11 +112,19 @@ class _Reader:
             if len(items) >= _SCAN:
                 return items, True
 
-    async def rows(self, **filters: Any) -> tuple[list[ProcessRow], bool]:
+    async def rows(
+        self,
+        *,
+        kind: ProcessKind | None = None,
+        status: ProcessStatus | None = None,
+        overdue: bool | None = None,
+    ) -> tuple[list[ProcessRow], bool]:
         items: list[ProcessRow] = []
         after: UUID | None = None
         while True:
-            page = await self.processes.processes(self.session, limit=_PAGE, after=after, **filters)
+            page = await self.processes.processes(
+                self.session, kind=kind, status=status, overdue=overdue, limit=_PAGE, after=after
+            )
             items.extend(page.items)
             after = page.next_cursor
             if after is None:
@@ -138,7 +146,9 @@ class _Reader:
         return self.text[f"process_kind_{kind}"]
 
     def due(self, due_on: date | None, overdue: bool) -> str:
-        """The due date in words: overdue by 3 days, due today, due tomorrow, due 1 May 2027."""
+        """The due date in words: overdue by 3 days, due today, due tomorrow, due 1 May 2027,
+        or "was due 3 November 2026" for a past date the database does not call overdue (an
+        open step of a closed process)."""
         text = self.text
         if due_on is None:
             return text["process_no_due"]
@@ -151,7 +161,10 @@ class _Reader:
             return text["process_due_today"]
         if due_on == self.today + timedelta(days=1):
             return text["process_due_tomorrow"]
-        return text["process_due_on"].format(day=format_day(due_on, self.language))
+        day = format_day(due_on, self.language)
+        if due_on < self.today:
+            return text["process_was_due"].format(day=day)
+        return text["process_due_on"].format(day=day)
 
     def steps(self, done: int, total: int) -> str:
         word = self.text["process_step" if total == 1 else "process_steps"]
@@ -206,7 +219,8 @@ async def resolve_process_read(
     turn's copy (``service._TEXT[facts.language]``)."""
     if not unlocked(facts.packages, TAB_GATES["hr"]):
         return _say(text["processes_unavailable"])
-    if proposal.view == "person_process" and not (proposal.person or "").strip():
+    wanted = (proposal.person or "").strip()
+    if proposal.view == "person_process" and not wanted:
         ask = ClarificationProposal(action="clarification", question=text["ask_person"])
         return ProcessAnswer(shown=ask)
     reader = _Reader(request, actor, client_id, facts.language, text)
@@ -214,8 +228,7 @@ async def resolve_process_read(
         if proposal.view == "my_tasks":
             return await _my_tasks(reader)
         if proposal.view == "person_process":
-            assert proposal.person is not None
-            return await _person_process(reader, proposal.person.strip())
+            return await _person_process(reader, wanted)
         if proposal.view == "overdue":
             return await _overdue(reader)
         kind: ProcessKind = "onboarding" if proposal.view == "who_onboarding" else "offboarding"
@@ -343,7 +356,7 @@ def _matches(rows: list[ProcessRow], wanted: str) -> list[ProcessRow]:
     """The visible processes the words name: a picked option's process id (or an employee id),
     else every word in the person's name, in any order (the People search rule for names).
     Active processes win over closed ones; a closed one is only answered when nothing is open."""
-    target = _as_id(wanted)
+    target = as_id(wanted)
     if target is not None:
         found = [row for row in rows if target in (row.process_id, row.employee_id)]
     else:
@@ -377,9 +390,11 @@ async def _person_process(reader: _Reader, wanted: str) -> ProcessAnswer:
     head = text["process_person_head"].format(
         name=_one_line(row.employee_name),
         kind=kind,
+        # The Malay sentence starts with the kind: "Onboarding Aina Rahman: ...".
+        Kind=kind[:1].upper() + kind[1:],
         progress=reader.steps(row.tasks_done, row.tasks_total),
     )
-    lines = [head[:1].upper() + head[1:]]  # "Onboarding Aina Rahman: ..." in Malay
+    lines = [head]
     if row.status != "active":
         lines.append(text["process_closed"].format(status=text[f"process_{row.status}"]))
     open_tasks = sorted(
@@ -415,11 +430,16 @@ def _step_line(reader: _Reader, task: ProcessTask) -> str:
 
 
 def _which(reader: _Reader, wanted: str, found: list[ProcessRow]) -> ProcessAnswer:
-    """Several visible processes match: up to five options, "Name — kind", valued by process
-    id. The stored copy keeps the kinds only, so no name reaches the turn row."""
+    """Several visible processes match: up to five options, valued by process id, labelled
+    "Aina Rahman — onboarding, started 3 November 2026" (a closed one marked), with a counter
+    when two labels would still read alike. The stored copy keeps the kinds only, so no name or
+    date reaches the turn row."""
     text = reader.text
-    found = sorted(found, key=lambda row: (row.employee_name.casefold(), row.kind))[:MAX_OPTIONS]
-    question = text["which_person"].format(name=_one_line(wanted))
+    order = sorted(found, key=lambda row: (row.employee_name.casefold(), row.kind, row.started_at))
+    found = order[:MAX_OPTIONS]
+    # A picked id is no name to repeat: ask with the person's name instead.
+    name = _one_line(found[0].employee_name) if as_id(wanted) is not None else _one_line(wanted)
+    question = text["which_person"].format(name=name)
 
     def kind(row: ProcessRow) -> str:
         label = reader.kind(row.kind, row.name)
@@ -427,12 +447,23 @@ def _which(reader: _Reader, wanted: str, found: list[ProcessRow]) -> ProcessAnsw
             label = f"{label} ({text[f'process_{row.status}']})"
         return label
 
-    shown = [
-        ClarificationOption(
-            label=f"{_one_line(row.employee_name)} — {kind(row)}"[:OPTION_LABEL],
-            value=str(row.process_id),
+    labels = [
+        text["process_option"].format(
+            name=_one_line(row.employee_name),
+            kind=kind(row),
+            day=format_day(kl_today(row.started_at), reader.language),
         )
         for row in found
+    ]
+    for label in set(labels):
+        same = [i for i, seen in enumerate(labels) if seen == label]
+        if len(same) > 1:
+            for number, i in enumerate(same, start=1):
+                counter = text["process_counter"].format(n=number, total=len(same))
+                labels[i] = f"{label} ({counter})"
+    shown = [
+        ClarificationOption(label=label[:OPTION_LABEL], value=str(row.process_id))
+        for label, row in zip(labels, found, strict=True)
     ]
     stored = [
         ClarificationOption(label=kind(row)[:OPTION_LABEL], value=str(row.process_id))

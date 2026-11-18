@@ -346,7 +346,8 @@ class HrPersonOpenProposal(_Contract):
 
 class HrProcessReadProposal(_Contract):
     """Read HR onboarding and offboarding processes and tasks; never changes a task.
-    ``person`` is the name the user wrote, given only with ``person_process``."""
+    ``person`` is the name the user wrote, or the option value they picked; only with
+    ``person_process``."""
 
     action: Literal["hr_process_read"]
     view: Literal["my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"]

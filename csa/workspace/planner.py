@@ -377,7 +377,8 @@ Malay "mohon kursus latihan") is training_submit, never training_ask.
 department (for "who is in Finance").
 - hr_person_open: open a person's profile; person is the name the user wrote.
 - hr_process_read: read HR onboarding and offboarding steps; view is my_tasks ("what are my \
-tasks", "apa tugasan saya"), person_process with person, the name as written ("what is \
+tasks", "apa tugasan saya"), person_process with person, the name as written or the \
+option value the user picked from a list you offered ("what is \
 outstanding for Aina's onboarding", "apa yang belum selesai untuk onboarding Aina"), \
 who_onboarding ("who is onboarding", "siapa yang sedang onboarding"), who_leaving ("who is \
 leaving", "siapa yang akan berhenti") or overdue ("what is overdue", "apa yang tertunggak" or \
@@ -438,8 +439,9 @@ order change, shipping, cancelling or refund there. For such a request, answer t
 in TikTok Shop Seller Center; for how many are in stock, use product_stock_read.
 - Propose hr_person_add, hr_person_update or hr_person_leave only when people_access is "hr"; \
 otherwise answer that the user's People access does not allow it.
-- In the people actions, write names, job titles and departments as the user wrote them. Use \
-an employee id only when the user picked one from offered options.
+- In the people actions and hr_process_read, write names, job titles and departments as the \
+user wrote them. Use an employee id (for hr_process_read, a process id) only when the user \
+picked one from offered options.
 - hr_process_read never depends on people_access: the database decides what the user may see, \
 so never answer that their People access does not allow a process question.
 - Marking someone as leaving stays hr_person_leave, opening a profile stays hr_person_open, who \
