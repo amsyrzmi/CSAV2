@@ -125,13 +125,22 @@ token always creates a run. It has one job, `plan`, which runs
 - `nothing to plan: main's tip <sha7> is not staged yet` (green): staging is paused, the rollout was
   superseded or failed, or the record job failed. Nothing is planned until a staged record exists.
 - `a deploy-production run for <sha7> already exists: <run id>` (green): a run for the tip is
-  queued, in progress, waiting, pending or already succeeded. A run that failed or was cancelled
-  does not count, so an early manual dispatch that failed with "not staged yet" does not stop the auto plan.
+  requested, queued, in progress, waiting, pending or already succeeded. A run that failed or was
+  cancelled does not count, so an early manual dispatch that failed with "not staged yet" does not
+  stop the auto plan. The guard counts a run by its `head_sha`, which is the tip of `main` when the
+  run was dispatched, not necessarily the commit it plans. So a rollback a person dispatched with
+  an explicit sha while the tip was T, and which is still waiting, in progress or succeeded, makes
+  `check` report that a run for T already exists, and the plan for T is then started by hand. The
+  opposite case, a run that planned the tip while its `head_sha` is an older tip, is not seen by
+  the guard, which is safe: `supersede` cancels that run while it is waiting and the new plan starts.
 - `cancelled run <id> (planned <sha7>)`: a stale auto-started run was cancelled.
 - `left alone: run <id> (<reason>)`: a waiting run was not cancelled. The reason is
   `started by <login>` (a person's run, including a rollback), `same commit`, `apply is not
   waiting`, `not a dispatch`, `not on main` or `unreadable fields`.
-- `run <id> moved on; left alone`: a cancel was refused because the run had just changed state.
+- `run <id> moved on; left alone`: the run changed state (approved, finished) between the listing
+  and the cancel, so it was not cancelled, or the cancel was refused because it had just done so.
+  The run and its jobs are read again just before the cancel, and once more after a refusal; there
+  is never a second cancel.
 - `warning: could not cancel run <id>; it stays waiting`: the cancel was refused and the run is
   still waiting. The new run queues behind it, as for a manual run: reject the stale one.
 - `started deploy-production run <id>: <url>`: the plan was started. The apply waits for approval on

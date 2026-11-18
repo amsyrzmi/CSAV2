@@ -305,8 +305,18 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "Manual dispatch only",
         "nothing to plan:",
         "a deploy-production run for <sha7> already exists",
+        "requested, queued, in progress, waiting, pending or already succeeded",
+        "which is the tip of `main` when the run was dispatched, "
+        "not necessarily the commit it plans",
+        "makes `check` report that a run for T already exists, "
+        "and the plan for T is then started by hand",
+        "`supersede` cancels that run while it is waiting and the new plan starts",
         "cancelled run <id> (planned <sha7>)",
         "left alone:",
+        "`started by <login>` (a person's run, including a rollback), `same commit`, "
+        "`apply is not waiting`, `not a dispatch`, `not on main` or `unreadable fields`",
+        "three `workflow_run` links",
+        "run <id> moved on; left alone",
         "warning: could not cancel",
         "started deploy-production run",
         "the dispatch was accepted but no deploy-production run started",

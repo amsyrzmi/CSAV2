@@ -1072,6 +1072,11 @@ def test_runs_filters_jobs_cancel_and_dispatch(gh: Gh) -> None:
     assert ids("?branch=main&event=workflow_dispatch&status=waiting") == [waiting]
     assert ids("?actor=github-actions%5Bbot%5D") == [waiting]
     assert ids("?actor=REVIEWER-B") == [done]
+    # status, head_sha and actor match case-insensitively; event and branch do not.
+    assert ids("?status=WAITING") == [waiting]
+    assert ids("?head_sha=" + OTHER_SHA.upper()) == [waiting]
+    assert ids("?event=WORKFLOW_DISPATCH") == []
+    assert ids("?branch=MAIN") == []
     # An unknown status, sha, branch or event is an empty list with HTTP 200, as on GitHub.
     for query in ("?status=bogus", "?head_sha=abc", "?branch=nope", "?event=push"):
         assert api_json(gh, RUNS + query) == {"total_count": 0, "workflow_runs": []}
@@ -1211,6 +1216,21 @@ def test_cancel_of_a_completed_run_is_409(gh: Gh) -> None:
     again = gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{run_id}/cancel")
     assert again.returncode == 1 and "(HTTP 409)" in again.stderr
     assert gh.state()["next_id"] == 1  # runs never touch the environment ids
+
+
+def test_cancel_conflict_refuses_the_cancel_of_a_run_that_still_waits(gh: Gh) -> None:
+    waiting = gh.add_run(status="waiting", conclusion=None, jobs=PLAN_APPLY_WAITING)
+    gh.set_state(cancel_conflict=True)
+    result = gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{waiting}/cancel")
+    assert result.returncode == 1 and "(HTTP 409)" in result.stderr
+    run = api_json(gh, f"repos/{REPO}/actions/runs/{waiting}")
+    assert (run["status"], run["conclusion"]) == ("waiting", None)
+    jobs = api_json(gh, f"repos/{REPO}/actions/runs/{waiting}/jobs")["jobs"]
+    assert [(j["name"], j["status"]) for j in jobs] == [("plan", "completed"), ("apply", "waiting")]
+    gh.set_state(cancel_conflict=False)
+    assert (
+        gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{waiting}/cancel").returncode == 0
+    )
 
 
 def test_dispatch_without_actions_write_fails_and_the_no_run_flag_creates_nothing(gh: Gh) -> None:

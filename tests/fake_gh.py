@@ -28,10 +28,12 @@ Workflow runs (read-only GETs of the real repository, 2026-11-18, and the REST d
   ``run_number``, ``event``, ``status``, ``conclusion`` (``null`` until completed), ``workflow_id``,
   ``url``, ``html_url``, ``created_at``, ``updated_at``, ``actor`` and ``triggering_actor``
   (``{login, id, type}``), ``run_attempt``, ``run_started_at``, ``jobs_url``, ``cancel_url``. The
-  filters ``status``, ``event``, ``branch``, ``head_sha`` and ``actor`` are exact matches (verified:
-  ``status`` matches a run's ``status`` or its ``conclusion``, so ``status=success`` lists the runs
-  that concluded success; an unknown value or an unknown sha is an empty list with HTTP 200;
-  ``total_count`` counts every match, not the page). ``per_page`` defaults to 30 and is capped at
+  filters ``event`` and ``branch`` are case-sensitive exact matches; ``status``, ``head_sha`` and
+  ``actor`` match case-insensitively (reported by the Task 5 review of the plan; the fake follows
+  that report). Verified: ``status`` matches a run's ``status`` or its ``conclusion``, so
+  ``status=success`` lists the runs that concluded success; an unknown value or an unknown sha is
+  an empty list with HTTP 200; ``total_count`` counts every match, not the page. ``per_page``
+  defaults to 30 and is capped at
   100 (``0`` and non-numbers give the default); ``page`` counts from 1. Unknown query keys are
   ignored, as GitHub does. A workflow file that does not exist is a 404.
 * ``GET .../actions/runs/<id>`` is one run (404 for an unknown id); ``GET
@@ -45,12 +47,17 @@ Workflow runs (read-only GETs of the real repository, 2026-11-18, and the REST d
   once it is. UNVERIFIED (a real cancel was never sent): the 409 text, and that GitHub cancels
   asynchronously; the fake cancels at once (the run and every job not completed become
   ``completed`` / ``cancelled``). A token without ``actions: write`` (state key ``actions_write``
-  false) is refused with 403 ``Resource not accessible by integration``.
+  false) is refused with 403 ``Resource not accessible by integration``. The state key
+  ``cancel_conflict`` makes every cancel answer 409 and change nothing (a run that is refused the
+  cancel while it still waits).
 * ``gh workflow run <file> --repo <r> [--ref <branch>] [-f key=value]`` prints nothing on a
   non-terminal stdout (UNVERIFIED for gh 2.x releases after 2.46) and creates a run with status
   ``queued``, event ``workflow_dispatch``, ``head_branch`` the ref, ``head_sha`` the ref's tip
   (state ``branches``) and the token's actor (state ``token_actor``, ``github-actions[bot]`` by
-  default; a run's ``actor`` and ``triggering_actor`` are the same for a first attempt). Refused
+  default; a run's ``actor`` and ``triggering_actor`` are the same for a first attempt). UNVERIFIED:
+  that the actor GitHub shows for a dispatch made with the workflow's own ``GITHUB_TOKEN`` is
+  ``github-actions[bot]`` (the plan's Part B proves it on the real repository; until then it is
+  an assumption of the fake and of ``auto_plan.sh``'s ``AUTO_ACTOR``). Refused
   as gh prints it (text UNVERIFIED): an unknown workflow (``could not find any workflow named``), no
   ``workflow_dispatch`` trigger, an unknown ref, an input the workflow does not declare, and a
   token without ``actions_write`` (HTTP 403). The state key ``dispatch_no_run`` makes the dispatch
@@ -647,11 +654,14 @@ def runs_route(state, rest, query, method, opts):
         if file is None:
             not_found()
         runs = [r for r in visible_runs(state) if r["workflow"] == file]
-        for key, field in (("event", "event"), ("branch", "head_branch"), ("head_sha", "head_sha")):
+        for key, field in (("event", "event"), ("branch", "head_branch")):
             if query.get(key):
                 runs = [r for r in runs if r[field] == query[key]]
+        if query.get("head_sha"):
+            runs = [r for r in runs if r["head_sha"].lower() == query["head_sha"].lower()]
         if query.get("status"):
-            runs = [r for r in runs if query["status"] in (r["status"], r["conclusion"])]
+            wanted = query["status"].lower()
+            runs = [r for r in runs if wanted in (r["status"], r["conclusion"])]
         if query.get("actor"):
             runs = [r for r in runs if r["actor"]["login"].lower() == query["actor"].lower()]
         runs.sort(key=lambda r: (r["created_at"], r["run_number"]), reverse=True)
@@ -667,7 +677,7 @@ def runs_route(state, rest, query, method, opts):
         if rest[2:] == ["cancel"] and method == "POST":
             if not state.get("actions_write", True):
                 http_error(403, "Resource not accessible by integration")
-            if run["status"] == "completed":
+            if run["status"] == "completed" or state.get("cancel_conflict"):
                 http_error(409, "Cannot cancel a workflow run that is completed")
             now = stamp(state)
             for job in run["jobs"]:
@@ -962,6 +972,7 @@ class Gh:
                 "actions_write": True,
                 "dispatch_no_run": False,
                 "dispatch_lag": 0,
+                "cancel_conflict": False,
                 "runs": [],
                 "next_run_id": 7000000001,
                 "next_id": 1,
@@ -1005,8 +1016,8 @@ class Gh:
         return labels
 
     def set_state(self, **values: Any) -> None:
-        """Set top-level state keys (``actions_write``, ``dispatch_no_run``, ``dispatch_lag``,
-        ``token_actor``, ``logged_out``, ``put_semantics``, ...)."""
+        """Set top-level state keys (``actions_write``, ``cancel_conflict``, ``dispatch_no_run``,
+        ``dispatch_lag``, ``token_actor``, ``logged_out``, ``put_semantics``, ...)."""
         state = self.state()
         state.update(values)
         self.save(state)
