@@ -326,7 +326,15 @@ HR_STAFF = make_hr_context(actions=["training.read"])
 HR_OWNER = make_hr_context(
     client_owner=True, actions=["training.read"], workflows=["leave.request"], hr_duties=True
 )
-HR_OWNER_TABS = ("Home", "People", "Leave & attendance", "Training", "Requests", "Settings")
+HR_OWNER_TABS = (
+    "Home",
+    "People",
+    "Processes",
+    "Leave & attendance",
+    "Training",
+    "Requests",
+    "Settings",
+)
 PROFILE_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 
 

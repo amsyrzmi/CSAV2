@@ -51,6 +51,8 @@ from csa.hr.process_models import (
     TemplateDeactivate,
     TemplateList,
     TemplateOut,
+    TemplatePreview,
+    TemplatePreviewRequest,
     TemplateReceipt,
     TemplateSummary,
     TemplateUpdate,
@@ -60,8 +62,9 @@ from csa.hr.service import HrService, _fingerprint
 
 __all__ = ["PROBLEMS", "REFUSALS", "HrProcesses"]
 
-# Every RAISE of hr_template_apply, hr_process_start_apply, hr_process_cancel_apply,
-# hr_probation_set and hr_task_apply (0631, 0632, 0634), and the problem code it becomes.
+# Every RAISE of hr_template_apply, hr_template_preview, hr_process_start_apply,
+# hr_process_cancel_apply, hr_probation_set and hr_task_apply (0631, 0632, 0634, 0636), and the
+# problem code it becomes.
 # tests/test_hr_process_api.py checks that every code the migrations raise is here.
 REFUSALS: dict[str, str] = {
     "hr_people_manager_required": "permission_denied",
@@ -264,6 +267,23 @@ class HrProcesses:
         if found is None:
             raise HrPolicyError("resource_unavailable")
         return TemplateOut.model_validate({**found, "warnings": _warnings(found["warnings"])})
+
+    async def preview(self, session: HrSession, body: TemplatePreviewRequest) -> TemplatePreview:
+        """What a draft rule set means now; writes nothing, so it takes no idempotency key."""
+        rules = body.rules.model_dump(mode="json") if body.rules is not None else None
+        async with tx(self.core.pool, str(session.tenant_id)) as conn:
+            access = await self.core._access(conn, session)
+            HrOperations.people_manager(access)
+            row = await self._call(
+                conn,
+                "hr/process_template_preview.sql",
+                (session.tenant_id, body.kind, Jsonb(rules)),
+            )
+            await self.core._session(conn, session)
+        found = row["preview"] if row else None
+        if found is None:
+            raise HrPolicyError("resource_unavailable")
+        return TemplatePreview.model_validate(found)
 
     async def _template_write(
         self, session: HrSession, body: dict[str, Any], key: UUID

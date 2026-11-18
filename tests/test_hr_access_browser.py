@@ -28,6 +28,7 @@ import httpx
 import pytest
 from playwright.async_api import Page, async_playwright, expect
 
+from tests.hr_process_world import ProcessWorld
 from tests.test_services_browser import (
     ROOT,
     TENANT,
@@ -172,6 +173,7 @@ class World:
                     "params": params,
                     "body": body,
                     "key": key,
+                    "csrf": request.headers.get("x-csrf-token"),
                 }
             )
             status, data = self.answer(caller, request.method, path, params, body)
@@ -306,10 +308,15 @@ LEAVING_OPERATIONS = {"person.leave", "person.leave_undo"}
 
 
 class RecordsWorld(World):
-    """The same company, plus one person's personal details, documents and leaving date."""
+    """The same company, plus one person's personal details, documents and leaving date.
+
+    Process paths (My tasks, and the processes and templates of later tasks) are answered by
+    `self.processes` (tests/hr_process_world.py), empty unless a test seeds it.
+    """
 
     def __init__(self) -> None:
         super().__init__()
+        self.processes = ProcessWorld(unexpected=self.unexpected)
         self.person_version = 3
         self.last_day: str | None = None
         self.documents: list[dict[str, Any]] = []
@@ -343,6 +350,10 @@ class RecordsWorld(World):
     def answer(
         self, caller: str, method: str, path: str, params: dict[str, str], body: Any
     ) -> tuple[int, Any]:
+        if params.get("client_id") == TENANT:
+            answered = self.processes.answer(caller, method, path, params, body)
+            if answered is not None:
+                return answered
         if caller != OWNER or params.get("client_id") != TENANT:
             return super().answer(caller, method, path, params, body)
         person = f"hr/people/{EMPLOYEE[LEAVER]}"

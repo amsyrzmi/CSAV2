@@ -15,6 +15,7 @@ import { PeopleTab } from "./PeopleTab";
 import { PayrollTab } from "./PayrollTab";
 import { NewPerson } from "./PersonForm";
 import { PersonProfile } from "./PersonProfile";
+import { ProcessesTab } from "./ProcessesTab";
 import { RecruitmentTab } from "./RecruitmentTab";
 import { ALL_DOMAINS, RequestsPanel } from "./RequestsPanel";
 import { SettingsTab } from "./SettingsTab";
@@ -96,6 +97,7 @@ function TabContent({ route, props }: { route: HrRoute; props: HrTabProps }) {
       if (route.view === "new") return <NewPerson tenant={tenant} context={context} readonly={readonly} platform={platform} />;
       return <PeopleTab tenant={tenant} context={context} readonly={readonly} platform={platform} view={route.view} />;
     }
+    case "processes": return <ProcessesTab {...props} route={route} />;
     case "recruitment": return <RecruitmentTab {...props} />;
     case "leave": return <LeaveTab {...props} />;
     case "payroll": return <PayrollTab {...props} />;

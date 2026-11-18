@@ -430,7 +430,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
                 "workflows": [],
                 "hr_duties": False,
             }
-        elif path == "hr/training-requests":
+        elif path in {"hr/training-requests", "hr/tasks/mine"}:
+            # My HR also lists the member's process steps (none here).
             data = EMPTY_PAGE
         elif path == f"hr/people/{ALI_B}":
             # HR Home for a member without HR duties shows their own profile and balances.
@@ -475,7 +476,11 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
             }
         elif path == f"hr/people/{ALI_B}/documents":
             data = {"items": []}
-        elif path == "hr/records/balances":
+        elif path == f"hr/people/{ALI_B}/processes":
+            # My HR's onboarding and offboarding section: none, so it stays hidden.
+            data = ALI_PROCESSES
+        elif path in {"hr/records/balances", "hr/records/notifications"}:
+            # My HR also reads the member's own reminders (none, so the panel stays hidden).
             data = {"items": []}
         elif path == f"email/drafts/{EMAIL_DRAFT}" and request.method == "GET":
             data = email_draft()
@@ -1161,11 +1166,21 @@ EMPTY_HINT = (
     "Ask about this tab, find a colleague, or prepare an action. Nothing changes until you "
     "confirm it."
 )
+# A person's own view of their processes (`GET /hr/people/{id}/processes`): none.
+ALI_PROCESSES: dict[str, Any] = {
+    "view": "self",
+    "employee_id": str(ALI_B),
+    "processes": [],
+    "anchor_dates": {"start_date": None, "last_day": None, "probation_end": None},
+}
 # What People & HR loads for a member without HR duties (the same bodies `exercise` answers).
 HR_PAGES: dict[str, Any] = {
     "hr/training-requests": EMPTY_PAGE,
+    "hr/tasks/mine": EMPTY_PAGE,
     "hr/records/balances": {"items": []},
+    "hr/records/notifications": {"items": []},
     f"hr/people/{ALI_B}/documents": {"items": []},
+    f"hr/people/{ALI_B}/processes": ALI_PROCESSES,
     f"hr/people/{ALI_B}": {
         "person": {
             "employee_id": str(ALI_B),

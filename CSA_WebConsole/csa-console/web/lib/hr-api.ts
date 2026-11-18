@@ -51,8 +51,12 @@ export interface Confirmation {
 export type AgentResult = { operation: string; status: string; resource_id: string } | Confirmation | { kind: "persisted_training"; request: Training } | Workflow | Employee | Training | { clarification: string; action?: null };
 export interface Page<T> { items: T[]; next_cursor: string | null }
 
-/** Keys stay with an exact operation after an uncertain response. No HR data is stored locally. */
-export function hrClient(tenant: string) {
+/**
+ * Writes to `/console/v1/hr`: CSRF comes from `api()`, and each exact operation (method, path, body)
+ * keeps its Idempotency-Key until it succeeds, so a retry after an uncertain answer is the same
+ * operation. One writer per client: the keys live in it. No HR data is stored locally.
+ */
+export function hrWriter(tenant: string) {
   const suffix = `?client_id=${encodeURIComponent(tenant)}`;
   const keys = new Map<string, string>();
   function write<T>(path: string, body: unknown, method = "POST"): Promise<T> {
@@ -64,6 +68,12 @@ export function hrClient(tenant: string) {
       method, body: serialized, headers: { "Idempotency-Key": key },
     }).then(result => { keys.delete(fingerprint); return result; });
   }
+  return { suffix, write };
+}
+
+/** Keys stay with an exact operation after an uncertain response. No HR data is stored locally. */
+export function hrClient(tenant: string) {
+  const { suffix, write } = hrWriter(tenant);
   const page = <T>(path: string, after?: string) => api<Page<T>>(
     `/console/v1/hr${path}${suffix}${after ? `&after=${encodeURIComponent(after)}` : ""}`,
   );

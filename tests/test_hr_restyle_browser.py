@@ -2049,6 +2049,10 @@ HOLIDAY_LABEL = "Reviewed holiday dates, separated by commas (YYYY-MM-DD)"
 TAB_INTROS = {
     "home": "What needs you today, and quick ways to start.",
     "people": "People in your company, their details and who they report to.",
+    "processes": (
+        "Onboarding, offboarding and other checklists for your people, and the templates they "
+        "start from."
+    ),
     "recruitment": "Candidates, their CVs and notes, and interview times.",
     "leave": "Leave balances, work calendars and, where you have access, attendance and shifts.",
     "payroll": "Prepare payroll figures for a second person to check.",
@@ -2059,7 +2063,7 @@ TAB_INTROS = {
 
 
 class TabsWorld(HomeWorld):
-    """The HR owner who also holds every private area and workflow, so all eight tabs show."""
+    """The HR owner who also holds every private area and workflow, so all nine tabs show."""
 
     def __init__(self) -> None:
         super().__init__(empty=False)

@@ -1046,6 +1046,7 @@ async def test_api_contract_exposes_only_bounded_hr_operations(world: HrWorld) -
         "/console/v1/hr/departments",
         "/console/v1/hr/home",
         "/console/v1/hr/templates",
+        "/console/v1/hr/templates/preview",
         "/console/v1/hr/templates/{template_id}",
         "/console/v1/hr/templates/{template_id}/deactivate",
         "/console/v1/hr/processes",

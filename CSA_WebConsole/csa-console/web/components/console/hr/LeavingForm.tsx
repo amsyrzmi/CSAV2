@@ -4,6 +4,8 @@ import { ApiError } from "@/lib/api";
 import { hrClient } from "@/lib/hr-api";
 import { dateText, klDate, PEOPLE_COPY } from "@/lib/hr-people";
 import { peopleClient, type LeavingReason, type OrgChart, type Person } from "@/lib/hr-people-api";
+import { processClient } from "@/lib/hr-process-api";
+import { hasActiveOffboarding, REHIRE_QUESTION } from "@/lib/hr-process-view";
 import {
   leaveBody, leaveFormIssue, leavingErrorText, leaveUndoBody, RECORDS_COPY, rehireBody, rehireFormIssue, reportsMoveChoices,
 } from "@/lib/hr-records";
@@ -136,44 +138,105 @@ export function LeavingForm({ tenant, person, onDone, onReload, onCancel }: {
   </Panel>;
 }
 
-/** Rehire someone who has left, from a start date. Console access is a separate step in Settings. */
+type OffboardingCheck = { open: boolean } | { failed: true };
+
+/**
+ * Rehire someone who has left, from a start date. Console access is a separate step in Settings.
+ * Rehiring cancels an offboarding still in progress, so when the person's processes show one the
+ * inline question asks first and nothing is sent until Continue. When that read fails, the form
+ * says so and rehires as before.
+ */
 export function RehireForm({ tenant, person, onDone, onReload, onCancel }: {
   tenant: string; person: Person; onDone: (message: string) => void; onReload: () => void; onCancel: () => void;
 }) {
   const client = useMemo(() => hrClient(tenant), [tenant]);
+  const processes = useMemo(() => processClient(tenant), [tenant]);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
+  // The start date waiting for Continue while the question about the open offboarding asks.
+  const [asking, setAsking] = useState<string | null>(null);
+  const [checkFailed, setCheckFailed] = useState(false);
+  // Rehire waits (disabled, with a line saying so) until the read of open processes settles.
+  const [checking, setChecking] = useState(true);
+  const check = useRef<Promise<OffboardingCheck> | null>(null);
   const submitting = useRef(false);
+  const submitButton = useRef<HTMLButtonElement>(null);
+  const keepButton = useRef<HTMLButtonElement>(null);
+  const wasAsking = useRef(false);
+  const questionId = useId();
+
+  useEffect(() => {
+    let active = true;
+    const pending: Promise<OffboardingCheck> = processes.personProcesses(person.employee_id)
+      .then(data => ({ open: hasActiveOffboarding(data.processes) }))
+      .catch(() => ({ failed: true as const }));
+    check.current = pending;
+    void pending.then(result => { if (active) { setCheckFailed("failed" in result); setChecking(false); } });
+    return () => { active = false; };
+  }, [processes, person.employee_id]);
+
+  // The safe choice takes focus when the question opens; closing it hands focus back to Rehire.
+  useEffect(() => {
+    if (asking !== null) { wasAsking.current = true; keepButton.current?.focus(); }
+    else if (wasAsking.current) { wasAsking.current = false; submitButton.current?.focus(); }
+  }, [asking]);
 
   async function submit(form: HTMLFormElement) {
-    if (submitting.current) return;
+    if (submitting.current || asking !== null) return;
     const startDate = String(new FormData(form).get("start_date") ?? "");
     const issue = rehireFormIssue(startDate);
     if (issue) { setProblem({ text: issue, code: "" }); return; }
+    setProblem(null);
+    // Not `busy`: disabling the form here would drop focus from Rehire while the read is usually already back.
+    submitting.current = true;
+    const result = await (check.current ?? Promise.resolve<OffboardingCheck>({ failed: true }));
+    submitting.current = false;
+    // Nothing is sent yet: Continue sends this start date.
+    if ("open" in result && result.open) { setAsking(startDate); return; }
+    await send(startDate);
+  }
+
+  async function send(startDate: string) {
+    if (submitting.current) return;
     submitting.current = true; setBusy(true); setProblem(null);
     try {
       await client.operation(rehireBody({ employeeId: person.employee_id, version: person.version ?? undefined, startDate }));
     } catch (cause) {
       const failure = failureOf(cause);
       setProblem({ text: leavingErrorText(failure, "rehire"), code: failure?.code ?? "" });
+      setAsking(null);
       return;
     } finally { submitting.current = false; setBusy(false); }
     onDone("Rehired. Invite them again from Settings to give console access.");
   }
 
-  return <Panel title={`Rehire ${person.display_name}`}>
+  return <div data-testid="hr-rehire-form"><Panel title={`Rehire ${person.display_name}`}>
     <form onSubmit={event => { event.preventDefault(); void submit(event.currentTarget); }}>
-      <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
+      <fieldset disabled={busy || asking !== null} className="grid gap-4 sm:grid-cols-2">
         <label className="block text-sm">Start date
           <input className={`${field} mt-1`} name="start_date" type="date" required defaultValue={klDate(new Date())} /></label>
+        {checkFailed && <div className="sm:col-span-2" data-testid="hr-rehire-check-failed"><Notice warning>
+          We couldn&apos;t check for an open offboarding. If one is open, rehiring cancels it and skips its remaining steps.
+        </Notice></div>}
         <Problems problem={problem} onReload={onReload} />
         <div className="flex flex-wrap gap-2 sm:col-span-2">
-          <button className={action}>Rehire</button>
+          <button ref={submitButton} className={action} disabled={checking}>Rehire</button>
           <button type="button" className={secondary} onClick={onCancel}>Cancel</button>
         </div>
+        {checking && <p className="text-sm sm:col-span-2" data-testid="hr-rehire-checking">Checking open processes…</p>}
       </fieldset>
+      {asking !== null && <div role="group" aria-labelledby={questionId} data-testid="hr-rehire-confirm-group"
+        onKeyDown={event => { if (event.key === "Escape" && !busy) { event.stopPropagation(); setAsking(null); } }}
+        className="mt-4 space-y-3 rounded-[var(--fs-radius-control)] border border-[color:var(--fs-primary)] bg-[var(--fs-surface-blue)] p-3">
+        <p id={questionId} data-testid="hr-rehire-confirm-question" className="text-sm">{REHIRE_QUESTION}</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={action} disabled={busy} onClick={() => void send(asking)}>Continue</button>
+          <button ref={keepButton} type="button" className={secondary} disabled={busy} onClick={() => setAsking(null)}>
+            Keep the offboarding</button>
+        </div>
+      </div>}
     </form>
-  </Panel>;
+  </Panel></div>;
 }
 
 /** Undo a leaving date while the last day has not passed. */

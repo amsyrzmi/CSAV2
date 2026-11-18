@@ -6,19 +6,21 @@ import { hrHref, type HrRoute } from "@/lib/hr-paths";
 import { emptyText, homeItems, homeQuickActions, runsHomeMaintenance } from "@/lib/hr-people";
 import { peopleClient, type HrHome, type Interview, type Person } from "@/lib/hr-people-api";
 import { isDenied } from "@/lib/hr-pickers";
+import type { HomeReminder, OpenTasks } from "@/lib/hr-process-view";
 import GetStarted, { useNoPeopleYet } from "../hr-guide/GetStarted";
 import { secondary, Notice, Panel } from "../ui";
+import { HomeReminders } from "./HomeReminders";
 import type { HrTabProps } from "./HrShell";
 import { MyHr } from "./MyHr";
-import { useHrRunner, useHrSave } from "./useHrRunner";
+import { MyTasks } from "./MyTasks";
+import { useHrRunner } from "./useHrRunner";
 
-type Reminder = { id: string; kind: string; resource_id: string; read_at: string | null };
 /** For the HR owner, local maintenance runs every five minutes while Home is open, as it did in the old HR tools. */
 const MAINTENANCE_MS = 300000;
 
 /**
- * Home. Staff with HR duties get "Needs you today", quick actions and the reminders; everyone else
- * gets My HR. The workspace dock is the only assistant.
+ * Home. Staff with HR duties get "Needs you today", quick actions, My tasks and the reminders;
+ * everyone else gets My HR, which starts with My tasks. The workspace dock is the only assistant.
  */
 export function HomeTab(props: HrTabProps) {
   const { tenant, context, readonly, platform } = props;
@@ -29,19 +31,20 @@ export function HomeTab(props: HrTabProps) {
 /** What "Needs you today" is built from, besides the reminders and interviews Home already reads. */
 type Today = { home: HrHome; starting: Person[] } | { failed: true } | null;
 
-function HrHomePage({ tenant, context, readonly, platform, admin, refreshContext }: HrTabProps) {
+function HrHomePage({ tenant, context, readonly, platform, admin }: HrTabProps) {
   const client = useMemo(() => hrClient(tenant), [tenant]);
   const people = useMemo(() => peopleClient(tenant), [tenant]);
   const runner = useHrRunner();
   const { busy, error, message, run, setError } = runner;
-  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [reminders, setReminders] = useState<HomeReminder[]>([]);
+  // The open steps My tasks holds: a reminder of any other step is done.
+  const [openTasks, setOpenTasks] = useState<OpenTasks | null>(null);
   const [appointments, setAppointments] = useState<Interview[]>([]);
   const [today, setToday] = useState<Today>(null);
   const load = useCallback(async () => {
-    const [notifications, interviews] = await Promise.all([client.records<Reminder>("notifications"), client.records<Interview>("my_interviews")]);
+    const [notifications, interviews] = await Promise.all([client.records<HomeReminder>("notifications"), client.records<Interview>("my_interviews")]);
     setReminders(notifications.items); setAppointments(interviews.items);
   }, [client]);
-  const save = useHrSave(runner, client, load, refreshContext);
   useEffect(() => { void run(load); }, [run, load]);
   useEffect(() => {
     let active = true;
@@ -84,12 +87,12 @@ function HrHomePage({ tenant, context, readonly, platform, admin, refreshContext
             : <ul className="space-y-2 text-sm">{items.map(item => <li key={item.key}>
               <Link className="underline" href={href(item.href)}>{item.label}</Link></li>)}</ul>}
     </Panel>
+    <MyTasks tenant={tenant} readonly={readonly} onOpenTasks={setOpenTasks} />
     {message && <Notice>{message}</Notice>}{error && <Notice error>{error}. Check saved records before retrying an uncertain write.</Notice>}
     <Panel title="Local HR reminders"><p className="mb-4 text-sm">{maintains && "Maintenance runs every five minutes while this page is open. "}Reminders are deduplicated daily; expired candidate content is erased. No external messages are sent.</p>
       <button className={secondary} disabled={busy || readonly} onClick={() => void run(async () => { if (maintains) await client.operation({ operation: "automation.run" }); await load(); })}>Refresh reminders</button>
       <div className="mt-4 space-y-2">{appointments.map(appointment => <p key={appointment.id} className="text-sm">Interview {new Date(appointment.starts_at).toLocaleString()} – {new Date(appointment.ends_at).toLocaleTimeString()} · {appointment.status}</p>)}</div>
-      <div className="mt-4 space-y-3">{reminders.map(reminder => <div key={reminder.id} className="flex flex-wrap justify-between gap-3 border-b border-ink-200 py-3 text-sm">
-        <span>{reminder.kind.replaceAll("_", " ")} · {reminder.resource_id}</span>{!reminder.read_at && <button className={secondary} disabled={busy || readonly} onClick={() => void save({ operation: "notification.read", notification_id: reminder.id })}>Mark read</button>}
-      </div>)}</div></Panel>
+      <div className="mt-4"><HomeReminders client={client} reminders={reminders} open={openTasks} readonly={readonly} busy={busy}
+        reload={load} /></div></Panel>
   </div>;
 }
