@@ -159,10 +159,14 @@ def page(items: Sequence[HrPersonOut], cursor: str | None) -> PeoplePage:
 
 
 def org_chart(people: Sequence[HrPersonOut]) -> OrgChart:
-    """Nodes for everyone who has not left. A manager outside the set makes a root; people on a
-    management loop are listed in ``looped`` and shown as roots."""
+    """Nodes for everyone who has not left. A manager outside the set makes a root and sets
+    ``manager_outside`` (no id or name is given); people on a management loop are listed in
+    ``looped`` and shown as roots."""
     present = sorted((p for p in people if p.status != "left"), key=_name_order)
     parent = {p.employee_id: p.manager_id for p in present}
+    # Read before the nulling below: a manager who left, or whom this viewer cannot see, is the
+    # only reason a person with a manager stands at the top for a reason other than a loop.
+    outside = {eid for eid, m in parent.items() if m is not None and m not in parent}
     parent = {eid: (m if m in parent else None) for eid, m in parent.items()}
     looped: set[UUID] = set()
     for start in parent:
@@ -187,6 +191,7 @@ def org_chart(people: Sequence[HrPersonOut]) -> OrgChart:
             job_title=p.job_title,
             department=p.department,
             manager_id=None if p.employee_id in looped else parent[p.employee_id],
+            manager_outside=p.employee_id in outside,
             department_id=p.department_id,
             status=cast(OrgStatus, p.status),  # `left` was filtered out above
             start_date=p.start_date,

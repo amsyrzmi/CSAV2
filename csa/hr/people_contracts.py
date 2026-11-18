@@ -149,6 +149,9 @@ class OrgNode(HrModel):
     job_title: str | None
     department: str | None
     manager_id: UUID | None
+    # True when the person has a manager who is not on the chart (left, or not visible to this
+    # viewer). `manager_id` is null then, so this says why; it never carries the manager's id.
+    manager_outside: bool = False
     department_id: UUID | None = None
     # `left` people are never nodes. A viewer whose row hides the last day reads `active`.
     status: OrgStatus

@@ -216,7 +216,9 @@ people with basic fields only. The HR-only fields (`employment_profile`, `versio
   `is_owner`.
 - `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
   manager loop (shown flat). `directory` viewers see active and starting people. Each node is
-  `{employee_id, display_name, job_title, department, manager_id}` plus `department_id`, `status`
+  `{employee_id, display_name, job_title, department, manager_id}` plus `manager_outside` (true when
+  the person has a manager who is not on the chart, because they left or this viewer cannot see
+  them: `manager_id` is `null` then and no id or name is given), `department_id`, `status`
   (`active`, `starting` or `leaving`; never `left`), `start_date`, `last_day` and
   `legal_entity_reference`. The last four come from the same row rules as the People list: only
   HR, the person and their direct manager get `last_day` (a leaving person reads `active` to

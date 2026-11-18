@@ -1829,6 +1829,7 @@ ORG_NODE_KEYS = {
     "job_title",
     "department",
     "manager_id",
+    "manager_outside",
     "department_id",
     "status",
     "start_date",
@@ -1886,6 +1887,8 @@ async def test_org_chart_and_departments(world: HrWorld) -> None:
     parents = {n["employee_id"]: n["manager_id"] for n in chart["nodes"]}
     assert parents[str(world.employees["staff"])] == str(world.employees["manager"])
     assert parents[str(world.employees["manager"])] is None
+    # Nobody here has a manager outside the chart.
+    assert not any(n["manager_outside"] for n in chart["nodes"])
 
     listed = await get_ok(world, "operator", f"{BASE}/departments")
     assert [(d["name"], d["people"], d["archived"]) for d in listed["items"]] == [
@@ -1904,6 +1907,20 @@ async def test_org_chart_and_departments(world: HrWorld) -> None:
     assert {n["employee_id"]: n["manager_id"] for n in looped["nodes"]}[
         str(world.employees["manager"])
     ] is None
+    # A loop is not "outside": the members' managers are on the chart.
+    assert not any(n["manager_outside"] for n in looped["nodes"])
+    # A manager who has left makes a root with the reason, and the id stays hidden.
+    await world.q(
+        "UPDATE hr_employees SET manager_id=%s WHERE client_id=%s AND id=%s",
+        (world.employees["outsider"], world.tenant, world.employees["staff"]),
+    )
+    gone = await get_ok(world, "operator", f"{BASE}/org-chart")
+    assert gone["looped"] == []
+    by_id = {n["employee_id"]: n for n in gone["nodes"]}
+    staff_node = by_id[str(world.employees["staff"])]
+    assert staff_node["manager_outside"] is True and staff_node["manager_id"] is None
+    assert by_id[str(world.employees["manager"])]["manager_outside"] is False
+    assert str(world.employees["outsider"]) not in str(gone)
 
 
 async def test_home_counts_training_and_requests_waiting(world: HrWorld) -> None:

@@ -13205,6 +13205,11 @@
             ],
             "title": "Manager Id"
           },
+          "manager_outside": {
+            "default": false,
+            "title": "Manager Outside",
+            "type": "boolean"
+          },
           "start_date": {
             "anyOf": [
               {

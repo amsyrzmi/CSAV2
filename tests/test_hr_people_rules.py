@@ -155,6 +155,9 @@ def test_org_chart_roots_children_hidden_managers_and_left():
     assert parents == {"amir": None, "Bakar": ceo.employee_id, "Cik": None, "zara": None}
     assert left_id not in {n.employee_id for n in chart.nodes}
     assert chart.looped == []
+    # A manager who is hidden or left is "outside"; a manager on the chart, or none, is not.
+    outside = {n.display_name: n.manager_outside for n in chart.nodes}
+    assert outside == {"amir": True, "Bakar": False, "Cik": True, "zara": False}
     root = next(n for n in chart.nodes if n.display_name == "zara")
     assert (root.job_title, root.department) == ("CEO", "Exec")
 
@@ -211,6 +214,8 @@ def test_org_chart_loop_is_flat():
     assert set(chart.looped) == {a, b}
     assert {n.employee_id: n.manager_id for n in chart.nodes}[a] is None
     assert {n.employee_id: n.manager_id for n in chart.nodes}[c.employee_id] == a
+    # Their managers are on the chart, so nobody here is "outside".
+    assert not any(n.manager_outside for n in chart.nodes)
 
 
 def test_org_chart_self_manager_is_a_loop():
