@@ -32,6 +32,9 @@ function ratio(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+// The org chart's department chip tints 1..N (lib/hr-org-chart.ts: DEPARTMENT_TINT_COUNT, pinned below).
+const DEPARTMENT_TINTS = [1, 2, 3, 4, 5, 6];
+
 const COLOUR_TOKENS = [
   "--fs-bg", "--fs-surface", "--fs-surface-raised", "--fs-surface-blue", "--fs-text",
   "--fs-text-secondary", "--fs-primary", "--fs-primary-hover", "--fs-border", "--fs-border-control",
@@ -48,6 +51,7 @@ const COLOUR_TOKENS = [
   "--fs-room-staff-bg", "--fs-room-staff-bar", "--fs-log-from", "--fs-log-to",
   "--fs-attention-border", "--fs-attention-edge",
   ...[1, 2, 3, 4].flatMap((n) => [`--fs-customer-${n}-bg`, `--fs-customer-${n}-text`]),
+  ...DEPARTMENT_TINTS.flatMap((n) => [`--fs-dept-${n}-bg`, `--fs-dept-${n}-text`]),
 ];
 
 // [foreground token, background token, minimum ratio, what it protects]
@@ -91,6 +95,7 @@ const PAIRS = [
   ["--fs-customer-text", "--fs-customer-bg", 4.5, "status label: customer"],
   ["--fs-team-text", "--fs-team-bg", 4.5, "status label: team"],
   ...[1, 2, 3, 4].map((n) => [`--fs-customer-${n}-text`, `--fs-customer-${n}-bg`, 4.5, `customer avatar tint ${n}`]),
+  ...DEPARTMENT_TINTS.map((n) => [`--fs-dept-${n}-text`, `--fs-dept-${n}-bg`, 4.5, `org chart department tint ${n}`]),
   ["--fs-auth-text", "--fs-auth-from", 4.5, "text on the sign-in panel, top"],
   ["--fs-auth-text", "--fs-auth-to", 3, "sign-in panel text at the lightest corner (decorative; no text sits there)"],
   ["--fs-auth-logo", "--fs-auth-from", 3, "sign-in logo on the panel, darkest stop"],
@@ -199,6 +204,17 @@ test("cobalt customer tints match the library's approved blues", async () => {
     assert.equal(map[`--fs-customer-${i + 1}-bg`].toLowerCase(), tint.background.toLowerCase());
     assert.equal(map[`--fs-customer-${i + 1}-text`].toLowerCase(), tint.color.toLowerCase());
   });
+});
+
+test("the department tint tokens match departmentTint's range", async () => {
+  const source = await readFile(new URL("../lib/hr-org-chart.ts", import.meta.url), "utf8");
+  const count = Number(/DEPARTMENT_TINT_COUNT\s*=\s*(\d+)/.exec(source)?.[1]);
+  assert.equal(count, DEPARTMENT_TINTS.length);
+  for (const theme of THEMES) {
+    const map = tokens(theme);
+    const present = Object.keys(map).filter((name) => /^--fs-dept-\d+-(bg|text)$/.test(name));
+    assert.equal(present.length, count * 2, `${theme} defines exactly ${count} department tints`);
+  }
 });
 
 /** The colour `fraction` of the way from `from` to `to`, as #rrggbb (what the panel gradient paints there). */

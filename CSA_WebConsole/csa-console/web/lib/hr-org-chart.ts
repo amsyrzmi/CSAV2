@@ -59,6 +59,9 @@ export function orgMarker(node: Pick<OrgNode, "status">): "starting" | "leaving"
   return node.status === "starting" || node.status === "leaving" ? node.status : null;
 }
 
+/** How many --fs-dept-N-bg / -text token pairs the themes define (app/themes.css; pinned in tests/theme-contrast.test.mjs). */
+export const DEPARTMENT_TINT_COUNT = 6;
+
 /** Stable FNV-1a (32 bit) over the department id, so a department keeps its tint (1 to 6). */
 export function departmentTint(departmentId: string | null): 1 | 2 | 3 | 4 | 5 | 6 | null {
   if (!departmentId) return null;
@@ -67,7 +70,7 @@ export function departmentTint(departmentId: string | null): 1 | 2 | 3 | 4 | 5 |
     hash ^= departmentId.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
-  return (((hash >>> 0) % 6) + 1) as 1 | 2 | 3 | 4 | 5 | 6;
+  return (((hash >>> 0) % DEPARTMENT_TINT_COUNT) + 1) as 1 | 2 | 3 | 4 | 5 | 6;
 }
 
 /** A spreadsheet runs a cell that starts with one of these as a formula. */
