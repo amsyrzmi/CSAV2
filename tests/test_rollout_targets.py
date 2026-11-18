@@ -15,6 +15,7 @@ from tests.test_rollout_production import HOST_REQUIRED, HOST_TEXT
 from tests.test_staging_rollout import (
     DIGEST_A,
     DIGEST_B,
+    PREV_SHA,
     SHA,
     FakeRunner,
     fail,
@@ -42,6 +43,11 @@ def test_staging_target_matches_current_module_constants() -> None:
     assert STAGING.db_name == "csa_staging"
     assert STAGING.staged_gate is False
     assert STAGING.pre_change is None
+
+
+def test_staging_targets_downgrade_warning_is_on() -> None:
+    assert STAGING.downgrade_warning is True
+    assert PRODUCTION.downgrade_warning is True
 
 
 def test_get_target_returns_staging() -> None:
@@ -380,6 +386,33 @@ def test_main_target_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     docker = first_docker(runner)
     assert docker[docker.index("--project-name") + 1] == "csa-prod"
     assert "deploy/compose.production.yml" in docker
+
+
+def test_staging_plan_warns_on_a_downgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret_dir = tmp_path / "secrets"
+    checks_dir = tmp_path / "checks"
+    checks_dir.mkdir()
+    monkeypatch.setattr(sr, "SECRET_DIR", secret_dir)
+    monkeypatch.setattr(sr, "CHECKS_DIR", checks_dir)
+    monkeypatch.setattr(
+        sr, "discover_migrations", lambda: [(v, Path(f"{v}_x.sql")) for v in ("0484", "0485")]
+    )
+    warning = (
+        f"WARNING: {SHA[:7]} is older than the running {PREV_SHA[:7]}; this is a downgrade. "
+        "A downgrade across a migration is refused."
+    )
+    secrets = make_secret_files(secret_dir, "staging_owner_dsn")
+    runner = staging_runner(downgrade=True, secret_files=secrets)
+    assert sr.main(["plan"], runner=runner) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines.count(warning) == 1
+    # It is a warning only: the apply command is still printed, and the exit stays 0.
+    assert lines[-1] == f"{sr.APPLY_COMMAND} --sha {SHA}"
+    # A newer commit than the running one prints no warning.
+    assert sr.main(["plan"], runner=staging_runner(secret_files=secrets)) == 0
+    assert "WARNING" not in capsys.readouterr().out
 
 
 def test_main_defaults_to_staging(

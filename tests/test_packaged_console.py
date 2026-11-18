@@ -1604,6 +1604,8 @@ async def test_packaged_customer_inbox_browser_acceptance(
             await staff.goto(f"{w.origin}/portal/inbox")
             # The assistant dock button only; its turns are not driven (the planner is off).
             await staff.get_by_test_id("assistant-open").wait_for()
+            # The Inbox opens on Needs us; the assistant's chats are only on All.
+            await staff.get_by_test_id("inbox-tab-all").click()
             # Rows show the customer, not the id; the row button carries the conversation id.
             inbox_row = f'[data-conversation-id="{conversation}"]'
             await staff.locator(inbox_row).click()
@@ -1640,10 +1642,15 @@ async def test_packaged_customer_inbox_browser_acceptance(
             assert replies[0] is not None and json.loads(replies[0])["request_key"]
             assert await thread.get_by_role("list").get_by_text(reply_text, exact=True).count() == 1
             await staff.get_by_text("Staff · queued", exact=True).wait_for()
-            await staff.get_by_role("button", name="Hand back to assistant", exact=True).click()
+            # A taken-over chat is a queue item: Hand back is in the thread's More menu.
+            await staff.get_by_test_id("inbox-more-menu").click()
+            await staff.get_by_role(
+                "menuitem", name="Hand back to the assistant", exact=True
+            ).click()
             await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
             assert await staff.get_by_label("Human reply", exact=True).count() == 0
             await staff.reload()
+            await staff.get_by_test_id("inbox-tab-all").click()
             await staff.locator(inbox_row).click()
             await thread.get_by_text(reply_text, exact=True).wait_for()
             await thread.get_by_text("The assistant is handling this", exact=True).wait_for()
@@ -1690,6 +1697,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
                     await expect_empty_inbox(member, connect=False)
                     assert (await fetch(member, f"{base}/messages"))["status"] == 404
                 else:
+                    await member.get_by_test_id("inbox-tab-all").click()
                     await member.locator(inbox_row).click()
                     await (
                         member.get_by_test_id("inbox-thread")
@@ -1703,6 +1711,7 @@ async def test_packaged_customer_inbox_browser_acceptance(
             assert await platform.get_by_test_id("assistant-open").count() == 0
             assert (await fetch(platform, "/console/v1/inbox/conversations"))["status"] == 400
             await platform.get_by_label("Tenant").select_option(tenants[0])
+            await platform.get_by_test_id("inbox-tab-all").click()
             await platform.locator(inbox_row).click()
             await (
                 platform.get_by_test_id("inbox-thread")

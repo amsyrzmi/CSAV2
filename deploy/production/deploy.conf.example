@@ -1,0 +1,8 @@
+# Config for the production deploy entry script. Install it root-owned, mode 0644, next to the
+# script as /usr/local/sbin/csa-prod-deploy.conf. KEY=value lines only; nothing here is a secret.
+TARGET=production
+DEPLOY_USER=ubuntu
+CHECKOUT=/home/ubuntu/CSAV2
+PYTHON=/opt/csa-deploy/venv/bin/python
+LOCK=/var/lock/csa-prod-deploy.lock
+LOG_DIR=/var/log/csa-prod-deploy

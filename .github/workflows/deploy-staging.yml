@@ -1,0 +1,284 @@
+# Roll the newest green commit on main out to staging on the home server through AWS Systems
+# Manager Run Command, and record it as staged. It starts when publish-staging-images completes
+# (that run is only a wake-up) and by manual dispatch. Every automatic run resolves the tip of main
+# itself with deploy/staging/rollout_gate.sh; the commit GitHub attaches to the publish run is not
+# trusted, because it can be a later commit than the one that run published. Newest wins:
+#   - GitHub's concurrency drops an older pending run when a newer one queues;
+#   - a run whose tip is not ready yet (ci not green, or images not published) ends green with
+#     `nothing to roll out`, and that commit's own publish run starts the next rollout;
+#   - a tip that already has a staged record ends green with `already staged`;
+#   - the apply job ends green with `superseded`, and sends nothing, when main moved after its plan.
+# An explicit `sha` (dispatch) skips the tip checks and is still stopped by a downgrade warning in
+# the plan: staging never goes back through this workflow (the manual script is the break-glass).
+#
+# Pause switch: the repository variable STAGING_AUTO_PAUSED. `true` turns automatic runs into a
+# green `paused` notice and nothing is sent; unset or any other value means automatic. A manual
+# dispatch ignores the pause.
+#
+# `plan` sends the read-only plan to the instance and shows it in the job summary; `apply` sends
+# exactly that commit, those migrations and those image digests, and the rollout on the instance
+# refuses if they changed. The instance runs the smoke test as part of the apply. Only when the
+# instance reported success does `record` write the staged record, with the workflow token: the
+# `staging` environment is used by plan and apply with `deployment: false` so that GitHub creates
+# no deployment object of its own, and `record` names no environment. The production gate counts
+# only a deployment described `staging rollout`, so nothing else can count as staged.
+#
+# AWS access is a short-lived OIDC role session. The role ARN (STAGING_DEPLOY_ROLE_ARN) and the
+# managed-node id (STAGING_INSTANCE_ID) are environment secrets on `staging` (masked in the public
+# logs), the region is the repository variable STAGING_DEPLOY_REGION, and a missing one stops the
+# run before any AWS call.
+# Instance output is bracketed in stop-commands so it cannot act as a workflow command. Every job
+# runs only for main, and the runner scripts always come from a checkout of main, never from the
+# commit being deployed.
+name: deploy-staging
+
+on:
+  workflow_run:
+    workflows: [publish-staging-images]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA on main (empty = the tip of main)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && vars.STAGING_AUTO_PAUSED != 'true')) && 'deploy-staging' || format('deploy-staging-idle-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  paused:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && vars.STAGING_AUTO_PAUSED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Say that automatic rollouts are paused
+        run: |
+          set -euo pipefail
+          echo "Automatic staging rollouts are paused (repository variable STAGING_AUTO_PAUSED). Nothing was sent. Run deploy-staging by hand, or set the variable to false." >> "$GITHUB_STEP_SUMMARY"
+
+  plan:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && vars.STAGING_AUTO_PAUSED != 'true'))
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      deployment: false
+    timeout-minutes: 130
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
+      id-token: write
+      packages: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      sha: ${{ steps.parse.outputs.sha }}
+      explicit: ${{ steps.gate.outputs.explicit }}
+      migrations: ${{ steps.parse.outputs.migrations }}
+      python_digest: ${{ steps.gate.outputs.python_digest }}
+      frontend_digest: ${{ steps.gate.outputs.frontend_digest }}
+    env:
+      ROLE_ARN: ${{ secrets.STAGING_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.STAGING_DEPLOY_REGION }}
+      INSTANCE_ID: ${{ secrets.STAGING_INSTANCE_ID }}
+      DEPLOY_TARGET: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # The gate prints the commit's values and then `proceed=true|false` and `reason=...`. It
+      # ends the run green (proceed=false) when the tip is not ready yet or is already staged on an
+      # automatic run, and fails on any other refusal. Every later step waits for its verdict.
+      - name: Decide what to roll out
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SHA: ${{ inputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deploy/staging/rollout_gate.sh start > "$RUNNER_TEMP/gate.txt"
+          cat "$RUNNER_TEMP/gate.txt" >> "$GITHUB_OUTPUT"
+          reason="$(sed -n 's/^reason=//p' "$RUNNER_TEMP/gate.txt")"
+          printf '%s\n' "$reason" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Require the deploy variables
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          [ -n "${ROLE_ARN:-}" ] || { echo "secret STAGING_DEPLOY_ROLE_ARN is not set on the staging environment" >&2; exit 1; }
+          [ -n "${AWS_REGION:-}" ] || { echo "repository variable STAGING_DEPLOY_REGION is not set (needed by the staging environment)" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "secret STAGING_INSTANCE_ID is not set on the staging environment" >&2; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.proceed == 'true'
+        with:
+          role-to-assume: ${{ secrets.STAGING_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.STAGING_DEPLOY_REGION }}
+          role-session-name: deploy-staging-plan
+          mask-aws-account-id: true
+
+      - name: Plan on the staging node
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          SHA: ${{ steps.gate.outputs.sha }}
+          PYTHON_DIGEST: ${{ steps.gate.outputs.python_digest }}
+          FRONTEND_DIGEST: ${{ steps.gate.outputs.frontend_digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          # Instance output is data: no line of it (stdout, or the stderr ssm_run.sh passes on)
+          # may act as a workflow command. The trap resumes command processing however the
+          # step ends.
+          token="$(uuidgen)"
+          echo "::stop-commands::$token"
+          trap 'echo "::$token::"' EXIT
+          deploy/production/ssm_run.sh plan "$SHA" > "$RUNNER_TEMP/plan.txt" || status="$?"
+          sed -e '$a\' "$RUNNER_TEMP/plan.txt" || true
+          {
+            echo "### Staging plan for \`$SHA\`"
+            echo
+            echo '````'
+            sed -e '$a\' "$RUNNER_TEMP/plan.txt"
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Read the plan
+        id: parse
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          SHA: ${{ steps.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deploy/production/parse_plan.sh "$RUNNER_TEMP/plan.txt" "$SHA" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      deployment: false
+    timeout-minutes: 130
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      applied: ${{ steps.done.outputs.applied }}
+    env:
+      ROLE_ARN: ${{ secrets.STAGING_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.STAGING_DEPLOY_REGION }}
+      INSTANCE_ID: ${{ secrets.STAGING_INSTANCE_ID }}
+      DEPLOY_TARGET: staging
+    steps:
+      - name: Require the deploy variables
+        run: |
+          set -euo pipefail
+          [ -n "${ROLE_ARN:-}" ] || { echo "secret STAGING_DEPLOY_ROLE_ARN is not set on the staging environment" >&2; exit 1; }
+          [ -n "${AWS_REGION:-}" ] || { echo "repository variable STAGING_DEPLOY_REGION is not set (needed by the staging environment)" >&2; exit 1; }
+          [ -n "${INSTANCE_ID:-}" ] || { echo "secret STAGING_INSTANCE_ID is not set on the staging environment" >&2; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # Newest wins: unless the sha was given explicitly, main must still be at the planned
+      # commit. This reads the tip and sends nothing. A moved tip ends the job green here (every
+      # later step waits for current=true) and the run for the newer commit rolls it out; an
+      # unreadable tip fails the step.
+      - name: Check the commit is still current
+        id: current
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+          EXPLICIT: ${{ needs.plan.outputs.explicit }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          deploy/staging/rollout_gate.sh current "$SHA" "$EXPLICIT" > "$RUNNER_TEMP/current.txt"
+          cat "$RUNNER_TEMP/current.txt" >> "$GITHUB_OUTPUT"
+          if grep -qx 'current=false' "$RUNNER_TEMP/current.txt"; then
+            echo "superseded: main moved after this run's plan, so nothing was sent. The run for the newer commit rolls it out." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.current.outputs.current == 'true'
+        with:
+          role-to-assume: ${{ secrets.STAGING_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.STAGING_DEPLOY_REGION }}
+          role-session-name: deploy-staging-apply
+          mask-aws-account-id: true
+
+      - name: Apply on the staging node
+        if: steps.current.outputs.current == 'true'
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+          MIGRATIONS: ${{ needs.plan.outputs.migrations }}
+          PYTHON_DIGEST: ${{ needs.plan.outputs.python_digest }}
+          FRONTEND_DIGEST: ${{ needs.plan.outputs.frontend_digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          # Instance output is data: no line of it (stdout, or the stderr ssm_run.sh passes on)
+          # may act as a workflow command. The trap resumes command processing however the
+          # step ends.
+          token="$(uuidgen)"
+          echo "::stop-commands::$token"
+          trap 'echo "::$token::"' EXIT
+          deploy/production/ssm_run.sh apply "$SHA" "$MIGRATIONS" > "$RUNNER_TEMP/apply.txt" || status="$?"
+          sed -e '$a\' "$RUNNER_TEMP/apply.txt" || true
+          {
+            echo "### Staging apply of \`$SHA\`"
+            echo
+            echo '````'
+            sed -e '$a\' "$RUNNER_TEMP/apply.txt"
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      # The only place `applied` is set: after a successful apply, as the last step.
+      - name: Mark applied
+        id: done
+        if: steps.current.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          echo applied=true >> "$GITHUB_OUTPUT"
+
+  record:
+    needs: [plan, apply]
+    if: github.ref == 'refs/heads/main' && needs.apply.outputs.applied == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # Staging is already rolled out: if this fails, use "Re-run failed jobs" on this run.
+      - name: Record the staged commit
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          deploy/staging/record_staged.sh "$SHA"

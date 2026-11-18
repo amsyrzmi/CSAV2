@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Staging deploy, read-only plan: runs the root-owned csa-staging-deploy entry script as the csa-deploy user with the action fixed to plan. Published in AWS as csa-staging-plan.",
+  "parameters": {
+    "sha": {
+      "type": "String",
+      "description": "Full 40 character lowercase commit sha on main.",
+      "allowedPattern": "^[0-9a-f]{40}$"
+    },
+    "pythonDigest": {
+      "type": "String",
+      "description": "Digest of the csa-python image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "frontendDigest": {
+      "type": "String",
+      "description": "Digest of the csa-frontend image to roll out, sha256: and 64 lowercase hex characters.",
+      "allowedPattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "7200",
+        "runCommand": [
+          "set -eu",
+          "exec runuser -u csa-deploy -- /usr/local/sbin/csa-staging-deploy plan \"{{ sha }}\" \"\" \"\" \"{{ pythonDigest }}\" \"{{ frontendDigest }}\""
+        ]
+      }
+    }
+  ]
+}

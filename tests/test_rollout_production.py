@@ -1234,3 +1234,14 @@ def test_plan_refuses_video_without_the_key_before_any_docker_command(
     flags_name = Path(rig.target.flags_file).name
     assert caught.value.message == VIDEO_NEEDS_KEY.replace("production-rollout.env", flags_name)
     assert rig.docker_calls() == []
+
+
+def test_runbooks_describe_the_resolver_setting_and_its_exit_codes() -> None:
+    root = Path(__file__).resolve().parent.parent
+    for name in ("PRODUCTION.md", "RELEASE.md"):
+        text = " ".join((root / "deploy" / name).read_text(encoding="utf-8").split())
+        assert "DEPLOY_TARGET" in text, name
+        assert "resolve_commit.sh" in text, name
+    production = " ".join((root / "deploy" / "PRODUCTION.md").read_text(encoding="utf-8").split())
+    assert "exits 3" in production
+    assert "nothing to roll out" in production

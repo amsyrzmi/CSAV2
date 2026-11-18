@@ -1,14 +1,16 @@
 #!/bin/bash
-# Send a production deploy Systems Manager document to the production instance, wait for the
-# command to finish and print its output. The deploy-production workflow runs it from main:
+# Send a deploy Systems Manager document to the target's instance, wait for the command to finish
+# and print its output. The deploy-production and deploy-staging workflows run it from main:
 #   ssm_run.sh <plan|apply> <sha> [<migrations>] [<host_digest>]
-# Each action has its own document with the action fixed inside it: plan sends csa-production-plan
-# with the sha, apply sends csa-production-apply with the sha, the host digest and, when any are
-# pending, the migrations (the document defaults them to empty). Both also send the two image
-# digests the rollout will use.
-# Needs AWS_REGION, INSTANCE_ID, PYTHON_DIGEST and FRONTEND_DIGEST (each image digest is
-# sha256: and 64 lowercase hex characters); AWS credentials come from the environment and are
-# never printed.
+# Each action has its own document with the action fixed inside it. On production, plan sends
+# csa-production-plan with the sha, and apply sends csa-production-apply with the sha, the host
+# digest and, when any are pending, the migrations (the document defaults them to empty). On
+# staging, plan sends csa-staging-plan and apply sends csa-staging-apply with the sha and the
+# migrations only: staging has no host settings digest, so a non-empty one is refused. Every
+# send also carries the two image digests the rollout will use.
+# Needs DEPLOY_TARGET (staging or production), AWS_REGION, INSTANCE_ID, PYTHON_DIGEST and
+# FRONTEND_DIGEST (each image digest is sha256: and 64 lowercase hex characters); AWS credentials
+# come from the environment and are never printed.
 # Exit: 0 when the command succeeded, 124 when it was still running once SSM_MAX_SECONDS had passed
 # since the send, 64 for a refused argument or setting (nothing is sent), 1 for anything else.
 set -euo pipefail
@@ -44,6 +46,7 @@ valid() {
     [[ "$2" =~ $1 && "$2" != *$'\n'* ]]
 }
 
+valid '^(staging|production)$' "${DEPLOY_TARGET:-}" || die "DEPLOY_TARGET must be staging or production"
 valid '^[a-z0-9-]+$' "${AWS_REGION:-}" || die "AWS_REGION must be set to the AWS region"
 valid '^m?i-[0-9a-f]{8,17}$' "${INSTANCE_ID:-}" || die "INSTANCE_ID must be set to the instance id"
 valid '^[0-9]+$' "$SSM_POLL_SECONDS" || die "SSM_POLL_SECONDS must be a whole number of seconds"
@@ -65,9 +68,15 @@ valid '^([0-9]{4}(,[0-9]{4})*)?$' "$migrations" || die "migrations must be comma
 # The document's parameters go as one JSON map built by jq: no value is ever spliced into a
 # command string. Empty migrations are left out (the apply document defaults them to "").
 if [[ "$action" == "apply" ]]; then
-    valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
-    document="csa-production-apply"
-    filter='{sha: [$sha], migrations: [$migrations], hostDigest: [$digest]'
+    filter='{sha: [$sha], migrations: [$migrations]'
+    if [[ "$DEPLOY_TARGET" == "staging" ]]; then
+        [[ -z "$digest" ]] || die "staging takes no host digest"
+        document="csa-staging-apply"
+    else
+        valid '^[0-9a-f]{12}$' "$digest" || die "apply needs a 12 character lowercase hex host digest"
+        document="csa-production-apply"
+        filter+=', hostDigest: [$digest]'
+    fi
     filter+=', pythonDigest: [$python], frontendDigest: [$frontend]}'
     filter+=' | if $migrations == "" then del(.migrations) else . end'
     parameters="$(jq -cn --arg sha "$sha" --arg migrations "$migrations" --arg digest "$digest" \
@@ -75,7 +84,7 @@ if [[ "$action" == "apply" ]]; then
 else
     [[ -z "$migrations" ]] || die "plan takes no migrations"
     [[ -z "$digest" ]] || die "plan takes no host digest"
-    document="csa-production-plan"
+    document="csa-${DEPLOY_TARGET}-plan"
     parameters="$(jq -cn --arg sha "$sha" --arg python "$PYTHON_DIGEST" \
         --arg frontend "$FRONTEND_DIGEST" \
         '{sha: [$sha], pythonDigest: [$python], frontendDigest: [$frontend]}')"

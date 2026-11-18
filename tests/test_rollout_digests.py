@@ -201,6 +201,7 @@ def test_a_plan_without_digests_prints_no_digest_options(rig: DigestRig) -> None
                 "id": 1,
                 "sha": SHA,
                 "environment": "staging",
+                "description": "staging rollout",
                 "created_at": "2026-11-09T10:00:00Z",
                 "statuses": [{"id": 10, "state": "success", "created_at": "2026-11-09T10:00:00Z"}],
             }

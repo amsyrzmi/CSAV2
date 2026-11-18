@@ -67,3 +67,77 @@ test("any other key does nothing", () => {
   for (const key of ["a", "Enter", " ", "ArrowDown", "jj", "", "Tab"])
     assert.equal(shortcutFor(press(key), closed), null, JSON.stringify(key));
 });
+
+// ---- Task 9: claim, resolve, snooze, search, help and the selection key ----
+
+const { SHORTCUT_HELP } = await import(moduleUrl(
+  await readFile(new URL("../lib/inbox-shortcuts.ts", import.meta.url), "utf8"),
+));
+
+/** A target inside an element matching `inside` (a dialog, a menu), as `closest` reports it. */
+function within(inside, tagName = "BUTTON") {
+  return { tagName, closest: (selector) => (inside && selector.split(",").some(
+    (part) => part.trim() === inside) ? {} : null) };
+}
+
+test("c, e and s act on the open conversation, upper case too", () => {
+  for (const [key, shortcut] of [["c", "claim"], ["C", "claim"], ["e", "resolve"], ["E", "resolve"],
+    ["s", "snooze"], ["S", "snooze"]])
+    assert.equal(shortcutFor(press(key), closed), shortcut, key);
+});
+
+test("slash goes to search, a question mark (Shift and slash) opens the help, x toggles a row", () => {
+  assert.equal(shortcutFor(press("/"), closed), "search");
+  assert.equal(shortcutFor(press("?", { shiftKey: true }), closed), "help");
+  // Some layouts send "?" without Shift: still the help.
+  assert.equal(shortcutFor(press("?"), closed), "help");
+  assert.equal(shortcutFor(press("x"), closed), "toggle");
+  assert.equal(shortcutFor(press("X"), closed), "toggle");
+});
+
+const NEW_KEYS = ["c", "C", "e", "E", "s", "S", "/", "?", "x", "X"];
+
+test("the new keys never fire while typing in a field or an editable area", () => {
+  for (const key of NEW_KEYS) {
+    for (const tagName of ["INPUT", "TEXTAREA", "SELECT", "input", "textarea", "select"])
+      assert.equal(shortcutFor(press(key, { target: { tagName } }), closed), null, `${key} ${tagName}`);
+    assert.equal(shortcutFor(press(key, { target: { tagName: "DIV", isContentEditable: true } }), closed),
+      null, `${key} editable`);
+  }
+});
+
+test("the new keys never fire with Ctrl, Cmd or Alt held", () => {
+  for (const key of NEW_KEYS)
+    for (const modifier of ["ctrlKey", "metaKey", "altKey"])
+      assert.equal(shortcutFor(press(key, { [modifier]: true }), closed), null, `${key} ${modifier}`);
+});
+
+test("the new keys never fire while a dialog, slide-over or popover is open", () => {
+  for (const key of NEW_KEYS) assert.equal(shortcutFor(press(key), open), null, key);
+});
+
+test("nothing fires from inside a dialog, popover or menu, even one the screen did not count", () => {
+  for (const inside of ['[role="dialog"]', '[role="alertdialog"]', '[role="menu"]', "dialog"]) {
+    for (const key of [...NEW_KEYS, "j", "k", "Escape"])
+      assert.equal(shortcutFor(press(key, { target: within(inside) }), closed), null, `${key} in ${inside}`);
+  }
+  // Outside every one of them, the key works.
+  assert.equal(shortcutFor(press("j", { target: within(null) }), closed), "next");
+  assert.equal(shortcutFor(press("c", { target: within(null) }), closed), "claim");
+});
+
+test("a held key repeats only J and K: an action key acts once", () => {
+  assert.equal(shortcutFor(press("j", { repeat: true }), closed), "next");
+  assert.equal(shortcutFor(press("k", { repeat: true }), closed), "previous");
+  for (const key of [...NEW_KEYS, "Escape"])
+    assert.equal(shortcutFor(press(key, { repeat: true }), closed), null, key);
+});
+
+test("the help lists every shortcut in words", () => {
+  assert.deepEqual(SHORTCUT_HELP.map((entry) => entry.key),
+    ["J", "K", "X", "C", "E", "S", "/", "?", "Escape"]);
+  for (const entry of SHORTCUT_HELP) {
+    assert.ok(entry.text.length > 10 && /^[A-Z]/.test(entry.text) && entry.text.endsWith("."), entry.key);
+    assert.ok(entry.name.length > 0, entry.key);
+  }
+});
