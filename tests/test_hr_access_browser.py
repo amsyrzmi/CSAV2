@@ -400,14 +400,21 @@ class RecordsWorld(World):
         if path == "hr/org-chart" and method == "GET":
             nodes = [
                 {
-                    key: self.full_person(user)[key]
-                    for key in (
-                        "employee_id",
-                        "display_name",
-                        "job_title",
-                        "department",
-                        "manager_id",
-                    )
+                    **{
+                        key: self.full_person(user)[key]
+                        for key in (
+                            "employee_id",
+                            "display_name",
+                            "job_title",
+                            "department_id",
+                            "department",
+                            "manager_id",
+                            "status",
+                            "start_date",
+                            "last_day",
+                        )
+                    },
+                    "legal_entity_reference": None,
                 }
                 for user in self.people
             ]

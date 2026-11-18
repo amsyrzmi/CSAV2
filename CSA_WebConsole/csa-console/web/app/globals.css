@@ -649,3 +649,32 @@
 /* FourStacks supplied UI guide: explicit light canvas and typography fallbacks. */
 h1, h2, h3, .page-title { font-family: var(--fs-font-heading); }
 .brand-wordmark { font-family: var(--fs-font-brand); }
+
+/* The org chart prints on its own. Everything but the chart and the elements that hold it is
+   dropped (rail, top bar, tabs, toolbar, assistant). Every branch opens on paper whatever the
+   screen shows; the screen's fold state is untouched. The ink is dark on a light page in every
+   theme: system colours follow `color-scheme: light`, not the theme, and a department chip keeps
+   its name and gets an outline instead of a tint, which an unprinted background would lose. */
+@media print {
+  html { color-scheme: light !important; }
+  body *:not([data-org-print], [data-org-print] *, :has([data-org-print])) { display: none !important; }
+  [data-org-print] button,
+  [data-org-print] [data-org-screen] { display: none !important; }
+  [data-org-print] .overflow-x-auto { overflow: visible !important; }
+  html, body, body :has([data-org-print]), [data-org-print], [data-org-print] * {
+    background: Canvas !important;
+    color: CanvasText !important;
+    box-shadow: none !important;
+  }
+  [data-org-print] :is([data-org-chip], [data-tone]) { border: 1px solid CanvasText !important; }
+  [data-org-print] li > div:first-child { break-inside: avoid; }
+}
+
+/* Tailwind's own `[hidden] { display: none !important }` lives in the base layer, and among
+   !important rules a layered one beats an unlayered one, so this override joins that layer and
+   wins on specificity instead. */
+@layer base {
+  @media print {
+    [data-org-print] [hidden] { display: block !important; }
+  }
+}
