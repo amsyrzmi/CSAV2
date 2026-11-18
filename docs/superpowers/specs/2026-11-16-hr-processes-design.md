@@ -12,6 +12,41 @@ Related: `2026-11-01-hr-people-design.md` (people, access), `2026-11-02-hr-owner
 `hr-refinement-programme`. The reminder and notification layer is designed in the **Inbox refinement** session (migrations
 0620-0629); this document names the seam (section 8) and does not build push delivery.
 
+## Amendments after the 2026-11-18 owner decisions and PR 4 (added 2026-11-18)
+
+The sections below are kept as written; where one is changed, it carries a short "(amended 2026-11-18,
+see Amendments)" mark. What PR 4 (the org chart and the Malaysian default templates) built, and where
+it differs from this document:
+
+1. **English only for the defaults (sections 6 and 7).** The requirement that every default title and
+   description exist in Malay is dropped: the default templates are English only (`title_ms` and
+   `description_ms` stay empty). The assistant understanding Malay HR questions is a separate later PR
+   (section 9, slice 1c).
+2. **"Bank and statutory numbers recorded" has no auto-check (section 7).** Section 7 said
+   "auto-check on personal details". The check `personal_details_complete` covers only the five
+   contact fields (home address, personal phone and the emergency name, relationship and phone), not
+   the bank or statutory numbers, so that step is a plain HR step. The step that does use the check
+   is the new hire's "Personal details completed".
+3. **No default step is owned by a named person.** Every default step is owned by a role (HR team, the
+   person's manager, or the new hire or leaver) or by the system. Company-level duties (employer
+   registrations, monthly deductions and returns, HRD Corp) are not per-person steps and are left out
+   on purpose; the review document lists them as excluded.
+4. **The review gate (section 5.7 ruling 10 and section 6) is implemented as two things:** the
+   generated review document `docs/hr/DEFAULT_TEMPLATES_REVIEW.md` (every step with who, when, source,
+   checked date and confidence, the open questions, what could not be confirmed, and a sign-off block;
+   a test fails if it drifts from `csa/hr/default_templates.py`), and a deploy switch,
+   `CSA_STAGING_HR_DEFAULT_TEMPLATES` in the rollout files (the app setting
+   `HR_DEFAULT_TEMPLATES_ENABLED`), declared but not set in either rollout file, so it is OFF on
+   staging and production until a reviewed pull request turns it on after the sign-off. With it off
+   the route answers 404 and the template list reports `defaults.available: false`.
+5. **The offboarding default has 15 steps** (the onboarding default has 14).
+6. **Org chart focus (section 5.5).** See the implementation decision in the 5.5 note below.
+7. **No "unlinked" state on the org chart (section 5.5).** Section 5.5 promised that the left, unlinked
+   and "no manager" states are shown. The chart shows "No manager", "Manager not in the chart" and
+   "In a reporting loop" on the people at the top, and Starting and Leaving markers, but no indicator
+   for a person with no console account: whether an account is linked is HR-only data. It is a
+   follow-up if wanted.
+
 ## 1. Intent
 
 A new hire should arrive to a prepared list of things that must happen, each with an owner and a date, and so should a
@@ -171,6 +206,12 @@ Rows are idempotent by `(subject, reminder_key)` as in `hr_notifications`.
 - **Org chart** (existing People tab view): a drawn tree with collapsible branches, department colour, "starting" and
   "leaving" markers, filters by department and legal entity, search, expand all, print, CSV. Same data endpoint, same
   loop warning; the left, unlinked and "no manager" states are shown rather than dropped.
+  *(Built in PR 4, 2026-11-18; see Amendments.)* Implementation decision on focus: while a filter or the
+  search is changing, focus stays in the search box or the select the person is using (moving it would
+  break typing and arrow-key choice in a native select, and a change of context on input is a WCAG 3.2.2
+  failure); the change is announced by the polite live text "N people shown". Focus moves to the
+  "Reporting lines" heading only on **Clear filters**, because that button disappears. The plan's wording
+  (focus lands on the heading after every filter change) is superseded by this.
 
 ### 5.6 API
 
@@ -205,7 +246,9 @@ file and `docs/CONSOLE_API.md` are updated with each route.
    task queries**; `hr_notifications` rows are only the alerts (assigned, due soon, due, overdue).
 10. **The review gate** blocks only the "create the Malaysian default templates" action in PR 4; the org chart ships
     regardless. The builder gathers the official sources and timings during implementation; the owner (and the
-    practitioner the owner names) reviews before the action is enabled.
+    practitioner the owner names) reviews before the action is enabled. *(Amended 2026-11-18: the gate is the
+    generated review document plus the deploy switch `CSA_STAGING_HR_DEFAULT_TEMPLATES`, off until a reviewed
+    pull request turns it on; see Amendments.)*
 
 ## 6. Malaysian grade: how it is enforced
 
@@ -215,15 +258,21 @@ file and `docs/CONSOLE_API.md` are updated with each route.
   the timing of each ("within N days") is entered at implementation from the official page and recorded in the step with
   its source and the date it was checked. Nothing in this document is a statement of the law.
 - **Malay and English** for every default title and description; Malay written for HR practice, reviewed by the owner
-  (same review route as the Malay write facts).
+  (same review route as the Malay write facts). *(Amended 2026-11-18: the defaults are English only; see Amendments.)*
 - **PDPA:** a template step may reference personal data only by category; processes store no IC, tax, EPF or bank numbers
   (those stay in the encrypted personal details); the process audit trail follows the same retention as the person.
 - **Regions:** the person's region (Peninsular/Labuan, Sabah, Sarawak) is a template rule and the due-date calendar uses
   the region's time zone; public holidays are phase 3.
 - **Review gate:** the default templates ship only after the owner (and ideally an HR practitioner or accountant the owner
   names) has read the English and Malay text and the step timings; until then they are not created.
+  *(Amended 2026-11-18: English text only, and the gate is the generated review document plus the deploy
+  switch; see Amendments.)*
 
 ## 7. Malaysian default templates (content to be verified at build time)
+
+*(Amended 2026-11-18: the built defaults are English only, 14 onboarding and 15 offboarding steps; "bank and
+statutory numbers recorded" has no auto-check; no step uses a named person. The research and the final steps
+are in `docs/hr/default-templates-sources.md` and `docs/hr/DEFAULT_TEMPLATES_REVIEW.md`. See Amendments.)*
 
 Onboarding (owner roles in brackets, offsets from `start_date` unless stated): signed employment contract and offer
 on file (HR, before start); personal details completed by the employee (person, first week, auto-check); bank and

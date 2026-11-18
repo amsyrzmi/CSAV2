@@ -15,6 +15,7 @@ const {
   dueText, processToday, statusLabel, ownerRoleLabel, offsetSentence, progressText, groupReminders, autoCheckText, reminderLabel,
   processKindLabel, eventText, eventLines, groupHistory, isDateText, replaceQuestion,
   reminderLayout, reminderDue, markingText, hasActiveOffboarding, anchorDateRows, noTemplateText, REHIRE_QUESTION,
+  defaultsSkippedText, DEFAULTS_NOTHING_CREATED,
 } = await import(
   moduleUrl((await read("../lib/hr-process-view.ts")).replace('"./hr-people"', JSON.stringify(peopleUrl))));
 
@@ -352,4 +353,24 @@ test("noTemplateText names the kind", () => {
 test("REHIRE_QUESTION says what rehiring does to the open offboarding", () => {
   assert.equal(REHIRE_QUESTION,
     "Rehiring cancels the open offboarding and skips its remaining steps (for example final pay checks). Continue?");
+});
+
+const made = (kind, name) => ({ kind, template_id: `id-${kind}`, version: 1, name });
+const skip = (kind) => ({ kind, reason: "already_present" });
+
+test("defaultsSkippedText: empty when nothing was skipped", () => {
+  assert.equal(defaultsSkippedText({ created: [made("onboarding", "A"), made("offboarding", "B")], skipped: [], duplicate: false }), "");
+});
+
+test("defaultsSkippedText: everything already there says nothing was created", () => {
+  const text = defaultsSkippedText({ created: [], skipped: [skip("onboarding"), skip("offboarding")], duplicate: false });
+  assert.equal(text, "These templates already exist: nothing was created.");
+  assert.equal(text, DEFAULTS_NOTHING_CREATED);
+});
+
+test("defaultsSkippedText: one kind skipped names it and says it was left as it is", () => {
+  assert.equal(defaultsSkippedText({ created: [made("offboarding", "B")], skipped: [skip("onboarding")], duplicate: false }),
+    "The company already had an active onboarding template, so it was left as it is.");
+  assert.equal(defaultsSkippedText({ created: [made("onboarding", "A")], skipped: [skip("offboarding")], duplicate: false }),
+    "The company already had an active offboarding template, so it was left as it is.");
 });

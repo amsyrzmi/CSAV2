@@ -167,6 +167,12 @@ def test_training_video_is_off_unless_switched_on() -> None:
     assert _settings(TRAINING_VIDEO_ENABLED="false").TRAINING_VIDEO_ENABLED is False
 
 
+def test_hr_default_templates_are_off_unless_switched_on() -> None:
+    assert _settings().HR_DEFAULT_TEMPLATES_ENABLED is False
+    assert _settings(HR_DEFAULT_TEMPLATES_ENABLED="true").HR_DEFAULT_TEMPLATES_ENABLED is True
+    assert _settings(HR_DEFAULT_TEMPLATES_ENABLED="false").HR_DEFAULT_TEMPLATES_ENABLED is False
+
+
 def test_training_root_apart_from_kb_and_hr_roots_is_accepted() -> None:
     s = _settings(
         KB_UPLOAD_ROOT="/srv/kb-uploads",

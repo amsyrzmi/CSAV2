@@ -552,6 +552,22 @@ def test_one_switch_turns_video_on_for_the_gateway_and_the_training_worker(
         assert services[name]["environment"]["TRAINING_VIDEO_ENABLED"] == "true", name
 
 
+def test_hr_default_templates_are_off_and_reach_the_gateway_only(tmp_path: Path) -> None:
+    (tmp_path / "default").mkdir()
+    services = render(tmp_path / "default", "staging-approved", "pipeline-approved")["services"]
+    assert services["gateway"]["environment"]["HR_DEFAULT_TEMPLATES_ENABLED"] == "false"
+    for name in ("worker", "delivery", "frontend", "training-worker"):
+        assert "HR_DEFAULT_TEMPLATES_ENABLED" not in services[name].get("environment", {}), name
+    (tmp_path / "on").mkdir()
+    services = render(
+        tmp_path / "on",
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_HR_DEFAULT_TEMPLATES": "true"},
+    )["services"]
+    assert services["gateway"]["environment"]["HR_DEFAULT_TEMPLATES_ENABLED"] == "true"
+
+
 def test_gateway_and_delivery_carry_both_whatsapp_secrets(tmp_path: Path) -> None:
     services = render(tmp_path, "staging-approved", "pipeline-approved")["services"]
     for name in ("gateway", "delivery"):

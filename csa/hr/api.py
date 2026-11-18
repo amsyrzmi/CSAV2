@@ -97,6 +97,8 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy
 # Request body caps in bytes; every other HR path keeps 8192.
 _BODY_LIMITS = {"/console/v1/hr/operations": 262144, "/console/v1/hr/access/changes": 65536}
 _DOCUMENT_UPLOAD = re.compile(r"/console/v1/hr/people/[0-9a-fA-F-]{36}/documents")
+# A template body (create, update). /templates/preview and /templates/defaults keep 8192: the
+# preview sends only rules, the defaults action an empty body.
 _TEMPLATE_WRITE = re.compile(r"/console/v1/hr/templates(/[0-9a-fA-F-]{36})?")
 # A step's note is up to 2000 characters; escaped as JSON (\uXXXX pairs) it can pass 8192 bytes.
 _TASK_NOTE_WRITE = re.compile(r"/console/v1/hr/tasks/[0-9a-fA-F-]{36}/(complete|note)")

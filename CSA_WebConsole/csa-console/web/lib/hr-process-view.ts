@@ -1,5 +1,5 @@
 import { dateText } from "./hr-people";
-import type { Anchor, AnchorDates, AutoCheck, OwnerRole, ProcessKind, ProcessStatus, TaskStatus } from "./hr-process-api";
+import type { Anchor, AnchorDates, AutoCheck, DefaultTemplatesReceipt, OwnerRole, ProcessKind, ProcessStatus, TaskStatus } from "./hr-process-api";
 
 /** Pure words for processes and tasks: due dates, statuses, offsets and progress. */
 
@@ -252,6 +252,20 @@ export function isDateText(text: string): boolean {
 export function replaceQuestion(kind: ProcessKind | (string & {}), name: string | null): string {
   const what = kind === "onboarding" || kind === "offboarding" ? kind : "process";
   return `There is already an active ${what} for ${name ?? "this person"}. Replace it?`;
+}
+
+/** The sentence when the create-defaults request found every default already there. */
+export const DEFAULTS_NOTHING_CREATED = "These templates already exist: nothing was created.";
+
+/**
+ * What the create-defaults answer left alone, in a sentence: "" when nothing was skipped, the plain
+ * "already exist" line when nothing was created, else which kind the company already had.
+ */
+export function defaultsSkippedText(receipt: Pick<DefaultTemplatesReceipt, "created" | "skipped">): string {
+  if (receipt.skipped.length === 0) return "";
+  if (receipt.created.length === 0) return DEFAULTS_NOTHING_CREATED;
+  // Something was created, so at most one of the two kinds was skipped.
+  return `The company already had an active ${processKindLabel(receipt.skipped[0].kind).toLowerCase()} template, so it was left as it is.`;
 }
 
 /** Most urgent first; any kind not listed follows in the order it first appears. */

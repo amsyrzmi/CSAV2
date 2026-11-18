@@ -155,8 +155,48 @@ def test_org_chart_roots_children_hidden_managers_and_left():
     assert parents == {"amir": None, "Bakar": ceo.employee_id, "Cik": None, "zara": None}
     assert left_id not in {n.employee_id for n in chart.nodes}
     assert chart.looped == []
+    # A manager who is hidden or left is "outside"; a manager on the chart, or none, is not.
+    outside = {n.display_name: n.manager_outside for n in chart.nodes}
+    assert outside == {"amir": True, "Bakar": False, "Cik": True, "zara": False}
     root = next(n for n in chart.nodes if n.display_name == "zara")
     assert (root.job_title, root.department) == ("CEO", "Exec")
+
+
+def test_org_chart_nodes_carry_department_status_dates_and_legal_entity():
+    dept = uuid4()
+    profile = {
+        "region": "sabah",
+        "legal_entity_reference": "Synthetic Sdn Bhd",
+        "employment_category": "permanent",
+    }
+    starter = person(
+        display_name="Starter", status="starting", start_date=date(2026, 12, 1), department_id=dept
+    )
+    leaver = person(
+        display_name="Leaver",
+        status="leaving",
+        last_day=date(2026, 12, 31),
+        employment_profile=profile,
+    )
+    veiled = person(display_name="Veiled", status="active")
+    chart = org_chart([starter, leaver, veiled])
+    nodes = {n.display_name: n for n in chart.nodes}
+
+    assert nodes["Starter"].status == "starting"
+    assert nodes["Starter"].start_date == date(2026, 12, 1)
+    assert nodes["Starter"].department_id == dept
+    assert nodes["Leaver"].status == "leaving"
+    assert nodes["Leaver"].last_day == date(2026, 12, 31)
+    assert nodes["Leaver"].legal_entity_reference == "Synthetic Sdn Bhd"
+    # A row that hides the last day and the employment profile leaves those null.
+    assert nodes["Veiled"].status == "active"
+    assert nodes["Veiled"].last_day is None and nodes["Veiled"].legal_entity_reference is None
+    assert nodes["Veiled"].department_id is None and nodes["Veiled"].start_date is None
+
+
+def test_org_chart_status_never_left():
+    chart = org_chart([person(status="left"), person(status="leaving")])
+    assert [n.status for n in chart.nodes] == ["leaving"]
 
 
 def test_org_chart_ties_order_by_employee_id():
@@ -174,6 +214,8 @@ def test_org_chart_loop_is_flat():
     assert set(chart.looped) == {a, b}
     assert {n.employee_id: n.manager_id for n in chart.nodes}[a] is None
     assert {n.employee_id: n.manager_id for n in chart.nodes}[c.employee_id] == a
+    # Their managers are on the chart, so nobody here is "outside".
+    assert not any(n.manager_outside for n in chart.nodes)
 
 
 def test_org_chart_self_manager_is_a_loop():

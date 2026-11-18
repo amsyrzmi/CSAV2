@@ -523,7 +523,10 @@ e. The host file `/srv/csa-prod/host.env`, readable by `ubuntu`. It holds what t
    accepted. The optional Jev switches (`CSA_STAGING_JEV_SECRET`, `CSA_STAGING_ASSISTANT_DECIDER_*`,
    `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT`, `CSA_STAGING_JEV_FLOOR_*`) may be added to
    `deploy/production-rollout.env` by a reviewed PR too; today that file sets the four shadow lines
-   in "Jev on production (shadow)" below and nothing else of the Jev switches. `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
+   in "Jev on production (shadow)" below and nothing else of the Jev switches. The other optional
+   switches are `CSA_STAGING_TRAINING_VIDEO` ("Training video" below) and
+   `CSA_STAGING_HR_DEFAULT_TEMPLATES` ("HR default templates" below); both are off when unset.
+   `grep -n "[\"']" /srv/csa-prod/host.env` must print nothing.
 
 f. The backup script, **only after step e**: the repository's `deploy/production/backup.sh` reads
    the bucket and region from `host.env`, so if it replaced the installed copy first, the
@@ -1268,6 +1271,35 @@ before any commit containing 2b is deployed there:
 Never roll production back past 2a once 2b has run there: an older delivery process sends a
 picture message's caption as plain text, and an older worker fails a saved conversation turn that
 carries a picture. Fix forward instead.
+
+## HR default templates
+
+HR PR 4 adds a run-once action that creates the Malaysian default onboarding and offboarding
+templates for a company (`POST /console/v1/hr/templates/defaults`, the **Create the default
+templates** button in People & HR, Processes, Templates). It needs no migration, so it rolls out
+with the images only. It is behind one optional switch:
+
+| Rollout line | Values | Default | Sets |
+| --- | --- | --- | --- |
+| `CSA_STAGING_HR_DEFAULT_TEMPLATES` | `false`, `true` | off (unset) | the app setting `HR_DEFAULT_TEMPLATES_ENABLED` on the gateway |
+
+It is declared in `scripts/rollout_targets.py` (production takes it from the same name, as it does
+`CSA_STAGING_TRAINING_VIDEO`) and passed through `deploy/compose.staging-pipeline.yml`, but it is
+**not set** in `deploy/staging-rollout.env` or `deploy/production-rollout.env`, so it is off on both.
+Put the line `CSA_STAGING_HR_DEFAULT_TEMPLATES=true` in a rollout file, never
+`HR_DEFAULT_TEMPLATES_ENABLED`. While it is off the route answers 404 `resource_unavailable`, the
+template list says `defaults.available: false` and the console shows no button.
+
+**Review gate.** The default templates are statutory reminders with references, so the switch stays
+off until a named reviewer has read `docs/hr/DEFAULT_TEMPLATES_REVIEW.md` and signed its sign-off
+block, and the owner has recorded that sign-off; only then does a reviewed pull request add the
+line, to `deploy/staging-rollout.env` first and, after the staging checks in
+`docs/hr/PROCESSES_RETEST.md`, to `deploy/production-rollout.env`. Never turn it on by a hand edit on
+a host. Turning it on creates nothing by itself: an HR user chooses the button once per company, and
+the onboarding default then becomes the company default, so the next person added starts real tasks
+and reminders. Setting the line back to `false` (or removing it) hides the button again; templates
+already created stay and are edited or deactivated in the console. The full steps are in
+`docs/hr/SETUP.md`, "The Malaysian default templates".
 
 ## Pointing the model at a stub (capacity test only)
 

@@ -79,8 +79,13 @@ STAGING = Target(
     ),
     # Video in the training library (gateway and training worker); unset is off. Turning it on
     # is a reviewed change to the flags file, after the checks in deploy/PRODUCTION.md.
-    optional_keys=frozenset({"CSA_STAGING_TRAINING_VIDEO"}),
-    optional_values={"CSA_STAGING_TRAINING_VIDEO": ("false", "true")},
+    # The HR create-defaults action (gateway); unset is off. Turning it on is a reviewed change
+    # to the flags file, after the content review (docs/hr/DEFAULT_TEMPLATES_REVIEW.md) is signed.
+    optional_keys=frozenset({"CSA_STAGING_TRAINING_VIDEO", "CSA_STAGING_HR_DEFAULT_TEMPLATES"}),
+    optional_values={
+        "CSA_STAGING_TRAINING_VIDEO": ("false", "true"),
+        "CSA_STAGING_HR_DEFAULT_TEMPLATES": ("false", "true"),
+    },
     host_file=None,
     host_required_keys=frozenset(),
     host_override_keys=frozenset(),

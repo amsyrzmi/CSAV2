@@ -1,14 +1,15 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { hrHref } from "@/lib/hr-paths";
 import { peopleClient, type Department } from "@/lib/hr-people-api";
-import { processClient, type TemplateSummary } from "@/lib/hr-process-api";
+import { processClient, type TemplateDefaults, type TemplateSummary } from "@/lib/hr-process-api";
 import { processLoadError } from "@/lib/hr-process-copy";
 import { processKindLabel } from "@/lib/hr-process-view";
 import { rulesText, templateTies } from "@/lib/hr-template-form";
 import StatusLabel from "../fs/StatusLabel";
 import { action, secondary, Notice, Panel } from "../ui";
+import { DefaultTemplates } from "./DefaultTemplates";
 
 const card = "rounded-[var(--fs-radius-panel)] border border-[color:var(--fs-border)] bg-[var(--fs-surface)] p-3";
 
@@ -32,12 +33,14 @@ export function useDepartments(tenant: string, enabled = true) {
   return { ...state, name };
 }
 
-type Load = { items: TemplateSummary[] } | { failed: string } | null;
+type Load = { items: TemplateSummary[]; defaults: TemplateDefaults | null } | { failed: string } | null;
 
 /**
  * The HR team's templates: name, kind, who each applies to in words, its steps, active or not, and
  * the other templates it may tie with (the tie rule of the server, worked out from the list). A table
- * from `md`, cards below it. Each name opens the editor; "New template" is for those who may edit.
+ * from `md`, cards below it. Each name opens the editor; "New template" is for those who may edit, and so
+ * is "Create the default templates", offered only while the server says it is available and the company
+ * does not have the defaults yet (a read-only session never sees it: `available` does not know about that).
  */
 export function TemplateList({ tenant, readonly, platform }: { tenant: string; readonly: boolean; platform: boolean }) {
   const client = useMemo(() => processClient(tenant), [tenant]);
@@ -47,10 +50,11 @@ export function TemplateList({ tenant, readonly, platform }: { tenant: string; r
   useEffect(() => {
     let active = true;
     client.templates()
-      .then(list => { if (active) setLoad({ items: list.items }); })
+      .then(list => { if (active) setLoad({ items: list.items, defaults: list.defaults ?? null }); })
       .catch(cause => { if (active) setLoad({ failed: processLoadError(cause) }); });
     return () => { active = false; };
   }, [client, reads]);
+  const newTemplate = useRef<HTMLAnchorElement>(null);
   const href = (templateId: string) => hrHref({ tab: "processes", view: "template", templateId }, platform, tenant);
 
   let body: React.ReactNode;
@@ -104,8 +108,13 @@ export function TemplateList({ tenant, readonly, platform }: { tenant: string; r
   }
   return <div data-testid="hr-template-list">
     <Panel title="Templates">
-      {!readonly && <Link className={`${action} mb-4`} href={hrHref({ tab: "processes", view: "new-template" }, platform, tenant)}>
-        New template</Link>}
+      {!readonly && <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Link ref={newTemplate} className={action} href={hrHref({ tab: "processes", view: "new-template" }, platform, tenant)}>
+          New template</Link>
+        <DefaultTemplates client={client} tenant={tenant} platform={platform} fallback={newTemplate}
+          show={!!load && "items" in load && !!load.defaults?.available && !load.defaults.created}
+          onChanged={() => setReads(count => count + 1)} />
+      </div>}
       {body}
     </Panel>
   </div>;

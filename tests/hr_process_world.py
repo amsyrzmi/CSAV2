@@ -11,7 +11,9 @@ Extension point: `ROUTES`. Task 4 added the processes list, detail, start, cance
 template summaries and the HR-only task actions; Task 5 the template editor's routes (read, create,
 update, deactivate, preview: `ProcessWorld.people` are the active people a preview counts); Task 6
 a person's processes (`ProcessWorld.persons`), the probation end and rehire operations, and Home's
-notifications (`ProcessWorld.notifications`, with `notification.read`). A route is a handler
+notifications (`ProcessWorld.notifications`, with `notification.read`). HR PR 4 the create-defaults
+action (`POST hr/templates/defaults`, behind `ProcessWorld.defaults_enabled`, the deploy switch)
+and the list's `defaults` flag. A route is a handler
 registered in this module with `@route("GET", r"hr/processes")`; it gets the world, the `Call` and
 the path match and returns `(status, body)`, or None for a call it leaves to the old routes (an
 operation it does not own on the shared `hr/operations` path). A new path family whose prefix is
@@ -28,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from csa.hr.default_templates import DEFAULT_TEMPLATES
 
 # Paths under these prefixes belong to the process world even when no route is registered yet.
 PREFIXES = ("hr/tasks/", "hr/processes", "hr/templates")
@@ -253,6 +257,10 @@ class ProcessWorld:
     notification_reads: list[str] = field(default_factory=list)
     # A refusal or error to give, once, to a `notification.read` of that notification id.
     read_failures: dict[str, tuple[int, str]] = field(default_factory=dict)
+    # The create-defaults deploy switch (HR_DEFAULT_TEMPLATES_ENABLED); off, as it ships.
+    defaults_enabled: bool = False
+    # Who called the create-defaults route, in order (a double click must call it once).
+    defaults_calls: list[str] = field(default_factory=list)
 
     def handles(self, path: str) -> bool:
         return path.startswith(PREFIXES) or any(p.fullmatch(path) for _, p, _ in ROUTES)
@@ -1146,7 +1154,57 @@ def template_list(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
     if call.caller not in world.hr_team:
         return 404, {"detail": "resource_unavailable"}
     items = sorted(world.templates, key=lambda t: (t.kind, t.name))
-    return 200, {"items": [t.summary() for t in items]}
+    return 200, {"items": [t.summary() for t in items], "defaults": _defaults_flag(world)}
+
+
+def _defaults_present(world: ProcessWorld) -> set[str]:
+    return {t.kind for t in world.templates if t.is_active}
+
+
+def _defaults_flag(world: ProcessWorld) -> dict[str, bool]:
+    """`TemplateDefaults`: the switch, and whether every default kind has an active template."""
+    present = _defaults_present(world)
+    return {
+        "available": world.defaults_enabled,
+        "created": all(t.kind in present for t in DEFAULT_TEMPLATES),
+    }
+
+
+@route("POST", r"hr/templates/defaults")
+def template_defaults(world: ProcessWorld, call: Call, _: re.Match[str]) -> Answer:
+    """The real route's answers: 404 while the switch is off or for anyone outside the HR team; an
+    empty body; a kind with an active template is skipped, the others created from the real
+    content (`csa.hr.default_templates`)."""
+    if not world.defaults_enabled or call.caller not in world.hr_team:
+        return 404, {"detail": "resource_unavailable"}
+    if call.body not in (None, {}):
+        world.refuse_unexpected(call, "the create-defaults body is empty")
+        return 422, {"detail": "invalid_hr_input"}
+    world.defaults_calls.append(call.caller)
+    present = _defaults_present(world)
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for content in DEFAULT_TEMPLATES:
+        if content.kind in present:
+            skipped.append({"kind": content.kind, "reason": "already_present"})
+            continue
+        template = Template(
+            f"66666666-6666-4666-8666-{201 + len(world.templates):012d}",
+            content.kind,
+            content.name,
+            created_at=f"2026-11-{10 + len(world.templates):02d}T02:00:00Z",
+        )
+        _apply(template, content.model_dump(mode="json"))
+        world.templates.append(template)
+        created.append(
+            {
+                "kind": template.kind,
+                "template_id": template.template_id,
+                "version": template.version,
+                "name": template.name,
+            }
+        )
+    return 201, {"created": created, "skipped": skipped, "duplicate": False}
 
 
 # ---- Routes: the template editor (Task 5) ----

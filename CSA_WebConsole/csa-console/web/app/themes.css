@@ -83,6 +83,19 @@
   --fs-customer-3-text: #2c3e9e;
   --fs-customer-4-bg: #d2eef6;
   --fs-customer-4-text: #164b8d;
+  /* Org chart department chips (lib/hr-org-chart.ts departmentTint): six hues kept off the status greens, blues and ambers; the department name is always printed beside the colour. */
+  --fs-dept-1-bg: #d9cdfa;
+  --fs-dept-1-text: #43268f;
+  --fs-dept-2-bg: #f3cbf6;
+  --fs-dept-2-text: #802089;
+  --fs-dept-3-bg: #fbd3e3;
+  --fs-dept-3-text: #99144a;
+  --fs-dept-4-bg: #fcd4b4;
+  --fs-dept-4-text: #873208;
+  --fs-dept-5-bg: #e6edc2;
+  --fs-dept-5-text: #4d5a0a;
+  --fs-dept-6-bg: #cdf0ec;
+  --fs-dept-6-text: #0f5f5a;
   --fs-skeleton: #e9eff9;
   --fs-skeleton-shine: #f6f9ff;
   --fs-scrim: #1c2b4066;
@@ -171,6 +184,19 @@
   --fs-customer-3-text: #d6dcff;
   --fs-customer-4-bg: #173f6a;
   --fs-customer-4-text: #c4e4ff;
+  /* Org chart department chips, dark tints with light text. */
+  --fs-dept-1-bg: #33265e;
+  --fs-dept-1-text: #e2d8ff;
+  --fs-dept-2-bg: #4d2352;
+  --fs-dept-2-text: #f6d6fa;
+  --fs-dept-3-bg: #52203a;
+  --fs-dept-3-text: #ffd6e6;
+  --fs-dept-4-bg: #55301a;
+  --fs-dept-4-text: #ffdcc2;
+  --fs-dept-5-bg: #3f4516;
+  --fs-dept-5-text: #eaf2b8;
+  --fs-dept-6-bg: #14403d;
+  --fs-dept-6-text: #c4f4ee;
   --fs-skeleton: #1b2742;
   --fs-skeleton-shine: #2a3858;
   --fs-scrim: #00000099;
@@ -258,6 +284,19 @@
   --fs-customer-3-text: #2c3e9e;
   --fs-customer-4-bg: #d2eef6;
   --fs-customer-4-text: #164b8d;
+  /* Org chart department chips (lib/hr-org-chart.ts departmentTint): six hues kept off the status greens, blues and ambers; the department name is always printed beside the colour. */
+  --fs-dept-1-bg: #d9cdfa;
+  --fs-dept-1-text: #43268f;
+  --fs-dept-2-bg: #f3cbf6;
+  --fs-dept-2-text: #802089;
+  --fs-dept-3-bg: #fbd3e3;
+  --fs-dept-3-text: #99144a;
+  --fs-dept-4-bg: #fcd4b4;
+  --fs-dept-4-text: #873208;
+  --fs-dept-5-bg: #e6edc2;
+  --fs-dept-5-text: #4d5a0a;
+  --fs-dept-6-bg: #cdf0ec;
+  --fs-dept-6-text: #0f5f5a;
   --fs-skeleton: #efe7d5;
   --fs-skeleton-shine: #f8f2e4;
   --fs-scrim: #14213d66;

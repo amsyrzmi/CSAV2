@@ -51,6 +51,18 @@ and Home reminders; migration `0636`) is the top entry of [../PROGRESS.md](../PR
 processes console (PR 3)". The owner's staging checks are in
 [PROCESSES_RETEST.md](./PROCESSES_RETEST.md).
 
+PR 4 (the org chart and the Malaysian default templates; no migration) is the top entry of
+[../PROGRESS.md](../PROGRESS.md), "HR processes, pull request 4". The org chart (collapsible
+branches, department colour, Starting and Leaving markers, filters, search, print, CSV) ships on
+rollout. The default templates (14 onboarding and 15 offboarding steps, English only) ship with their
+deploy switch `CSA_STAGING_HR_DEFAULT_TEMPLATES` **off** until a reviewer has signed
+[DEFAULT_TEMPLATES_REVIEW.md](./DEFAULT_TEMPLATES_REVIEW.md); the steps to turn it on are in
+[SETUP.md](./SETUP.md), "The Malaysian default templates", and the owner's checks are rows 14 to 21
+of [PROCESSES_RETEST.md](./PROCESSES_RETEST.md). The research is in
+[default-templates-sources.md](./default-templates-sources.md). Before the reviewer signs: print the
+second official URL for steps whose rule sits in a different instrument (Employment Regulations 1957
+for onboarding step 1 reg 8(1) and offboarding step 11 reg 5) in DEFAULT_TEMPLATES_REVIEW.md.
+
 ## HR chat retired (project 1b)
 
 The separate HR chat block on People & HR Home (`HrAssistant.tsx`) is gone; the workspace

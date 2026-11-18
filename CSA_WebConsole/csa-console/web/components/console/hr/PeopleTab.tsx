@@ -69,7 +69,8 @@ function OrgChartView({ tenant, canEdit, owner, href }: { tenant: string; canEdi
   if (!chart) return <Notice>Loading the org chart…</Notice>;
   return <Panel title="Org chart">
     {chart.nodes.length === 0 ? <p className="text-sm text-ink-500">{emptyText("org", canEdit)}</p>
-      : <OrgChart chart={chart} owner={owner} hrefFor={id => href(profileRoute(id))} />}
+      : <OrgChart chart={chart} owner={owner} canSeeLegalEntity={chart.nodes.some(node => Boolean(node.legal_entity_reference?.trim()))}
+        hrefFor={id => href(profileRoute(id))} />}
   </Panel>;
 }
 

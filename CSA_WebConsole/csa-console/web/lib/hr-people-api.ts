@@ -63,6 +63,15 @@ export interface OrgNode {
   job_title: string | null;
   department: string | null;
   manager_id: string | null;
+  /** True when the person has a manager who is not on the chart (left, or hidden from this viewer); `manager_id` is null then. Optional so older payloads still type-check. */
+  manager_outside?: boolean;
+  department_id: string | null;
+  status: "active" | "starting" | "leaving";
+  /** `YYYY-MM-DD`. */
+  start_date: string | null;
+  /** The last working day, `YYYY-MM-DD`. */
+  last_day: string | null;
+  legal_entity_reference: string | null;
 }
 export interface OrgChart { nodes: OrgNode[]; looped: string[] }
 export interface Department {

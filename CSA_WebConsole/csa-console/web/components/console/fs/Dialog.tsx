@@ -20,6 +20,7 @@ export default function Dialog({
   children,
   testId,
   returnFocusTo,
+  describedBy,
   widthClass = "max-w-lg",
 }: {
   open: boolean;
@@ -28,6 +29,8 @@ export default function Dialog({
   children: ReactNode;
   testId?: string;
   returnFocusTo?: RefObject<HTMLElement | null>;
+  /** The id of the element that says what the dialog is about (`aria-describedby`); it must be unique on the page. */
+  describedBy?: string;
   widthClass?: string;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -65,6 +68,7 @@ export default function Dialog({
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
+      aria-describedby={describedBy}
       data-testid={testId}
       onCancel={(event) => {
         // Escape: let the parent decide, then the effect above closes the dialog.

@@ -81,7 +81,21 @@ export interface TemplateSummary {
   created_at: string;
   updated_at: string;
 }
-export interface TemplateList { items: TemplateSummary[] }
+/**
+ * What the server says about the default templates. `available` is the deploy switch and the HR
+ * team only: it does not know about a read-only session, so the page combines it with its own
+ * `readonly`. `created` is true when the company already has an active template of both kinds.
+ * Absent on a server that predates it: the page then offers nothing.
+ */
+export interface TemplateDefaults { available: boolean; created: boolean }
+export interface TemplateList { items: TemplateSummary[]; defaults?: TemplateDefaults }
+export interface DefaultTemplateCreated { kind: ProcessKind; template_id: string; version: number; name: string }
+export interface DefaultTemplateSkipped { kind: ProcessKind; reason: "already_present" }
+export interface DefaultTemplatesReceipt {
+  created: DefaultTemplateCreated[];
+  skipped: DefaultTemplateSkipped[];
+  duplicate: boolean;
+}
 export interface TemplateStepOut {
   ordinal: number;
   title_en: string;
@@ -358,6 +372,8 @@ export function processClient(tenant: string) {
       write<TemplateReceipt>(`/templates/${uuid(templateId, "template")}`, body, "PUT"),
     deactivateTemplate: async (templateId: string, expected_version: number) =>
       write<TemplateReceipt>(`/templates/${uuid(templateId, "template")}/deactivate`, { expected_version }),
+    /** Create the Malaysian default onboarding and offboarding templates (the HR team, deploy switch on). No body. */
+    createDefaultTemplates: () => write<DefaultTemplatesReceipt>("/templates/defaults", undefined),
     previewTemplate: (kind: ProcessKind, rules: TemplateRules | null) =>
       api<TemplatePreview>(path(tenant, "/templates/preview"), { method: "POST", body: JSON.stringify({ kind, rules }) }),
     processes: (filters: ProcessFilters, after?: string) => {

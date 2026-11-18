@@ -215,7 +215,14 @@ people with basic fields only. The HR-only fields (`employment_profile`, `versio
   `account` (`{user_id, display_name}` or `null`), the `on` switches, the `custom` rows and
   `is_owner`.
 - `GET /org-chart` returns `OrgChart`: `nodes` (up to 5000) and `looped`, the ids that sit in a
-  manager loop (shown flat). `directory` viewers see active and starting people.
+  manager loop (shown flat). `directory` viewers see active and starting people. Each node is
+  `{employee_id, display_name, job_title, department, manager_id}` plus `manager_outside` (true when
+  the person has a manager who is not on the chart, because they left or this viewer cannot see
+  them: `manager_id` is `null` then and no id or name is given), `department_id`, `status`
+  (`active`, `starting` or `leaving`; never `left`), `start_date`, `last_day` and
+  `legal_entity_reference`. The last four come from the same row rules as the People list: only
+  HR, the person and their direct manager get `last_day` (a leaving person reads `active` to
+  everyone else), and only HR gets `legal_entity_reference`; otherwise they are `null`.
 - `GET /departments` returns `DepartmentList`: each `{department_id, name, archived, version,
   people}`. `hr` and `directory` viewers only.
 - `GET /home` returns `HrHome` (`training_waiting`, `requests_waiting`): counts of what waits for
@@ -376,7 +383,14 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
 
 - `GET /templates` returns `TemplateList`: up to 500 `items` of `TemplateSummary` (`template_id`,
   `kind`, `name`, `version`, `is_active`, `rules`, `step_count`, `created_at`, `updated_at`),
-  by kind, then name.
+  by kind, then name, and `defaults` (`TemplateDefaults` `{available, created}`, HR PR 4) for the
+  create-defaults action below. `available` is `true` only while the deploy switch
+  `HR_DEFAULT_TEMPLATES_ENABLED` is on and the caller is a signed-in member of the HR team (an
+  assistant or capability session gets `false`; a read-only session still gets `true`, and its
+  POST is 403 like every write). `created` is `true` when onboarding and offboarding each already
+  have an active template, made by the action or by hand, so the action would create nothing (also
+  when the list is cut at 500). A console shows the button only when `available` is `true` and
+  `created` is `false`, and shows nothing about the defaults otherwise.
 - `GET /templates/{template_id}` returns `TemplateOut`: the summary fields, `steps` (each
   `TemplateStepOut`: `ordinal`, `title_en`, `title_ms`, `description_en`, `description_ms`,
   `owner_role`, `owner_employee_id`, `anchor`, `due_offset_days`, `required`, `approval_by`,
@@ -391,6 +405,25 @@ retry returns the first receipt with `duplicate: true`; the same key with anothe
   A stale version is 409 `template_changed`.
 - `POST /templates/{template_id}/deactivate` `{expected_version}` returns `TemplateReceipt`
   (`version` + 1).
+- `POST /templates/defaults` (HR PR 4, no migration) creates the Malaysian default onboarding and
+  offboarding templates (`csa/hr/default_templates.py`, English only, no rule: each becomes the
+  company default of its kind; reviewed in `docs/hr/DEFAULT_TEMPLATES_REVIEW.md`). The body is
+  empty (`{}` or none; any key is 422; the HR default cap of 8192 bytes, 413
+  `hr_request_too_large` over it); CSRF and an `Idempotency-Key` are required, and only the HR
+  owner or a Manage people holder may call it (anyone else 404 `resource_unavailable`, a
+  read-only session 403 `read_only_session`, an assistant or capability session 409
+  `human_operation_required`). While the switch `HR_DEFAULT_TEMPLATES_ENABLED` is off (the
+  default; on only after the content review is signed) it answers 404 `resource_unavailable`
+  before any session, CSRF, key or database check (a malformed JSON body is still parsed first, so
+  that case answers 422). It answers 201 `DefaultTemplatesReceipt` `{created: [{kind,
+  template_id, version, name}], skipped: [{kind, reason: "already_present"}], duplicate}`: under
+  the company's HR operations lock, a kind that already has an active template is skipped, never
+  duplicated (a second default would tie), and the others are created in one transaction, all or
+  none; a refusal on any of them (for example `template_step_person_unavailable`) writes nothing.
+  So a second click, a second tab or a retry under a new key creates nothing more. Each template
+  created writes its own `hr.template_created` audit row. A retry with the same key returns the
+  first result with `duplicate: true`, even after the templates changed; the key is never reused
+  for another change (409 `idempotency_conflict`).
 - `POST /templates/preview` `TemplatePreviewRequest` `{kind, rules?}` (migration 0636) returns
   `TemplatePreview` `{matching, ties, total_active}` for the template editor's draft. Only the HR
   team (the HR owner or a Manage people holder) may call it; anyone else (staff, a manager, a
