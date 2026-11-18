@@ -27,7 +27,10 @@ skill checks that workflow, dispatches it when the owner says so, and keeps the 
 3. Dispatch only after the owner's go: `gh workflow run deploy-staging.yml --ref main`, or with a
    named commit `gh workflow run deploy-staging.yml --ref main -f sha=<sha>`. An empty `sha` is the
    tip of `main`. A dispatch ignores the pause. Staging never goes back through the workflow: a
-   downgrade is refused.
+   downgrade is refused. A dispatch with a named `sha` shares the `deploy-staging` concurrency
+   group, so it can replace the pending automatic run for the tip; if that `sha` is older than what
+   runs now it ends red at the downgrade stop and the tip waits for the next merge or a dispatch
+   with an empty `sha`.
 4. Pausing is the repository variable `STAGING_AUTO_PAUSED` (`gh variable set STAGING_AUTO_PAUSED
    --body true|false`); change it only on the owner's say-so.
 5. Use the manual steps below only when the owner asks (or when the workflow cannot do it, such as
@@ -86,6 +89,14 @@ the image publish on GitHub and gives the go here; nothing reaches staging by ha
   restart or roll back on your own; ask the owner.
 - If a command is blocked by the permission system or a hook, give the owner numbered, copy-ready
   commands to run instead, and wait for the output.
+
+## Resetting staging
+
+The reset tool (`deploy/STAGING_PIPELINE.md`, "Resetting staging") is the owner's, at a terminal;
+an agent may run only `plan`. Before the owner runs it, remind them to set `STAGING_AUTO_PAUSED`
+to `true` first (and back to `false` after `accounts`). The `staging_reset` `wipe` and `accounts`
+take the same rollout lock as a rollout: when one holds it they change nothing and stop with
+`Stopped at lock: ...`; report the line as printed and wait for that rollout to end.
 
 ## Never
 

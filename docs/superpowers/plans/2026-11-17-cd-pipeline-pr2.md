@@ -50,7 +50,7 @@
 - Run only the changed files' tests: `.venv/bin/python -m pytest <files> -q`. Run `uv sync --frozen` first if `.venv` is missing. If the session guard refuses `ENV=` prefixes or compound commands, use the `ci.sh` wrapper. Then run `.venv/bin/ruff format`, `.venv/bin/ruff check` and `.venv/bin/pyright <touched python files>`, plus `bash -n` on every touched shell script, and `make lint` before the final review. `tests/test_production_deploy_assets.py` takes about 3 minutes: run it in the background. CI runs the full suite.
 - Commit trailers: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` and the session line the controller gives.
 - The builder never touches the home server's stack, AWS or GitHub settings. Every host, AWS or GitHub step is in Part B for the owner. The only exceptions are the read-only commands that Task 3 Step 4 and Task 9 Step 3 name, and **the controller runs those, not a builder**: a builder subagent never runs `gh auth token`, `docker` or `docker inspect`. The controller reports the output.
-- The `ci.sh` wrapper is not in the repository. The controller creates it in the scratchpad (`/tmp/claude-1000/-home-amsyrzmi-CSAV2--claude-worktrees-feat-cd-staging/0b429d2f-9061-4b82-9e30-e378a45a8971/scratchpad/ci.sh`: it exports `NO_LOCAL_ENV=1 ENV=ci` and `PATH=/tmp/fourstacks-toolbin:$PATH`, then `exec "$@"`) and gives builders its path. Run tests as `bash <that path> .venv/bin/python -m pytest <files> -q`, one plain command per call.
+- The `ci.sh` wrapper is not in the repository. The controller creates it in its own scratchpad (the controller's scratchpad `ci.sh` wrapper: it exports `NO_LOCAL_ENV=1 ENV=ci` and `PATH=/tmp/fourstacks-toolbin:$PATH`, then `exec "$@"`) and gives builders its path. Run tests as `bash <that path> .venv/bin/python -m pytest <files> -q`, one plain command per call.
 - Test stand-ins: `test-region-1` for the Systems Manager runner and documents (pattern `^[a-z0-9-]+$`); `zz-test-1` for `setup-target.sh` (it matches that script's region pattern and the repository's no-real-region scan).
 - Reusing test helpers: `harness` is a pytest fixture defined separately in `tests/test_production_deploy_assets.py` and `tests/test_production_resolve.py`. A new test file imports the class (`Harness`) and the helpers, and defines its own fixture where it needs one, rather than importing a fixture (ruff `F811` would fail `make lint`).
 
@@ -464,12 +464,12 @@
     - that a migration stops all services on every such merge;
     - that a failed record job leaves staging updated but unrecorded, so the next automatic run sees the tip as "not staged" and rolls it out again (stopping services again if migrations are pending): re-run the failed record job promptly;
     - that a pending dispatch run is replaced by a newer automatic run in the same concurrency group, and that a green commit whose successor's ci is red when its run starts is not rolled out until the next green merge (tip-only rule);
-    - that if GitHub did create extra deployments (the Part C2 fallback), they never count as staged, and `scripts/image_keep_list.py` (newest 15 staging deployments with a success status, no description filter) would keep more images, not fewer.
+    - that if GitHub did create extra deployments (the Part C2 fallback), they never count as staged, and `scripts/image_keep_list.py` (newest 15 staging deployments with a success status, no description filter) would keep fewer distinct staged shas, not more: the script takes the newest 15 deployment rows before it keeps only those with a success status, so extra rows shrink the number of distinct staged shas kept (the newest 20 sha tags are still kept).
   - A new section "Host setup for automatic rollouts" holds Part B steps 3 to 14, as the permanent record.
   - The manual steps stay, retitled "Manual rollout (break-glass)", with "pause first, unpause after", and the note that a manual run writes the record with the owner's `gh` login.
   - `deploy/PRODUCTION.md`:
     - "Deploying from GitHub" says the staged record comes from `deploy-staging` and only a `staging rollout` description counts;
-    - "One-time setup" says `deploy/aws/setup-target.sh production check` verifies steps 1, 3 and 4;
+    - "One-time setup" says `deploy/aws/setup-target.sh production check` verifies steps 3 and 4, and, through the node's ping status, step 2 (it never verifies step 1: the node role is touched only by `activate`);
     - the two existing lines that install the entry script (one-time step 5d, near line 473, and the digest-change section, near line 670) now say "install the config first (see Reinstalling the shared entry script), then the script", because the script exits 78 without its config;
     - a new section "Reinstalling the shared entry script" gives the config file (the six keys with today's production values from `deploy/production/deploy.conf.example`), `sudo install -m 0644 -o root -g root`, then the script install, in that order;
     - it mentions the core lock `/run/lock/csa-prod-rollout.lock`.
@@ -486,11 +486,11 @@
 
 # Part B: Owner host preparation (handed to the owner by the controller)
 
-Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the other developer, who owns the home server, and who must be present for every home-server step. Placeholders: `<region>` is the production region, `<node-id>` is the `mi-...` id from step 6, and `<subject>` comes from step 8. Nothing printed here goes into the repository or a chat, apart from yes/no results and sha7 values. The commands name the repository `amsyrzmi/CSAV2` literally (change it if the repository moves).
+Each step says **who** runs it and **where**. "Owner" is the owner. "Dev" is the other developer, who owns the home server, and who must be present for every home-server step. Placeholders: `<region>` is the production region, `<node-id>` is the `mi-...` id from step 6, and `<subject>` comes from step 8. Nothing printed here goes into the repository or a chat, apart from yes/no results and sha7 values. The commands name the repository `amsyrzmi/CSAV2` literally (change it if the repository moves).
 
 **Before PR 2 merges**
 
-1. **Owner, own terminal (GitHub):** pause automatic rollouts, so merges made before the preparation do not each produce a red run.
+1. **Owner, own terminal (GitHub):** pause automatic rollouts, so merges made before the preparation do not each produce a red run. The pause variable must be set BEFORE the merge: the merge's own publish run starts `deploy-staging` and, with no secrets yet, it would end red at `Require the deploy variables`.
    ```bash
    gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body true
    gh variable list --repo amsyrzmi/CSAV2 | grep STAGING_AUTO_PAUSED
@@ -500,9 +500,18 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
    gh api repos/amsyrzmi/CSAV2/environments/staging --jq '{protection_rules, deployment_branch_policy}'
    gh api repos/amsyrzmi/CSAV2/environments/staging/deployment-branch-policies --jq '.branch_policies[].name'
    ```
-   The second command must print only `main`. The policy is what stops a workflow on any other branch from using `environment: staging` and assuming the role. One unverified risk: the record job creates a deployment whose `ref` is a commit SHA, and a custom branch policy might refuse that with a 422. If the first record job fails with a 422 naming the deployment branch policy, tell the controller: the fallback is to remove the branch policy from `staging` (every job already has `if: github.ref == 'refs/heads/main'`) and re-run the record job. Part C2 finds this out on the first run, with staging already updated.
+   The second command must print only `main`. The policy is what stops a workflow on any other branch from using `environment: staging` and assuming the role. One unverified risk: the record job creates a deployment whose `ref` is a commit SHA, and a custom branch policy might refuse that with a 422. Find this out before the merge with a probe, once the policy is set: create a deployment for a main sha in `staging` with description `policy probe` (never `staging rollout`, so it can never count as staged), `auto_merge` false and `required_contexts` an empty array, mark it inactive, then delete it. `required_contexts` must be an empty array, which `-F` cannot express, so the body goes in as JSON:
+   ```bash
+   gh api repos/amsyrzmi/CSAV2/commits/main --jq .sha
+   printf '{"ref":"%s","environment":"staging","description":"policy probe","auto_merge":false,"required_contexts":[]}' <full main sha> | gh api --method POST repos/amsyrzmi/CSAV2/deployments --input - --jq .id
+   gh api --method POST repos/amsyrzmi/CSAV2/deployments/<id>/statuses -f state=inactive
+   gh api --method DELETE repos/amsyrzmi/CSAV2/deployments/<id>
+   ```
+   If the POST answers 422, do NOT merge and do NOT remove the policy: tell the controller. The policy is the only ref restriction (the OIDC subject carries the environment but no ref), so an alternative must be chosen first. Part C2 stays the final proof, on the first run, with staging already updated.
 
 **After PR 2 merges (pause still on)**
+
+Steps 4 (the clone for `setup-target.sh`) and 10 (the install from `deploy_entry.sh`, which reads a config) need the merged code.
 
 3. **Owner + Dev, home server (sudo):** take the baseline memory and check the prerequisites.
    ```bash
@@ -555,7 +564,7 @@ Each step says **who** runs it and **where**. "Owner" is Amsyar. "Dev" is the ot
    ```
 9. **Owner + Dev, home server (sudo):** create the dedicated checkout and the Python 3.12 environment. The host's `python3` is 3.14, so uv builds a 3.12 environment under `/opt`, readable by `csa-deploy`.
    ```bash
-   sudo -u csa-deploy git clone https://github.com/amsyrzmi/CSAV2.git /srv/csa-staging-deploy/CSAV2
+   sudo -u csa-deploy git -C /srv/csa-staging-deploy clone https://github.com/amsyrzmi/CSAV2.git CSAV2
    sudo -u csa-deploy git -C /srv/csa-staging-deploy/CSAV2 checkout --detach origin/main
    sudo -u csa-deploy git -C /srv/csa-staging-deploy/CSAV2 status --porcelain --untracked-files=no
    sudo install -d -m 0755 -o root -g root /opt/csa-staging-deploy

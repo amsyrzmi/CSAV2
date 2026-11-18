@@ -1509,8 +1509,29 @@ def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsecti
         "A run given digests is treated as the workflow's run",
         "must therefore use no digests",
         "One role serves both",
+        # Trust paragraph.
+        "**Trust.**",
+        "root-equivalent code execution on the home server",
+        "as `csa-deploy`",
+        "member of the `docker` group",
+        "a minute after the merge",
+        "branch protection",
+        "writable by `csa-deploy`",
+        "git hooks",
+        "`staging-images` environment has no reviewer",
+        "does not exist as a gate today",
+        # Explicit-sha dispatch shares the concurrency group.
+        "An explicit-`sha` dispatch shares the `deploy-staging` concurrency group",
+        "replace the pending automatic run for the tip",
+        "stops red at the downgrade stop",
+        "a dispatch with an empty `sha`",
+        # image_keep_list: extra deployment rows shrink the staged set.
+        "newest 15 deployment rows before it keeps only those with a success status",
+        "extra rows shrink the number of distinct staged shas kept",
+        "newest 20 sha tags are still kept",
     ):
         assert needle in automatic, needle
+    assert "would keep more images, not fewer" not in automatic
 
     manual = _flat(_md_section(text, "Manual rollout (break-glass)", 3))
     assert f"{sr.RECORD_COMMAND} --sha" in manual
@@ -1526,7 +1547,7 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
     text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
     setup = _md_section(text, "Host setup for automatic rollouts")
     flat = _flat(setup)
-    for number in range(3, 15):
+    for number in range(1, 15):
         assert re.search(rf"^{number}\. \*\*", setup, re.MULTILINE), number
     for needle in (
         "fs.protected_regular",
@@ -1552,6 +1573,37 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
         "tell the owner before anything is changed",
     ):
         assert needle in flat, needle
+    # Timing markers: steps 1-2 before the merge, the rest after it, in this order.
+    before = setup.index("Before PR 2 merges: pause and branch policy")
+    after = setup.index("After PR 2 merges (pause still on)")
+    assert before < setup.index("\n1. **") < setup.index("\n2. **") < after
+    assert after < setup.index("\n3. **") < setup.index("\n10. **")
+    for needle in (
+        "Steps 4 (the clone for `setup-target.sh`) and 10 (the install from `deploy_entry.sh`, "
+        "which reads a config) need the merged code",
+        "must be set BEFORE the merge",
+        "the merge's own publish run starts `deploy-staging`",
+        "`Require the deploy variables`",
+    ):
+        assert needle in flat, needle
+    # Step 2: a pre-merge probe replaces the old "remove the policy" fallback.
+    assert "the fallback is to remove the branch policy" not in flat
+    for needle in (
+        "policy probe",
+        "never `staging rollout`",
+        '"required_contexts":[]',
+        '"auto_merge":false',
+        "--method POST repos/amsyrzmi/CSAV2/deployments --input -",
+        "deployments/<id>/statuses -f state=inactive",
+        "--method DELETE repos/amsyrzmi/CSAV2/deployments/<id>",
+        "answers 422, do NOT merge and do NOT remove the policy",
+        "tell the controller",
+        "an alternative must be chosen first",
+    ):
+        assert needle in flat, needle
+    # Step 9: the clone must not run from the owner's working directory.
+    assert "sudo -u csa-deploy git -C /srv/csa-staging-deploy clone https://" in flat
+    assert "sudo -u csa-deploy git clone" not in flat
     # The ordering the steps depend on.
     assert setup.index("staging activate") < setup.index("-register")
     assert setup.index("-register") < setup.index("delete-activation")
@@ -1575,6 +1627,69 @@ def test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval() -> N
         (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
     )
     assert "The owner approves the image publish on GitHub" in skill
+
+
+def test_pipeline_runbook_registry_login_needs_search_and_read_not_ownership() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    routine = _md_section(text, "Routine rollouts")
+    flat = _flat(routine)
+    paragraph = flat[flat.index("**Optional registry login.**") : flat.index("**Switches.**")]
+    # The code checks neither mode nor owner: it needs only search on the directory and read.
+    assert "must belong to (be readable by) `csa-deploy`" not in paragraph
+    assert "use `csa-deploy` in place of `<rollout-user>`" not in paragraph
+    for needle in (
+        "checks neither the mode nor the owner",
+        "keep the owner as owner (file 0600, directory 0700)",
+        "sudo setfacl -m u:csa-deploy:x /srv/csa-staging/registry",
+        "sudo setfacl -m u:csa-deploy:r /srv/csa-staging/registry/config.json",
+        "Re-apply the ACLs after recreating the file",
+        "makes a new inode",
+    ):
+        assert needle in paragraph, needle
+    setup = _flat(_md_section(text, "Host setup for automatic rollouts"))
+    assert "registry` directory exists, also run" in setup
+    assert "u:csa-deploy:r /srv/csa-staging/registry/config.json" in setup
+
+
+def test_pipeline_runbook_reset_section_takes_the_rollout_lock() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    reset = _flat(_md_section(text, "Resetting staging"))
+    for needle in (
+        "Set `STAGING_AUTO_PAUSED` to `true` first",
+        "`wipe` and `accounts` take the same rollout lock",
+        "Stopped at lock: another rollout of staging is running; nothing was changed",
+    ):
+        assert needle in reset, needle
+    skill = _flat(
+        (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
+    )
+    assert "set `STAGING_AUTO_PAUSED` to `true` first" in skill
+    assert "`staging_reset` `wipe` and `accounts` take the same rollout lock" in skill
+    assert "Stopped at lock: ..." in skill
+
+
+def test_production_doc_setup_check_does_not_claim_to_verify_step_1() -> None:
+    doc = _flat((REPO / "deploy" / "PRODUCTION.md").read_text(encoding="utf-8"))
+    assert "verifies steps 3 and 4 below" in doc
+    assert "through the node's ping status, step 2" in doc
+    assert "verifies steps 1, 3 and 4" not in doc
+    plan = (REPO / "docs" / "superpowers" / "plans" / "2026-11-17-cd-pipeline-pr2.md").read_text(
+        encoding="utf-8"
+    )
+    assert "verifies steps 1, 3 and 4" not in plan
+
+
+def test_owned_docs_carry_no_local_paths_session_ids_or_personal_names() -> None:
+    files = (
+        "deploy/STAGING_PIPELINE.md",
+        "deploy/PRODUCTION.md",
+        ".claude/skills/staging-rollout/SKILL.md",
+        "docs/superpowers/plans/2026-11-17-cd-pipeline-pr2.md",
+    )
+    for name in files:
+        text = (REPO / name).read_text(encoding="utf-8")
+        for needle in ("/tmp/claude-", "scratchpad/", "session_01", "Ams" + "yar"):
+            assert needle not in text, (name, needle)
 
 
 def test_host_setup_config_line_matches_the_example_config() -> None:

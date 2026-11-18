@@ -323,9 +323,10 @@ role policies and `PROD_DEPLOY_REGION` must all use it. Nothing in this section 
 into the repository or a chat; secret values go in at a hidden prompt.
 
 `deploy/aws/setup-target.sh production check --region <region> --node <managed-instance-id>
---subject '<subject>'` (CloudShell, read-only) verifies steps 1, 3 and 4 below: the OIDC provider,
-each role's trust and inline policy, each document's default version, and the node's ping status
-(registration). It reports
+--subject '<subject>'` (CloudShell, read-only) verifies steps 3 and 4 below: the OIDC provider,
+each role's trust and inline policy and each document's default version, and, through the node's
+ping status, step 2 (registration). It never verifies step 1: the node role is touched only by
+`activate`. It reports
 `ok`, `missing` or `differs` per item and exits 0 only when everything is `ok`. It does not
 replace reading the steps, and never run its `apply` mode against production without the owner's
 decision.
