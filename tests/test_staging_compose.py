@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
+from scripts.rollout_targets import STAGING
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = REPO_ROOT / "deploy" / "compose.staging-local-proposal.yml"
@@ -770,3 +772,143 @@ def test_staging_proposal_gateway_carries_the_jev_switches(tmp_path: Path) -> No
     assert switched["ASSISTANT_DECIDER_ROUTING"] == "llm"
     assert switched["ASSISTANT_JEV_FLOOR_CHOICE"] == "0.9"
     assert switched["ASSISTANT_DECIDER_EMAIL"] == "auto"
+
+
+STAGING_COMPOSE_FILES = tuple(REPO_ROOT / name for name in STAGING.compose_files)
+
+
+class _TagTolerantLoader(yaml.SafeLoader):
+    """SafeLoader that takes any `!tag` (compose's `!override`, `!reset`) as its plain value."""
+
+
+def _plain_tagged_value(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    if isinstance(node, yaml.MappingNode):
+        return loader.construct_mapping(node, deep=True)
+    return loader.construct_scalar(node)  # type: ignore[arg-type]
+
+
+_TagTolerantLoader.add_multi_constructor("!", _plain_tagged_value)
+
+
+def _load_compose(path: Path) -> dict:
+    document = yaml.load(path.read_text(encoding="utf-8"), Loader=_TagTolerantLoader)
+    assert isinstance(document, dict), path
+    return document
+
+
+def _tagged_volumes_nodes(path: Path) -> list[str]:
+    """Return a description of every service `volumes` node (or item) that carries a YAML tag."""
+    root = yaml.compose(path.read_text(encoding="utf-8"), Loader=yaml.SafeLoader)
+    found: list[str] = []
+    for key_node, services_node in root.value:
+        if key_node.value != "services":
+            continue
+        for service_key, service_node in services_node.value:
+            for field_key, field_node in service_node.value:
+                if field_key.value != "volumes":
+                    continue
+                nodes = [field_node]
+                if isinstance(field_node, yaml.SequenceNode):
+                    nodes += list(field_node.value)
+                found += [
+                    f"{path.name}: {service_key.value}.volumes {node.tag}"
+                    for node in nodes
+                    if node.tag.startswith("!")
+                ]
+    return found
+
+
+def _volume_source(entry: object) -> tuple[str | None, str]:
+    """Return (source, kind) of one `volumes:` entry, short or long syntax."""
+    if isinstance(entry, str):
+        parts = entry.split(":")
+        return (parts[0], "short") if len(parts) > 1 else (None, "short")
+    assert isinstance(entry, dict), entry
+    return entry.get("source"), str(entry.get("type", ""))
+
+
+def test_app_services_mount_nothing_from_the_checkout() -> None:
+    documents = {path: _load_compose(path) for path in STAGING_COMPOSE_FILES}
+    # Compose appends a plain `volumes` list from a later file; `!override` or `!reset` would
+    # replace or clear it and change what this test merges.
+    assert [tag for path in documents for tag in _tagged_volumes_nodes(path)] == []
+
+    declared: set[str] = set()
+    for path, document in documents.items():
+        for name, definition in (document.get("volumes") or {}).items():
+            declared.add(name)
+            for field in ("name", "external", "driver_opts"):
+                assert field not in (definition or {}), f"{path.name}: volume {name} sets {field}"
+
+    merged: dict[str, list[object]] = {}
+    for document in documents.values():
+        for service, definition in (document.get("services") or {}).items():
+            merged.setdefault(service, []).extend(definition.get("volumes") or [])
+
+    assert set(STAGING.app_services) <= set(merged)
+    for service in STAGING.app_services:
+        for entry in merged[service]:
+            source, kind = _volume_source(entry)
+            assert source in declared, f"{service} mounts {entry!r}: not a declared named volume"
+            assert not source.startswith((".", "/", "~")), f"{service}: {entry!r}"
+            assert kind in {"short", "volume"}, f"{service}: {entry!r}"
+
+    # The only entries that name a path rather than a declared volume belong to the bot setup
+    # job, which a rollout never recreates.
+    path_mounts = {
+        service
+        for service, entries in merged.items()
+        for entry in entries
+        if _volume_source(entry)[0] not in declared
+    }
+    assert path_mounts == {"staging-bot-setup"}
+
+
+def _render_staging_stack(project_root: Path, secret_dir: Path) -> dict:
+    env = {
+        **_compose_env(secret_dir),
+        "CSA_STAGING_PROJECT": "csa-staging",
+        "CSA_STAGING_HOOKS_ORIGIN": "https://hooks.staging.invalid",
+        "COMPOSE_PROFILES": "",
+    }
+    command = ["docker", "compose", "--env-file", "/dev/null", "--project-name", "csa-staging"]
+    for name in STAGING.compose_files:
+        command += ["--file", str(project_root / name)]
+    for profile in STAGING.profiles:
+        command += ["--profile", profile]
+    result = subprocess.run(
+        [*command, "config", "--format", "json"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return json.loads(result.stdout.replace(str(project_root), str(REPO_ROOT)))
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker CLI is unavailable")
+def test_the_staging_stack_renders_the_same_from_a_copy_of_the_checkout(tmp_path: Path) -> None:
+    secret_dir = tmp_path / "synthetic-staging-secrets"
+    secret_dir.mkdir(mode=0o700)
+    _make_synthetic_secrets(secret_dir)
+    copy = tmp_path / "copy" / "CSAV2"
+    shutil.copytree(REPO_ROOT / "deploy", copy / "deploy")
+    (copy / "scripts").mkdir()
+    shutil.copy2(REPO_ROOT / "scripts" / "staging_test_bot.py", copy / "scripts")
+    shutil.copytree(REPO_ROOT / "db" / "sql" / "staging", copy / "db" / "sql" / "staging")
+
+    from_repository = _render_staging_stack(REPO_ROOT, secret_dir)
+    from_copy = _render_staging_stack(copy, secret_dir)
+
+    assert from_copy == from_repository
+    declared = {
+        name
+        for path in STAGING_COMPOSE_FILES
+        for name in (_load_compose(path).get("volumes") or {})
+    }
+    assert declared
+    assert {
+        name: volume["name"] for name, volume in from_copy["volumes"].items() if name in declared
+    } == {name: f"{STAGING.project}_{name}" for name in declared}
