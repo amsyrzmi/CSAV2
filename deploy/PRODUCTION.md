@@ -24,10 +24,12 @@ applied last. The overlay changes only:
 against the real settings class. The memory numbers are starting values; the capacity gate decides
 whether they hold.
 
-**The rule:** production only receives a commit that staging has already run. A successful
-staging rollout records its commit as a successful GitHub Deployment in the environment `staging`;
-the production rollout refuses any commit without that record. The one exception is the owner's
-break-glass procedure below, which is outside that rule.
+**The rule:** production only receives a commit that staging has already run. The `deploy-staging`
+workflow rolls every green merge out to staging and, after the instance reported success, records
+the commit as a successful GitHub Deployment in the environment `staging`, described
+`staging rollout`; the production rollout refuses any commit without that record, and only a
+deployment with that description counts (GitHub's own auto-created deployments never do). The one
+exception is the owner's break-glass procedure below, which is outside that rule.
 
 ## Deploying from GitHub
 
@@ -45,7 +47,11 @@ The workflow, not the instance, talks to GitHub. The `plan` job first runs
 `deploy/production/resolve_commit.sh`, which picks the commit, checks it (refusals below) and reads
 both image digests from the registry's manifest API. Its pull token is requested with the
 workflow's own token (the `plan` job has `packages: read`); if the registry refuses that, the
-script asks once more anonymously (the images are public). The two digests go to the
+script asks once more anonymously (the images are public). The script is shared with
+`deploy-staging` and needs `DEPLOY_TARGET` (`production` or `staging`) in its environment: the
+workflow sets `DEPLOY_TARGET: production`, and only production enforces the staged check.
+The rollout core on the instance also takes a per-target lock, `/run/lock/csa-prod-rollout.lock`, in
+`plan` and `apply`, shared with break-glass runs by hand (see Reinstalling the shared entry script). The two digests go to the
 instance with the plan and the apply. The instance still pulls by digest with an empty Docker
 config and checks each pulled image's digest and revision label against the commit. A host run by
 hand without digests keeps the old path (see Break-glass).
@@ -84,8 +90,11 @@ sudo install -d -m 0700 -o ubuntu -g ubuntu /srv/csa-prod/registry
 It is needed only once the images are private.
 
 1. **Before you start.** The commit must be on `main`, its images published (the normal
-   `publish-staging-images` run), and it must have been rolled out to staging with the
-   `staging-rollout` flow, which writes the staged record.
+   `publish-staging-images` run), and it must have been rolled out to staging by the
+   `deploy-staging` workflow, whose `record` job writes the staged record (a manual staging
+   rollout writes it too; see `deploy/STAGING_PIPELINE.md`). Only a deployment described
+   `staging rollout` counts. If the tip is not staged yet, check the latest `deploy-staging` run
+   (`gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5`).
 2. **Start it.** GitHub, Actions, `deploy-production`, "Run workflow", branch `main`. Leave `sha`
    empty to deploy the tip of `main`, the commit you just merged, and only that commit: if its
    staging rollout has not finished, the run fails and nothing older is picked. Or give the full
@@ -204,7 +213,8 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   code: **75** means another deploy holds the lock (`another deploy is running`); wait for it to
   finish and start again. **64** means `csa-prod-deploy` refused its arguments. **73** means it
 could not write its log in `/var/log/csa-prod-deploy` (`cannot write the log file`); nothing ran,
-and the directory must be owned by `ubuntu`. **2** is a plan
+and the directory must be owned by `ubuntu`. **78** is a refused config: see Reinstalling the shared
+entry script. **2** is a plan
   that found missing secret files or, with `unrecognized arguments` in the output, a commit older
   than the digest change (its rollout CLI has no digest options): see Break-glass, "Rolling back
   to a revision older than the digest change". **1** is a rollout stop, `commit is not on main`, or a failed
@@ -229,7 +239,9 @@ lines, or named another commit; `apply` does not run.
 
 The `Resolve and check the commit` step of the `plan` job runs five checks in this order. The first
 that fails prints one line and fails the run; nothing was sent to the instance. Start again once
-the cause is fixed.
+the cause is fixed. `resolve_commit.sh` exits 3 for "not ready yet" (the `ci` run has not
+succeeded, or the images are not published) and 1 for every other refusal. Production treats both
+as a failure; `deploy-staging`'s automatic runs treat exit 3 as `nothing to roll out`.
 
 1. `sha must be the full 40 character lowercase commit SHA`: the `sha` input is not a full lowercase
    SHA. Fix the input, or leave it empty.
@@ -239,8 +251,10 @@ the cause is fixed.
    commit concluded success. Wait for it, or fix the failure.
 4. `main's tip <sha7> is not staged yet; wait for deploy-staging` (an empty `sha`) or
    `commit <sha7> has not been rolled out to staging` (an explicit `sha`): staging has no success
-   record for this commit. Roll it out to staging first. There is no bypass. If the staging
-   rollout succeeded but printed `WARNING: staging is fine but the staged record was not written`,
+   record for this commit. Wait for `deploy-staging` (check its latest run), or roll it out to
+   staging first. There is no bypass. If the `deploy-staging` run's `record` job failed, staging
+   is fine: use "Re-run failed jobs" on that run. If a manual staging rollout succeeded but
+   printed `WARNING: staging is fine but the staged record was not written`,
    run its `Retry:` line on the home server:
    `.venv/bin/python -m scripts.staging_rollout record-staged --sha <full sha>`. It refuses a
    commit that is not on `origin/main` in that checkout.
@@ -307,6 +321,15 @@ The owner does this once, after the deploy PR is merged to `main`. Each step nam
 `<region>` is the one AWS region used for production; the activation, the two documents, the two
 role policies and `PROD_DEPLOY_REGION` must all use it. Nothing in this section is ever pasted
 into the repository or a chat; secret values go in at a hidden prompt.
+
+`deploy/aws/setup-target.sh production check --region <region> --node <managed-instance-id>
+--subject '<subject>'` (CloudShell, read-only) verifies steps 3 and 4 below: the OIDC provider,
+each role's trust and inline policy and each document's default version, and, through the node's
+ping status, step 2 (registration). It never verifies step 1: the node role is touched only by
+`activate`. It reports
+`ok`, `missing` or `differs` per item and exits 0 only when everything is `ok`. It does not
+replace reading the steps, and never run its `apply` mode against production without the owner's
+decision.
 
 ### 1. AWS (CloudShell, admin login): the agent's service role and an activation
 
@@ -466,8 +489,10 @@ c. The rollout's Python environment, root-owned, at `/opt/csa-deploy/venv` (the 
    ```
 
 d. The entry script, installed root-owned outside the checkout (a deploy cannot change the program
-   Systems Manager runs), and its log directory. Reinstall the script the same way whenever a PR
-   changes `deploy/production/deploy_entry.sh`.
+   Systems Manager runs), and its log directory. The script reads a root-owned config file next
+   to it and exits 78 without one, so install the config first (see Reinstalling the shared
+   entry script), then the script. Reinstall the script the same way whenever a PR changes
+   `deploy/production/deploy_entry.sh`.
 
    ```bash
    sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh /usr/local/sbin/csa-prod-deploy
@@ -665,6 +690,8 @@ check. Do the five steps in this order. `<name>` is
 2. **Reinstall the entry script** (Instance, SSH as `ubuntu`). The checkout `~/CSAV2` on the
    instance must be on the merged `main` first (`git -C ~/CSAV2 fetch origin main` and
    `git -C ~/CSAV2 checkout --detach origin/main`), because the script is installed from it.
+   The script exits 78 without its config, so install the config first (see Reinstalling the
+   shared entry script), then the script:
 
    ```bash
    sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh /usr/local/sbin/csa-prod-deploy
@@ -712,6 +739,39 @@ check. Do the five steps in this order. `<name>` is
 
 The first run after this should show the two digests in the plan from the registry and, on apply,
 `smoke ...: ok` lines followed by `Rollout of <sha7> finished.`.
+
+## Reinstalling the shared entry script
+
+`deploy/production/deploy_entry.sh` is shared by production and staging. It reads a config file
+installed next to it, as `/usr/local/sbin/csa-prod-deploy.conf` on this instance, and refuses
+with exit 78 (a configuration error) when the file is missing, is not a regular file, is not owned
+by the script's owner, is writable by group or others, or has an unknown, repeated or missing key.
+Environment variables override nothing. The config has exactly six keys, all required, as
+`KEY=value` lines (it is parsed, never sourced; nothing in it is a secret). Today's production
+values are in `deploy/production/deploy.conf.example`:
+
+```text
+TARGET=production
+DEPLOY_USER=ubuntu
+CHECKOUT=/home/ubuntu/CSAV2
+PYTHON=/opt/csa-deploy/venv/bin/python
+LOCK=/var/lock/csa-prod-deploy.lock
+LOG_DIR=/var/log/csa-prod-deploy
+```
+
+Install the config first, then the script, on the instance as `ubuntu`, from the checkout
+`~/CSAV2` at the merged `main`:
+
+```bash
+sudo install -m 0644 -o root -g root ~/CSAV2/deploy/production/deploy.conf.example /usr/local/sbin/csa-prod-deploy.conf
+sudo install -m 0755 -o root -g root ~/CSAV2/deploy/production/deploy_entry.sh /usr/local/sbin/csa-prod-deploy
+```
+
+The installed `csa-prod-deploy` keeps working until it is replaced, so this is not a prerequisite
+for anything else; it is needed the next time the entry script changes. A deploy also takes the
+rollout core's own lock, `/run/lock/csa-prod-rollout.lock`, in `plan` and `apply`. A break-glass
+run by hand takes it as well, so two rollouts of production cannot run at once, whoever starts
+them.
 
 ## Restoring a backup
 

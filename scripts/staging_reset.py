@@ -63,6 +63,7 @@ from scripts.staging_rollout import (
     build_env,
     compose_base,
     docker_base,
+    hold_rollout_lock,
     load_flags,
     missing_secrets,
     running_images,
@@ -1168,10 +1169,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> int:
-    """Run a command; the targets are fixed, so the only arguments are the command names."""
-    args = _parser().parse_args(argv)
-    runner = runner or SubprocessResetRunner(cwd=REPO_ROOT)
+def _run_command(args: argparse.Namespace, runner: ResetRunner) -> int:
     docker_config = Path(tempfile.mkdtemp(prefix="csa-reset-docker-"))
     try:
         docker_config.chmod(0o700)
@@ -1208,6 +1206,25 @@ def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> in
         shutil.rmtree(docker_config, ignore_errors=True)
     print(format_plan(context))
     return 0
+
+
+def main(argv: list[str] | None = None, runner: ResetRunner | None = None) -> int:
+    """Run a command; the targets are fixed, so the only arguments are the command names.
+
+    ``wipe`` and ``accounts`` change the stack and the database, so they hold the staging rollout
+    lock, taken before any runner call: an automatic rollout must not recreate services or migrate
+    a half-wiped database. ``plan`` only reads, and takes no lock.
+    """
+    args = _parser().parse_args(argv)
+    runner = runner or SubprocessResetRunner(cwd=REPO_ROOT)
+    if args.command == "plan":
+        return _run_command(args, runner)
+    try:
+        with hold_rollout_lock(STAGING):
+            return _run_command(args, runner)
+    except RolloutError as error:  # the lock; the command reports its own stops
+        _report_stop(error, print)
+        return 1
 
 
 if __name__ == "__main__":

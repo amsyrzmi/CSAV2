@@ -15,6 +15,8 @@ secret directory is opened, read or printed.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -24,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -146,6 +148,12 @@ RECORD_COMMAND = f"{MODULE_COMMAND} record-staged"
 TARGET_NAMES = ("staging", "production")
 HOST_DIGEST_RE = re.compile(r"^[0-9a-f]{12}$")
 GATE_ENVIRONMENT = "staging"
+# The description of the deployment record_staged writes; the gate counts only deployments with it.
+STAGED_DESCRIPTION = "staging rollout"
+# One rollout per target at a time, whoever starts it (the owner's manual run, or the
+# deploy-staging workflow through the entry script). Tests point this at a temporary directory.
+ROLLOUT_LOCK_DIR = Path("/run/lock")
+WORKFLOW_RECORDS = "Staged record: written by the deploy-staging workflow after this run."
 # The backup taken before anything changes (deploy/production/backup.sh, installed by path).
 BACKUP_LOG = Path("/srv/csa-prod/backup/backup.log")
 BACKUP_INSTALLED = Path(BACKUP_SCRIPT)
@@ -562,7 +570,9 @@ def publish_state(runner: Runner, sha: str) -> str:
 def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
     """When ``sha`` first succeeded on staging, from GitHub Deployments; None if it never did.
 
-    Fails closed: a gh failure or any answer not of the expected shape is a stop, never a pass.
+    Only a deployment described ``STAGED_DESCRIPTION`` counts: GitHub's own deployments for a job
+    with an environment carry no description and are never a record. Fails closed: a gh failure
+    or any answer not of the expected shape is a stop, never a pass.
     """
     if not SHA_RE.fullmatch(sha):
         raise RolloutError("gate", "not a full 40-character SHA")
@@ -582,6 +592,8 @@ def staged_record(runner: Runner, target: Target, sha: str) -> str | None:
             raise RolloutError("gate", "gh returned a deployment for another commit")
         if deployment.get("environment", GATE_ENVIRONMENT) != GATE_ENVIRONMENT:
             raise RolloutError("gate", f"gh returned a deployment outside {GATE_ENVIRONMENT}")
+        if deployment.get("description") != STAGED_DESCRIPTION:
+            continue
         statuses = _gh_json(
             runner, ["gh", "api", f"{deployments}/{number}/statuses?per_page=100"], "gate"
         )
@@ -626,7 +638,7 @@ def record_staged(runner: Runner, target: Target, sha: str) -> None:
             "required_contexts": [],
             "transient_environment": False,
             "production_environment": False,
-            "description": "staging rollout",
+            "description": STAGED_DESCRIPTION,
         },
     )
     number = created.get("id") if isinstance(created, dict) else None
@@ -1612,6 +1624,47 @@ def _verify_rollback(
                 raise RolloutError("rollback", f"{name} is not healthy on the previous image")
 
 
+@contextlib.contextmanager
+def hold_rollout_lock(target: Target) -> Iterator[None]:
+    """Hold the target's rollout lock for the block; stop at once when another run has it.
+
+    The file is opened read-only, and O_CREAT only when it does not exist yet: /run/lock is
+    sticky and the host sets fs.protected_regular, so open(O_CREAT) on a file another user
+    created is refused even for O_RDONLY. flock works on a read-only descriptor.
+    """
+    path = ROLLOUT_LOCK_DIR / f"{target.project}-rollout.lock"
+    cannot_open = RolloutError("lock", f"cannot open the rollout lock {path}")
+    plain = os.O_RDONLY | os.O_CLOEXEC
+    try:
+        try:
+            fd = os.open(path, plain)
+        except FileNotFoundError:
+            try:
+                fd = os.open(path, plain | os.O_CREAT | os.O_EXCL, 0o644)
+                try:
+                    # The umask masks the mode above; under 077 the next user could not open it.
+                    os.fchmod(fd, 0o644)
+                except OSError:
+                    os.close(fd)
+                    raise
+            except FileExistsError:  # another process created it first
+                fd = os.open(path, plain)
+    except OSError:
+        raise cannot_open from None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RolloutError(
+                "lock", f"another rollout of {target.name} is running; nothing was changed"
+            ) from None
+        except OSError:
+            raise cannot_open from None
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
     out(f"Stopped at {error.step}: {error.message}")
     if error.state:
@@ -1961,6 +2014,21 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     runner = runner or SubprocessRunner(cwd=REPO_ROOT)
     if args.command == "record-staged":
         return record_staged_command(runner, target, args.sha, repo=REPO_ROOT)
+    try:
+        with hold_rollout_lock(target):
+            return _rollout(args, runner, target, image_digests)
+    except RolloutError as error:  # the lock, before any runner call
+        _report_stop(error, print)
+        return 1
+
+
+def _rollout(
+    args: argparse.Namespace,
+    runner: Runner,
+    target: Target,
+    image_digests: dict[str, str] | None,
+) -> int:
+    """plan or apply, with the target's rollout lock held (the record write included)."""
     # Staging keeps its module-level directory (tests point it elsewhere).
     secret_dir = SECRET_DIR if target.name == "staging" else target.secret_dir
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))
@@ -1983,8 +2051,13 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             )
             if code == 0 and target.name == GATE_ENVIRONMENT:
                 # Not inside apply: a failed record must not turn a good rollout into a stop.
-                # Only a staging rollout is a staged record; no other target writes one.
-                _record_rollout(runner, args.sha, print)
+                # Only a staging rollout is a staged record; no other target writes one. A run
+                # given digests is the deploy-staging workflow's: it records after the instance
+                # reported success, so the host makes no gh call.
+                if image_digests is None:
+                    _record_rollout(runner, args.sha, print)
+                else:
+                    print(WORKFLOW_RECORDS)
             return code
         plan = build_plan(
             runner,

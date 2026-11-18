@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import inspect
 import io
 import json
@@ -16,10 +17,13 @@ from typing import Any
 
 import pytest
 from scripts import staging_reset as rs
+from scripts import staging_rollout
 from scripts.migrate import discover_migrations
 from scripts.staging_rollout import RESTART_COMMAND, SOCKET, Completed, RolloutError
 from scripts.staging_roster import load_roster, parse_roster
 
+from tests.test_rollout_lock import STOP as LOCK_STOP
+from tests.test_rollout_lock import held_by_another_process
 from tests.test_staging_rollout import (
     FLAGS_TEXT,
     SHA,
@@ -2053,3 +2057,106 @@ def test_main_runs_accounts(
     assert "mail not sent" in out
     assert PASSWORD not in out
     assert _company_calls(runner)[0][2].startswith(PASSWORD + "\n")  # type: ignore[union-attr]
+
+
+def _lock_file() -> Path:
+    return staging_rollout.ROLLOUT_LOCK_DIR / f"{rs.STAGING.project}-rollout.lock"
+
+
+def _can_lock() -> bool:
+    fd = os.open(_lock_file(), os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+@pytest.mark.parametrize("command", ["wipe", "accounts"])
+def test_wipe_and_accounts_stop_at_the_rollout_lock_before_any_runner_call(
+    reset_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    # An automatic rollout holds this lock while it recreates services or migrates.
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": rs.CONFIRM_PHRASE)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    runner = wipe_runner()
+    with held_by_another_process(_lock_file()):
+        assert rs.main([command], runner) == 1
+    assert capsys.readouterr().out.splitlines() == [LOCK_STOP]
+    assert runner.order == []
+    assert runner.every_argv == []
+    assert not rs.BACKUP_ROOT.exists()
+
+
+def test_plan_is_read_only_and_takes_no_rollout_lock(
+    reset_env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = reset_runner()
+    with held_by_another_process(_lock_file()):
+        assert rs.main(["plan"], runner) == 0
+    assert "Staging reset plan" in capsys.readouterr().out
+
+
+def test_the_rollout_lock_is_held_during_a_wipe_and_released_after_it(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": rs.CONFIRM_PHRASE)
+    held_during: list[bool] = []
+    runner = wipe_runner()
+    real_run = runner.run
+
+    def watching(*args: Any, **kwargs: Any) -> Completed:
+        held_during.append(not _can_lock())
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "run", watching)
+    assert rs.main(["wipe"], runner) == 0
+    assert held_during and all(held_during)
+    assert _can_lock()
+
+
+def test_the_rollout_lock_is_held_during_accounts_and_released_after_it(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    held_during: list[bool] = []
+    runner = accounts_runner()
+    real_run = runner.run
+
+    def watching(*args: Any, **kwargs: Any) -> Completed:
+        held_during.append(not _can_lock())
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "run", watching)
+    assert rs.main(["accounts"], runner) == 0
+    assert held_during and all(held_during)
+    assert _can_lock()
+
+
+@pytest.mark.parametrize("command", ["wipe", "accounts"])
+def test_the_rollout_lock_is_released_after_a_stop_and_after_a_crash(
+    reset_env: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    monkeypatch.setattr(rs, "_on_a_terminal", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": rs.CONFIRM_PHRASE)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": PASSWORD)
+    # A refusal inside the command (the images do not match HEAD) is a stop with exit 1.
+    stopped = reset_runner(revisions={"gateway": "f" * 40})
+    assert rs.main([command], stopped) == 1
+    assert _can_lock()
+
+    def crash(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(rs, command, crash)
+    with pytest.raises(RuntimeError):
+        rs.main([command], reset_runner())
+    assert _can_lock()

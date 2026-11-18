@@ -27,6 +27,10 @@ cannot be rolled out (a manual `ci` run is never publishable), and the next merg
 contain its changes. Manual `workflow_dispatch` runs are never cancelled and never cancel
 another run.
 
+`resolve_commit.sh` is shared by both deploy workflows and needs `DEPLOY_TARGET` (`staging` or
+`production`) in its environment. It exits with exit code 3 for "not ready yet" (no successful `ci`
+run, or the images are not published) and 1 for any other refusal.
+
 ## Inputs and artifacts
 
 Never build from the repository root or copied web checkout. Their Docker ignore

@@ -35,6 +35,8 @@ SHA7 = TIP[:7]
 PY_DIGEST = "sha256:" + "0123456789abcdef" * 4
 FE_DIGEST = "sha256:" + "fedcba9876543210" * 4
 STAGED_ON = "2026-11-13T08:30:00Z"
+DESCRIPTION = "staging rollout"
+TARGET_MESSAGE = "DEPLOY_TARGET must be staging or production"
 ACCEPT_TYPES = (
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.oci.image.manifest.v1+json",
@@ -125,6 +127,12 @@ def _statuses(*states: tuple[str, str]) -> str:
     return json.dumps([{"state": state, "created_at": at} for state, at in states])
 
 
+def _deployment(
+    id: int | str, sha: str = TIP, description: str | None = DESCRIPTION
+) -> dict[str, object]:
+    return {"id": id, "sha": sha, "environment": "staging", "description": description}
+
+
 def _headers(digest: str, name: str = "Docker-Content-Digest") -> str:
     kind = "application/vnd.oci.image.manifest.v1+json"
     return f"HTTP/2 200\r\ncontent-type: {kind}\r\n{name}: {digest}\r\n\r\n"
@@ -147,13 +155,7 @@ def _defaults() -> dict[str, str]:
         "commits.json": json.dumps({"sha": TIP}),
         "compare.json": json.dumps({"status": "ahead"}),
         "runs.json": json.dumps({"workflow_runs": [_run()]}),
-        "deployments.json": json.dumps(
-            [
-                {"id": 11, "sha": TIP, "environment": "staging"},
-                {"id": 12, "sha": TIP, "environment": "staging"},
-                {"id": 10, "sha": OLDER, "environment": "staging"},
-            ]
-        ),
+        "deployments.json": json.dumps([_deployment(11), _deployment(12), _deployment(10, OLDER)]),
         "statuses-11.json": _statuses(
             ("pending", "2026-11-13T09:00:00Z"), ("success", "2026-11-13T10:00:00Z")
         ),
@@ -219,9 +221,10 @@ class Harness:
         env_extra: dict[str, str] | None = None,
         token: str | None = GH_TOKEN,
         namespace: str | None = IMAGE_NAMESPACE,
+        target: str | None = "production",
         xtrace: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        """Run the script with the stubs first on PATH."""
+        """Run the script with the stubs first on PATH (target None leaves DEPLOY_TARGET unset)."""
         env = {
             "PATH": f"{self.bin}:/usr/bin:/bin",
             "REPOSITORY": REPOSITORY,
@@ -230,6 +233,8 @@ class Harness:
             "STUB_STDIN_LOG": str(self.stdin_log),
             **(env_extra or {}),
         }
+        if target is not None:
+            env["DEPLOY_TARGET"] = target
         if token is not None:
             env["GH_TOKEN"] = token
         if namespace is not None:
@@ -376,7 +381,7 @@ def test_default_with_an_unstaged_tip_does_not_fall_back_to_an_older_staged_comm
     # The older commit is staged (and even listed by the stub); the tip has no deployment.
     harness.set(
         "deployments.json",
-        json.dumps([{"id": 10, "sha": OLDER, "environment": "staging"}]),
+        json.dumps([_deployment(10, OLDER)]),
     )
     result = harness.run()
     _assert_refused(result, f"main's tip {SHA7} is not staged yet; wait for deploy-staging")
@@ -393,12 +398,140 @@ def test_explicit_sha_message_differs(harness: Harness) -> None:
 
 
 def test_a_deployment_without_a_success_status_is_not_staged(harness: Harness) -> None:
-    harness.set("deployments.json", json.dumps([{"id": 11, "sha": TIP, "environment": "staging"}]))
+    harness.set("deployments.json", json.dumps([_deployment(11)]))
     harness.set(
         "statuses-11.json",
         _statuses(("pending", "2026-11-13T09:00:00Z"), ("failure", "2026-11-13T10:00:00Z")),
     )
     _assert_refused(harness.run(), f"main's tip {SHA7} is not staged yet; wait for deploy-staging")
+
+
+def test_a_deployment_with_a_success_status_but_another_description_is_not_staged(
+    harness: Harness,
+) -> None:
+    # GitHub's own auto-created deployment has no description; only `staging rollout` counts.
+    for description in (None, "", "Deployment", "Staging rollout", "staging rollout "):
+        harness.set("deployments.json", json.dumps([_deployment(11, description=description)]))
+        harness.set("statuses-11.json", _statuses(("success", STAGED_ON)))
+        _assert_refused(
+            harness.run(), f"main's tip {SHA7} is not staged yet; wait for deploy-staging"
+        )
+        assert not any("/deployments/11/" in call[1] for call in harness.calls())
+
+
+def test_production_ignores_a_success_deployment_without_the_staging_rollout_description(
+    harness: Harness,
+) -> None:
+    # The unlabelled deployment is the earliest success, but only the labelled one is counted.
+    harness.set(
+        "deployments.json",
+        json.dumps([_deployment(11, description=None), _deployment(12)]),
+    )
+    harness.set("statuses-11.json", _statuses(("success", "2026-11-13T01:00:00Z")))
+    harness.set("statuses-12.json", _statuses(("success", STAGED_ON)))
+    result = harness.run()
+    assert result.returncode == 0, result.stderr
+    assert f"staged_on={STAGED_ON}\n" in result.stdout
+    gh_calls = [call[1] for call in harness.calls() if call[0] == "gh"]
+    assert not any("/deployments/11/" in call for call in gh_calls)
+    assert any("/deployments/12/" in call for call in gh_calls)
+
+
+@pytest.mark.parametrize("target", [None, "", "prod", "Staging", "PRODUCTION", "staging\n", "both"])
+def test_deploy_target_is_required_and_validated(harness: Harness, target: str | None) -> None:
+    # Validated before anything else: not even a missing GH_TOKEN is reported first.
+    result = harness.run(target=target, token=None)
+    _assert_refused(result, TARGET_MESSAGE)
+    assert harness.calls() == []
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_both_valid_targets_pass_the_target_check(harness: Harness, target: str) -> None:
+    result = harness.run(target=target)
+    assert result.returncode == 0, result.stderr
+
+
+def test_staging_does_not_require_a_staged_record_and_reports_one_when_present(
+    harness: Harness,
+) -> None:
+    # Present: staged_on is the earliest success on a `staging rollout` deployment.
+    result = harness.run(target="staging")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f"sha={TIP}\npython_digest={PY_DIGEST}\nfrontend_digest={FE_DIGEST}\n"
+        f"staged_on={STAGED_ON}\nexplicit=false\n"
+    )
+    # Absent, whether there is no deployment at all, only a failed one, or an unlabelled one.
+    cases = {
+        "none": "[]",
+        "failure-only": json.dumps([_deployment(11)]),
+        "unlabelled": json.dumps([_deployment(11, description=None)]),
+    }
+    for name, deployments in cases.items():
+        harness.set("deployments.json", deployments)
+        harness.set("statuses-11.json", _statuses(("failure", "2026-11-13T10:00:00Z")))
+        if name == "unlabelled":
+            harness.set("statuses-11.json", _statuses(("success", STAGED_ON)))
+        for args in ((), (TIP,)):
+            result = harness.run(*args, target="staging")
+            assert result.returncode == 0, (name, result.stderr)
+            assert result.stdout == (
+                f"sha={TIP}\npython_digest={PY_DIGEST}\nfrontend_digest={FE_DIGEST}\n"
+                f"staged_on=\nexplicit={'true' if args else 'false'}\n"
+            ), name
+            assert result.stderr == ""
+
+
+def test_staging_reads_deployments_the_same_way_and_ignores_unlabelled_ones(
+    harness: Harness,
+) -> None:
+    harness.set(
+        "deployments.json",
+        json.dumps([_deployment(11, description=None), _deployment(12)]),
+    )
+    harness.set("statuses-11.json", _statuses(("success", "2026-11-13T01:00:00Z")))
+    result = harness.run(target="staging")
+    assert result.returncode == 0, result.stderr
+    assert f"staged_on={STAGED_ON}\n" in result.stdout
+    assert not any("/deployments/11/" in call[1] for call in harness.calls() if call[0] == "gh")
+
+
+def test_staging_still_fails_closed_on_an_unreadable_deployment_answer(harness: Harness) -> None:
+    harness.flag("fail-gh-deployments")
+    _assert_refused(harness.run(target="staging"))
+    harness.set("deployments.json", "not json")
+    (harness.dir / "fail-gh-deployments").unlink()
+    _assert_refused(harness.run(target="staging"))
+
+
+STAGING_REFUSALS = {
+    "not-on-main-diverged": 1,
+    "not-on-main-behind": 1,
+    "ci-failed": 3,
+    "ci-in-progress": 3,
+    "ci-no-runs": 3,
+    "ci-run-for-another-sha": 3,
+    "python-image-missing": 3,
+    "frontend-image-missing": 3,
+    "python-digest-malformed": 1,
+    "frontend-digest-malformed": 1,
+}
+
+
+@pytest.mark.parametrize("name", STAGING_REFUSALS)
+def test_staging_still_runs_checks_1_2_3_and_5(harness: Harness, name: str) -> None:
+    overrides, message = FAILED_CHECKS[name]
+    for file, content in overrides.items():
+        harness.set(file, content)
+    result = harness.run(target="staging")
+    _assert_refused(result, message)
+    assert result.returncode == STAGING_REFUSALS[name]
+
+
+def test_staging_still_refuses_a_malformed_input_sha(harness: Harness) -> None:
+    result = harness.run(TIP[:7], target="staging")
+    _assert_refused(result, "sha must be the full 40 character lowercase commit SHA")
+    assert harness.calls() == []
 
 
 FAILED_CHECKS = {
@@ -457,6 +590,53 @@ def test_each_check_stops_with_its_exact_message_and_prints_nothing_to_stdout(
     for file, content in overrides.items():
         harness.set(file, content)
     _assert_refused(harness.run(), message)
+
+
+# Exit 3 means "not ready yet": the ci run has not succeeded, or the images are not published.
+NOT_READY = {
+    "ci-failed",
+    "ci-in-progress",
+    "ci-no-runs",
+    "ci-run-for-another-sha",
+    "python-image-missing",
+    "frontend-image-missing",
+}
+# Refusals outside FAILED_CHECKS: a bad input, a failing call, an unexpected answer. Each is
+# (fixture overrides, marker files, arguments); all of them are exit 1.
+OTHER_REFUSALS = {
+    "bad-sha": ({}, [], ("not-a-sha",)),
+    "tip-unreadable": ({}, ["fail-gh-commits"], ()),
+    "compare-unreadable": ({}, ["fail-gh-compare"], ()),
+    "ci-runs-unreadable": ({}, ["fail-gh-runs"], ()),
+    "ci-runs-garbage": ({"runs.json": "not json"}, [], ()),
+    "deployments-unreadable": ({}, ["fail-gh-deployments"], ()),
+    "registry-token-unreadable": ({}, ["fail-curl-token-python"], ()),
+    "registry-unreachable": ({}, ["fail-curl-head-frontend"], ()),
+    "registry-unexpected-status": ({"code-python": "500"}, [], ()),
+    "digest-header-missing": (
+        {"head-python.txt": "HTTP/2 200\r\ncontent-type: text/plain\r\n\r\n"},
+        [],
+        (),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", [*FAILED_CHECKS, *OTHER_REFUSALS])
+def test_not_ready_checks_exit_3_and_every_other_refusal_exits_1(
+    harness: Harness, name: str
+) -> None:
+    if name in FAILED_CHECKS:
+        overrides, args, flags = FAILED_CHECKS[name][0], (), []
+    else:
+        overrides, flags, args = OTHER_REFUSALS[name]
+    for file, content in overrides.items():
+        harness.set(file, content)
+    for flag in flags:
+        harness.flag(flag)
+    result = harness.run(*args)
+    assert result.stdout == ""
+    assert result.stderr.count("\n") == 1, result.stderr
+    assert result.returncode == (3 if name in NOT_READY else 1), result.stderr
 
 
 def test_a_failed_check_stops_before_the_later_calls(harness: Harness) -> None:
@@ -571,7 +751,7 @@ GARBAGE = ["", "not json", "{", "null", '"a string"', "[]", "{}"]
 @pytest.mark.parametrize("garbage", GARBAGE)
 def test_malformed_or_empty_gh_json_fails_closed(harness: Harness, key: str, garbage: str) -> None:
     # One deployment, so an empty status list (a legitimate answer) means "not staged".
-    harness.set("deployments.json", json.dumps([{"id": 11, "sha": TIP, "environment": "staging"}]))
+    harness.set("deployments.json", json.dumps([_deployment(11)]))
     harness.set(f"{key}.json", garbage)
     _assert_refused(harness.run())
     assert any(GH_PATHS[key] in call[1] for call in harness.calls() if call[0] == "gh")
@@ -591,12 +771,14 @@ def test_a_token_answer_without_a_usable_token_fails_closed(
     )
 
 
-def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness) -> None:
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness, target: str) -> None:
+    # Staging reads the same record, and still fails closed on a malformed matching deployment.
     harness.set(
         "deployments.json",
-        json.dumps([{"id": "11; echo pwned", "sha": TIP, "environment": "staging"}]),
+        json.dumps([_deployment("11; echo pwned")]),
     )
-    _assert_refused(harness.run())
+    _assert_refused(harness.run(target=target))
 
 
 @pytest.mark.parametrize(
@@ -609,10 +791,17 @@ def test_a_deployment_id_that_is_not_a_number_is_refused(harness: Harness) -> No
         "2026-11-13T10:00:00+08:00",
     ],
 )
-def test_staged_on_must_be_a_plain_utc_timestamp(harness: Harness, created_at: str) -> None:
-    harness.set("deployments.json", json.dumps([{"id": 11, "sha": TIP, "environment": "staging"}]))
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_staged_on_must_be_a_plain_utc_timestamp(
+    harness: Harness, created_at: str, target: str
+) -> None:
+    if target == "staging" and created_at == "":
+        # The script skips an empty date as "no success recorded": production then refuses for
+        # the missing record, staging reports staged_on= empty and goes on. Not a malformed value.
+        pytest.skip("an empty date is an absent record, which staging accepts")
+    harness.set("deployments.json", json.dumps([_deployment(11)]))
     harness.set("statuses-11.json", _statuses(("success", created_at)))
-    _assert_refused(harness.run())
+    _assert_refused(harness.run(target=target))
 
 
 def test_a_tip_that_is_not_a_full_sha_is_refused(harness: Harness) -> None:
@@ -800,7 +989,8 @@ def test_credentials_are_never_printed(harness: Harness, name: str, xtrace: bool
     for file, content in NEVER_PRINTED[name].items():
         harness.set(file, content)
     result = harness.run(env_extra=LOGIN, xtrace=xtrace)
-    assert result.returncode == (0 if name in ("success", "credentialed-refused") else 1)
+    expected = {"success": 0, "credentialed-refused": 0, "image-missing": 3}
+    assert result.returncode == expected.get(name, 1)
     if xtrace:
         assert "+ " in result.stderr  # the trace is on, and still shows no secret
     _assert_login_kept_secret(harness, result)

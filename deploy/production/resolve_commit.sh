@@ -1,6 +1,7 @@
 #!/bin/bash
-# Decide which commit production deploys and check it before anything reaches the instance:
-#   resolve_commit.sh [<input-sha>]      environment: GH_TOKEN, REPOSITORY (owner/name),
+# Decide which commit a target deploys and check it before anything reaches the instance:
+#   resolve_commit.sh [<input-sha>]      environment: DEPLOY_TARGET (staging or production),
+#                                        GH_TOKEN, REPOSITORY (owner/name),
 #                                        IMAGE_NAMESPACE (ghcr.io/<lowercase owner>),
 #                                        optional REGISTRY_USER and REGISTRY_TOKEN
 # With no input the commit is the tip of main (and that tip alone: if it is not staged, nothing
@@ -8,14 +9,19 @@
 #   sha=, python_digest=, frontend_digest=, staged_on=, explicit=true|false
 # Checks run in order and the first failure prints one line to stderr and exits non-zero with
 # nothing on stdout: 1 the input, 2 the commit is on main, 3 its ci run on main succeeded, 4 it
-# has a success status on a staging Deployment (this is the staged gate, since a host given image
-# digests skips its own), 5 both images are tagged with the sha in the registry and their digests
-# are readable. Every gh or curl failure and every malformed answer fails closed. GH_TOKEN is
-# read only by gh and is never printed. The registry token request carries the login
-# REGISTRY_USER:REGISTRY_TOKEN when both are set (the workflow's own token, with packages: read)
-# and is retried once anonymously if the registry refuses it; with no login it is anonymous. The
-# login and the bearer token reach curl on stdin (a curl config), never on a command line, and
-# are read with xtrace off, so `bash -x` does not echo them either.
+# has a success status on a staging Deployment described `staging rollout` (this is the staged
+# gate, since a host given image digests skips its own; a deployment GitHub creates by itself has
+# no such description and never counts), 5 both images are tagged with the sha in the registry
+# and their digests are readable. DEPLOY_TARGET=production enforces check 4. DEPLOY_TARGET=staging
+# never refuses at check 4: staged_on is the earliest such success, or empty.
+# Exit status: 3 means "not ready yet" (check 3, or the images of check 5 are not published, so
+# the same commit may pass later); 1 is every other refusal. Every gh or curl failure and every
+# malformed answer fails closed (exit 1). GH_TOKEN is read only by gh and is never printed. The
+# registry token request carries the login REGISTRY_USER:REGISTRY_TOKEN when both are set (the
+# workflow's own token, with packages: read) and is retried once anonymously if the registry
+# refuses it; with no login it is anonymous. The login and the bearer token reach curl on stdin
+# (a curl config), never on a command line, and are read with xtrace off, so `bash -x` does not
+# echo them either.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -24,6 +30,12 @@ export LC_ALL=C
 die() {
     echo "$1" >&2
     exit 1
+}
+
+# not_ready <message>: the same, with exit status 3 ("not ready yet").
+not_ready() {
+    echo "$1" >&2
+    exit 3
 }
 
 # valid <pattern> <value>: the whole value matches and holds no newline.
@@ -40,6 +52,8 @@ gh_get() {
     printf '%s' "$out"
 }
 
+# The target comes first: it decides how check 4 behaves.
+valid '^(staging|production)$' "${DEPLOY_TARGET:-}" || die "DEPLOY_TARGET must be staging or production"
 [[ "$#" -le 1 ]] || die "usage: resolve_commit.sh [<sha>]"
 input="${1:-}"
 # ${GH_TOKEN:+set}, not the value: xtrace shows the expanded test, and in the workflow GH_TOKEN is
@@ -99,14 +113,17 @@ passed="$(jq -r --arg sha "$sha" \
      then any(.workflow_runs[]; .head_sha == $sha and .head_branch == "main" and .event == "push"
                                 and .status == "completed" and .conclusion == "success") | tostring
      else error("shape") end' <<< "$body" 2> /dev/null)" || die "unexpected answer for the ci runs of $sha7"
-[[ "$passed" == "true" ]] || die "the ci run for $sha7 has not succeeded on main"
+[[ "$passed" == "true" ]] || not_ready "the ci run for $sha7 has not succeeded on main"
 
-# 4. A success status on a staging Deployment of this sha. staged_on is the earliest one.
+# 4. A success status on a staging Deployment of this sha described `staging rollout` (the
+# rollout's own record; GitHub's auto-created deployments have no description). staged_on is the
+# earliest one. Production refuses without one; staging reports it, or an empty value.
 body="$(gh_get "repos/$REPOSITORY/deployments?environment=staging&sha=$sha&per_page=100" \
     "could not read the staging deployments from GitHub" "unexpected answer for the staging deployments")"
 ids="$(jq -r --arg sha "$sha" \
     'if type == "array"
-     then .[] | select(.sha == $sha and .environment == "staging") | .id | tostring
+     then .[] | select(.sha == $sha and .environment == "staging" and .description == "staging rollout")
+                | .id | tostring
      else error("shape") end' <<< "$body" 2> /dev/null)" || die "unexpected answer for the staging deployments"
 successes=""
 while IFS= read -r id; do
@@ -130,7 +147,7 @@ while IFS= read -r date; do
         staged_on="$date"
     fi
 done <<< "$successes"
-if [[ -z "$staged_on" ]]; then
+if [[ -z "$staged_on" && "$DEPLOY_TARGET" == "production" ]]; then
     if [[ "$explicit" == "true" ]]; then
         die "commit $sha7 has not been rolled out to staging"
     fi
@@ -173,7 +190,7 @@ registry_digest() {
         | curl -s --max-time 30 --head -K - -o /dev/null -D "$headers" -w '%{http_code}' -H "Accept: $ACCEPT" \
             "https://ghcr.io/v2/$repo/manifests/$sha" 2> /dev/null)" \
         || die "could not reach the registry for csa-$app"
-    [[ "$code" != "404" ]] || die "images for $sha7 are not published (csa-$app)"
+    [[ "$code" != "404" ]] || not_ready "images for $sha7 are not published (csa-$app)"
     [[ "$code" == "200" ]] || die "the registry answered HTTP ${code:0:3} for csa-$app"
     digest=""
     while IFS= read -r line || [[ -n "$line" ]]; do
