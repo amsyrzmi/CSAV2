@@ -407,8 +407,14 @@ export function rowClock(
   return { kind: "last", at, title: absolute ? `Last message ${absolute}` : "" };
 }
 
-/** The newest message is the customer's and nobody has answered it. False when either time is unknown or unreadable. */
-export function isUnread(item: Pick<Conversation, "last_customer_at" | "last_staff_reply_at">): boolean {
+/**
+ * The newest message is the customer's and nobody has answered it. False when either time is unknown
+ * or unreadable, and for the assistant's chats (`bot`), whose answers are not staff replies.
+ */
+export function isUnread(
+  item: Pick<Conversation, "last_customer_at" | "last_staff_reply_at" | "queue_status">,
+): boolean {
+  if (item.queue_status === "bot") return false;
   const customer = parseTime(item.last_customer_at ?? null);
   if (customer === null) return false;
   const staff = parseTime(item.last_staff_reply_at ?? null);
@@ -932,7 +938,7 @@ export function viewErrorText(status: number | null, code: string | null, fallba
 export function settingsErrorText(status: number | null, code: string | null, fallback: string): string {
   if (status === null) return actionErrorText(null, null, fallback);
   if (status === 409 && code === "version_conflict") {
-    return "Someone else changed these. The latest values are shown; check them and save again.";
+    return "Someone else changed these, so your change was not saved. The latest values are shown; check them and save again.";
   }
   if (status === 403) return "You do not have permission to do that.";
   if (status === 422) return "One of these values is out of range. Check them and save again.";

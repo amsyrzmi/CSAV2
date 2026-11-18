@@ -683,10 +683,10 @@ test("saved-view errors are plain sentences and never a raw code", () => {
   assert.equal(viewErrorText(409, "something else", fallback), fallback);
 });
 
-test("a settings error is a plain sentence, a version conflict says the latest values are shown", () => {
+test("a settings error is a plain sentence, a version conflict says the change was lost", () => {
   const fallback = "Could not save.";
   assert.equal(settingsErrorText(409, "version_conflict", fallback),
-    "Someone else changed these. The latest values are shown; check them and save again.");
+    "Someone else changed these, so your change was not saved. The latest values are shown; check them and save again.");
   assert.equal(settingsErrorText(403, "x", fallback), "You do not have permission to do that.");
   assert.equal(settingsErrorText(422, "x", fallback), "One of these values is out of range. Check them and save again.");
   assert.equal(settingsErrorText(null, null, fallback), actionErrorText(null, null, fallback));
@@ -754,6 +754,8 @@ test("isUnread: the customer wrote last and nobody has answered", () => {
   // Rows without the queue fields (older servers, other screens' stubs) are never emphasised.
   assert.equal(isUnread({ ...item(), last_customer_at: undefined, last_staff_reply_at: undefined }), false);
   assert.equal(isUnread(item({ last_customer_at: "nope", last_staff_reply_at: null })), false);
+  // The assistant's chats: its replies are not staff replies, so they are never emphasised.
+  assert.equal(isUnread(item({ queue_status: "bot", last_customer_at: ago(HOUR), last_staff_reply_at: null })), false);
 });
 
 test("dueLabel: neutral minutes, Due soon in the last quarter, Overdue in words in the error tone", () => {

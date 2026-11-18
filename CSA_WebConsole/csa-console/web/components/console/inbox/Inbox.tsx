@@ -52,9 +52,9 @@ function shown(element: HTMLElement | null): element is HTMLElement {
 
 /**
  * A bulk action's answer: its summary (the notice it set) and what did not apply, one line per
- * conversation. Shown only while the notice is still that summary.
+ * conversation, with those conversations' ids (`kept`). Shown only while the notice is still that summary.
  */
-type BulkOutcomeView = { summary: string; lines: string[] };
+type BulkOutcomeView = { summary: string; lines: string[]; kept: readonly string[] };
 
 /**
  * Outcome notices, the shared proposal card and the explicit retry, next to the work. After a bulk
@@ -147,16 +147,28 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   // The selection as it applies: the picked rows that are loaded, in list order. An id whose row
   // has left the list (resolved elsewhere, say) is neither counted nor sent.
   const chosen = items.filter((item) => picked.has(item.id)).map((item) => item.id);
+  // Each list answer drops a picked row it no longer has, so the row does not come back checked
+  // later; a row the bulk result names as not done stays picked while that result stands.
+  const listAnswer = conversations.extra;
+  const [prunedFor, setPrunedFor] = useState(listAnswer);
+  if (listAnswer !== prunedFor) {
+    setPrunedFor(listAnswer);
+    if (listAnswer !== null) {
+      const keep = (id: string) => items.some((item) => item.id === id) || !!bulkResult?.kept.includes(id);
+      if ([...picked].some((id) => !keep(id))) setPicked(new Set([...picked].filter(keep)));
+    }
+  }
 
   // The read time a bulk request sends as `seen_at`: the list's `as_of` when the selection started,
   // kept (the earliest) while more rows are added, so a customer who wrote after the person looked
   // is refused even when the list has polled since. After a bulk answer it moves to the next list
   // answer's `as_of` (the person has seen the refreshed list), so an item refused because the
-  // customer wrote can be acted on again once that message is on screen, and not before.
+  // customer wrote can be acted on again once that message is on screen, and not before. An answer
+  // without a read time (or none yet for a new list) never replaces it: it waits for one that has.
   const listAsOf = conversations.extra?.as_of ?? null;
   const [selectionAsOf, setSelectionAsOf] = useState<string | null>(null);
   const [renewAsOf, setRenewAsOf] = useState<{ from: string | null } | null>(null);
-  if (renewAsOf && listAsOf !== renewAsOf.from) {
+  if (renewAsOf && listAsOf !== null && listAsOf !== renewAsOf.from) {
     setRenewAsOf(null);
     setSelectionAsOf(listAsOf);
   }
@@ -273,7 +285,9 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         const item = items.find((row) => row.id === id);
         return names.get(id) ?? (item ? conversationName(item) : undefined);
       };
-      setBulkResult({ summary: bulkSummary(results).text, lines: bulkFailureLines(results, nameOf) });
+      setBulkResult({
+        summary: bulkSummary(results).text, lines: bulkFailureLines(results, nameOf), kept: [...failed],
+      });
       setBulkFeedback(true);
       setRenewAsOf({ from: listAsOf });
     };
@@ -496,6 +510,9 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
           canSelectAll={chosen.length < Math.min(BULK_LIMIT, items.length)} onSelectAll={selectAll}
           onClear={clearSelection} blocked={actions.blocked} canAssign={canAssign} query={query} meId={me.user.id}
           onRun={runBulk} /> : undefined} />
+      {/* On a phone the bar's box is dissolved, so the column's 1rem under it is lost: its rows keep
+          0.5rem below them and this keeps the rest. */}
+      <div aria-hidden className="h-2 md:hidden" />
     </div>
     {feedbackTop && <Feedback actions={actions} framed={false} bulk={bulkResult} bulkRef={bulkResultRef} />}
     {/* Breakpoints in rem like `md`: Tailwind cannot order a px variant against a rem one. */}

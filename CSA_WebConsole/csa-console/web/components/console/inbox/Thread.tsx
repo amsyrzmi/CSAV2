@@ -9,7 +9,7 @@ import { action, field, Notice, secondary } from "@/components/console/ui";
 import { rowTitle } from "@/lib/customer-identity";
 import type { ConsoleRole } from "@/lib/identity-contracts";
 import type { Approval, Conversation, Message } from "@/lib/inbox-api";
-import { dueLabel, rowMeta } from "@/lib/inbox-queue";
+import { dueLabel, rowMeta, threadActions } from "@/lib/inbox-queue";
 import { handoffNoteLine, nearBottom, newMessagesText, threadItems, unseenCount } from "@/lib/inbox-thread";
 import { ChannelBadge, contactOf } from "./ConversationList";
 import { MessageItem } from "./MessageItem";
@@ -231,6 +231,9 @@ export function Thread({
         </div>}
       </form>
       : <p key="hint" className={`border-t border-[color:var(--fs-border)] bg-[var(--fs-surface)] px-3 py-3 text-sm text-ink-700 ${roomMotion}`}>
-        Take over to reply as a team member.</p>}
+        {shown && threadActions(shown, me)
+          // A queued item has Take over under More; the assistant's chats keep the old button.
+          ? "Use More, then Take over the chat, to reply as a team member."
+          : "Take over to reply as a team member."}</p>}
   </section>;
 }

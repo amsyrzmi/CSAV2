@@ -105,6 +105,8 @@ export function Menu({
   // React listens on the document here, so stopping propagation cannot keep a key from the Inbox's
   // own document listener: a key the menu handles is marked handled (defaultPrevented) instead.
   function onMenuKey(event: KeyboardEvent<HTMLDivElement>) {
+    // The browser's own keys stay the browser's: anything with Ctrl, Cmd or Alt (Find, Back) and F1–F12.
+    if (event.ctrlKey || event.metaKey || event.altKey || /^F\d{1,2}$/.test(event.key)) return;
     if (event.key === "Enter" || event.key === " ") return; // the item's own click
     if (event.key === "Tab") { setOpen(false); return; }
     event.preventDefault();
