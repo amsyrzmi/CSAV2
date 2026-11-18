@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 from psycopg import AsyncConnection
-from scripts import registry_auth
+from scripts import registry_auth, staging_rollout
 from scripts.rollout_targets import PRODUCTION, STAGING
 
 from tests import shard
@@ -248,3 +248,13 @@ def _no_host_registry_login(
         return real(docker_config, absent if source in _HOST_REGISTRY_LOGINS else source)
 
     monkeypatch.setattr(registry_auth, "install", install)
+
+
+@pytest.fixture(autouse=True)
+def _rollout_lock_in_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """A rollout takes a lock file in /run/lock on the host; no test may touch the real one."""
+    monkeypatch.setattr(
+        staging_rollout, "ROLLOUT_LOCK_DIR", tmp_path_factory.mktemp("rollout-lock")
+    )

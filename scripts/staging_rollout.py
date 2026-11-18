@@ -15,6 +15,8 @@ secret directory is opened, read or printed.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -24,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -148,6 +150,9 @@ HOST_DIGEST_RE = re.compile(r"^[0-9a-f]{12}$")
 GATE_ENVIRONMENT = "staging"
 # The description of the deployment record_staged writes; the gate counts only deployments with it.
 STAGED_DESCRIPTION = "staging rollout"
+# One rollout per target at a time, whoever starts it (the owner's manual run, or the
+# deploy-staging workflow through the entry script). Tests point this at a temporary directory.
+ROLLOUT_LOCK_DIR = Path("/run/lock")
 WORKFLOW_RECORDS = "Staged record: written by the deploy-staging workflow after this run."
 # The backup taken before anything changes (deploy/production/backup.sh, installed by path).
 BACKUP_LOG = Path("/srv/csa-prod/backup/backup.log")
@@ -1619,6 +1624,41 @@ def _verify_rollback(
                 raise RolloutError("rollback", f"{name} is not healthy on the previous image")
 
 
+@contextlib.contextmanager
+def hold_rollout_lock(target: Target) -> Iterator[None]:
+    """Hold the target's rollout lock for the block; stop at once when another run has it.
+
+    The file is opened read-only, and O_CREAT only when it does not exist yet: /run/lock is
+    sticky and the host sets fs.protected_regular, so open(O_CREAT) on a file another user
+    created is refused even for O_RDONLY. flock works on a read-only descriptor.
+    """
+    path = ROLLOUT_LOCK_DIR / f"{target.project}-rollout.lock"
+    cannot_open = RolloutError("lock", f"cannot open the rollout lock {path}")
+    plain = os.O_RDONLY | os.O_CLOEXEC
+    try:
+        try:
+            fd = os.open(path, plain)
+        except FileNotFoundError:
+            try:
+                fd = os.open(path, plain | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:  # another process created it first
+                fd = os.open(path, plain)
+    except OSError:
+        raise cannot_open from None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RolloutError(
+                "lock", f"another rollout of {target.name} is running; nothing was changed"
+            ) from None
+        except OSError:
+            raise cannot_open from None
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 def _report_stop(error: RolloutError, out: Callable[[str], None]) -> None:
     out(f"Stopped at {error.step}: {error.message}")
     if error.state:
@@ -1968,6 +2008,21 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     runner = runner or SubprocessRunner(cwd=REPO_ROOT)
     if args.command == "record-staged":
         return record_staged_command(runner, target, args.sha, repo=REPO_ROOT)
+    try:
+        with hold_rollout_lock(target):
+            return _rollout(args, runner, target, image_digests)
+    except RolloutError as error:  # the lock, before any runner call
+        _report_stop(error, print)
+        return 1
+
+
+def _rollout(
+    args: argparse.Namespace,
+    runner: Runner,
+    target: Target,
+    image_digests: dict[str, str] | None,
+) -> int:
+    """plan or apply, with the target's rollout lock held (the record write included)."""
     # Staging keeps its module-level directory (tests point it elsewhere).
     secret_dir = SECRET_DIR if target.name == "staging" else target.secret_dir
     docker_config = Path(tempfile.mkdtemp(prefix="csa-rollout-docker-"))
