@@ -1532,7 +1532,7 @@ def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsecti
         "as `csa-deploy`",
         "member of the `docker` group",
         "a minute after the merge",
-        "branch protection",
+        "repository ruleset",
         "writable by `csa-deploy`",
         "git hooks",
         "the `staging-images` environment has no reviewer",

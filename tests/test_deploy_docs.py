@@ -14,6 +14,7 @@ keeps real identifiers out of the public repository.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -975,6 +976,23 @@ def test_the_deploy_skill_never_approves_and_checks_state_before_cancelling() ->
     assert CANCEL_RULE in auto
     assert CANCEL_RULE in never
     assert flat.count(CANCEL_RULE) == 2
+    # An agent never cancels a production run itself (cancelling a waiting apply is a reject in
+    # effect): it hands the owner the command, and the positive rule is what the owner checks.
+    assert (
+        "Never cancel a production run yourself, with or without the owner's go: cancelling a "
+        "waiting apply is a reject in effect." in auto
+    )
+    assert "`gh run cancel <run id> --repo amsyrzmi/CSAV2`, for the owner to run" in auto
+    assert (
+        "Cancel a production run yourself, with or without the owner's go: give the owner the "
+        "command to run, and say that the owner should cancel only a run whose apply job" in never
+    )
+    assert "The only automatic cancel is the workflow's own `supersede`" in auto
+    for old in (
+        "Cancel a production run only after the owner's go",
+        "Cancel a production run without the owner's go",
+    ):
+        assert old not in flat, old
     # Approving or rejecting has its own bullet and holds with or without the owner's go.
     bullets = [" ".join(chunk.split()) for chunk in _section(skill, "## Never").split("\n- ")[1:]]
     approve = next(b for b in bullets if b.startswith("Approve or reject"))
@@ -1038,8 +1056,9 @@ def test_the_deploy_skill_says_where_it_runs_and_what_to_do_when_staging_misbeha
         "if an apply is slow, hangs (for example on a docker pull) or is rolled back by the smoke "
         "check, report the lines verbatim and ask the owner. Do not kill any process and do not "
         "re-run a failed job on your own: a re-run is a rollout action and needs the owner's go. "
-        "Host load is the usual cause (this machine also runs other work)."
+        "It may be host load (unproven)."
     ) in wrong
+    assert "Host load is the usual cause" not in _flat(_skill_text())
 
 
 def test_the_deploy_skill_points_at_the_one_entry_runbook_and_the_setup_scripts() -> None:
@@ -1090,3 +1109,132 @@ def test_deploy_doc_names_the_deploy_skill_without_the_later_in_this_series_phra
     assert "added later in this series" not in text
     assert "The `deploy` skill:" in text
     assert "`.claude/skills/deploy/SKILL.md`" in text
+
+
+def test_the_trust_paragraph_describes_the_ruleset_and_what_it_does_not_enforce() -> None:
+    deploy = _deploy()
+    staging = _flat(_section(deploy, "## Staging: automatic rollouts (deploy-staging)"))
+    trust = staging[staging.index("**Trust.**") : staging.index("**Access.**")]
+    for needle in (
+        "one repository ruleset, `main: pull requests only`",
+        "created by the owner on 2026-11-18",
+        '"One-time setup", "Protect main"',
+        "requires a pull request for every change to the default branch",
+        "forbids force pushes and deletion of `main`",
+        "has no bypass actor, so no one, an admin included, can push to `main` directly",
+        "does not require an approving review (the count is 0)",
+        "does not require any status check",
+        "a merged commit whose `ci` is green rolls out to staging by itself",
+        "The human gate is the click on the production approval",
+        "a repository setting that the owner applies",
+        "nothing in this repository's code creates, enforces or verifies it",
+    ):
+        assert needle in trust, needle
+    # The old claim is gone everywhere in the runbook.
+    assert "required review, no bypass" not in _flat(deploy)
+    assert "branch protection (" not in _flat(deploy)
+    auto = _flat(_section(deploy, "## Auto-planned production runs (PROD_AUTO_PLAN)"))
+    for needle in (
+        "Merging to `main` needs a pull request but no review and no green check "
+        "(the ruleset `main: pull requests only`",
+        "the production approval click is the only human gate between a merged commit and "
+        "production",
+        "**No agent cancels a production run.**",
+        "The only automatic cancel is the workflow's own `supersede`, under the seven conditions "
+        'listed in "Cancelling stale waiting runs, and its limits"',
+        "An agent never cancels a production run itself, because cancelling a waiting apply is a "
+        "reject in effect",
+        "`gh run cancel <run id> --repo amsyrzmi/CSAV2`",
+        "never one that is approved, queued, `in_progress` or finished",
+    ):
+        assert needle in auto, needle
+
+
+def test_the_protect_main_setup_step_records_the_command_the_check_and_the_removal() -> None:
+    deploy = _deploy()
+    setup = _section(deploy, "### Protect main (once, for the repository)")
+    flat = _flat(setup)
+    for needle in (
+        "the owner created this repository ruleset on 2026-11-18",
+        "no script of this repository creates or checks it",
+        "gh api --method POST repos/amsyrzmi/CSAV2/rulesets --input - <<'JSON'",
+        '"name": "main: pull requests only"',
+        '"target": "branch"',
+        '"enforcement": "active"',
+        '"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}',
+        '"bypass_actors": []',
+        '"type": "pull_request"',
+        '"required_approving_review_count": 0',
+        '"dismiss_stale_reviews_on_push": false',
+        '"require_code_owner_review": false',
+        '"require_last_push_approval": false',
+        '"required_review_thread_resolution": false',
+        '{"type": "non_fast_forward"}',
+        '{"type": "deletion"}',
+        "gh api repos/amsyrzmi/CSAV2/rules/branches/main --jq '.[].type'",
+        "expect `pull_request`, `non_fast_forward` and `deletion`",
+        "gh api repos/amsyrzmi/CSAV2/rulesets --jq '.[] | [.id,.name] | @tsv'",
+        "gh api --method DELETE repos/amsyrzmi/CSAV2/rulesets/<id>",
+    ):
+        assert needle in flat, needle
+    # The JSON body is valid and says what the prose says; no numeric id of the real ruleset.
+    body = setup.split("<<'JSON'\n", 1)[1].split("\nJSON", 1)[0]
+    rules = json.loads(body)
+    assert rules["bypass_actors"] == []
+    assert [rule["type"] for rule in rules["rules"]] == [
+        "pull_request",
+        "non_fast_forward",
+        "deletion",
+    ]
+    assert rules["rules"][0]["parameters"]["required_approving_review_count"] == 0
+    assert not re.search(r"rulesets/\d", deploy)
+
+
+def test_the_hung_pull_outcome_row_gives_the_look_the_owner_step_and_the_honest_cause() -> None:
+    section = _section(_deploy(), "## Staging: automatic rollouts (deploy-staging)")
+    rows = [line for line in section.splitlines() if "stuck `docker pull`" in line]
+    assert len(rows) == 1 and rows[0].startswith("| ")
+    row = _flat(rows[0])
+    for needle in (
+        "ends red with runner exit 124 or `TimedOut`",
+        "`timeoutSeconds` is 7200 in `deploy/staging/ssm-document-*.json`",
+        "the job limit is 130 minutes",
+        "holds the `deploy-staging` concurrency group and the host's rollout lock for up to about "
+        "two hours",
+        "Nothing is recorded as staged meanwhile, so `deploy-production-auto` reports "
+        "`not staged yet`",
+        "the apply stops before anything is recreated",
+        "`pgrep -fa 'docker pull'`",
+        "the `docker pull` child of `csa-staging-deploy`",
+        "stops only that stuck `docker pull` client with `sudo kill <pid>`",
+        '"Re-run failed jobs" on the run, which is a rollout action that needs the owner\'s go',
+        "likely cause but unproven",
+    ):
+        assert needle in row, needle
+    # The facts the row cites are what the files say.
+    for document in ("plan", "apply"):
+        text = (ROOT / "deploy" / "staging" / f"ssm-document-{document}.json").read_text()
+        assert '"timeoutSeconds": "7200"' in text
+    workflow = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+    assert workflow.count("timeout-minutes: 130") == 2
+
+
+def test_order_and_checks_say_production_needs_two_reviewers_on_an_empty_repository() -> None:
+    order = _flat(_section(_deploy(), "### Order and checks"))
+    assert (
+        "production needs `--reviewer <login-1> --reviewer <login-2>` (the script refuses without "
+        "a reviewer)" in order
+    )
+
+
+def test_the_apply_line_grammar_names_rotated_and_changed() -> None:
+    setup = _flat(_section(_deploy(), "### The GitHub side: deploy/github/setup-environments.sh"))
+    for needle in (
+        "`secret <NAME> on <env>: set`, `rotated`, `unchanged` or `missing`",
+        "(`set`, `changed`, `unchanged` or `missing`)",
+        "`rotated` is a `SETUP_<NAME>` value written over an existing secret",
+        "`changed` is a `--region` or `--image-namespace` value written over an existing "
+        "variable that held another value",
+        "Neither the new nor the old value is ever printed",
+    ):
+        assert needle in setup, needle

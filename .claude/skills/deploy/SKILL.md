@@ -200,11 +200,15 @@ the owner or the other developer, and the human approval is never given by an ag
   plans, and that its apply is waiting for the owner or the other developer.
 - Never approve it and never reject it, and never ask someone else to approve for the owner. The
   owner approves or rejects on the run page ("Review deployments").
-- Cancel a production run only after the owner's go, and cancel only a run whose apply job is
-  still `waiting` (read in the same turn); never one whose apply is approved, queued, `in_progress`
-  or finished (an approved run may already have sent the deploy to the instance; tell the owner to
-  check the host log and the public smoke test instead). The auto workflow itself cancels stale auto-started runs whose apply is still waiting;
-  it never cancels a person's run.
+- Never cancel a production run yourself, with or without the owner's go: cancelling a waiting
+  apply is a reject in effect. Read its state and give the owner the exact command,
+  `gh run cancel <run id> --repo amsyrzmi/CSAV2`, for the owner to run. What the owner should
+  check first: cancel only a run whose apply job is still `waiting` (read in the same turn);
+  never one whose apply is approved, queued, `in_progress` or finished (an approved run may
+  already have sent the deploy to the instance; tell the owner to check the host log and the
+  public smoke test instead). The only automatic cancel is the workflow's own `supersede`, which
+  cancels stale auto-started runs whose apply is still waiting (seven conditions, in
+  `deploy/DEPLOY.md`); it never cancels a person's run.
 - `PROD_AUTO_PLAN` is changed only on the owner's say-so:
   `gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true|false`. The plain read is
   `gh variable get PROD_AUTO_PLAN --repo amsyrzmi/CSAV2` (it fails when unset, which means off).
@@ -227,8 +231,8 @@ the owner or the other developer, and the human approval is never given by an ag
   rollback itself failed: show the lines and ask the owner.
 - Staging: if an apply is slow, hangs (for example on a docker pull) or is rolled back by the
   smoke check, report the lines verbatim and ask the owner. Do not kill any process and do not
-  re-run a failed job on your own: a re-run is a rollout action and needs the owner's go. Host
-  load is the usual cause (this machine also runs other work).
+  re-run a failed job on your own: a re-run is a rollout action and needs the owner's go. It
+  may be host load (unproven).
 - Staging: if `apply` fails, show the script's own recovery lines verbatim: the step, the state
   staging is in, then whichever applies (`Nothing on staging was changed.`, the `docker ... start`
   restart command, `Migrations were applied: ...` with fix forward, or `Rollback images:` with the
@@ -281,9 +285,9 @@ take the same rollout lock as a rollout: when one holds it they change nothing a
   a pull request.
 - Approve or reject a production deployment, or ask anyone to approve for the owner. Never, with
   or without the owner's go.
-- Cancel a production run without the owner's go: cancel only a run whose apply job is still
-  `waiting` (read in the same turn); never one whose apply is approved, queued, `in_progress` or
-  finished.
+- Cancel a production run yourself, with or without the owner's go: give the owner the command
+  to run, and say that the owner should cancel only a run whose apply job is still `waiting`
+  (read in the same turn); never one whose apply is approved, queued, `in_progress` or finished.
 - Run `gh run rerun` on a production run: a rerun re-uses the old plan. A new run, after the
   owner's go, is the way.
 - Change the environments, their reviewers or branch rules, the secrets, or the AWS roles and

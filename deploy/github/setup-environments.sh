@@ -34,8 +34,9 @@
 # value comes from the environment variable SETUP_<NAME>, or from a hidden prompt when stdin and
 # stderr are a terminal (Enter skips one), and reaches `gh secret set` on stdin only: never an
 # argument, never printed, never logged. A secret that already exists is not prompted for and not
-# overwritten unless its SETUP_<NAME> is set (an explicit rotation). A secret or required variable
-# that has no value ends the run with `apply: <n> item(s) still missing` (exit 1), after
+# overwritten unless its SETUP_<NAME> is set (an explicit rotation, printed as `rotated`; an
+# existing variable given another value prints `changed`, never either value). A secret or
+# required variable that has no value ends the run with `apply: <n> item(s) still missing` (exit 1), after
 # everything else was applied. Every input is validated before the first `gh` call, and every
 # secret value before the first write. Every SETUP_<NAME> that bash holds as a shell variable is
 # moved out of the environment into a shell array before the first child process starts, so no gh,
@@ -673,19 +674,24 @@ set_secret() {
 
 # apply_secrets: one line per secret of the target, after every environment exists.
 apply_secrets() {
-    local entry env name what write
+    local entry env name what write result
     for entry in "${SECRETS[@]}"; do
         IFS='|' read -r env name <<< "$entry"
         what="secret $name on $env"
         write=0
+        result=set
         if [[ -n "${SECRET_VALUE[$name]+x}" ]]; then
-            if [[ "${SECRET_ROTATE[$name]}" -eq 1 ]] || ! secret_listed "$env" "$name"; then
+            if ! secret_listed "$env" "$name"; then
                 write=1
+            elif [[ "${SECRET_ROTATE[$name]}" -eq 1 ]]; then
+                # An explicit SETUP_<NAME> over an existing secret is a rotation: say so.
+                write=1
+                result=rotated
             fi
         fi
         if [[ "$write" -eq 1 ]]; then
             set_secret "$env" "$name" || gh_fail "$what"
-            step "$what" set
+            step "$what" "$result"
         elif secret_listed "$env" "$name"; then
             step "$what" unchanged
         else
@@ -701,7 +707,7 @@ apply_secrets() {
 # and it is absent or different; a required one that is absent and not given is missing. Values
 # are never printed, except for the two switches, whose whole content is true or false.
 apply_variables() {
-    local entry name kind flag needs_set
+    local entry name kind flag needs_set overwrite
     for entry in "${VARIABLES[@]}"; do
         IFS='|' read -r name kind _ <<< "$entry"
         variable_want "$kind"
@@ -712,9 +718,14 @@ apply_variables() {
             fi
         fi
         if [[ "$needs_set" -eq 1 ]]; then
+            overwrite=0
+            ! var_present "$name" || overwrite=1
             gh_call variable set "$name" --repo "$REPO" --body "$WANT" || gh_fail "variable $name"
             if [[ "$kind" == "switch" ]]; then
                 step "variable $name" "set ($WANT)"
+            elif [[ "$overwrite" -eq 1 ]]; then
+                # An existing variable now holds another value: say so, never print either.
+                step "variable $name" changed
             else
                 step "variable $name" set
             fi

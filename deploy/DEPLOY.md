@@ -98,6 +98,7 @@ whose plan was overtaken ends green without sending anything. Read the outcome f
 | `Missing secret files:` (red, plan exit 2) | A secret file the stack needs does not exist for `csa-deploy`. Nothing was sent to apply. After a new secret directory, re-run the `find ... setfacl` line of step 7 of `deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts". |
 | `the plan is a downgrade; staging never goes back by itself (roll back by hand, deploy/STAGING_PIPELINE.md)` (red) | The plan's target is older than what runs now. The workflow never moves staging back, not even for an explicit `sha`; use `deploy/STAGING_PIPELINE.md`, "Manual rollout (break-glass)". An explicit-`sha` dispatch of an older commit ends here too, and it may have replaced the pending automatic run for the tip (see the limits below). |
 | `Stopped at <step>: ...` (red) | The rollout stopped on the host. The recovery lines under `deploy/STAGING_PIPELINE.md`, "Recovery, retest and switches (automatic and manual rollouts)", apply unchanged. The Systems Manager output holds at most 24,000 characters, so the complete log is the one on the host. |
+| the run stays `in_progress` for a long time, then ends red with runner exit 124 or `TimedOut` (see "What a failure means"), for example on a stuck `docker pull` | Staging uses the same runner as production (`ssm_run.sh`; the Systems Manager `timeoutSeconds` is 7200 in `deploy/staging/ssm-document-*.json` and the job limit is 130 minutes). A hung step holds the `deploy-staging` concurrency group and the host's rollout lock for up to about two hours. Nothing is recorded as staged meanwhile, so `deploy-production-auto` reports `not staged yet`. When the pull is what hangs, the apply stops before anything is recreated. Look, read-only: on the host `pgrep -fa 'docker pull'` shows the `docker pull` child of `csa-staging-deploy`. The owner stops only that stuck `docker pull` client with `sudo kill <pid>` (never the entry script or a container), then uses "Re-run failed jobs" on the run, which is a rollout action that needs the owner's go. A slow host (other test suites on the same machine, swap) is a likely cause but unproven. |
 | `Recorded <sha7> as staged` (green) | The record job wrote the staged record, after the host reported success (smoke test included). |
 | the record job is red, with `staging is fine but the staged record was not written; use Re-run failed jobs on this run` | Staging was updated but the record was not written. Use "Re-run failed jobs" on that run now. |
 
@@ -161,8 +162,16 @@ pending), so dispatch only when the tip is not staged.
 
 **Trust.** Merge rights on `main` plus a green `ci` equal root-equivalent code execution on the home
 server, as `csa-deploy` (a member of the `docker` group), a minute after the merge: the entry script
-checks out the deployed sha and runs its Python from the `csa-deploy`-owned checkout. This rests on
-`main`'s branch protection (required review, no bypass). The checkout is writable by `csa-deploy`,
+checks out the deployed sha and runs its Python from the `csa-deploy`-owned checkout. What stands
+in front of `main` is one repository ruleset, `main: pull requests only` (created by the owner on
+2026-11-18; see "One-time setup", "Protect main"). It requires a pull request for every change to
+the default branch, forbids force pushes and deletion of `main`, and has no bypass actor, so no one,
+an admin included, can push to `main` directly. It does not require an approving review (the count
+is 0) and it does not require any status check, so a pull request can be merged without a review and
+without a green `ci`, and a merged commit whose `ci` is green rolls out to staging by itself. The
+human gate is the click on the production approval. The ruleset is a repository setting that the
+owner applies and can check with the command under "Protect main"; nothing in this repository's code
+creates, enforces or verifies it. The checkout is writable by `csa-deploy`,
 so a malicious commit could persist there (for example in git hooks). The image publish needs no
 approval today (the `staging-images` environment has no reviewer). If a reviewer is added to
 `staging-images`, every merge waits on that click.
@@ -557,7 +566,15 @@ the check that the images exist), and write Actions (cancel and dispatch). Appro
 deployment needs a user who is a required reviewer, and the token is not one; the script and the
 workflow contain no call that approves. It never checks out or runs anything from the triggering
 run: it checks out `main`, takes no artifact, and uses no field of the triggering event in a
-command.
+command. Merging to `main` needs a pull request but no review and no green check (the ruleset
+`main: pull requests only`, "Protect main" under "One-time setup"), so the production approval
+click is the only human gate between a merged commit and production.
+
+**No agent cancels a production run.** The only automatic cancel is the workflow's own `supersede`,
+under the seven conditions listed in "Cancelling stale waiting runs, and its limits". An agent never cancels a production run itself, because cancelling
+a waiting apply is a reject in effect: it reads the run's state and hands the owner the command,
+`gh run cancel <run id> --repo amsyrzmi/CSAV2`. The owner runs it only for a run whose apply job is
+still `waiting`, never one that is approved, queued, `in_progress` or finished.
 
 **Turning it on and off** (an owner action; the value is `true` or `false`):
 
@@ -600,7 +617,7 @@ Each target needs three sides prepared once: GitHub, AWS and the host, interleav
 and checks" below (the host comes before the AWS `apply`). The two scripts below are the repeatable
 path, and the manual steps in `deploy/PRODUCTION.md`, "One-time setup", and
 `deploy/STAGING_PIPELINE.md`, "Host setup for automatic rollouts", are the reference they were
-built from.
+built from. The repository itself also needs `main` protected, once ("Protect main" below).
 
 ### The AWS side: deploy/aws/setup-target.sh
 
@@ -679,8 +696,11 @@ root while the script runs: use the hidden prompt when that matters. The only va
 
 **What `apply` prints.** One `[n/total] <what>: <result>` line per item: first the environments
 (`created`, `updated` or `unchanged`), then the secrets (`secret <NAME> on <env>: set`,
-`unchanged` or `missing`, with a `note: give SETUP_<NAME> or run on a terminal` line under each
-missing one), then the variables (`set`, `unchanged` or `missing`). A secret or a required variable
+`rotated`, `unchanged` or `missing`, with a `note: give SETUP_<NAME> or run on a terminal` line
+under each missing one), then the variables (`set`, `changed`, `unchanged` or `missing`). `set` is a
+first write; `rotated` is a `SETUP_<NAME>` value written over an existing secret; `changed` is a
+`--region` or `--image-namespace` value written over an existing variable that held another value.
+Neither the new nor the old value is ever printed. A secret or a required variable
 that has no value does not stop the run: everything else is applied first, and the run ends
 non-zero with `apply: <n> item(s) still missing`. When everything is in place it ends
 `apply: everything is in place` (exit 0).
@@ -733,13 +753,62 @@ setup for automatic rollouts" (staging, together with the other developer who ow
 server): the Systems Manager agent, the dedicated checkout, the shared entry script and its
 root-owned config, the secret files, the lock and log directories.
 
+### Protect main (once, for the repository)
+
+Recorded: the owner created this repository ruleset on 2026-11-18; the staging trust model
+("Trust" under "Staging: automatic rollouts") depends on it. It makes every change to the default
+branch go through a pull request, forbids force pushes and deletion, and has no bypass actor. It
+requires no approving review and no status check. It is a repository setting: no script of this
+repository creates or checks it. The owner's command (needs repository admin):
+
+```bash
+gh api --method POST repos/amsyrzmi/CSAV2/rulesets --input - <<'JSON'
+{
+  "name": "main: pull requests only",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "bypass_actors": [],
+  "rules": [
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false
+      }
+    },
+    {"type": "non_fast_forward"},
+    {"type": "deletion"}
+  ]
+}
+JSON
+```
+
+Check (expect `pull_request`, `non_fast_forward` and `deletion`):
+
+```bash
+gh api repos/amsyrzmi/CSAV2/rules/branches/main --jq '.[].type'
+```
+
+Remove it (the id comes from the list):
+
+```bash
+gh api repos/amsyrzmi/CSAV2/rulesets --jq '.[] | [.id,.name] | @tsv'
+gh api --method DELETE repos/amsyrzmi/CSAV2/rulesets/<id>
+```
+
 ### Order and checks
 
 1. **GitHub environments:** `setup-environments.sh <target> --check`, then without `--check` (secrets
    cannot be set before the environment exists). With no `SETUP_<NAME>` values given (press Enter at
    each prompt on a terminal), this first apply creates the environments and, with `--region` and
    `--image-namespace`, the variables, then ends non-zero with
-   `apply: <n> item(s) still missing`: that is expected until step 5.
+   `apply: <n> item(s) still missing`: that is expected until step 5. On a repository with no
+   `production` environment yet, production needs `--reviewer <login-1> --reviewer <login-2>` (the
+   script refuses without a reviewer).
 2. **AWS activation:** `setup-target.sh <target> activate`, for the host's Systems Manager node.
 3. **The host:** the steps of the target's own document, including the registration of the node.
 4. **AWS apply:** `setup-target.sh <target> check`, then `apply`, then `check` again.

@@ -1792,8 +1792,12 @@ def test_an_existing_secret_is_not_prompted_for_or_overwritten_unless_its_setup_
     assert state["production-plan"]["secrets"]["PROD_INSTANCE_ID"] == rotated
     assert state["production"]["secrets"]["PROD_INSTANCE_ID"] == rotated
     assert state["production"]["secrets"]["PROD_APPLY_ROLE_ARN"] == "VALUE-OF-PROD_APPLY_ROLE_ARN"
-    assert results(result)["secret PROD_INSTANCE_ID on production"] == "set"
+    # An overwritten existing secret says `rotated` (never `set`, which is a first write), and
+    # the value is not printed.
+    assert results(result)["secret PROD_INSTANCE_ID on production-plan"] == "rotated"
+    assert results(result)["secret PROD_INSTANCE_ID on production"] == "rotated"
     assert results(result)["secret PROD_APPLY_ROLE_ARN on production"] == "unchanged"
+    assert rotated not in result.stdout + result.stderr
 
 
 BAD_SECRETS = [
@@ -2035,7 +2039,8 @@ def test_variables_are_set_when_given_and_left_alone_when_equal(gh: Gh) -> None:
         ["variable", "set", "IMAGE_NAMESPACE", "--repo", REPO, "--body", NAMESPACE],
         ["variable", "set", "STAGING_DEPLOY_REGION", "--repo", REPO, "--body", REGION],
     ]
-    assert results(result)["variable IMAGE_NAMESPACE"] == "set"
+    # An existing variable that is overwritten says `changed` (no values); an absent one `set`.
+    assert results(result)["variable IMAGE_NAMESPACE"] == "changed"
     assert results(result)["variable STAGING_DEPLOY_REGION"] == "set"
     assert gh.state()["variables"]["UNRELATED"] == f"{MARKER}-unrelated"
     assert MARKER not in result.stdout + result.stderr
@@ -2058,6 +2063,8 @@ def test_variables_are_set_when_given_and_left_alone_when_equal(gh: Gh) -> None:
     assert variable_sets(gh) == [
         ["variable", "set", "STAGING_DEPLOY_REGION", "--repo", REPO, "--body", "zz-other-2"]
     ]
+    assert results(result)["variable STAGING_DEPLOY_REGION"] == "changed"
+    assert "zz-other-2" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
