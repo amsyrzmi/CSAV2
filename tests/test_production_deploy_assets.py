@@ -1185,6 +1185,7 @@ COMMAND_ID = "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0"
 SECRET = "test-secret-access-key-never-printed"
 TOKEN = "test-session-token-never-printed"
 SSM_ENV = {
+    "DEPLOY_TARGET": "production",
     "AWS_REGION": REGION,
     "INSTANCE_ID": INSTANCE,
     "SSM_POLL_SECONDS": "0",
@@ -1588,12 +1589,13 @@ def _plan_output(pending: list[str], *, sha: str = SHA, production: bool = True)
 
 
 def _parse(
-    harness: Harness, text: str, *args: str, locale: str = "C"
+    harness: Harness, text: str, *args: str, locale: str = "C", target: str = "production"
 ) -> subprocess.CompletedProcess[bytes]:
     plan = harness.root / "plan.txt"
     plan.write_bytes(text.encode())
     argv = list(args) if args else [str(plan), SHA]
-    return harness.run_script(PARSE_PLAN, argv, env=harness.env(LC_ALL=locale, LANG=locale))
+    env = harness.env(LC_ALL=locale, LANG=locale, DEPLOY_TARGET=target)
+    return harness.run_script(PARSE_PLAN, argv, env=env)
 
 
 def _outputs(sha: str, migrations: str, digest: str) -> bytes:
@@ -2306,6 +2308,8 @@ def test_workflow_plan_summarises_the_plan_and_exposes_its_values(
     summary = harness.root / "summary.md"
     output = harness.root / "github-output"
     env = harness.env(
+        # The job's env supplies the target (Task 7 adds it to the workflow itself).
+        DEPLOY_TARGET="production",
         SHA=SHA,
         PYTHON_DIGEST=PY_DIGEST,
         FRONTEND_DIGEST=FE_DIGEST,
