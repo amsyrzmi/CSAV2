@@ -12,6 +12,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from collections.abc import Sequence
@@ -47,12 +48,14 @@ RECORD = ROOT / "deploy" / "staging" / "record_staged.sh"
 RETRY_LINE = (
     "staging is fine but the staged record was not written; use Re-run failed jobs on this run"
 )
+DIGEST = "sha256:" + "ab" * 32
 SHA_MESSAGE = "sha must be the full 40 character lowercase commit SHA"
 
 # `gh api <path> --jq .sha` (the `current` command) and `gh api --method POST <path> --input -`
 # (the record). Each call is logged; a POST body goes to $POST_LOG as `<path><TAB><compact json>`.
-# A fail-gh-<key> file makes that call exit 1 after printing a line that holds the token, so a
-# test can prove the scripts never show gh's own stderr.
+# A fail-gh-<key> file makes that call exit 1 after printing a line that holds the token (followed
+# by the file's own text, e.g. ` (HTTP 403)`), so a test can prove the scripts never show gh's own
+# stderr beyond an HTTP code.
 GH_STUB = r"""#!/bin/bash
 IFS=$'\t'
 printf 'gh\t%s\n' "$*" >> "$STUB_LOG"
@@ -85,7 +88,7 @@ else
     exit 2
 fi
 if [[ -e "$STUB_DIR/fail-gh-$key" ]]; then
-    echo "gh: stub failure for $key (token $GH_TOKEN)" >&2
+    echo "gh: stub failure for $key (token $GH_TOKEN)$(cat "$STUB_DIR/fail-gh-$key")" >&2
     exit 1
 fi
 cat "$STUB_DIR/$key.json"
@@ -421,6 +424,164 @@ def test_start_ignores_a_stale_deploy_target_in_the_environment(gate: Gate) -> N
     assert TARGET_MESSAGE not in result.stderr
 
 
+class StubTree:
+    """rollout_gate.sh in a `staging/` directory beside a stub `production/resolve_commit.sh`.
+
+    The gate finds the resolver at ../production relative to itself, so the stub answers instead of
+    the real one: its stdout is the `answer` file, its stderr the `reason` file, its exit code
+    `status`.
+    """
+
+    def __init__(self, tmp_path: Path) -> None:
+        """Lay out `<tmp>/tree/staging/` (the gate) and `<tmp>/tree/production/` (the stub)."""
+        self.root = tmp_path / "tree"
+        staging = self.root / "staging"
+        production = self.root / "production"
+        staging.mkdir(parents=True)
+        production.mkdir()
+        self.gate = staging / "rollout_gate.sh"
+        shutil.copy(GATE, self.gate)
+        resolver = production / "resolve_commit.sh"
+        resolver.write_text(
+            "#!/bin/bash\n"
+            'here="$(dirname "$0")"\n'
+            'cat "$here/answer"\n'
+            'cat "$here/reason" >&2\n'
+            'exit "$(cat "$here/status")"\n'
+        )
+        resolver.chmod(0o755)
+        self.answer(valid_answer())
+        self.refuse("", 0)
+
+    def answer(self, text: str) -> None:
+        """What the stub resolver prints on stdout."""
+        (self.root / "production" / "answer").write_text(text)
+
+    def refuse(self, stderr: str, status: int) -> None:
+        """What the stub resolver prints on stderr, and its exit code."""
+        (self.root / "production" / "reason").write_text(stderr)
+        (self.root / "production" / "status").write_text(f"{status}\n")
+
+    def start(
+        self,
+        event: str = "workflow_run",
+        *,
+        extra: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        script: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run `rollout_gate.sh start` from the tree (the resolver needs no credentials here)."""
+        env = {"PATH": "/usr/bin:/bin", "EVENT_NAME": event, "INPUT_SHA": "", **(extra or {})}
+        return subprocess.run(
+            ["bash", script or str(self.gate), "start"],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+
+
+def valid_answer(
+    *,
+    sha: str = TIP,
+    python_digest: str = DIGEST,
+    frontend_digest: str = DIGEST,
+    staged_on: str = "",
+    explicit: str = "false",
+) -> str:
+    """The resolver's five lines."""
+    return (
+        f"sha={sha}\npython_digest={python_digest}\nfrontend_digest={frontend_digest}\n"
+        f"staged_on={staged_on}\nexplicit={explicit}\n"
+    )
+
+
+@pytest.fixture
+def tree(tmp_path: Path) -> StubTree:
+    return StubTree(tmp_path)
+
+
+def test_start_reads_only_the_first_line_of_the_resolver_stderr_on_not_ready(
+    tree: StubTree,
+) -> None:
+    tree.refuse("line1\nreason=evil\n", 3)
+    result = tree.start("workflow_run")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "proceed=false\nreason=nothing to roll out: line1\n"
+    assert result.stderr == ""
+
+
+def test_start_reports_only_the_first_line_of_the_resolver_stderr_on_a_refusal(
+    tree: StubTree,
+) -> None:
+    tree.refuse("line1\nreason=evil\n", 1)
+    result = tree.start("workflow_run")
+    assert (result.returncode, result.stdout, result.stderr) == (1, "", "line1\n")
+
+
+def test_start_passes_the_stub_resolvers_five_keys_through(tree: StubTree) -> None:
+    tree.answer(valid_answer(staged_on=STAGED_ON, explicit="true"))
+    result = tree.start("workflow_dispatch")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        valid_answer(staged_on=STAGED_ON, explicit="true")
+        + f"proceed=true\nreason=rolling out {SHA7}\n"
+    )
+
+
+UNEXPECTED_ANSWERS = {
+    "extra-key": valid_answer() + "evil=1\n",
+    "extra-key-first": "evil=1\n" + valid_answer(),
+    "extra-key-between": valid_answer().replace("staged_on", "evil=1\nstaged_on"),
+    "injected-proceed": valid_answer() + "proceed=true\n",
+    "newline-in-staged-on": valid_answer(staged_on=STAGED_ON + "\nevil=1"),
+    "newline-in-explicit": valid_answer(explicit="false\nproceed=true"),
+    "repeated-key": valid_answer() + f"sha={TIP}\n",
+    "missing-key": valid_answer().replace("explicit=false\n", ""),
+    "reordered": "explicit=false\n" + valid_answer().replace("explicit=false\n", ""),
+    "line-without-key": valid_answer() + "garbage\n",
+    "bad-sha": valid_answer(sha=TIP.upper()),
+    "short-sha": valid_answer(sha=TIP[:39]),
+    "bad-python-digest": valid_answer(python_digest="sha256:" + "AB" * 32),
+    "short-frontend-digest": valid_answer(frontend_digest="sha256:" + "ab" * 31),
+    "digest-without-prefix": valid_answer(python_digest="ab" * 32),
+    "bad-staged-on": valid_answer(staged_on="yesterday"),
+    "staged-on-with-offset": valid_answer(staged_on="2026-11-13T08:30:00+00:00"),
+    "bad-explicit": valid_answer(explicit="yes"),
+    "empty-explicit": valid_answer(explicit=""),
+    "empty-output": "",
+}
+
+
+@pytest.mark.parametrize("event", ["workflow_run", "workflow_dispatch"])
+@pytest.mark.parametrize("name", UNEXPECTED_ANSWERS)
+def test_start_emits_only_the_five_checked_keys_and_fails_closed_otherwise(
+    tree: StubTree, name: str, event: str
+) -> None:
+    tree.answer(UNEXPECTED_ANSWERS[name])
+    result = tree.start(event)
+    assert result.returncode == 1, result.stdout
+    assert result.stdout == ""
+    assert result.stderr == "unexpected answer from the commit resolver\n"
+
+
+def test_start_is_not_redirected_by_a_cdpath_in_the_environment(
+    tree: StubTree, tmp_path: Path
+) -> None:
+    # A relative script path with a CDPATH that holds a decoy `tree/staging` would otherwise send
+    # the gate's own `cd` to the decoy (and make cd print the directory).
+    decoy = tmp_path / "decoy"
+    (decoy / "tree" / "staging").mkdir(parents=True)
+    result = tree.start(
+        extra={"CDPATH": str(decoy)}, cwd=tree.root.parent, script="tree/staging/rollout_gate.sh"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == valid_answer() + f"proceed=true\nreason=rolling out {SHA7}\n"
+
+
 # --- rollout_gate.sh current ------------------------------------------------------------------
 
 
@@ -442,6 +603,16 @@ def test_current_true_false_and_explicit(gate: Gate) -> None:
     result = gate.run_script(GATE, "current", TIP, "true")
     assert (result.returncode, result.stdout, result.stderr) == (0, "current=true\n", "")
     assert len(gate.gh_calls()) == before
+
+
+def test_current_compares_the_whole_sha_not_a_seven_character_prefix(gate: Gate) -> None:
+    other = TIP[:7] + OLDER[7:]
+    assert other != TIP
+    gate.set("tip.json", other + "\n")
+    result = gate.run_script(GATE, "current", TIP, "false")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "current=false\n"
+    assert result.stderr.startswith(f"superseded: main moved to {SHA7};")
 
 
 def test_current_explicit_needs_no_credentials(gate: Gate) -> None:
@@ -622,6 +793,39 @@ def test_record_reports_the_retry_line_when_a_call_fails_and_shows_no_secret(
     assert GH_TOKEN not in result.stdout + result.stderr
 
 
+@pytest.mark.parametrize("key", ["post-deployment", "post-status"])
+@pytest.mark.parametrize("code", ["403", "404"])
+@pytest.mark.parametrize("xtrace", [False, True])
+def test_record_names_the_http_code_gh_answered_before_the_retry_line(
+    gate: Gate, key: str, code: str, xtrace: bool
+) -> None:
+    (gate.dir / f"fail-gh-{key}").write_text(f" (HTTP {code}) forbidden, token {GH_TOKEN}")
+    result = gate.run_script(RECORD, TIP, xtrace=xtrace)
+    assert result.returncode == 1
+    assert result.stdout == ""
+    if xtrace:
+        # The trace lines are interleaved; the two messages are still there, in this order.
+        lines = result.stderr.splitlines()
+        assert lines.index(f"gh answered HTTP {code}") < lines.index(RETRY_LINE)
+    else:
+        assert result.stderr == f"gh answered HTTP {code}\n{RETRY_LINE}\n"
+    assert GH_TOKEN not in result.stdout + result.stderr
+    assert "forbidden" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("key", ["post-deployment", "post-status"])
+@pytest.mark.parametrize(
+    "text", [" no code here", " (HTTP 40) short", " (HTTP 4031) long", " http 403"]
+)
+def test_record_shows_no_http_line_without_a_three_digit_code(
+    gate: Gate, key: str, text: str
+) -> None:
+    (gate.dir / f"fail-gh-{key}").write_text(text)
+    result = gate.run_script(RECORD, TIP)
+    assert result.returncode == 1
+    assert result.stderr == RETRY_LINE + "\n"
+
+
 def test_record_with_a_failed_status_has_created_the_deployment_first(gate: Gate) -> None:
     gate.flag("fail-gh-post-status")
     gate.run_script(RECORD, TIP)
@@ -678,7 +882,14 @@ def test_scripts_are_bash_strict_quoted_and_executable(script: Path) -> None:
     locale = lines.index("export LC_ALL=C")
     assert strict < locale < next(i for i, line in enumerate(lines) if "=~" in line)
     assert not re.search(r"\beval\b|\b(?:ba)?sh -c\b|\bset -x\b|\bsource\b", code)
-    assert "jq" in code
+    if script == RECORD:
+        # jq as a command (not just inside a gh --jq argument): the record builds and reads JSON.
+        assert re.search(r"(?:^|[\s(|;])jq\s", code, re.MULTILINE)
+    else:
+        # The gate parses no JSON of its own: only gh's `--jq .sha`, and the resolver's key=value
+        # lines.
+        assert code.count("--jq .sha") == 1
+        assert "jq" not in code.replace("--jq .sha", "")
     assert "${{" not in text
     assert _unquoted_expansions(text) == []
     assert script.stat().st_mode & stat.S_IXUSR

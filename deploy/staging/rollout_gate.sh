@@ -39,7 +39,8 @@ valid() {
     [[ "$2" =~ $1 && "$2" != *$'\n'* ]]
 }
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# CDPATH= keeps a CDPATH in the environment from redirecting the cd (and printing the directory).
+here="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" > /dev/null && pwd)"
 resolver="$here/../production/resolve_commit.sh"
 sha_message="sha must be the full 40 character lowercase commit SHA"
 
@@ -66,16 +67,35 @@ start() {
     fi
     [[ "$status" -eq 0 ]] || die "$message"
 
-    local sha=""
+    # Exactly the resolver's five keys, once each and in its order, each value checked against its
+    # pattern; any other line, repeated key or doubtful value is refused, so nothing else reaches
+    # the output.
+    local sha="" python_digest="" frontend_digest="" explicit="" key seen=","
+    local digest='^sha256:[0-9a-f]{64}$'
     while IFS= read -r line; do
-        if [[ "$line" == staged_on=* ]]; then
-            staged_on="${line#staged_on=}"
-        elif [[ "$line" == sha=* ]]; then
-            sha="${line#sha=}"
-        fi
+        [[ "$line" == *=* ]] || die "unexpected answer from the commit resolver"
+        key="${line%%=*}"
+        seen+="$key,"
+        case "$key" in
+            sha) sha="${line#*=}" ;;
+            python_digest) python_digest="${line#*=}" ;;
+            frontend_digest) frontend_digest="${line#*=}" ;;
+            staged_on) staged_on="${line#*=}" ;;
+            explicit) explicit="${line#*=}" ;;
+            *) die "unexpected answer from the commit resolver" ;;
+        esac
     done <<< "$out"
-    valid '^[0-9a-f]{40}$' "$sha" || die "unexpected answer from the commit resolver"
-    printf '%s\n' "$out"
+    [[ "$seen" == ",sha,python_digest,frontend_digest,staged_on,explicit," ]] \
+        || die "unexpected answer from the commit resolver"
+    valid '^[0-9a-f]{40}$' "$sha" \
+        && valid "$digest" "$python_digest" \
+        && valid "$digest" "$frontend_digest" \
+        && { [[ -z "$staged_on" ]] \
+            || valid '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$staged_on"; } \
+        && valid '^(true|false)$' "$explicit" \
+        || die "unexpected answer from the commit resolver"
+    printf 'sha=%s\npython_digest=%s\nfrontend_digest=%s\nstaged_on=%s\nexplicit=%s\n' \
+        "$sha" "$python_digest" "$frontend_digest" "$staged_on" "$explicit"
     if [[ "$event" == "workflow_run" && -n "$staged_on" ]]; then
         printf 'proceed=false\nreason=%s\n' "main's tip ${sha:0:7} is already staged"
     else
