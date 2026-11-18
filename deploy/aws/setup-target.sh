@@ -3,7 +3,8 @@
 # `git clone --depth 1` of the repository; the templates are read relative to this script:
 #
 #   setup-target.sh <staging|production> activate --region <region>
-#   setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix>
+#   setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id>
+#       --subject <prefix> [--subject <prefix> ...] [--allow-subject-removal]
 #
 #   activate creates the node's service role if it is missing (trust: Systems Manager in this
 #          account and region, as in deploy/PRODUCTION.md step 1), attaches
@@ -24,10 +25,30 @@
 #          the node's ping status. Exits 0 only when everything is ok.
 #
 # <subject> is the OIDC subject prefix GitHub issues for the repository (docs: deploy/PRODUCTION.md,
-# step 3). Every input is validated before the first AWS call, and nothing is run through eval.
+# step 3). --subject may be repeated: pass every subject the role must trust, including the subjects
+# of a planned repository or organisation move (at most 5, no duplicates). With one subject each
+# role's `sub` condition is a plain string; with several it is a list of `<subject>:environment:<env>`
+# strings in the order given. check compares the live list as a set (sorted, duplicates removed: the
+# order stored in AWS does not matter, and apply leaves an equal set alone), but a string is never
+# the same as a one-element list. Production's live roles trust several subjects, so
+# `production check` must be given all of them.
+#
+# apply refuses to REMOVE a subject a live role trusts: before its first write it reads each
+# existing role and, when the live `sub` values are not all among the wanted ones, prints one
+# `refused:` line per role to stderr and exits 1 having written nothing. Pass
+# --allow-subject-removal (apply only; activate and check accept it and ignore it) when the removal
+# is intended; apply then prints a `removing` line per role before its steps. Subjects the live role
+# lacks are announced with an `adding` line (with or without the flag).
+# `apply` replaces the whole trust document of a role, not only its subject: any extra
+# statement or condition in a live trust is overwritten, and `check` reports it as `differs`.
+# The guard reads the `sub` key in any letter case (IAM condition keys are case-insensitive), under
+# any statement and any condition operator.
+# Every input is validated before the first AWS call, and nothing is run through eval.
 # The templates are copied to a temporary directory (removed on exit), filled there, and refused
 # if any <placeholder> is left; nothing is written under the repository. Of AWS's own output only
-# the role ARNs are shown; each step prints `[n/total] what: result` before and after its calls.
+# the role ARNs are shown, and the live subjects that match the subject shape (in the `refused`,
+# `removing` and `adding` lines; any other live value is shown as `<unrecognised value>`);
+# each step prints `[n/total] what: result` before and after its calls.
 set -euo pipefail
 # Regex ranges follow the locale (a UTF-8 locale lets Unicode digits through [0-9]), so pin it
 # before any validation.
@@ -72,7 +93,7 @@ configure_target() {
 
 usage() {
     echo "usage: setup-target.sh <staging|production> activate --region <region>" >&2
-    echo "       setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix>" >&2
+    echo "       setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix> [--subject <prefix> ...] [--allow-subject-removal]" >&2
     exit 2
 }
 
@@ -99,15 +120,22 @@ esac
 
 REGION=""
 NODE=""
-SUBJECT=""
+SUBJECTS=()
 NODE_GIVEN=0
 SUBJECT_GIVEN=0
+ALLOW_REMOVAL=0
 while [[ "$#" -gt 0 ]]; do
+    # The one flag without a value; every other option takes exactly one.
+    if [[ "$1" == "--allow-subject-removal" ]]; then
+        ALLOW_REMOVAL=1
+        shift
+        continue
+    fi
     [[ "$#" -ge 2 ]] || usage
     case "$1" in
         --region) REGION="$2" ;;
         --node) NODE="$2"; NODE_GIVEN=1 ;;
-        --subject) SUBJECT="$2"; SUBJECT_GIVEN=1 ;;
+        --subject) SUBJECTS+=("$2"); SUBJECT_GIVEN=1 ;;
         *) usage ;;
     esac
     shift 2
@@ -119,8 +147,18 @@ if [[ "$ACTION" != "activate" || "$NODE_GIVEN" -eq 1 ]]; then
     valid '^mi-[0-9a-f]{17}$' "$NODE" || { echo "--node must be a managed node id (mi- and 17 lowercase hex characters)" >&2; exit 2; }
 fi
 if [[ "$ACTION" != "activate" || "$SUBJECT_GIVEN" -eq 1 ]]; then
-    valid '^repo:[A-Za-z0-9_.@/-]+$' "$SUBJECT" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    [[ "${#SUBJECTS[@]}" -ge 1 ]] || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    for subject in "${SUBJECTS[@]}"; do
+        valid '^repo:[A-Za-z0-9_.@/-]+$' "$subject" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+    done
+    SEEN=$'\n'
+    for subject in "${SUBJECTS[@]}"; do
+        [[ "$SEEN" != *$'\n'"$subject"$'\n'* ]] || { echo "--subject given twice with the same value: $subject" >&2; exit 2; }
+        SEEN+="$subject"$'\n'
+    done
+    [[ "${#SUBJECTS[@]}" -le 5 ]] || { echo "--subject may be given at most 5 times" >&2; exit 2; }
 fi
+SUBJECT="${SUBJECTS[0]:-}"
 command -v jq > /dev/null || die "jq is required"
 command -v aws > /dev/null || die "the aws CLI is required"
 
@@ -224,12 +262,24 @@ copy_template() {
     cp "$TEMPLATE_DIR/$1" "$WORK/files/$1"
 }
 
+SUB_KEY="token.actions.githubusercontent.com:sub"
+
+# list_subjects <trust file>: with several subjects the template's `<repo-subject>:environment:<env>`
+# string becomes a JSON list of `<subject>:environment:<env>` strings, in the order given. Built
+# with jq (the subjects are positional arguments, never spliced into the filter); it runs before the
+# sed pass, which then finds no <repo-subject> left in the trust file.
+list_subjects() {
+    jq --arg key "$SUB_KEY" '(.Statement[].Condition.StringEquals[$key]) |= (if startswith("<repo-subject>:") then ltrimstr("<repo-subject>") as $suffix | [$ARGS.positional[] | . + $suffix] else error("not a <repo-subject> template") end)' "$1" --args "${SUBJECTS[@]}" > "$WORK/trust.tmp" || die "could not put the subjects into a trust template; nothing was changed"
+    mv "$WORK/trust.tmp" "$1"
+}
+
 fill_templates() {
     local entry name trust policy_name permissions file
     for entry in "${ROLES[@]}"; do
         IFS='|' read -r name trust policy_name permissions <<< "$entry"
         copy_template "$trust"
         copy_template "$permissions"
+        if [[ "${#SUBJECTS[@]}" -ge 2 ]]; then list_subjects "$WORK/files/$trust"; fi
     done
     for entry in "${DOCUMENTS[@]}"; do
         IFS='|' read -r name file <<< "$entry"
@@ -262,6 +312,11 @@ normalised() {
     jq -S . "$1"
 }
 
+# The role trust is compared with its `sub` list sorted and without duplicates (a set), so neither
+# the order stored in AWS nor a repeated entry matters (a string stays a string: it is not the same
+# as a one-element list).
+SET_SUBJECTS='walk(if type == "object" and (.[$key] | type) == "array" then .[$key] |= unique else . end)'
+
 provider_state() {
     aws_must iam list-open-id-connect-providers
     if jq -e --arg arn "$OIDC_ARN" '[.OpenIDConnectProviderList[].Arn] | index($arn) != null' <<< "$AWS_OUT" > /dev/null; then
@@ -278,8 +333,8 @@ trust_state() {
         STATE=missing
         return 0
     fi
-    have="$(jq -S '.Role.AssumeRolePolicyDocument' <<< "$AWS_OUT")"
-    want="$(normalised "$WORK/files/$2")"
+    have="$(jq -S --arg key "$SUB_KEY" ".Role.AssumeRolePolicyDocument | $SET_SUBJECTS" <<< "$AWS_OUT")"
+    want="$(jq -S --arg key "$SUB_KEY" "$SET_SUBJECTS" "$WORK/files/$2")"
     if [[ "$have" == "$want" ]]; then STATE=ok; else STATE=differs; fi
 }
 
@@ -336,6 +391,48 @@ node_state() {
     fi
 }
 
+# ---- apply: the live role trusts are read before anything is written -------------------------
+# The subjects of a trust document: every `sub` value under any statement and operator, a string
+# as one element and a list as its elements, as a sorted list without duplicates.
+# IAM condition keys are case-insensitive, so the key is matched in lower case ($key is given in
+# lower case).
+SUBJECTS_OF='[.. | objects | to_entries[] | select(.key | ascii_downcase == $key) | .value | if type == "array" then .[] else . end | strings] | unique'
+# Four lines: how many live subjects are not wanted, which (only values of the subject shape are
+# shown, anything else becomes a fixed text), how many wanted subjects the live role lacks, which.
+# \A and \z anchor the whole value: ^ and $ would also match around a newline inside it.
+SUBJECT_CHANGES='def shown: map(if test("\\Arepo:[A-Za-z0-9_.@/-]+:environment:[A-Za-z0-9_.-]+\\z") then . else "<unrecognised value>" end) | join(", "); ($live - $want) as $gone | ($want - $live) as $new | ($gone | length), ($gone | shown), ($new | length), ($new | shown)'
+
+# preflight_subjects: for each role that already exists, compares its live subjects with the wanted
+# ones. A removal is refused (stderr, exit 1) unless --allow-subject-removal was given; this runs
+# before the provider is created, so a refusal leaves nothing half applied. Roles that do not
+# exist yet are skipped. Prints the removing and adding notes when it goes on.
+preflight_subjects() {
+    local entry role trust _ live want
+    local -a change
+    local refusals="" notes=""
+    WHAT="reading the live trust of the deploy roles"
+    for entry in "${ROLES[@]}"; do
+        IFS='|' read -r role trust _ <<< "$entry"
+        aws_probe NoSuchEntity iam get-role --role-name "$role" || continue
+        live="$(jq -c --arg key "$SUB_KEY" ".Role.AssumeRolePolicyDocument | $SUBJECTS_OF" <<< "$AWS_OUT")" || die "could not read the live trust of role $role"
+        want="$(jq -c --arg key "$SUB_KEY" "$SUBJECTS_OF" "$WORK/files/$trust")" || die "could not read the wanted trust of role $role"
+        mapfile -t change < <(jq -nr --argjson live "$live" --argjson want "$want" "$SUBJECT_CHANGES")
+        [[ "${#change[@]}" -eq 4 ]] || die "could not compare the subjects of role $role"
+        if [[ "${change[0]}" -gt 0 ]]; then
+            refusals+="refused: role $role trusts ${change[0]} subject(s) not given: ${change[1]}"$'\n'
+            notes+="removing ${change[0]} subject(s) from role $role trust: ${change[1]}"$'\n'
+        fi
+        if [[ "${change[2]}" -gt 0 ]]; then
+            notes+="adding ${change[2]} subject(s) to role $role trust: ${change[3]}"$'\n'
+        fi
+    done
+    if [[ -n "$refusals" && "$ALLOW_REMOVAL" -ne 1 ]]; then
+        printf '%s' "$refusals" >&2
+        die "give them with --subject, or pass --allow-subject-removal if the removal is intended"
+    fi
+    printf '%s' "$notes"
+}
+
 # ---- activate: the node's service role and a single-use activation --------------------------
 if [[ "$ACTION" == "activate" ]]; then
     TOTAL=3
@@ -384,6 +481,10 @@ role_count="${#ROLES[@]}"
 document_count="${#DOCUMENTS[@]}"
 TOTAL="$((1 + 2 * role_count + document_count))"
 [[ "$ACTION" != "check" ]] || TOTAL="$((TOTAL + 1))"
+
+if [[ "$ACTION" == "apply" ]]; then
+    preflight_subjects
+fi
 
 step_begin "OIDC provider token.actions.githubusercontent.com"
 provider_state

@@ -488,9 +488,14 @@ in AWS:
     ```
 
     The usage is `setup-target.sh <staging|production> <activate|apply|check> --region <region>
-    --node <mi-id> --subject <prefix>` (`--node` and `--subject` are required for `apply` and `check`). The staging check must say `ok` on every line; copy the
+    --node <mi-id> --subject <prefix> [--subject <prefix> ...]` (`--node` and `--subject` are required for `apply` and `check`). The staging check must say `ok` on every line; copy the
     printed `csa-staging-deploy` ARN for step 13. The production check is read-only. If it shows
-    `differs` or `missing`, do **not** run `production apply`; tell the owner.
+    `differs` or `missing`, do **not** run `production apply`; tell the owner. `--subject` may be
+    repeated (pass every subject the role must trust, including the subjects of a planned
+    repository or organisation move). Production's live roles trust several subjects, so
+    `production check` must be given all of them (and `production apply` is never run with fewer).
+    `apply` refuses to remove a subject that a live role trusts unless it is given
+    `--allow-subject-removal`.
 13. **Owner, own terminal (GitHub):** set the secrets on `staging`, each typed at the hidden
     prompt, and the region variable.
 
