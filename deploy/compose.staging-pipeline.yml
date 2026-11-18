@@ -31,6 +31,9 @@ services:
       # Video in the training library. Off unless the owner sets CSA_STAGING_TRAINING_VIDEO=true,
       # which also switches the training worker on (deploy/PRODUCTION.md, "Training video").
       TRAINING_VIDEO_ENABLED: ${CSA_STAGING_TRAINING_VIDEO:-false}
+      # The HR "create the default templates" action. Off unless a reviewed change adds
+      # CSA_STAGING_HR_DEFAULT_TEMPLATES=true to the rollout flags file, after the content review.
+      HR_DEFAULT_TEMPLATES_ENABLED: ${CSA_STAGING_HR_DEFAULT_TEMPLATES:-false}
       TEI_ENDPOINT: http://staging-embeddings:8080
       KB_EMBED_MODEL_LABEL: multilingual-e5-small-fd1525a
       TEI_QUERY_PREFIX: "query: "

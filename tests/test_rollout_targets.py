@@ -128,6 +128,7 @@ def test_production_target_values() -> None:
     assert len(PRODUCTION.required_keys) == 6
     assert PRODUCTION.optional_keys == PROD_TUNING_KEYS | {
         "CSA_STAGING_TRAINING_VIDEO",
+        "CSA_STAGING_HR_DEFAULT_TEMPLATES",
         "CSA_PROD_S3_TRAINING_KEY",
     }
     assert PRODUCTION.host_file == Path("/srv/csa-prod/host.env")
@@ -451,7 +452,10 @@ def test_both_targets_recreate_and_stop_the_training_worker() -> None:
 
 def test_the_training_switches_are_optional_and_their_values_are_checked(tmp_path: Path) -> None:
     assert "CSA_PROD_MEM_TRAINING_WORKER" in PROD_TUNING_KEYS
-    assert STAGING.optional_keys == {"CSA_STAGING_TRAINING_VIDEO"}
+    assert STAGING.optional_keys == {
+        "CSA_STAGING_TRAINING_VIDEO",
+        "CSA_STAGING_HR_DEFAULT_TEMPLATES",
+    }
     # The key switch is production's alone: staging has no S3.
     assert "CSA_PROD_S3_TRAINING_KEY" not in STAGING.optional_keys
     assert "CSA_PROD_S3_TRAINING_KEY" not in PRODUCTION.host_override_keys
@@ -502,3 +506,41 @@ def test_staging_flags_refuse_the_production_key_switch(tmp_path: Path) -> None:
     path.write_text(text + "CSA_PROD_S3_TRAINING_KEY=prod_s3_training\n", encoding="utf-8")
     with pytest.raises(sr.RolloutError, match="unknown key CSA_PROD_S3_TRAINING_KEY"):
         sr.load_flags(path, STAGING)
+
+
+# --- the HR default templates switch ----------------------------------------------------------
+
+HR_DEFAULTS = "CSA_STAGING_HR_DEFAULT_TEMPLATES"
+
+
+def test_the_hr_default_templates_switch_ships_off_on_both_targets() -> None:
+    """Absent is off: the switch is turned on by a reviewed pull request that adds the line, after
+    the review of docs/hr/DEFAULT_TEMPLATES_REVIEW.md is signed."""
+    for target in (STAGING, PRODUCTION):
+        path = sr.REPO_ROOT / target.flags_file
+        assert HR_DEFAULTS not in path.read_text(encoding="utf-8"), target.name
+        assert HR_DEFAULTS not in sr.load_flags(path, target), target.name
+        assert HR_DEFAULTS in target.optional_keys, target.name
+        assert target.optional_values[HR_DEFAULTS] == ("false", "true"), target.name
+        assert HR_DEFAULTS not in target.host_override_keys | target.host_required_keys
+
+
+def test_the_hr_default_templates_switch_loads_and_its_value_is_checked(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, f"{HR_DEFAULTS}=true")
+    flags = sr.load_flags(path, PRODUCTION)
+    assert flags[HR_DEFAULTS] == "true"
+    env = sr.build_env(
+        flags,
+        {"python": "p@sha256:aa", "frontend": "f@sha256:bb"},
+        docker_config=tmp_path / "dc",
+        target=PRODUCTION,
+    )
+    assert env[HR_DEFAULTS] == "true"
+    staging = tmp_path / "staging-rollout.env"
+    text = (sr.REPO_ROOT / STAGING.flags_file).read_text(encoding="utf-8")
+    staging.write_text(text + f"{HR_DEFAULTS}=false\n", encoding="utf-8")
+    assert sr.load_flags(staging, STAGING)[HR_DEFAULTS] == "false"
+    path = production_flags_with(tmp_path, f"{HR_DEFAULTS}=yes")
+    with pytest.raises(sr.RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.message.endswith(f"{HR_DEFAULTS} must be one of false, true")

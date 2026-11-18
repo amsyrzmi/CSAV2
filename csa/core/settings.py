@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     # Video in the training library: while false, starting a video upload answers 503
     # training_video_unavailable and no new video can be added.
     TRAINING_VIDEO_ENABLED: bool = False
+    # The HR "create the default templates" action (POST /console/v1/hr/templates/defaults): while
+    # false the route answers 404 and the template list says the action is not available. On only
+    # after the content review (docs/hr/DEFAULT_TEMPLATES_REVIEW.md) is signed.
+    HR_DEFAULT_TEMPLATES_ENABLED: bool = False
     KB_INGEST_ENABLED: bool = False
     # Where KB, HR and training files live: the *_UPLOAD_ROOT folders ("local") or one S3
     # bucket ("s3").

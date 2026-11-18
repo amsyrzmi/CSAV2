@@ -188,6 +188,8 @@ def create_app() -> FastAPI:
             meter = LedgerMeter(pool, mirror=langfuse_sink)
             # Video in the training library: while off, the upload routes answer 503.
             app.state.training_video_enabled = settings.TRAINING_VIDEO_ENABLED
+            # The HR create-defaults action: while off its route answers 404.
+            app.state.hr_default_templates_enabled = settings.HR_DEFAULT_TEMPLATES_ENABLED
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on

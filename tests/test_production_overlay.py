@@ -370,3 +370,15 @@ def test_one_placeholder_list_serves_settings_and_the_training_worker() -> None:
     assert "disabled" in settings_module.KEY_PLACEHOLDERS
     assert not hasattr(training_main, "PLACEHOLDER_KEYS")
     assert training_main.KEY_PLACEHOLDERS is settings_module.KEY_PLACEHOLDERS
+
+
+def test_hr_default_templates_are_off_on_production_unless_the_switch_says_otherwise(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "off").mkdir()
+    gateway = render(tmp_path / "off")["gateway"]
+    assert gateway["environment"]["HR_DEFAULT_TEMPLATES_ENABLED"] == "false"
+    assert settings_for(gateway).HR_DEFAULT_TEMPLATES_ENABLED is False
+    (tmp_path / "on").mkdir()
+    gateway = render(tmp_path / "on", {"CSA_STAGING_HR_DEFAULT_TEMPLATES": "true"})["gateway"]
+    assert settings_for(gateway).HR_DEFAULT_TEMPLATES_ENABLED is True
