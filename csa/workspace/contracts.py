@@ -345,13 +345,8 @@ class HrPersonOpenProposal(_Contract):
 
 
 class HrProcessReadProposal(_Contract):
-    """Read HR onboarding and offboarding processes and tasks. Read-only.
-
-    ``view`` says what is asked: the caller's own tasks, one person's process, who is
-    onboarding, who is leaving, or what is overdue. ``person`` is the name the user wrote and
-    only goes with ``person_process``. The server answers from what the caller may see in the
-    console (csa/workspace/hr_processes.py); nothing here changes a task.
-    """
+    """Read HR onboarding and offboarding processes and tasks; never changes a task.
+    ``person`` is the name the user wrote, given only with ``person_process``."""
 
     action: Literal["hr_process_read"]
     view: Literal["my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"]
