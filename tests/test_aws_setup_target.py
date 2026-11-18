@@ -381,7 +381,7 @@ def step_lines(result: subprocess.CompletedProcess[str]) -> list[re.Match[str]]:
 
 # --- validation -----------------------------------------------------------------------------
 
-BAD_REGIONS = ["", "us-east", "US-EAST-1", "zz_test_1", "zz-test-1\n", "zz-test-12", "zz-test-1 x"]
+BAD_REGIONS = ["", "zz-test", "ZZ-TEST-1", "zz_test_1", "zz-test-1\n", "zz-test-12", "zz-test-1 x"]
 BAD_NODES = ["", "mi-123", "i-0123456789abcdef0", "mi-0123456789ABCDEF0", "mi-0123456789abcdef01"]
 BAD_SUBJECTS = ["", "example-owner/CSAV2", "repo:", "repo:a b", "repo:a|b", "repo:a&b", "repo:a;b"]
 
@@ -682,6 +682,139 @@ def test_check_reports_a_missing_provider_alone(aws: Aws) -> None:
 
     assert result.returncode == 1
     assert [m.group(4) for m in step_lines(result)].count("missing") == 1
+
+
+# --- activate -------------------------------------------------------------------------------
+
+NODE_ROLES = {
+    "production": ("csa-prod-ssm-node", "csa-prod"),
+    "staging": ("csa-staging-ssm-node", "csa-staging"),
+}
+SSM_CORE = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+
+def activate(aws: Aws, target: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return aws.run(target, "activate", "--region", REGION, *extra)
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_activate_creates_the_node_role_once_and_a_single_use_activation(
+    aws: Aws, target: str
+) -> None:
+    role, instance_name = NODE_ROLES[target]
+
+    first = activate(aws, target)
+
+    assert first.returncode == 0, first.stderr
+    calls = aws.calls()
+    assert [" ".join(c["argv"][:2]) for c in calls] == [
+        "sts get-caller-identity",
+        "iam get-role",
+        "iam create-role",
+        "iam attach-role-policy",
+        "ssm create-activation",
+    ]
+    create, attach, activation = calls[2], calls[3], calls[4]
+    assert create["argv"][create["argv"].index("--role-name") + 1] == role
+    trust = json.loads(create["files"]["assume-role-policy-document"])
+    assert trust == {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"Service": "ssm.amazonaws.com"},
+                "Action": "sts:AssumeRole",
+                "Condition": {
+                    "StringEquals": {"aws:SourceAccount": ACCOUNT},
+                    "ArnEquals": {"aws:SourceArn": f"arn:aws:ssm:{REGION}:{ACCOUNT}:*"},
+                },
+            }
+        ],
+    }
+    assert attach["argv"][attach["argv"].index("--role-name") + 1] == role
+    assert attach["argv"][attach["argv"].index("--policy-arn") + 1] == SSM_CORE
+    argv = activation["argv"]
+    assert argv[argv.index("--iam-role") + 1] == role
+    assert argv[argv.index("--default-instance-name") + 1] == instance_name
+    assert argv[argv.index("--registration-limit") + 1] == "1"
+    assert "--expiration-date" in argv  # the fake checks it is UTC and about four hours away
+    assert aws.state()["roles"][role]["attached"] == [SSM_CORE]
+    assert len(aws.state()["activations"]) == 1
+
+    # A second run keeps the role (no create-role) and issues one more activation.
+    aws.reset_log()
+    second = activate(aws, target)
+    assert second.returncode == 0, second.stderr
+    assert aws.commands() == [
+        "sts get-caller-identity",
+        "iam get-role",
+        "iam attach-role-policy",
+        "ssm create-activation",
+    ]
+    assert len(aws.state()["activations"]) == 2
+    assert list(aws.state()["roles"]) == [role]
+
+
+def test_activate_prints_the_id_and_code_once_with_the_warning(aws: Aws) -> None:
+    result = activate(aws, "production")
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert out.count("00000000-0000-4000-8000-0000000000a1") == 1
+    assert out.count("FAKE-ACTIVATION-CODE-0123") == 1
+    assert "type the code at the hidden prompt on the host; never paste it anywhere else" in out
+    assert "FAKE-ACTIVATION-CODE-0123" not in result.stderr
+    assert MARKER not in out + result.stderr
+    others = [
+        line
+        for line in out.splitlines()
+        if not STEP_LINE.match(line)
+        and not line.startswith(("Activation id: ", "Activation code: "))
+    ]
+    assert others == [
+        "type the code at the hidden prompt on the host; never paste it anywhere else"
+    ]
+    steps = step_lines(result)
+    assert {int(m.group(2)) for m in steps} == {3}
+    for number in (1, 2, 3):
+        assert len([m for m in steps if int(m.group(1)) == number]) == 2
+    # The code is in the output only after the activation call returned: no step line holds it.
+    assert not any("FAKE-ACTIVATION" in line.group(0) for line in steps)
+
+
+def test_activate_needs_no_node_or_subject_but_checks_them_when_given(aws: Aws) -> None:
+    assert activate(aws, "staging", "--node", NODE, "--subject", SUBJECT).returncode == 0
+    aws.reset_log()
+    for bad in (("--node", "mi-123"), ("--subject", "repo:a b")):
+        result = activate(aws, "staging", *bad)
+        assert result.returncode == 2
+    assert aws.calls() == []
+
+
+@pytest.mark.parametrize("region", BAD_REGIONS)
+def test_activate_validates_the_region_before_any_aws_call(aws: Aws, region: str) -> None:
+    result = aws.run("production", "activate", "--region", region)
+    assert result.returncode == 2
+    assert aws.calls() == []
+
+
+def test_a_failed_activation_prints_no_code_and_leaves_no_temporary_files(aws: Aws) -> None:
+    result = aws.run(
+        "staging", "activate", "--region", REGION, env={"FAKE_AWS_DENY": "ssm create-activation"}
+    )
+    assert result.returncode == 1
+    assert "AccessDenied" in result.stderr
+    assert "Activation code" not in result.stdout
+    assert list(aws.tmp.iterdir()) == []
+
+
+def test_activate_node_role_names_match_the_runbook() -> None:
+    step1 = _runbook_section("### 1. AWS (CloudShell, admin login)", "### 2. Instance")
+    assert "--role-name csa-prod-ssm-node" in step1
+    assert "--default-instance-name csa-prod " in step1
+    assert "--registration-limit 1" in step1
+    assert "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" in step1
+    assert '"aws:SourceAccount"' in step1 and '"aws:SourceArn"' in step1
 
 
 # --- the filled files and the names ---------------------------------------------------------

@@ -2,8 +2,14 @@
 # Create or check the AWS side of a deploy target, from AWS CloudShell (admin login), in a
 # `git clone --depth 1` of the repository; the templates are read relative to this script:
 #
+#   setup-target.sh <staging|production> activate --region <region>
 #   setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix>
 #
+#   activate creates the node's service role if it is missing (trust: Systems Manager in this
+#          account and region, as in deploy/PRODUCTION.md step 1), attaches
+#          AmazonSSMManagedInstanceCore, and creates one single-use activation that expires in
+#          four hours. It prints the activation id and code once: type the code at the hidden
+#          prompt on the host and never paste it anywhere else.
 #   apply  idempotent: creates the GitHub OIDC provider if it is missing; for each deploy role,
 #          creates it (or updates its trust) and puts its inline policy; for each Systems Manager
 #          document, creates it (or, when the default version's content differs, updates it and
@@ -25,12 +31,16 @@ export LC_ALL=C
 export AWS_PAGER=""
 
 # ---- the two targets ------------------------------------------------------------------------
-# Roles are `name|trust template|inline policy name|permissions template` and documents are
-# `name|file`, with templates relative to deploy/<templates>/.
+# NODE_ROLE is the Systems Manager service role of the node (activate); INSTANCE_NAME is the
+# name its activation gives the node. Roles are `name|trust template|inline policy name|
+# permissions template` and documents are `name|file`, with templates relative to
+# deploy/<templates>/.
 configure_target() {
     case "$1" in
         production)
             TEMPLATES="production"
+            NODE_ROLE="csa-prod-ssm-node"
+            INSTANCE_NAME="csa-prod"
             ROLES=(
                 "csa-prod-deploy-plan|iam/plan-trust-policy.json|send-plan-document|iam/plan-permissions-policy.json"
                 "csa-prod-deploy-apply|iam/apply-trust-policy.json|send-apply-document|iam/apply-permissions-policy.json"
@@ -42,6 +52,8 @@ configure_target() {
             ;;
         staging)
             TEMPLATES="staging"
+            NODE_ROLE="csa-staging-ssm-node"
+            INSTANCE_NAME="csa-staging"
             ROLES=(
                 "csa-staging-deploy|iam/trust-policy.json|send-staging-documents|iam/permissions-policy.json"
             )
@@ -55,7 +67,8 @@ configure_target() {
 }
 
 usage() {
-    echo "usage: setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix>" >&2
+    echo "usage: setup-target.sh <staging|production> activate --region <region>" >&2
+    echo "       setup-target.sh <staging|production> <apply|check> --region <region> --node <mi-id> --subject <prefix>" >&2
     exit 2
 }
 
@@ -76,27 +89,34 @@ ACTION="$2"
 shift 2
 configure_target "$TARGET" || usage
 case "$ACTION" in
-    apply | check) ;;
+    activate | apply | check) ;;
     *) usage ;;
 esac
 
 REGION=""
 NODE=""
 SUBJECT=""
+NODE_GIVEN=0
+SUBJECT_GIVEN=0
 while [[ "$#" -gt 0 ]]; do
     [[ "$#" -ge 2 ]] || usage
     case "$1" in
         --region) REGION="$2" ;;
-        --node) NODE="$2" ;;
-        --subject) SUBJECT="$2" ;;
+        --node) NODE="$2"; NODE_GIVEN=1 ;;
+        --subject) SUBJECT="$2"; SUBJECT_GIVEN=1 ;;
         *) usage ;;
     esac
     shift 2
 done
 
 valid '^[a-z]{2}(-[a-z]+)+-[0-9]$' "$REGION" || { echo "--region must look like a region name" >&2; exit 2; }
-valid '^mi-[0-9a-f]{17}$' "$NODE" || { echo "--node must be a managed node id (mi- and 17 lowercase hex characters)" >&2; exit 2; }
-valid '^repo:[A-Za-z0-9_.@/-]+$' "$SUBJECT" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+# --node and --subject are required for apply and check, and checked whenever they are given.
+if [[ "$ACTION" != "activate" || "$NODE_GIVEN" -eq 1 ]]; then
+    valid '^mi-[0-9a-f]{17}$' "$NODE" || { echo "--node must be a managed node id (mi- and 17 lowercase hex characters)" >&2; exit 2; }
+fi
+if [[ "$ACTION" != "activate" || "$SUBJECT_GIVEN" -eq 1 ]]; then
+    valid '^repo:[A-Za-z0-9_.@/-]+$' "$SUBJECT" || { echo "--subject must be the OIDC subject prefix, repo:... (letters, digits and _.@/- only)" >&2; exit 2; }
+fi
 command -v jq > /dev/null || die "jq is required"
 command -v aws > /dev/null || die "the aws CLI is required"
 
@@ -216,7 +236,9 @@ fill_templates() {
     fi
 }
 
-fill_templates
+if [[ "$ACTION" != "activate" ]]; then
+    fill_templates
+fi
 
 # ---- state probes: STATE becomes ok, missing or differs --------------------------------------
 # normalised <file>: the JSON of a file in a stable key order, for comparing with what AWS holds.
@@ -281,6 +303,42 @@ node_state() {
         STATE=differs
     fi
 }
+
+# ---- activate: the node's service role and a single-use activation --------------------------
+if [[ "$ACTION" == "activate" ]]; then
+    TOTAL=3
+
+    step_begin "node role $NODE_ROLE"
+    if aws_probe NoSuchEntity iam get-role --role-name "$NODE_ROLE"; then
+        step_end exists
+    else
+        # One line: the quote checker in the tests reads the script line by line.
+        jq -n --arg account "$ACCOUNT" --arg region "$REGION" '{Version: "2012-10-17", Statement: [{Effect: "Allow", Principal: {Service: "ssm.amazonaws.com"}, Action: "sts:AssumeRole", Condition: {StringEquals: {"aws:SourceAccount": $account}, ArnEquals: {"aws:SourceArn": ("arn:aws:ssm:" + $region + ":" + $account + ":*")}}}]}' > "$WORK/ssm-node-trust.json"
+        aws_must iam create-role --role-name "$NODE_ROLE" \
+            --assume-role-policy-document "file://$WORK/ssm-node-trust.json"
+        step_end created
+    fi
+
+    step_begin "policy AmazonSSMManagedInstanceCore on $NODE_ROLE"
+    aws_must iam attach-role-policy --role-name "$NODE_ROLE" \
+        --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+    step_end attached
+
+    step_begin "single-use activation for $INSTANCE_NAME, expires in 4 hours"
+    EXPIRY="$(date -u -d '+4 hours' +%Y-%m-%dT%H:%M:%SZ)"
+    aws_must ssm create-activation --iam-role "$NODE_ROLE" --default-instance-name "$INSTANCE_NAME" \
+        --registration-limit 1 --expiration-date "$EXPIRY"
+    ACTIVATION_ID="$(jq -r '.ActivationId // empty' <<< "$AWS_OUT")"
+    ACTIVATION_CODE="$(jq -r '.ActivationCode // empty' <<< "$AWS_OUT")"
+    AWS_OUT=""
+    valid '^[0-9a-f-]{36}$' "$ACTIVATION_ID" || die "create-activation returned no activation id"
+    valid '^[^[:space:]]+$' "$ACTIVATION_CODE" || die "create-activation returned no activation code"
+    step_end created
+    echo "Activation id: $ACTIVATION_ID"
+    echo "Activation code: $ACTIVATION_CODE"
+    echo "type the code at the hidden prompt on the host; never paste it anywhere else"
+    exit 0
+fi
 
 # ---- the steps ------------------------------------------------------------------------------
 # Provider, then for each role its trust and its policy, then each document (and, for check, the
