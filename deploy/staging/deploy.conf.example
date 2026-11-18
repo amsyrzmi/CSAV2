@@ -1,0 +1,8 @@
+# Config for the staging deploy entry script. Install it root-owned, mode 0644, next to the
+# script as /usr/local/sbin/csa-staging-deploy.conf. KEY=value lines only; nothing here is a secret.
+TARGET=staging
+DEPLOY_USER=csa-deploy
+CHECKOUT=/srv/csa-staging-deploy/CSAV2
+PYTHON=/opt/csa-staging-deploy/venv/bin/python
+LOCK=/run/lock/csa-staging-deploy.lock
+LOG_DIR=/var/log/csa-staging-deploy

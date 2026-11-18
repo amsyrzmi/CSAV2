@@ -13,6 +13,7 @@ import dataclasses
 import fcntl
 import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -34,6 +35,8 @@ APPLY_DOCUMENT = PRODUCTION_DIR / "ssm-document-apply.json"
 REQUIREMENTS = PRODUCTION_DIR / "requirements.txt"
 SSM_RUN = PRODUCTION_DIR / "ssm_run.sh"
 PARSE_PLAN = PRODUCTION_DIR / "parse_plan.sh"
+PRODUCTION_CONFIG_EXAMPLE = PRODUCTION_DIR / "deploy.conf.example"
+STAGING_CONFIG_EXAMPLE = ROOT / "deploy" / "staging" / "deploy.conf.example"
 IAM_DIR = PRODUCTION_DIR / "iam"
 PLAN_TRUST = IAM_DIR / "plan-trust-policy.json"
 APPLY_TRUST = IAM_DIR / "apply-trust-policy.json"
@@ -202,11 +205,19 @@ printf '%s\n' "$STUB_TIP"
 """
 
 
-class Harness:
-    """Stub executables and an environment the deploy scripts can run in."""
+ENTRY_NAMES = {"production": "csa-prod-deploy", "staging": "csa-staging-deploy"}
 
-    def __init__(self, tmp_path: Path) -> None:
+
+class Harness:
+    """Stub executables and an environment the deploy scripts can run in.
+
+    The entry script is installed as a copy under ``<tmp>/sbin`` with its config next to it, as on
+    a host; ``target`` picks the installed name and the config's ``TARGET``.
+    """
+
+    def __init__(self, tmp_path: Path, target: str = "production") -> None:
         self.root = tmp_path
+        self.target = target
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.checkout = tmp_path / "checkout"
@@ -220,6 +231,33 @@ class Harness:
         self._write_stub(self.bin / "aws", AWS_STUB)
         self._write_stub(self.bin / "gh", GH_STUB)
         self._write_stub(self.python, PYTHON_STUB)
+        self.sbin = tmp_path / "sbin"
+        self.sbin.mkdir()
+        self.entry = self.sbin / ENTRY_NAMES[target]
+        self.entry.write_text(ENTRY.read_text())
+        self.entry.chmod(0o755)
+        self.config = Path(f"{self.entry}.conf")
+        self.write_config()
+
+    def config_values(self) -> dict[str, str]:
+        return {
+            "TARGET": self.target,
+            "DEPLOY_USER": pwd.getpwuid(os.geteuid()).pw_name,
+            "CHECKOUT": str(self.checkout),
+            "PYTHON": str(self.python),
+            "LOCK": str(self.lock),
+            "LOG_DIR": str(self.log_dir),
+        }
+
+    def write_config(self, **overrides: str) -> None:
+        """Install the config (mode 0644, owned by the current user), with some values replaced."""
+        values = {**self.config_values(), **overrides}
+        self.write_config_text("".join(f"{key}={value}\n" for key, value in values.items()))
+
+    def write_config_text(self, text: str) -> None:
+        self.config.unlink(missing_ok=True)
+        self.config.write_text(text)
+        self.config.chmod(0o644)
 
     @staticmethod
     def _write_stub(path: Path, body: str) -> None:
@@ -229,10 +267,6 @@ class Harness:
     def env(self, **extra: str) -> dict[str, str]:
         return {
             "PATH": f"{self.bin}:/usr/bin:/bin",
-            "CHECKOUT": str(self.checkout),
-            "PYTHON": str(self.python),
-            "LOCK": str(self.lock),
-            "LOG_DIR": str(self.log_dir),
             "STUB_LOG": str(self.log),
             **extra,
         }
@@ -240,7 +274,7 @@ class Harness:
     def run(
         self, args: list[str], *, stdin: bytes = b"", **extra_env: str
     ) -> subprocess.CompletedProcess[bytes]:
-        return self.run_script(ENTRY, args, env=self.env(**extra_env), stdin=stdin)
+        return self.run_script(self.entry, args, env=self.env(**extra_env), stdin=stdin)
 
     @staticmethod
     def run_script(
@@ -275,6 +309,11 @@ class Harness:
 @pytest.fixture
 def harness(tmp_path: Path) -> Harness:
     return Harness(tmp_path)
+
+
+@pytest.fixture
+def staging_harness(tmp_path: Path) -> Harness:
+    return Harness(tmp_path, target="staging")
 
 
 # Validation must not depend on the caller's locale: a UTF-8 locale widens regex ranges.
@@ -511,7 +550,7 @@ def test_entry_runs_from_root_whatever_the_starting_directory(harness: Harness) 
     start = harness.root / "start"
     start.mkdir()
     result = subprocess.run(
-        ["bash", str(ENTRY), "plan", SHA, "", ""],
+        ["bash", str(harness.entry), "plan", SHA, "", ""],
         env=harness.env(),
         cwd=start,
         capture_output=True,
@@ -540,7 +579,8 @@ def test_entry_refuses_up_front_when_the_log_cannot_be_written(
         harness.log_dir.write_text("not a directory\n")
         log_dir = harness.log_dir / "sub"
     try:
-        result = harness.run(["apply", SHA, "", DIGEST], LOG_DIR=str(log_dir))
+        harness.write_config(LOG_DIR=str(log_dir))
+        result = harness.run(["apply", SHA, "", DIGEST])
     finally:
         if harness.log_dir.is_dir():
             harness.log_dir.chmod(0o700)
@@ -551,7 +591,7 @@ def test_entry_refuses_up_front_when_the_log_cannot_be_written(
     assert harness.calls() == []
 
 
-def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
+def test_entry_script_is_bash_strict_has_no_sudo_and_no_defaults() -> None:
     text = ENTRY.read_text()
     lines = text.splitlines()
     code = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
@@ -563,8 +603,346 @@ def test_entry_script_is_bash_strict_and_has_no_sudo() -> None:
     assert "< /dev/null" in code
     assert ENTRY.stat().st_mode & stat.S_IXUSR
     assert os.access(ENTRY, os.X_OK)
+    # No defaults: every path comes from the config file next to the script.
+    assert not re.search(r'^\s*: "\$\{', text, re.MULTILINE)
     for name in ("CHECKOUT", "PYTHON", "LOCK", "LOG_DIR"):
-        assert re.search(rf'^: "\$\{{{name}:=[^}}]+\}}"$', text, re.MULTILINE)
+        assert not re.search(rf"\b{name}:?=\s*/", code)
+
+
+# --- the entry script's config ------------------------------------------------------------------
+
+CONFIG_KEYS = ("TARGET", "DEPLOY_USER", "CHECKOUT", "PYTHON", "LOCK", "LOG_DIR")
+
+
+def _rolled_out(harness: Harness) -> list[list[str]]:
+    return [call for call in harness.calls() if call[0] == "python"]
+
+
+def test_entry_reads_every_path_from_its_config_and_ignores_the_environment(
+    harness: Harness,
+) -> None:
+    other = harness.root / "other"
+    other.mkdir()
+    result = harness.run(
+        ["plan", SHA, "", ""],
+        CHECKOUT=str(other),
+        PYTHON=str(other / "no-such-python"),
+        LOCK=str(other / "env.lock"),
+        LOG_DIR=str(other / "env-logs"),
+        TARGET="staging",
+        DEPLOY_USER="nobody-at-all",
+    )
+
+    assert result.returncode == 0, result.stderr
+    checkout = str(harness.checkout)
+    assert harness.calls() == [
+        ["git", "-C", checkout, "fetch", "origin", "main"],
+        ["git", "-C", checkout, "merge-base", "--is-ancestor", SHA, "origin/main"],
+        ["git", "-C", checkout, "checkout", "--detach", SHA],
+        ["python", "-m", "scripts.staging_rollout", "--target", "production", "plan"],
+        ["python-cwd", checkout],
+        ["python-stdin-bytes", "0"],
+    ]
+    assert harness.lock.exists()
+    assert len(list(harness.log_dir.iterdir())) == 1
+    assert not (other / "env.lock").exists()
+    assert not (other / "env-logs").exists()
+
+
+@pytest.mark.parametrize("target", ["production", "staging"])
+def test_entry_without_a_config_exits_78_before_git(tmp_path: Path, target: str) -> None:
+    harness = Harness(tmp_path, target=target)
+    harness.config.unlink()
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert f"{ENTRY_NAMES[target]}: no config at {harness.config}".encode() in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+def _make_group_writable(harness: Harness) -> None:
+    harness.config.chmod(0o664)
+
+
+def _make_other_writable(harness: Harness) -> None:
+    harness.config.chmod(0o646)
+
+
+def _make_symlink(harness: Harness) -> None:
+    real = harness.root / "real.conf"
+    real.write_text(harness.config.read_text())
+    real.chmod(0o644)
+    harness.config.unlink()
+    harness.config.symlink_to(real)
+
+
+def _make_directory(harness: Harness) -> None:
+    harness.config.unlink()
+    harness.config.mkdir()
+
+
+@pytest.mark.parametrize(
+    ("break_it", "reason"),
+    [
+        pytest.param(_make_group_writable, "writable by group or others", id="group-writable"),
+        pytest.param(_make_other_writable, "writable by group or others", id="other-writable"),
+        pytest.param(_make_symlink, "is a symlink", id="symlink"),
+        pytest.param(_make_directory, "is not a regular file", id="directory"),
+    ],
+)
+def test_entry_refuses_a_group_writable_or_symlinked_config(
+    harness: Harness, break_it: Any, reason: str
+) -> None:
+    break_it(harness)
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert reason.encode() in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+BAD_CONFIG_VALUES = {
+    "TARGET": ["prod-uction-x", "Staging", "staging staging", ""],
+    "DEPLOY_USER": ["Bad-User-x", "9user", "user name", "u" * 33, ""],
+    "CHECKOUT": [
+        "relative/dir",
+        "/dir/../escape",
+        "/dir/..",
+        "/dir/./x",
+        "//double",
+        "/dir//x",
+        "/dir with space",
+        "/dir;touch-x",
+        "/",
+        "",
+    ],
+    "PYTHON": ["python-bad", "/opt/../python-bad", "/opt/$HOME"],
+    "LOCK": ["lock-bad", "/run/lock/./bad", "/run//lock-bad"],
+    "LOG_DIR": ["logs-bad", "/var/log/../bad", "/var/log/$(id)"],
+}
+
+
+def _config_cases() -> list[object]:
+    cases: list[object] = []
+    for key, values in BAD_CONFIG_VALUES.items():
+        for value in values:
+            cases.append(
+                pytest.param(
+                    f"{key}={value}", key, value, id=f"malformed-{key}-{value!r}".replace(" ", "_")
+                )
+            )
+    return cases
+
+
+@pytest.mark.parametrize(("text", "key", "value"), _config_cases())
+def test_entry_refuses_malformed_config_values_without_echoing_them(
+    harness: Harness, text: str, key: str, value: str
+) -> None:
+    values = {**harness.config_values()}
+    lines = [f"{name}={values[name]}" for name in CONFIG_KEYS if name != key]
+    harness.write_config_text("\n".join([*lines, text]) + "\n")
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert key.encode() in result.stderr
+    if value:
+        assert value.encode() not in result.stderr + result.stdout
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+@pytest.mark.parametrize("key", CONFIG_KEYS)
+def test_entry_refuses_a_missing_or_repeated_key(harness: Harness, key: str) -> None:
+    values = harness.config_values()
+    others = [f"{name}={values[name]}" for name in CONFIG_KEYS if name != key]
+
+    harness.write_config_text("\n".join(others) + "\n")
+    missing = harness.run(["plan", SHA, "", ""])
+    harness.write_config_text("\n".join([*others, f"{key}={values[key]}", f"{key}=/other"]) + "\n")
+    repeated = harness.run(["plan", SHA, "", ""])
+
+    assert missing.returncode == 78
+    assert f"missing the key {key}".encode() in missing.stderr
+    assert repeated.returncode == 78
+    assert f"repeats the key {key}".encode() in repeated.stderr
+    assert harness.calls() == []
+    assert not harness.log_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param("EXTRA=/x", id="unknown-key"),
+        pytest.param("PATH=/x", id="path-is-not-a-key"),
+        pytest.param("lowercase=/x", id="lowercase-key"),
+        pytest.param("no equals sign", id="no-equals"),
+        pytest.param("CHECKOUT = /spaced", id="spaces-around-equals"),
+        pytest.param("$(touch /pwned)=1", id="command-substitution"),
+    ],
+)
+def test_entry_refuses_unknown_or_malformed_lines(harness: Harness, extra: str) -> None:
+    harness.write_config_text(harness.config.read_text() + extra + "\n")
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert b"the config has " in result.stderr
+    assert b"pwned" not in result.stderr
+    assert harness.calls() == []
+    assert not harness.log_dir.exists()
+
+
+def test_entry_never_sources_the_config(harness: Harness) -> None:
+    marker = harness.root / "sourced"
+    harness.write_config_text(
+        harness.config.read_text() + f"# a comment\n\n$(touch {marker})\ntouch {marker}\n"
+    )
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 78
+    assert not marker.exists()
+
+
+def test_entry_accepts_comments_and_blank_lines_and_a_last_line_without_newline(
+    harness: Harness,
+) -> None:
+    values = harness.config_values()
+    body = "".join(f"{name}={values[name]}\n\n" for name in CONFIG_KEYS[:-1])
+    harness.write_config_text("# a comment\n\n" + body + f"LOG_DIR={values['LOG_DIR']}")
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_entry_refuses_a_wrong_user_before_taking_the_lock(harness: Harness) -> None:
+    actual = pwd.getpwuid(os.geteuid()).pw_name
+    harness.write_config(DEPLOY_USER="some-other-user")
+
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert result.returncode == 64
+    assert f"csa-prod-deploy: run as some-other-user, not {actual}".encode() in result.stderr
+    assert harness.calls() == []
+    assert not harness.lock.exists()
+    assert not harness.log_dir.exists()
+
+
+def test_staging_entry_runs_the_staging_target_without_a_host_digest(
+    staging_harness: Harness,
+) -> None:
+    harness = staging_harness
+    rollout = ["python", "-m", "scripts.staging_rollout", "--target", "staging"]
+    checkout = str(harness.checkout)
+
+    plan = harness.run(["plan", SHA, "", "", PY_DIGEST, FE_DIGEST])
+    with_migrations = harness.run(["apply", SHA, MIGRATIONS, "", PY_DIGEST, FE_DIGEST])
+    without_migrations = harness.run(["apply", SHA, "", "", PY_DIGEST, FE_DIGEST])
+    without_digests = harness.run(["apply", SHA, MIGRATIONS])
+
+    assert [r.returncode for r in (plan, with_migrations, without_migrations, without_digests)] == [
+        0,
+        0,
+        0,
+        0,
+    ]
+    assert _rolled_out(harness) == [
+        [*rollout, "plan", *IMAGE_OPTIONS],
+        [*rollout, "apply", "--sha", SHA, "--migrations", MIGRATIONS, *IMAGE_OPTIONS],
+        [*rollout, "apply", "--sha", SHA, *IMAGE_OPTIONS],
+        [*rollout, "apply", "--sha", SHA, "--migrations", MIGRATIONS],
+    ]
+    assert all("--host-digest" not in call for call in _rolled_out(harness))
+    assert ["git", "-C", checkout, "checkout", "--detach", SHA] in harness.calls()
+    assert b"csa-staging-deploy" not in plan.stderr
+
+
+@pytest.mark.parametrize("args", [["apply", SHA, "", DIGEST], ["plan", SHA, "", DIGEST]])
+def test_staging_entry_refuses_a_host_digest_on_apply(
+    staging_harness: Harness, args: list[str]
+) -> None:
+    result = staging_harness.run(args)
+
+    assert result.returncode == 64
+    assert b"csa-staging-deploy: staging takes no host digest" in result.stderr
+    assert staging_harness.calls() == []
+    assert not staging_harness.log_dir.exists()
+
+
+def test_staging_entry_names_itself_in_its_refusals(staging_harness: Harness) -> None:
+    staging_harness.log_dir.write_text("not a directory\n")
+
+    result = staging_harness.run(["apply", SHA, "", ""])
+
+    assert result.returncode == 73
+    assert b"csa-staging-deploy: cannot write the log file " in result.stderr
+    assert staging_harness.calls() == []
+
+
+def test_production_entry_is_unchanged_with_the_production_config(harness: Harness) -> None:
+    assert harness.entry.name == "csa-prod-deploy"
+    assert "TARGET=production\n" in harness.config.read_text()
+
+    result = harness.run(["apply", SHA, MIGRATIONS, DIGEST, PY_DIGEST, FE_DIGEST])
+
+    assert result.returncode == 0, result.stderr
+    assert _rolled_out(harness) == [
+        [
+            *ROLLOUT,
+            "apply",
+            "--sha",
+            SHA,
+            "--migrations",
+            MIGRATIONS,
+            "--host-digest",
+            DIGEST,
+            *IMAGE_OPTIONS,
+        ]
+    ]
+    refused = harness.run(["apply", SHA, "", ""])
+    assert refused.returncode == 64
+    assert b"apply needs a 12 character lowercase hex host digest" in refused.stderr
+
+
+@pytest.mark.parametrize(
+    ("example", "target"),
+    [
+        pytest.param(PRODUCTION_CONFIG_EXAMPLE, "production", id="production"),
+        pytest.param(STAGING_CONFIG_EXAMPLE, "staging", id="staging"),
+    ],
+)
+def test_the_example_configs_parse_under_the_entry_scripts_own_rules(
+    tmp_path: Path, example: Path, target: str
+) -> None:
+    harness = Harness(tmp_path, target=target)
+    text = example.read_text()
+    harness.write_config_text(text)
+    pairs = [
+        line.split("=", 1)
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    values = dict(pairs)
+
+    # The deploy user is not this test's user, so a config the script accepts stops at the user
+    # check (64) and nothing else: a refused config would stop at 78 first.
+    result = harness.run(["plan", SHA, "", ""])
+
+    assert [key for key, _ in pairs] == list(CONFIG_KEYS)
+    assert values["TARGET"] == target
+    assert result.returncode == 64, result.stderr
+    assert f"run as {values['DEPLOY_USER']}, not ".encode() in result.stderr
+    assert harness.calls() == []
+    assert not re.search(r"(?i)secret|token|password|key=", "\n".join(text.splitlines()[2:]))
 
 
 # Each action has its own document, so the plan role can never send an apply.
@@ -1361,6 +1739,8 @@ NEW_FILES = (
     APPLY_PERMISSIONS,
     WORKFLOW,
     PRODUCTION_DIR / "backup.sh",
+    PRODUCTION_CONFIG_EXAMPLE,
+    STAGING_CONFIG_EXAMPLE,
 )
 
 
