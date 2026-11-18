@@ -1,8 +1,9 @@
 # HR processes: owner's staging checks
 
-Run these rows on **staging** after the HR processes console (PR 3, migration `0636`) is rolled out.
-They need a few minutes each, except rows 5, 8 and 9, which wait for the worker or for a day to
-pass.
+Run rows 1 to 13 on **staging** after the HR processes console (PR 3, migration `0636`) is rolled
+out. Rows 14 to 21 check the org chart and the default templates (PR 4, no migration) and are run
+after that rollout. They need a few minutes each, except rows 5, 8 and 9, which wait for the worker
+or for a day to pass.
 Tick each row, write what you saw in **Result**, and stop at the first row that does not match.
 
 **Before you start.**
@@ -14,6 +15,10 @@ Tick each row, write what you saw in **Result**, and stop at the first row that 
   need a second browser profile (or a private window) signed in as a staff member of the same
   company. Row 4 needs a second person who can approve (see row 4). Row 11 needs a read-only
   member, which the owner sets on the Team page, linked to a person record.
+- Rows 14 to 19 use the org chart (**People → Org chart**). Row 15 needs a plain colleague signed in
+  with the directory switch only, and a person who is leaving and has a manager who also has the
+  directory switch. Row 21 needs a company with no active onboarding or offboarding template: use
+  a second synthetic test company, or deactivate the templates from rows 1 and 7 first.
 - Reminders come from the background worker, which runs every 15 minutes. After the step that
   creates a task, wait up to 15 minutes before you look for its reminder (rows 5 and 8).
 - Report issues to the person running this build session. Give the row number, what you did,
@@ -224,5 +229,123 @@ steps.
 
 You should see: nothing scrolls sideways on any of them; lists change from tables to cards; the
 step fields in the editor stack one under another; buttons are tappable and none is cut off.
+
+Result: ____________________
+
+### 14. Org chart: collapse and expand with the keyboard
+
+Do: open **People**, then **Org chart**. With the keyboard only, press Tab to a team's fold button,
+press Enter, then press Enter again; try Space as well. Then press **Collapse all** and **Expand
+all**.
+
+You should see: each fold button names the manager ("Name's team (3)") and is a real button that
+folds and unfolds that team with Enter or Space, keeping focus on the button; the first three levels
+are open when the page loads and deeper teams are folded; **Collapse all** leaves only the people at
+the top, and **Expand all** shows everyone. The line "N people shown" counts everyone, also when
+teams are folded.
+
+Result: ____________________
+
+### 15. Org chart: department colour, name and markers
+
+Do: on the org chart, look at each person's row. Include a person who starts in the future (a start
+date after today) and a person marked as leaving. Then sign in as a plain colleague (second browser
+profile, directory switch only) and as the leaving person's manager, and look at the same two
+people.
+
+You should see: each row shows the department as a coloured chip that always carries the department
+name (the colour is never the only sign); a person who starts in the future has **Starting**; a
+person who is leaving has **Leaving** for the HR owner and for their manager; the plain colleague
+sees the starting person as **Starting** but the leaving person as an ordinary person with no
+**Leaving** marker. The legal entity filter appears only for HR and only when someone has a legal
+entity.
+
+Result: ____________________
+
+### 16. Org chart: people at the top
+
+Do: make three situations with synthetic people: someone with no manager; someone whose manager has
+left; two people who are each other's manager (change a manager on a profile; if the form refuses
+to make a loop, skip that part and say so).
+
+You should see: at the top of the chart, the first reads **No manager**, the second **Manager not
+in the chart**, and each person in a loop **In a reporting loop**, and nobody is missing from the
+chart. The HR owner also sees a notice naming the loop and how to fix it; a colleague does not.
+
+Result: ____________________
+
+### 17. Org chart: search, filters and counts
+
+Do: type part of a name in **Search people**, then clear it and type part of a job title. Choose a
+department, then (as the HR owner, when a person has a legal entity) a legal entity. Fold a team,
+then search for someone inside it. Press **Clear filters**.
+
+You should see: the chart narrows to the matches and the managers above them; "N people shown"
+updates as you type; while you type, focus stays in the search box; a branch above a match opens by
+itself while the filter is on; a team you folded earlier is folded again after **Clear filters**;
+with no match the chart says "No one matches the search or the filters." with a **Clear filters**
+button, and after **Clear filters** focus is on the "Reporting lines" heading.
+
+Result: ____________________
+
+### 18. Org chart: print and download CSV
+
+Do: on the org chart, fold a team, then press **Print** and look at the print preview (do not
+print). Close it and open another page (People list) in print preview. Back on the org chart, press
+**Download CSV**, open the file in a spreadsheet, and give one synthetic person a name that starts
+with `=` (for example `=Test`) before downloading to see how it appears.
+
+You should see: the print preview shows the whole tree, including the folded team, without the side
+menu, top bar and filters, on a white background with dark text; the other page's print preview is
+normal. The button reads "Download CSV (N people)" and the file has exactly those people (the
+filtered view when a filter is on), opens in the spreadsheet with Malay names intact and one row per
+person, and the `=` name appears as text (it starts with an apostrophe), never as a formula.
+
+Result: ____________________
+
+### 19. Org chart at phone width, 390 px
+
+Do: switch the browser to a 390 px phone view and open the org chart. Use the search, a fold button,
+**Expand all** and the buttons.
+
+You should see: nothing scrolls sideways; names, job titles and department chips wrap; fold buttons
+and the other buttons are tappable and none is cut off.
+
+Result: ____________________
+
+### 20. Default templates: no button while the switch is off
+
+Do: as the HR owner, open **Processes**, then **Templates**, on staging as it is shipped (the
+switch `CSA_STAGING_HR_DEFAULT_TEMPLATES` not set).
+
+You should see: **New template** only: no **Create the default templates** button and no hint about
+default templates.
+
+Result: ____________________
+
+### 21. Default templates: create them once (only after the review is signed and the switch is on)
+
+Run this row only after the reviewer has signed `docs/hr/DEFAULT_TEMPLATES_REVIEW.md`, the owner
+has recorded it, and a reviewed pull request has set `CSA_STAGING_HR_DEFAULT_TEMPLATES=true` in
+`deploy/staging-rollout.env` and staging was rolled out. Use a company with no active onboarding or
+offboarding template.
+
+Do:
+
+1. As the HR owner, open **Processes**, then **Templates**. Press **Create the default templates**.
+   Read the dialog and press its confirm button once.
+2. Open each of the two new templates and edit one step's title; save.
+3. Reload the Templates list.
+4. Sign in as a read-only member of the HR team of the same company (Manage people, set to read
+   only on the Team page) and open the Templates list, if the Processes tab shows for them.
+
+You should see: the button appears beside **New template**; the dialog says what the two templates
+are, that they are reminders with references and not filings, that they become the company defaults
+(the next person added starts the onboarding with real tasks and reminders) and that HR can edit
+them; after confirming, a notice says "Created" with links to **Onboarding (Malaysia default)** and
+**Offboarding (Malaysia default)**, and both appear in the list as Active, applying to Everyone,
+with their step counts (14 and 15). Both open in the editor and the edit saves as a new version.
+After the reload there is no **Create the default templates** button. A read-only member sees no
+button. With the switch turned back off, the button never shows.
 
 Result: ____________________
