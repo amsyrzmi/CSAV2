@@ -307,6 +307,11 @@ Out of this slice: no new proposal or plan kinds (they need a CHECK change on th
 assistant already knows the HR tab as a page; a read-only answer "what is outstanding for X's onboarding" and a
 "mark done" card follow once the tables exist (slice 1c, own small PR).
 
+Note, 2026-11-18: slice 1c-i is built (branch `feat/hr-assistant-read`): the read-only answers, five
+views (my tasks, one person's process, who is onboarding, who is leaving, what is overdue), in English and
+Malay, with no migration and no new proposal kind; see `2026-11-18-hr-assistant-processes-design.md`. Slice
+1c-ii, the "mark my task done" confirm card, is next and is its own PR.
+
 ## 10. Owner questions (answer or accept my default)
 
 1. **A step needs approval but the only possible approver is the person who did it** (a one-person HR team, or an

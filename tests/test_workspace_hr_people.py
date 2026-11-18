@@ -406,6 +406,34 @@ async def test_planner_facts_never_hold_personal_fields(planned) -> None:  # noq
         "siti-ic-scan-secret", ".pdf",
     ):  # fmt: skip
         assert secret not in prompt
+    # A process case: a step's title, note and description reach the caller's answer only,
+    # never the planner (facts, prompt or the history of the stored turn).
+    process = await w.q(
+        "INSERT INTO hr_processes(client_id,employee_id,kind) VALUES (%s,%s,'onboarding')"
+        " RETURNING id",
+        tenant, siti,
+    )  # fmt: skip
+    await w.q(
+        "INSERT INTO hr_process_tasks(client_id,process_id,ordinal,title_en,description_en,"
+        "owner_role,anchor,due_offset_days,note) VALUES (%s,%s,1,'Synthetic secret step',"
+        "'Synthetic secret description','hr','start_date',0,'Synthetic secret note')",
+        tenant, process[0]["id"],
+    )  # fmt: skip
+    model.reply({"action": "hr_process_read", "view": "my_tasks"})
+    read = await _turn(w, browser, thread, "What are my tasks?", "hr")
+    assert read.status_code == 201, read.text
+    assert "Synthetic secret step" in read.json()["result"]["markdown"]
+    model.respond(answer)
+    again = await _turn(w, browser, thread, "What are my tasks?", "hr")
+    assert again.status_code == 201, again.text
+    _, system, user = model.calls[-1]
+    prompt = system + user + json.dumps(seen[-1])
+    for secret in (
+        "Synthetic secret step",
+        "Synthetic secret description",
+        "Synthetic secret note",
+    ):
+        assert secret not in prompt
 
 
 async def test_refusal_only_the_database_decides_comes_back_at_confirm(planned) -> None:  # noqa: F811
