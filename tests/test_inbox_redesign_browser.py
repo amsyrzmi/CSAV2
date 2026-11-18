@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -24,11 +25,15 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from csa.console.inbox_settings import InboxSettingsIn
+from csa.inbox_queue.settings import InboxSettings
 from playwright.async_api import Page, async_playwright, expect
+from pydantic import ValidationError
 
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
+    TENANT,
     WAIT,
     WEB,
     Upstream,
@@ -47,10 +52,50 @@ LONG_NAME = ("Wolfeschlegelsteinhausenbergerdorff" * 2)[:60]
 FULL_PHONE = "+60125550148"
 MASKED_PHONE = "••••0148"
 WIDTHS = (320, 390, 768, 1024, 1440)
+# The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
+ME_ID = "22222222-2222-4222-8222-222222222222"
+PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
+# Every key a saved view's `filters` has when the server sends it back (its model's defaults).
+VIEW_DEFAULTS: dict[str, Any] = {
+    "state": [],
+    "assignee": None,
+    "priority_min": None,
+    "reason": [],
+    "topic": [],
+    "overdue": False,
+    "waiting_over": None,
+    "channel": None,
+    "sender": None,
+    "order": None,
+}
+QUEUE_FIELDS = {
+    "queue_status",
+    "queue_reason",
+    "topic",
+    "priority",
+    "assignee_id",
+    "assignee",
+    "claimed_at",
+    "needs_staff_since",
+    "due_at",
+    "snoozed_until",
+    "last_customer_at",
+    "last_staff_reply_at",
+}
 
 
 def ago(minutes: int) -> str:
     return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+def saved_view(name: str, filters: dict[str, Any], minutes: int = 0) -> dict[str, Any]:
+    """A saved view as stored: `filters` holds only what is set."""
+    return {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "filters": filters,
+        "created_at": ago(minutes),
+    }
 
 
 def conversation(
@@ -65,6 +110,15 @@ def conversation(
     minutes: int,
     pending: int = 0,
     human_muted: bool = False,
+    queue_status: str = "bot",
+    queue_reason: str | None = None,
+    topic: str | None = None,
+    priority: str = "normal",
+    assignee_id: str | None = None,
+    assignee_name: str | None = None,
+    needs_staff_since: str | None = None,
+    due_at: str | None = None,
+    snoozed_until: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": identifier,
@@ -85,6 +139,21 @@ def conversation(
         },
         "last_message": {"preview": preview, "at": ago(minutes)},
         "pending_approvals": pending,
+        # The work-queue fields; a plain row is one the assistant has (`bot`), outside the queue.
+        "queue_status": queue_status,
+        "queue_reason": queue_reason,
+        "topic": topic,
+        "priority": priority,
+        "assignee_id": assignee_id,
+        "assignee": None
+        if assignee_id is None
+        else {"id": assignee_id, "display_name": assignee_name},
+        "claimed_at": None if assignee_id is None else ago(minutes),
+        "needs_staff_since": needs_staff_since,
+        "due_at": due_at,
+        "snoozed_until": snoozed_until,
+        "last_customer_at": ago(minutes),
+        "last_staff_reply_at": None,
     }
 
 
@@ -157,6 +226,24 @@ class Inbox:
         ]
     )
     needs_review_count: int = 2
+    # The tab counts the list sends: computed from the rows unless a test fixes them, or null.
+    counts_override: dict[str, Any] | None = None
+    null_counts: bool = False
+    # Off by default: the older tests expect every row whatever tab the page opens on.
+    filter_state: bool = False
+    # The people the Filters panel offers, and what the assignee read answers (200 or a status).
+    assignees: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "id": "33333333-3333-4333-8333-333333333331",
+                "display_name": "Aina Demo",
+                "role": "tenant_staff",
+            },
+            {"id": ME_ID, "display_name": "Synthetic User", "role": "tenant_admin"},
+        ]
+    )
+    assignees_status: int = 200
+    assignee_calls: int = 0
     fail_lists: bool = False
     # A 403 `detail` code for the list (for example "package_inactive"), or None.
     refuse_lists: str | None = None
@@ -177,6 +264,101 @@ class Inbox:
     # What the picture route answers (200 = a synthetic PNG, else that status) and was asked.
     picture_status: int = 200
     picture_requests: list[str] = field(default_factory=list)
+    # Queue actions the page sent ({"id", "action", "body", "query", "at"}). Answers are scripted
+    # per action and used in order: (status, json) or "abort" (no answer at all); with none left the
+    # stub applies the action to the row. `queue_delay` holds every answer back that long.
+    queue_calls: list[dict[str, Any]] = field(default_factory=list)
+    queue_script: dict[str, list[Any]] = field(default_factory=dict)
+    queue_delay: float = 0.0
+    # Takeover and release calls ({"id", "action", "body"}), and when each conversation was read.
+    handoffs: list[dict[str, Any]] = field(default_factory=list)
+    detail_reads: list[float] = field(default_factory=list)
+    # Rows sent as an older server sent them, without any queue field (list and detail).
+    bare: set[str] = field(default_factory=set)
+    # Bulk requests the page sent ({"body", "query"}). Answers are scripted in order: (status, json)
+    # or "abort"; with none left each id is applied as one action (`done`), unless `bulk_outcomes`
+    # names its outcome, and an id that is not a row is `not_found`. `as_of` fixes the list's read
+    # time (otherwise it is the time of each read); `omit_as_of` answers without one, as an older
+    # server does.
+    bulk_calls: list[dict[str, Any]] = field(default_factory=list)
+    bulk_script: list[Any] = field(default_factory=list)
+    bulk_outcomes: dict[str, str] = field(default_factory=dict)
+    as_of: str | None = None
+    omit_as_of: bool = False
+    # Saved views per person (user id -> views, newest first; `filters` as stored, only what is
+    # set), the signed-in person (`inbox_page` signs this id in), the view calls the page made
+    # ({"method", "path", "body", "query"}), scripted answers per method used in order ((status,
+    # json)), and gates per method: while a test holds one shut, that answer waits until it is set.
+    views: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    viewer: str = ME_ID
+    view_calls: list[dict[str, Any]] = field(default_factory=list)
+    views_script: dict[str, list[Any]] = field(default_factory=dict)
+    views_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    # The company's Inbox settings as the server stores them (the defaults with `version` 0 until a
+    # first save), the settings calls the page made ({"method", "body", "query"}), scripted answers
+    # per method used in order ((status, json)), and gates per method: while a test holds one shut,
+    # that answer waits until the test sets it. `role` is the signed-in person's (`inbox_page` sets
+    # it): tenant staff may read the settings but a save is 403, as on the server.
+    settings: dict[str, Any] = field(
+        default_factory=lambda: {**InboxSettings().model_dump(), "version": 0}
+    )
+    settings_calls: list[dict[str, Any]] = field(default_factory=list)
+    settings_script: dict[str, list[Any]] = field(default_factory=dict)
+    settings_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    role: str = "tenant_admin"
+    # The companies a platform administrator picks from.
+    clients: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"id": TENANT, "slug": "synthetic", "name": "Synthetic Tenant", "status": "active"}
+        ]
+    )
+
+    def queue_counts(self) -> dict[str, Any] | None:
+        """The tab counts, from the rows (as the server counts them) unless a test set them."""
+        if self.null_counts:
+            return None
+        if self.counts_override is not None:
+            return self.counts_override
+        now = datetime.now(UTC).isoformat()
+
+        def count(state: str, extra: Any = lambda _item: True) -> int:
+            return sum(1 for item in self.items if item["queue_status"] == state and extra(item))
+
+        waiting = [
+            item["needs_staff_since"]
+            for item in self.items
+            if item["queue_status"] == "needs_staff" and item["needs_staff_since"]
+        ]
+        return {
+            "needs_us": count("needs_staff"),
+            "mine": count("needs_staff", lambda i: i["assignee_id"] == ME_ID)
+            + count("waiting_customer", lambda i: i["assignee_id"] == ME_ID),
+            "unassigned": count("needs_staff", lambda i: i["assignee_id"] is None),
+            "overdue": count("needs_staff", lambda i: bool(i["due_at"]) and i["due_at"] < now),
+            "waiting_customer": count("waiting_customer"),
+            "snoozed": count("snoozed"),
+            "oldest_waiting_at": min(waiting) if waiting else None,
+        }
+
+    def queue_filter(self, items: list[dict[str, Any]], params: dict[str, list[str]]) -> list[Any]:
+        """The queue filters, close enough to the server's for the screen's tests."""
+        if self.filter_state and "state" in params:
+            items = [item for item in items if item["queue_status"] in params["state"]]
+        if "assignee" in params:
+            wanted = params["assignee"][0]
+            target = ME_ID if wanted == "me" else None if wanted == "none" else wanted
+            items = [item for item in items if item["assignee_id"] == target]
+        if "priority_min" in params:
+            floor = PRIORITY_RANK[params["priority_min"][0]]
+            items = [item for item in items if PRIORITY_RANK[item["priority"]] >= floor]
+        if "reason" in params:
+            items = [item for item in items if item["queue_reason"] in params["reason"]]
+        if "topic" in params:
+            items = [item for item in items if item["topic"] in params["topic"]]
+        if params.get("overdue") == ["true"]:
+            now = datetime.now(UTC).isoformat()
+            items = [item for item in items if item["due_at"] and item["due_at"] < now]
+        return items
 
     def thread(self, identifier: str) -> list[dict[str, Any]]:
         """Newest first, as the API pages them."""
@@ -195,7 +377,117 @@ class Inbox:
         phone = FULL_PHONE if identifier == UNNAMED else None
         note = self.notes.get(identifier)
         extra = {"handoff_note": note} if note else {}
-        return {**row, "contact": {**row["contact"], "phone": phone}, **extra}
+        return self.served({**row, "contact": {**row["contact"], "phone": phone}, **extra})
+
+    def served(self, item: dict[str, Any]) -> dict[str, Any]:
+        """A row as sent: without its queue fields when the test plays an older server."""
+        if item["id"] not in self.bare:
+            return item
+        return {key: value for key, value in item.items() if key not in QUEUE_FIELDS}
+
+    def apply_queue(self, identifier: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A queue action as the server applies it, close enough for the screen's tests."""
+        row = next(item for item in self.items if item["id"] == identifier)
+        cleared = {
+            "queue_reason": None,
+            "assignee_id": None,
+            "assignee": None,
+            "needs_staff_since": None,
+            "due_at": None,
+            "snoozed_until": None,
+        }
+        if action == "claim":
+            row.update(assignee_id=ME_ID, assignee={"id": ME_ID, "display_name": "Synthetic User"})
+        elif action == "unclaim":
+            row.update(assignee_id=None, assignee=None)
+        elif action == "assign":
+            person = next((p for p in self.assignees if p["id"] == body["assignee_id"]), None)
+            name = person["display_name"] if person else None
+            row.update(
+                assignee_id=body["assignee_id"],
+                assignee={"id": body["assignee_id"], "display_name": name},
+            )
+        elif action == "resolve":
+            row.update(queue_status="resolved", **cleared)
+        elif action == "snooze":
+            claim = {"assignee_id": row["assignee_id"], "assignee": row["assignee"]}
+            row.update(
+                queue_status="snoozed", **{**cleared, **claim, "snoozed_until": body["until"]}
+            )
+        elif action in ("priority", "topic"):
+            row[action] = body[action]
+        row["inbox_version"] += 1
+        return {"outcome": "applied", "conversation": self.detail(identifier)}
+
+    async def views_route(self, request: Any, path: str, query: str) -> tuple[int, Any]:
+        """The saved views as the server keeps them: per person, unique names, 20 at most."""
+        method = request.method
+        body = request.post_data_json if method in ("POST", "PUT") else None
+        self.view_calls.append({"method": method, "path": path, "body": body, "query": query})
+        gate = self.views_gates.get(method)
+        if gate is not None:
+            await gate.wait()
+        script = self.views_script.get(method) or []
+        if script:
+            return script.pop(0)
+        # Only a POST or PUT has a body; the calls above record it as sent.
+        payload: dict[str, Any] = body or {}
+        mine = self.views.setdefault(self.viewer, [])
+
+        def served(view: dict[str, Any]) -> dict[str, Any]:
+            return {**view, "filters": {**VIEW_DEFAULTS, **view["filters"]}}
+
+        def taken(name: str, other_than: str | None = None) -> bool:
+            return any(v["name"].lower() == name.lower() and v["id"] != other_than for v in mine)
+
+        if method == "GET":
+            return 200, [served(view) for view in mine]
+        if method == "POST":
+            name = payload["name"].strip()
+            if taken(name):
+                return 409, {"detail": "you already have a saved view with this name"}
+            if len(mine) >= 20:
+                return 409, {"detail": "you can keep at most 20 saved views"}
+            view = saved_view(name, payload["filters"])
+            mine.insert(0, view)
+            return 201, served(view)
+        target = next((view for view in mine if view["id"] == path.split("/")[-1]), None)
+        if target is None:
+            return 404, {"detail": "saved view not found"}
+        if method == "PUT":
+            if "name" in payload:
+                if taken(payload["name"].strip(), target["id"]):
+                    return 409, {"detail": "you already have a saved view with this name"}
+                target["name"] = payload["name"].strip()
+            if "filters" in payload:
+                target["filters"] = payload["filters"]
+            return 200, served(target)
+        mine.remove(target)
+        return 204, None
+
+    async def settings_route(self, request: Any, query: str) -> tuple[int, Any]:
+        """The company's settings as the API keeps them: every field, ranges, version, admins."""
+        method = request.method
+        body = request.post_data_json if method == "PUT" else None
+        self.settings_calls.append({"method": method, "body": body, "query": query})
+        gate = self.settings_gates.get(method)
+        if gate is not None:
+            await gate.wait()
+        script = self.settings_script.get(method) or []
+        if script:
+            return script.pop(0)
+        if method == "GET":
+            return 200, dict(self.settings)
+        if self.role == "tenant_staff":
+            return 403, {"detail": "forbidden"}
+        try:
+            saved = InboxSettingsIn.model_validate(body)
+        except ValidationError:
+            return 422, {"detail": [{"msg": "synthetic validation error"}]}
+        if saved.version != self.settings["version"]:
+            return 409, {"detail": "version_conflict"}
+        self.settings = {**saved.model_dump(), "version": saved.version + 1}
+        return 200, dict(self.settings)
 
     async def route(self, request_route: Any) -> None:
         request = request_route.request
@@ -213,6 +505,7 @@ class Inbox:
             items = self.items
             if params.get("needs_review") == ["true"]:
                 items = [item for item in items if item["pending_approvals"] > 0]
+            items = self.queue_filter(items, params)
             if "channel" in params:
                 items = [item for item in items if item["channel"] in params["channel"]]
             if "sender" in params:
@@ -235,10 +528,82 @@ class Inbox:
                 status, data = 500, {"detail": "synthetic outage"}
             else:
                 data = {
-                    "items": items,
+                    "items": [self.served(item) for item in items],
                     "next_cursor": None,
                     "needs_review_count": self.needs_review_count,
+                    "counts": self.queue_counts(),
+                    "as_of": self.as_of or datetime.now(UTC).isoformat(),
                 }
+                if self.omit_as_of:
+                    del data["as_of"]
+        elif path == "inbox/assignees" and request.method == "GET":
+            self.assignee_calls += 1
+            if self.assignees_status == 200:
+                data = self.assignees
+            else:
+                status, data = self.assignees_status, {"detail": "synthetic directory outage"}
+        elif path == "admin/clients" and request.method == "GET":
+            data = self.clients
+        elif path == "inbox/settings" and request.method in ("GET", "PUT"):
+            status, data = await self.settings_route(request, query)
+        elif path == "inbox/views" or path.startswith("inbox/views/"):
+            status, data = await self.views_route(request, path, query)
+            if status == 204:
+                await request_route.fulfill(status=204, body="")
+                return
+        elif path.startswith("inbox/conversations/") and "/queue/" in path:
+            identifier, action = path.split("/")[2], path.split("/")[4]
+            body = request.post_data_json or {}
+            self.queue_calls.append(
+                {
+                    "id": identifier,
+                    "action": action,
+                    "body": body,
+                    "query": query,
+                    "at": time.monotonic(),
+                }
+            )
+            await asyncio.sleep(self.queue_delay)
+            script = self.queue_script.get(action) or []
+            answer = script.pop(0) if script else None
+            if answer == "abort":
+                await request_route.abort("failed")
+                return
+            if answer is None:
+                data = self.apply_queue(identifier, action, body)
+            else:
+                status, data = answer
+        elif path == "inbox/bulk" and request.method == "POST":
+            body = request.post_data_json or {}
+            self.bulk_calls.append({"body": body, "query": query})
+            answer = self.bulk_script.pop(0) if self.bulk_script else None
+            if answer == "abort":
+                await request_route.abort("failed")
+                return
+            if answer is not None:
+                status, data = answer
+            else:
+                results = []
+                for identifier in body.get("ids", []):
+                    outcome = self.bulk_outcomes.get(identifier)
+                    if outcome is None and any(item["id"] == identifier for item in self.items):
+                        self.apply_queue(identifier, body["action"], body)
+                        outcome = "done"
+                    results.append({"id": identifier, "outcome": outcome or "not_found"})
+                data = {"results": results}
+        elif path.startswith("inbox/conversations/") and path.endswith(("/takeover", "/release")):
+            identifier, action = path.split("/")[2], path.split("/")[3]
+            self.handoffs.append(
+                {"id": identifier, "action": action, "body": request.post_data_json or {}}
+            )
+            taken = action == "takeover"
+            for item in self.items:
+                if item["id"] == identifier:
+                    item.update(
+                        human_muted=taken, owned_by="human" if taken else None, ai_muted_until=None
+                    )
+                    item["inbox_version"] = item.get("inbox_version", 1) + 1
+            data = {"outcome": "applied", "queued": False, "warnings": [], "status": None}
         elif path.startswith("inbox/conversations/") and path.endswith("/reply"):
             await asyncio.sleep(self.reply_delay)
             self.replies.append((request.post_data_json or {}).get("body", ""))
@@ -247,6 +612,7 @@ class Inbox:
         elif path.startswith("inbox/conversations/") and path.endswith("/messages"):
             data = {"items": self.thread(path.split("/")[2]), "next_cursor": None}
         elif path.startswith("inbox/conversations/"):
+            self.detail_reads.append(time.monotonic())
             data = self.detail(path.split("/")[2])
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
@@ -360,9 +726,15 @@ async def inbox_page(
     role: str = "tenant_admin",
     reduced_motion: bool = False,
     theme: str = "cobalt",
+    path: str = "/portal/inbox",
 ) -> AsyncIterator[Page]:
     """A logged-in page on the inbox, answered by `state`; checks for stray calls on exit."""
-    shell.upstream.me = make_me(role)
+    me = make_me(role)
+    state.role = role
+    # The signed-in person is the one whose saved views the stub serves.
+    if state.viewer != ME_ID:
+        me["user"] = {**me["user"], "id": state.viewer, "display_name": "Second Member"}
+    shell.upstream.me = me
     shell.upstream.packages = [{"key": "customer_support", "status": "active"}]
     shell.upstream.unexpected.clear()
     async with async_playwright() as playwright:
@@ -383,7 +755,7 @@ async def inbox_page(
         page.on("pageerror", lambda error: errors.append(str(error)))
         try:
             await page.route("**/console/v1/**", state.route)
-            await page.goto(f"{shell.base}/portal/inbox")
+            await page.goto(f"{shell.base}{path}")
             yield page
             assert not errors, errors
             assert not state.unexpected, state.unexpected
@@ -471,19 +843,38 @@ async def test_long_name_does_not_break_the_row(shell: Shell) -> None:
             assert clipped == {"ellipsis": "ellipsis", "cut": True}, (width, clipped)
 
 
-async def test_needs_review_count_stays_visible_and_filters_on_the_server(shell: Shell) -> None:
-    state = Inbox()
+def held(state: Inbox) -> Inbox:
+    """The two rows with a held reply wait on staff for it, as the queue model files them."""
+    for item in state.items:
+        if item["pending_approvals"] > 0:
+            item.update(queue_status="needs_staff", queue_reason="held_reply")
+            item["needs_staff_since"] = item["last_message"]["at"]
+    return state
+
+
+async def open_filters(page: Page) -> Any:
+    await page.get_by_test_id("inbox-queue-filters").click()
+    panel = page.get_by_role("dialog", name="Filters")
+    await expect(panel).to_be_visible()
+    return panel
+
+
+async def test_needs_us_count_stays_visible_and_held_replies_filter_on_the_server(
+    shell: Shell,
+) -> None:
+    # Was the "Needs review" count and chip: the count is now the Needs us tab's, and a held
+    # reply is the Reason filter. The needs_review parameter is never sent any more.
+    state = held(Inbox())
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
-        count = page.get_by_test_id("inbox-needs-review-count")
+        count = page.get_by_test_id("inbox-needs-us-count")
         await expect(count).to_have_text("2")
         await expect(count).to_be_visible()
-        assert not any("needs_review" in query for query in state.list_queries)
-        chip = page.get_by_test_id("inbox-filter-needs-review")
-        await chip.click()
-        await expect(chip).to_have_attribute("aria-pressed", "true")
+        panel = await open_filters(page)
+        await panel.get_by_role("checkbox", name="Held reply").check()
         await rows_loaded(page, 2)
-        assert any("needs_review=true" in query for query in state.list_queries)
+        assert any("reason=held_reply" in query for query in state.list_queries)
+        assert not any("needs_review" in query for query in state.list_queries)
         await expect(row(page, NAMED)).to_have_count(1)
         await expect(row(page, NEWCOMER)).to_have_count(1)
         await expect(count).to_be_visible()
@@ -974,60 +1365,39 @@ async def test_assistant_launcher_never_covers_the_reply_buttons(
         )
 
 
-async def test_inbox_view_chips_filter_like_the_old_control(shell: Shell) -> None:
+async def test_sender_and_channel_filters_work_like_the_old_controls(shell: Shell) -> None:
+    # Was the All / Customers / New senders chips and the channel select: both moved into
+    # the Filters panel and still combine into one request.
     state = Inbox()
     async with inbox_page(shell, state) as page:
         await rows_loaded(page)
-        group = page.get_by_test_id("inbox-view")
-        await expect(group).to_have_attribute("role", "group")
-        chips = group.get_by_role("button")
-        await expect(chips).to_have_text(
-            ["All", re.compile(r"^Needs review\s*\d+$"), "Customers", "New senders"]
-        )
-        # The channel control stays a select.
-        channel = page.get_by_test_id("inbox-channel-filter")
-        assert await channel.evaluate("el => el.tagName") == "SELECT"
-        # The count lives inside its chip and keeps its own id.
-        await expect(
-            page.get_by_test_id("inbox-filter-needs-review").get_by_test_id(
-                "inbox-needs-review-count"
-            )
-        ).to_have_text("2")
+        panel = await open_filters(page)
+        sender = panel.get_by_role("group", name="Sender")
+        await expect(sender.get_by_role("radio")).to_have_count(3)
+        await expect(sender.get_by_role("radio", name="Anyone")).to_be_checked()
 
-        async def press(test_id: str, expected: str) -> dict[str, list[str]]:
+        async def choose(group: str, name: str, key: str, expected: str) -> dict[str, list[str]]:
             before = len(state.list_queries)
-            await page.get_by_test_id(test_id).click()
-            await expect(page.get_by_test_id(test_id)).to_have_attribute("aria-pressed", "true")
-            for other in await chips.all():
-                if await other.get_attribute("data-testid") != test_id:
-                    await expect(other).to_have_attribute("aria-pressed", "false")
+            await panel.get_by_role("group", name=group).get_by_role("radio", name=name).check()
             await eventually(lambda: len(state.list_queries) > before)
             await asyncio.sleep(0.3)
             latest = parse_qs(state.list_queries[-1])
-            assert latest.get("needs_review", [""])[0] == ("true" if expected == "review" else "")
-            assert latest.get("sender", [""])[0] == (
-                expected if expected in {"known", "new"} else ""
-            )
+            assert latest.get(key, [""])[0] == expected, latest
+            assert "needs_review" not in latest, latest
             return latest
 
-        await press("inbox-filter-needs-review", "review")
+        await choose("Sender", "Customers", "sender", "known")
         await rows_loaded(page, 2)
-        await press("inbox-filter-customers", "known")
+        await choose("Sender", "New senders", "sender", "new")
         await rows_loaded(page, 2)
-        await press("inbox-filter-new-senders", "new")
-        await rows_loaded(page, 2)
-        # A pressed chip stays pressed when pressed again (single select, as before).
-        await page.get_by_test_id("inbox-filter-new-senders").click()
-        await expect(page.get_by_test_id("inbox-filter-new-senders")).to_have_attribute(
-            "aria-pressed", "true"
-        )
-        await press("inbox-filter-all", "all")
+        await choose("Sender", "Anyone", "sender", "")
         await rows_loaded(page, 4)
-        # Chips and the channel select still combine into one request.
-        await channel.select_option("whatsapp")
-        await press("inbox-filter-needs-review", "review")
-        latest = parse_qs(state.list_queries[-1])
-        assert latest["channel"] == ["whatsapp"] and latest["needs_review"] == ["true"]
+        # Channel and sender still combine into one request.
+        await choose("Channel", "WhatsApp", "channel", "whatsapp")
+        latest = await choose("Sender", "New senders", "sender", "new")
+        assert latest["channel"] == ["whatsapp"] and latest["sender"] == ["new"]
+        await rows_loaded(page, 1)
+        await expect(row(page, UNNAMED)).to_have_count(1)
 
 
 async def test_search_clear_button_resets(shell: Shell) -> None:
@@ -1089,9 +1459,14 @@ async def test_rows_show_preview_time_and_review_marker(shell: Shell) -> None:
         marker = named.get_by_test_id("inbox-row-review")
         await expect(marker).to_have_text("Needs review")
         await expect(marker.locator("svg")).to_have_count(1)
-        # Existing row words are still there.
-        await expect(named).to_contain_text("Customer")
-        await expect(named.get_by_test_id("inbox-channel-badge")).to_have_text("Telegram")
+        # A known customer has no sender pill any more (it was on every row); a new sender keeps
+        # the dashed "New sender" label. The channel is an icon named for assistive technology.
+        await expect(named).not_to_contain_text("Customer")
+        await expect(row(page, NEWCOMER)).to_contain_text("New sender")
+        badge = named.get_by_test_id("inbox-channel-badge")
+        await expect(badge).to_have_text("Telegram")
+        await expect(badge).to_have_role("img")
+        await expect(badge).to_have_accessible_name("Telegram")
 
 
 async def on_top(button: Any) -> bool:

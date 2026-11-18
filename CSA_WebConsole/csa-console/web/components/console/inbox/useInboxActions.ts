@@ -9,7 +9,27 @@ type Result = {
   outcome: "applied" | "already_handled" | "expired" | "not_found";
   queued: boolean; warnings: string[]; status: string | null;
 };
-export type Pending = { path: string; payload: Record<string, unknown>; onSuccess?: () => void };
+export type Pending = {
+  path: string; payload: Record<string, unknown>; onSuccess?: () => void;
+  /** Queue requests only: the plain notice for the result, in place of the reply wording. */
+  notice?: (result: unknown) => string;
+  /** Queue requests only: the plain sentence for a failure. `status` is null when no answer came. */
+  failure?: (cause: unknown, status: number | null) => string;
+  /**
+   * Queue requests only: whether a failure is settled (dropped, no Retry). Without it a 4xx is
+   * settled and anything else (no answer, 5xx) is kept for Retry with the same request key.
+   */
+  definitive?: (status: number | null, cause: unknown) => boolean;
+  /**
+   * Called with the answer of a successful request, first attempt or Retry alike (Retry sends this
+   * same object), so a bulk action's results reach the screen however it got through.
+   */
+  onResult?: (result: unknown) => void;
+};
+/** What `submit` settled with. `definitive` is false when the outcome is uncertain and the request is kept. */
+export type Submitted =
+  | { ok: true; result: unknown }
+  | { ok: false; status: number | null; cause: unknown; definitive: boolean };
 
 /**
  * The inbox's write paths, unchanged from the previous InboxWorkspace: request keys, one
@@ -25,7 +45,8 @@ export function useInboxActions(query: string, tenantId: string | null) {
   const [notice, setNotice] = useState("");
   const [proposal, setProposal] = useState<ProposalOut | null>(null);
 
-  async function submit(request: Pending) {
+  /** Sends one request and settles with what happened; `submit` is the same without the result. */
+  async function execute(request: Pending): Promise<Submitted> {
     setPending(request); setBusy(true); setError(""); setNotice("");
     try {
       const result = await api<Result>(request.path, {
@@ -33,18 +54,33 @@ export function useInboxActions(query: string, tenantId: string | null) {
       });
       setPending(null);
       request.onSuccess?.();
+      request.onResult?.(result);
+      if (request.notice) {
+        setNotice(request.notice(result));
+        setRevision((value) => value + 1);
+        return { ok: true, result };
+      }
       setNotice(result.outcome === "already_handled" ? "Already handled. Refreshed the current state."
         : result.outcome === "expired" ? `Approval expired.${result.queued ? " Follow-up reply queued." : " No reply queued."}`
         : result.queued ? "Reply queued. Delivery status appears in the conversation."
         : result.status ? `Reply ${result.status}. No new delivery queued.` : "Conversation updated.");
       if (result.warnings.length) setNotice((value) => `${value} Edit warning: ${result.warnings.join(", ")}`);
       setRevision((value) => value + 1);
+      return { ok: true, result };
     } catch (cause) {
-      const definitive = cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
+      const status = cause instanceof ApiError ? cause.status : null;
+      const definitive = request.definitive ? request.definitive(status, cause)
+        : cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
       if (definitive) setPending(null);
-      setError(`${(cause as Error).message}${definitive ? ". Refreshed; review before acting again." : ". Outcome uncertain. Retry keeps the same request key. After reload, inspect history before sending again."}`);
+      setError(request.failure ? request.failure(cause, status)
+        : `${(cause as Error).message}${definitive ? ". Refreshed; review before acting again." : ". Outcome uncertain. Retry keeps the same request key. After reload, inspect history before sending again."}`);
       setRevision((value) => value + 1);
+      return { ok: false, status, cause, definitive };
     } finally { setBusy(false); }
+  }
+
+  async function submit(request: Pending): Promise<void> {
+    await execute(request);
   }
 
   /** Approve and reject are confirmed through a shared proposal bound to the conversation version. */
@@ -71,6 +107,11 @@ export function useInboxActions(query: string, tenantId: string | null) {
       payload: { request_key: crypto.randomUUID(), decision: "edit", text } });
   }
 
+  /** Say what a control outside the request path did (a saved view chosen or saved), in the notice. */
+  function announce(text: string) {
+    setNotice(text);
+  }
+
   /** Forget the last outcome when the reader moves to another conversation. */
   function clearFeedback() {
     setError(""); setNotice(""); setProposal(null);
@@ -79,7 +120,7 @@ export function useInboxActions(query: string, tenantId: string | null) {
   return {
     tenantId, revision, refresh: () => setRevision((value) => value + 1),
     pending, busy, blocked: busy || pending !== null, error, notice, proposal,
-    submit, propose, edit, clearFeedback,
+    submit, execute, propose, edit, clearFeedback, announce,
   };
 }
 

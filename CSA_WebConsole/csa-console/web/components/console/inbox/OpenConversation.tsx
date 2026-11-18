@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
+import type { ConsoleRole } from "@/lib/identity-contracts";
 import { approvalsPath, type Approval, type Conversation, type Message } from "@/lib/inbox-api";
 import { usePublishContext } from "@/lib/page-context";
 import { CustomerCard } from "./CustomerCard";
@@ -39,13 +40,14 @@ function useConversationDetail(base: string, query: string, revision: number) {
  */
 export function OpenConversation({
   id, row, query, revision, actions, now, motion, wide, cardHost, threadClass, cardClass, feedback,
-  onBack, onDetails, onCloseDetails, detailsRef,
+  onBack, onDetails, onCloseDetails, detailsRef, me,
 }: {
   id: string; row: Conversation | undefined; query: string; revision: number; actions: InboxActions;
   now: number; motion: boolean; wide: boolean; cardHost: HTMLElement | null;
   threadClass: string; cardClass: string; feedback: ReactNode;
   onBack: () => void; onDetails: () => void; onCloseDetails: () => void;
   detailsRef: RefObject<HTMLButtonElement | null>;
+  me: { userId: string | null; role: ConsoleRole | null };
 }) {
   const base = `/console/v1/inbox/conversations/${id}`;
   const { current, error } = useConversationDetail(base, query, revision);
@@ -73,7 +75,7 @@ export function OpenConversation({
       <Thread id={id} row={row} current={current} detailError={error} messages={messages}
         onOlder={() => setPages((value) => value + 1)} pending={pending} now={now} motion={motion} query={query}
         actions={actions} feedback={feedback} onBack={onBack} onDetails={onDetails} detailsRef={detailsRef}
-        logRef={logRef} />
+        logRef={logRef} me={me} />
     </div>
     {wide ? <aside aria-label="Customer details" className={cardClass}>{card}</aside>
       : cardHost ? createPortal(card, cardHost) : null}

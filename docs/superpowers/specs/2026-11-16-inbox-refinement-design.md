@@ -648,12 +648,12 @@ One header row above the messages:
   - unclaimed and in the queue: primary "Take it" (claims; a first reply also claims);
   - claimed by you: primary "Resolve";
   - claimed by someone else: primary "Take it from {name}" with a one-line notice "Assigned to {name}";
-  - waiting on customer or snoozed: primary "Resolve" with "Reopen" in More;
+  - waiting on customer or snoozed: primary "Resolve";
   - bot-handled: primary stays the existing "Take over" button.
   - **Snooze ▾** menu: Later today (+3 h), Tomorrow 09:00, Next Monday 09:00, Pick a time (the existing
     date and time field patterns).
-  - **More ▾**: Assign to… (admins), Give up this item, Set priority, Set topic, Hand back to the
-    assistant.
+  - **More ▾**: Assign to… (admins), Give up this item, Set priority, Set topic, Take over the chat
+    (while the assistant still answers it), Hand back to the assistant.
 - A **banner** under the header (the existing `Notice` pattern) when it helps: "Waiting on us for 3 h
   20 m, due 1 h ago", "A held reply needs a decision first" (when resolve is refused), "The customer
   wrote after you opened this. Reload to see it." (the `customer_wrote` case).
@@ -692,6 +692,16 @@ needs your team right now", Mine "Nothing is assigned to you", Overdue "Nothing 
 yet", with the assistant's resting avatar at 48 px beside the sentence in the Needs us tab only. A
 failed counts request shows "–" and never zero.
 
+Calls made in the build (plan 1b, 2026-11-18), visible to the owner and open to change:
+
+- The empty copy for Unassigned ("Nothing is waiting for someone to take it") and All ("No
+  conversations yet") is the builder's, not this design's. All is empty only for a company with no
+  conversations, which shows the existing first-run state ("No conversations yet" with Connect
+  WhatsApp, or "Ask your administrator to connect WhatsApp."), so All's sentence is only a fallback.
+  The first-run state also shows on the other tabs when the company has no conversation at all.
+- The C shortcut (14.8) claims only an unclaimed item ("Take it"). Taking an item from a colleague
+  ("Take it from {name}", administrators) stays a deliberate click, never a key press.
+
 ### 14.8 Interaction, motion, accessibility
 
 - Keyboard: the existing J and K and Escape stay; added C (claim), E (resolve), S (snooze menu) and `/`
@@ -711,6 +721,11 @@ failed counts request shows "–" and never zero.
 
 The notification bell and the notification centre (PR 2), the targets page (PR 3), internal notes,
 customer timelines, and any change to the thread's message rendering, takeover flow or held-reply cards.
+A manual "Reopen" for a waiting, snoozed or resolved item is not built: there is no Reopen route. A
+waiting item comes back to Needs us when the customer writes while a person owns the chat, a snoozed
+one when its time comes, and a resolved one when a person takes the chat over (More, Take over the
+chat); a customer message on a resolved chat goes to the assistant. A Reopen action and its route are
+for later.
 
 ## 15. What is left to the builder
 

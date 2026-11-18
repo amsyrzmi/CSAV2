@@ -248,6 +248,18 @@ export async function decode<T>(response: Response): Promise<T> {
         const said = "message" in body && typeof body.message === "string" ? body.message : "";
         message = (serverSentence.has(code) && said) || (explained[code] ?? code);
         detail = body as Record<string, unknown>;
+      } else if (
+        typeof body === "object" &&
+        body !== null &&
+        "detail" in body &&
+        typeof body.detail === "object" &&
+        body.detail !== null &&
+        "code" in body.detail &&
+        typeof body.detail.code === "string"
+      ) {
+        // A coded refusal, `{"detail": {"code": "..."}}`: the code is readable, the shown message is unchanged.
+        code = body.detail.code;
+        detail = body as Record<string, unknown>;
       }
     } catch {
       /* Non-JSON gateway failures keep their HTTP status, or the plain server-error sentence. */
