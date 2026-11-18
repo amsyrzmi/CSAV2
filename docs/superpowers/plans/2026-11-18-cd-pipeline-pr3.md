@@ -1,0 +1,558 @@
+# CD pipeline, PR 3: GitHub setup script, auto-planned production runs, one runbook, one skill — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** The GitHub side of both deploy targets is a repeatable, tested script (`deploy/github/setup-environments.sh`). The production plan can start by itself after a commit has been staged (repository variable `PROD_AUTO_PLAN`, default off), while the apply still waits for a person's approval on the `production` environment. One runbook (`deploy/DEPLOY.md`) and one skill (`deploy`) describe both targets. The stale "the owner approves the image publish" wording is gone.
+
+**Architecture:** A new workflow `.github/workflows/deploy-production-auto.yml` starts on `workflow_run` of `deploy-staging` and has one job. It runs `deploy/production/auto_plan.sh` three times: `check` (is there anything to plan, ending green with a notice when not), `supersede` (cancel earlier auto-started runs whose apply is still `waiting`) and `start` (dispatch `deploy-production` with no input, then verify that a run appeared). `deploy-production.yml` and every script it uses stay byte-for-byte as they are. `deploy/github/setup-environments.sh` reads each environment, builds the complete desired state and writes only what differs; it is tested against a stateful fake `gh` (`tests/fake_gh.py`) that models GitHub's replace-on-PUT behaviour. `deploy/DEPLOY.md` becomes the entry runbook; whole generic sections move out of `deploy/PRODUCTION.md` and `deploy/STAGING_PIPELINE.md`, each leaving a heading and a pointer, and a frozen heading map test proves nothing was dropped.
+
+**Tech Stack:** bash, `gh` (REST API through `gh api`), `jq`, GitHub Actions, Python 3.12 + pytest (fake executables on `PATH`, structural workflow tests, doc assertions).
+
+**Spec:** `docs/superpowers/specs/2026-11-13-cd-pipeline-design.md`, "Delivery" item 3, with the changes recorded below. Predecessors: `docs/superpowers/plans/2026-11-17-cd-pipeline-pr2.md` (merged; this plan follows its format and its Global Constraints).
+
+## Plan decisions (mine; the owner may overrule)
+
+Owner decisions already taken and **not open**: `PROD_AUTO_PLAN` defaults to off; the production apply always waits for a human approval on the `production` environment and is never approved by an agent; one runbook `deploy/DEPLOY.md` and one skill `deploy` replace the two skills; the setup scripts hold no real ids and are tested against fake executables on `PATH`.
+
+1. **The auto-plan lives in its own workflow, not in `deploy-production.yml`.** The spec puts a second trigger in `deploy-production`. I deviate, for three reasons found by reading the real files:
+   - **A waiting run holds the concurrency group.** `deploy-production.yml:31-33` uses the group `deploy-production`, and `deploy/PRODUCTION.md:129-133` already records that a run waiting for approval holds it: the next run queues as `pending` behind it. A gate job inside the new run would therefore never start while the very run it must cancel is waiting. GitHub's own text on concurrency: "At most one job or workflow run can be `pending` in the concurrency group" and `cancel-in-progress: true` cancels "any currently running job or workflow in the same concurrency group"; it says nothing about runs waiting for approval, and it has no way to cancel only a run whose apply is `waiting` and spare one whose apply is `in_progress` (a manual run in the middle of an apply would be cancelled too).
+   - **Manual dispatch stays byte-for-byte.** Adding a trigger and a gate job to `deploy-production.yml` means changing the `if:` of its jobs and its `needs`. With a separate workflow, `git diff origin/main -- .github/workflows/deploy-production.yml deploy/production/{resolve_commit,ssm_run,parse_plan,deploy_entry,public_smoke}.sh` is empty, and Task 13 checks exactly that.
+   - **Failure isolation.** A failing auto-plan is a red `deploy-production-auto` run, not a red staging run and not a red production run.
+
+   The cost is one extra file and the fact that GitHub starts the plan by a `workflow_dispatch` made with the workflow's own `GITHUB_TOKEN` (`actions: write`). GitHub documents that `workflow_dispatch` and `repository_dispatch` events always create runs when made with `GITHUB_TOKEN` ("events triggered by the `GITHUB_TOKEN` will not create a new workflow run," with those two exceptions). I considered a final job inside `deploy-staging.yml` that dispatches after `record` succeeds (it would need no "nothing to plan" pre-check for the paused, `already staged` and `superseded` outcomes, because those runs have no `record`). I rejected it: it adds a `actions: write` job to the workflow that holds the staging OIDC role, and a failure there would turn a successful staging run red.
+2. **The `workflow_run` chain is within GitHub's limit, and the dispatch is not part of it.** GitHub: "You can't use `workflow_run` to chain together more than three levels of workflows"; in its example A → B → C → D → E → F, "workflows `E` and `F` will not be run" (docs, "Events that trigger workflows", `workflow_run`). Here ci (A) → publish-staging-images (B) → deploy-staging (C) → deploy-production-auto (D) is three `workflow_run` links, the last allowed. The dispatched `deploy-production` is a `workflow_dispatch` run, not a `workflow_run` link; the docs do not say whether it counts, so Part C proves it, and `auto_plan.sh start` fails red (not silently) when no run appears after the dispatch. (The literal spec design, a `workflow_run` into `deploy-production` itself, would be a fourth link, also allowed.)
+3. **`workflow_run` semantics, cited.** For a `workflow_run` event GitHub's table gives `GITHUB_SHA` "Last commit on default branch" and `GITHUB_REF` "Default branch", so `github.ref == 'refs/heads/main'` holds only while `main` is the default branch (`deploy-staging.yml` relies on the same). `branches:` "specif[ies] what branches the triggering workflow must run on". The page does not define `head_branch`; the repository's own PR 2 finding (2026-11-17) is that `workflow_run.head_sha` is not the commit the run handled. So the workflow reads **no** field of `github.event.workflow_run` in a `run:` text, only `conclusion`, `head_branch` and `head_repository.full_name` in the job `if`, exactly as `deploy-staging.yml:68`, and it plans the **tip of `main`**, never an event sha.
+4. **No red noise: a `check` step decides, the conclusion of the staging run does not.** `deploy-staging` ends `success` for `paused`, `nothing to roll out`, `already staged` and `superseded` as well as for a real rollout, so `conclusion == success` proves nothing. `auto_plan.sh check` asks the facts: it runs `resolve_commit.sh` with `DEPLOY_TARGET=staging` (`deploy/production/resolve_commit.sh:56`, `:150-155`: staging never refuses at the staged check and reports `staged_on`, empty when the tip has no record; exit 3 means not ready, `:116` and `:193`). The resolver's `production` target is **not** used, because its not-staged refusal exits 1 and would be a red run. `check` ends green with a notice when:
+   - the tip's ci is not green or its images are not published (resolver exit 3): `nothing to plan: <resolver message>`;
+   - the tip has no staged record (staging paused, superseded, or the record job failed): `nothing to plan: main's tip <sha7> is not staged yet`;
+   - a `deploy-production` run for the tip already exists that is queued, in progress, waiting or concluded `success`: `a deploy-production run for <sha7> already exists: <run id>`. A run that failed or was cancelled does not block, so an owner's early manual dispatch that failed with "not staged yet" does not stop the auto-plan;
+   - any other resolver failure is red (exit 1): it is a real problem.
+5. **Cancelling stale waiting runs: what GitHub can and cannot do.**
+   - It cannot do it by concurrency (decision 1). The only mechanism is the REST call `POST /repos/{r}/actions/runs/{id}/cancel`, which needs `actions: write` and which cancels a run whatever its jobs are doing; it is not atomic with "the apply is still waiting".
+   - `supersede` therefore cancels only a run for which **all** of these hold, read just before the call: run status `waiting`; event `workflow_dispatch`; `triggering_actor.login` is `github-actions[bot]` (the auto-plan's own dispatches; a person's manual run, a rollback with an explicit `sha`, is never touched); `head_branch` `main`; `head_sha` differs from the tip being planned (a run for the same commit is the dedupe rule of decision 4); its jobs are exactly `plan` (completed, success) and `apply` (status `waiting`), none `in_progress` or `queued`. A run whose apply is `in_progress` is never cancelled.
+   - **The race is harmless.** If a reviewer approves the stale run in the instant before the cancel lands, its apply job starts and its first steps are `Require the deploy variables` and `Check the commit is still current` (`deploy-production.yml:145-183`). For a run of an older sha that check fails (`main moved to <sha7> since this run's plan`) before AWS credentials are fetched and before anything is sent. The `head_sha` rule guarantees the stale run's sha is older than the tip. A cancel that fails is re-checked: when the run is no longer `waiting` it is left alone and the line says so; when it is still waiting, the line says so and the step continues (the new run queues behind it, as today, and the owner rejects the stale one).
+   - GitHub has already notified both reviewers about each waiting apply; cancelling does not recall that. This is why the default is off.
+   - The `triggering_actor` marker is the part I cannot verify by reading: GitHub documents the event but not the actor shown for a token-made dispatch. Part C proves it and the constant (`AUTO_ACTOR` in the script) is the one line to change. Failing safe: if the marker never matches, nothing is cancelled.
+6. **Security reasoning: the auto path cannot skip the approval.** The apply approval is a property of the `production` **environment** (required reviewers; main-only branch policy), not of the workflow file, so no workflow change can remove it. The auto workflow has no `environment`, no `id-token` permission and no secret; its token can read the repository, read Actions and deployments and write Actions (cancel and dispatch). Approving a pending deployment (`POST .../pending_deployments`) needs a user who is a required reviewer; the token is not one, and the script and workflow contain no call to it (a test asserts that). The workflow dispatches with no `sha` input, so it can never request an explicit rollback. It never checks out or runs anything from the triggering run (`ref: main`; no artifact download; no event field in run text), which is the usual defence for `workflow_run` workflows. `PROD_AUTO_PLAN != 'true'` makes every job skip.
+7. **Setup script: read, build the whole desired state, write only on difference.** The finding from running the setup by hand on 2026-11-17: `PUT repos/<r>/environments/<env>` **replaces** the protection settings it is not given (reviewers, wait timer, and in the same way `prevent_self_review` and `can_admins_bypass`). So `apply` does `GET`, builds the complete body from the current values plus the desired changes, and sends the `PUT` only when something differs:
+   - `reviewers`: the given `--reviewer` set when any was given, otherwise the current reviewers (`.protection_rules[] | select(.type == "required_reviewers") | .reviewers[] | {type, id: .reviewer.id}`); `wait_timer`, `prevent_self_review` and `can_admins_bypass` are carried over (a new environment gets 0, `false` and GitHub's `true`); `deployment_branch_policy` is `{protected_branches: false, custom_branch_policies: true}`.
+   - **How production's reviewers are preserved:** by that carry-over; and `production` is refused (before any write) when it has no reviewer and none was given, so the script can never leave it unprotected. A test with a pre-existing production environment holding two reviewers, `wait_timer` 5 and `prevent_self_review` true proves that `apply` with no `--reviewer` sends a body that still holds them.
+   - The custom branch policy is **a separate `POST`** of `{"name":"main","type":"branch"}` to `.../deployment-branch-policies`, made after the `PUT` and only when `main` is missing; any other policy is `DELETE`d after `main` exists. An environment with custom policies on and none listed admits nothing, so this order is fail-safe.
+   - Reviewers on `staging`, `staging-images` and `production-plan` are **preserved and reported**, never added or removed by the script (a reviewer on `staging` is rejected in PR 2's decisions; on `staging-images` it would hold every merge, so `check` prints it as a note, not a failure).
+8. **`staging-images` gets the main-only policy.** Read-only check on 2026-11-18: `staging-images` has `protection_rules: []` and `deployment_branch_policy: null`: no reviewer (as the spec says) **and no branch restriction either** (the spec and `deploy/RELEASE.md:112-115` describe `main`-only). A workflow on any branch could use it and its `packages: write`. `setup-environments.sh staging` adds the `main` policy to it. `publish-staging-images` runs on `main` in every real case (`workflow_run` runs on the default branch; dispatch is made from `main`), so the policy does not stop it; Part C watches the first publish after the change.
+9. **Secrets: environment variables or hidden prompt, never argv, never printed.** Names, by environment (read from the two deploy workflows, `grep -rnoE '(secrets|vars)\.[A-Za-z_]+' .github/workflows` on 2026-11-18, plus the existing runbook step):
+
+   | Environment | Reviewers | Secrets | 
+   | --- | --- | --- |
+   | `staging` | none | `STAGING_DEPLOY_ROLE_ARN`, `STAGING_INSTANCE_ID` |
+   | `staging-images` | none | none |
+   | `production-plan` | none | `PROD_PLAN_ROLE_ARN`, `PROD_INSTANCE_ID` |
+   | `production` | the given set (required) | `PROD_APPLY_ROLE_ARN`, `PROD_INSTANCE_ID`, `PROD_CONSOLE_ORIGIN` |
+
+   Repository variables: `IMAGE_NAMESPACE` (both targets), `STAGING_DEPLOY_REGION` (staging), `PROD_DEPLOY_REGION` (production); the switches `STAGING_AUTO_PAUSED` (staging, set only with `--paused`) and `PROD_AUTO_PLAN` (production, set only with `--auto-plan`; unset means off). `GITLEAKS_LICENSE` (ci) and `GITHUB_TOKEN` are out of scope. A secret value comes from `SETUP_<NAME>` in the environment, or a hidden `read -rs` prompt on a terminal, and reaches `gh secret set` on **stdin** only. A secret that already exists is never overwritten unless its `SETUP_<NAME>` is set (explicit rotation), so a routine run prompts for nothing. Secrets cannot be read back, so `check` reports `set` or `missing` by name. Values are validated (ARN, node id, origin) before any write, and no message ever contains a value. Variable values are never printed either, except the two on/off switches, whose whole content is `true` or `false`.
+10. **One heading map, whole sections move.** The two old docs are large and their text is asserted by tests. I move **whole level-2 or level-3 sections verbatim** (then adjust wording), leave the heading in the old file with a one-paragraph pointer when a test, a code message or another doc points at it, and add a frozen heading map test (Task 9) that lists every heading of both docs as of `origin/main` and where it lives now. Host-specific procedures stay where they are (install steps, secret files, restore, pruning, feature rollouts, reset, the manual break-glass commands); cross-cutting explanation moves (the pipeline, outcomes, failures, rollback meaning, setup order). A few rules, such as the staged rule, are stated in both places on purpose.
+11. **Publish pins.** `publish-staging-images.yml` pins its two third-party actions (`actions/checkout`, `actions/download-artifact`, both `@v4`) to the commit each `v4` tag points at today, with a `# vX.Y.Z` comment, in a separate small task. I do not jump to the `v7` checkout the deploy workflows use: this workflow publishes the images, and an unproven major upgrade is a different change. The controller resolves the commits read-only (Task 8). `ci.yml` has many more unpinned actions (`docker/*`, `astral-sh/setup-uv`, `gitleaks/gitleaks-action`, `actions/*`): out of scope, listed below.
+12. **Stale wording is replaced by one sentence in every place:** "The image publish needs no approval today (the `staging-images` environment has no reviewer). If a reviewer is added to `staging-images`, every merge waits on that click." Places, verified by grep on 2026-11-18: `.github/workflows/publish-staging-images.yml:2-4`; `deploy/RELEASE.md:93-119` (describes the publish as manual and the reviewer as required); `deploy/STAGING_PIPELINE.md:18-21`, `:27-28`, `:117-118`, `:149-150`; `.claude/skills/staging-rollout/SKILL.md:10-11`, `:55`. **`deploy/PRODUCTION.md` has no such sentence** (the spec says it does; it does not, so there is nothing to change there). `scripts/staging_rollout.py:564` returns `waiting for approval` as a publish state; that stays, it is correct if a reviewer is added.
+
+**Out of scope, with reasons:**
+- `ci.yml` action pins: about twelve `uses:` lines; no deploy credential; separate PR.
+- Changing `can_admins_bypass` or `prevent_self_review` on `production` (today `true` and `false`): an owner decision about the approval rule; the script carries them over and `check` prints them.
+- Team reviewers, deleting environments, rotating repository-level secrets: not needed.
+- Re-planning production when a duplicate `deploy-staging` completion arrives for a tip whose auto-run **failed or was rejected**: it plans again (documented in DEPLOY.md), because blocking on failures would break the early-dispatch case of decision 4.
+- A `record` job failure is already documented (re-roll after a failed record); DEPLOY.md only moves the text.
+
+## Global Constraints
+
+- The repository is public. No hostname, address, account id, managed-node id, ARN, bucket or real region goes in any file, test, commit or PR text. Stand-ins: `mi-0123456789abcdef0`, `zz-test-1` (matches the region pattern and the no-real-region scan), `repo:example-owner@1001/CSAV2@2002`, an ARN with an invented twelve-digit account id (tests only, never in docs: the doc scan forbids twelve-digit ids), `example-owner/CSAV2` as the test repository, logins `reviewer-a` and `reviewer-b`. Docs and Part B name the real repository `amsyrzmi/CSAV2` literally, as PR 2 did, and the two existing reviewer logins appear only where the current `PRODUCTION.md` already names them. Never read secrets, `/srv/csa-staging/secrets` or anything under `/srv/csa-prod`.
+- No secret reaches a log, argv, the job summary or the repository. Values reach `gh` on stdin only; `set -x` and `eval` do not appear; the setup script prints no value (tests plant marker values and grep every output stream and the fake's call log).
+- Every `uses:` is pinned to a 40-hex commit with a `# vX.Y.Z` comment. The new workflow uses exactly the two pins `deploy-production.yml` uses (`actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`; it uses no other action).
+- Workflows run only from `main`: every job has `if: github.ref == 'refs/heads/main'`, scripts come from `actions/checkout` with `ref: main`, `persist-credentials: false`. Values reach scripts through `env:`, never through `${{ }}` in run text.
+- Shell strictness for every new script: `#!/bin/bash` first line, `set -euo pipefail`, then `export LC_ALL=C` **before** any `=~` (regex ranges follow the locale), a `valid <pattern> <value>` helper that also refuses a newline, `jq` for every JSON read and write, no `eval`, no `sh -c`, no `source`, no `set -x`, every `$` expansion inside double quotes. The repository's quote checker `_unquoted_expansions` (`tests/test_production_deploy_assets.py:1493`) is asserted over every new script: write the script so it passes line by line (a `$(...)` that spans a line is fine; an unquoted `$x` is not). Every input is validated before the first `gh` call.
+- `deploy-production.yml` and `deploy/production/{resolve_commit,ssm_run,parse_plan,deploy_entry,public_smoke}.sh` are **not modified**. Task 13 verifies the empty diff.
+- Test helper reuse across files, explicit: `tests/fake_gh.py` (new, Task 1) is imported by `tests/test_github_setup_environments.py` and `tests/test_production_auto_plan.py`; the workflow tests import `PIN`, `ROOT`, `_children`, `_jobs`, `_steps`, `_step`, `_run_blocks`, `_run_step`, `_unquoted_expansions`, `_workflow` from `tests.test_production_deploy_assets` (their `path` parameters already default to the production file, `tests/test_production_deploy_assets.py:1871-1905`, `:1931`). A pytest fixture is **not** imported from another file (ruff `F811` fails `make lint`): each file defines its own fixture. `_runbook_section`-style heading reads are written against the **new** locations.
+- Run only the changed files' tests: `.venv/bin/python -m pytest <files> -q` (`uv sync --frozen` first if `.venv` is missing). The session guard refuses `ENV=` prefixes and compound commands in a worktree session: run tests through the controller's `ci.sh` wrapper (it exports `NO_LOCAL_ENV=1 ENV=ci` and prepends the shared tool directory to `PATH`, then `exec "$@"`; the controller gives its path), one plain command per call: `bash <wrapper> .venv/bin/python -m pytest <files> -q`. Long suites in the background with `nohup`. Then `.venv/bin/ruff format`, `.venv/bin/ruff check`, `.venv/bin/pyright <touched python files>`, `bash -n` on every touched script, and `make lint` before the final review. `tests/test_production_deploy_assets.py` takes about three minutes. CI runs the full suite. A builder never touches another worktree.
+- A builder never approves, rejects or cancels a production run, never runs `gh` against the real repository except the read-only commands a task names, and never runs docker, aws or ssh. Commands the controller runs are marked "**controller**". Every owner step is in Part B.
+- Commit trailers: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` and the session line the controller gives.
+
+## Review Focus
+
+1. **The auto path cannot approve or skip an approval.** No `pending_deployments`, no `gh run approve`, no `id-token`, no secret, no `environment`, no `sha` input in the dispatch; `PROD_AUTO_PLAN` off skips every job. (Tasks 5 to 7)
+2. **`supersede` never cancels the wrong run.** Only a `waiting` run that is a bot dispatch, on `main`, for an older sha, whose apply is `waiting` and whose other jobs are done. A manual run, an in-progress apply, a same-sha run, a rollback run: all untouched, each proved by a named test. (Task 6)
+3. **No silent no-op.** A dispatch that creates no run is a red step with its own message. (Task 6)
+4. **No red noise.** Each green outcome of `deploy-staging` that staged nothing ends `deploy-production-auto` green with a notice. (Task 5)
+5. **`PUT` never drops protection.** The body always carries reviewers, wait timer, self-review and admin-bypass; production is never left without a reviewer; a second run writes nothing. (Task 3)
+6. **No value ever printed.** Secrets and variable values, in every outcome, including failures and the prompt. (Tasks 2 to 4)
+7. **Nothing deleted from the two old docs.** The frozen heading map, the re-pointed assertions (none weakened), the scans for ids, and the stale-wording test. (Tasks 9 to 12)
+8. **Manual production behaviour unchanged.** Empty diff of the production workflow and scripts. (Task 13)
+
+## File Structure
+
+- Create:
+  - `deploy/github/setup-environments.sh` (mode 755);
+  - `deploy/production/auto_plan.sh` (mode 755);
+  - `.github/workflows/deploy-production-auto.yml`;
+  - `deploy/DEPLOY.md`;
+  - `.claude/skills/deploy/SKILL.md`;
+  - `tests/fake_gh.py` (helper module, not a test), `tests/test_fake_gh.py`, `tests/test_github_setup_environments.py`, `tests/test_production_auto_plan.py`, `tests/test_deploy_production_auto_workflow.py`, `tests/test_deploy_docs.py` (the heading map, DEPLOY.md assertions, stale wording).
+- Modify:
+  - `.github/workflows/publish-staging-images.yml` (header comment, two pins);
+  - `deploy/PRODUCTION.md`, `deploy/STAGING_PIPELINE.md`, `deploy/RELEASE.md`, `docs/RUNBOOK.md` (lines 226 and 296 name the old skill), `docs/PROJECT_OVERVIEW.md` (one row), the design spec;
+  - tests: `tests/test_publish_staging_images.py`, `tests/test_staging_rollout.py`, `tests/test_production_deploy_assets.py`, `tests/test_rollout_production.py`, `tests/test_aws_setup_target.py` (only if Task 10 changes a heading it reads: it does not, see Task 10).
+- Delete: `.claude/skills/staging-rollout/`, `.claude/skills/production-deploy/`.
+
+---
+
+# Part A: built and tested against fakes
+
+### Task 1: The stateful fake `gh` (environments, branch policies, secrets, variables, users)
+
+**Files:**
+- Create: `tests/fake_gh.py`, `tests/test_fake_gh.py`
+
+**Interfaces:**
+- `tests/fake_gh.py` exports `FAKE_GH` (the source of a Python program written to `<tmp>/bin/gh`, shebang `sys.executable`, the same pattern as `FAKE_AWS` in `tests/test_aws_setup_target.py:39-262`) and `class Gh` with the same shape as `Aws` there (`tests/test_aws_setup_target.py:276-355`): `__init__(tmp_path)`, `state()`, `save(state)`, `calls()`, `commands()`, `reset_log()`, `writes()` (calls that are not reads: an `api` call with a method other than GET, `secret set`, `variable set`, `workflow run`, `run cancel`), and `run(script, *args, env=None, stdin=None) -> CompletedProcess[str]` (PATH puts `bin` first, `GH_TOKEN` and `GITHUB_TOKEN` removed from the inherited environment, `cwd` a scratch directory, `TMPDIR` the scratch directory).
+- Fake state (JSON file): `{"repo": {"id": 42, "full_name": "example-owner/CSAV2", "admin": true}, "users": {"reviewer-a": 1001, "reviewer-b": 1002}, "environments": {<name>: {"id", "can_admins_bypass": true, "wait_timer": 0, "prevent_self_review": false, "reviewers": [{"type": "User", "id": N}], "custom_branch_policies": bool, "protected_branches": bool, "policies": [{"id", "name", "type"}], "secrets": {NAME: value}}}, "variables": {NAME: value}, "runs": [], "next_id": 1}`.
+- Supported calls (anything else exits 252 with `fake gh: unsupported call: ...`, like the fake `aws`):
+  - `gh api [--method M] [--input -] [--jq F] <path>`: `repos/<repo>` (GET, with `.permissions.admin`, `.id`), `users/<login>` (GET; 404 for an unknown login), `repos/<repo>/environments/<env>` (GET, PUT), `.../deployment-branch-policies` (GET, POST), `.../deployment-branch-policies/<id>` (DELETE), `repositories/<repo id>/environments/<env>/secrets` (GET, names only), `repos/<repo>/actions/variables` (GET, `{variables: [{name, value}]}`). `--jq` is applied with the real `jq` binary, as `gh` does.
+  - `gh secret set <NAME> --env <E> --repo <R>`: reads the value from stdin; exits 1 with `gh: Not Found (HTTP 404)` when the environment does not exist; **any `--body` or `-b` argument is a test bug (exit 252)**.
+  - `gh variable set <NAME> --repo <R> --body <V>`.
+  - `gh auth status` exits 0 (or 1 when `FAKE_GH_LOGGED_OUT` is set).
+- Real shapes it models (from the read-only look at the real repository on 2026-11-18): `GET environments/<env>` returns `protection_rules` as a list of `{"type": "required_reviewers", "prevent_self_review": bool, "reviewers": [{"type": "User", "reviewer": {"id", "login"}}]}`, `{"type": "wait_timer", "wait_timer": N}` (only when N > 0), `{"type": "branch_policy"}` (when custom policies are on), plus top-level `can_admins_bypass` and `deployment_branch_policy` (`null`, or `{"custom_branch_policies": true, "protected_branches": false}`). A missing environment is `{"message": "Not Found", ...}` on stdout, `gh: Not Found (HTTP 404)` on stderr, exit 1.
+- **`PUT environments/<env>` replaces everything it is not given:** a missing `reviewers` key empties the reviewers, a missing `wait_timer` becomes 0, a missing `prevent_self_review` becomes false, a missing `can_admins_bypass` becomes true, a missing `deployment_branch_policy` becomes `null` (and clears the policies). `POST .../deployment-branch-policies` answers 422 for a duplicate name and 404 for an unknown environment.
+- The call log (`log.jsonl`) holds argv and the **byte length** of stdin, never stdin content; the secret values live only in the state file.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_fake_gh.py`:
+  - `test_put_environment_replaces_everything_it_is_not_given` (the finding: create with two reviewers, wait 5, self-review on, admin bypass off, then PUT only a `deployment_branch_policy`: reviewers empty, wait 0, self-review off, admin bypass on);
+  - `test_put_with_a_full_body_keeps_reviewers_and_flags`;
+  - `test_get_environment_has_the_real_shape_and_a_missing_one_is_a_404`;
+  - `test_branch_policies_are_a_separate_post_and_a_duplicate_is_422`;
+  - `test_secret_set_reads_stdin_needs_the_environment_and_refuses_body`;
+  - `test_secret_names_are_listed_without_values`;
+  - `test_variables_list_and_set`;
+  - `test_users_lookup_and_unknown_user_404`;
+  - `test_the_log_holds_argv_and_stdin_length_but_never_stdin_content`;
+  - `test_an_unsupported_call_is_a_bug_not_a_silent_success`.
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_fake_gh.py -q`; expect failures (no module).
+- [ ] **Step 3: Implement** `tests/fake_gh.py`. The module must not define a pytest fixture (importers define their own) and must not collide with `tests/conftest.py`.
+- [ ] **Step 4: Run** the file; pass. Format, lint, pyright.
+- **Mutation check:** change the fake's PUT to merge instead of replace: `test_put_environment_replaces_everything_it_is_not_given` must fail. Make the log write stdin content: the log test must fail.
+- [ ] **Step 5: Commit** `test(deploy): a stateful fake gh that models GitHub's replace-on-PUT environments`.
+
+### Task 2: `setup-environments.sh`: arguments, validation, the target table and `--check`
+
+**Files:**
+- Create: `deploy/github/setup-environments.sh` (mode 755), `tests/test_github_setup_environments.py` (its own `gh` fixture built on `tests.fake_gh.Gh`)
+
+**Interfaces:**
+- Usage: `setup-environments.sh <staging|production> [--check] --repo <owner/name> [--region <region>] [--image-namespace <ghcr.io/owner>] [--reviewer <login>]... [--auto-plan true|false] [--paused true|false]`. Without `--check` it applies (Tasks 3 and 4). Run on a machine where `gh` is logged in as a repository admin.
+- Validation, all before the first `gh` call, exit 2 with a usage or reason line that never contains a rejected value that could be a secret (none of these are secrets, but the habit stays): target; `--repo` `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`; `--region` `^[a-z]{2}(-[a-z]+)+-[0-9]$`; `--image-namespace` `^ghcr\.io/[a-z0-9][a-z0-9-]*$` (the same pattern as `deploy/production/resolve_commit.sh:66`); `--reviewer` `^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`, at most 6, no repeat, **production only** (refused for staging); `--auto-plan` production only; `--paused` staging only; each flag at most once (reviewer excepted); an unknown flag or a flag without a value is usage.
+- The target table at the top of the script (as `configure_target` in `deploy/aws/setup-target.sh:42-71`): per target the environments with their kind (`staging`: `staging` and `staging-images`; `production`: `production-plan` and `production`), the secret names per environment (decision 9) and the repository variables with their patterns and whether they are required.
+- After validation: `command -v gh` and `command -v jq`; `gh auth status`; `gh api repos/<repo> --jq '{id, admin: .permissions.admin}'`: refuse (exit 1, before any write) unless `admin` is `true` (the secrets and environments endpoints need it).
+- `--check` (read-only: only `gh api` GETs and `gh auth status`; asserted by the test). It prints one line per item in the grammar `[n/total] <what>: <result>` (the `STEP_LINE` grammar of `tests/test_aws_setup_target.py:380`), results `ok`, `missing` or `differs`, and ends `check: everything is ok` (exit 0) or `check: <n> item(s) not ok` (exit 1). Items, in order, for each environment: `environment <name>` (exists); `environment <name> branch policy` (custom policies on, protected-branches off, and the policy list is exactly `main` of type `branch`: `missing` when none, `differs` when extra or other); `environment <name> reviewers` (production: at least one, and equal to the given set when `--reviewer` was given; the other environments: always `ok`, with a note line `note: <name> has <n> required reviewer(s): every job that uses it waits on that click` when there are any); a note line `note: <name> can_admins_bypass=<bool> prevent_self_review=<bool> wait_timer=<n>` for the environments that exist; then for each secret `secret <NAME> on <env>` (`ok` when listed, else `missing`); then for each variable `variable <NAME>` (`ok`, `missing`, or `differs` when the matching flag was given and the value is different). The two switches print their value: `variable PROD_AUTO_PLAN: ok (true)` or `ok (unset: off)` and likewise `STAGING_AUTO_PAUSED`; they are never `missing` (unset is a valid state) and are `differs` only when the flag was given and does not match. **No other value is ever printed.**
+
+- [ ] **Step 1: Write the failing tests:**
+  - `test_inputs_are_validated_before_any_gh_call` (parametrised: unknown and missing target; missing, malformed and newline `--repo`; bad region, namespace, reviewer login, more than six reviewers, a repeated reviewer; `--reviewer` and `--auto-plan` on staging; `--paused` on production; `--auto-plan maybe`; a repeated or unknown flag; a flag without a value; each exits 2 and `gh.calls() == []`);
+  - `test_a_logged_out_gh_and_a_non_admin_login_stop_before_any_write` (exit 1, no write);
+  - `test_check_makes_only_read_calls` (`gh.writes() == []` on every state);
+  - `test_check_on_an_empty_repository_reports_every_item_missing_and_exits_1` (both targets: each environment, policy, secret and required variable listed);
+  - `test_check_passes_on_a_complete_target` (both targets, exit 0, last line `check: everything is ok`);
+  - `test_check_reports_a_missing_main_policy_and_extra_policies_as_not_ok` (`staging-images` with `deployment_branch_policy` null is `missing`; an extra `release/*` policy is `differs`);
+  - `test_check_production_without_a_reviewer_is_not_ok_and_given_reviewers_are_compared`;
+  - `test_check_notes_reviewers_on_other_environments_without_failing` (including `staging-images`: the note says every job that uses it waits on that click);
+  - `test_check_prints_the_two_switches_and_no_other_value` (plant marker values in `IMAGE_NAMESPACE`, the regions, secrets: none appears in stdout, stderr or the log; `PROD_AUTO_PLAN` and `STAGING_AUTO_PAUSED` print `true`/`false`/`unset: off`);
+  - `test_check_compares_a_given_region_and_namespace_without_printing_them`;
+  - `test_check_output_keeps_to_the_step_grammar` (every non-note line matches `STEP_LINE` or is a note or the final line);
+  - `test_script_is_bash_strict_quoted_and_executable` (copy the assertions of `tests/test_aws_setup_target.py:1180-1198`: `#!/bin/bash`, `set -euo pipefail` before `export LC_ALL=C` before the first `=~`, no `eval`, `sh -c`, `set -x`, `source`; `_unquoted_expansions(text) == []`; executable bit; `bash -n`; git mode 100755).
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_github_setup_environments.py -q`; expect failures.
+- [ ] **Step 3: Implement** validation, the table, the step printer and `--check`. Until Task 3 lands, a run without `--check` exits 2 with `apply is added by the next change` and makes no call; `test_apply_is_not_available_yet` asserts that and is deleted by Task 3.
+- [ ] **Step 4: Run** the file; pass. `bash -n deploy/github/setup-environments.sh`.
+- **Mutation check:** let `--check` call `gh api --method PUT` once: `test_check_makes_only_read_calls` fails. Print a variable value: the marker test fails. Drop the `admin` refusal: the non-admin test fails. Skip the `main`-only comparison: `test_check_reports_a_missing_main_policy...` fails.
+- [ ] **Step 5: Commit** `feat(deploy): setup-environments.sh validates its inputs and checks the GitHub side of a target`.
+
+### Task 3: `setup-environments.sh apply`: environments, reviewers, branch policies
+
+**Files:**
+- Modify: `deploy/github/setup-environments.sh`, `tests/test_github_setup_environments.py`
+
+**Interfaces:**
+- `apply` for each environment of the target, in order (`staging`, `staging-images`, or `production-plan`, `production`), one step line each (`[n/total] environment <name>: created|updated|unchanged`):
+  1. `GET` the environment (404 means it does not exist).
+  2. Reviewers: production resolves each `--reviewer` through `gh api users/<login> --jq '{id, type}'` (an unknown login stops the run **before any write**, exit 1; only `User` accounts are accepted). The desired reviewer set is the given set, else the current set; a production environment whose desired set is empty is refused (`production needs at least one reviewer: pass --reviewer <login>`, exit 1, before any write). The other environments' desired set is their current set (empty when new).
+  3. Build the full body with `jq -n` (decision 7): `reviewers`, `wait_timer`, `prevent_self_review`, `can_admins_bypass` carried over (defaults for a new environment: `0`, `false`, `true`), `deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}`. Compare with the current state; send `gh api --method PUT repos/<repo>/environments/<name> --input -` (body on stdin, stdout discarded) **only if** the environment is missing, the reviewer set differs, or the custom-policy flags differ.
+  4. Branch policies: `GET .../deployment-branch-policies`; `POST` `{"name":"main","type":"branch"}` only when `main` of type `branch` is missing; then `DELETE` each other policy by id. The step line says what happened (`policy main: created`, `policy release/*: removed`).
+  5. A failed write exits 1 with `[n/total] <what>: failed: <first line of gh's error>` (the first non-blank stderr line, as `first_error_line` in `deploy/aws/setup-target.sh:175-179`); gh's text never contains a secret here.
+- The reviewer change is printed: `reviewers: 2 -> 1 (changed)` with counts only.
+- After the last environment of this task's scope the script does not yet touch secrets or variables (Task 4).
+
+- [ ] **Step 1: Write the failing tests:**
+  - `test_apply_on_an_empty_repository_creates_each_environment_then_its_main_policy_in_order` (call order: `GET`, `PUT`, `GET policies`, `POST`, for each environment; production resolves both reviewers first);
+  - `test_apply_twice_makes_no_write_call_the_second_time` (both targets);
+  - `test_the_put_body_is_the_full_desired_state_and_keeps_what_exists` (**the finding**: a pre-existing `production` with reviewers `reviewer-a` and `reviewer-b`, `wait_timer` 5, `prevent_self_review` true, `can_admins_bypass` false and no custom policy; `apply production` with **no** `--reviewer` sends a PUT whose body holds both reviewers, 5, true, false; the fake state afterwards still has them);
+  - `test_given_reviewers_replace_the_set_and_the_change_is_printed` (counts only);
+  - `test_production_is_refused_without_a_reviewer_when_it_has_none_and_nothing_is_written`;
+  - `test_an_unknown_or_non_user_reviewer_stops_before_any_write`;
+  - `test_extra_branch_policies_are_deleted_only_after_main_exists`;
+  - `test_staging_apply_adds_the_policy_to_staging_images_and_never_adds_a_reviewer_and_keeps_an_existing_one` (the real repository's state today: `staging-images` with null policy);
+  - `test_a_failed_write_names_the_step_and_exits_1_without_continuing`;
+  - `test_apply_makes_no_secret_or_variable_call_yet` (removed by Task 4); `test_apply_is_not_available_yet` of Task 2 is deleted;
+  - the check-mode tests of Task 2 still pass, and one new test `test_check_after_apply_is_ok_for_the_environment_items`.
+- [ ] **Step 2: Run** the file; expect failures.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** the file; pass. `bash -n`.
+- **Mutation check:** drop `reviewers` from the PUT body: `test_the_put_body_is_the_full_desired_state_and_keeps_what_exists` fails (this is the regression the real run showed). Make the PUT unconditional: the second-run test fails. Delete extras before creating `main`: the ordering test fails. Remove the empty-reviewer refusal: the production refusal test fails.
+- [ ] **Step 5: Commit** `feat(deploy): setup-environments.sh creates environments and main-only policies without dropping protection`.
+
+### Task 4: `setup-environments.sh apply`: secrets and variables, the workflow guard
+
+**Files:**
+- Modify: `deploy/github/setup-environments.sh`, `tests/test_github_setup_environments.py`
+
+**Interfaces:**
+- Secrets, after the environments exist (a secret set on a missing environment is a 404, which the old runbook text calls out, `deploy/PRODUCTION.md:615-617`). For each secret of the target, one step line `secret <NAME> on <env>: set|unchanged|missing`:
+  - value source: `SETUP_<NAME>` in the environment; else, when stdin and stderr are a terminal, a hidden `read -rs -p` prompt (once per name per run, reused for `PROD_INSTANCE_ID`'s two environments); else none;
+  - a secret already present on the environment and with no `SETUP_<NAME>` is `unchanged` and is never prompted for;
+  - a missing secret with no value is `missing` (`give SETUP_<NAME> or run on a terminal`); the run continues with the other items and ends non-zero (`apply: <n> item(s) still missing`);
+  - validation before any write, per name: `*_ROLE_ARN` `^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,._@-]+$`; `*_INSTANCE_ID` `^mi-[0-9a-f]{17}$`; `PROD_CONSOLE_ORIGIN` `^https://[A-Za-z0-9.-]+$` (no path, port or trailing slash, as `deploy/PRODUCTION.md:604-605` says); a failure prints `SETUP_<NAME> is not a valid <kind>` and **never the value**, exit 2, before any write;
+  - the write is `printf '%s' "$value" | gh secret set <NAME> --env <env> --repo <repo>`: the value is on stdin only, `--body` is never used, stdout and stderr of `gh` are discarded except the first error line (which cannot contain the value).
+- Variables, one step line each: `variable <NAME>: set|unchanged`. `IMAGE_NAMESPACE` and the region variable are required for the target: set from `--image-namespace` and `--region` when given and different from the current value (`gh variable set <NAME> --repo <repo> --body <value>`); when absent and not given the step is `missing` (value-less message). `PROD_AUTO_PLAN` (production) and `STAGING_AUTO_PAUSED` (staging) are set only when their flag is given. Values are read from `gh api repos/<repo>/actions/variables --jq`, never printed.
+- The workflow guard: the table in the script equals what the workflows read.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `test_each_environment_gets_exactly_its_secrets_and_the_repository_gets_exactly_its_variables` (the tables of decision 9, both targets, from the fake's final state);
+  - `test_secrets_come_from_setup_variables_and_reach_gh_on_stdin_only` (the log has no value and no `--body`; the state has the value);
+  - `test_a_hidden_prompt_supplies_a_missing_secret_and_does_not_echo` (run under a pseudo-terminal with `pty.openpty()`; type a marker value; assert it is stored, absent from the terminal output and from the log; the prompt is asked once for `PROD_INSTANCE_ID`);
+  - `test_without_a_terminal_a_missing_secret_is_reported_not_prompted_and_the_rest_is_applied` (exit 1, other items done);
+  - `test_an_existing_secret_is_not_prompted_for_and_not_overwritten_unless_its_setup_variable_is_set`;
+  - `test_secret_values_are_validated_before_any_write_and_never_echoed` (bad ARN, bad node id, an origin with a path, a port, a trailing slash, an uppercase scheme; exit 2; no write; the value absent from stdout and stderr);
+  - `test_no_value_reaches_stdout_stderr_or_the_log` (markers in every secret and variable, on success and on a failing write);
+  - `test_variables_are_set_when_given_and_left_alone_when_equal`;
+  - `test_the_switches_are_set_only_when_their_flag_is_given` (production `--auto-plan true`; staging `--paused true`; neither flag: no write; `check` afterwards prints the value);
+  - `test_apply_twice_makes_no_write_call_the_second_time_even_with_secret_inputs_absent`;
+  - `test_the_names_in_the_script_match_what_the_workflows_read` (**the guard**, in the style of `test_setup_section_names_every_secret_variable_and_environment_the_workflow_reads`, `tests/test_production_deploy_assets.py:2836`): parse every `${{ secrets.X }}`, `${{ vars.X }}` and `environment:` name (plain and `name:` forms) from `deploy-production.yml`, `deploy-staging.yml` and `publish-staging-images.yml`, drop `GITHUB_TOKEN`, and assert the set of secret names equals the union of the script's secret table, the set of variable names equals the script's variable table, and the environments equal the script's environment set; `GITLEAKS_LICENSE` is in `ci.yml` only and is not read. Task 7 adds the new workflow to the parsed list.
+- [ ] **Step 2: Run** the file; expect failures.
+- [ ] **Step 3: Implement.** Remove the test `test_apply_makes_no_secret_or_variable_call_yet`.
+- [ ] **Step 4: Run** the file; pass. `bash -n`.
+- **Mutation check:** pass the value with `--body`: the stdin-only test fails. Echo the prompt (drop `-s`): the pty test fails. Print the invalid value in the error: the validation test fails. Overwrite an existing secret without `SETUP_`: the no-overwrite test fails. Remove a name from the table: the workflow guard fails.
+- [ ] **Step 5: Commit** `feat(deploy): setup-environments.sh sets the secrets and variables the workflows need, never printing a value`.
+
+### Task 5: `auto_plan.sh check`, and the runs endpoints in the fake `gh`
+
+**Files:**
+- Modify: `tests/fake_gh.py`, `tests/test_fake_gh.py` (runs, jobs, cancel, workflow run)
+- Create: `deploy/production/auto_plan.sh` (mode 755; this task builds `check`; Task 6 adds `supersede` and `start`), `tests/test_production_auto_plan.py`
+
+**Interfaces:**
+- Fake `gh` additions: `gh api repos/<repo>/actions/workflows/deploy-production.yml/runs?...` (GET; supports the `status`, `event`, `branch` and `head_sha` query filters and `per_page`; `{workflow_runs: [{id, head_sha, head_branch, event, status, conclusion, triggering_actor: {login}, created_at, html_url}]}`), `repos/<repo>/actions/runs/<id>` (GET), `repos/<repo>/actions/runs/<id>/jobs` (GET, `{jobs: [{name, status, conclusion}]}`), `repos/<repo>/actions/runs/<id>/cancel` (POST: 202 for a waiting or queued run, 409 `Cannot cancel a workflow run that is completed` otherwise; sets `completed`/`cancelled`), `gh workflow run deploy-production.yml --ref main` (creates a run `queued` with actor `github-actions[bot]` unless `FAKE_GH_DISPATCH_NO_RUN` is set in the fake's state; exits 1 with an error when the token lacks the `actions_write` flag in state). The tip: `repos/<repo>/commits/main` GET is **not** needed by the script (the stub resolver prints the sha).
+- `auto_plan.sh check`: environment `GH_TOKEN`, `REPOSITORY` (`owner/name`), `IMAGE_NAMESPACE`, optional `REGISTRY_USER`, `REGISTRY_TOKEN` (passed through to the resolver). It runs `DEPLOY_TARGET=staging "$here/resolve_commit.sh"` (its own directory, as `deploy/staging/rollout_gate.sh:44` does) with an empty sha, and prints for `$GITHUB_OUTPUT`: `sha=<40 hex>` (when known), `proceed=true|false`, `reason=<one line>` (built from fixed text, sha7 and the resolver's own fixed message only). Cases, in order, exactly decision 4: resolver exit 3 → `proceed=false` (green); other non-zero → the resolver's one-line message on stderr, nothing on stdout, exit 1; the five keys are parsed strictly as `rollout_gate.sh:70-96` does (same pattern checks); `staged_on` empty → `proceed=false`; existing run for the tip → `proceed=false`; else `proceed=true`.
+- The existing-run lookup: `gh api "repos/$REPOSITORY/actions/workflows/deploy-production.yml/runs?head_sha=<sha>&per_page=100"`, a run blocks when its status is `queued`, `in_progress`, `waiting` or `pending`, or its conclusion is `success`; a failed read exits 1.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_production_auto_plan.py` (the script is copied into a temporary directory next to a **stub** `resolve_commit.sh` whose exit code, stdout and stderr each test sets, so the resolver itself is not re-tested; one test asserts the real resolver path is `$here/resolve_commit.sh` and that the script exports `DEPLOY_TARGET=staging` for it):
+  - `test_check_proceeds_for_a_ready_staged_tip_with_no_run` (prints `sha=`, `proceed=true`, `reason=planning <sha7>`);
+  - `test_check_ends_green_when_the_tip_is_not_ready` (resolver exit 3 with each of the two fixed messages: `proceed=false`, exit 0, `nothing to plan: ...`);
+  - `test_check_ends_green_when_the_tip_is_not_staged` (empty `staged_on`: the paused, superseded and failed-record cases);
+  - `test_check_skips_when_a_run_for_the_tip_is_waiting_queued_in_progress_or_succeeded` (parametrised);
+  - `test_check_does_not_skip_for_a_failed_or_cancelled_run_of_the_tip` (the early manual dispatch);
+  - `test_check_does_not_skip_for_a_run_of_another_sha`;
+  - `test_check_fails_closed_on_any_other_resolver_failure_with_nothing_on_stdout` (exit 1, message on stderr);
+  - `test_check_refuses_a_malformed_resolver_answer` (an extra key, a repeated key, a bad digest, a newline);
+  - `test_check_fails_on_an_unreadable_run_list`;
+  - `test_the_reason_holds_only_fixed_text_and_sha7` (the reason may carry the resolver's message only when it is one of its two known not-ready lines, `the ci run for <sha7> has not succeeded on main` or `images for <sha7> are not published (csa-<app>)`; for exit 3 with any other stderr text the reason is `nothing to plan: the commit is not ready yet` and the hostile text appears nowhere in stdout);
+  - `test_the_environment_inputs_are_validated` (bad `REPOSITORY`; unset `GH_TOKEN`);
+  - `test_script_is_bash_strict_quoted_executable_and_never_approves` (the strictness assertions of Task 2, plus: the code contains neither `pending_deployments` nor `run approve` nor `review`).
+  - In `tests/test_fake_gh.py`: `test_runs_filters_jobs_cancel_and_dispatch`, `test_cancel_of_a_completed_run_is_409`, `test_dispatch_without_actions_write_fails_and_the_no_run_flag_creates_nothing`.
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_production_auto_plan.py tests/test_fake_gh.py -q`; expect failures.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** both files; pass. `bash -n deploy/production/auto_plan.sh`.
+- **Mutation check:** treat exit 3 as a failure: the not-ready test fails (red noise). Let a failed run block: the early-dispatch test fails. Print the resolver's raw stderr in `reason`: the hostile-line test fails. Call the resolver with `DEPLOY_TARGET=production`: the structural test fails.
+- [ ] **Step 5: Commit** `feat(deploy): auto_plan.sh check ends green when there is nothing to plan`.
+
+### Task 6: `auto_plan.sh supersede` and `start`
+
+**Files:**
+- Modify: `deploy/production/auto_plan.sh`, `tests/test_production_auto_plan.py`
+
+**Interfaces:**
+- `auto_plan.sh supersede <sha>`: environment `GH_TOKEN`, `REPOSITORY`; `<sha>` is the tip being planned (40 hex). A constant `AUTO_ACTOR="github-actions[bot]"` at the top of the script. It lists `gh api "repos/$REPOSITORY/actions/workflows/deploy-production.yml/runs?status=waiting&per_page=100"` (a failure exits 1), and for each run applies the rule of decision 5 by reading `.event`, `.triggering_actor.login`, `.head_branch`, `.head_sha`, `.status` and then `actions/runs/<id>/jobs` (a job list that is not exactly the job names `plan` and `apply`, with `plan` completed/success and `apply` `waiting`, leaves the run alone). One line per run: `cancelled run <id> (planned <sha7>)`, or `left alone: run <id> (<reason>)` with a fixed reason (`started by <login>`, `same commit`, `apply is not waiting`, `not a dispatch`, `not on main`). The cancel is `gh api --method POST repos/$REPOSITORY/actions/runs/<id>/cancel`; on failure it re-reads the run: not `waiting` any more prints `run <id> moved on; left alone`; still `waiting` prints `warning: could not cancel run <id>; it stays waiting` and the exit status stays 0. Run ids are validated `^[0-9]+$`. Exit 0 unless the list or a read fails.
+- `auto_plan.sh start`: environment `GH_TOKEN`, `REPOSITORY`, optional `START_WAIT_SECONDS` (default 90) and `START_POLL_SECONDS` (default 5), both `^[0-9]{1,3}$`. It records the ids of the current `deploy-production` dispatch runs (`event=workflow_dispatch&branch=main&per_page=30`), runs `gh workflow run deploy-production.yml --repo "$REPOSITORY" --ref main` (no `-f`; a test asserts the argv has no `-f`/`--field`/`sha`), then polls the same list until a run whose id was not in the first list appears, and prints `started deploy-production run <id>: <html_url>`. When none appears within the wait: `the dispatch was accepted but no deploy-production run started (check that workflow_run chaining is not limited)` on stderr, exit 1. A refused dispatch exits 1 with the first error line. The URL is the run's `html_url`, validated `^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `test_supersede_cancels_a_stale_waiting_auto_run` (waiting, bot dispatch, `main`, older sha, jobs `plan` success and `apply` waiting: one cancel POST; message exact);
+  - `test_supersede_leaves_a_manual_run_alone_even_when_stale_and_waiting`;
+  - `test_supersede_leaves_a_rollback_run_alone` (a person's dispatch with an explicit sha is a person's run: same rule);
+  - `test_supersede_never_cancels_a_run_whose_apply_is_in_progress` (run status `in_progress` is not in the `waiting` list; and a `waiting` run with an `in_progress` job is left alone);
+  - `test_supersede_leaves_a_run_for_the_same_commit_alone`;
+  - `test_supersede_leaves_alone_a_run_not_on_main_or_not_a_dispatch`;
+  - `test_supersede_rereads_after_a_failed_cancel` (409: the run moved on, exit 0; still waiting: warning, exit 0);
+  - `test_supersede_fails_on_an_unreadable_listing_and_validates_its_arguments`;
+  - `test_supersede_makes_only_the_listing_job_and_cancel_calls` (no other write; no `pending_deployments`);
+  - `test_start_dispatches_without_inputs_and_prints_the_new_run` (argv exactly `workflow run deploy-production.yml --repo example-owner/CSAV2 --ref main`);
+  - `test_start_fails_red_when_the_dispatch_creates_no_run` (state flag; `START_WAIT_SECONDS=2`, `START_POLL_SECONDS=1`);
+  - `test_start_fails_when_the_token_may_not_dispatch`;
+  - `test_start_ignores_runs_that_existed_before_the_dispatch`;
+  - `test_start_validates_its_numeric_settings_and_the_url`.
+- [ ] **Step 2: Run** the file; expect failures.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** the file; pass. `bash -n`.
+- **Mutation check:** drop the `head_sha` rule: the same-commit test fails. Drop the actor rule: the manual-run test fails. Drop the apply-status rule: the in-progress test fails. Add `-f sha=...` to the dispatch: the no-input test fails. Make `start` print success without polling: the no-run test fails.
+- [ ] **Step 5: Commit** `feat(deploy): auto_plan.sh cancels stale waiting auto runs and starts the production plan`.
+
+### Task 7: The `deploy-production-auto` workflow
+
+**Files:**
+- Create: `.github/workflows/deploy-production-auto.yml`, `tests/test_deploy_production_auto_workflow.py`
+- Modify: `tests/test_github_setup_environments.py` (the guard of Task 4 also parses the new file: it adds the variable `PROD_AUTO_PLAN`, which the script's table already holds)
+
+**Interfaces:**
+- `deploy-production-auto.yml`, with a header comment that says: what it does; that it starts a `deploy-production` **plan** only and the apply always waits for the `production` environment approval, which nothing here can give; that `PROD_AUTO_PLAN` must be `true` (default off, because both reviewers get a review request for every waiting apply); the chain count (ci, publish, deploy-staging, this: three links); that it plans the tip of `main` and never reads the event's sha.
+  - `on: workflow_run: {workflows: [deploy-staging], types: [completed], branches: [main]}` and nothing else (no `workflow_dispatch`).
+  - Top-level `permissions: contents: read`.
+  - Workflow-level `concurrency: {group: deploy-production-auto, cancel-in-progress: false}`.
+  - One job `plan`: `if: github.ref == 'refs/heads/main' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && vars.PROD_AUTO_PLAN == 'true'`; `runs-on: ubuntu-24.04`; `timeout-minutes: 10`; permissions `actions: write`, `contents: read`, `deployments: read`, `packages: read`; **no** `environment`, `id-token` or `secrets.` reference; env `GH_TOKEN: ${{ github.token }}`, `REPOSITORY: ${{ github.repository }}`, `IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}`, `REGISTRY_USER: ${{ github.actor }}`, `REGISTRY_TOKEN: ${{ github.token }}` (as `deploy-staging.yml:103-110`).
+  - Steps: (1) checkout `main` (`persist-credentials: false`); (2) `Decide whether there is anything to plan` (`id: gate`; `deploy/production/auto_plan.sh check > "$RUNNER_TEMP/gate.txt"`, the file appended to `$GITHUB_OUTPUT`, the `reason=` line printed and written to `$GITHUB_STEP_SUMMARY`); (3) `Cancel earlier auto-started runs that are still waiting` (`if: steps.gate.outputs.proceed == 'true'`, env `SHA: ${{ steps.gate.outputs.sha }}`, `deploy/production/auto_plan.sh supersede "$SHA"`); (4) `Start the production plan` (same `if`, `deploy/production/auto_plan.sh start`, the run URL written to the summary with the sentence `The plan starts now; the apply waits for approval on the production environment.`).
+  - No run text contains `${{ inputs.`, `${{ github.event.` or `head_sha`.
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_deploy_production_auto_workflow.py`, helpers imported from `tests.test_production_deploy_assets` with `path=` set to the new file):
+  - `test_triggers_permissions_concurrency_and_pins` (exact `on:` keys: only `workflow_run` of `deploy-staging`, `completed`, `main`; top-level permissions; the concurrency block; every `uses:` matches `PIN` and equals `deploy-production.yml`'s pins);
+  - `test_the_job_runs_only_for_main_and_only_when_the_switch_is_true` (the exact `if` string; the evaluation as text: `vars.PROD_AUTO_PLAN == 'true'` present, `!=` absent);
+  - `test_the_auto_path_has_no_way_to_approve` (no `environment:`, no `id-token`, no `secrets.` other than none, no `configure-aws-credentials`, no `pending_deployments`, no `approve`, no `sha` input or `-f` in any run text or in `auto_plan.sh`);
+  - `test_no_run_text_interpolates_inputs_or_event_fields_and_head_sha_appears_nowhere`;
+  - `test_every_step_after_the_gate_waits_for_proceed_true`;
+  - `test_the_gate_step_writes_the_outputs_and_the_reason_and_fails_closed` (extract and run the step with a stub `auto_plan.sh` on a temporary copy of the checkout: proceed false writes the reason and the later steps' condition is false; a failing `check` fails the step);
+  - `test_scripts_come_from_a_main_checkout`;
+  - `test_the_header_names_the_switch_the_approval_and_the_chain`;
+  - `test_the_workflow_holds_no_account_instance_region_or_address` (add the file to `NEW_FILES`, `tests/test_production_deploy_assets.py:1826`);
+  - `test_deploy_production_is_untouched_by_this_pr` (reads `deploy-production.yml` and asserts the facts the auto path depends on: group `deploy-production`, input `sha` with default `""`, jobs `plan` (`production-plan`) and `apply` (`production`); a guard against editing the file without noticing, not a hash).
+- [ ] **Step 2: Run** the new file and the guard test in `tests/test_github_setup_environments.py`; expect failures.
+- [ ] **Step 3: Implement** the workflow. Validate with `.venv/bin/python -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" .github/workflows/deploy-production-auto.yml`; `actionlint` if already installed (do not install it).
+- [ ] **Step 4: Run** the two files and `tests/test_production_deploy_assets.py -k no_account` (background); pass.
+- **Mutation check:** add `id-token: write`: the no-approve test fails. Change `== 'true'` to `!= 'false'` (on by default): the switch test fails. Add `github.event.workflow_run.head_sha` to a run: the interpolation test fails.
+- [ ] **Step 5: Commit** `feat(deploy): deploy-production-auto starts the production plan after staging when PROD_AUTO_PLAN is true`.
+
+### Task 8: Pin `publish-staging-images.yml` and correct its header
+
+**Files:**
+- Modify: `.github/workflows/publish-staging-images.yml` (header comment lines 1-7; `actions/checkout@v4` at line 74; `actions/download-artifact@v4` at line 85), `tests/test_publish_staging_images.py`
+- The controller resolves the pins first, read-only: `gh api repos/actions/checkout/git/matching-refs/tags/v4` and the same for `actions/download-artifact`; for each, pick the highest `v4.x.y` tag whose commit equals the commit the `v4` tag points at (as of 2026-11-18, `v4` for `actions/checkout` is the commit starting `11d5960a`); when an object is an annotated tag, follow it with `git/tags/<sha>`, as `deploy/PRODUCTION.md:658-661` says. The controller gives the builder the two 40-hex commits and their `vX.Y.Z`.
+
+**Interfaces:**
+- Both `uses:` lines become `actions/<name>@<40 hex> # v4.x.y`.
+- The header says: starts on manual dispatch or when a green push-to-main `ci` run completes; **no approval today** (the `staging-images` environment has no reviewer); if a reviewer is added to `staging-images`, every merge waits on that click; nothing is rebuilt (the rest of the existing header stays).
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_publish_staging_images.py` (import `PIN` from `tests.test_production_deploy_assets`):
+  - `test_every_action_is_pinned_to_a_commit_with_a_version_comment` (every `uses:` line of the file matches `PIN`);
+  - `test_the_header_says_there_is_no_approval_today_and_what_a_reviewer_would_do` (needles `no approval today`, `if a reviewer is added to `staging-images``, `every merge waits on that click`; and the old `environment approval is still required` is absent).
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_publish_staging_images.py tests/test_ci_artifacts.py tests/test_image_namespace.py -q`; expect the two new tests to fail (`tests/test_ci_artifacts.py:40` matches `startswith("actions/download-artifact@")`, which a pinned line still satisfies).
+- [ ] **Step 3: Edit.**
+- [ ] **Step 4: Run** the three files; pass.
+- **Mutation check:** revert one pin to `@v4`: the pin test fails.
+- [ ] **Step 5: Commit** `ci(publish): pin the publish actions to commits and say there is no approval today`.
+
+### Task 9: `deploy/DEPLOY.md` (new content) and the heading map
+
+**Files:**
+- Create: `deploy/DEPLOY.md`, `tests/test_deploy_docs.py`
+
+**Interfaces:**
+- `deploy/DEPLOY.md` headings (exact; later tasks add the moved sections at the marked places):
+  - `# Deploying CSA: staging and production` (what is here, what is in the two target documents, that the repository is public and every identifying value is a placeholder);
+  - `## The pipeline` (the diagram of the spec's "The pipeline" updated with `deploy-production-auto`; a table of workflows, environments and who clicks; the staged rule; the sentence of decision 12);
+  - `## The routine for one release` (numbered: open and merge a PR; ci; publish (no approval today); deploy-staging runs by itself and how to read it; production by "Run workflow" with an empty `sha`, or auto-planned; read the plan; approve or reject; read the result);
+  - `## Staging: automatic rollouts (deploy-staging)` (**placeholder until Task 11**);
+  - `## Production: deploying from GitHub` (**placeholder until Task 10**), with its `###` subsections (`What a smoke stop or a rollback means`, `What a failure means`, `What each refusal means`);
+  - `## Auto-planned production runs (PROD_AUTO_PLAN)` (new: the variable and its default; what the workflow does in its three steps; the outcomes and what each message means: `nothing to plan: ...`, `a deploy-production run for <sha7> already exists`, `cancelled run <id> (planned <sha7>)`, `left alone: ...`, `warning: could not cancel`, `started deploy-production run`, `the dispatch was accepted but no deploy-production run started`; that both reviewers get a review request for every waiting apply; that a stale waiting auto run is cancelled and a manual run never; the security statement of decision 6; how to turn it on and off, `gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true|false`);
+  - `## Rollback` (staging never goes back through the workflow; production: automatic image-only rollback and what it prints, fix forward when migrations ran, an explicit `sha` for a deliberate rollback, restore and break-glass pointers; the verbatim lines are in the sections they moved with);
+  - `## One-time setup` with `### The AWS side: deploy/aws/setup-target.sh`, `### The GitHub side: deploy/github/setup-environments.sh` (usage, every flag, `SETUP_<NAME>` variables and the hidden prompt, the read-modify-write rule and how production's reviewers are preserved, `--check`, the table of environments, secrets and variables, the finding that `PUT` replaces what it is not given, that the policy is a separate request), `### The host side (per target)` (pointers: `deploy/PRODUCTION.md` "One-time setup" and `deploy/STAGING_PIPELINE.md` "Host setup for automatic rollouts") and `### Order and checks` (the order: GitHub environments, AWS activate, host, AWS apply, secrets, check both scripts, first run watched live);
+  - `## Break-glass` (when; pause first; the staged gate and what bypasses it; where each target's procedure lives: `deploy/PRODUCTION.md` "Break-glass: manual deploy (owner only)" and `deploy/STAGING_PIPELINE.md` "Manual rollout (break-glass)");
+  - `## Where each fact lives` (the heading map in prose: a table of the two old documents' topics and their new homes, kept current by the map test).
+- `tests/test_deploy_docs.py` holds:
+  - `OLD_HEADINGS`: the frozen list of every heading line of `deploy/PRODUCTION.md` and `deploy/STAGING_PIPELINE.md` at `origin/main` (all `#`-prefixed lines outside code fences; the 84 headings outside code fences on 2026-11-18, 36 in PRODUCTION.md and 48 in STAGING_PIPELINE.md (`awk '/^```/{c=!c} !c && /^#+ /' <file>`), written out in the test as `("PRODUCTION.md", "## Deploying from GitHub")` pairs; the builder generates the list with a one-off script outside the repository and pastes it) and `MOVED`: a mapping from `(file, heading)` to the destination `(file, heading)`; empty in this task.
+  - `test_every_old_heading_still_has_a_home`: for each old heading, it is present in its old file, **or** it is in `MOVED` and the destination heading exists in the destination file; and when moved, the old file still holds a line `Moved to deploy/DEPLOY.md, "<destination heading>".` under a heading of the same name, if the heading is in the set `KEEP_STUB` (every heading that code, tests or other documents point at: the builder lists them with `grep -rn 'PRODUCTION.md\|STAGING_PIPELINE.md' scripts tests docs deploy .claude` and puts them in the set; at least `Deploying from GitHub`, `Routine rollouts`, `Manual rollout (break-glass)`, `Resetting staging`, `One-time setup`, `Break-glass: manual deploy (owner only)`, `Reinstalling the shared entry script`, `Host setup for automatic rollouts`).
+  - `test_deploy_doc_has_its_required_headings` (the headings above, in order).
+  - `test_deploy_doc_names_every_setup_script_flag_secret_and_variable` (every flag the usage of `setup-environments.sh` accepts, parsed from its usage line, and every name in its tables, appears in DEPLOY.md; every secret, variable and environment the **four** workflows read appears too).
+  - `test_deploy_doc_explains_put_replaces_and_the_separate_branch_policy_request` (needles: `replaces`, `reviewers`, `read`, `separate`, `deployment-branch-policies`).
+  - `test_deploy_doc_covers_auto_plan_and_its_approval_guarantee` (needles of the section above, `never approved by an agent`, `review request`).
+  - `test_deploy_doc_carries_no_account_ids_addresses_arns_or_personal_names` (the scan of `test_docs_contain_no_account_ids_ip_addresses_or_arns`, `tests/test_production_deploy_assets.py:2873`; Task 10 also adds `DEPLOY.md` to its `SCANNED_DOCS`).
+  - `test_no_doc_or_workflow_claims_the_owner_approves_the_publish` (**the stale-wording guard, failing until Task 11**: scan `deploy/RELEASE.md`, `deploy/STAGING_PIPELINE.md`, `deploy/PRODUCTION.md`, `deploy/DEPLOY.md`, `.github/workflows/publish-staging-images.yml`, `.claude/skills/*/SKILL.md` for `owner approves`, `owner's approval on`, `approval is still required`, `waits for the owner`, `required reviewer` near `staging-images` unless the sentence also contains `if a reviewer`; the guard is added in this task as a test marked `@pytest.mark.xfail(strict=True, reason="fixed by Tasks 11 and 12")`, and Task 12 removes the marker).
+- [ ] **Step 1: Write the failing tests** above (all but the xfail one fail: no file).
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_deploy_docs.py -q`; expect failures.
+- [ ] **Step 3: Write DEPLOY.md** with the new sections and `Moved sections follow in the next commits` **not** written into the document: the two placeholder headings carry one line each, `This section is completed by the next change in this series.`, removed by Tasks 10 and 11. Wording follows the repository's tone: plain, exact lines quoted as printed.
+- [ ] **Step 4: Run** the file; pass (xfail counts as expected failure).
+- **Mutation check:** delete a heading from DEPLOY.md: the heading-order test fails. Remove `PROD_AUTO_PLAN` from the doc: the names test fails. Add a twelve-digit number: the scan fails.
+- [ ] **Step 5: Commit** `docs(deploy): DEPLOY.md, the entry runbook, with setup scripts, auto-plan and a heading map`.
+
+### Task 10: Move production's generic sections into DEPLOY.md and re-point their assertions
+
+**Files:**
+- Modify: `deploy/DEPLOY.md`, `deploy/PRODUCTION.md`, `tests/test_production_deploy_assets.py`, `tests/test_rollout_production.py`, `tests/test_deploy_docs.py` (`MOVED`)
+
+**Content map (production), verbatim moves then wording edits:**
+
+| `deploy/PRODUCTION.md` heading (line) | Destination |
+| --- | --- |
+| `## Deploying from GitHub` (34): paragraphs of lines 36-65 (what the workflow does, the registry digests, the lock, `IMAGE_NAMESPACE`), and steps 1-6 (92-152) | `deploy/DEPLOY.md` `## Production: deploying from GitHub`. PRODUCTION.md keeps the heading and a stub: a pointer sentence, the facts of this host (entry script `/usr/local/sbin/csa-prod-deploy` runs as `ubuntu` in `/home/ubuntu/CSAV2` with `/opt/csa-deploy/venv/bin/python`; log directory `/var/log/csa-prod-deploy`; the core lock `/run/lock/csa-prod-rollout.lock`) |
+| the `Optional registry login on the instance` paragraph (67-90) | stays in PRODUCTION.md, retitled `### Optional registry login on the instance` under the stub |
+| `### What a smoke stop or a rollback means` (154) | `## Production: deploying from GitHub` → same `###` heading in DEPLOY.md; no stub (nothing points at it by name except tests, re-pointed) |
+| `### What a failure means` (193) | same, DEPLOY.md |
+| `### What each refusal means` (238) | same, DEPLOY.md |
+| `## One-time setup` (318) and `### 1.` to `### 7.`, `### First production deploy: what to check` | **stay** (host-specific names and commands, and the manual equivalent of the setup scripts). Add one paragraph at the top: the scripted path is in DEPLOY.md "One-time setup"; the steps below are the manual equivalents and the reference the scripts' tests compare against |
+| `## After the digest change merges`, `## Reinstalling the shared entry script`, `## Restoring a backup`, `## Break-glass: manual deploy (owner only)` and its two `###` subsections, `## Pruning old images` and everything after | **stay** unchanged |
+| the intro (1-32), including "The rule" | stays; DEPLOY.md "The pipeline" restates the rule (decision 10) |
+
+**Re-pointing the tests (none weakened: every needle moves with its sentence and is asserted against the new text; where a section split, the test is split along the same line):**
+- `test_production_doc_mentions_every_one_time_step` (`tests/test_production_deploy_assets.py:2761`): the `setup` and `break_glass` needles stay on PRODUCTION.md; the second list (`deploy-production`, `has not been rolled out to staging`, `sr.HOST_CHANGED`, `is older than the running`, `sr.BACKUP_REINSTALL`, `skipped`, `124`, `75`, `**73**`, `cannot write the log file`, `sr.RECORD_COMMAND`) is asserted on `_section(deploy_doc, "Production: deploying from GitHub")`.
+- `test_production_doc_describes_the_tip_default_digests_smoke_and_rollback` (`:2955`): `deploying` becomes the DEPLOY.md section (all its needles, including `holds the workflow's concurrency group`, `unrecognized arguments`, `130 minutes`, the smoke and rollback lines); `setup`, `break_glass`, `after`, `flat_text` keep reading PRODUCTION.md. The `40-minute` negative is asserted on both files.
+- `test_production_doc_review_fixes` (`:3045`): the first group (`TimedOut`, `120 minutes`, `115 minutes (by the clock, not a count of polls)`, `sts:AssumeRoleWithWebIdentity`, `24,000 characters`, `the complete log is always the`) reads DEPLOY.md; the `30 minutes` negative reads both; the setup, `### 6.` and entry-script assertions stay on PRODUCTION.md.
+- `test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the_lock` (`:3097`): the `deploying` needles (`deploy-staging`, `` `staging rollout` ``, `/run/lock/csa-prod-rollout.lock`, `DEPLOY_TARGET`, `exits 3`) read DEPLOY.md; the reinstall section reads PRODUCTION.md; the lock path is **also** asserted on the PRODUCTION.md stub (it states the lock for this host).
+- `test_docs_contain_no_account_ids_ip_addresses_or_arns` (`:2873`): `SCANNED_DOCS` gains `"DEPLOY.md"`; `_scanned_doc` maps it.
+- `test_runbooks_describe_the_resolver_setting_and_its_exit_codes` (`tests/test_rollout_production.py:1239`): `DEPLOY_TARGET` and `resolve_commit.sh` still read PRODUCTION.md (the stub names them) and RELEASE.md; `exits 3` and `nothing to roll out` read DEPLOY.md.
+- `test_setup_section_names_every_secret_variable_and_environment_the_workflow_reads` (`:2836`) and `test_production_doc_explains_restoring_the_named_backup` (`:2819`): unchanged (their sections did not move).
+- `tests/test_aws_setup_target.py` reads PRODUCTION.md headings `### 1. AWS (CloudShell, admin login)`, `### 2. Instance`, `### 3. AWS (CloudShell)`, `### 4. AWS (CloudShell)`, `### 5. Instance` (`:921-923`, `:1013-1020`): those sections stay, so the file is unchanged. A test in `tests/test_deploy_docs.py`, `test_the_manual_setup_steps_the_script_tests_read_still_exist`, asserts the five headings so a later edit cannot orphan them silently.
+
+- [ ] **Step 1: Write the failing assertions** as above (`MOVED` entries for the four moved headings, the re-pointed tests, the stub test `test_production_doc_stub_names_this_hosts_facts_and_points_at_deploy_md`: needles `Moved to deploy/DEPLOY.md`, `/usr/local/sbin/csa-prod-deploy`, `/home/ubuntu/CSAV2`, `/opt/csa-deploy/venv`, `/var/log/csa-prod-deploy`, `/run/lock/csa-prod-rollout.lock`).
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_deploy_docs.py tests/test_rollout_production.py -q` and, in the background, `tests/test_production_deploy_assets.py`; expect failures.
+- [ ] **Step 3: Move the text.** Copy the sections byte for byte into DEPLOY.md, then edit only what a move needs: "this runbook" references, `### 6.` and step references to PRODUCTION.md ("One-time setup, step 3" becomes `deploy/PRODUCTION.md`, "One-time setup", step 3), the first sentence saying the section is the production half. Remove the placeholder line.
+- [ ] **Step 4: Run** the three files; pass.
+- **Mutation check:** delete the `What each refusal means` heading from DEPLOY.md: the heading map test fails. Delete the `115 minutes` sentence from DEPLOY.md: the re-pointed review-fixes test fails. Delete the stub line: the stub test fails.
+- [ ] **Step 5: Commit** `docs(deploy): production's deploy, failure and refusal sections move to DEPLOY.md`.
+
+### Task 11: Move staging's automatic-rollout section, fix the stale wording, re-point
+
+**Files:**
+- Modify: `deploy/DEPLOY.md`, `deploy/STAGING_PIPELINE.md`, `deploy/RELEASE.md`, `tests/test_staging_rollout.py`, `tests/test_production_deploy_assets.py`, `tests/test_deploy_docs.py` (`MOVED`)
+
+**Content map (staging):**
+
+| `deploy/STAGING_PIPELINE.md` heading (line) | Destination |
+| --- | --- |
+| `## Routine rollouts` intro (16-23) | stays, reworded (decision 12) and pointing at DEPLOY.md |
+| `### Automatic rollouts (deploy-staging)` (25-128): the outcome table, the record, what counts as staged, migrations, pause and catch up, limits, Trust, Access | `deploy/DEPLOY.md` `## Staging: automatic rollouts (deploy-staging)`; STAGING_PIPELINE.md keeps the `###` heading with a stub: `Moved to deploy/DEPLOY.md, "Staging: automatic rollouts (deploy-staging)".` plus this host's facts (entry script `/usr/local/sbin/csa-staging-deploy` and `.conf`, user `csa-deploy`, log directory `/var/log/csa-staging-deploy/`, lock `/run/lock/csa-staging-rollout.lock`, the dedicated checkout) |
+| `### Manual rollout (break-glass)` (129) | **stays** (the code's messages and the skill point at it) |
+| `### Recovery, retest and switches (automatic and manual rollouts)` (182) incl. the registry login paragraph | **stays** (staging-specific) |
+| `## Host setup for automatic rollouts` (297), `### First run (acceptance), watched live` (506) | **stay**; in the steps, 2, 13 and 14 gain the script commands (`setup-environments.sh staging --check`, `... staging`) as the preferred path, the manual commands remain below them; the sentence that PR 3 prefers a dispatch is replaced by the real chain description (decision 2) and keeps `does not run a fifth workflow` |
+| `## 1.` to `## 14.`, `## Resetting staging` and its subsections, `## Rollback`, `## Why the console alone does nothing` | **stay** unchanged |
+
+Stale wording, each replaced by the sentence of decision 12: `deploy/STAGING_PIPELINE.md:18-21`, `:27-28`, `:117-118` (the Trust paragraph moves with its section), `:149-150` (the `images for <sha7> are not published yet (<state>)` hint: the state is `waiting for approval` only if a reviewer was added; say so); `deploy/RELEASE.md:93-119` ("It is manual (`workflow_dispatch`)" becomes "It starts when a green push-to-main `ci` run completes, and by dispatch with a `ci_run_id`"; "the repository owner must create the GitHub environment `staging-images` with a required reviewer" becomes "no reviewer today; `deploy/github/setup-environments.sh staging` gives it the `main`-only deployment-branch policy; a reviewer added later holds every merge"). The dated first-publication history (`RELEASE.md:128-` onwards) stays as it is.
+
+**Re-pointing the tests (needles move with their text; the stale ones are inverted deliberately):**
+- `test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsections` (`tests/test_staging_rollout.py:1473`): structure assertions (exactly one `## Routine rollouts`; its first two `###` are `Automatic rollouts (deploy-staging)` then `Manual rollout (break-glass)`; `## Host setup for automatic rollouts` after it) stay on STAGING_PIPELINE.md, and the automatic subsection must hold `Moved to deploy/DEPLOY.md` and this host's facts. **The long needle list** (`Every green merge` through `newest 20 sha tags are still kept`) is asserted on `_md_section(deploy_md, "Staging: automatic rollouts (deploy-staging)")`, except the two Trust needles `` `staging-images` environment has no reviewer `` and `does not exist as a gate today`, which become `` The `staging-images` environment has no reviewer `` and `needs no approval today`; the manual-subsection needles stay on STAGING_PIPELINE.md.
+- `test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval` (`:1617`): the chain assertions stay on STAGING_PIPELINE.md (`does not run a fifth workflow`, `nothing may be chained after` absent) and gain `deploy-production-auto`; the two approval assertions are **inverted**: `waits for the owner's approval on the `staging-images` environment` must be **absent** and `If a reviewer is added to `staging-images`, every merge waits on that click` present, in STAGING_PIPELINE.md, DEPLOY.md and RELEASE.md; the skill assertion moves to Task 12.
+- `test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14` (`:1546`), `test_pipeline_runbook_registry_login_...` (`:1632`), `test_pipeline_runbook_reset_section_takes_the_rollout_lock` (`:1654`), `test_host_setup_config_line_matches_the_example_config` (`:1695`): unchanged (those sections stay); the host-setup test gains needles for the new script commands.
+- `test_staging_skill_mentions_the_staged_record` (`tests/test_production_deploy_assets.py:2907`) and `_scanned_doc("pipeline routine")` (`:2863`): unchanged here (`Routine rollouts` keeps the manual subsection with `RECORD_COMMAND --sha`, `GitHub Deployment`, `` `staging` `` and `production`); Task 12 re-points the skill half.
+- `test_parse_plan_points_at_text_that_exists_in_the_pipeline_runbook` (`:3155`): the refusal row now lives in DEPLOY.md: the assertion `refusal in doc` reads DEPLOY.md; `roll back by hand` and `Manual rollout (break-glass)` still read STAGING_PIPELINE.md. `deploy/production/parse_plan.sh` and its message are unchanged (they still name `deploy/STAGING_PIPELINE.md`, where the manual procedure is).
+- `test_no_doc_or_workflow_claims_the_owner_approves_the_publish` (Task 9): the `xfail` marker stays until Task 12 (the skills still carry the old sentence).
+
+- [ ] **Step 1: Write the failing assertions** as above.
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_deploy_docs.py tests/test_staging_rollout.py -q` and, in the background, `tests/test_production_deploy_assets.py`; expect failures.
+- [ ] **Step 3: Move the text and replace the wording.**
+- [ ] **Step 4: Run** the three files; pass (the xfail still xfails). Run `tests/test_staging_deploy_assets.py` (it asserts `deploy/STAGING_PIPELINE.md` in a runner message, `:455`).
+- **Mutation check:** reinstate "waits for the owner's approval" in RELEASE.md: the inverted test fails. Delete the outcome table from DEPLOY.md: the re-pointed needle test fails.
+- [ ] **Step 5: Commit** `docs(deploy): staging's automatic rollout section moves to DEPLOY.md; no approval is needed to publish`.
+
+### Task 12: The `deploy` skill replaces `staging-rollout` and `production-deploy`
+
+**Files:**
+- Create: `.claude/skills/deploy/SKILL.md`
+- Delete: `.claude/skills/staging-rollout/SKILL.md`, `.claude/skills/production-deploy/SKILL.md` (and the two directories)
+- Modify: `docs/RUNBOOK.md` (lines 226 and 296: `the `staging-rollout` skill` becomes `the `deploy` skill`), `tests/test_staging_rollout.py`, `tests/test_production_deploy_assets.py`, `tests/test_deploy_docs.py` (remove the `xfail`)
+
+**How skills are listed and triggered:** each skill is a directory under `.claude/skills/` with a `SKILL.md` whose frontmatter `name` and `description` are what the session lists; the model picks a skill from the description, so it must say both "roll out ... staging" and "deploy ... production". `CLAUDE.md` and `AGENTS.md` do not mention either skill (grep on 2026-11-18); `.agents/skills/` holds unrelated skills. Only `docs/RUNBOOK.md` and the old skills themselves (`production-deploy` lines 36 and 40 name `staging-rollout`) refer to the old names; older specs and plans are history and stay.
+
+**Interfaces:**
+- Frontmatter: `name: deploy`; `description: Use when the owner asks to roll out, deploy or update staging (csa-staging) or production (csa-prod): staging rolls out by itself through the deploy-staging workflow, production through the deploy-production workflow (plan, approval, apply), including images with or without database migrations.`
+- Sections (all rules of both old skills kept, in this order): `# Deploy`; `## Which flow` (staging versus production; "not sure" means ask); `## Where to run` (`gh` only, from the main checkout `/home/amsyrzmi/CSAV2`, repository `amsyrzmi/CSAV2`; nothing on an instance from here); `## Staging: automatic rollouts` (the old steps 1-5 with the new "no approval today" wording); `## Staging: manual rollout (break-glass)` (the old manual steps, pause first); `## Production: hold before step 1` (the pictures hold, unchanged); `## Production: steps` (the old steps 1-5 verbatim, including the refusal list and the rollback lines); `## Auto-planned production runs` (new: when a waiting production run exists, read its state first: `gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production.yml --limit 5` and the jobs of the run; say whether it was auto-started (`github-actions[bot]`); the apply is waiting for the **owner or the other developer**; never approve, never reject; cancel only after the owner's go and only after reading the run's state (never one whose apply is `in_progress`); `PROD_AUTO_PLAN` is changed only on the owner's say-so, `gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true|false`; `nothing to plan: ...` and the other messages are reported verbatim); `## If something goes wrong` (verbatim recovery lines of both flows, numbered copy-ready commands when a command is blocked); `## Resetting staging` (unchanged); `## Never` (both old lists, plus: approve or reject a production deployment, or cancel a production run without reading its state, or change the environments, reviewers, secrets or `PROD_AUTO_PLAN` on your own).
+- Hold items: the "Hold before step 1" paragraph of the production skill is carried over unchanged (it is a dated hold, not mine to drop).
+
+**Re-pointing the tests (`STAGING_SKILL`/`PRODUCTION_SKILL` in `tests/test_production_deploy_assets.py:2743-2744` become one `DEPLOY_SKILL`):**
+- `test_skill_requires_plan_then_owner_go_then_apply` (`tests/test_staging_rollout.py:1439`): reads the deploy skill; `name: deploy`; `description: Use when the owner asks to roll out, deploy or update staging` stays a prefix of the new description; needles `plan`, `apply`, `--ff-only`, `--sha`, `verbatim`; `text.index("plan") < text.index("apply")`.
+- `test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate` (`:2919`): reads the deploy skill; all needles kept (`deploy-production`, `gh workflow run deploy-production`, `production-plan`, `` `production` ``, `has not been rolled out to staging`, `never approve`, `break-glass`, `verbatim`, `numbered, copy-ready commands`, `deploy/PRODUCTION.md`, and the flat list `Leave `sha` empty`, `tip of `main``, `main's tip <sha7> is not staged yet; wait for deploy-staging`, `main moved to <sha7> since this run's plan`, `Rolled back:`, `Stopped at smoke:`, `Stopped at rollback:`, `older than the digest change`, `unrecognized arguments`, `concurrency group`); the frontmatter assertion `description: Use when the owner asks to deploy` is replaced by `test_the_deploy_skill_description_triggers_on_both_flows` (needles `roll out`, `deploy`, `update`, `staging`, `production`, `deploy-staging`, `deploy-production`, `migrations`).
+- `test_production_skill_says_what_not_staged_yet_means` (`:3148`), `test_staging_skill_mentions_the_staged_record` (`:2907`, skill half), `test_staging_skill_checks_the_workflow_and_keeps_the_manual_steps` (`tests/test_staging_rollout.py:1712`), the skill halves of `test_pipeline_runbook_reset_section_takes_the_rollout_lock` (`:1654`) and `test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval` (inverted: the deploy skill must **not** say `The owner approves the image publish` and must say `no approval today`), `test_owned_docs_carry_no_local_paths_session_ids_or_personal_names` (`:1682`, file list: the staging skill entry becomes `.claude/skills/deploy/SKILL.md`; `deploy/DEPLOY.md` and this plan are added), and `SCANNED_DOCS` (`production skill`, `staging skill` become `deploy skill`): all read the one skill with their needles unchanged.
+- New: `test_the_old_skill_directories_are_gone_and_nothing_live_names_them` (the two directories do not exist; no file under `.claude`, `deploy`, `docs/RUNBOOK.md`, `tests` and `scripts` contains `staging-rollout` as a skill name: the only allowed occurrences are the file name `staging-rollout.env`, the module and workflow names, and the historical specs and plans under `docs/superpowers`), and `test_the_deploy_skill_never_approves_and_checks_state_before_cancelling` (needles: `never approve`, `never reject`, `checking`/`read its state`, `in_progress`, `PROD_AUTO_PLAN`, `owner's go`).
+
+- [ ] **Step 1: Write the failing assertions.**
+- [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_deploy_docs.py tests/test_staging_rollout.py -q`, and in the background `tests/test_production_deploy_assets.py`; expect failures.
+- [ ] **Step 3: Write the skill, delete the two old ones, edit `docs/RUNBOOK.md`.** Remove the `xfail` marker from the stale-wording guard.
+- [ ] **Step 4: Run** the three files; pass (nothing xfails any more).
+- **Mutation check:** drop `never approve` from the skill: the skill test fails. Reintroduce `The owner approves the image publish`: the inverted test and the guard fail. Recreate `.claude/skills/staging-rollout`: the directory test fails.
+- [ ] **Step 5: Commit** `docs(deploy): one deploy skill for staging and production`.
+
+### Task 13: The spec, the overview row, the unchanged-production check, lint
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-11-13-cd-pipeline-design.md` (a "Changes made while building PR 3" section after "Changes made while building PR 2"), `docs/PROJECT_OVERVIEW.md` (one row: `Deploying staging and production | [Deploy runbook](../deploy/DEPLOY.md)`), `tests/test_production_deploy_assets.py` (`test_spec_lists_the_changes_made_while_building_pr_3`, in the style of `test_spec_lists_the_changes_made_while_building_pr_2`, `:3168`)
+
+**Interfaces:** the spec section lists decisions 1 to 12 of this plan in the spec's own words: the separate `deploy-production-auto` workflow and why (the held concurrency group; manual path untouched), the dispatch and the `GITHUB_TOKEN` exception, the chain count, `check` instead of the staging conclusion, the cancel rule and its race, the security statement, the replace-on-PUT finding and the read-modify-write rule, `staging-images` having no branch policy, the secrets and variables tables, the heading map, the pins, the stale-wording places and that `PRODUCTION.md` had none. It also corrects the spec's two statements that no longer hold: "A second trigger, `workflow_run` of `deploy-staging` succeeding, starts the plan" (now a separate workflow that dispatches the plan) and "A new auto-started run cancels earlier runs" (the cancel is an explicit API call made by the auto workflow, and it cancels only auto-started waiting runs).
+
+- [ ] **Step 1: Write the failing test** (needles: `deploy-production-auto`, `workflow_dispatch`, `three levels` or `three `workflow_run` links`, `PUT`, `replaces`, `deployment-branch-policies`, `staging-images`, `no branch`, `GITHUB_TOKEN`, `waiting`, `in_progress`, `never approve`, `heading map`, `pin`, and `PRODUCTION.md had no`).
+- [ ] **Step 2: Run** it; expect failure.
+- [ ] **Step 3: Edit** the spec and the overview.
+- [ ] **Step 4: Verify manual production is untouched** (**controller**, or the builder: these are local git commands): `git diff --stat origin/main -- .github/workflows/deploy-production.yml deploy/production/resolve_commit.sh deploy/production/ssm_run.sh deploy/production/parse_plan.sh deploy/production/deploy_entry.sh deploy/production/public_smoke.sh` must print nothing. If it prints anything, stop: the change belongs in a different PR.
+- [ ] **Step 5: Run** every file this plan touched (`tests/test_fake_gh.py tests/test_github_setup_environments.py tests/test_production_auto_plan.py tests/test_deploy_production_auto_workflow.py tests/test_deploy_docs.py tests/test_publish_staging_images.py tests/test_ci_artifacts.py tests/test_image_namespace.py tests/test_staging_rollout.py tests/test_rollout_production.py tests/test_aws_setup_target.py tests/test_staging_deploy_assets.py tests/test_deploy_staging_workflow.py tests/test_production_resolve.py`, then `tests/test_production_deploy_assets.py` in the background), `bash -n` on the three shell scripts, `.venv/bin/ruff format`, `.venv/bin/ruff check`, `.venv/bin/pyright` on the touched Python files, and `make lint`.
+- **Mutation check (a final sweep, not committed):** break one behaviour from each of Tasks 3, 5, 6 and 12 as listed in their sections and confirm the named test fails; restore.
+- [ ] **Step 6: Commit** `docs(deploy): PR 3 changes in the spec and the overview; production workflow untouched`.
+
+---
+
+# Part B: Owner steps after PR 3 merges (handed to the owner by the controller)
+
+Each step says where it runs. Nothing printed here goes into the repository or a chat apart from yes/no results and sha7 values. `<login-1>` and `<login-2>` are the two production reviewers named in `deploy/PRODUCTION.md`, One-time setup, step 6. All commands name the repository `amsyrzmi/CSAV2` literally.
+
+The merge itself exercises two changes: the pinned `publish-staging-images` (watch that run: step 1) and the idle `deploy-production-auto` (it is skipped while `PROD_AUTO_PLAN` is unset).
+
+1. **Owner, own terminal:** watch the first publish after the merge. Pinned actions are new for that workflow.
+   ```bash
+   gh run list --repo amsyrzmi/CSAV2 --workflow publish-staging-images.yml --limit 3
+   gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production-auto.yml --limit 3
+   ```
+   The publish must end `success`; the auto workflow's runs, if any, are skipped.
+2. **Owner, a machine with `gh` logged in as a repository admin, in a checkout of the merged `main`:** read-only checks first. Neither command writes.
+   ```bash
+   git pull --ff-only origin main
+   deploy/github/setup-environments.sh staging --check --repo amsyrzmi/CSAV2
+   deploy/github/setup-environments.sh production --check --repo amsyrzmi/CSAV2 --reviewer <login-1> --reviewer <login-2>
+   ```
+   Expected today: staging is `not ok` for one item only, `environment staging-images branch policy: missing` (it has no branch restriction); production is `everything is ok`, with notes for `can_admins_bypass=true prevent_self_review=false`. Anything else: stop and tell the controller.
+3. **Owner, same machine:** apply. The first command adds the `main`-only policy to `staging-images`; the second must make no change.
+   ```bash
+   deploy/github/setup-environments.sh staging --repo amsyrzmi/CSAV2
+   deploy/github/setup-environments.sh production --repo amsyrzmi/CSAV2 --reviewer <login-1> --reviewer <login-2>
+   ```
+   Every secret and variable line must say `unchanged`, and neither command prompts. Then `gh api repos/amsyrzmi/CSAV2/environments/staging-images/deployment-branch-policies --jq '.branch_policies[].name'` must print `main`, and `gh api repos/amsyrzmi/CSAV2/environments/production --jq '.protection_rules[] | select(.type=="required_reviewers") | (.reviewers | length)'` must still print `2`.
+4. **Owner, own terminal:** the next ordinary merge must publish normally under the new policy (`staging-images` now accepts only `main`). If the publish run fails at the environment with a branch-policy message, tell the controller and run `gh api --method DELETE repos/amsyrzmi/CSAV2/environments/staging-images/deployment-branch-policies/<id>` only after the controller agrees.
+5. **Owner, own terminal:** decide about `can_admins_bypass` on `production` (it is `true`: a repository admin can skip the approval). The script only reports it. Tell the controller if you want it changed; it is a separate decision.
+6. **Owner, own terminal:** turn the auto-plan on, for the test only.
+   ```bash
+   deploy/github/setup-environments.sh production --repo amsyrzmi/CSAV2 --auto-plan true
+   gh variable list --repo amsyrzmi/CSAV2 | grep PROD_AUTO_PLAN
+   ```
+7. **Owner:** merge the next small pull request (a docs change is enough). Watch the chain: `ci`, `publish-staging-images`, `deploy-staging`, `deploy-production-auto`, then `deploy-production`.
+   ```bash
+   gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 2
+   gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production-auto.yml --limit 2
+   gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production.yml --limit 2
+   ```
+   Open the new `deploy-production` run: `plan` is green, `apply` is `waiting`. **Do not approve.** In the web page choose "Review deployments" and **Reject**.
+8. **Owner:** prove the marker the supersede step depends on, on the run from step 7.
+   ```bash
+   gh api repos/amsyrzmi/CSAV2/actions/runs/<deploy-production run id> --jq '[.event, .triggering_actor.login, .actor.login] | @tsv'
+   ```
+   Expected `workflow_dispatch`, `github-actions[bot]`, `github-actions[bot]`. If the login differs, tell the controller (the one-line fix is the `AUTO_ACTOR` constant in `deploy/production/auto_plan.sh`); until then nothing is cancelled, which is safe.
+9. **Owner:** prove the supersede. Merge another small pull request **while** a previous auto-planned run is still waiting (do not reject the first this time). The first run must end `cancelled` with its apply never started, and the second run must be `waiting`: `Reject` the second.
+10. **Owner:** prove the no-noise outcomes. Pause staging, merge a small change, and watch `deploy-production-auto` end green with `nothing to plan: main's tip <sha7> is not staged yet`.
+    ```bash
+    deploy/github/setup-environments.sh staging --repo amsyrzmi/CSAV2 --paused true
+    ```
+    After the merge's runs finish: `deploy/github/setup-environments.sh staging --repo amsyrzmi/CSAV2 --paused false`, then dispatch `deploy-staging` once to catch up (`gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main`).
+11. **Owner:** decide the setting to leave. The default is off: `deploy/github/setup-environments.sh production --repo amsyrzmi/CSAV2 --auto-plan false`.
+
+# Part C: Acceptance, watched live
+
+Owner and controller together, after Part B step 6.
+
+- **C1. The setup script on the real repository.** `--check` on both targets reports `everything is ok` after step 3; the second `apply` of each prints `unchanged` on every line and makes no write (read the line count); production still has both reviewers and `wait_timer`, `prevent_self_review`, `can_admins_bypass` as before step 2 (this is the proof, on the real service, that nothing was dropped; the replace-on-PUT behaviour itself is proved by the tests, because a run that changes nothing sends no PUT).
+- **C2. The `staging-images` policy.** `deployment-branch-policies` for it prints exactly `main`, and the next publish run is green.
+- **C3. The chain.** A merge produces, in order, `ci`, `publish-staging-images`, `deploy-staging` (success), `deploy-production-auto` (success, summary `planning <sha7>` and the run URL) and a `deploy-production` run started by `github-actions[bot]`. This proves the `workflow_run` link count and that the dispatch starts a run. If the auto run is red with `the dispatch was accepted but no deploy-production run started`, the limit or the dispatch rule is not what the plan assumed: switch the setting back to `false` and tell the controller.
+- **C4. The approval stays human.** The auto-started run waits at `apply` and nothing starts without the click; the owner rejects it. `gh api repos/amsyrzmi/CSAV2/actions/runs/<id>/jobs --jq '.jobs[] | [.name, .status, .conclusion] | @tsv'` shows `plan` success and `apply` not started.
+- **C5. Supersede and the marker.** Steps 8 and 9 behave as written. A manual dispatch started by the owner while an auto run waits is **not** cancelled by the next auto run.
+- **C6. No red noise.** Step 10's paused merge ends the auto workflow green with the not-staged notice; a duplicate `already staged` staging run (dispatch of `deploy-staging` for a tip whose production run is waiting) ends green with `a deploy-production run for <sha7> already exists`.
+- **C7. Manual production unchanged.** A manual `deploy-production` dispatch with an empty `sha` behaves as before (plan, waiting apply, reject). The two documents `deploy/DEPLOY.md` and the `deploy` skill are what the owner uses from now on; the old skill names no longer exist.
+- **If anything fails:** `deploy/github/setup-environments.sh production --repo amsyrzmi/CSAV2 --auto-plan false`; keep the red run's log; the manual `deploy-production` dispatch, break-glass and the staging workflow are unaffected by every part of this PR.
