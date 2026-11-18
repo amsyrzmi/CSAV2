@@ -432,47 +432,65 @@ def _step_line(reader: _Reader, task: ProcessTask) -> str:
 def _which(reader: _Reader, wanted: str, found: list[ProcessRow]) -> ProcessAnswer:
     """Several visible processes match: up to five options, valued by process id, labelled
     "Aina Rahman — onboarding, started 3 November 2026" (a closed one marked), with a counter
-    when two labels would still read alike. The stored copy keeps the kinds only, so no name or
-    date reaches the turn row."""
+    when two labels would still read alike.
+
+    A typed name is asked about in the user's own words; a picked id gets a fixed question, so
+    no name the user did not type reaches the turn row (the console also repeats the question
+    in the next turn's body). The stored options keep a generic kind only: no name, date or
+    template name."""
     text = reader.text
     order = sorted(found, key=lambda row: (row.employee_name.casefold(), row.kind, row.started_at))
     found = order[:MAX_OPTIONS]
-    # A picked id is no name to repeat: ask with the person's name instead.
-    name = _one_line(found[0].employee_name) if as_id(wanted) is not None else _one_line(wanted)
-    question = text["which_person"].format(name=name)
+    if as_id(wanted) is not None:
+        question = text["process_which"]
+    else:
+        question = text["which_person"].format(name=_one_line(wanted))
 
-    def kind(row: ProcessRow) -> str:
-        label = reader.kind(row.kind, row.name)
-        if row.status != "active":
-            label = f"{label} ({text[f'process_{row.status}']})"
-        return label
+    def closed(row: ProcessRow, label: str) -> str:
+        return label if row.status == "active" else f"{label} ({text[f'process_{row.status}']})"
 
-    labels = [
+    names = [_one_line(row.employee_name) for row in found]
+    rests = [
         text["process_option"].format(
-            name=_one_line(row.employee_name),
-            kind=kind(row),
+            name="",
+            kind=closed(row, reader.kind(row.kind, row.name)),
             day=format_day(kl_today(row.started_at), reader.language),
         )
         for row in found
     ]
-    for label in set(labels):
-        same = [i for i, seen in enumerate(labels) if seen == label]
-        if len(same) > 1:
-            for number, i in enumerate(same, start=1):
-                counter = text["process_counter"].format(n=number, total=len(same))
-                labels[i] = f"{label} ({counter})"
     shown = [
-        ClarificationOption(label=label[:OPTION_LABEL], value=str(row.process_id))
-        for label, row in zip(labels, found, strict=True)
+        ClarificationOption(label=label, value=str(row.process_id))
+        for label, row in zip(_distinct(names, rests, text), found, strict=True)
     ]
+    # The kind word only ("process" for a custom one, never its template's name).
+    generic = [closed(row, text[f"process_kind_{row.kind}"]) for row in found]
     stored = [
-        ClarificationOption(label=kind(row)[:OPTION_LABEL], value=str(row.process_id))
-        for row in found
+        ClarificationOption(label=label, value=str(row.process_id))
+        for label, row in zip(generic, found, strict=True)
     ]
     return ProcessAnswer(
         shown=ClarificationProposal(action="clarification", question=question, options=shown),
         stored=ClarificationProposal(action="clarification", question=question, options=stored),
     )
+
+
+def _fit(name: str, rest: str, suffix: str = "") -> str:
+    """``name + rest + suffix`` within the option label limit, the name cut first."""
+    room = max(OPTION_LABEL - len(rest) - len(suffix), 1)
+    return (name[:room] + rest + suffix)[:OPTION_LABEL]
+
+
+def _distinct(names: list[str], rests: list[str], text: dict[str, str]) -> list[str]:
+    """The option labels, every one different: labels that read alike (after cutting) get
+    " (1 of 2)", and the counter is never cut off."""
+    labels = [_fit(name, rest) for name, rest in zip(names, rests, strict=True)]
+    for label in set(labels):
+        same = [i for i, seen in enumerate(labels) if seen == label]
+        if len(same) > 1:
+            for number, i in enumerate(same, start=1):
+                counter = text["process_counter"].format(n=number, total=len(same))
+                labels[i] = _fit(names[i], rests[i], f" ({counter})")
+    return labels
 
 
 __all__ = ["SHOWN", "ProcessAnswer", "resolve_process_read"]

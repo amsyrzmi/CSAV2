@@ -686,7 +686,22 @@ async def test_same_names_and_a_rehire_get_distinct_options(planned) -> None:  #
     ]
     # A picked employee id never shows as the name in the question.
     by_id = await _ask(w, model, c.hr, "person_process", person=str(c.people["razak"]))
-    assert by_id["question"] == "Which Razak Ali do you mean?"
+    # A picked id gets a fixed question: the console repeats the question in the next turn's
+    # body, so a name the user never typed must not be in it, nor in the stored row.
+    assert by_id["question"] == "Which process do you mean?"
+    last = await w.q("SELECT body, result FROM console_workspace_turns ORDER BY id DESC LIMIT 1")
+    assert last[0]["result"]["question"] == "Which process do you mean?"
+    assert [option["label"] for option in last[0]["result"]["options"]] == [
+        "onboarding (completed)",
+        "onboarding (completed)",
+    ]
+    for name in NAMES:
+        assert name not in by_id["question"]
+        assert name not in json.dumps(last[0]["result"])
+    malay_id = await _ask(
+        w, model, c.hr, "person_process", person=str(c.people["razak"]), language="ms"
+    )
+    assert malay_id["question"] == "Proses yang mana satu?"
     # The open step of the closed process: a past date that the database does not call overdue.
     picked = await _answer(w, model, c.hr, "person_process", person=str(late))
     assert picked == (
@@ -745,3 +760,40 @@ async def test_other_hr_refusals_become_the_usual_http_error(
     response = await _turn(w, c.manager, thread, ENGLISH, "hr")
     assert (response.status_code, response.json()) == (401, {"detail": "session_unavailable"})
     assert await w.q("SELECT count(*) n FROM console_workspace_turns") == [{"n": 0}]
+
+
+async def test_long_names_keep_their_counter_and_custom_names_are_not_stored(planned) -> None:  # noqa: F811
+    w, model = planned
+    await activate(w, w.tenants[0], "hr")
+    owner = await _hr_owner(w)
+    long_name = "Siti Aminah binti Synthetic " + "Panjang " * 10  # 108 characters
+    first = await _process(w, await _employee(w, long_name.strip()))
+    second = await _process(w, await _employee(w, long_name.strip()))
+    result = await _ask(w, model, owner, "person_process", person="Siti Aminah")
+    labels = [option["label"] for option in result["options"]]
+    assert [option["value"] for option in result["options"]] == [str(first), str(second)]
+    assert labels[0].endswith(" (1 of 2)") and labels[1].endswith(" (2 of 2)")
+    assert labels[0].startswith("Siti Aminah binti Synthetic")
+    assert all(len(label) <= 100 for label in labels) and len(set(labels)) == 2
+    # Two custom processes from a template named by HR: the name is shown, never stored.
+    template = await w.q(
+        "INSERT INTO hr_process_templates(client_id,kind,name) VALUES (%s,'custom',"
+        "'Performance review') RETURNING id",
+        w.tenants[0],
+    )
+    danial = await _employee(w, "Danial Hakim")
+    for _ in range(2):
+        await w.q(
+            "INSERT INTO hr_processes(client_id,employee_id,kind,template_id,template_version)"
+            " VALUES (%s,%s,'custom',%s,1)",
+            w.tenants[0], danial, template[0]["id"],
+        )  # fmt: skip
+    custom = await _ask(w, model, owner, "person_process", person="Danial")
+    assert [option["label"] for option in custom["options"]] == [
+        f"Danial Hakim — Performance review, started {STARTED} (1 of 2)",
+        f"Danial Hakim — Performance review, started {STARTED} (2 of 2)",
+    ]
+    last = await w.q("SELECT result FROM console_workspace_turns ORDER BY id DESC LIMIT 1")
+    stored = last[0]["result"]
+    assert [option["label"] for option in stored["options"]] == ["process", "process"]
+    assert "Performance review" not in json.dumps(stored)
