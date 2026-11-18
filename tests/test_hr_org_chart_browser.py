@@ -35,6 +35,7 @@ CHART = "/portal/hr/people/org-chart"
 OPS, WAREHOUSE, FINANCE = (f"88888888-8888-4888-8888-00000000010{n}" for n in (1, 2, 3))
 SERBANEKA = "Perniagaan Serbaneka Sdn Bhd"
 MAWAR = "Kedai Mawar Enterprise"
+NIGHT = "88888888-8888-4888-8888-000000000104"
 TEAM = 40
 
 
@@ -102,6 +103,7 @@ class OrgWorld(RestyleWorld):
             node(10, "Edwin Tan", "Picker", wh, None),
             node(11, "Priya Nair", "Picker", wh, None),
             node(12, "=Zul Karim", "Driver", wh, None, outside=True),
+            node(13, "Dispatch Clerk", "=Dispatch clerk", (NIGHT, "-Night shift"), eid(1)),
         ]
         for n in range(team):
             self.nodes.append(node(100 + n, f"Associate {n:03d}", "Associate", wh, eid(2)))
@@ -176,9 +178,7 @@ def count_text(page: Page) -> Locator:
 
 
 def branch_button(page: Page, name: str) -> Locator:
-    return page.get_by_role(
-        "button", name=re.compile(rf"^(Collapse|Expand) {re.escape(name)}'s team")
-    )
+    return page.get_by_role("button", name=re.compile(rf"^{re.escape(name)}'s team"))
 
 
 async def test_every_person_shows_with_department_markers_and_labels(site: Site) -> None:
@@ -223,8 +223,9 @@ async def test_every_person_shows_with_department_markers_and_labels(site: Site)
             await expect(row(page, "=Zul Karim")).not_to_contain_text("No manager")
             await expect(row(page, "Nadia Hassan")).not_to_contain_text("In a reporting loop")
 
-            # The loop notice names the pair, for the owner.
-            notice = page.get_by_role("alert").filter(has_text="each other's managers in a loop")
+            # The loop notice names the pair, for the owner, and prints with the chart.
+            notice = page.locator("[data-org-print]").get_by_role("alert")
+            await expect(notice).to_contain_text("each other's managers in a loop")
             await expect(notice).to_contain_text("Edwin Tan, Priya Nair")
 
     await with_browser(body)
@@ -247,7 +248,7 @@ async def test_branches_collapse_with_truthful_state_and_keyboard(site: Site) ->
     async def body(browser: Any) -> None:
         world = OrgWorld()
         async with org_page(browser, site, world) as page:
-            siti = page.get_by_role("button", name="Collapse Siti Rahman's team (3)")
+            siti = page.get_by_role("button", name="Siti Rahman's team (3)")
             await expect(siti).to_have_attribute("aria-expanded", "true")
             controlled = await siti.get_attribute("aria-controls")
             assert controlled
@@ -255,7 +256,7 @@ async def test_branches_collapse_with_truthful_state_and_keyboard(site: Site) ->
             await expect(row(page, "Aiman Yusof")).to_be_visible()
 
             await siti.click()
-            expand = page.get_by_role("button", name="Expand Siti Rahman's team (3)")
+            expand = page.get_by_role("button", name="Siti Rahman's team (3)")
             await expect(expand).to_have_attribute("aria-expanded", "false")
             for name in ("Aiman Yusof", "Mei Ling Tan", "Kumar Raj"):
                 await expect(row(page, name)).to_be_hidden()
@@ -317,7 +318,7 @@ async def test_filters_keep_the_manager_chain_and_the_fold_state(site: Site) -> 
     async def body(browser: Any) -> None:
         world = OrgWorld()
         async with org_page(browser, site, world) as page:
-            await page.get_by_role("button", name="Collapse Siti Rahman's team (3)").click()
+            await page.get_by_role("button", name="Siti Rahman's team (3)").click()
 
             await page.get_by_label("Department").select_option(label="Finance")
             await expect(count_text(page)).to_have_text("3 people shown")
@@ -454,8 +455,10 @@ async def test_csv_download_has_header_bom_and_safe_rows(site: Site) -> None:
     async def body(browser: Any) -> None:
         world = OrgWorld()
         async with org_page(browser, site, world) as page:
+            download_button = page.get_by_role("button", name="Download CSV")
+            await expect(download_button).to_have_text(f"Download CSV ({len(world.nodes)} people)")
             async with page.expect_download() as download:
-                await page.get_by_role("button", name="Download CSV").click()
+                await download_button.click()
             saved = await download.value
             assert saved.suggested_filename == "org-chart.csv"
             raw = (await saved.path()).read_bytes()
@@ -474,9 +477,12 @@ async def test_csv_download_has_header_bom_and_safe_rows(site: Site) -> None:
             ]
             assert len(rows) == len(world.nodes) + 1
             # No row starts with a formula: the name that began with "=" has a leading apostrophe.
-            assert all(not line[0].startswith(("=", "+", "-", "@")) for line in rows[1:])
+            assert all(not cell.startswith(("=", "+", "-", "@")) for line in rows for cell in line)
             zul = next(line for line in rows if "Zul Karim" in line[0])
             assert zul[0] == "'=Zul Karim"
+            # So do a job title and a department name that begin with a formula character.
+            clerk = next(line for line in rows if line[0] == "Dispatch Clerk")
+            assert clerk[1:3] == ["'=Dispatch clerk", "'-Night shift"]
             lina = next(line for line in rows if line[0] == "Lina Wong")
             assert lina[:6] == [
                 "Lina Wong",
@@ -491,8 +497,10 @@ async def test_csv_download_has_header_bom_and_safe_rows(site: Site) -> None:
 
             # A filtered view downloads what is shown.
             await page.get_by_label("Department").select_option(label="Finance")
+            filtered_button = page.get_by_role("button", name="Download CSV")
+            await expect(filtered_button).to_have_text("Download CSV (3 people)")
             async with page.expect_download() as filtered:
-                await page.get_by_role("button", name="Download CSV").click()
+                await filtered_button.click()
             text = (await (await filtered.value).path()).read_text(encoding="utf-8-sig")
             assert len(list(csv.reader(io.StringIO(text)))) == 4
 
@@ -505,7 +513,7 @@ async def test_print_asks_the_browser_and_shows_the_whole_tree_without_the_conso
     async def body(browser: Any) -> None:
         world = OrgWorld()
         async with org_page(browser, site, world, theme="night") as page:
-            await page.get_by_role("button", name="Collapse Siti Rahman's team (3)").click()
+            await page.get_by_role("button", name="Siti Rahman's team (3)").click()
             await page.get_by_role("button", name="Print").click()
             assert await page.evaluate("() => window.__prints") == 1
 
@@ -552,7 +560,7 @@ async def test_print_asks_the_browser_and_shows_the_whole_tree_without_the_conso
             assert max(float(n) for n in re.findall(r"[\d.]+", chip_ink)[:3]) < 100, chip_ink
             await page.emulate_media(media="screen")
             await expect(
-                page.get_by_role("button", name="Expand Siti Rahman's team (3)")
+                page.get_by_role("button", name="Siti Rahman's team (3)")
             ).to_have_attribute("aria-expanded", "false")
             await expect(row(page, "Aiman Yusof")).to_be_hidden()
 

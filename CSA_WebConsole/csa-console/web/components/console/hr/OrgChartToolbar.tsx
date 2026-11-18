@@ -7,11 +7,11 @@ import { field, secondary, Notice } from "../ui";
 export const FILE_NAME = "org-chart.csv";
 
 /**
- * Hands `text` to the browser as a UTF-8 file. The byte order mark goes in here, at download time
+ * Hands `text` to the browser as a UTF-8 file. The byte order mark (U+FEFF, written as an escape so it can be seen) goes in here, at download time
  * only, so a spreadsheet opens Malay names correctly while the CSV text stays clean.
  */
 function saveCsv(text: string) {
-  const url = URL.createObjectURL(new Blob(["﻿", text], { type: "text/csv;charset=utf-8" }));
+  const url = URL.createObjectURL(new Blob(["\uFEFF", text], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;
   link.download = FILE_NAME;
@@ -40,7 +40,8 @@ export interface OrgChartToolbarProps {
 export function OrgChartToolbar({ shown, choices, filter, onFilter, onClear, onExpandAll, onCollapseAll }: OrgChartToolbarProps) {
   const [problem, setProblem] = useState("");
   const hasEntities = choices.legalEntities.length > 0;
-  const filtered = Boolean(filter.department_id || filter.legal_entity || filter.query);
+  const filtered = Boolean(filter.department_id || filter.legal_entity || filter.query?.trim());
+  const people = shown.nodes.length;
   function download() {
     try { saveCsv(orgChartCsv(shown, { includeLegalEntity: hasEntities })); setProblem(""); }
     catch { setProblem("We could not prepare the CSV. Try again."); }
@@ -65,7 +66,7 @@ export function OrgChartToolbar({ shown, choices, filter, onFilter, onClear, onE
       <button type="button" className={secondary} onClick={onExpandAll}>Expand all</button>
       <button type="button" className={secondary} onClick={onCollapseAll}>Collapse all</button>
       <button type="button" className={secondary} onClick={() => window.print()}>Print</button>
-      <button type="button" className={secondary} onClick={download}>Download CSV</button>
+      <button type="button" className={secondary} onClick={download}>Download CSV ({people} {people === 1 ? "person" : "people"})</button>
       {filtered && <button type="button" className={secondary} onClick={onClear}>Clear filters</button>}
     </div>
     {problem && <Notice error>{problem}</Notice>}

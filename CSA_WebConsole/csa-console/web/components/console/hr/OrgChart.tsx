@@ -62,7 +62,7 @@ function Branch({ nodes, depth, prefix, loopIds, hrefFor, open, onToggle }: Bran
         <div data-testid="org-row" className="flex flex-wrap items-center gap-x-2 gap-y-1">
           {kids > 0
             ? <button type="button" aria-expanded={isOpen} aria-controls={listId}
-              aria-label={`${isOpen ? "Collapse" : "Expand"} ${node.display_name}'s team (${kids})`}
+              aria-label={`${node.display_name}'s team (${kids})`}
               onClick={() => onToggle(node.employee_id, !isOpen)}
               className="inline-flex size-8 shrink-0 items-center justify-center rounded-[var(--fs-radius-control)] text-[color:var(--fs-text-secondary)] hover:bg-[var(--fs-tile)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)] pointer-coarse:size-11">
               <Chevron open={isOpen} /></button>
@@ -112,24 +112,24 @@ export function OrgChart({ chart, owner, canSeeLegalEntity, hrefFor }: {
   }, [chart, canSeeLegalEntity]);
   const names = new Map(chart.nodes.map(node => [node.employee_id, node.display_name]));
   const looped = chart.looped.flatMap(id => names.get(id) ?? []);
+  const loopIds = useMemo(() => new Set(chart.looped), [chart]);
   // Narrowed, every person on the tree is a match or above one, so every branch opens: the
   // full-chart folds are left alone and apply again once the filter is cleared.
   const open = (id: string, depth: number) => (filtered ? narrowFolds : folds).get(id) ?? (filtered || depth < OPEN_DEPTH);
   const folded = shown.nodes.length - seen(tree, 0, open);
-  const loopIds = useMemo(() => new Set(chart.looped), [chart]);
   const setFoldsNow = filtered ? setNarrowFolds : setFolds;
   const setAll = (value: boolean) => setFoldsNow(new Map(shown.nodes.map(node => [node.employee_id, value])));
   const narrow = (change: Partial<OrgChartFilter>) => { setNarrowFolds(new Map()); setFilter(old => ({ ...old, ...change })); };
   const clear = () => { setNarrowFolds(new Map()); setFilter({}); result.current?.focus(); };
 
   return <div className="space-y-4">
-    {owner && looped.length > 0 && <Notice error>
-      These people are each other&apos;s managers in a loop: {looped.join(", ")}. Change a manager on their profile to fix it.
-    </Notice>}
     <OrgChartToolbar shown={shown} choices={choices} filter={filter} onFilter={narrow} onClear={clear}
       onExpandAll={() => setAll(true)} onCollapseAll={() => setAll(false)} />
     <div data-org-print className="space-y-3">
       <p className="hidden font-semibold print:block">Org chart</p>
+      {owner && looped.length > 0 && <Notice error>
+        These people are each other&apos;s managers in a loop: {looped.join(", ")}. Change a manager on their profile to fix it.
+      </Notice>}
       <h3 ref={result} tabIndex={-1} className="font-(family-name:--fs-font-heading) text-sm font-semibold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--fs-focus)]">Reporting lines</h3>
       <p className="text-sm text-[color:var(--fs-text-secondary)]" aria-live="polite">
         <span data-testid="org-count">{shown.nodes.length} {shown.nodes.length === 1 ? "person" : "people"} shown</span>
