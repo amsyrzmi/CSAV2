@@ -15,11 +15,12 @@ import re
 from typing import Any
 
 import pytest
+from csa.hr.default_templates import DEFAULT_TEMPLATES
 from playwright.async_api import Locator, Page, expect
 
 from tests import test_services_redesign_browser as services
 from tests.hr_process_world import DEPARTMENT, TEMPLATE, Template
-from tests.test_hr_access_browser import EMPLOYEE, MANAGER, STAFF
+from tests.test_hr_access_browser import EMPLOYEE, MANAGER, OWNER, STAFF
 from tests.test_hr_processes_browser import (
     LIST,
     SIDEWAYS,
@@ -29,7 +30,7 @@ from tests.test_hr_processes_browser import (
 )
 from tests.test_services_browser import TENANT, WAIT
 from tests.test_services_redesign_browser import Site, with_browser
-from tests.test_team_browser import THEMES, overflow
+from tests.test_team_browser import THEMES, WIDTHS, overflow
 
 pytestmark = pytest.mark.asyncio
 
@@ -1073,5 +1074,301 @@ async def test_templates_fit_phone_widths_in_three_themes(site: Site, theme: str
                         )
                     sideways = await page.get_by_test_id("hr-processes").evaluate(SIDEWAYS)
                     assert sideways == {"out": [], "scrollers": []}, (where, sideways)
+
+    await with_browser(body)
+
+
+# ---- Create the default templates (HR PR 4) ----
+
+DEFAULTS = "Create the default templates"
+DEFAULTS_PATH = "hr/templates/defaults"
+ONBOARDING_DEFAULT, OFFBOARDING_DEFAULT = (template.name for template in DEFAULT_TEMPLATES)
+DEFAULTS_UNCERTAIN = (
+    "We couldn't confirm that. Choose Create the default templates again; it won't be done twice."
+)
+DEFAULTS_UNAVAILABLE = "The default templates are not available right now."
+NOTHING_CREATED = "These templates already exist: nothing was created."
+
+
+def defaults_button(page: Page) -> Locator:
+    return template_list(page).get_by_role("button", name=DEFAULTS, exact=True)
+
+
+def defaults_dialog(page: Page) -> Locator:
+    return page.get_by_test_id("hr-defaults-dialog")
+
+
+def defaults_confirm(page: Page) -> Locator:
+    return defaults_dialog(page).get_by_role("button", name=DEFAULTS, exact=True)
+
+
+def defaults_notice(page: Page) -> Locator:
+    return page.get_by_test_id("hr-defaults-notice")
+
+
+def defaults_world(*, on: bool = True, empty: bool = True) -> TemplatesWorld:
+    """The templates company with the deploy switch on and, by default, no template at all."""
+    world = TemplatesWorld()
+    world.processes.defaults_enabled = on
+    if empty:
+        world.processes.templates = []
+    return world
+
+
+async def test_the_create_defaults_button_never_exists_when_it_does_not_apply(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        cases = {
+            # The deploy switch is off: no button and no hint, with templates and without.
+            "off with templates": defaults_world(on=False, empty=False),
+            "off and empty": defaults_world(on=False),
+            # The switch is on, but the company already has an active template of each kind.
+            "on and created": defaults_world(on=True, empty=False),
+        }
+        for name, world in cases.items():
+            async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+                await expect(
+                    template_list(page).get_by_role("link", name="New template")
+                ).to_be_visible(timeout=WAIT)
+                await page.wait_for_timeout(300)
+                await expect(template_list(page).get_by_role("button")).to_have_count(0)
+                text = await template_list(page).inner_text()
+                assert "default" not in text.lower(), (name, text)
+                assert world.processes.defaults_calls == [], name
+        # A read-only session never sees it, even with the switch on and nothing created.
+        world = defaults_world()
+        async with processes_page(
+            browser, site, world, TEMPLATES, role="read_only", ready=template_list
+        ) as page:
+            await expect(template_list(page).get_by_text("No templates yet.")).to_be_visible(
+                timeout=WAIT
+            )
+            await page.wait_for_timeout(300)
+            await expect(template_list(page).get_by_role("button")).to_have_count(0)
+            await expect(template_list(page)).not_to_contain_text("default")
+            assert world.processes.defaults_calls == []
+            assert [c for c in world.calls if c["method"] == "POST"] == []
+
+    await with_browser(body)
+
+
+async def test_the_defaults_dialog_says_what_it_creates_and_closes_cleanly(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            button = defaults_button(page)
+            await expect(button).to_be_visible(timeout=WAIT)
+            dialog = defaults_dialog(page)
+            for closer in ("escape", "cancel", "close"):
+                await button.click()
+                await expect(dialog).to_be_visible()
+                await expect(dialog.get_by_role("heading", name=DEFAULTS)).to_be_visible()
+                assert await focus_place(page, "hr-defaults-dialog") == "dialog", closer
+                for text in (
+                    ONBOARDING_DEFAULT,
+                    OFFBOARDING_DEFAULT,
+                    "checklist of reminders",
+                    "do not file anything",
+                    "not legal advice",
+                    "official source",
+                    "company default",
+                    "the next person you add starts onboarding with real tasks and reminders",
+                    "You can edit both afterwards",
+                ):
+                    await expect(dialog).to_contain_text(text)
+                # aria-describedby points at one element that says what the dialog does.
+                described = await dialog.get_attribute("aria-describedby")
+                assert described, closer
+                assert await page.locator(f"[id='{described}']").count() == 1, described
+                await expect(page.locator(f"[id='{described}']")).to_contain_text(
+                    "checklist of reminders"
+                )
+                text = await dialog.inner_text()
+                assert not UUID.search(text), text
+                assert not [code for code in CODES if code in text], text
+                if closer == "escape":
+                    await page.keyboard.press("Escape")
+                elif closer == "cancel":
+                    await dialog.get_by_role("button", name="Cancel", exact=True).click()
+                else:
+                    await dialog.get_by_role("button", name="Close", exact=True).click()
+                await expect(dialog).to_have_count(0)
+                await expect(button).to_be_focused()
+            assert world.processes.defaults_calls == []
+            assert world.template_calls("POST", DEFAULTS_PATH) == []
+
+    await with_browser(body)
+
+
+async def test_confirming_creates_both_templates_once_and_links_them(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            await defaults_button(page).click(timeout=WAIT)
+            confirm = defaults_confirm(page)
+            # Two clicks in the same task: the second must not send a second request.
+            await confirm.evaluate("(button) => { button.click(); button.click(); }")
+            notice = defaults_notice(page)
+            await expect(notice).to_be_visible(timeout=WAIT)
+            await expect(defaults_dialog(page)).to_have_count(0)
+            await expect(notice).to_contain_text(
+                f"Created {ONBOARDING_DEFAULT} and {OFFBOARDING_DEFAULT}."
+            )
+            await expect(notice).to_be_focused()
+            assert await focus_place(page, "hr-defaults-notice") == "dialog"
+            await page.wait_for_timeout(500)
+            (call,) = world.template_calls("POST", DEFAULTS_PATH)
+            assert_template_write(call, "POST", DEFAULTS_PATH, None)
+            assert world.processes.defaults_calls == [OWNER]
+            made = {t.name: t.template_id for t in world.processes.templates}
+            assert set(made) == {ONBOARDING_DEFAULT, OFFBOARDING_DEFAULT}, made
+            for name in made:
+                link = notice.get_by_role("link", name=name, exact=True)
+                await expect(link).to_have_attribute("href", template_path(made[name]))
+            # The list was read again and shows both, with their steps; the button is gone.
+            for template in DEFAULT_TEMPLATES:
+                row = page.get_by_test_id(f"hr-template-row-{made[template.name]}")
+                await expect(row).to_contain_text(f"{len(template.steps)} steps", timeout=WAIT)
+                await expect(row).to_contain_text("Everyone")
+            await expect(defaults_button(page)).to_have_count(0)
+            text = await notice.inner_text()
+            assert not UUID.search(text), text
+            await notice.get_by_role("link", name=ONBOARDING_DEFAULT, exact=True).click()
+            await page.wait_for_url(f"{site.base}{template_path(made[ONBOARDING_DEFAULT])}")
+            await expect(editor(page).get_by_label("Name", exact=True)).to_have_value(
+                ONBOARDING_DEFAULT, timeout=WAIT
+            )
+
+    await with_browser(body)
+
+
+async def test_templates_that_already_exist_are_said_plainly_and_not_duplicated(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        everything = list(TemplatesWorld().processes.templates)
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            await defaults_button(page).click(timeout=WAIT)
+            # Another tab made them since this list was read.
+            world.processes.templates = list(everything)
+            await defaults_confirm(page).click()
+            notice = defaults_notice(page)
+            await expect(notice).to_have_text(NOTHING_CREATED, timeout=WAIT)
+            await expect(notice).to_be_focused()
+            assert [t.name for t in world.processes.templates] == [t.name for t in everything]
+            assert world.processes.defaults_calls == [OWNER]
+            # The list was read again: it shows what exists and no button.
+            await expect(page.get_by_test_id(f"hr-template-row-{WAREHOUSE}")).to_be_visible(
+                timeout=WAIT
+            )
+            await expect(defaults_button(page)).to_have_count(0)
+
+    await with_browser(body)
+
+
+async def test_one_kind_already_there_is_left_alone_and_the_other_is_created(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        everything = list(TemplatesWorld().processes.templates)
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            await defaults_button(page).click(timeout=WAIT)
+            world.processes.templates = [t for t in everything if t.kind != "offboarding"]
+            await defaults_confirm(page).click()
+            notice = defaults_notice(page)
+            await expect(notice).to_contain_text(f"Created {OFFBOARDING_DEFAULT}.", timeout=WAIT)
+            await expect(notice).to_contain_text(
+                "The company already had an active onboarding template, so it was left as it is."
+            )
+            await expect(notice).not_to_contain_text(NOTHING_CREATED)
+            assert [t.name for t in world.processes.templates if t.kind == "offboarding"] == [
+                OFFBOARDING_DEFAULT
+            ]
+
+    await with_browser(body)
+
+
+async def test_a_failed_create_keeps_the_dialog_open_and_a_retry_keeps_the_key(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        world.processes.failures[f"POST {DEFAULTS_PATH}"] = [(500, "synthetic_outage")]
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            await defaults_button(page).click(timeout=WAIT)
+            dialog = defaults_dialog(page)
+            await defaults_confirm(page).click()
+            await expect(dialog).to_contain_text(DEFAULTS_UNCERTAIN, timeout=WAIT)
+            await expect(dialog.locator("[tabindex='-1']:has([role=alert])")).to_be_focused()
+            assert await focus_place(page, "hr-defaults-dialog") == "dialog"
+            await expect(defaults_notice(page)).to_have_count(0)
+            # The confirm button works again, and the retry is the same operation (same key).
+            await defaults_confirm(page).click()
+            await expect(defaults_notice(page)).to_contain_text("Created", timeout=WAIT)
+            await expect(dialog).to_have_count(0)
+            calls = world.template_calls("POST", DEFAULTS_PATH)
+            assert len(calls) == 2 and len({c["key"] for c in calls}) == 1 and calls[0]["key"], (
+                calls
+            )
+            assert world.processes.defaults_calls == [OWNER]
+
+    await with_browser(body)
+
+
+async def test_the_switch_turned_off_mid_session_is_said_and_the_button_goes(site: Site) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        async with processes_page(browser, site, world, TEMPLATES, ready=template_list) as page:
+            await defaults_button(page).click(timeout=WAIT)
+            world.processes.defaults_enabled = False
+            dialog = defaults_dialog(page)
+            await defaults_confirm(page).click()
+            await expect(dialog).to_contain_text(DEFAULTS_UNAVAILABLE, timeout=WAIT)
+            await expect(dialog.locator("[tabindex='-1']:has([role=alert])")).to_be_focused()
+            assert world.processes.defaults_calls == []
+            await dialog.get_by_role("button", name="Cancel", exact=True).click()
+            await expect(dialog).to_have_count(0)
+            # The list was read again: the switch is off, so the button is gone, and focus did
+            # not fall to the page.
+            await expect(defaults_button(page)).to_have_count(0, timeout=WAIT)
+            await expect(
+                template_list(page).get_by_role("link", name="New template")
+            ).to_be_focused()
+
+    await with_browser(body)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+async def test_the_defaults_dialog_and_notice_fit_phone_widths_in_three_themes(
+    site: Site, theme: str
+) -> None:
+    async def body(browser: Any) -> None:
+        world = defaults_world()
+        async with processes_page(
+            browser, site, world, TEMPLATES, theme=theme, width=320, ready=template_list
+        ) as page:
+            await expect(page.locator("html")).to_have_attribute("data-theme", theme)
+            await expect(defaults_button(page)).to_be_visible(timeout=WAIT)
+            dialog = defaults_dialog(page)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 640})
+                await defaults_button(page).click()
+                await expect(dialog).to_be_visible()
+                await page.wait_for_timeout(150)
+                where = (theme, width)
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], (where, measured)
+                box = await dialog.bounding_box()
+                assert box and box["x"] >= 0 and box["x"] + box["width"] <= width, (where, box)
+                sideways = await dialog.evaluate(SIDEWAYS)
+                assert sideways == {"out": [], "scrollers": []}, (where, sideways)
+                await page.keyboard.press("Escape")
+                await expect(dialog).to_have_count(0)
+            await page.set_viewport_size({"width": 320, "height": 900})
+            await defaults_button(page).click()
+            await defaults_confirm(page).click()
+            await expect(defaults_notice(page)).to_be_visible(timeout=WAIT)
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 900})
+                await page.wait_for_timeout(150)
+                measured = await overflow(page)
+                assert measured["scroll"] <= measured["inner"], (theme, width, measured)
+                sideways = await page.get_by_test_id("hr-processes").evaluate(SIDEWAYS)
+                assert sideways == {"out": [], "scrollers": []}, (theme, width, sideways)
 
     await with_browser(body)

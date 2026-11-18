@@ -79,7 +79,7 @@ export function processErrorText(code: string): string {
 export type ProcessAction =
   | "start" | "cancel" | "close" | "save" | "deactivate"
   | "complete" | "check" | "complete-for" | "approve" | "send-back" | "skip" | "reschedule" | "reassign" | "note"
-  | "clear" | "mark-read" | "mark-all-read";
+  | "clear" | "mark-read" | "mark-all-read" | "create-defaults";
 const BUTTON: Record<ProcessAction, string> = {
   start: "Start process",
   cancel: "Cancel process",
@@ -100,7 +100,11 @@ const BUTTON: Record<ProcessAction, string> = {
   clear: "Clear",
   "mark-read": "Mark read",
   "mark-all-read": "Mark all read",
+  "create-defaults": "Create the default templates",
 };
+
+/** The route answers 404 while the deploy switch is off: said in words instead of "does not exist". */
+export const DEFAULTS_UNAVAILABLE = "The default templates are not available right now.";
 
 /** An `ApiError`, or anything: a definite answer is a 4xx with a code. */
 function refusal(failure: unknown): { status: number; code: string } | null {
@@ -117,6 +121,8 @@ function refusal(failure: unknown): { status: number; code: string } | null {
  */
 export function processSaveError(failure: unknown, action: ProcessAction): string {
   const definite = refusal(failure);
+  if (definite && action === "create-defaults" && definite.status === 404 && definite.code === "resource_unavailable")
+    return DEFAULTS_UNAVAILABLE;
   if (definite) return processErrorText(definite.code);
   return `We couldn't confirm that. Choose ${BUTTON[action]} again; it won't be done twice.`;
 }

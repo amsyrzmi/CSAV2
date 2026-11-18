@@ -15,7 +15,7 @@ const apiUrl = moduleUrl(await read("../lib/api.ts"));
 const hrApiUrl = moduleUrl((await read("../lib/hr-api.ts")).replace('"./api"', JSON.stringify(apiUrl)));
 const { processClient } = await import(moduleUrl((await read("../lib/hr-process-api.ts"))
   .replace('"./api"', JSON.stringify(apiUrl)).replace('"./hr-api"', JSON.stringify(hrApiUrl))));
-const { processErrorText, processSaveError, processLoadError, PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR } = await import(
+const { processErrorText, processSaveError, processLoadError, PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR, DEFAULTS_UNAVAILABLE } = await import(
   moduleUrl((await read("../lib/hr-process-copy.ts")).replace('"./api"', JSON.stringify(apiUrl))));
 const { ApiError } = await import(apiUrl);
 
@@ -125,6 +125,27 @@ test("template writes use the right method, path and exact body, each with a key
   assert.ok(keys.every(Boolean));
   assert.equal(new Set(keys).size, 3);
   assert.ok(requests.every((request) => request.headers.get("X-CSRF-Token") === "synthetic-csrf"));
+});
+
+test("createDefaultTemplates posts to /templates/defaults with no body, a key and CSRF, and keeps the key until it succeeds", async () => {
+  const requests = await capture(async (client) => {
+    await assert.rejects(client.createDefaultTemplates());
+    await assert.rejects(client.createDefaultTemplates());
+    await client.createDefaultTemplates();
+    await client.createDefaultTemplates();
+  }, (count) => count <= 2 ? new Response("{}", { status: 500 }) : Response.json({ created: [], skipped: [], duplicate: false }));
+  assert.equal(requests.length, 4);
+  for (const request of requests) {
+    assert.equal(request.method, "POST");
+    assert.equal(request.path, `${BASE}/templates/defaults?${SUFFIX}`);
+    assert.equal(request.body, undefined);
+    assert.equal(request.headers.get("X-CSRF-Token"), "synthetic-csrf");
+  }
+  const keys = requests.map((request) => request.headers.get("Idempotency-Key"));
+  assert.ok(keys.every(Boolean));
+  // The two failed attempts and the one that worked are the same operation; after it succeeds a new one has a new key.
+  assert.equal(new Set(keys.slice(0, 3)).size, 1);
+  assert.notEqual(keys[3], keys[0]);
 });
 
 test("an update always sends rules, even null, so a save can never clear them by omission", async () => {
@@ -320,6 +341,20 @@ test("a failed write: a 4xx gets the refusal sentence, a 5xx or network error th
   // My tasks names the button the person chose: an automatic check, or a step done on someone's behalf.
   assert.match(processSaveError(null, "check"), /Choose Check now again/);
   assert.match(processSaveError(null, "complete-for"), /Choose Mark done for them again/);
+  assert.equal(processSaveError(null, "create-defaults"),
+    "We couldn't confirm that. Choose Create the default templates again; it won't be done twice.");
+});
+
+test("the create-defaults refusals: the gate switched off mid-session, a read-only account, a reused key", () => {
+  assert.equal(processSaveError(refused(404, "resource_unavailable"), "create-defaults"), DEFAULTS_UNAVAILABLE);
+  assert.match(DEFAULTS_UNAVAILABLE, /not available/);
+  assert.doesNotMatch(DEFAULTS_UNAVAILABLE, SNAKE);
+  // Every other refusal keeps its own sentence.
+  assert.equal(processSaveError(refused(403, "read_only_session"), "create-defaults"), processErrorText("read_only_session"));
+  assert.equal(processSaveError(refused(409, "idempotency_conflict"), "create-defaults"), processErrorText("idempotency_conflict"));
+  assert.equal(processSaveError(refused(409, "human_operation_required"), "create-defaults"), processErrorText("human_operation_required"));
+  // The same 404 on another write is unchanged.
+  assert.equal(processSaveError(refused(404, "resource_unavailable"), "save"), processErrorText("resource_unavailable"));
 });
 
 test("a failed read: a known refusal says so, anything else is a plain retry", () => {
@@ -333,7 +368,7 @@ test("a failed read: a known refusal says so, anything else is a plain retry", (
 
 test("no fallback, uncertain or load sentence tells the person to reload", () => {
   const actions = ["start", "cancel", "close", "save", "deactivate", "complete", "check", "complete-for", "approve", "send-back",
-    "skip", "reschedule", "reassign", "note"];
+    "skip", "reschedule", "reassign", "note", "create-defaults"];
   const sentences = [PROCESS_ERROR_FALLBACK, PROCESS_LOAD_ERROR, processLoadError(null),
     ...actions.map((action) => processSaveError(null, action)), ...actions.map((action) => processSaveError(refused(500, "x"), action))];
   for (const sentence of sentences) {
