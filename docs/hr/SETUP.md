@@ -104,6 +104,22 @@ and frontend for the migrate step.
   chart. A member whose directory access was set by hand to only some of those fields is not
   “directory”: they get no People tab. Anyone else with HR access sees only their own profile,
   under Home.
+- **The org chart.** **People → Org chart** draws the company as a tree by manager. Each manager's
+  team folds and unfolds with a button (the first three levels open at first; **Expand all** and
+  **Collapse all** change every team). A person row shows the name (a link to their profile), the job
+  title, the department as a coloured chip that always carries the department name, and **Starting**
+  or **Leaving** where it applies. A person at the top is labelled **No manager**, **Manager not in
+  the chart** (their manager left or is not visible to the viewer) or **In a reporting loop** (the HR
+  owner also gets a notice naming the loop, which is fixed by changing a manager on a profile). Search
+  (name or job title) and the department filter narrow the chart to the matches and the managers
+  above them; HR also gets a legal entity filter when anyone has one. The live line says “N people
+  shown”, and **Clear filters** resets. **Print** prints the whole tree, unfolded, without the rest of
+  the page (other pages print as usual). **Download CSV (N people)** saves what is shown now, as UTF-8
+  with a byte order mark, with cells that start like a formula (`=`, `+`, `-`, `@`) made plain text.
+  Privacy follows the People list rules, enforced by the server: everyone who can open the chart sees
+  Starting, but the Leaving marker (the last day) is visible only to HR, the person themselves and
+  their direct manager, and the legal entity only to HR; a plain colleague sees a leaving person as an
+  ordinary one. The chart reads `GET /console/v1/hr/org-chart`; no migration was needed.
 - **The Left filter.** People who have left are hidden by default. The HR owner and Manage people
   holders choose **Left** in the status filter to see them. People who are leaving stay in the
   default list, marked Leaving. Marking someone as leaving and rehiring them are on the profile
@@ -223,9 +239,61 @@ round (every 15 minutes), reminders on Home (the HR team in **Local HR reminders
 the template editor reach production only with the deploy of the HR processes console (PR 3,
 migration 0636); until then there is no tab to create templates from. Create templates there only
 when you are ready for staff to receive tasks, because a template starts a process for the
-next person added and sends real reminders. The Malaysian default templates arrive in a later
-release; until then a company starts with none. The checks to run on staging first are in
-[PROCESSES_RETEST.md](./PROCESSES_RETEST.md).
+next person added and sends real reminders. A company starts with no templates, unless the
+Malaysian default templates below have been turned on and HR has created them. The checks to run on
+staging first are in [PROCESSES_RETEST.md](./PROCESSES_RETEST.md).
+
+### The Malaysian default templates (HR PR 4)
+
+Two ready-made templates, **Onboarding (Malaysia default)** (14 steps) and **Offboarding (Malaysia
+default)** (15 steps), live in `csa/hr/default_templates.py`. They are English only, and every step
+is a reminder with a reference, not a filing or a calculation: each statutory step names the official
+body, form or portal, the timing as that source words it, and the date it was checked, and a
+company-practice step says it has no statutory source. No rate, ceiling or amount appears in them.
+Duties that belong to the company rather than to one person (employer registrations, monthly
+deductions and returns, HRD Corp) are left out on purpose. The research behind each step is in
+[default-templates-sources.md](./default-templates-sources.md), with its confidence and what could not
+be read, and a generated document, [DEFAULT_TEMPLATES_REVIEW.md](./DEFAULT_TEMPLATES_REVIEW.md), lays
+out every step with who does it, when it is due, the source, the open questions for a reviewer and a
+sign-off block. A test fails if that document differs from the content file.
+
+**They are off until the review is signed.** The action that creates them is behind a deploy switch,
+the rollout flag `CSA_STAGING_HR_DEFAULT_TEMPLATES` (values `false` and `true`). It is declared but
+not set in `deploy/staging-rollout.env` or `deploy/production-rollout.env`, so it is off on staging
+and production. The app setting it feeds is `HR_DEFAULT_TEMPLATES_ENABLED`; that name is not what goes
+in a rollout file. While it is off, the route answers 404 `resource_unavailable`, the template list
+reports `defaults.available: false` and the console shows no button.
+
+The steps to turn it on:
+
+1. A reviewer (an HR practitioner or accountant the owner names) reads
+   [DEFAULT_TEMPLATES_REVIEW.md](./DEFAULT_TEMPLATES_REVIEW.md), answers its open questions and fills
+   in its sign-off block (name and role, date, approved or changes needed). If changes are needed,
+   the content file is changed, the review document is rendered again with
+   `python -m scripts.render_default_templates_review`, and the review starts again.
+2. The owner records the sign-off.
+3. A reviewed pull request adds the line `CSA_STAGING_HR_DEFAULT_TEMPLATES=true` to
+   `deploy/staging-rollout.env`, and the staging rollout applies it (the gateway is recreated; there
+   is no migration). Run the defaults rows of [PROCESSES_RETEST.md](./PROCESSES_RETEST.md) on staging.
+4. Only after the staging check, a second reviewed pull request adds the same line to
+   `deploy/production-rollout.env`, and production takes it through the normal production deploy.
+
+**What turning it on does.** Nothing is created by the switch itself. It lets the HR owner and Manage
+people holders see **Create the default templates** in **Processes → Templates**, next to **New
+template**; the button shows only while the defaults have not been created, and never to a read-only
+member. Its dialog says what the two templates are and that they become the company defaults. Confirm
+once and both are created together, or neither is. **Both become the company default of their kind
+(they have no Applies to rule), so from then on the next person added starts the onboarding with real
+tasks and reminders, and the next person marked as leaving starts the offboarding.** People already
+employed get nothing (HR can start a process for them by hand). The action runs once per company: a
+second click, a second tab or a retry creates nothing more, and a kind that already has an active
+template is skipped, so a company that made its own onboarding or offboarding template keeps it and
+gets only the other default (a note says which was left alone). A company that wants the default of a
+kind it already covers deactivates its own template first and then uses the button.
+
+**Editing afterwards.** HR can edit both like any template. Each save is a new version; a process
+already running keeps the frozen copy of the version it started from, and only processes started
+later use the new one.
 
 ## Private recruitment and scheduling
 

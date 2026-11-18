@@ -40,9 +40,9 @@ This document is a checklist of reminders with references. It is not legal advic
 filing: no step files anything with an authority or calculates any amount, and no rate, ceiling,
 threshold or amount appears in the templates. Each statutory step names the official body, form
 or portal and the timing wording as the official source states it, with the date it was checked;
-a company-practice step says it has no statutory source. Where the
-research could not confirm a timing on an official page, the note says so and the reviewer
-decides. The research behind every step, with the full wording and its confidence, is in
+a company-practice step says it has no statutory source. Where the research could not confirm a
+timing on an official page, the note says so and the reviewer decides. The research behind every
+step, with the full wording and its confidence, is in
 [default-templates-sources.md](./default-templates-sources.md).
 
 How the steps behave: a due date is the anchor date (start date, probation end date or last day)
@@ -193,8 +193,10 @@ _SIGN_OFF = """\
 
 Reviewer name and role: ____ Date: ____ Decision: approved / changes needed ____
 
-The create-defaults action stays off until the owner records this sign-off and flips the switch by
-a reviewed pull request.
+The create-defaults action stays off until the owner records this sign-off. Then a reviewed pull
+request adds the line `CSA_STAGING_HR_DEFAULT_TEMPLATES=true` to `deploy/staging-rollout.env`, and,
+after the staging check, to `deploy/production-rollout.env`. The line is the rollout flag; the app
+setting it sets, `HR_DEFAULT_TEMPLATES_ENABLED`, is not what goes in those files.
 """
 
 

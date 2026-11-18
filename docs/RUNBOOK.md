@@ -235,6 +235,7 @@ recreated).
 | `CSA_STAGING_JEV_FLOOR_NOUL` | a decimal from 0.5 to 1.0 (default 0.7) | `ASSISTANT_JEV_FLOOR_NOUL` (gateway) |
 | `CSA_STAGING_JEV_FLOOR_CHOICE` | a decimal from 0.5 to 1.0 (default 0.7) | `ASSISTANT_JEV_FLOOR_CHOICE` (gateway) |
 | `CSA_STAGING_CUSTOMER_DECIDE_MODE_DEFAULT` | `llm` (default), `cascade` | `CUSTOMER_DECIDE_MODE_DEFAULT` (worker) |
+| `CSA_STAGING_HR_DEFAULT_TEMPLATES` | `false` (default), `true` | `HR_DEFAULT_TEMPLATES_ENABLED` (gateway); the HR default templates action, off until the review in `docs/hr/DEFAULT_TEMPLATES_REVIEW.md` is signed (`docs/hr/SETUP.md`) |
 
 `CSA_STAGING_JEV_SECRET` accepts only those two names: any other declared secret (a database DSN,
 the Groq key) would be sent to the external Jev API. A decider at `shadow` or `cascade`, or the
