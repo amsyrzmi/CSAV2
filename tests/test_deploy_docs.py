@@ -25,8 +25,8 @@ DEPLOY_DOC = ROOT / "deploy" / "DEPLOY.md"
 PRODUCTION_DOC = ROOT / "deploy" / "PRODUCTION.md"
 PIPELINE_DOC = ROOT / "deploy" / "STAGING_PIPELINE.md"
 RELEASE_DOC = ROOT / "deploy" / "RELEASE.md"
-PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-staging-images.yml"
 WORKFLOWS = ROOT / ".github" / "workflows"
+AUTO_WORKFLOW = WORKFLOWS / "deploy-production-auto.yml"
 SETUP_SCRIPT = ROOT / "deploy" / "github" / "setup-environments.sh"
 
 DEPLOY_NAME = "deploy/DEPLOY.md"
@@ -316,6 +316,7 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "`started by <login>` (a person's run, including a rollback), `same commit`, "
         "`apply is not waiting`, `not a dispatch`, `not on main` or `unreadable fields`",
         "three `workflow_run` links",
+        "is documented to create a run",
         "run <id> moved on; left alone",
         "warning: could not cancel",
         "started deploy-production run",
@@ -339,6 +340,81 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "needs repository admin and exits 1 when any other item of the target is not ok",
     ):
         assert needle in section, needle
+
+
+AUTO_PLAN_SCRIPT = ROOT / "deploy" / "production" / "auto_plan.sh"
+# What `supersede` prints in the parentheses of `left alone: run <id> (<reason>)`, and the order
+# DEPLOY.md lists them in.
+LEFT_ALONE_REASONS = [
+    "started by <login>",
+    "same commit",
+    "apply is not waiting",
+    "not a dispatch",
+    "not on main",
+    "unreadable fields",
+]
+
+
+def _workflow_run_sources(path: Path) -> list[str]:
+    """The workflows whose completion starts this one (``on.workflow_run.workflows``)."""
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    triggers = document.get("on", document.get(True)) or {}
+    if isinstance(triggers, str | list):
+        return []
+    return list((triggers.get("workflow_run") or {}).get("workflows") or [])
+
+
+def _workflow_run_depths() -> dict[str, int]:
+    """The number of ``workflow_run`` links from a workflow that is not started by one to each
+    workflow (``ci`` has none, ``publish-staging-images`` has one, and so on)."""
+    sources = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        name = yaml.safe_load(path.read_text(encoding="utf-8"))["name"]
+        sources[name] = _workflow_run_sources(path)
+
+    def depth(name: str, seen: tuple[str, ...] = ()) -> int:
+        assert name not in seen, f"workflow_run cycle through {name}"
+        return max((depth(source, (*seen, name)) + 1 for source in sources[name]), default=0)
+
+    return {name: depth(name) for name in sources}
+
+
+def test_the_workflow_run_chain_is_three_links_and_the_doc_says_so() -> None:
+    # GitHub runs at most three workflow_run links in a chain; a fourth would silently not start.
+    depths = _workflow_run_depths()
+    assert depths["ci"] == 0
+    assert depths["publish-staging-images"] == 1
+    assert depths["deploy-staging"] == 2
+    assert depths["deploy-production-auto"] == 3
+    assert max(depths.values()) == 3
+    # The dispatched deploy-production is not a workflow_run link.
+    assert depths["deploy-production"] == 0
+
+    auto = _flat(_section(_deploy(), "## Auto-planned production runs (PROD_AUTO_PLAN)"))
+    assert "three `workflow_run` links" in auto
+    assert "`ci`, `publish-staging-images`, `deploy-staging` and this workflow" in auto
+    header = _flat(AUTO_WORKFLOW.read_text(encoding="utf-8").split("\nname:", 1)[0])
+    assert "three `workflow_run` links" in header
+
+
+def test_the_six_left_alone_reasons_are_what_the_script_prints_and_the_doc_lists() -> None:
+    script = AUTO_PLAN_SCRIPT.read_text(encoding="utf-8")
+    printed = [
+        reason.replace("$login", "<login>")
+        for reason in re.findall(r'verdict="([^"]+)"', script)
+        if reason != "cancel"
+    ]
+    assert sorted(set(printed)) == sorted(LEFT_ALONE_REASONS)
+
+    auto = _flat(_section(_deploy(), "## Auto-planned production runs (PROD_AUTO_PLAN)"))
+    (listed,) = re.findall(
+        r"The reason is (.*?) \(a person's run, including a rollback\)(.*?)\.", auto
+    )
+    reasons = re.findall(r"`([^`]+)`", " ".join(listed))
+    assert reasons == LEFT_ALONE_REASONS
+    # The script's own header names the same six, in the same order.
+    header = _flat(script.split("set -euo pipefail", 1)[0])
+    assert "reason: " + ", ".join(LEFT_ALONE_REASONS) in header
 
 
 def test_deploy_doc_states_the_facts_the_review_checked() -> None:
@@ -566,8 +642,9 @@ def test_no_doc_or_workflow_claims_the_owner_approves_the_publish() -> None:
         PIPELINE_DOC: PIPELINE_DOC.read_text(encoding="utf-8"),
         PRODUCTION_DOC: PRODUCTION_DOC.read_text(encoding="utf-8"),
         DEPLOY_DOC: _deploy(),
-        PUBLISH_WORKFLOW: PUBLISH_WORKFLOW.read_text(encoding="utf-8"),
     }
+    for workflow in sorted(WORKFLOWS.glob("*.yml")):
+        texts[workflow] = workflow.read_text(encoding="utf-8")
     for skill in sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md")):
         texts[skill] = skill.read_text(encoding="utf-8")
 
@@ -581,6 +658,21 @@ def test_no_doc_or_workflow_claims_the_owner_approves_the_publish() -> None:
 
 def test_deploy_doc_itself_never_claims_the_owner_approves_the_publish() -> None:
     assert _stale_sentences(_deploy()) == []
+
+
+def test_no_workflow_header_claims_the_owner_approves_the_publish() -> None:
+    # Every workflow file is read (not only the publish one), so a new workflow's header, such as
+    # the auto-plan workflow's, is covered; the stale claim cannot come back in any of them.
+    workflows = sorted(WORKFLOWS.glob("*.yml"))
+    assert {path.name for path in workflows} >= {
+        "ci.yml",
+        "deploy-production-auto.yml",
+        "deploy-production.yml",
+        "deploy-staging.yml",
+        "publish-staging-images.yml",
+    }
+    for path in workflows:
+        assert _stale_sentences(path.read_text(encoding="utf-8"), markdown=False) == [], path.name
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by Task 11")

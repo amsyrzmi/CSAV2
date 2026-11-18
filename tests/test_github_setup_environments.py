@@ -2079,7 +2079,12 @@ def test_apply_twice_makes_no_write_call_the_second_time_even_with_secret_inputs
 
 WORKFLOWS = ROOT / ".github" / "workflows"
 # The workflows that run in a deploy environment or read one of its names.
-DEPLOY_WORKFLOWS = ["deploy-production.yml", "deploy-staging.yml", "publish-staging-images.yml"]
+DEPLOY_WORKFLOWS = [
+    "deploy-production-auto.yml",
+    "deploy-production.yml",
+    "deploy-staging.yml",
+    "publish-staging-images.yml",
+]
 
 
 def names_read(text: str, context: str) -> set[str]:
@@ -2166,11 +2171,7 @@ def test_the_names_in_the_script_match_what_the_workflows_read() -> None:
         environments |= found[2]
 
     assert secrets == script_secrets
-    # PROD_AUTO_PLAN (decision 9) is read by no workflow until deploy-production-auto.yml exists
-    # (a later task of this change), so it is the one variable the script knows and no workflow
-    # in the list reads yet; that task adds the new workflow to DEPLOY_WORKFLOWS and removes this
-    # exception.
-    assert variables == script_variables - {"PROD_AUTO_PLAN"}
+    assert variables == script_variables
     assert environments == script_environments
     # GITLEAKS_LICENSE is read by ci.yml only and is out of scope.
     assert "GITLEAKS_LICENSE" not in script_secrets

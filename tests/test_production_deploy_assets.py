@@ -1833,10 +1833,13 @@ NEW_FILES = (
     PLAN_PERMISSIONS,
     APPLY_PERMISSIONS,
     WORKFLOW,
+    ROOT / ".github" / "workflows" / "deploy-production-auto.yml",
     PRODUCTION_DIR / "backup.sh",
+    PRODUCTION_DIR / "auto_plan.sh",
     PRODUCTION_CONFIG_EXAMPLE,
     STAGING_CONFIG_EXAMPLE,
     ROOT / "deploy" / "aws" / "setup-target.sh",
+    ROOT / "deploy" / "github" / "setup-environments.sh",
 )
 
 

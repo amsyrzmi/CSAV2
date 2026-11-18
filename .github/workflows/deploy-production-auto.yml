@@ -1,0 +1,98 @@
+# Start the production PLAN by itself once a commit has been rolled out to staging. It starts when
+# deploy-staging completes on main and has one job. The job runs deploy/production/auto_plan.sh
+# three times: `check` (is there anything to plan; the job ends green with a notice when not),
+# `supersede` (cancel earlier auto-started runs whose apply is still waiting) and `start`
+# (dispatch deploy-production with no input, then verify that a run appeared).
+#
+# This starts a deploy-production PLAN only. The apply of that run waits for approval on the
+# `production` environment (required reviewers, main only), and nothing here can give that
+# approval: this workflow has no environment, no id-token permission and no secret, it never
+# calls the approval endpoint, and it dispatches with no `sha` input, so it can never ask for a
+# rollback. A person's "Run workflow" on deploy-production stays as it was.
+#
+# Switch: the repository variable PROD_AUTO_PLAN must be `true`. It is off by default (unset or
+# any other value), because both reviewers get a review request for every waiting apply. With the
+# switch off, or when the deploy-staging run did not succeed, the job is skipped and the run
+# concludes `skipped` (grey), not success. A staging run that ended green without staging
+# anything (paused, nothing to roll out, already staged, superseded) is stopped by `check` with a
+# `nothing to plan` notice, so it is not red either.
+#
+# The chain is ci, publish-staging-images, deploy-staging and this workflow: three `workflow_run`
+# links, which is the most GitHub allows. The deploy-production run is a dispatch made with the
+# workflow's own token, not a fourth link. It plans the tip of `main` and never reads the sha of the
+# event: the commit GitHub attaches to the triggering run is not trusted, and nothing from that run
+# is checked out or downloaded. The scripts always come from a checkout of main.
+#
+# Its concurrency group is its own. A real run (the switch on and the staging run green) shares
+# `deploy-production-auto`, newest pending wins; every other run gets a group of its own, so an
+# idle run can never replace a pending real one.
+name: deploy-production-auto
+
+on:
+  workflow_run:
+    workflows: [deploy-staging]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event.workflow_run.conclusion == 'success' && vars.PROD_AUTO_PLAN == 'true' && 'deploy-production-auto' || format('deploy-production-auto-idle-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && vars.PROD_AUTO_PLAN == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      deployments: read
+      packages: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      IMAGE_NAMESPACE: ${{ vars.IMAGE_NAMESPACE }}
+      REGISTRY_USER: ${{ github.actor }}
+      REGISTRY_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # `check` prints `proceed=true|false` and `reason=...` (and the sha of main's tip). It ends the
+      # run green (proceed=false) when there is nothing to plan, and fails on any real problem.
+      # Every later step waits for its verdict.
+      - name: Decide whether there is anything to plan
+        id: gate
+        run: |
+          set -euo pipefail
+          deploy/production/auto_plan.sh check > "$RUNNER_TEMP/gate.txt"
+          cat "$RUNNER_TEMP/gate.txt" >> "$GITHUB_OUTPUT"
+          reason="$(sed -n 's/^reason=//p' "$RUNNER_TEMP/gate.txt")"
+          printf '%s\n' "$reason" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Cancel earlier auto-started runs that are still waiting
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          SHA: ${{ steps.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          deploy/production/auto_plan.sh supersede "$SHA"
+
+      # The `started deploy-production run <id>: <url>` line is not key=value, so it goes to the
+      # log and the summary and never to $GITHUB_OUTPUT.
+      - name: Start the production plan
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          deploy/production/auto_plan.sh start > "$RUNNER_TEMP/start.txt"
+          cat "$RUNNER_TEMP/start.txt"
+          {
+            cat "$RUNNER_TEMP/start.txt"
+            echo
+            echo "The plan starts now; the apply waits for approval on the production environment."
+          } >> "$GITHUB_STEP_SUMMARY"

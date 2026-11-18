@@ -105,8 +105,8 @@ so no workflow change can remove it.
 `deploy-staging` completes on `main`. The chain is `ci`, `publish-staging-images`,
 `deploy-staging` and this workflow: three `workflow_run` links, which is the most GitHub allows;
 the `deploy-production` run it makes is a dispatch, and a dispatch made with the workflow's own
-token always creates a run. It has one job, `plan`, which runs
-`deploy/production/auto_plan.sh` three times:
+token is documented to create a run (`start` fails red when none appears). It has one job, `plan`,
+which runs `deploy/production/auto_plan.sh` three times:
 
 1. `check` decides whether there is anything to plan, with the staging mode of
    `deploy/production/resolve_commit.sh`, and ends green with a notice when there is not. It looks
