@@ -21,6 +21,31 @@ What it models is what was observed on GitHub's environments API (2026-11-18):
 * Branch policies exist only while custom policies are on: the list and the POST of any other
   environment answer 404, as GitHub does for ``deployment_branch_policy: null``.
 
+How it differs from real ``gh`` on purpose, or where its fidelity is unverified (scripts and tests
+must not depend on any of these):
+
+* ``--jq`` runs the system ``jq`` with ``-S`` (object keys sorted, as gh's gojq does). gojq's regex
+  engine and some builtins differ from jq's, and the fake's jq is the more lenient of the two: a
+  filter that passes here can still fail in real gh.
+* ``--paginate`` returns one page and ignores ``per_page``. Combined with a non-GET method it is
+  refused client-side with gh's message (exit 1), as real gh does.
+* A policy POST whose pattern already exists answers ``gh: HTTP 303`` (exit 1). GitHub's OpenAPI
+  description lists 303 for it; how gh prints a 303 (text, exit code) is UNVERIFIED.
+* ``render_environment`` lists the ``branch_policy`` protection rule only for custom policies;
+  whether GitHub also lists it when only ``protected_branches`` is true is UNVERIFIED.
+* A Team reviewer gets a ``login`` in the fake's GET; real GitHub shows a team's ``slug``/``name``
+  instead. Team reviewers are out of scope: their ids are not looked up.
+* ``reviewers`` in a PUT: at most 6; a ``User`` id must be a stored user whose type is ``User``
+  (else 422, an Organization id included). Names of environments and users match
+  case-insensitively and the stored spelling is returned.
+* ``gh secret set`` / ``gh variable set``: names are stored uppercase and a ``GITHUB_`` prefix
+  (any case) is refused with 422; a secret read from stdin loses trailing CR/LF characters; a
+  logged-out gh exits 4. The 404 text of ``secret set`` is ``gh: Not Found (HTTP 404)`` (the plan's
+  wording); real gh prints something like ``failed to fetch public key: HTTP 404: Not Found``
+  (recollection, unverified), so a script must never match on that text. ``--body ""`` falls back
+  to stdin in real gh (unverified) and is not modelled; ``variable set`` takes only ``--body``
+  (its value is stored untrimmed, as gh does).
+
 Anything the fake does not model exits 252 with ``fake gh: unsupported call: ...``: that is a test
 bug, never a silent success. There is deliberately no ``gh auth status``.
 
@@ -110,7 +135,7 @@ def emit(payload, jq):
     if jq is not None:
         try:
             done = subprocess.run(
-                ["jq", "-c", "-r", jq], input=text, capture_output=True, text=True
+                ["jq", "-S", "-c", "-r", jq], input=text, capture_output=True, text=True
             )
         except FileNotFoundError:
             bug("jq is not installed")
@@ -135,12 +160,13 @@ def split_option(args, index, names):
 
 
 def parse_api(args):
-    opts = {"method": None, "input": False, "jq": None}
+    opts = {"method": None, "input": False, "jq": None, "paginate": False}
     path = None
     i = 0
     while i < len(args):
         arg = args[i]
         if arg == "--paginate":
+            opts["paginate"] = True
             i += 1
             continue
         value, used = split_option(args, i, ["--method", "-X"])
@@ -170,6 +196,9 @@ def parse_api(args):
         unsupported()
     if opts["method"] is None:
         opts["method"] = "POST" if opts["input"] else "GET"
+    if opts["paginate"] and opts["method"] != "GET":
+        sys.stderr.write("the `--paginate` option is not supported for non-GET requests\n")
+        finish(1)
     if opts["method"] not in ("GET", "POST", "PUT", "DELETE"):
         unsupported()
     return opts, path
@@ -177,6 +206,22 @@ def parse_api(args):
 
 def is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def find_name(names, wanted):
+    # GitHub matches environment names and logins case-insensitively; return the stored spelling.
+    for name in names:
+        if name.lower() == wanted.lower():
+            return name
+    return None
+
+
+def user_of(state, user_id):
+    for login, entry in state["users"].items():
+        user = entry if isinstance(entry, dict) else {"id": entry}
+        if user["id"] == user_id:
+            return {"login": login, "id": user_id, "type": user.get("type", "User")}
+    return None
 
 
 def login_of(state, user_id):
@@ -243,7 +288,7 @@ def new_environment(state):
     }
 
 
-def validate_put(body, ignored):
+def validate_put(state, body, ignored):
     if not isinstance(body, dict):
         invalid()
 
@@ -253,12 +298,18 @@ def validate_put(body, ignored):
     if given("reviewers"):
         reviewers = body["reviewers"]
         if reviewers is not None:
-            if not isinstance(reviewers, list):
+            if not isinstance(reviewers, list) or len(reviewers) > 6:
                 invalid()
             for item in reviewers:
                 ok = isinstance(item, dict) and item.get("type") in ("User", "Team")
                 if not (ok and is_int(item.get("id"))):
                     invalid()
+                if item["type"] == "User":
+                    # A User reviewer must be an existing account of type User. Team ids are not
+                    # looked up (out of scope).
+                    account = user_of(state, item["id"])
+                    if account is None or account["type"] != "User":
+                        invalid()
     if given("wait_timer"):
         value = body["wait_timer"]
         if not (is_int(value) and 0 <= value <= 43200):
@@ -315,34 +366,38 @@ def apply_put(state, env, body):
 
 def environment_route(state, name, tail, method, opts):
     envs = state["environments"]
+    existing = find_name(envs, name)
     if tail == "" and method == "GET":
-        if name not in envs:
+        if existing is None:
             not_found()
-        emit(render_environment(state, name), opts["jq"])
+        emit(render_environment(state, existing), opts["jq"])
     if tail == "" and method == "PUT":
         try:
             body = json.loads(read_stdin()) if opts["input"] else {}
         except ValueError:
             http_error(400, "Problems parsing JSON")
-        validate_put(body, set(state.get("put_ignores", [])))
-        if name not in envs:
+        validate_put(state, body, set(state.get("put_ignores", [])))
+        if existing is None:
+            existing = name
             envs[name] = new_environment(state)
-        apply_put(state, envs[name], body)
-        state.setdefault("api_bodies", []).append({"method": "PUT", "path": name, "body": body})
+        apply_put(state, envs[existing], body)
+        state.setdefault("api_bodies", []).append(
+            {"method": "PUT", "path": existing, "body": body}
+        )
         save(state)
-        emit(render_environment(state, name), opts["jq"])
+        emit(render_environment(state, existing), opts["jq"])
     if tail == "/secrets" and method == "GET":
-        if name not in envs:
+        if existing is None:
             not_found()
-        secrets = [{"name": key} for key in envs[name]["secrets"]]
+        secrets = [{"name": key} for key in sorted(envs[existing]["secrets"])]
         emit({"total_count": len(secrets), "secrets": secrets}, opts["jq"])
     if tail.startswith("/deployment-branch-policies"):
-        policies_route(state, name, tail[len("/deployment-branch-policies"):], method, opts)
+        policies_route(state, existing, tail[len("/deployment-branch-policies"):], method, opts)
     unsupported()
 
 
 def policies_route(state, name, tail, method, opts):
-    env = state["environments"].get(name)
+    env = state["environments"].get(name) if name is not None else None
     # Policies exist only with custom policies on (GitHub answers 404 otherwise).
     if env is None or not env["custom_branch_policies"]:
         not_found()
@@ -389,16 +444,15 @@ def api_command(args):
     path, _, query = raw_path.lstrip("/").partition("?")
     parse_qs(query)  # accepted and ignored (one page)
     state = load()
-    if state.get("logged_out"):
-        sys.stderr.write("gh: To get started with GitHub CLI, please run:  gh auth login\n")
-        finish(4)
+    require_login(state)
     parts = path.split("/")
     if parts[0] == "users" and len(parts) == 2 and method == "GET":
-        entry = state["users"].get(parts[1])
-        if entry is None:
+        login = find_name(state["users"], parts[1])
+        if login is None:
             not_found()
+        entry = state["users"][login]
         user = entry if isinstance(entry, dict) else {"id": entry}
-        emit({"login": parts[1], "id": user["id"], "type": user.get("type", "User")}, opts["jq"])
+        emit({"login": login, "id": user["id"], "type": user.get("type", "User")}, opts["jq"])
     if parts[0] == "repos" and len(parts) >= 3:
         repo = state["repo"]
         if f"{parts[1]}/{parts[2]}" != repo["full_name"]:
@@ -414,7 +468,7 @@ def api_command(args):
                 opts["jq"],
             )
         if rest == ["actions", "variables"] and method == "GET":
-            listed = [{"name": k, "value": v} for k, v in state["variables"].items()]
+            listed = [{"name": k, "value": v} for k, v in sorted(state["variables"].items())]
             emit({"total_count": len(listed), "variables": listed}, opts["jq"])
         if len(rest) >= 2 and rest[0] == "environments":
             environment_route(state, rest[1], "".join("/" + p for p in rest[2:]), method, opts)
@@ -443,9 +497,15 @@ def option_values(args, names):
 
 
 def valid_name(name):
-    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None and not name.startswith(
-        "GITHUB_"
-    )
+    if name.upper().startswith("GITHUB_"):
+        return False
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None
+
+
+def require_login(state):
+    if state.get("logged_out"):
+        sys.stderr.write("gh: To get started with GitHub CLI, please run:  gh auth login\n")
+        finish(4)
 
 
 def secret_set(args):
@@ -455,14 +515,16 @@ def secret_set(args):
         bug("secret values must reach gh on stdin, never --body")
     if "repo" not in values or "env" not in values or len(positional) != 1:
         unsupported()
-    value = read_stdin()
+    value = read_stdin().rstrip("\r\n")
     state = load()
-    if values["repo"] != state["repo"]["full_name"] or values["env"] not in state["environments"]:
+    require_login(state)
+    env_name = find_name(state["environments"], values["env"])
+    if values["repo"] != state["repo"]["full_name"] or env_name is None:
         sys.stderr.write("gh: Not Found (HTTP 404)\n")
         finish(1)
     if not valid_name(positional[0]):
         invalid()
-    state["environments"][values["env"]]["secrets"][positional[0]] = value
+    state["environments"][env_name]["secrets"][positional[0].upper()] = value
     save(state)
     finish(0)
 
@@ -473,12 +535,13 @@ def variable_set(args):
     if "repo" not in values or "body" not in values or len(positional) != 1:
         unsupported()
     state = load()
+    require_login(state)
     if values["repo"] != state["repo"]["full_name"]:
         sys.stderr.write("gh: Not Found (HTTP 404)\n")
         finish(1)
     if not valid_name(positional[0]):
         invalid()
-    state["variables"][positional[0]] = values["body"]
+    state["variables"][positional[0].upper()] = values["body"]
     save(state)
     finish(0)
 
@@ -503,16 +566,20 @@ WRITE_VERBS = {
 
 
 def api_method(argv: list[str]) -> str:
-    """The HTTP method a ``gh api`` call uses: explicit, else POST with ``--input``, else GET."""
+    """The HTTP method a ``gh api`` call uses: explicit (``--method``/``-X``, either spelling), else
+    POST with ``--input`` (``--input -`` or ``--input=-``), else GET. Mirrors ``parse_api``."""
     method: str | None = None
+    has_input = False
     for index, arg in enumerate(argv):
         if arg in ("--method", "-X") and index + 1 < len(argv):
             method = argv[index + 1].upper()
         elif arg.startswith("--method="):
             method = arg.split("=", 1)[1].upper()
+        elif arg == "--input" or arg.startswith("--input="):
+            has_input = True
     if method is not None:
         return method
-    return "POST" if "--input" in argv else "GET"
+    return "POST" if has_input else "GET"
 
 
 class Gh:
@@ -548,6 +615,11 @@ class Gh:
 
     def save(self, state: dict[str, Any]) -> None:
         self.state_path.write_text(json.dumps(state))
+
+    def api_bodies(self) -> list[dict[str, Any]]:
+        """The bodies of the accepted PUTs and policy POSTs, in order: ``{"method", "path",
+        "body"}``. A refused (4xx) request is never recorded."""
+        return list(self.state().get("api_bodies", []))
 
     def calls(self) -> list[dict[str, Any]]:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]

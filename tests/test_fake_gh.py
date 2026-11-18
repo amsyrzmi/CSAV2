@@ -361,9 +361,7 @@ def test_secret_names_are_listed_without_values_on_the_documented_path(gh: Gh) -
     assert "VALUE-MARKER" not in raw.stdout
     assert all(set(item) <= {"name", "created_at", "updated_at"} for item in body["secrets"])
     names = gh.call("api", "--paginate", f"{path}?per_page=100", "--jq", ".secrets[].name")
-    assert names.stdout.split() == ["PROD_INSTANCE_ID", "B_NAME"] or sorted(
-        names.stdout.split()
-    ) == ["B_NAME", "PROD_INSTANCE_ID"]
+    assert names.stdout.split() == ["B_NAME", "PROD_INSTANCE_ID"]  # sorted by name
     missing = gh.call("api", f"repos/{REPO}/environments/nope/secrets")
     assert missing.returncode == 1
     assert missing.stderr.strip() == NOT_FOUND
@@ -394,7 +392,7 @@ def test_variables_list_and_set(gh: Gh) -> None:
         "api", f"repos/{REPO}/actions/variables",
         "--jq", ".variables[] | [.name, .value] | @tsv",
     )  # fmt: skip
-    assert sorted(values.stdout.splitlines()) == [
+    assert values.stdout.splitlines() == [  # sorted by name
         "IMAGE_NAMESPACE\tghcr.io/x",
         "PROD_AUTO_PLAN\tfalse",
     ]
@@ -557,3 +555,287 @@ def test_run_executes_a_script_with_the_fake_first_on_path_and_no_tokens(
     quiet = gh.run(script, REPO)
     assert quiet.stdout.splitlines()[2] == "stdin="
     assert gh.run(script, REPO, env={"GH_TOKEN": "x"}).returncode == 0
+
+
+# --- how a call is read: methods, input forms, pagination -------------------------------------
+
+
+def policies_url(name: str = "production") -> str:
+    return f"repos/{REPO}/environments/{name}/deployment-branch-policies"
+
+
+@pytest.mark.parametrize("input_args", [("--input", "-"), ("--input=-",)])
+def test_a_method_less_call_with_input_is_a_post_and_a_logged_write(
+    gh: Gh, input_args: tuple[str, ...]
+) -> None:
+    assert put(gh, "production", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    gh.reset_log()
+    result = gh.call(
+        "api", policies_url(), *input_args, stdin=json.dumps({"name": "main", "type": "branch"})
+    )
+    assert result.returncode == 0, result.stderr
+    assert [p["name"] for p in stored(gh, "production")["policies"]] == ["main"]
+    assert gh.commands() == [f"api POST {policies_url()}"]
+    assert [call["argv"] for call in gh.writes()] == [["api", policies_url(), *input_args]]
+
+
+def test_an_explicit_method_wins_over_the_input_default(gh: Gh) -> None:
+    assert put(gh, "production", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    gh.reset_log()
+    # --input with an explicit GET is still a GET: the list answers, nothing is created.
+    result = gh.call("api", "--method", "GET", policies_url(), "--input=-", stdin="{}")
+    assert result.returncode == 0
+    assert gh.commands() == [f"api GET {policies_url()}"]
+    assert gh.writes() == []
+    assert stored(gh, "production")["policies"] == []
+
+
+@pytest.mark.parametrize(
+    "method_args", [("--method", "POST"), ("--method=PUT",), ("-X", "DELETE"), ("-X", "put")]
+)
+def test_paginate_with_a_non_get_method_is_refused_like_gh_does(
+    gh: Gh, method_args: tuple[str, ...]
+) -> None:
+    assert put(gh, "production", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    before = gh.state()
+    result = gh.call(
+        "api", "--paginate", *method_args, policies_url(), "--input", "-",
+        stdin=json.dumps({"name": "main", "type": "branch"}),
+    )  # fmt: skip
+    assert result.returncode == 1
+    assert "the `--paginate` option is not supported for non-GET requests" in result.stderr
+    assert result.stdout == ""
+    assert gh.state() == before
+    # The same flags in the other order, and a method-less --input (a POST), refuse too.
+    last = gh.call("api", policies_url(), "--input=-", "--paginate", stdin="{}")
+    assert last.returncode == 1
+    assert "not supported for non-GET requests" in last.stderr
+    assert gh.state() == before
+    ok = gh.call("api", "--paginate", "--method", "GET", policies_url())
+    assert ok.returncode == 0
+
+
+# --- the recorded bodies ----------------------------------------------------------------------
+
+
+def test_api_bodies_holds_only_accepted_puts_and_policy_posts_in_order(gh: Gh) -> None:
+    assert gh.api_bodies() == []
+    first = {"wait_timer": 3}
+    assert put(gh, "production", first).returncode == 0
+    assert put(gh, "production", {"wait_timer": -1}).returncode == 1  # a 422: not recorded
+    second = {"deployment_branch_policy": CUSTOM}
+    assert put(gh, "production", second).returncode == 0
+    post = {"name": "main", "type": "branch"}
+    assert gh.call("api", policies_url(), "--input=-", stdin=json.dumps(post)).returncode == 0
+    # A duplicate (303), an invalid body (422), a missing environment (404) and a DELETE: none.
+    assert gh.call("api", policies_url(), "--input=-", stdin=json.dumps(post)).returncode == 1
+    assert gh.call("api", policies_url(), "--input=-", stdin="{}").returncode == 1
+    assert gh.call("api", policies_url("nope"), "--input=-", stdin=json.dumps(post)).returncode == 1
+    assert put(gh, "production", {"reviewers": [{"type": "User", "id": 9999}]}).returncode == 1
+    assert gh.api_bodies() == [
+        {"method": "PUT", "path": "production", "body": first},
+        {"method": "PUT", "path": "production", "body": second},
+        {"method": "POST", "path": "production/policies", "body": post},
+    ]
+
+
+# --- validation boundaries --------------------------------------------------------------------
+
+
+def test_the_two_branch_policy_flags_must_differ(gh: Gh) -> None:
+    for protected, custom in ((False, False), (True, True)):
+        body = {
+            "deployment_branch_policy": {
+                "protected_branches": protected,
+                "custom_branch_policies": custom,
+            }
+        }
+        result = put(gh, "production", body)
+        assert result.returncode == 1, body
+        assert "(HTTP 422)" in result.stderr
+    for protected, custom in ((True, False), (False, True)):
+        body = {
+            "deployment_branch_policy": {
+                "protected_branches": protected,
+                "custom_branch_policies": custom,
+            }
+        }
+        assert put(gh, "production", body).returncode == 0
+
+
+def test_wait_timer_is_accepted_up_to_43200_minutes(gh: Gh) -> None:
+    assert put(gh, "production", {"wait_timer": 43200}).returncode == 0
+    assert rule(get_env(gh, "production"), "wait_timer") == {
+        "type": "wait_timer",
+        "wait_timer": 43200,
+    }
+    refused = put(gh, "production", {"wait_timer": 43201})
+    assert refused.returncode == 1
+    assert "(HTTP 422)" in refused.stderr
+    assert stored(gh, "production")["wait_timer"] == 43200
+    assert put(gh, "production", {"wait_timer": 0}).returncode == 0
+
+
+def add_users(gh: Gh, users: dict[str, Any]) -> None:
+    state = gh.state()
+    state["users"].update(users)
+    gh.save(state)
+
+
+def test_reviewers_are_capped_at_six_and_must_be_real_user_accounts(gh: Gh) -> None:
+    add_users(gh, {f"user-{n}": 2000 + n for n in range(1, 8)})
+    users = [{"type": "User", "id": 2000 + n} for n in range(1, 8)]
+    assert put(gh, "production", {"reviewers": users[:6]}).returncode == 0
+    assert len(reviewer_ids(get_env(gh, "production"))) == 6
+    before = gh.state()
+    too_many = put(gh, "production", {"reviewers": users})
+    assert too_many.returncode == 1
+    assert "(HTTP 422)" in too_many.stderr
+    assert gh.state() == before
+    # An id that is no user at all, and an Organization account, are refused as a User reviewer.
+    add_users(gh, {"example-org": {"id": 7, "type": "Organization"}})
+    for reviewers in (
+        [{"type": "User", "id": 31337}],
+        [{"type": "User", "id": 7}],
+        [{"type": "User", "id": 1001}, {"type": "User", "id": 7}],
+    ):
+        result = put(gh, "production", {"reviewers": reviewers})
+        assert result.returncode == 1, reviewers
+        assert "(HTTP 422)" in result.stderr
+    assert gh.state()["environments"] == before["environments"]
+    # An empty list clears them; a Team id is not looked up (Team reviewers are out of scope).
+    assert put(gh, "production", {"reviewers": []}).returncode == 0
+    assert reviewer_ids(get_env(gh, "production")) == []
+    assert put(gh, "production", {"reviewers": [{"type": "Team", "id": 31337}]}).returncode == 0
+
+
+def test_the_same_id_with_a_different_type_is_a_different_reviewer(gh: Gh) -> None:
+    both = [{"type": "User", "id": 1001}, {"type": "Team", "id": 1001}]
+    assert put(gh, "production", {"reviewers": both}).returncode == 0
+    assert stored(gh, "production")["reviewers"] == both
+    env = get_env(gh, "production")
+    found = rule(env, "required_reviewers")
+    assert found is not None
+    assert [item["type"] for item in found["reviewers"]] == ["User", "Team"]
+
+
+# --- jq ---------------------------------------------------------------------------------------
+
+
+def test_jq_output_has_sorted_object_keys_like_gh(gh: Gh) -> None:
+    result = gh.call("api", f"repos/{REPO}", "--jq", "{z: .id, a: .id, m: .full_name}")
+    assert result.returncode == 0
+    assert result.stdout.strip() == '{"a":42,"m":"example-owner/CSAV2","z":42}'
+    plain = gh.call("api", "users/reviewer-a", "--jq", "{type, login, id}")
+    assert plain.stdout.strip() == '{"id":1001,"login":"reviewer-a","type":"User"}'
+
+
+# --- gh secret set / gh variable set ----------------------------------------------------------
+
+
+def test_a_secret_from_stdin_loses_only_its_trailing_newlines(gh: Gh) -> None:
+    gh.add_environment("production")
+    for sent, kept in (
+        ("value\n", "value"),
+        ("value\r\n\r\n", "value"),
+        ("  two words  \n", "  two words  "),
+        ("line1\nline2\n", "line1\nline2"),
+    ):
+        done = gh.call("secret", "set", "S", "--env", "production", "--repo", REPO, stdin=sent)
+        assert done.returncode == 0
+        assert stored(gh, "production")["secrets"] == {"S": kept}
+
+
+def test_secret_and_variable_names_are_stored_uppercase_and_github_prefix_is_reserved(
+    gh: Gh,
+) -> None:
+    gh.add_environment("production")
+    done = gh.call("secret", "set", "prod_id", "--env", "production", "--repo", REPO, stdin="v")
+    assert done.returncode == 0
+    assert list(stored(gh, "production")["secrets"]) == ["PROD_ID"]
+    done = gh.call("secret", "set", "PROD_ID", "--env", "production", "--repo", REPO, stdin="w")
+    assert stored(gh, "production")["secrets"] == {"PROD_ID": "w"}  # the same secret
+    assert gh.call("variable", "set", "my_var", "--repo", REPO, "--body", "1").returncode == 0
+    assert gh.state()["variables"] == {"MY_VAR": "1"}
+    for name in ("GITHUB_X", "github_x", "Github_Y"):
+        secret = gh.call("secret", "set", name, "--env", "production", "--repo", REPO, stdin="v")
+        variable = gh.call("variable", "set", name, "--repo", REPO, "--body", "1")
+        for result in (secret, variable):
+            assert result.returncode == 1, name
+            assert "(HTTP 422)" in result.stderr
+    assert list(stored(gh, "production")["secrets"]) == ["PROD_ID"]
+    assert list(gh.state()["variables"]) == ["MY_VAR"]
+
+
+def test_secret_and_variable_set_stop_with_exit_4_when_logged_out(gh: Gh) -> None:
+    gh.add_environment("production")
+    state = gh.state()
+    state["logged_out"] = True
+    gh.save(state)
+    before = gh.state()
+    secret = gh.call("secret", "set", "S", "--env", "production", "--repo", REPO, stdin="v")
+    variable = gh.call("variable", "set", "V", "--repo", REPO, "--body", "1")
+    for result in (secret, variable):
+        assert result.returncode == 4
+        assert "gh auth login" in result.stderr
+        assert result.stdout == ""
+    assert gh.state() == before
+
+
+def test_the_logged_stdin_length_counts_bytes_not_characters(gh: Gh) -> None:
+    gh.add_environment("production")
+    value = "caf\u00e9-\u00fc"  # 6 characters, 8 bytes
+    done = gh.call("secret", "set", "S", "--env", "production", "--repo", REPO, stdin=value)
+    assert done.returncode == 0
+    assert gh.calls()[-1]["stdin"] == 8
+    assert stored(gh, "production")["secrets"] == {"S": value}
+
+
+def test_secrets_and_variables_are_listed_sorted_by_name(gh: Gh) -> None:
+    gh.add_environment("production", secrets={"ZED": "1", "ALPHA": "2", "MID": "3"})
+    for name in ("ZZ", "AA", "MM"):
+        gh.call("variable", "set", name, "--repo", REPO, "--body", "1")
+    secrets = gh.call("api", f"repos/{REPO}/environments/production/secrets")
+    assert [s["name"] for s in json.loads(secrets.stdout)["secrets"]] == ["ALPHA", "MID", "ZED"]
+    variables = gh.call("api", f"repos/{REPO}/actions/variables")
+    assert [v["name"] for v in json.loads(variables.stdout)["variables"]] == ["AA", "MM", "ZZ"]
+
+
+# --- case-insensitive names -------------------------------------------------------------------
+
+
+def test_environment_names_are_case_insensitive_and_the_stored_name_is_returned(gh: Gh) -> None:
+    gh.add_environment("production")
+    assert get_env(gh, "PRODUCTION")["name"] == "production"
+    assert put(gh, "Production", {"wait_timer": 4}).returncode == 0
+    assert list(gh.state()["environments"]) == ["production"]  # no second environment
+    assert stored(gh, "production")["wait_timer"] == 4
+    done = gh.call("secret", "set", "S", "--env", "PRODUCTION", "--repo", REPO, stdin="v")
+    assert done.returncode == 0
+    assert stored(gh, "production")["secrets"] == {"S": "v"}
+    secrets = gh.call("api", f"repos/{REPO}/environments/PRODUCTION/secrets")
+    assert json.loads(secrets.stdout)["total_count"] == 1
+    assert put(gh, "production", {"deployment_branch_policy": CUSTOM}).returncode == 0
+    created = gh.call(
+        "api", policies_url("PRODUCTION"), "--input=-",
+        stdin=json.dumps({"name": "main", "type": "branch"}),
+    )  # fmt: skip
+    assert created.returncode == 0
+    assert (
+        len(json.loads(gh.call("api", policies_url("Production")).stdout)["branch_policies"]) == 1
+    )
+    # A new environment keeps the case it was created with.
+    assert put(gh, "Staging", {"wait_timer": 1}).returncode == 0
+    assert get_env(gh, "staging")["name"] == "Staging"
+
+
+def test_user_lookup_is_case_insensitive_and_returns_the_stored_login(gh: Gh) -> None:
+    add_users(gh, {"MixedCaseUser": 3001})
+    for asked in ("MixedCaseUser", "mixedcaseuser", "MIXEDCASEUSER"):
+        found = gh.call("api", f"users/{asked}", "--jq", "{login, id, type}")
+        assert found.returncode == 0, asked
+        assert json.loads(found.stdout) == {"login": "MixedCaseUser", "id": 3001, "type": "User"}
+    assert put(gh, "production", {"reviewers": [{"type": "User", "id": 3001}]}).returncode == 0
+    found_rule = rule(get_env(gh, "production"), "required_reviewers")
+    assert found_rule is not None
+    assert found_rule["reviewers"][0]["reviewer"]["login"] == "MixedCaseUser"
