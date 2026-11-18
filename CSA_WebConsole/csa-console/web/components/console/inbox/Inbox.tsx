@@ -36,9 +36,12 @@ const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
 const NONE: ReadonlySet<string> = new Set();
 /** A burst of count changes settles this long before one polite announcement says where it ended. */
 const ANNOUNCE_SETTLE_MS = 1500;
-/** Which primary button (its `data-action`) each action key presses. */
+/**
+ * Which primary button (its `data-action`) each action key presses. C takes only an unclaimed item:
+ * "Take it from {name}" (an administrator taking a colleague's claim) stays a deliberate click.
+ */
 const PRIMARY_FOR: Partial<Record<Shortcut, readonly string[]>> = {
-  claim: ["take_it", "take_from"],
+  claim: ["take_it"],
   resolve: ["resolve"],
 };
 

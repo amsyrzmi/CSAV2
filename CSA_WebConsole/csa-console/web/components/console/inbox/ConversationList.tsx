@@ -114,16 +114,17 @@ export function ConversationList({
 }
 
 /**
- * A tab with nothing in it, nothing filtered or searched: its own sentence (design 14.7). Needs us
- * has the assistant's resting avatar beside it (48 px; its idle loop only where motion is allowed)
- * and the way to every conversation, since the assistant's chats are only under All.
+ * A tab with nothing in it, nothing filtered or searched: its own sentence (design 14.7), said by
+ * the list's one polite live region around it. Needs us has the assistant's resting avatar beside
+ * it (48 px, frame 0, never animated) and the way to every conversation, since the assistant's
+ * chats are only under All.
  */
 function TabEmpty({ tab, onSeeAll }: { tab: QueueTabId; onSeeAll: () => void }) {
   const needsUs = tab === "needs_us";
-  return <div role="status" data-testid={`inbox-empty-${tab}`}
+  return <div data-testid={`inbox-empty-${tab}`}
     className="flex flex-col items-center gap-3 px-4 py-8 text-center">
     <div className="flex min-w-0 max-w-full items-center gap-3">
-      {needsUs && <span className="shrink-0"><AgentAvatar agentId="support" size={48} /></span>}
+      {needsUs && <span className="shrink-0"><AgentAvatar agentId="support" size={48} state="rest" /></span>}
       <p className={`min-w-0 font-(family-name:--fs-font-heading) text-base font-semibold [overflow-wrap:anywhere] ${needsUs ? "text-left" : ""}`}>
         {TAB_EMPTY[tab]}</p>
     </div>

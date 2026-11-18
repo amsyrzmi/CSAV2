@@ -3336,6 +3336,32 @@ async def test_c_takes_the_open_item_and_waits_while_its_request_is_out(shell: S
         assert state.queue_calls[1]["id"] == UNNAMED, state.queue_calls
 
 
+async def test_c_never_takes_a_colleagues_claim_but_the_button_still_does(
+    shell: Shell,
+) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        # Held by Aina: an administrator is offered "Take it from Aina", a deliberate click only.
+        await open_item(page, OTHER_ROW)
+        await expect(primary(page)).to_have_text("Take it from Aina")
+        await row(page, OTHER_ROW).focus()
+        await page.keyboard.press("c")
+        # Keys are handled in order: once S has opened the Snooze menu, C has been and gone.
+        await page.keyboard.press("s")
+        menu = page.get_by_role("menu", name="Snooze")
+        await expect(menu).to_be_visible()
+        assert actions_sent(state) == [], state.arrived
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
+        await primary(page).click()
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        assert actions_sent(state) == ["claim"], state.arrived
+        assert state.queue_calls[0]["id"] == OTHER_ROW, state.queue_calls
+
+
 async def test_e_resolves_with_the_buttons_refusal_sentence_and_only_when_offered(
     shell: Shell,
 ) -> None:
@@ -3511,8 +3537,18 @@ async def test_each_tab_says_its_own_empty_sentence(shell: Shell) -> None:
         # The assistant's resting avatar beside the sentence, 48 px, in Needs us only.
         avatar = empty.locator("[data-agent='support']")
         await expect(avatar).to_have_count(1)
+        await expect(avatar).to_have_attribute("data-state", "rest")
         box = await avatar.bounding_box()
         assert box is not None and round(box["width"]) == 48, box
+        # Said once: inside the list's one polite live region, with no live region of its own.
+        live = await empty.evaluate(
+            """el => ({
+                inside: el.parentElement.closest('[aria-live], [role=status]') !== null,
+                own: el.matches('[aria-live], [role=status], [role=alert]')
+                    || el.querySelector('[aria-live], [role=status], [role=alert]') !== null,
+            })"""
+        )
+        assert live == {"inside": True, "own": False}, live
         # The company has a conversation (the probe found it): never the first-run state.
         await eventually(lambda: state.probe_answers >= 1)
         await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
