@@ -24,6 +24,7 @@ from csa.jobs.bookings import (
     run_turn_action_retention,
 )
 from csa.jobs.clock import Clock, SystemClock
+from csa.jobs.console_notifications import run_console_notifications_purge
 from csa.jobs.inbox_queue import run_inbox_snooze_wake
 from csa.jobs.inbox_reminders import run_inbox_reminders_sweep
 from csa.jobs.orders import run_order_draft_expiry, run_orphan_draft_expiry
@@ -121,6 +122,16 @@ def build_default_registry(
             own_transactions=True,
             timeout=120.0,
             batch_size=500,
+        )
+    )
+    # Per company, console notifications older than 30 days, in batches of 1000.
+    registry.register(
+        Job(
+            name="console_notifications_purge",
+            every=timedelta(hours=6),
+            fn=run_console_notifications_purge,
+            per_client=True,
+            batch_size=1000,
         )
     )
     registry.register(

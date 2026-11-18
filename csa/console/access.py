@@ -14,20 +14,25 @@ from csa.console.contracts import ConsoleActor, Role
 from csa.core import db
 from csa.core.tenancy import tx
 
-# The one write a read_only member may make: asking for an item's stored training summary
-# (regenerating it stays manage-only, refused by the route). Both the route routing matched and
-# the path it matched on are checked, so no other route, method or lookalike path is exempt.
-_READER_POST = re.compile(
-    r"/console/v1/training/items/"
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-    r"/summary"
-)
-# The summary route's template as routing reports it. FastAPI 0.143 keeps included routers
-# nested, so the route carries its own template without the /console/v1 prefix; the prefixed
-# form is accepted too, so a FastAPI that flattens the prefix still names the same one route.
-_READER_POST_ROUTES = frozenset(
-    {"/training/items/{item_id}/summary", "/console/v1/training/items/{item_id}/summary"}
-)
+# The writes a read_only member may make: asking for an item's stored training summary
+# (regenerating it stays manage-only, refused by the route) and marking their own console
+# notifications read. Both the route routing matched and the path it matched on are checked, so no
+# other route, method or lookalike path is exempt, and a route is never paired with another
+# route's path pattern.
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_READER_POST = re.compile(rf"/console/v1/training/items/{_UUID}/summary")
+_READER_POST_NOTIFICATIONS = re.compile(r"/console/v1/notifications/read")
+# Each route's template as routing reports it, with the path pattern it may match. FastAPI 0.143
+# keeps included routers nested, so the route carries its own template without the /console/v1
+# prefix; the prefixed form is accepted too, so a FastAPI that flattens the prefix still names the
+# same one route.
+_READER_POST_PATHS: dict[str, re.Pattern[str]] = {
+    "/training/items/{item_id}/summary": _READER_POST,
+    "/console/v1/training/items/{item_id}/summary": _READER_POST,
+    "/notifications/read": _READER_POST_NOTIFICATIONS,
+    "/console/v1/notifications/read": _READER_POST_NOTIFICATIONS,
+}
+_READER_POST_ROUTES = frozenset(_READER_POST_PATHS)
 
 
 def reader_may_post(method: str, route_format: str | None, path: str) -> bool:
@@ -37,11 +42,9 @@ def reader_may_post(method: str, route_format: str | None, path: str) -> bool:
     ``path`` the decoded path routing matched on (``scope["path"]``; not ``request.url.path``,
     which is re-parsed and so is cut at an encoded ``?`` or ``#``).
     """
-    return (
-        method == "POST"
-        and route_format in _READER_POST_ROUTES
-        and _READER_POST.fullmatch(path) is not None
-    )
+    if method != "POST" or route_format not in _READER_POST_ROUTES:
+        return False
+    return _READER_POST_PATHS[route_format].fullmatch(path) is not None
 
 
 class MachineActor(BaseModel):

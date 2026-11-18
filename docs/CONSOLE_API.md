@@ -1287,7 +1287,7 @@ save the response is the defaults with `version: 0`. The PUT must carry every fi
 | `version` | 0 | the version read; 409 `version_conflict` if it is not the stored one |
 
 The four targets are minutes of waiting before a `needs_staff` item is due, by priority (wall clock).
-The last five fields are for the reminders of a later change and have no effect yet. A save changes
+The last five fields drive the reminders (see Reminders below). A save changes
 only items that enter `needs_staff` afterwards: an item already waiting keeps its due time (a person
 changing an item's priority recomputes that item's due time from its clock). Each save is audited
 (`inbox.settings.updated`).
@@ -1370,7 +1370,29 @@ limit. A POST or PUT body over 32 KiB is 413. Create, rename and delete are audi
 whose `snoozed_until` has passed (up to 100 per run) to `needs_staff`: a fresh clock, `due_at` from the
 company's current target for the item's priority, the claim kept, reason `customer_message` when the
 customer wrote after the last staff reply and `manual` otherwise (history event `woke`, no actor, no
-version change). No reminder or notification goes out yet.
+version change). It returns `{"woken_count": n}`. It does not notify anyone: the `inbox.snooze_due`
+reminder (below) tells the holder, or the team when nobody holds the item, that the snooze ended (and
+wakes the item itself if the job has not yet).
+
+**Reminders.** Six kinds notify staff about Inbox work that waits; each is a row of the generic reminder
+table (`csa.reminders`) and fires from the `reminders_fire` job, which runs every minute for each company,
+so a reminder is on time to the minute (not to the second), and a reminder that has become stale (the
+customer wrote, the item was resolved, snoozed, handed back or reassigned, the setting was turned off,
+the priority changed) is dropped without a message. `inbox.overdue`: a `needs_staff` item is past its
+response target; it repeats every `repeat_minutes` up to `max_repeats` times, one priority level higher
+from the second notice, and the last one also names every tenant admin. `inbox.stale_claim`: a claimed
+item saw no action for `stale_claim_hours`; the holder first, the tenant admins `repeat_minutes` later.
+`inbox.snooze_due`: the snooze ended. `inbox.follow_up`: a person answered and the customer has been quiet
+for `follow_up_hours`. `inbox.handback`: the same quiet for `handback_prompt_hours` while a person still
+holds the chat (the assistant is paused for it), a prompt to hand the chat back. `inbox.assigned`: sent at
+once to the person someone else assigned an item to; it has no reminder row. The holder is told when they
+are still an enabled admin or staff member, else the whole team (every enabled tenant admin and tenant
+staff member; never read-only); a company with nobody to tell gets nothing. The per-minute
+`inbox_reminders_sweep` job schedules the reminders the database triggers cannot (overdue, stale claim,
+and snoozes from before the reminders existed); replies and snoozes schedule theirs in the same
+transaction. Every kind writes a console notification per recipient (see [Notifications](#notifications));
+only `inbox.overdue` also goes to the company's staff chat, to targets that carry the event. Messages name
+the customer by display name only and never carry message text.
 
 **Roles.** Every inbox route needs tenant staff, tenant admin or a platform admin; read-only members
 and machine principals get 403 on all of them, and the Customer Support package must not be
@@ -1386,13 +1408,49 @@ could not use one under row security): the company's conversations are read alon
 until a page fills, which at 50,000 conversations takes up to about
 0.5 s when few rows match (the typed search should be debounced). `sender` is computed per scanned
 row. The Mine tab's later pages re-read the person's own rows (bounded by them). `order=due` and
-`order=waiting` outside the Needs us tabs sort the company's rows in scope. Reminders and
-notifications (overdue, follow-up, stale claim) arrive in a later change; the settings that drive
-them are stored already. A `waiting_customer` item never leaves on its own: it stays until the
-customer writes or a person acts (the follow-up reminders of a later change will point at it). The
+`order=waiting` outside the Needs us tabs sort the company's rows in scope. A `waiting_customer` item
+never leaves on its own: it stays until the customer writes or a person acts (the follow-up and
+handback reminders point at it). The
 operations script `db/sql/ops/expire_stuck_approvals.sql` settles approvals without the queue code,
 so after such a run a `held_reply` item can keep that reason with no pending reply; a person resolves
 it or changes it by acting (see `docs/INBOX_RETEST.md`, Operations).
+
+## Notifications
+
+Per-person console notifications, written by the Inbox reminders (see **Reminders** above) and later by
+other areas. Routes under `/console/v1/notifications`; every one answers for the signed-in person only:
+`user_id` comes from the session, no parameter or body field can name another person, and a row is only
+ever read or changed together with that filter and the company's row security.
+
+| Route | Parameters | Answer |
+|---|---|---|
+| `GET /notifications` | `limit` 1 to 50 (default 50; otherwise 422), `unread=true` to keep unread rows (default false) | `{"items": [...], "unread": n}`: newest first; `unread` is the person's whole unread count, not the page's |
+| `GET /notifications/count` | none | `{"unread": n}` |
+| `POST /notifications/read` | body `{"ids": ["<uuid>", ...]}` (up to 200) or `{"all": true}`, exactly one of the two (both, neither, `all: false` or an unknown field is 422) | `{"updated": n}`: the caller's unread rows that were marked |
+
+An item is `{id, kind, priority, message_key, params, link, read_at, created_at}`; `read_at` is `null` while
+unread. Ids in `ids` that are not the caller's, or unknown, are ignored: no error, they are not counted in
+`updated`, and nobody else's row is touched. Marking a read row again changes nothing (`read_at` stays).
+Rows older than 30 days are deleted, read or not, by the `console_notifications_purge` job (every six
+hours, per company, in batches of 1000).
+
+**Who may call.** Any active member of the company, `read_only` included: a read-only member reads their
+own rows and may call the POST (the one write they have besides the training summary). There is no
+package gate. A platform admin is not a member and has no rows: `GET /notifications` is
+`{"items": [], "unread": 0}`, `/count` is `{"unread": 0}`, and `POST /read` is `{"updated": 0}` (they
+still select a company with `client_id`, else 400). The POST needs the CSRF token like every other
+POST (403 without it); no session is 401; a machine principal is 403.
+
+**What the browser renders.** The server stores no finished text: `message_key` names the message (for
+the Inbox kinds it is the kind itself: `inbox.overdue`, `inbox.snooze_due`, `inbox.stale_claim`,
+`inbox.follow_up`, `inbox.handback`, `inbox.assigned`) and `params` fills it; the browser renders the
+text in its own language, as console users have no language setting. Inbox params are
+`conversation_id`, `customer` (display name; never message text) and `priority`, plus `waited_minutes`
+(overdue, stale claim, follow-up and handback: how long the wait has lasted), `repeat` (overdue only:
+the notice's number, from 1) and `assigned_by` (the user id of the assigner, for
+`inbox.assigned`). `priority` is `low`, `normal`, `high` or `urgent`. `link` says where the item leads and
+holds ids only: `{"route": "inbox", "conversation": "<conversation id>"}`; a client that does not know a
+route shows the text without a link.
 
 ## Workspace assistant
 
