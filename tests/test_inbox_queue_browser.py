@@ -3482,10 +3482,21 @@ async def test_a_failed_read_says_so_and_try_again_reads_again(shell: Shell) -> 
         await expect(panel.get_by_role("textbox")).to_have_count(0)
 
 
+# A slow machine can measure a slide-over during its 220 ms slide-in, while it still sits 24 px to
+# the right; holding the animation at its first frame makes every run see that moment.
+HOLD_SLIDE_IN = ".fs-slide-in-right { animation-play-state: paused !important; }"
+
+
+async def at_rest(locator: Any) -> None:
+    """Run every animation inside to its end, so boxes are measured where they come to rest."""
+    await locator.evaluate("el => el.getAnimations({subtree: true}).forEach(a => a.finish())")
+
+
 async def test_the_times_panel_fits_small_screens(shell: Shell) -> None:
     state = queue_inbox()
     async with inbox_page(shell, state, width=390) as page:
         await rows_loaded(page, 3)
+        await page.add_style_tag(content=HOLD_SLIDE_IN)
         for width in (390, 320, 768):
             await page.set_viewport_size({"width": width, "height": 844})
             measured = await page_width(page)
@@ -3498,6 +3509,7 @@ async def test_the_times_panel_fits_small_screens(shell: Shell) -> None:
             await times_loaded(panel)
             await panel.get_by_label("Normal", exact=True).fill("4")
             await expect(panel.get_by_text(TARGET_WORDS, exact=True)).to_be_visible()
+            await at_rest(panel)
             panel_box = await panel.bounding_box()
             assert panel_box and panel_box["x"] >= 0, (width, panel_box)
             assert panel_box["x"] + panel_box["width"] <= width, (width, panel_box)
@@ -3905,13 +3917,14 @@ async def test_each_tab_says_its_own_empty_sentence(shell: Shell) -> None:
 
 
 async def test_first_run_copy_only_when_the_company_has_no_conversations(shell: Shell) -> None:
-    state = GatedInbox(items=[], filter_state=True, probe_gate=asyncio.Event())
+    gate = asyncio.Event()
+    state = GatedInbox(items=[], filter_state=True, probe_gate=gate)
     async with inbox_page(shell, state) as page:
         # While the probe is out, the tab's own sentence; never the first-run state.
         await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible(timeout=WAIT)
         await eventually(lambda: state.probes_arrived >= 1)
         await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
-        state.probe_gate.set()
+        gate.set()
         first_run = page.get_by_test_id("inbox-list-state-empty")
         await expect(first_run).to_be_visible(timeout=WAIT)
         await expect(first_run.get_by_role("heading", name="No conversations yet")).to_be_visible()
@@ -3936,7 +3949,8 @@ def is_probe(query: str) -> bool:
 async def test_the_probe_is_never_sent_again_while_out_and_rests_after_none(shell: Shell) -> None:
     # Work to show at first, so no page sends a probe before the clock is the test's.
     work = [item for item in queue_rows() if item["id"] == UNNAMED]
-    state = GatedInbox(items=work, filter_state=True, probe_gate=asyncio.Event())
+    gate = asyncio.Event()
+    state = GatedInbox(items=work, filter_state=True, probe_gate=gate)
     async with inbox_page(shell, state) as page:
         # The page's clock is the test's from here: it runs on its own until the test jumps it.
         await page.clock.install()
@@ -3954,7 +3968,7 @@ async def test_the_probe_is_never_sent_again_while_out_and_rests_after_none(shel
         before = polls()
         await eventually(lambda: polls() >= before + 3, 20)
         assert state.probes_arrived == 1, state.probes_arrived
-        state.probe_gate.set()
+        gate.set()
         first_run = page.get_by_test_id("inbox-list-state-empty")
         await expect(first_run).to_be_visible(timeout=WAIT)
         # "None" rests: three more answers, no new probe.
@@ -3981,6 +3995,8 @@ async def test_empty_states_and_the_help_fit_small_screens(shell: Shell, width: 
         await page.get_by_role("button", name="Keyboard shortcuts").click()
         dialog = help_dialog(page)
         await expect(dialog).to_be_visible()
+        # (Its fade only changes opacity, but a box is measured at rest all the same.)
+        await at_rest(dialog)
         measured = await page_width(page)
         assert measured["scroll"] <= measured["inner"], ("help", width, measured)
         overflow = await dialog.evaluate(
