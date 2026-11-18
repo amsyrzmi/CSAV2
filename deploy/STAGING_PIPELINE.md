@@ -15,15 +15,17 @@ webhook path. None of that is a code defect; the pipeline was never started.
 
 ## Routine rollouts
 
-After a merge, `publish-staging-images` starts by itself once the push-to-main `ci` run is green.
-Its images of that commit are then rolled out to staging by the `deploy-staging` workflow
-(automatic, below). The same rollout can still be run by hand with `scripts/staging_rollout.py`
+After a merge, `publish-staging-images` starts by itself once the push-to-main `ci` run is green
+and waits for the owner's approval on the `staging-images` environment. Once the owner has
+approved it and it has finished, the images of that commit are rolled out to staging by the
+`deploy-staging` workflow, which starts when the publish run finishes (automatic, below). The same rollout can still be run by hand with `scripts/staging_rollout.py`
 (break-glass, further down). The first-time setup in the sections below stays manual; the host
 preparation that automatic rollouts need is recorded in "Host setup for automatic rollouts".
 
 ### Automatic rollouts (deploy-staging)
 
-Every green merge to `main` rolls out to staging by itself. The workflow
+Every green merge to `main` rolls out to staging by itself once its image publish (which still
+waits for the owner's approval on `staging-images`) has finished. The workflow
 `.github/workflows/deploy-staging.yml` starts when `publish-staging-images` completes (that run is
 only a wake-up) and by manual dispatch. It always resolves the tip of `main` itself: the commit
 GitHub attaches to the publish run can be a later commit than the one it published, so it is never
@@ -38,14 +40,14 @@ Read the outcome from the run page (the job summary has the plan and apply outpu
 
 | What you see | What it means |
 | --- | --- |
-| `nothing to roll out` (green) | The tip's `ci` is not green yet, or its images are not published yet. That commit's own publish run starts the next rollout. |
-| `already staged` (green) | The tip already has a staged record, so a late duplicate run does not restart staging. |
+| `nothing to roll out` (green) | The tip's `ci` is not green yet, or its images are not published yet. That commit's own publish run starts the next rollout. Green only on an automatic run: a dispatch of a commit that is not ready fails red. |
+| `already staged` (green) | The tip already has a staged record, so a late duplicate run does not restart staging. Green only on an automatic run: a dispatch of an already-staged commit rolls it out again. |
 | `superseded` (green) | `main` moved after this run's plan. Nothing was sent; the run for the newer commit rolls it out. |
 | `paused` (green) | `STAGING_AUTO_PAUSED` is `true`. Nothing was sent. |
 | `Stopped at lock: another rollout of staging is running; nothing was changed` (red) | The core's per-target lock (`/run/lock/csa-staging-rollout.lock`) is held, for example by a manual rollout. Nothing was pulled or recreated. Start the workflow again when the other run ends. |
 | `Missing secret files:` (red, plan exit 2) | A secret file the stack needs does not exist for `csa-deploy`. Nothing was sent to apply. After a new secret directory, re-run the `find ... setfacl` line of step 7 below. |
 | `the plan is a downgrade; staging never goes back by itself (roll back by hand, deploy/STAGING_PIPELINE.md)` (red) | The plan's target is older than what runs now. The workflow never moves staging back, not even for an explicit `sha`; use "Manual rollout (break-glass)" below. |
-| `Stopped at <step>: ...` (red) | The rollout stopped on the host. The recovery lines under "Recovery" below apply unchanged. The Systems Manager output holds at most 24,000 characters, so the complete log is the one on the host. |
+| `Stopped at <step>: ...` (red) | The rollout stopped on the host. The recovery lines under "Recovery, retest and switches" below apply unchanged. The Systems Manager output holds at most 24,000 characters, so the complete log is the one on the host. |
 | `Recorded <sha7> as staged` (green) | The record job wrote the staged record, after the host reported success (smoke test included). |
 | the record job is red, with `staging is fine but the staged record was not written; use Re-run failed jobs on this run` | Staging was updated but the record was not written. Use "Re-run failed jobs" on that run now. |
 
@@ -87,7 +89,9 @@ gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main
 
 The first line pauses, the second resumes. After a pause, catch up with the third: a dispatch with
 an empty `sha` rolls out the tip of `main` (add `-f sha=<full 40-character sha>` to roll out a
-named commit; the downgrade refusal still applies).
+named commit; the downgrade refusal still applies). A dispatch always rolls out, even when the
+tip is already staged (it restarts staging, and stops the services again when migrations are
+pending), so dispatch only when the tip is not staged.
 
 **Limits to know about.**
 
@@ -259,7 +263,11 @@ sudo install -d -m 0700 -o <rollout-user> -g <rollout-user> /srv/csa-staging/reg
 )
 ```
 
-It is needed only once the images are private.
+It is needed only once the images are private. For automatic rollouts the entry script runs as
+`csa-deploy`, so the file and its directory must belong to (be readable by) `csa-deploy`, not the
+owner: use `csa-deploy` in place of `<rollout-user>` above (the file stays mode 0600, so it must be
+owned by `csa-deploy`; the search-only ACL of step 7 of "Host setup for automatic rollouts" is not
+enough for a file the owner owns).
 
 **Switches.** The non-secret staging switches live in `deploy/staging-rollout.env`. To change one,
 open a pull request; do not export it by hand. The script never opens the secret files; compose
@@ -435,7 +443,7 @@ settings below.
     ```
 
     The usage is `setup-target.sh <staging|production> <activate|apply|check> --region <region>
-    [--node <mi-id>] [--subject <prefix>]`. The staging check must say `ok` on every line; copy the
+    --node <mi-id> --subject <prefix>` (`--node` and `--subject` are required for `apply` and `check`). The staging check must say `ok` on every line; copy the
     printed `csa-staging-deploy` ARN for step 13. The production check is read-only. If it shows
     `differs` or `missing`, do **not** run `production apply`; tell the owner.
 13. **Owner, own terminal (GitHub):** set the secrets on `staging`, each typed at the hidden
@@ -457,7 +465,7 @@ Owner and Dev together, with the pause still **on**.
 - **Start.** Owner, own terminal: `gh workflow run deploy-staging.yml --repo amsyrzmi/CSAV2 --ref main`,
   then `gh run watch --repo amsyrzmi/CSAV2 <run id>` (the run id comes from
   `gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 1 --json databaseId`).
-  Dev, home server: `sudo tail -f /var/log/csa-staging-deploy/*.log` and `watch -n 10 free -m`.
+  Dev, home server: `sudo sh -c 'tail -f /var/log/csa-staging-deploy/*.log'` and `watch -n 10 free -m`.
   A dispatch ignores the pause, so this works while paused.
 - **Pass criteria.** The plan summary shows the tip, both images by digest, the pending
   migrations, and no `Stopped at` or `Missing secret files`. Apply ends with the `smoke <name>:
@@ -480,8 +488,9 @@ Owner and Dev together, with the pause still **on**.
   memory again (`ps -eo rss=,args= | grep -E '[s]sm-agent'`).
 - **Unpause.** Owner: `gh variable set STAGING_AUTO_PAUSED --repo amsyrzmi/CSAV2 --body false`. Watch
   the run the next merge starts by itself: it proves the three-level `workflow_run` chain
-  (`ci`, `publish-staging-images`, `deploy-staging`). GitHub allows at most three levels of
-  `workflow_run` chaining, so nothing may be chained after `deploy-staging` by `workflow_run`.
+  (`ci`, `publish-staging-images`, `deploy-staging`). GitHub does not run a fifth workflow in a
+  `workflow_run` chain, so at most one more link could follow `deploy-staging`; PR 3 prefers a
+  `workflow_dispatch` from `deploy-staging`'s token.
 - **Optional.** Start `deploy-production` with an empty `sha`, read the plan (the tip is now
   staged by the workflow's record) and **reject** the approval.
 - **If anything fails:** pause again, keep the red run's log, and roll staging out by hand as before

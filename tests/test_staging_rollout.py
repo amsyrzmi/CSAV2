@@ -1562,6 +1562,38 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
     assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", setup)
 
 
+def test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval() -> None:
+    # GitHub runs A->B->C->D and skips a fifth workflow; the runbook must not claim that nothing
+    # can follow deploy-staging.
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    flat = _flat(text)
+    assert "nothing may be chained after" not in flat
+    assert "does not run a fifth workflow" in flat
+    # The publish run still waits for the owner's approval; the automatic rollout follows it.
+    assert "waits for the owner's approval on the `staging-images` environment" in flat
+    skill = _flat(
+        (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
+    )
+    assert "The owner approves the image publish on GitHub" in skill
+
+
+def test_host_setup_config_line_matches_the_example_config() -> None:
+    text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
+    setup = _md_section(text, "Host setup for automatic rollouts")
+    lines = [line for line in setup.splitlines() if "printf '%s\\n' " in line]
+    assert len(lines) == 1, lines
+    documented = lines[0].split("printf '%s\\n' ", 1)[1].split(" | ", 1)[0].split()
+    example = [
+        line.strip()
+        for line in (REPO / "deploy" / "staging" / "deploy.conf.example")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert len(documented) == 6
+    assert documented == example
+
+
 def test_staging_skill_checks_the_workflow_and_keeps_the_manual_steps() -> None:
     text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
         encoding="utf-8"

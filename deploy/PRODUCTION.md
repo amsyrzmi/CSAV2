@@ -213,7 +213,8 @@ The runner (`deploy/production/ssm_run.sh`) exits with:
   code: **75** means another deploy holds the lock (`another deploy is running`); wait for it to
   finish and start again. **64** means `csa-prod-deploy` refused its arguments. **73** means it
 could not write its log in `/var/log/csa-prod-deploy` (`cannot write the log file`); nothing ran,
-and the directory must be owned by `ubuntu`. **2** is a plan
+and the directory must be owned by `ubuntu`. **78** is a refused config: see Reinstalling the shared
+entry script. **2** is a plan
   that found missing secret files or, with `unrecognized arguments` in the output, a commit older
   than the digest change (its rollout CLI has no digest options): see Break-glass, "Rolling back
   to a revision older than the digest change". **1** is a rollout stop, `commit is not on main`, or a failed
@@ -322,8 +323,9 @@ role policies and `PROD_DEPLOY_REGION` must all use it. Nothing in this section 
 into the repository or a chat; secret values go in at a hidden prompt.
 
 `deploy/aws/setup-target.sh production check --region <region> --node <managed-instance-id>
---subject '<subject>'` (CloudShell, read-only) verifies steps 1, 3 and 4 below: the node role and
-the node's ping status, the OIDC provider and the two roles, and the two documents. It reports
+--subject '<subject>'` (CloudShell, read-only) verifies steps 1, 3 and 4 below: the OIDC provider,
+each role's trust and inline policy, each document's default version, and the node's ping status
+(registration). It reports
 `ok`, `missing` or `differs` per item and exits 0 only when everything is `ok`. It does not
 replace reading the steps, and never run its `apply` mode against production without the owner's
 decision.

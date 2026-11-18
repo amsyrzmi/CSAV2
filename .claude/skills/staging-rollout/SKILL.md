@@ -6,7 +6,9 @@ description: Use when the owner asks to roll out, deploy or update staging (csa-
 # Staging rollout
 
 Rollouts of `csa-staging` are automatic: every green merge to `main` is rolled out by the
-`deploy-staging` workflow (plan, apply, then a record job that writes the staged record). This
+`deploy-staging` workflow (plan, apply, then a record job that writes the staged record) once its
+image publish has finished. The owner approves the image publish on GitHub (the `staging-images`
+environment); the automatic rollout starts when that publish finishes. This
 skill checks that workflow, dispatches it when the owner says so, and keeps the manual
 `scripts/staging_rollout.py` steps for when the owner asks for them. Details:
 `deploy/STAGING_PIPELINE.md`, "Routine rollouts".
@@ -37,7 +39,7 @@ Pause first (`STAGING_AUTO_PAUSED` `true`), unpause after.
 
 Everything runs in `/home/amsyrzmi/CSAV2`, the main checkout, never in a worktree. The script
 refuses when HEAD is not on `origin/main` or the worktree has tracked changes. The owner approves
-the image publish on GitHub and gives the go here.
+the image publish on GitHub and gives the go here; nothing reaches staging by hand without both.
 
 ### Steps
 
