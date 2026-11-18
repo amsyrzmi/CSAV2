@@ -16,20 +16,13 @@ from csa.channels.telegram import TelegramAdapter, TelegramDeliveryError
 from csa.contracts.callbacks import StaffCallbackCodec
 from csa.core import crypto, db
 from csa.core.tenancy import tx
+from csa.notify.format import format_notification as format_notification  # re-exported
 
 logger = structlog.get_logger(__name__)
 
 MAX_NOTIFICATION_ATTEMPTS = 5
 NOTIFICATION_STALE_SECONDS = 180
 ACTION_TTL = timedelta(hours=24)
-_HEADLINES = {
-    "escalation": "Escalation",
-    "approval_needed": "Order needs approval",
-    "order_submitted": "Order submitted",
-    "dlq": "Dead-letter item",
-    "circuit_opened": "Agent circuit opened",
-    "booking_pending": "Booking waiting for confirmation",
-}
 
 
 class NotificationFailure(Exception):
@@ -37,19 +30,6 @@ class NotificationFailure(Exception):
         super().__init__(error_code)
         self.error_code = error_code
         self.retry_after_seconds = retry_after_seconds
-
-
-def format_notification(event: str, priority: str, payload: dict[str, Any]) -> str:
-    """Render a short staff message; never includes raw customer text."""
-    headline = _HEADLINES.get(event, event)
-    if event == "approval_needed" and payload.get("approval_id"):
-        headline = "AI reply needs approval"
-    lines = [f"[{priority.upper()}] {headline}"]
-    for key in ("text", "order_id", "ticket_id", "reason", "agent", "stage", "trace_id"):
-        value = payload.get(key)
-        if value:
-            lines.append(f"{key}: {value}")
-    return "\n".join(lines)[:4000]
 
 
 def quiet_until(quiet_hours: Any, priority: str, now: datetime) -> datetime | None:
@@ -213,7 +193,9 @@ class StaffNotificationSender:
         await TelegramAdapter.send_message(
             bot_token,
             chat_id=str(target["address"]),
-            text=format_notification(row["event"], row["priority"], payload),
+            text=format_notification(
+                row["event"], row["priority"], payload, str(target["language"])
+            ),
             http_client=self._http_client,
             buttons=buttons,
         )
