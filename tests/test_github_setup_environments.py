@@ -9,15 +9,19 @@ logins ``reviewer-a`` and ``reviewer-b`` and the region ``zz-test-1``.
 from __future__ import annotations
 
 import os
+import pty
 import re
+import select
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
-from tests.fake_gh import REPO, Gh
+from tests.fake_gh import FAKE_GH, REPO, Gh
 from tests.test_production_deploy_assets import _unquoted_expansions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +58,13 @@ TARGETS: dict[str, dict[str, Any]] = {
 }
 # The count of items that are not ok on an empty repository (see the table above).
 EMPTY_NOT_OK = {"staging": 8, "production": 14}
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_setup_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SETUP_<NAME> value in the shell running pytest must never reach the script."""
+    for key in [key for key in os.environ if key.startswith("SETUP_")]:
+        monkeypatch.delenv(key)
 
 
 @pytest.fixture
@@ -609,10 +620,90 @@ BODY_KEYS = {
 CUSTOM_POLICIES = {"protected_branches": False, "custom_branch_policies": True}
 
 
+# Valid stand-in values of every secret (the pattern of each is checked by the script).
+ACCOUNT = "123456789012"
+VALUES = {
+    "STAGING_DEPLOY_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/example-staging-deploy",
+    "STAGING_INSTANCE_ID": "mi-0123456789abcdef0",
+    "PROD_PLAN_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/example-prod-plan",
+    "PROD_APPLY_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/example-prod-apply",
+    "PROD_INSTANCE_ID": "mi-0fedcba9876543210",
+    "PROD_CONSOLE_ORIGIN": "https://console.example.test",
+}
+VARIABLE_FLAGS = ["--region", REGION, "--image-namespace", NAMESPACE]
+# Items one apply reports: its environments, its secrets and its variables (the switch included).
+ITEMS = {
+    target: len(spec["environments"])
+    + sum(len(names) for names in spec["secrets"].values())
+    + len(spec["required_variables"])
+    + 1
+    for target, spec in TARGETS.items()
+}
+
+
+AT_PLAN = f"[1/{ITEMS['production']}] environment production-plan"
+AT_PRODUCTION = f"[2/{ITEMS['production']}] environment production"
+
+
+def setup_values(target: str) -> dict[str, str]:
+    """SETUP_<NAME> for every secret the target needs."""
+    names = {name for names in TARGETS[target]["secrets"].values() for name in names}
+    return {f"SETUP_{name}": VALUES[name] for name in sorted(names)}
+
+
 def apply(
-    gh: Gh, target: str, *extra: str, env: dict[str, str] | None = None
+    gh: Gh,
+    target: str,
+    *extra: str,
+    env: dict[str, str] | None = None,
+    secrets: bool = True,
+    variables: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    return run(gh, target, "--repo", REPO, *extra, env=env)
+    """Apply with the variable flags and every secret value, unless told otherwise."""
+    environment = setup_values(target) if secrets else {}
+    environment.update(env or {})
+    flags = VARIABLE_FLAGS if variables else []
+    return run(gh, target, "--repo", REPO, *flags, *extra, env=environment)
+
+
+def env_commands(gh: Gh) -> list[str]:
+    """The calls about environments and their policies (secret and variable calls left out)."""
+    return [
+        label
+        for label in gh.commands()
+        if not label.startswith(("secret ", "variable "))
+        and "actions/variables" not in label
+        and not label.split("?")[0].endswith("/secrets")
+    ]
+
+
+def env_writes(gh: Gh) -> list[dict[str, Any]]:
+    """The environment and policy writes (secret and variable sets left out)."""
+    return [call for call in gh.writes() if call["argv"][0] == "api"]
+
+
+def secret_sets(gh: Gh) -> list[list[str]]:
+    return [call["argv"] for call in gh.calls() if call["argv"][:2] == ["secret", "set"]]
+
+
+def variable_sets(gh: Gh) -> list[list[str]]:
+    return [call["argv"] for call in gh.calls() if call["argv"][:2] == ["variable", "set"]]
+
+
+def env_lines(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return [line for line in step_lines(result) if " environment " in line.split(": ")[0]]
+
+
+def patch_fake(gh: Gh, anchor: str, snippet: str) -> None:
+    """Insert a snippet of the fake gh's Python source in front of an anchor line, once."""
+    fake = gh.bin / "gh"
+    text = fake.read_text()
+    assert anchor in text
+    fake.write_text(text.replace(anchor, snippet + anchor, 1))
+
+
+def restore_fake(gh: Gh) -> None:
+    (gh.bin / "gh").write_text(FAKE_GH)
 
 
 def set_mode(gh: Gh, mode: str) -> None:
@@ -695,9 +786,10 @@ def test_apply_on_an_empty_repository_creates_each_environment_then_its_main_pol
             f"api GET {policies_path(name)}?per_page=100",
             f"api POST {policies_path(name)}",
         ]
-    assert gh.commands() == expected
-    assert step_lines(result) == [
-        f"[{n}/2] environment {name}: created" for n, name in enumerate(environments, 1)
+    assert env_commands(gh) == expected
+    assert env_lines(result) == [
+        f"[{n}/{ITEMS[target]}] environment {name}: created"
+        for n, name in enumerate(environments, 1)
     ]
 
     state = gh.state()
@@ -709,13 +801,16 @@ def test_apply_on_an_empty_repository_creates_each_environment_then_its_main_pol
         assert (env["wait_timer"], env["prevent_self_review"]) == (0, False)
         gated = production and name == "production"
         assert reviewer_ids(gh, name) == ([1001, 1002] if gated else [])
-        # The body is the complete desired state, the policy flags included.
+        # The body is the complete desired state, the policy flags included, and every reviewer
+        # given is a User entry (a Team-typed entry would be refused or ignored by GitHub).
         body = put_bodies(gh)[name]
         assert set(body) == BODY_KEYS
         assert body["deployment_branch_policy"] == CUSTOM_POLICIES
         assert body["can_admins_bypass"] is (not production)
+        wanted = [{"type": "User", "id": 1001}, {"type": "User", "id": 1002}] if gated else []
+        assert sorted(body["reviewers"], key=lambda item: item["id"]) == wanted
     # The write goes through stdin (--input -), never through field flags.
-    for call in gh.writes():
+    for call in env_writes(gh):
         argv = call["argv"]
         assert argv[argv.index("--input") + 1] == "-" and call["stdin"] > 0
         assert not {"-f", "-F", "--field", "--raw-field"} & set(argv)
@@ -733,10 +828,11 @@ def test_apply_twice_makes_no_write_call_the_second_time(gh: Gh, target: str, mo
     before = gh.state()
     for again in (extra, []):  # the same arguments, then with the live reviewers carried over
         gh.reset_log()
-        result = apply(gh, target, *again)
+        result = apply(gh, target, *again, secrets=False)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert gh.writes() == []
-        assert {line.split(": ")[-1] for line in step_lines(result)} == {"unchanged"}
+        assert all(state.startswith("unchanged") for state in results(result).values())
+        assert len(step_lines(result)) == ITEMS[target]
         assert "note:" not in result.stdout
     after = gh.state()
     assert after["environments"] == before["environments"]
@@ -809,7 +905,7 @@ def test_admin_bypass_is_false_on_production_and_production_plan_and_carried_on_
             gh.add_environment(name, can_admins_bypass=bypass, policies=["main"])
         result = apply(gh, "staging")
         assert result.returncode == 0, (result.stdout, result.stderr)
-        assert gh.writes() == []
+        assert env_writes(gh) == []
         assert "admin bypass" not in result.stdout
         for name in ("staging", "staging-images"):
             assert gh.state()["environments"][name]["can_admins_bypass"] is bypass
@@ -883,7 +979,9 @@ def test_given_reviewers_equal_to_the_live_set_need_no_flag_and_a_new_production
 ) -> None:
     complete(gh, "production", reviewers=("reviewer-a", "reviewer-b"))
     # The same set, in another order and case: no change, so no flag and no write.
-    result = apply(gh, "production", "--reviewer", "REVIEWER-B", "--reviewer", "reviewer-a")
+    result = apply(
+        gh, "production", "--reviewer", "REVIEWER-B", "--reviewer", "reviewer-a", secrets=False
+    )
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert gh.writes() == []
     assert "reviewers on production" not in result.stdout
@@ -941,7 +1039,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "reviewers",
             "plan-ok",
             ("--reviewer", "reviewer-b", "--replace-reviewers"),
-            "[2/2] environment production: failed: reviewers is reviewer-a after the write, "
+            f"{AT_PRODUCTION}: failed: reviewers is reviewer-a after the write, "
             "expected reviewer-b",
         ),
         (
@@ -950,8 +1048,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "reviewers",
             "plan-ok",
             ("--reviewer", "reviewer-b", "--replace-reviewers"),
-            "[2/2] environment production: failed: reviewers is none after the write, "
-            "expected reviewer-b",
+            f"{AT_PRODUCTION}: failed: reviewers is none after the write, expected reviewer-b",
         ),
         (
             "admin bypass (merge)",
@@ -959,8 +1056,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "can_admins_bypass",
             "plan-bypass",
             (),
-            "[1/2] environment production-plan: failed: can_admins_bypass is true after the "
-            "write, expected false",
+            f"{AT_PLAN}: failed: can_admins_bypass is true after the write, expected false",
         ),
         (
             "admin bypass (replace)",
@@ -968,8 +1064,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "can_admins_bypass",
             "plan-bypass",
             (),
-            "[1/2] environment production-plan: failed: can_admins_bypass is true after the "
-            "write, expected false",
+            f"{AT_PLAN}: failed: can_admins_bypass is true after the write, expected false",
         ),
         (
             "wait timer reset (replace)",
@@ -977,8 +1072,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "wait_timer",
             "plan-wait",
             (),
-            "[1/2] environment production-plan: failed: wait_timer is 0 after the write, "
-            "expected 5",
+            f"{AT_PLAN}: failed: wait_timer is 0 after the write, expected 5",
         ),
         (
             "self-review reset (replace)",
@@ -986,8 +1080,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "prevent_self_review",
             "plan-self-review",
             (),
-            "[1/2] environment production-plan: failed: prevent_self_review is false after "
-            "the write, expected true",
+            f"{AT_PLAN}: failed: prevent_self_review is false after the write, expected true",
         ),
         (
             "policy flags (merge)",
@@ -995,8 +1088,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "deployment_branch_policy",
             "plan-no-policy",
             (),
-            "[1/2] environment production-plan: failed: custom_branch_policies is false after "
-            "the write, expected true",
+            f"{AT_PLAN}: failed: custom_branch_policies is false after the write, expected true",
         ),
         (
             "policy flags (replace)",
@@ -1004,8 +1096,7 @@ def test_an_unknown_or_non_user_reviewer_stops_before_any_write(gh: Gh) -> None:
             "deployment_branch_policy",
             "plan-no-policy",
             (),
-            "[1/2] environment production-plan: failed: custom_branch_policies is false after "
-            "the write, expected true",
+            f"{AT_PLAN}: failed: custom_branch_policies is false after the write, expected true",
         ),
     ],
 )
@@ -1043,13 +1134,15 @@ def test_a_put_that_did_not_take_effect_fails_loudly_after_the_re_read(
     assert failure in result.stderr, (label, result.stderr)
     assert MARKER not in everything(gh, result)
     # The script stopped: nothing after the failed environment was touched.
-    failed = "production-plan" if "[1/2]" in failure else "production"
+    failed = "production-plan" if "[1/" in failure else "production"
     assert put_commands(gh)[-1] == f"api PUT repos/{REPO}/environments/{failed}"
     if failed == "production-plan":
         assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/production-plan"]
         assert policies_path("production-plan") not in " ".join(gh.commands())
     assert step_lines(result) == (
-        [] if failed == "production-plan" else ["[1/2] environment production-plan: unchanged"]
+        []
+        if failed == "production-plan"
+        else [f"[1/{ITEMS['production']}] environment production-plan: unchanged"]
     )
 
 
@@ -1078,9 +1171,13 @@ def test_extra_branch_policies_are_deleted_only_after_main_exists(gh: Gh) -> Non
     state["environments"]["staging"]["policies"] = [{"id": 800, "name": "main", "type": "tag"}]
     gh.save(state)
     gh.reset_log()
-    assert apply(gh, "staging").returncode == 0
+    result = apply(gh, "staging")
+    assert result.returncode == 0
     assert policy_names(gh, "staging") == ["main"]
     assert gh.state()["environments"]["staging"]["policies"][0]["type"] == "branch"
+    # The note of a removed policy shows its type when it is not a branch policy.
+    assert "note: staging policy main: created" in result.stdout
+    assert "note: staging policy main (tag): removed" in result.stdout
 
     # protected-branches on and custom policies off is rewritten to custom policies.
     state = gh.state()
@@ -1108,7 +1205,7 @@ def test_staging_apply_gives_staging_images_the_policy_and_keeps_its_reviewers(
     path = f"repos/{REPO}/environments/staging-images"
     # staging is already right, so it is only listed; staging-images has no custom policy: the
     # PUT that turns them on, the re-read, and only then the list and the POST.
-    assert gh.commands() == [
+    assert env_commands(gh) == [
         f"api GET repos/{REPO}",
         f"api GET repos/{REPO}/environments/staging",
         f"api GET {path}",
@@ -1145,9 +1242,7 @@ def test_a_failed_write_names_the_step_and_exits_1_without_continuing(gh: Gh) ->
     result = apply(gh, "production", "--reviewer", "reviewer-a")
 
     assert result.returncode == 1
-    assert "[1/2] environment production-plan: failed: gh: Validation Failed (HTTP 422)" in (
-        result.stderr
-    )
+    assert f"{AT_PLAN}: failed: gh: Validation Failed (HTTP 422)" in (result.stderr)
     assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/production-plan"]
     assert "production" not in gh.state()["environments"]
     assert MARKER not in everything(gh, result)
@@ -1169,9 +1264,10 @@ def test_a_failed_policy_delete_names_the_environment_and_stops(gh: Gh) -> None:
     result = apply(gh, "staging")
 
     assert result.returncode == 1
-    assert "[1/2] environment staging branch policy: failed: gh: Forbidden (HTTP 403)" in (
-        result.stderr
-    )
+    assert (
+        f"[1/{ITEMS['staging']}] environment staging branch policy: failed: gh: Forbidden"
+        " (HTTP 403) (the environment was written; run again to finish)"
+    ) in result.stderr
     # main was created first, and staging-images was never reached.
     assert policy_names(gh, "staging") == ["release/*", "main"]
     # (staging-images was read with every environment, before the first write, and no more.)
@@ -1181,36 +1277,649 @@ def test_a_failed_policy_delete_names_the_environment_and_stops(gh: Gh) -> None:
     assert MARKER not in everything(gh, result)
 
 
-def test_apply_makes_no_secret_or_variable_call_yet(gh: Gh) -> None:
-    for target, reviewers in (("staging", []), ("production", ["--reviewer", "reviewer-a"])):
-        plant_markers(gh)
-        gh.reset_log()
-        result = apply(gh, target, *reviewers, "--region", REGION, "--image-namespace", NAMESPACE)
-        assert result.returncode == 0, (result.stdout, result.stderr)
-        labels = gh.commands()
-        assert not [label for label in labels if label.startswith(("secret ", "variable "))]
-        assert not [label for label in labels if "actions/variables" in label]
-        assert not [label for label in labels if label.split("?")[0].endswith("/secrets")]
-        assert MARKER not in everything(gh, result)
-
-
 @pytest.mark.parametrize("target", ["staging", "production"])
-def test_check_after_apply_is_ok_for_the_environment_items(gh: Gh, target: str) -> None:
+def test_check_after_apply_is_ok_for_every_item(gh: Gh, target: str) -> None:
     extra = (
         ["--reviewer", "reviewer-a", "--reviewer", "reviewer-b"] if target == "production" else []
     )
     assert apply(gh, target, *extra).returncode == 0
-    result = check(gh, target, *extra)
-    # Only the secrets and the required variables are still missing: apply does not set them yet.
-    assert result.returncode == 1
-    assert not_ok(result)
-    assert all(item.startswith(("secret ", "variable ")) for item in not_ok(result)), not_ok(result)
+    result = check(gh, target, *extra, *VARIABLE_FLAGS)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert not_ok(result) == []
+    assert result.stdout.splitlines()[-1] == "check: everything is ok"
     for name in TARGETS[target]["environments"]:
         assert results(result)[f"environment {name} branch policy"] == "ok"
         assert results(result)[f"environment {name} reviewers"] == "ok"
         assert results(result)[f"environment {name}"] == "ok"
         if target == "production":
             assert results(result)[f"environment {name} admin bypass"] == "ok"
+    switch = TARGETS[target]["switch"]
+    assert results(result)[f"variable {switch}"] == "ok (unset: off)"
+
+
+# --- apply: the Task 3 review gaps ----------------------------------------------------------
+
+
+def test_custom_policies_on_with_an_empty_list_need_a_post_and_no_put(gh: Gh) -> None:
+    complete(gh, "staging")
+    set_policies(gh, "staging-images", [])  # custom policies on, nothing listed: admits nothing
+    gh.reset_log()
+
+    result = apply(gh, "staging", secrets=False)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert put_commands(gh) == []
+    assert [label for label in gh.commands() if label.startswith("api POST")] == [
+        f"api POST {policies_path('staging-images')}"
+    ]
+    assert policy_names(gh, "staging-images") == ["main"]
+    assert results(result)["environment staging-images"] == "updated"
+    assert results(result)["environment staging"] == "unchanged"
+
+
+FINISH = "(the environment was written; run again to finish)"
+
+
+def test_a_failed_policy_post_after_the_put_says_the_environment_was_written(gh: Gh) -> None:
+    patch_fake(
+        gh,
+        '    parts = path.split("/")\n',
+        '    if method == "POST":\n'
+        '        sys.stderr.write("gh: Forbidden (HTTP 403)\\n")\n'
+        "        finish(1)\n",
+    )
+    plant_markers(gh)
+
+    result = apply(gh, "staging")
+
+    assert result.returncode == 1
+    assert (
+        f"[1/{ITEMS['staging']}] environment staging branch policy: failed: gh: Forbidden"
+        f" (HTTP 403) {FINISH}"
+    ) in result.stderr
+    # State is left as it is: staging was created with custom policies on and no policy (which
+    # admits no branch at all), and nothing after it was touched.
+    env = gh.state()["environments"]
+    assert list(env) == ["staging"]
+    assert (env["staging"]["custom_branch_policies"], env["staging"]["policies"]) == (True, [])
+    assert MARKER not in everything(gh, result)
+
+    # Running again, with a working gh, finishes the job and writes no second PUT for staging.
+    restore_fake(gh)
+    gh.reset_log()
+    result = apply(gh, "staging")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert put_commands(gh) == [f"api PUT repos/{REPO}/environments/staging-images"]
+    assert policy_names(gh, "staging") == ["main"]
+    assert policy_names(gh, "staging-images") == ["main"]
+
+
+def test_a_failed_re_read_after_the_put_says_the_environment_was_written(gh: Gh) -> None:
+    patch_fake(
+        gh,
+        '    parts = path.split("/")\n',
+        '    puts = [b for b in state.get("api_bodies", []) if b["method"] == "PUT"]\n'
+        '    if method == "GET" and puts:\n'
+        '        sys.stderr.write("gh: Server Error (HTTP 500)\\n")\n        finish(1)\n',
+    )
+
+    result = apply(gh, "staging")
+
+    assert result.returncode == 1
+    assert (
+        f"[1/{ITEMS['staging']}] environment staging: failed: gh: Server Error (HTTP 500) {FINISH}"
+    ) in result.stderr
+    assert list(gh.state()["environments"]) == ["staging"]
+    assert policy_names(gh, "staging") == []
+
+    restore_fake(gh)
+    result = apply(gh, "staging")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert policy_names(gh, "staging") == ["main"]
+    assert policy_names(gh, "staging-images") == ["main"]
+
+
+def test_a_failure_before_any_write_does_not_claim_the_environment_was_written(gh: Gh) -> None:
+    gh.add_environment("production-plan", can_admins_bypass=False, policies=["main"])
+    state = gh.state()
+    state["environments"]["production-plan"]["reviewers"] = [{"type": "User", "id": 9999}]
+    state["environments"]["production-plan"]["can_admins_bypass"] = True
+    gh.save(state)
+    result = apply(gh, "production", "--reviewer", "reviewer-a")
+    assert result.returncode == 1
+    assert "failed:" in result.stderr and FINISH not in result.stderr
+
+
+# --- apply: secrets and variables -----------------------------------------------------------
+
+
+def all_values() -> list[str]:
+    return list(VALUES.values())
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_each_environment_gets_exactly_its_secrets_and_the_repository_gets_exactly_its_variables(
+    gh: Gh, target: str
+) -> None:
+    spec = TARGETS[target]
+    extra = ["--reviewer", "reviewer-a"] if target == "production" else []
+
+    result = apply(gh, target, *extra)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    state = gh.state()
+    for name in spec["environments"]:
+        wanted = {secret: VALUES[secret] for secret in spec["secrets"][name]}
+        assert state["environments"][name]["secrets"] == wanted
+    assert state["variables"] == {"IMAGE_NAMESPACE": NAMESPACE, spec["region_variable"]: REGION}
+    # One line per item, in the order environments, secrets, variables, numbered to the total.
+    lines = step_lines(result)
+    assert len(lines) == ITEMS[target]
+    assert [STEP_LINE.match(line).group(1) for line in lines] == [  # type: ignore[union-attr]
+        str(n) for n in range(1, ITEMS[target] + 1)
+    ]
+    kinds = [line.split("] ")[1].split(" ")[0] for line in lines]
+    assert kinds == sorted(kinds, key=["environment", "secret", "variable"].index)
+    for name in spec["environments"]:
+        for secret in spec["secrets"][name]:
+            assert results(result)[f"secret {secret} on {name}"] == "set"
+    assert results(result)["variable IMAGE_NAMESPACE"] == "set"
+    assert results(result)[f"variable {spec['region_variable']}"] == "set"
+    assert results(result)[f"variable {spec['switch']}"] == "unchanged (unset: off)"
+    # Secrets are written only after the last environment exists and has its policy.
+    commands = gh.commands()
+    first_secret = next(i for i, label in enumerate(commands) if label.startswith("secret set"))
+    last_policy = max(i for i, label in enumerate(commands) if POLICY_LIST in label)
+    assert last_policy < first_secret
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_secrets_come_from_setup_variables_and_reach_gh_on_stdin_only(gh: Gh, target: str) -> None:
+    extra = ["--reviewer", "reviewer-a"] if target == "production" else []
+    result = apply(gh, target, *extra)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    sets = secret_sets(gh)
+    assert len(sets) == sum(len(names) for names in TARGETS[target]["secrets"].values())
+    calls = [call for call in gh.calls() if call["argv"][:2] == ["secret", "set"]]
+    for call in calls:
+        argv = call["argv"]
+        # Exactly the documented shape: name, environment, repository; no value, no --body.
+        assert argv[:3] == ["secret", "set", argv[2]]
+        assert argv[3:] == ["--env", argv[4], "--repo", REPO]
+        assert not {"--body", "-b"} & set(argv)
+        assert not any(value in " ".join(argv) for value in all_values())
+        # The value went through stdin: its length is logged, never its content.
+        assert call["stdin"] == len(VALUES[argv[2]])
+    state = gh.state()
+    for name, secrets in TARGETS[target]["secrets"].items():
+        for secret in secrets:
+            assert state["environments"][name]["secrets"][secret] == VALUES[secret]
+    assert not any(value in everything(gh, result) for value in all_values())
+
+
+def run_in_terminal(
+    gh: Gh,
+    target: str,
+    answers: dict[str, str],
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run the script with stdin and stderr on a pseudo-terminal and answer each hidden prompt.
+
+    Returns the exit status, what the terminal showed (the prompts, and any echo of what was
+    typed) and the script's stdout. An answer is typed only after its prompt has appeared, so a
+    prompt that does not hide the input would echo it into the terminal text.
+    """
+    master, slave = pty.openpty()
+    stdout_path = gh.tmp / "terminal-stdout.txt"
+    with stdout_path.open("w") as stdout_file:
+        process = subprocess.Popen(
+            [str(SCRIPT), target, "--repo", REPO, *args],
+            stdin=slave,
+            stdout=stdout_file,
+            stderr=slave,
+            env=gh.environment(env),
+            cwd=gh.tmp,
+            close_fds=True,
+        )
+    os.close(slave)
+    shown = b""
+    answered: set[str] = set()
+    deadline = time.monotonic() + 60
+    try:
+        while True:
+            ready, _, _ = select.select([master], [], [], 0.2)
+            if ready:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:  # the script closed its end
+                    break
+                if not chunk:
+                    break
+                shown += chunk
+                for name, value in answers.items():
+                    if name not in answered and f"Value for {name} ".encode() in shown:
+                        time.sleep(0.3)
+                        os.write(master, f"{value}\n".encode())
+                        answered.add(name)
+            elif process.poll() is not None:
+                break
+            assert time.monotonic() < deadline, "the script is waiting at a prompt: " + repr(shown)
+        status = process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        os.close(master)
+    return status, shown.decode(errors="replace"), stdout_path.read_text()
+
+
+def test_a_hidden_prompt_supplies_a_missing_secret_and_does_not_echo(gh: Gh) -> None:
+    typed = {
+        "PROD_PLAN_ROLE_ARN": VALUES["PROD_PLAN_ROLE_ARN"],
+        "PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"],
+        "PROD_APPLY_ROLE_ARN": VALUES["PROD_APPLY_ROLE_ARN"],
+        "PROD_CONSOLE_ORIGIN": VALUES["PROD_CONSOLE_ORIGIN"],
+    }
+
+    status, shown, stdout = run_in_terminal(
+        gh, "production", typed, *VARIABLE_FLAGS, "--reviewer", "reviewer-a"
+    )
+
+    assert status == 0, (shown, stdout)
+    state = gh.state()
+    assert state["environments"]["production-plan"]["secrets"] == {
+        "PROD_PLAN_ROLE_ARN": VALUES["PROD_PLAN_ROLE_ARN"],
+        "PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"],
+    }
+    assert state["environments"]["production"]["secrets"] == {
+        "PROD_APPLY_ROLE_ARN": VALUES["PROD_APPLY_ROLE_ARN"],
+        "PROD_INSTANCE_ID": VALUES["PROD_INSTANCE_ID"],
+        "PROD_CONSOLE_ORIGIN": VALUES["PROD_CONSOLE_ORIGIN"],
+    }
+    # One prompt per name: the node id is asked once and used for both environments.
+    for name in typed:
+        assert shown.count(f"Value for {name} ") == 1, name
+    # What was typed is on the terminal nowhere (the prompt hides it), nor in stdout or the log.
+    for value in typed.values():
+        assert value not in shown
+        assert value not in stdout
+        assert value not in gh.log_path.read_text()
+    assert all(call["argv"][0] != "secret" or "--body" not in call["argv"] for call in gh.calls())
+
+
+def test_an_empty_answer_at_the_prompt_skips_the_secret_and_a_bad_one_stops_the_run(
+    gh: Gh,
+) -> None:
+    typed = {
+        "STAGING_DEPLOY_ROLE_ARN": "",
+        "STAGING_INSTANCE_ID": VALUES["STAGING_INSTANCE_ID"],
+    }
+    status, shown, stdout = run_in_terminal(gh, "staging", typed, *VARIABLE_FLAGS)
+    assert status == 1, (shown, stdout)
+    assert "secret STAGING_DEPLOY_ROLE_ARN on staging: missing" in stdout
+    assert "secret STAGING_INSTANCE_ID on staging: set" in stdout
+    assert stdout.splitlines()[-1] == "apply: 1 item(s) still missing"
+    assert list(gh.state()["environments"]["staging"]["secrets"]) == ["STAGING_INSTANCE_ID"]
+
+    fresh = fresh_gh(gh)
+    bad = "not-a-node-id-4417"
+    status, shown, stdout = run_in_terminal(
+        fresh,
+        "staging",
+        {"STAGING_DEPLOY_ROLE_ARN": "", "STAGING_INSTANCE_ID": bad},
+        *VARIABLE_FLAGS,
+    )
+    assert status == 2, (shown, stdout)
+    assert "STAGING_INSTANCE_ID is not a valid managed-node id" in shown + stdout
+    assert bad not in shown.replace("Value for STAGING_INSTANCE_ID", "") + stdout
+    # Nothing was written, not even the environment.
+    assert fresh.writes() == []
+
+
+def test_a_terminal_is_not_prompted_for_a_secret_that_exists(gh: Gh) -> None:
+    complete(gh, "staging")
+    status, shown, stdout = run_in_terminal(gh, "staging", {}, *VARIABLE_FLAGS)
+    assert status == 0, (shown, stdout)
+    assert "Value for" not in shown
+    assert secret_sets(gh) == []
+
+
+def test_a_prompted_value_fills_only_the_environment_that_lacks_the_secret(gh: Gh) -> None:
+    complete(gh, "production")
+    state = gh.state()
+    del state["environments"]["production"]["secrets"]["PROD_INSTANCE_ID"]
+    gh.save(state)
+    typed = "mi-0bbbbbbbbbbbbbbbb"
+
+    status, shown, stdout = run_in_terminal(gh, "production", {"PROD_INSTANCE_ID": typed})
+
+    assert status == 0, (shown, stdout)
+    # One prompt, and the value is written where the secret is missing, not where it exists.
+    assert shown.count("Value for ") == 1
+    assert [argv[2:5] for argv in secret_sets(gh)] == [["PROD_INSTANCE_ID", "--env", "production"]]
+    envs = gh.state()["environments"]
+    assert envs["production"]["secrets"]["PROD_INSTANCE_ID"] == typed
+    assert envs["production-plan"]["secrets"]["PROD_INSTANCE_ID"] == "VALUE-OF-PROD_INSTANCE_ID"
+    assert typed not in shown + stdout + gh.log_path.read_text()
+
+
+def test_without_a_terminal_a_missing_secret_is_reported_not_prompted_and_the_rest_is_applied(
+    gh: Gh,
+) -> None:
+    # Only one of the two secrets is given; stdin is not a terminal, so nothing can be asked.
+    environment = gh.environment({"SETUP_STAGING_INSTANCE_ID": VALUES["STAGING_INSTANCE_ID"]})
+    result = subprocess.run(
+        [str(SCRIPT), "staging", "--repo", REPO, *VARIABLE_FLAGS],
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=gh.tmp,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert results(result)["secret STAGING_DEPLOY_ROLE_ARN on staging"] == "missing"
+    assert results(result)["secret STAGING_INSTANCE_ID on staging"] == "set"
+    assert "note: give SETUP_STAGING_DEPLOY_ROLE_ARN or run on a terminal" in result.stdout
+    assert result.stdout.splitlines()[-1] == "apply: 1 item(s) still missing"
+    assert "Value for" not in result.stdout + result.stderr
+    # The rest was applied: environments, the other secret and the variables.
+    state = gh.state()
+    assert set(state["environments"]) == {"staging", "staging-images"}
+    assert policy_names(gh, "staging-images") == ["main"]
+    assert list(state["environments"]["staging"]["secrets"]) == ["STAGING_INSTANCE_ID"]
+    assert state["variables"] == {
+        "IMAGE_NAMESPACE": NAMESPACE,
+        "STAGING_DEPLOY_REGION": REGION,
+    }
+
+
+def test_with_no_secret_values_every_secret_is_counted_and_the_variables_are_still_set(
+    gh: Gh,
+) -> None:
+    result = apply(gh, "production", "--reviewer", "reviewer-a", secrets=False)
+    assert result.returncode == 1
+    assert result.stdout.splitlines()[-1] == "apply: 5 item(s) still missing"
+    assert gh.state()["variables"] == {"IMAGE_NAMESPACE": NAMESPACE, "PROD_DEPLOY_REGION": REGION}
+    assert secret_sets(gh) == []
+    # Without the variable flags the two required variables are missing too.
+    fresh = fresh_gh(gh)
+    result = apply(fresh, "production", "--reviewer", "reviewer-a", secrets=False, variables=False)
+    assert result.returncode == 1
+    assert result.stdout.splitlines()[-1] == "apply: 7 item(s) still missing"
+    assert results(result)["variable IMAGE_NAMESPACE"] == "missing"
+    assert results(result)["variable PROD_DEPLOY_REGION"] == "missing"
+    assert "note: give --image-namespace" in result.stdout
+    assert "note: give --region" in result.stdout
+    assert variable_sets(fresh) == []
+
+
+def test_an_existing_secret_is_not_prompted_for_or_overwritten_unless_its_setup_variable_is_set(
+    gh: Gh,
+) -> None:
+    complete(gh, "production")
+    before = gh.state()["environments"]
+
+    result = apply(gh, "production", secrets=False)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert secret_sets(gh) == []
+    assert gh.writes() == []
+    assert gh.state()["environments"] == before
+    assert all(
+        results(result)[f"secret {secret} on {name}"] == "unchanged"
+        for name, secrets in TARGETS["production"]["secrets"].items()
+        for secret in secrets
+    )
+
+    # An explicit SETUP_<NAME> rotates that secret on every environment that has it, and only it.
+    rotated = "mi-0aaaaaaaaaaaaaaaa"
+    result = apply(gh, "production", secrets=False, env={"SETUP_PROD_INSTANCE_ID": rotated})
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert [argv[2:5] for argv in secret_sets(gh)] == [
+        ["PROD_INSTANCE_ID", "--env", "production-plan"],
+        ["PROD_INSTANCE_ID", "--env", "production"],
+    ]
+    state = gh.state()["environments"]
+    assert state["production-plan"]["secrets"]["PROD_INSTANCE_ID"] == rotated
+    assert state["production"]["secrets"]["PROD_INSTANCE_ID"] == rotated
+    assert state["production"]["secrets"]["PROD_APPLY_ROLE_ARN"] == "VALUE-OF-PROD_APPLY_ROLE_ARN"
+    assert results(result)["secret PROD_INSTANCE_ID on production"] == "set"
+    assert results(result)["secret PROD_APPLY_ROLE_ARN on production"] == "unchanged"
+
+
+BAD_SECRETS = [
+    ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:user/someone", "role ARN"),
+    ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::12345:role/short-account-{MARKER}", "role ARN"),
+    ("PROD_APPLY_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/{MARKER} with space", "role ARN"),
+    ("PROD_PLAN_ROLE_ARN", f"arn:aws:iam::{ACCOUNT}:role/ok\n{MARKER}", "role ARN"),
+    ("PROD_INSTANCE_ID", "mi-0123456789abcdeg", "managed-node id"),
+    ("PROD_INSTANCE_ID", "mi-0123456789ABCDEF0", "managed-node id"),
+    ("PROD_INSTANCE_ID", "i-0123456789abcdef0", "managed-node id"),
+    ("PROD_INSTANCE_ID", "", "managed-node id"),
+    ("PROD_CONSOLE_ORIGIN", f"https://console.example.test/{MARKER}", "origin"),
+    ("PROD_CONSOLE_ORIGIN", "https://console.example.test:8443", "origin"),
+    ("PROD_CONSOLE_ORIGIN", "https://console.example.test/", "origin"),
+    ("PROD_CONSOLE_ORIGIN", "HTTPS://console.example.test", "origin"),
+    ("PROD_CONSOLE_ORIGIN", "http://console.example.test", "origin"),
+    ("PROD_CONSOLE_ORIGIN", f"https://console.example.test\n{MARKER}", "origin"),
+]
+
+
+@pytest.mark.parametrize(("name", "value", "kind"), BAD_SECRETS, ids=range(len(BAD_SECRETS)))
+def test_secret_values_are_validated_before_any_write_and_never_echoed(
+    gh: Gh, name: str, value: str, kind: str
+) -> None:
+    result = apply(
+        gh,
+        "production",
+        "--reviewer",
+        "reviewer-a",
+        env={f"SETUP_{name}": value},
+    )
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert f"SETUP_{name} is not a valid {kind}" in result.stderr
+    assert gh.writes() == []  # not even an environment was created
+    assert gh.state()["environments"] == {}
+    shown = result.stdout + result.stderr + gh.log_path.read_text()
+    assert MARKER not in shown
+    if value.strip():
+        assert value not in shown
+
+
+def test_no_value_reaches_stdout_stderr_or_the_log(gh: Gh) -> None:
+    marker = MARKER.lower()
+    values = {
+        "SETUP_STAGING_DEPLOY_ROLE_ARN": f"arn:aws:iam::{ACCOUNT}:role/{MARKER}-deploy",
+        "SETUP_STAGING_INSTANCE_ID": "mi-0123456789abcdef0",
+    }
+    flags = ["--region", "zz-marker-1", "--image-namespace", f"ghcr.io/{marker}"]
+    state = gh.state()
+    state["variables"].update(IMAGE_NAMESPACE=f"{MARKER}-old", UNRELATED=f"{MARKER}-unrelated")
+    gh.save(state)
+
+    result = run(gh, "staging", "--repo", REPO, *flags, env=values)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    # A variable value is public: it is on argv (the log), but no message prints it.
+    printed = result.stdout + result.stderr
+    secrets_seen = printed + gh.log_path.read_text()
+    assert marker not in printed and MARKER not in printed
+    assert MARKER not in secrets_seen
+    assert values["SETUP_STAGING_INSTANCE_ID"] not in secrets_seen
+    assert "UNRELATED" not in printed
+
+    # A failing write is no different: the first error line of gh, no value.
+    patch_fake(
+        gh,
+        'elif argv[:2] == ["secret", "set"]:',
+        'elif argv[:2] == ["secret", "set"] and True:\n    read_stdin()\n'
+        '    sys.stderr.write("gh: Forbidden (HTTP 403)\\n")\n    finish(1)\n',
+    )
+    result = run(gh, "staging", "--repo", REPO, *flags, env=values)
+    assert result.returncode == 1
+    assert (
+        f"[3/{ITEMS['staging']}] secret STAGING_DEPLOY_ROLE_ARN on staging: failed: "
+        "gh: Forbidden (HTTP 403)"
+    ) in result.stderr
+    assert MARKER not in result.stdout + result.stderr + gh.log_path.read_text()
+
+
+def test_variables_are_set_when_given_and_left_alone_when_equal(gh: Gh) -> None:
+    state = gh.state()
+    state["variables"]["IMAGE_NAMESPACE"] = "ghcr.io/someone-else"
+    state["variables"]["UNRELATED"] = f"{MARKER}-unrelated"
+    gh.save(state)
+
+    result = apply(gh, "staging")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert variable_sets(gh) == [
+        ["variable", "set", "IMAGE_NAMESPACE", "--repo", REPO, "--body", NAMESPACE],
+        ["variable", "set", "STAGING_DEPLOY_REGION", "--repo", REPO, "--body", REGION],
+    ]
+    assert results(result)["variable IMAGE_NAMESPACE"] == "set"
+    assert results(result)["variable STAGING_DEPLOY_REGION"] == "set"
+    assert gh.state()["variables"]["UNRELATED"] == f"{MARKER}-unrelated"
+    assert MARKER not in result.stdout + result.stderr
+    assert "someone-else" not in result.stdout + result.stderr
+
+    # Equal values are not written again, and a present variable that is not given is left alone.
+    gh.reset_log()
+    result = apply(gh, "staging", secrets=False, variables=False)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert variable_sets(gh) == []
+    assert results(result)["variable IMAGE_NAMESPACE"] == "unchanged"
+    gh.reset_log()
+    result = apply(gh, "staging", secrets=False)
+    assert variable_sets(gh) == []
+    assert results(result)["variable STAGING_DEPLOY_REGION"] == "unchanged"
+    # Only the region is given and differs: only the region is written.
+    gh.reset_log()
+    result = run(gh, "staging", "--repo", REPO, "--region", "zz-other-2")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert variable_sets(gh) == [
+        ["variable", "set", "STAGING_DEPLOY_REGION", "--repo", REPO, "--body", "zz-other-2"]
+    ]
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_the_switches_are_set_only_when_their_flag_is_given(gh: Gh, target: str) -> None:
+    spec = TARGETS[target]
+    switch = spec["switch"]
+    flag = "--auto-plan" if target == "production" else "--paused"
+    extra = ["--reviewer", "reviewer-a"] if target == "production" else []
+
+    # No flag: the variable is not touched, and the line says what it is (unset means off).
+    result = apply(gh, target, *extra)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert switch not in gh.state()["variables"]
+    assert [argv[2] for argv in variable_sets(gh)] == ["IMAGE_NAMESPACE", spec["region_variable"]]
+    assert results(result)[f"variable {switch}"] == "unchanged (unset: off)"
+
+    # The flag sets it, and the line shows the one value that is printed.
+    gh.reset_log()
+    result = apply(gh, target, *extra, flag, "true", secrets=False)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert variable_sets(gh) == [["variable", "set", switch, "--repo", REPO, "--body", "true"]]
+    assert gh.state()["variables"][switch] == "true"
+    assert results(result)[f"variable {switch}"] == "set (true)"
+    assert results(check(gh, target, *extra, flag, "true"))[f"variable {switch}"] == "ok (true)"
+
+    # The same flag again writes nothing; no flag leaves it alone and shows the live value.
+    for again, shown in (([flag, "true"], "true"), ([], "true")):
+        gh.reset_log()
+        result = apply(gh, target, *extra, *again, secrets=False)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert gh.writes() == []
+        assert results(result)[f"variable {switch}"] == f"unchanged ({shown})"
+
+    # A different value is written; an unrecognised live value is reported, never printed.
+    gh.reset_log()
+    result = apply(gh, target, *extra, flag, "false", secrets=False)
+    assert gh.state()["variables"][switch] == "false"
+    assert results(result)[f"variable {switch}"] == "set (false)"
+    state = gh.state()
+    state["variables"][switch] = f"{MARKER}-odd"
+    gh.save(state)
+    gh.reset_log()
+    result = apply(gh, target, *extra, secrets=False)
+    assert result.returncode == 0
+    assert results(result)[f"variable {switch}"] == "unchanged (not true or false)"
+    assert MARKER not in result.stdout + result.stderr
+    assert gh.writes() == []
+
+
+def test_apply_twice_makes_no_write_call_the_second_time_even_with_secret_inputs_absent(
+    gh: Gh,
+) -> None:
+    extra = ["--reviewer", "reviewer-a", "--auto-plan", "true"]
+    assert apply(gh, "production", *extra).returncode == 0
+    gh.reset_log()
+
+    result = apply(gh, "production", *extra, secrets=False)
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert gh.writes() == []
+    assert all(state.startswith("unchanged") for state in results(result).values())
+    assert result.stdout.splitlines()[-1] == "apply: everything is in place"
+
+
+# --- the workflow guard ---------------------------------------------------------------------
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+# The workflows that run in a deploy environment or read one of its names.
+DEPLOY_WORKFLOWS = ["deploy-production.yml", "deploy-staging.yml", "publish-staging-images.yml"]
+
+
+def workflow_reads(path: Path) -> tuple[set[str], set[str], set[str]]:
+    """The secrets, variables and environments one workflow reads (``GITHUB_TOKEN`` excluded)."""
+    text = path.read_text(encoding="utf-8")
+    secrets = set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", text)) - {"GITHUB_TOKEN"}
+    variables = set(re.findall(r"vars\.([A-Z][A-Z0-9_]*)", text))
+    environments: set[str] = set()
+    for job in (yaml.safe_load(text).get("jobs") or {}).values():
+        environment = job.get("environment")
+        if isinstance(environment, dict):
+            environment = environment.get("name")
+        if isinstance(environment, str):
+            environments.add(environment)
+    return secrets, variables, environments
+
+
+def test_the_names_in_the_script_match_what_the_workflows_read() -> None:
+    text = SCRIPT.read_text()
+    # The quoted rows of the three target tables, both targets together.
+    script_secrets = set(re.findall(r'^\s*"[a-z-]+\|([A-Z][A-Z_]*)"$', text, re.MULTILINE))
+    script_variables = set(
+        re.findall(r'^\s*"([A-Z][A-Z_]*)\|(?:namespace|region|switch)\|', text, re.MULTILINE)
+    )
+    script_environments = set(
+        re.findall(r'^\s*"([a-z-]+)\|(?:required|preserved)\|', text, re.MULTILINE)
+    )
+    assert script_secrets and script_variables and script_environments
+
+    secrets: set[str] = set()
+    variables: set[str] = set()
+    environments: set[str] = set()
+    for name in DEPLOY_WORKFLOWS:
+        found = workflow_reads(WORKFLOWS / name)
+        secrets |= found[0]
+        variables |= found[1]
+        environments |= found[2]
+
+    assert secrets == script_secrets
+    # PROD_AUTO_PLAN (decision 9) is read by no workflow until deploy-production-auto.yml exists
+    # (a later task of this change), so it is the one variable the script knows and no workflow
+    # in the list reads yet; that task adds the new workflow to DEPLOY_WORKFLOWS and removes this
+    # exception.
+    assert variables == script_variables - {"PROD_AUTO_PLAN"}
+    assert environments == script_environments
+    # GITLEAKS_LICENSE is read by ci.yml only and is out of scope.
+    assert "GITLEAKS_LICENSE" not in script_secrets
 
 
 # --- the script itself ----------------------------------------------------------------------

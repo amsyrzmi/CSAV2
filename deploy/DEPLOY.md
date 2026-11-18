@@ -195,9 +195,13 @@ gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body true
 gh variable set PROD_AUTO_PLAN --repo amsyrzmi/CSAV2 --body false
 ```
 
-The first line turns it on, the second off. Read the state of the switch with
-`deploy/github/setup-environments.sh production --check --repo amsyrzmi/CSAV2`, which prints
-`true`, `false` or `unset: off`.
+The first line turns it on, the second off. The plain read is
+`gh variable get PROD_AUTO_PLAN --repo amsyrzmi/CSAV2` (it fails when the variable is unset, which
+means off). The script shows it among everything else:
+`deploy/github/setup-environments.sh production --check --repo amsyrzmi/CSAV2` prints
+`[n/total] variable PROD_AUTO_PLAN: ok (true)`, `ok (false)` or `ok (unset: off)`. That command
+needs repository admin and exits 1 when any other item of the target is not ok, so a red exit is
+not about the switch unless its own line says `differs`.
 
 ## Rollback
 
@@ -258,14 +262,14 @@ the repository variables of one target. Without `--check` it applies.
 
 | Flag | Meaning |
 | --- | --- |
-| `--check` | Read-only. Prints one `[n/total] <what>: ok|missing|differs` line per item and ends `check: everything is ok` (exit 0) or `check: <n> item(s) not ok` (exit 1). |
+| `--check` | Read-only. Prints one `[n/total] <what>: <result>` line per item and ends `check: everything is ok` (exit 0) or `check: <n> item(s) not ok` (exit 1). The result is `ok`, `missing` or `differs`; the two switches add their value (`ok (true)`, `ok (unset: off)`, `differs (<value>)`, `differs (not true or false)`); `note:` lines report what is only noted (reviewers on environments that need none, `can_admins_bypass`, `prevent_self_review` and `wait_timer`). |
 | `--repo <owner/name>` | The repository (here `amsyrzmi/CSAV2`). |
-| `--region <region>` | The AWS region variable of the target (`STAGING_DEPLOY_REGION` or `PROD_DEPLOY_REGION`). |
-| `--image-namespace <ghcr.io/owner>` | The repository variable `IMAGE_NAMESPACE`. |
+| `--region <region>` | The AWS region variable of the target (`STAGING_DEPLOY_REGION` or `PROD_DEPLOY_REGION`): `apply` sets it when it is absent or different, `--check` compares it. |
+| `--image-namespace <ghcr.io/owner>` | The repository variable `IMAGE_NAMESPACE`, set and compared the same way. |
 | `--reviewer <login>` | Production only, repeatable (at most six): the required reviewers, for example `<login-1>` and `<login-2>`. |
 | `--replace-reviewers` | Production only, with apply only: allows the reviewer set of an existing `production` to change. |
-| `--auto-plan true\|false` | Production only: sets `PROD_AUTO_PLAN`. Not given means the variable is not touched. |
-| `--paused true\|false` | Staging only: sets `STAGING_AUTO_PAUSED`. Not given means the variable is not touched. |
+| `--auto-plan true\|false` | Production only: `apply` sets `PROD_AUTO_PLAN`, `--check` compares it. Not given means the variable is not touched. |
+| `--paused true\|false` | Staging only: `apply` sets `STAGING_AUTO_PAUSED`, `--check` compares it. Not given means the variable is not touched. |
 
 Environments, secrets and variables, by target:
 
@@ -278,15 +282,29 @@ Environments, secrets and variables, by target:
 
 The repository variables are `IMAGE_NAMESPACE` (both targets), `STAGING_DEPLOY_REGION` (staging),
 `PROD_DEPLOY_REGION` (production), and the two switches `STAGING_AUTO_PAUSED` (staging, set only
-with `--paused`) and `PROD_AUTO_PLAN` (production, set only with `--auto-plan`).
+with `--paused`) and `PROD_AUTO_PLAN` (production, set only with `--auto-plan`). A required
+variable that is absent and was not given as a flag is reported `missing` by `apply` (and counted
+below); a present one is never changed unless its flag is given with a different value.
 
 **Secrets never appear on a command line or in output.** A secret value comes from the environment
 variable `SETUP_<NAME>` (for example `SETUP_PROD_INSTANCE_ID`), or from a hidden prompt on a
-terminal, and reaches `gh secret set` on stdin only. A secret that already exists is not prompted
-for and not overwritten unless its `SETUP_<NAME>` is set (an explicit rotation), so a routine run
-prompts for nothing. Values are validated (role ARN, managed-node id, origin with no path, port or
-trailing slash) before any write, and no message ever contains a value. The only values printed
-are the two switches, which are `true`, `false` or `unset: off`.
+terminal (`Value for <NAME> (hidden; Enter skips it)`; Enter leaves the secret missing), and
+reaches `gh secret set` on stdin only. Without a terminal and without `SETUP_<NAME>` a missing
+secret is not prompted for and not waited for: it is counted as missing. A secret that already
+exists is not prompted for and not overwritten unless its `SETUP_<NAME>` is set (an explicit
+rotation), so a routine run prompts for nothing. Values are validated (role ARN, managed-node id,
+origin with no path, port or trailing slash) before any write, and no message ever contains a
+value. The only values printed are the two switches, which are `true`, `false` or `unset: off`
+(for example `variable PROD_AUTO_PLAN: set (true)` or `unchanged (unset: off)` from `apply`, and
+`ok (true)` from `--check`).
+
+**What `apply` prints.** One `[n/total] <what>: <result>` line per item: first the environments
+(`created`, `updated` or `unchanged`), then the secrets (`secret <NAME> on <env>: set`,
+`unchanged` or `missing`, with a `note: give SETUP_<NAME> or run on a terminal` line under each
+missing one), then the variables (`set`, `unchanged` or `missing`). A secret or a required variable
+that has no value does not stop the run: everything else is applied first, and the run ends
+non-zero with `apply: <n> item(s) still missing`. When everything is in place it ends
+`apply: everything is in place` (exit 0).
 
 **Read, build the whole desired state, write only the difference, then re-read.** `apply` reads
 each environment, builds the complete `PUT` body from the current values plus the desired changes
@@ -339,8 +357,9 @@ root-owned config, the secret files, the lock and log directories.
 ### Order and checks
 
 1. **GitHub environments:** `setup-environments.sh <target> --check`, then without `--check` (secrets
-   cannot be set before the environment exists). With no `SETUP_<NAME>` values given, this first
-   apply creates the environments and variables, then ends non-zero with
+   cannot be set before the environment exists). With no `SETUP_<NAME>` values given (press Enter at
+   each prompt on a terminal), this first apply creates the environments and, with `--region` and
+   `--image-namespace`, the variables, then ends non-zero with
    `apply: <n> item(s) still missing`: that is expected until step 5.
 2. **AWS activation:** `setup-target.sh <target> activate`, for the host's Systems Manager node.
 3. **The host:** the steps of the target's own document, including the registration of the node.

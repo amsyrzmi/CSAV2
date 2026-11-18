@@ -270,6 +270,19 @@ def test_deploy_doc_explains_the_full_put_the_reread_and_the_separate_branch_pol
         # The owner's decision of 2026-11-18 and the self-review rule.
         "`can_admins_bypass` is wanted `false` on `production` and `production-plan`",
         "`prevent_self_review` is never changed",
+        # The line grammar of `--check`, and what `apply` prints (Task 4 of the change).
+        "`[n/total] <what>: <result>`",
+        "`ok (true)`",
+        "`ok (unset: off)`",
+        "`differs (<value>)`",
+        "`differs (not true or false)`",
+        "`note:` lines",
+        "(hidden; Enter skips it)",
+        "it is counted as missing",
+        "`secret <NAME> on <env>: set`",
+        "`apply: <n> item(s) still missing`",
+        "`apply: everything is in place`",
+        "`variable PROD_AUTO_PLAN: set (true)`",
     ):
         assert needle in setup, needle
 
@@ -306,6 +319,10 @@ def test_deploy_doc_covers_auto_plan_and_its_approval_guarantee() -> None:
         "not one; the script and the workflow contain no call that approves",
         "uses no field of the triggering event in a command",
         "setup-environments.sh production --check --repo amsyrzmi/CSAV2",
+        # The two ways to read the switch, and what the script's command needs and prints.
+        "`gh variable get PROD_AUTO_PLAN --repo amsyrzmi/CSAV2`",
+        "`[n/total] variable PROD_AUTO_PLAN: ok (true)`",
+        "needs repository admin and exits 1 when any other item of the target is not ok",
     ):
         assert needle in section, needle
 

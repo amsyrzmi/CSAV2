@@ -8,26 +8,36 @@
 #       [--replace-reviewers] [--auto-plan true|false] [--paused true|false]
 #
 #   --check             read-only (only `gh api` GET calls). Prints one line per item,
-#                       `[n/total] <what>: ok|missing|differs`, then `check: everything is ok`
-#                       (exit 0) or `check: <n> item(s) not ok` (exit 1). Secret and variable
-#                       values are never printed; the two switches (PROD_AUTO_PLAN,
-#                       STAGING_AUTO_PAUSED) print `true`, `false` or `unset: off`.
+#                       `[n/total] <what>: <result>` where the result is `ok`, `missing` or
+#                       `differs` (the two switches add their value: `ok (true)`, `ok (unset: off)`,
+#                       `differs (<value>)`, `differs (not true or false)`), `note:` lines for
+#                       what is only reported, then `check: everything is ok` (exit 0) or
+#                       `check: <n> item(s) not ok` (exit 1). Secret and variable values are never
+#                       printed; the two switches (PROD_AUTO_PLAN, STAGING_AUTO_PAUSED) print
+#                       `true`, `false` or `unset: off`.
 #   --region, --image-namespace
-#                       the repository variables of the target; when given, check compares them.
+#                       the repository variables of the target; check compares them, apply sets
+#                       them (a required variable that is absent and not given is reported missing).
 #   --reviewer          production only (at most six): the people who approve a production apply.
 #                       Check compares them with the live set by login.
 #   --replace-reviewers production only, apply only: allows the reviewer set of an existing
 #                       `production` to change (without it apply prints the old and the new
 #                       logins and stops before the first write).
-#   --auto-plan         production only: the PROD_AUTO_PLAN switch.
-#   --paused            staging only: the STAGING_AUTO_PAUSED switch.
+#   --auto-plan         production only: the PROD_AUTO_PLAN switch (apply sets it only when given).
+#   --paused            staging only: the STAGING_AUTO_PAUSED switch (apply sets it only when given).
 #
 # Without --check the script applies. For each environment of the target it reads the live state,
 # builds the complete desired state (reviewers, wait timer, self-review, admin bypass and the
 # branch-policy flags, so a PUT can never drop one), writes only when something differs, re-reads
 # the environment after every write and stops when a field is not what was intended, then makes
-# the `main`-only branch policy. Secrets and variables are added by a later change. Every input is
-# validated before the first `gh` call. The one permission check is `gh api repos/<repo>`
+# the `main`-only branch policy. Then it sets the secrets and the repository variables. A secret
+# value comes from the environment variable SETUP_<NAME>, or from a hidden prompt when stdin and
+# stderr are a terminal (Enter skips one), and reaches `gh secret set` on stdin only: never an
+# argument, never printed, never logged. A secret that already exists is not prompted for and not
+# overwritten unless its SETUP_<NAME> is set (an explicit rotation). A secret or required variable
+# that has no value ends the run with `apply: <n> item(s) still missing` (exit 1), after
+# everything else was applied. Every input is validated before the first `gh` call, and every
+# secret value before the first write. The one permission check is `gh api repos/<repo>`
 # (`.permissions.admin`): the login check of gh itself exits non-zero when any other configured
 # account is stale. No input is run through eval.
 set -euo pipefail
@@ -41,6 +51,10 @@ RE_REGION='^[a-z]{2}(-[a-z]+)+-[0-9]$'
 # The same pattern as deploy/production/resolve_commit.sh.
 RE_NAMESPACE='^ghcr\.io/[a-z0-9][a-z0-9-]*$'
 RE_REVIEWER='^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
+# The three kinds of secret value (the script prints the kind, never the value).
+RE_ROLE_ARN='^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,._@-]+$'
+RE_INSTANCE_ID='^mi-[0-9a-f]{17}$'
+RE_ORIGIN='^https://[A-Za-z0-9.-]+$'
 MAX_REVIEWERS=6
 
 # ---- the two targets --------------------------------------------------------------------------
@@ -245,9 +259,15 @@ report() {
     [[ "$2" == "ok" || "$2" == "ok "* ]] || BAD="$((BAD + 1))"
 }
 
-# gh_fail <what>: a read that failed ends the run, naming the item that was being read.
+# ENV_WRITTEN is 1 while the environment being applied has been written (the PUT, a policy POST
+# or DELETE): a later failure then says so, because a second run finishes what the first began.
+ENV_WRITTEN=0
+
+# gh_fail <what>: a call that failed ends the run, naming the item that was being read or written.
 gh_fail() {
-    echo "[$((STEP + 1))/$TOTAL] $1: failed: $(first_error_line)" >&2
+    local suffix=""
+    [[ "$ENV_WRITTEN" -eq 0 ]] || suffix=" (the environment was written; run again to finish)"
+    echo "[$((STEP + 1))/$TOTAL] $1: failed: $(first_error_line)$suffix" >&2
     exit 1
 }
 
@@ -280,6 +300,65 @@ POLICIES="[]"
 list_policies() {
     gh_call api --paginate "repos/$REPO/environments/$1/deployment-branch-policies?per_page=100" --jq '.branch_policies[] | {id, name, type}' || gh_fail "environment $1 branch policy"
     POLICIES="$(jq -cs '.' <<< "$GH_OUT")"
+}
+
+# secret_listed <env> <name>: the environment exists and lists the secret by name. Secrets cannot be
+# read back, so only names are known; each environment's list is read once, and an environment that
+# does not exist yet has none (the answer is kept, so it is not read again once it has been made).
+declare -A SECRET_NAMES=()
+secret_listed() {
+    if [[ -z "${SECRET_NAMES[$1]+x}" ]]; then
+        if env_exists "$1"; then
+            gh_call api --paginate "repos/$REPO/environments/$1/secrets?per_page=100" --jq '.secrets[].name' || gh_fail "secret $2 on $1"
+            SECRET_NAMES["$1"]=$'\n'"$GH_OUT"$'\n'
+        else
+            SECRET_NAMES["$1"]=$'\n'
+        fi
+    fi
+    [[ "${SECRET_NAMES[$1]}" == *$'\n'"$2"$'\n'* ]]
+}
+
+# read_variables: the repository variables as one JSON object in VARS. The values stay in this
+# shell, and are compared, never printed (the switches excepted: their whole content is true or
+# false).
+VARS="{}"
+read_variables() {
+    gh_call api --paginate "repos/$REPO/actions/variables?per_page=30" --jq '.variables[] | {name, value}' || gh_fail "repository variables"
+    VARS="$(jq -cs 'map({(.name): .value}) | add // {}' <<< "$GH_OUT" 2> /dev/null)" || die "could not read the repository variables"
+}
+
+var_present() {
+    jq -e --arg name "$1" 'has($name)' <<< "$VARS" > /dev/null
+}
+
+var_value() {
+    jq -j --arg name "$1" '.[$name] // ""' <<< "$VARS"
+}
+
+# variable_want <kind>: the value the flag for this kind of variable gave, in WANT (empty when the
+# flag was not given).
+variable_want() {
+    case "$1" in
+        namespace) WANT="$NAMESPACE" ;;
+        region) WANT="$REGION" ;;
+        *) WANT="$SWITCH_GIVEN" ;;
+    esac
+}
+
+# switch_shown <name>: SHOWN is the live value of a switch, true or false, or `unset: off` when the
+# variable does not exist; UNRECOGNISED is 1 when it holds anything else (the value is not kept).
+SHOWN=""
+UNRECOGNISED=0
+switch_shown() {
+    SHOWN="unset: off"
+    UNRECOGNISED=0
+    if var_present "$1"; then
+        SHOWN="$(var_value "$1")"
+        if [[ "$SHOWN" != "true" && "$SHOWN" != "false" ]]; then
+            SHOWN="not true or false"
+            UNRECOGNISED=1
+        fi
+    fi
 }
 
 # ---- state probes: STATE becomes ok, missing or differs ---------------------------------------
@@ -448,10 +527,11 @@ verify_write() {
 # Sets POLICY_WRITES to 1 when something was written.
 POLICY_WRITES=0
 sync_policies() {
-    local name="$1" ids pid pname
+    local name="$1" ids pid pname ptype
     list_policies "$name"
     if ! jq -e 'any(.[]; .name == "main" and .type == "branch")' <<< "$POLICIES" > /dev/null; then
         gh_call api --method POST "repos/$REPO/environments/$name/deployment-branch-policies" --input - <<< '{"name":"main","type":"branch"}' || gh_fail "environment $name branch policy"
+        ENV_WRITTEN=1
         echo "note: $name policy main: created"
         POLICY_WRITES=1
     fi
@@ -460,18 +540,174 @@ sync_policies() {
         [[ -n "$pid" ]] || continue
         valid '^[0-9]+$' "$pid" || die "environment $name has a branch policy with an unreadable id"
         pname="$(jq -r --argjson id "$pid" '.[] | select(.id == $id) | .name' <<< "$POLICIES")"
+        ptype="$(jq -r --argjson id "$pid" '.[] | select(.id == $id) | .type' <<< "$POLICIES")"
         gh_call api --method DELETE "repos/$REPO/environments/$name/deployment-branch-policies/$pid" || gh_fail "environment $name branch policy"
+        ENV_WRITTEN=1
+        # A policy that is not a branch policy (a tag policy named main, say) shows its type.
+        [[ "$ptype" == "branch" ]] || pname="$pname ($ptype)"
         echo "note: $name policy $pname: removed"
         POLICY_WRITES=1
     done <<< "$ids"
 }
 
-# run_apply: for each environment of the target, in order.
+# ---- apply: secrets ---------------------------------------------------------------------------
+# SECRET_VALUE[<name>] holds each secret value that will be written, SECRET_ROTATE[<name>] is 1
+# when it came from SETUP_<NAME> (an explicit rotation, written even where the secret exists) and
+# 0 when it came from the prompt (written only where the secret is missing). Values live in these
+# shell variables only: never exported, never printed, never on a command line.
+declare -A SECRET_VALUE=()
+declare -A SECRET_ROTATE=()
+SECRET_RE=""
+SECRET_KIND=""
+MISSING=0
+
+# secret_pattern <name>: the pattern and the kind of value a secret holds.
+secret_pattern() {
+    case "$1" in
+        *_ROLE_ARN)
+            SECRET_RE="$RE_ROLE_ARN"
+            SECRET_KIND="role ARN"
+            ;;
+        *_INSTANCE_ID)
+            SECRET_RE="$RE_INSTANCE_ID"
+            SECRET_KIND="managed-node id"
+            ;;
+        PROD_CONSOLE_ORIGIN)
+            SECRET_RE="$RE_ORIGIN"
+            SECRET_KIND="origin"
+            ;;
+        *) die "no value pattern is known for secret $1" ;;
+    esac
+}
+
+# prepare_secrets: decide, before any write, where each secret's value comes from and validate it.
+# A secret that exists everywhere it belongs is not prompted for. The message of a bad value names
+# the variable and the kind of value, never the value.
+prepare_secrets() {
+    local entry env name var value from_setup needed other other_env other_name interactive=0 seen=" "
+    if [[ -t 0 && -t 2 ]]; then
+        interactive=1
+    fi
+    for entry in "${SECRETS[@]}"; do
+        IFS='|' read -r env name <<< "$entry"
+        [[ "$seen" != *" $name "* ]] || continue
+        seen="$seen$name "
+        var="SETUP_$name"
+        value=""
+        from_setup=0
+        if [[ -n "${!var+x}" ]]; then
+            value="${!var}"
+            from_setup=1
+        else
+            needed=0
+            for other in "${SECRETS[@]}"; do
+                IFS='|' read -r other_env other_name <<< "$other"
+                if [[ "$other_name" == "$name" ]] && ! secret_listed "$other_env" "$name"; then
+                    needed=1
+                fi
+            done
+            if [[ "$needed" -eq 1 && "$interactive" -eq 1 ]]; then
+                read -rs -p "Value for $name (hidden; Enter skips it): " value || value=""
+                echo >&2
+            fi
+        fi
+        if [[ "$from_setup" -eq 0 && -z "$value" ]]; then
+            continue
+        fi
+        secret_pattern "$name"
+        if ! valid "$SECRET_RE" "$value"; then
+            if [[ "$from_setup" -eq 1 ]]; then
+                bad "$var is not a valid $SECRET_KIND"
+            fi
+            bad "the value given for $name is not a valid $SECRET_KIND"
+        fi
+        SECRET_VALUE["$name"]="$value"
+        SECRET_ROTATE["$name"]="$from_setup"
+    done
+}
+
+# set_secret <env> <name>: the value reaches `gh secret set` on stdin only (printf is a builtin, so
+# it is not on any command line either); gh's output is discarded except its error text, which
+# cannot hold the value.
+set_secret() {
+    local status=0
+    printf '%s' "${SECRET_VALUE[$2]}" | gh secret set "$2" --env "$1" --repo "$REPO" > /dev/null 2> "$WORK/gh.err" || status="$?"
+    GH_ERR="$(< "$WORK/gh.err")"
+    return "$status"
+}
+
+# apply_secrets: one line per secret of the target, after every environment exists.
+apply_secrets() {
+    local entry env name what write
+    for entry in "${SECRETS[@]}"; do
+        IFS='|' read -r env name <<< "$entry"
+        what="secret $name on $env"
+        write=0
+        if [[ -n "${SECRET_VALUE[$name]+x}" ]]; then
+            if [[ "${SECRET_ROTATE[$name]}" -eq 1 ]] || ! secret_listed "$env" "$name"; then
+                write=1
+            fi
+        fi
+        if [[ "$write" -eq 1 ]]; then
+            set_secret "$env" "$name" || gh_fail "$what"
+            step "$what" set
+        elif secret_listed "$env" "$name"; then
+            step "$what" unchanged
+        else
+            step "$what" missing
+            MISSING="$((MISSING + 1))"
+            echo "note: give SETUP_$name or run on a terminal"
+        fi
+    done
+}
+
+# ---- apply: variables -------------------------------------------------------------------------
+# apply_variables: one line per variable of the target. A variable is set when its flag was given
+# and it is absent or different; a required one that is absent and not given is missing. Values
+# are never printed, except for the two switches, whose whole content is true or false.
+apply_variables() {
+    local entry name kind flag needs_set
+    for entry in "${VARIABLES[@]}"; do
+        IFS='|' read -r name kind _ <<< "$entry"
+        variable_want "$kind"
+        needs_set=0
+        if [[ -n "$WANT" ]]; then
+            if ! var_present "$name" || [[ "$(var_value "$name")" != "$WANT" ]]; then
+                needs_set=1
+            fi
+        fi
+        if [[ "$needs_set" -eq 1 ]]; then
+            gh_call variable set "$name" --repo "$REPO" --body "$WANT" || gh_fail "variable $name"
+            if [[ "$kind" == "switch" ]]; then
+                step "variable $name" "set ($WANT)"
+            else
+                step "variable $name" set
+            fi
+        elif [[ "$kind" == "switch" ]]; then
+            switch_shown "$name"
+            step "variable $name" "unchanged ($SHOWN)"
+        elif var_present "$name"; then
+            step "variable $name" unchanged
+        else
+            step "variable $name" missing
+            MISSING="$((MISSING + 1))"
+            flag="--region"
+            [[ "$kind" != "namespace" ]] || flag="--image-namespace"
+            echo "note: give $flag to set $name"
+        fi
+    done
+}
+
+# run_apply: every refusal and every input check first, then for each environment of the target in
+# order, then the secrets, then the variables.
 run_apply() {
     local entry name existed result need want_set want_bypass timer prevent body live_bypass
-    TOTAL="${#ENVIRONMENTS[@]}"
+    local environment_count="${#ENVIRONMENTS[@]}" secret_count="${#SECRETS[@]}" variable_count="${#VARIABLES[@]}"
+    TOTAL="$((environment_count + secret_count + variable_count))"
     resolve_given
     decide_all
+    prepare_secrets
+    read_variables
     for entry in "${ENVIRONMENTS[@]}"; do
         IFS='|' read -r name _ _ <<< "$entry"
         want_set="${WANT_SET[$name]}"
@@ -481,6 +717,7 @@ run_apply() {
         result=unchanged
         timer=0
         prevent=false
+        ENV_WRITTEN=0
         if env_exists "$name"; then
             existed=1
             timer="$(env_value "$name" wait_timer)"
@@ -500,6 +737,7 @@ run_apply() {
             # The complete desired state, whatever GitHub does with a field a PUT leaves out.
             body="$(jq -nc --argjson reviewers "$want_set" --argjson timer "$timer" --argjson prevent "$prevent" --argjson bypass "$want_bypass" '{reviewers: $reviewers, wait_timer: $timer, prevent_self_review: $prevent, can_admins_bypass: $bypass, deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}')"
             gh_call api --method PUT "repos/$REPO/environments/$name" --input - <<< "$body" || gh_fail "environment $name"
+            ENV_WRITTEN=1
             verify_write "$name" "$want_set" "$timer" "$prevent" "$want_bypass"
             [[ "$existed" -eq 0 ]] || result=updated
         fi
@@ -509,7 +747,15 @@ run_apply() {
         sync_policies "$name"
         [[ "$POLICY_WRITES" -eq 0 || "$result" == "created" ]] || result=updated
         step "environment $name" "$result"
+        ENV_WRITTEN=0
     done
+    apply_secrets
+    apply_variables
+    if [[ "$MISSING" -gt 0 ]]; then
+        echo "apply: $MISSING item(s) still missing"
+        exit 1
+    fi
+    echo "apply: everything is in place"
 }
 
 if [[ "$CHECK" -eq 0 ]]; then
@@ -570,49 +816,25 @@ for entry in "${ENVIRONMENTS[@]}"; do
 done
 
 # Secrets cannot be read back: only their names are listed, per environment that exists.
-declare -A SECRET_NAMES=()
 for entry in "${SECRETS[@]}"; do
     IFS='|' read -r env name <<< "$entry"
-    if ! env_exists "$env"; then
-        report "secret $name on $env" missing
-        continue
-    fi
-    if [[ -z "${SECRET_NAMES[$env]+x}" ]]; then
-        gh_call api --paginate "repos/$REPO/environments/$env/secrets?per_page=100" --jq '.secrets[].name' || gh_fail "secret $name on $env"
-        SECRET_NAMES["$env"]=$'\n'"$GH_OUT"$'\n'
-    fi
-    if [[ "${SECRET_NAMES[$env]}" == *$'\n'"$name"$'\n'* ]]; then
+    if secret_listed "$env" "$name"; then
         report "secret $name on $env" ok
     else
         report "secret $name on $env" missing
     fi
 done
 
-# Variables: the values stay in this shell, and are compared, never printed (the switches
-# excepted: their whole content is true or false).
-gh_call api --paginate "repos/$REPO/actions/variables?per_page=30" --jq '.variables[] | {name, value}' || gh_fail "repository variables"
-VARS="$(jq -cs 'map({(.name): .value}) | add // {}' <<< "$GH_OUT" 2> /dev/null)" || die "could not read the repository variables"
-
-# var_present <name> and var_value <name>
-var_present() {
-    jq -e --arg name "$1" 'has($name)' <<< "$VARS" > /dev/null
-}
-
-var_value() {
-    jq -j --arg name "$1" '.[$name] // ""' <<< "$VARS"
-}
+# Variables: the values are compared, never printed (the switches excepted).
+read_variables
 
 for entry in "${VARIABLES[@]}"; do
     IFS='|' read -r name kind _ <<< "$entry"
-    case "$kind" in
-        namespace) want="$NAMESPACE" ;;
-        region) want="$REGION" ;;
-        *) want="$SWITCH_GIVEN" ;;
-    esac
+    variable_want "$kind"
     if [[ "$kind" != "switch" ]]; then
         if ! var_present "$name"; then
             report "variable $name" missing
-        elif [[ -n "$want" && "$(var_value "$name")" != "$want" ]]; then
+        elif [[ -n "$WANT" && "$(var_value "$name")" != "$WANT" ]]; then
             report "variable $name" differs
         else
             report "variable $name" ok
@@ -620,20 +842,13 @@ for entry in "${VARIABLES[@]}"; do
         continue
     fi
     # A switch: unset means off. It is the one value printed.
-    shown="unset: off"
-    unrecognised=0
-    if var_present "$name"; then
-        shown="$(var_value "$name")"
-        if [[ "$shown" != "true" && "$shown" != "false" ]]; then
-            unrecognised=1
-        fi
-    fi
-    if [[ "$unrecognised" -eq 1 ]]; then
-        report "variable $name" "differs (not true or false)"
-    elif [[ -n "$want" && "$shown" != "$want" ]]; then
-        report "variable $name" "differs ($shown)"
+    switch_shown "$name"
+    if [[ "$UNRECOGNISED" -eq 1 ]]; then
+        report "variable $name" "differs ($SHOWN)"
+    elif [[ -n "$WANT" && "$SHOWN" != "$WANT" ]]; then
+        report "variable $name" "differs ($SHOWN)"
     else
-        report "variable $name" "ok ($shown)"
+        report "variable $name" "ok ($SHOWN)"
     fi
 done
 
