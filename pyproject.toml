@@ -112,6 +112,22 @@ forbidden_modules = [
     "csa.notify.sender",
 ]
 
+[[tool.importlinter.contracts]]
+name = "csa.notify.people and csa.notify.format stay light"
+type = "forbidden"
+source_modules = ["csa.notify.people", "csa.notify.format"]
+forbidden_modules = [
+    "csa.notify.sender",
+    "csa.reminders",
+    "csa.inbox_queue",
+    "csa.console",
+    "csa.approval",
+    "csa.agents",
+    "csa.workspace",
+    "csa.staff",
+    "csa.hr",
+]
+
 [dependency-groups]
 dev = [
     "coverage==7.10.7",

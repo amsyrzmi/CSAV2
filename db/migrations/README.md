@@ -138,7 +138,12 @@ Reserved ranges (client growth program, 2026-10-27):
   adds `inbox_queue_enter` (the only way into `needs_staff`) and the message and escalation triggers
   that keep the queue state (one conversation update per message, never `inbox_version`); 0623
   adds `reminders`, the generic timer table behind `csa.reminders` (tenant row security, no
-  foreign key but the company; `(client_id, dedupe_key)` is unique); later numbers are listed as
+  foreign key but the company; `(client_id, dedupe_key)` is unique); 0624 adds
+  `console_notifications` (one row per person and notification, tenant row security,
+  `(client_id, user_id, dedupe_key)` unique, `(user_id, client_id)` references
+  `console_memberships` as `hr_notifications` does) and the SECURITY DEFINER recipient functions
+  `inbox_team_user_ids`, `inbox_admin_user_ids` and `console_notification_members` (EXECUTE to
+  `csa_app` only, each refusing a company other than `app.client_id`); later numbers are listed as
   they ship.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`

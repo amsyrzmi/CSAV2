@@ -36,6 +36,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from csa.core import db
 from csa.core.tenancy import tx
+from csa.notify.people import NotifyResult, notify_people
 from csa.reminders import registry as kinds
 from csa.reminders.registry import Decision, HandlerContext, Notice, Reminder, ReminderRegistry
 
@@ -74,11 +75,29 @@ def delivery_key(reminder_id: UUID, fire_number: int, index: int = 0) -> str:
     return key if index == 0 else f"{key}:{index}"
 
 
-async def _deliver_unset(
+async def deliver_notice(
     conn: psycopg.AsyncConnection[Any], client_id: UUID, notice: Notice, dedupe_key: str
-) -> None:
-    """The default delivery until notify_people is wired in: a notice fails as a handler would."""
-    raise NotImplementedError("reminder delivery is not wired yet")
+) -> NotifyResult:
+    """The default delivery: ``notify_people`` with the notice, on the claim's transaction.
+
+    The console rows go to the notice's recipients (a non-member is skipped). ``staff_chat``
+    also queues the staff chat as ``staff_event`` (the notice's kind when it names none), with the
+    notice's ``params`` as the chat payload: ids and display names only, never message text.
+    """
+    staff_event = (notice.staff_event or notice.kind) if notice.staff_chat else None
+    return await notify_people(
+        conn,
+        client_id,
+        recipients=notice.recipients,
+        kind=notice.kind,
+        priority=notice.priority,
+        message_key=notice.message_key,
+        params=notice.params,
+        link=notice.link,
+        dedupe_key=dedupe_key,
+        staff_event=staff_event,
+        staff_payload=dict(notice.params) if staff_event is not None else None,
+    )
 
 
 class SwallowedDatabaseError(Exception):
@@ -106,12 +125,13 @@ async def fire_due(
     ``fired``: the handler acted (delivered, or asked to fire again). ``dropped``: an empty
     decision. ``failed``: raised (or caught a database error, or hung), will retry. ``dead``:
     failed for the last time. ``unknown``: no handler for the kind here, pushed ahead.
-    ``handlers`` defaults to the process registry and ``deliver`` to the notification delivery.
+    ``handlers`` defaults to the process registry and ``deliver`` to :func:`deliver_notice`
+    (``notify_people``).
     """
     stats: dict[str, int] = dict.fromkeys(STATS, 0)
     now = clock.now()
     table = kinds.registry if handlers is None else handlers
-    send = _deliver_unset if deliver is None else deliver
+    send = deliver_notice if deliver is None else deliver
     seen: list[UUID] = []  # a row asked to fire again by now is left to the next run
     for _ in range(batch_size):
         async with tx(app_pool, str(client_id)) as conn:
