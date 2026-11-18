@@ -437,6 +437,11 @@ is reminded by the new clock's `inbox.overdue` instead.
 The existing immediate events (`escalation`, `approval_needed`, `booking_pending`) stay as they are and
 are not duplicated; the inbox reminders cover waiting time.
 
+Plan 2a decisions on this table: the overdue priority raise starts at the first repeat (the second
+fire, `fire_count >= 1` in `csa/inbox_queue/reminders.py`), not at the second repeat as the row above
+says. A staff-chat message held by quiet hours is delivered when they end even if the item has moved on
+by then (the console rows are unaffected); this is a known limit until PR 3.
+
 - **Existing items at rollout.** A one-time job in PR 2 schedules the overdue reminder for each
   backfilled `needs_staff` item with a fresh clock (due one response target after rollout), so no company
   receives a burst of reminders for old items.
