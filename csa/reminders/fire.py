@@ -7,8 +7,14 @@ company never fire the same row (the job's advisory lock, and ``SKIP LOCKED`` un
 
 A handler or a delivery that raises rolls back only its savepoint: the row records the attempt
 and the error's class and is tried again after a backoff (1, then 4 minutes); the third failure
-marks it ``fired`` with the error and it never runs again. The other rows of the run go on. A
-kind with no handler is cancelled with ``last_error = 'unknown kind'``.
+marks it ``fired`` with the error and it never runs again. The other rows of the run go on. Two
+failures that would not raise are made to: a database error the handler or a delivery caught
+(the savepoint is left aborted) and a hang (each row's handler and deliveries get
+``HANDLER_TIMEOUT`` seconds), so neither can keep the row at the head of the queue.
+
+A kind with no handler in this process is not lost: an older worker during a rolling deploy, or
+a process that never registered the kind, only pushes it ``UNKNOWN_KIND_RETRY`` ahead with
+``last_error = 'unknown kind'`` (no attempt counted), so a worker that knows the kind fires it.
 
 A notification's key is ``<reminder id>:<fire number>`` (a second notice in the same decision
 adds ``:<index>``). A worker that dies after delivering and before committing leaves the row
@@ -18,6 +24,7 @@ notification tables, unique on it, keep one.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -38,10 +45,14 @@ BATCH_SIZE = 500
 """At most this many reminders per company per run."""
 MAX_ATTEMPTS = 3
 """The failure that reaches this count is the last: the row is marked ``fired`` and stops."""
+HANDLER_TIMEOUT = 20.0
+"""Seconds one reminder's handler and deliveries may take before it counts as a failure."""
 UNKNOWN_KIND = "unknown kind"
-STATS = ("fired", "dropped", "failed", "dead")
+UNKNOWN_KIND_RETRY = timedelta(minutes=15)
+"""How far a reminder whose kind this process does not know is pushed ahead."""
+STATS = ("fired", "dropped", "failed", "dead", "unknown")
 
-Outcome = Literal["fired", "dropped", "failed", "dead"]
+Outcome = Literal["fired", "dropped", "failed", "dead", "unknown"]
 Deliver = Callable[[psycopg.AsyncConnection[Any], UUID, Notice, str], Awaitable[Any]]
 """``deliver(conn, client_id, notice, dedupe_key)``: send one notice on the claim's transaction."""
 
@@ -70,6 +81,17 @@ async def _deliver_unset(
     raise NotImplementedError("reminder delivery is not wired yet")
 
 
+class SwallowedDatabaseError(Exception):
+    """A handler or a delivery caught a database error and went on: its savepoint is aborted."""
+
+
+def _raise_if_aborted(conn: psycopg.AsyncConnection[Any]) -> None:
+    # Raising sends the savepoint down its ROLLBACK TO path; leaving it would RELEASE an aborted
+    # savepoint, which fails, and then the failure could not be recorded on the row either.
+    if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
+        raise SwallowedDatabaseError
+
+
 async def fire_due(
     app_pool: AsyncConnectionPool,
     client_id: UUID,
@@ -82,9 +104,9 @@ async def fire_due(
     """Fire up to ``batch_size`` of the company's due reminders, oldest first, and count them.
 
     ``fired``: the handler acted (delivered, or asked to fire again). ``dropped``: an empty
-    decision, or a kind with no handler. ``failed``: raised, will retry. ``dead``: raised for the
-    last time. ``handlers`` defaults to the process registry and ``deliver`` to the notification
-    delivery.
+    decision. ``failed``: raised (or caught a database error, or hung), will retry. ``dead``:
+    failed for the last time. ``unknown``: no handler for the kind here, pushed ahead.
+    ``handlers`` defaults to the process registry and ``deliver`` to the notification delivery.
     """
     stats: dict[str, int] = dict.fromkeys(STATS, 0)
     now = clock.now()
@@ -127,8 +149,8 @@ async def _fire_one(
     handler = table.get(reminder.kind)
     if handler is None:
         await db.q.execute(
-            "reminders/finish.sql",
-            {**ids, "state": "cancelled", "due_at": None, "fired": 0, "last_error": UNKNOWN_KIND},
+            "reminders/defer.sql",
+            {**ids, "due_at": now + UNKNOWN_KIND_RETRY, "last_error": UNKNOWN_KIND},
             conn=conn,
         )
         logger.warning(
@@ -137,13 +159,18 @@ async def _fire_one(
             reminder_id=str(reminder.id),
             kind=reminder.kind,
         )
-        return "dropped"
+        return "unknown"
     fire_number = reminder.fire_count + 1
     try:
-        async with conn.transaction():  # a savepoint: a failure undoes the handler's own writes
-            decision: Decision = await handler(HandlerContext(conn, client_id, reminder, now))
-            for index, notice in enumerate(decision.notices):
-                await send(conn, client_id, notice, delivery_key(reminder.id, fire_number, index))
+        # TimeoutError is an Exception: a hang is a failure of this row, not of the whole run.
+        async with asyncio.timeout(HANDLER_TIMEOUT):
+            async with conn.transaction():  # a savepoint: a failure undoes the handler's writes
+                decision: Decision = await handler(HandlerContext(conn, client_id, reminder, now))
+                _raise_if_aborted(conn)
+                for index, notice in enumerate(decision.notices):
+                    key = delivery_key(reminder.id, fire_number, index)
+                    await send(conn, client_id, notice, key)
+                    _raise_if_aborted(conn)
     except Exception as exc:  # one bad reminder must not stop the others
         attempts = int(row["attempts"]) + 1
         dead = attempts >= MAX_ATTEMPTS

@@ -109,7 +109,7 @@ def _handlers(kind: str, handler: Any) -> ReminderRegistry:
 
 
 def _stats(**counts: int) -> dict[str, int]:
-    return {"fired": 0, "dropped": 0, "failed": 0, "dead": 0, **counts}
+    return {"fired": 0, "dropped": 0, "failed": 0, "dead": 0, "unknown": 0, **counts}
 
 
 @pytest.fixture
@@ -224,21 +224,113 @@ async def test_an_empty_decision_is_dropped_silently(
 
 
 @requires_docker
-async def test_an_unknown_kind_is_cancelled_and_never_loops(
+async def test_an_unknown_kind_waits_for_a_worker_that_knows_it(
     migrated_dsn: str, pool: AsyncConnectionPool
 ) -> None:
+    """A process without the kind (an older worker in a rolling deploy) pushes the reminder 15
+    minutes ahead and counts no attempt; once the kind is registered it fires as usual."""
     c = _company(migrated_dsn)
-    made = _put(migrated_dsn, c, kind="nobody.home")
+    made = _put(migrated_dsn, c, kind="demo.later")
     sent = Recorder()
     clock = FakeClock(NOW)
-    ran = await fire.fire_due(pool, uuid.UUID(c), clock, handlers=ReminderRegistry(), deliver=sent)
-    assert ran == _stats(dropped=1) and sent.calls == []
+    unknown = ReminderRegistry()
+    ran = await fire.fire_due(pool, uuid.UUID(c), clock, handlers=unknown, deliver=sent)
+    assert ran == _stats(unknown=1) and sent.calls == []
     row = _row(migrated_dsn, made)
-    assert row["state"] == "cancelled" and row["last_error"] == "unknown kind"
-    assert row["fire_count"] == 0
-    clock.advance(timedelta(hours=1))
-    ran = await fire.fire_due(pool, uuid.UUID(c), clock, handlers=ReminderRegistry(), deliver=sent)
-    assert ran == _stats()
+    assert row["state"] == "scheduled" and row["last_error"] == "unknown kind"
+    assert row["due_at"] == NOW + timedelta(minutes=15)
+    assert row["attempts"] == 0 and row["fire_count"] == 0
+    # Not due again before then.
+    clock.advance(timedelta(minutes=14))
+    assert await fire.fire_due(pool, uuid.UUID(c), clock, handlers=unknown, deliver=sent) == (
+        _stats()
+    )
+
+    async def handler(ctx: HandlerContext) -> Decision:
+        return Decision(notices=(_notice(),))
+
+    clock.advance(timedelta(minutes=1))
+    known = _handlers("demo.later", handler)
+    ran = await fire.fire_due(pool, uuid.UUID(c), clock, handlers=known, deliver=sent)
+    assert ran == _stats(fired=1) and sent.keys == [f"{made}:1"]
+    row = _row(migrated_dsn, made)
+    assert row["state"] == "done" and row["fire_count"] == 1 and row["last_error"] is None
+
+
+@requires_docker
+async def test_a_database_error_the_handler_swallowed_is_a_failure(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    """Review focus 2: a handler that catches a database error and returns a decision leaves its
+    savepoint aborted; that row counts as a failure and backs off, and a newer row still fires."""
+    c = _company(migrated_dsn)
+    bad = _put(migrated_dsn, c, kind="demo.swallow", due_at=NOW - timedelta(minutes=2))
+    good = _put(migrated_dsn, c, due_at=NOW - timedelta(minutes=1))
+
+    async def swallow(ctx: HandlerContext) -> Decision:
+        try:  # the row's own (client_id, dedupe_key) again: a unique violation
+            await ctx.conn.execute(
+                "INSERT INTO reminders (client_id, kind, subject_type, subject_id, due_at,"
+                " dedupe_key) SELECT client_id, kind, subject_type, subject_id, due_at, dedupe_key"
+                " FROM reminders WHERE id = %s",
+                (ctx.reminder.id,),
+            )
+        except psycopg.errors.UniqueViolation:
+            pass
+        return Decision(notices=(_notice(),))
+
+    async def fine(ctx: HandlerContext) -> Decision:
+        return Decision(notices=(_notice(),))
+
+    handlers = _handlers("demo.swallow", swallow)
+    handlers.register("demo.due", fine)
+    sent = Recorder()
+    ran = await fire.fire_due(pool, uuid.UUID(c), FakeClock(NOW), handlers=handlers, deliver=sent)
+    assert ran == _stats(fired=1, failed=1)
+    assert sent.keys == [f"{good}:1"] and _row(migrated_dsn, good)["state"] == "done"
+    row = _row(migrated_dsn, bad)
+    assert row["state"] == "scheduled" and row["attempts"] == 1 and row["fire_count"] == 0
+    assert row["last_error"] == "SwallowedDatabaseError"
+    assert row["due_at"] == NOW + timedelta(minutes=1)
+
+
+@requires_docker
+@pytest.mark.parametrize("where", ["python", "database"])
+async def test_a_hanging_handler_is_a_failure_and_the_rest_fire(
+    migrated_dsn: str,
+    pool: AsyncConnectionPool,
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+) -> None:
+    """Review focus 2: a hang is cut off at the per-row timeout, counted as a failure and backed
+    off, instead of the job timeout ending the run on the same row every minute."""
+    monkeypatch.setattr(fire, "HANDLER_TIMEOUT", 0.5)
+    c = _company(migrated_dsn)
+    bad = _put(migrated_dsn, c, kind="demo.hang", due_at=NOW - timedelta(minutes=2))
+    good = _put(migrated_dsn, c, due_at=NOW - timedelta(minutes=1))
+
+    async def hang(ctx: HandlerContext) -> Decision:
+        if where == "python":
+            await asyncio.sleep(30)
+        else:
+            await ctx.conn.execute("SELECT pg_sleep(30)")
+        return Decision(notices=(_notice(),))
+
+    async def fine(ctx: HandlerContext) -> Decision:
+        return Decision(notices=(_notice(),))
+
+    handlers = _handlers("demo.hang", hang)
+    handlers.register("demo.due", fine)
+    sent = Recorder()
+    ran = await asyncio.wait_for(
+        fire.fire_due(pool, uuid.UUID(c), FakeClock(NOW), handlers=handlers, deliver=sent), 15
+    )
+    assert ran == _stats(fired=1, failed=1)
+    assert sent.keys == [f"{good}:1"] and _row(migrated_dsn, good)["state"] == "done"
+    row = _row(migrated_dsn, bad)
+    assert row["state"] == "scheduled" and row["attempts"] == 1 and row["fire_count"] == 0
+    assert row["last_error"] == "TimeoutError"
+    assert row["due_at"] == NOW + timedelta(minutes=1)
 
 
 @requires_docker
