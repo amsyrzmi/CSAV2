@@ -2,8 +2,8 @@
 
 The fake is a small Python program written into ``<tmp>/bin/gh``; that directory comes first on
 ``PATH`` when a script runs. It keeps a JSON state file of the repository, users, environments
-(reviewers, protection settings, branch policies, secrets), repository variables and, later,
-workflow runs. It logs every call (argv and the byte length of stdin, never stdin content) and
+(reviewers, protection settings, branch policies, secrets), repository variables, workflows and
+their runs and jobs. It logs every call (argv and the byte length of stdin, never stdin content) and
 answers like ``gh``: JSON on stdout, ``gh: <message> (HTTP <status>)`` on stderr, exit 1 for an
 HTTP error, exit 4 when logged out.
 
@@ -20,6 +20,53 @@ What it models is what was observed on GitHub's environments API (2026-11-18):
   body, so a test can prove a script re-reads after writing.
 * Branch policies exist only while custom policies are on: the list and the POST of any other
   environment answer 404, as GitHub does for ``deployment_branch_policy: null``.
+
+Workflow runs (read-only GETs of the real repository, 2026-11-18, and the REST documentation):
+
+* ``GET repos/<r>/actions/workflows/<file>/runs`` returns ``{total_count, workflow_runs}``, newest
+  first; each run has ``id``, ``name``, ``head_branch``, ``head_sha``, ``path``, ``display_title``,
+  ``run_number``, ``event``, ``status``, ``conclusion`` (``null`` until completed), ``workflow_id``,
+  ``url``, ``html_url``, ``created_at``, ``updated_at``, ``actor`` and ``triggering_actor``
+  (``{login, id, type}``), ``run_attempt``, ``run_started_at``, ``jobs_url``, ``cancel_url``. The
+  filters ``status``, ``event``, ``branch``, ``head_sha`` and ``actor`` are exact matches (verified:
+  ``status`` matches a run's ``status`` or its ``conclusion``, so ``status=success`` lists the runs
+  that concluded success; an unknown value or an unknown sha is an empty list with HTTP 200;
+  ``total_count`` counts every match, not the page). ``per_page`` defaults to 30 and is capped at
+  100 (``0`` and non-numbers give the default); ``page`` counts from 1. Unknown query keys are
+  ignored, as GitHub does. A workflow file that does not exist is a 404.
+* ``GET .../actions/runs/<id>`` is one run (404 for an unknown id); ``GET
+  .../actions/runs/<id>/jobs`` returns ``{total_count, jobs}`` in order. A job has ``id``,
+  ``run_id``, ``workflow_name``, ``head_branch``, ``head_sha``, ``name``, ``status``,
+  ``conclusion``, ``created_at``, ``started_at``, ``completed_at``, ``steps``, ``labels``,
+  ``runner_id``, ``runner_name`` and urls. A job cancelled
+  while it waited reads ``completed`` / ``cancelled`` with no steps, ``runner_id`` 0 and
+  ``runner_name`` "" (observed on a real run cancelled during approval).
+* ``POST .../actions/runs/<id>/cancel`` answers 202 ``{}`` while the run is not completed and 409
+  once it is. UNVERIFIED (a real cancel was never sent): the 409 text, and that GitHub cancels
+  asynchronously; the fake cancels at once (the run and every job not completed become
+  ``completed`` / ``cancelled``). A token without ``actions: write`` (state key ``actions_write``
+  false) is refused with 403 ``Resource not accessible by integration``.
+* ``gh workflow run <file> --repo <r> [--ref <branch>] [-f key=value]`` prints nothing on a
+  non-terminal stdout (UNVERIFIED for gh 2.x releases after 2.46) and creates a run with status
+  ``queued``, event ``workflow_dispatch``, ``head_branch`` the ref, ``head_sha`` the ref's tip
+  (state ``branches``) and the token's actor (state ``token_actor``, ``github-actions[bot]`` by
+  default; a run's ``actor`` and ``triggering_actor`` are the same for a first attempt). Refused
+  as gh prints it (text UNVERIFIED): an unknown workflow (``could not find any workflow named``), no
+  ``workflow_dispatch`` trigger, an unknown ref, an input the workflow does not declare, and a
+  token without ``actions_write`` (HTTP 403). The state key ``dispatch_no_run`` makes the dispatch
+  succeed without creating a run; ``dispatch_lag`` hides a created run from the first N run reads
+  (GitHub creates the run a moment after the 204). A new run has no jobs yet.
+* ``status`` values used are ``queued``, ``in_progress``, ``waiting``, ``pending`` and
+  ``completed`` for runs (``waiting``: the run waits for an environment approval; ``pending``: it
+  queues behind a concurrency group) and the same for jobs. UNVERIFIED: the exact fields of a job
+  that waits for an approval (the fake gives it ``started_at`` equal to ``created_at``, no steps and
+  ``runner_id`` ``null``); a script must read only ``name``, ``status`` and ``conclusion``.
+* Omitted from a run: ``node_id``, ``check_suite_*``, ``pull_requests``, ``referenced_workflows``,
+  ``head_commit``, ``previous_attempt_url``, ``logs_url``, ``artifacts_url``, ``rerun_url``,
+  ``workflow_url``; from a job ``node_id``, ``check_run_url``, ``runner_group_*``. The fake has one
+  attempt per run and timestamps from a fake clock (one second per call that stamps a time). The
+  run list with ``--paginate`` returns every match in one response and ignores ``per_page`` and
+  ``page`` (real gh prints one JSON document per page).
 
 How it differs from real ``gh`` on purpose, or where its fidelity is unverified (scripts and tests
 must not depend on any of these):
@@ -64,6 +111,7 @@ Stand-ins only. The module defines no pytest fixture (importers define their own
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -74,9 +122,16 @@ from typing import Any
 REPO = "example-owner/CSAV2"
 REPO_ID = 42
 USERS = {"reviewer-a": 1001, "reviewer-b": 1002}
+# The actor of a run made with a workflow's own token (these two are GitHub's public values).
+BOT = {"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}
+# The tip of main that a dispatch with --ref main runs on (a synthetic sha).
+TIP = "0123456789abcdef0123456789abcdef01234567"
+# An `override` value that removes the key from a rendered run instead of replacing it.
+MISSING_FIELD = "<missing field>"
 
 FAKE_GH = r'''#!__PYTHON__
 """A stateful fake of the GitHub CLI, for the deploy scripts' tests only."""
+import datetime
 import json
 import os
 import re
@@ -84,6 +139,7 @@ import subprocess
 import sys
 from urllib.parse import parse_qs
 
+MISSING = "__MISSING__"
 STATE = os.environ["FAKE_GH_STATE"]
 LOG = os.environ["FAKE_GH_LOG"]
 DOCS = "https://docs.github.com/rest"
@@ -473,12 +529,163 @@ def policies_route(state, name, tail, method, opts):
         finish(0)
     unsupported()
 
+def stamp(state):
+    # A fake clock: one second per call that stamps a time, so the order of events is stable.
+    state["tick"] = state.get("tick", 0) + 1
+    base = datetime.datetime(2026, 11, 18, 8, 0, 0, tzinfo=datetime.timezone.utc)
+    return (base + datetime.timedelta(seconds=state["tick"])).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def workflow_name(file):
+    return file.rsplit(".", 1)[0]
+
+
+def render_run(state, run):
+    workflow = state["workflows"][run["workflow"]]
+    repo = state["repo"]["full_name"]
+    api = f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}"
+    shown_repo = {"id": state["repo"]["id"], "full_name": repo}
+    out = {
+        "id": run["id"],
+        "name": workflow_name(run["workflow"]),
+        "head_branch": run["head_branch"],
+        "head_sha": run["head_sha"],
+        "path": ".github/workflows/" + run["workflow"],
+        "display_title": workflow_name(run["workflow"]),
+        "run_number": run["run_number"],
+        "event": run["event"],
+        "status": run["status"],
+        "conclusion": run["conclusion"],
+        "workflow_id": workflow["id"],
+        "url": api,
+        "html_url": f"https://github.com/{repo}/actions/runs/{run['id']}",
+        "created_at": run["created_at"],
+        "updated_at": run["updated_at"],
+        "actor": run["actor"],
+        "run_attempt": 1,
+        "run_started_at": run["created_at"],
+        "triggering_actor": run["triggering_actor"],
+        "jobs_url": api + "/jobs",
+        "cancel_url": api + "/cancel",
+        "repository": shown_repo,
+        "head_repository": shown_repo,
+    }
+    for key, value in run.get("override", {}).items():
+        if value == MISSING:
+            out.pop(key, None)
+        else:
+            out[key] = value
+    return out
+
+
+def render_job(state, run, job):
+    repo = state["repo"]["full_name"]
+    done = job["status"] == "completed"
+    cancelled_unstarted = done and job["conclusion"] == "cancelled" and not job["steps"]
+    started = job["started_at"] is not None
+    return {
+        "id": job["id"],
+        "run_id": run["id"],
+        "workflow_name": workflow_name(run["workflow"]),
+        "head_branch": run["head_branch"],
+        "run_url": f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}",
+        "run_attempt": 1,
+        "head_sha": run["head_sha"],
+        "url": f"https://api.github.com/repos/{repo}/actions/jobs/{job['id']}",
+        "html_url": f"https://github.com/{repo}/actions/runs/{run['id']}/job/{job['id']}",
+        "status": job["status"],
+        "conclusion": job["conclusion"],
+        "created_at": job["created_at"],
+        "started_at": job["started_at"],
+        "completed_at": job["completed_at"],
+        "name": job["name"],
+        "steps": job["steps"],
+        "labels": ["ubuntu-24.04"],
+        "runner_id": 0 if cancelled_unstarted else (1000000001 if started else None),
+        "runner_name": "" if cancelled_unstarted else ("GitHub Actions" if started else None),
+    }
+
+
+def page_of(state, query, items, opts):
+    # per_page defaults to 30 and is capped at 100 (0 and non-numbers give the default); page counts
+    # from 1. With --paginate every item comes back in one response.
+    if opts["paginate"]:
+        return items
+
+    def number(key, default, limit):
+        text = query.get(key, "")
+        if text.isdigit() and int(text) >= 1:
+            return min(int(text), limit)
+        return default
+
+    size = number("per_page", 30, 100)
+    page = number("page", 1, 10**9)
+    return items[(page - 1) * size : page * size]
+
+
+def visible_runs(state):
+    # A dispatched run shows up only after `dispatch_lag` reads (GitHub creates it a moment later).
+    state["list_calls"] = state.get("list_calls", 0) + 1
+    save(state)
+    return [r for r in state["runs"] if r.get("hidden_until", 0) < state["list_calls"]]
+
+
+def find_run(state, text):
+    if not text.isdigit():
+        not_found()
+    found = [r for r in visible_runs(state) if r["id"] == int(text)]
+    if not found:
+        not_found()
+    return found[0]
+
+
+def runs_route(state, rest, query, method, opts):
+    # rest: what follows repos/<owner>/<repo>/actions/ .
+    if len(rest) == 3 and rest[0] == "workflows" and rest[2] == "runs" and method == "GET":
+        files = state["workflows"]
+        file = next((f for f in files if f == rest[1] or str(files[f]["id"]) == rest[1]), None)
+        if file is None:
+            not_found()
+        runs = [r for r in visible_runs(state) if r["workflow"] == file]
+        for key, field in (("event", "event"), ("branch", "head_branch"), ("head_sha", "head_sha")):
+            if query.get(key):
+                runs = [r for r in runs if r[field] == query[key]]
+        if query.get("status"):
+            runs = [r for r in runs if query["status"] in (r["status"], r["conclusion"])]
+        if query.get("actor"):
+            runs = [r for r in runs if r["actor"]["login"].lower() == query["actor"].lower()]
+        runs.sort(key=lambda r: (r["created_at"], r["run_number"]), reverse=True)
+        shown = [render_run(state, r) for r in page_of(state, query, runs, opts)]
+        emit({"total_count": len(runs), "workflow_runs": shown}, opts["jq"])
+    if len(rest) >= 2 and rest[0] == "runs":
+        run = find_run(state, rest[1])
+        if len(rest) == 2 and method == "GET":
+            emit(render_run(state, run), opts["jq"])
+        if rest[2:] == ["jobs"] and method == "GET":
+            jobs = [render_job(state, run, j) for j in run["jobs"]]
+            emit({"total_count": len(jobs), "jobs": page_of(state, query, jobs, opts)}, opts["jq"])
+        if rest[2:] == ["cancel"] and method == "POST":
+            if not state.get("actions_write", True):
+                http_error(403, "Resource not accessible by integration")
+            if run["status"] == "completed":
+                http_error(409, "Cannot cancel a workflow run that is completed")
+            now = stamp(state)
+            for job in run["jobs"]:
+                if job["status"] != "completed":
+                    job.update(status="completed", conclusion="cancelled", steps=[])
+                    job["completed_at"] = now
+            run.update(status="completed", conclusion="cancelled", updated_at=now)
+            save(state)
+            print("{}")
+            finish(0)
+    unsupported()
+
 
 def api_command(args):
     opts, raw_path = parse_api(args)
     method = opts["method"]
     path, _, query = raw_path.lstrip("/").partition("?")
-    parse_qs(query)  # accepted and ignored (one page)
+    params = {key: values[0] for key, values in parse_qs(query).items()}
     state = load()
     require_login(state)
     parts = path.split("/")
@@ -508,6 +715,8 @@ def api_command(args):
             emit({"total_count": len(listed), "variables": listed}, opts["jq"])
         if len(rest) >= 2 and rest[0] == "environments":
             environment_route(state, rest[1], "".join("/" + p for p in rest[2:]), method, opts)
+        if len(rest) >= 3 and rest[0] == "actions" and rest[1] in ("workflows", "runs"):
+            runs_route(state, rest[1:], params, method, opts)
     unsupported()
 
 
@@ -582,15 +791,107 @@ def variable_set(args):
     finish(0)
 
 
+def workflow_run(args):
+    # gh workflow run <file> --repo <r> [--ref <branch>] [-f key=value ...]
+    repo = ref = None
+    selector = None
+    fields = []
+    i = 0
+    while i < len(args):
+        for name, target in (("repo", ["--repo", "-R"]), ("ref", ["--ref", "-r"])):
+            value, used = split_option(args, i, target)
+            if used:
+                if name == "repo":
+                    repo = value
+                else:
+                    ref = value
+                i += used
+                break
+        else:
+            value, used = split_option(args, i, ["--raw-field", "-f"])
+            if used:
+                if "=" not in value:
+                    bug("-f needs key=value")
+                fields.append(value.split("=", 1))
+                i += used
+            elif args[i].startswith("-") or selector is not None:
+                unsupported()
+            else:
+                selector = args[i]
+                i += 1
+    if repo is None or selector is None:
+        unsupported()
+    state = load()
+    require_login(state)
+    if repo.lower() != state["repo"]["full_name"].lower():
+        http_error(404, "Not Found")
+    files = state["workflows"]
+    file = next(
+        (f for f in files if selector in (f, workflow_name(f), str(files[f]["id"]))), None
+    )
+    if file is None:
+        sys.stderr.write(f"could not find any workflow named {selector}\n")
+        finish(1)
+    workflow = files[file]
+    ref = ref if ref is not None else "main"
+    where = (
+        f"https://api.github.com/repos/{state['repo']['full_name']}/actions/workflows/"
+        f"{workflow['id']}/dispatches"
+    )
+
+    def refuse(status, message):
+        sys.stderr.write(
+            f"could not create workflow dispatch event: HTTP {status}: {message} ({where})\n"
+        )
+        finish(1)
+
+    if not state.get("actions_write", True):
+        refuse(403, "Resource not accessible by integration")
+    if not workflow["dispatch"]:
+        refuse(422, "Workflow does not have 'workflow_dispatch' trigger")
+    if ref not in state["branches"]:
+        refuse(422, f"No ref found for: {ref}")
+    unknown = sorted(key for key, _ in fields if key not in workflow["inputs"])
+    if unknown:
+        refuse(422, "Unexpected inputs provided: " + json.dumps(unknown))
+    if not state.get("dispatch_no_run"):
+        run_id = state["next_run_id"]
+        state["next_run_id"] = run_id + 1
+        now = stamp(state)
+        state["runs"].append(
+            {
+                "id": run_id,
+                "workflow": file,
+                "run_number": 1 + sum(1 for r in state["runs"] if r["workflow"] == file),
+                "event": "workflow_dispatch",
+                "status": "queued",
+                "conclusion": None,
+                "head_branch": ref,
+                "head_sha": state["branches"][ref],
+                "actor": state["token_actor"],
+                "triggering_actor": state["token_actor"],
+                "created_at": now,
+                "updated_at": now,
+                "jobs": [],
+                "inputs": dict(fields),
+                "hidden_until": state.get("list_calls", 0) + state.get("dispatch_lag", 0),
+            }
+        )
+    save(state)
+    finish(0)
+
+
 if argv[:1] == ["api"]:
     api_command(argv[1:])
 elif argv[:2] == ["secret", "set"]:
     secret_set(argv[2:])
 elif argv[:2] == ["variable", "set"]:
     variable_set(argv[2:])
+elif argv[:2] == ["workflow", "run"]:
+    workflow_run(argv[2:])
 else:
     unsupported()
-'''.replace("__PYTHON__", sys.executable)
+'''.replace("__PYTHON__", sys.executable).replace("__MISSING__", MISSING_FIELD)
 
 # `gh` subcommands that change something: (group, verb).
 WRITE_VERBS = {
@@ -653,7 +954,16 @@ class Gh:
                 "users": dict(USERS),
                 "environments": {},
                 "variables": {},
+                "workflows": {
+                    "deploy-production.yml": {"id": 4242, "dispatch": True, "inputs": ["sha"]}
+                },
+                "branches": {"main": TIP},
+                "token_actor": dict(BOT),
+                "actions_write": True,
+                "dispatch_no_run": False,
+                "dispatch_lag": 0,
                 "runs": [],
+                "next_run_id": 7000000001,
                 "next_id": 1,
                 "put_semantics": "merge",
                 "put_ignores": [],
@@ -693,6 +1003,106 @@ class Gh:
             else:
                 labels.append(" ".join(argv[:2]))
         return labels
+
+    def set_state(self, **values: Any) -> None:
+        """Set top-level state keys (``actions_write``, ``dispatch_no_run``, ``dispatch_lag``,
+        ``token_actor``, ``logged_out``, ``put_semantics``, ...)."""
+        state = self.state()
+        state.update(values)
+        self.save(state)
+
+    def person(self, login: str) -> dict[str, Any]:
+        """The ``{login, id, type}`` of an account: the bot, a stored user, or a synthetic one (the
+        id of an unknown login is derived from the name; only the login matters)."""
+        if login == BOT["login"]:
+            return dict(BOT)
+        users = self.state()["users"]
+        entry = users.get(login)
+        if entry is not None:
+            return {
+                "login": login,
+                "id": entry["id"] if isinstance(entry, dict) else entry,
+                "type": "User",
+            }
+        return {"login": login, "id": 9000 + sum(map(ord, login)) % 1000, "type": "User"}
+
+    def add_run(
+        self,
+        *,
+        workflow: str = "deploy-production.yml",
+        status: str = "completed",
+        conclusion: str | None = "success",
+        event: str = "workflow_dispatch",
+        head_sha: str = TIP,
+        head_branch: str = "main",
+        actor: str = "reviewer-a",
+        triggering_actor: str | None = None,
+        jobs: list[tuple[str, str, str | None]] | None = None,
+        override: dict[str, Any] | None = None,
+    ) -> int:
+        """Plant a run and return its id. ``jobs`` is ``(name, status, conclusion)`` triples in
+        order. ``override`` replaces keys of the rendered run (``{"triggering_actor": None}`` for a
+        deleted account) or, with the value ``MISSING_FIELD``, removes them. The conclusion must be
+        ``None`` unless the status is ``completed``, as on GitHub."""
+        assert (status == "completed") == (conclusion is not None), (status, conclusion)
+        state = self.state()
+        assert workflow in state["workflows"], workflow
+        run_id = state["next_run_id"]
+        state["next_run_id"] = run_id + 1
+        tick = state.get("tick", 0) + 1
+        state["tick"] = tick
+        created = (
+            datetime.datetime(2026, 11, 18, 8, 0, 0, tzinfo=datetime.UTC)
+            + datetime.timedelta(seconds=tick)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stored_jobs = []
+        for name, job_status, job_conclusion in jobs or ():
+            assert (job_status == "completed") == (job_conclusion is not None), (name, job_status)
+            job_id = state["next_run_id"]
+            state["next_run_id"] = job_id + 1
+            finished = job_status == "completed"
+            stored_jobs.append(
+                {
+                    "id": job_id,
+                    "name": name,
+                    "status": job_status,
+                    "conclusion": job_conclusion,
+                    "created_at": created,
+                    "started_at": created,
+                    "completed_at": created if finished else None,
+                    "steps": []
+                    if job_status in ("waiting", "queued", "pending")
+                    else [
+                        {
+                            "name": "Set up job",
+                            "status": job_status,
+                            "conclusion": job_conclusion,
+                            "number": 1,
+                        }
+                    ],
+                }
+            )
+        state["runs"].append(
+            {
+                "id": run_id,
+                "workflow": workflow,
+                "run_number": 1 + sum(1 for r in state["runs"] if r["workflow"] == workflow),
+                "event": event,
+                "status": status,
+                "conclusion": conclusion,
+                "head_branch": head_branch,
+                "head_sha": head_sha,
+                "actor": self.person(actor),
+                "triggering_actor": self.person(triggering_actor or actor),
+                "created_at": created,
+                "updated_at": created,
+                "jobs": stored_jobs,
+                "override": override or {},
+                "hidden_until": 0,
+            }
+        )
+        self.save(state)
+        return run_id
 
     def reset_log(self) -> None:
         self.log_path.write_text("")

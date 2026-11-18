@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from tests.fake_gh import REPO, Gh
+from tests.fake_gh import BOT, MISSING_FIELD, REPO, TIP, Gh
 
 NOT_FOUND = "gh: Not Found (HTTP 404)"
 MODES = ["merge", "replace"]
@@ -970,3 +970,353 @@ def test_the_repository_name_matches_case_insensitively_and_the_stored_one_is_re
     assert gh.state()["variables"] == {"V": "1"}
     other = gh.call("variable", "set", "V", "--repo", "other-owner/other", "--body", "1")
     assert other.stderr.strip() == NOT_FOUND
+
+
+# --- workflow runs, jobs, cancel and dispatch ------------------------------------------------
+
+RUNS = f"repos/{REPO}/actions/workflows/deploy-production.yml/runs"
+RUN_KEYS = {
+    "id",
+    "name",
+    "head_branch",
+    "head_sha",
+    "path",
+    "display_title",
+    "run_number",
+    "event",
+    "status",
+    "conclusion",
+    "workflow_id",
+    "url",
+    "html_url",
+    "created_at",
+    "updated_at",
+    "actor",
+    "run_attempt",
+    "run_started_at",
+    "triggering_actor",
+    "jobs_url",
+    "cancel_url",
+    "repository",
+    "head_repository",
+}
+JOB_KEYS = {
+    "id",
+    "run_id",
+    "workflow_name",
+    "head_branch",
+    "run_url",
+    "run_attempt",
+    "head_sha",
+    "url",
+    "html_url",
+    "status",
+    "conclusion",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "name",
+    "steps",
+    "labels",
+    "runner_id",
+    "runner_name",
+}
+PLAN_APPLY_WAITING = [("plan", "completed", "success"), ("apply", "waiting", None)]
+OTHER_SHA = "f" * 40
+
+
+def api_json(gh: Gh, path: str, *flags: str) -> Any:
+    result = gh.call("api", *flags, path)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def listed(gh: Gh, query: str = "") -> list[dict[str, Any]]:
+    return api_json(gh, f"{RUNS}{query}")["workflow_runs"]
+
+
+def test_runs_filters_jobs_cancel_and_dispatch(gh: Gh) -> None:
+    waiting = gh.add_run(
+        status="waiting",
+        conclusion=None,
+        actor=BOT["login"],
+        head_sha=OTHER_SHA,
+        jobs=PLAN_APPLY_WAITING,
+    )
+    done = gh.add_run(actor="reviewer-b")
+    manual = gh.add_run(status="in_progress", conclusion=None, event="workflow_dispatch")
+
+    everything = api_json(gh, RUNS)
+    assert set(everything) == {"total_count", "workflow_runs"}
+    assert everything["total_count"] == 3
+    # Newest first; every run has exactly the documented keys; a running run has no conclusion.
+    assert [r["id"] for r in everything["workflow_runs"]] == [manual, done, waiting]
+    assert all(set(r) == RUN_KEYS for r in everything["workflow_runs"])
+    first = everything["workflow_runs"][0]
+    assert first["conclusion"] is None and first["status"] == "in_progress"
+    assert first["html_url"] == f"https://github.com/{REPO}/actions/runs/{manual}"
+    assert first["path"] == ".github/workflows/deploy-production.yml"
+    assert first["actor"] == {"login": "reviewer-a", "id": 1001, "type": "User"}
+    bot_run = everything["workflow_runs"][2]
+    assert bot_run["triggering_actor"] == BOT and bot_run["actor"] == BOT
+
+    def ids(query: str) -> list[int]:
+        return [r["id"] for r in listed(gh, query)]
+
+    assert ids("?status=waiting") == [waiting]
+    assert ids("?status=in_progress") == [manual]
+    # Verified on GitHub: `status` also matches the conclusion.
+    assert ids("?status=success") == [done]
+    assert ids("?status=completed") == [done]
+    assert ids("?head_sha=" + OTHER_SHA) == [waiting]
+    assert ids("?branch=main&event=workflow_dispatch&status=waiting") == [waiting]
+    assert ids("?actor=github-actions%5Bbot%5D") == [waiting]
+    assert ids("?actor=REVIEWER-B") == [done]
+    # An unknown status, sha, branch or event is an empty list with HTTP 200, as on GitHub.
+    for query in ("?status=bogus", "?head_sha=abc", "?branch=nope", "?event=push"):
+        assert api_json(gh, RUNS + query) == {"total_count": 0, "workflow_runs": []}
+    # Unknown query keys are ignored, as on GitHub.
+    assert len(ids("?conclusion=failure&filter=bogus")) == 3
+
+    # One run, and its jobs: the documented keys; a waiting job has no conclusion.
+    assert api_json(gh, f"repos/{REPO}/actions/runs/{waiting}")["status"] == "waiting"
+    jobs = api_json(gh, f"repos/{REPO}/actions/runs/{waiting}/jobs")
+    assert jobs["total_count"] == 2
+    assert [(j["name"], j["status"], j["conclusion"]) for j in jobs["jobs"]] == PLAN_APPLY_WAITING
+    assert all(set(j) == JOB_KEYS for j in jobs["jobs"])
+    assert all(j["run_id"] == waiting and j["head_sha"] == OTHER_SHA for j in jobs["jobs"])
+
+    # Cancel: 202, then the run and its waiting job read completed / cancelled (a job cancelled
+    # while it waited has no steps and runner id 0, as observed on GitHub).
+    result = gh.call("api", "--method", "POST", f"repos/{REPO}/actions/runs/{waiting}/cancel")
+    assert result.returncode == 0 and json.loads(result.stdout) == {}
+    cancelled = api_json(gh, f"repos/{REPO}/actions/runs/{waiting}")
+    assert (cancelled["status"], cancelled["conclusion"]) == ("completed", "cancelled")
+    plan, apply = api_json(gh, f"repos/{REPO}/actions/runs/{waiting}/jobs")["jobs"]
+    assert (plan["status"], plan["conclusion"]) == ("completed", "success")
+    assert (apply["status"], apply["conclusion"]) == ("completed", "cancelled")
+    assert apply["steps"] == [] and apply["runner_id"] == 0 and apply["runner_name"] == ""
+    assert ids("?status=cancelled") == [waiting]
+    # Only the cancelled run changed.
+    assert api_json(gh, f"repos/{REPO}/actions/runs/{manual}")["status"] == "in_progress"
+
+    # Dispatch: nothing on stdout, a queued run on main at the tip, made by the token's actor.
+    result = gh.call("workflow", "run", "deploy-production.yml", "--repo", REPO, "--ref", "main")
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+    newest = listed(gh)[0]
+    assert (newest["status"], newest["conclusion"], newest["event"]) == (
+        "queued",
+        None,
+        "workflow_dispatch",
+    )
+    assert (newest["head_branch"], newest["head_sha"]) == ("main", TIP)
+    assert newest["actor"] == BOT and newest["triggering_actor"] == BOT
+    assert newest["id"] not in (waiting, done, manual)
+    assert api_json(gh, f"repos/{REPO}/actions/runs/{newest['id']}/jobs")["jobs"] == []
+    assert gh.state()["runs"][-1]["inputs"] == {}
+    assert len(gh.writes()) == 2  # the cancel and the dispatch; every read above is a GET
+
+
+def test_runs_pagination_total_count_and_per_page_defaults(gh: Gh) -> None:
+    created = [gh.add_run() for _ in range(5)]
+    newest_first = created[::-1]
+    page = api_json(gh, RUNS + "?per_page=2")
+    # total_count counts every match, not the page.
+    assert page["total_count"] == 5
+    assert [r["id"] for r in page["workflow_runs"]] == newest_first[:2]
+    second = listed(gh, "?per_page=2&page=2")
+    assert [r["id"] for r in second] == newest_first[2:4]
+    assert [r["id"] for r in listed(gh, "?per_page=2&page=3")] == newest_first[4:]
+    assert listed(gh, "?per_page=2&page=4") == []
+    # 0 and non-numbers give the default (30); 101 is capped at 100, as on GitHub.
+    many = [gh.add_run() for _ in range(40)]
+    assert len(many) == 40
+    for query in ("", "?per_page=0", "?per_page=abc", "?per_page=-1"):
+        assert len(listed(gh, query)) == 30, query
+    assert len(listed(gh, "?per_page=45")) == 45
+    # --paginate returns every match in one response.
+    result = gh.call("api", "--paginate", RUNS + "?per_page=2")
+    assert len(json.loads(result.stdout)["workflow_runs"]) == 45
+
+
+def test_runs_jq_and_unknown_things_answer_like_github(gh: Gh) -> None:
+    run_id = gh.add_run(status="waiting", conclusion=None)
+    result = gh.call("api", RUNS + "?status=waiting", "--jq", ".workflow_runs[].id")
+    assert result.stdout == f"{run_id}\n"
+    assert (
+        gh.call("api", f"repos/{REPO}/actions/workflows/nope.yml/runs").stderr == NOT_FOUND + "\n"
+    )
+    # The numeric workflow id works as well as the file name.
+    workflow_id = gh.state()["workflows"]["deploy-production.yml"]["id"]
+    assert (
+        len(api_json(gh, f"repos/{REPO}/actions/workflows/{workflow_id}/runs")["workflow_runs"])
+        == 1
+    )
+    for path in (
+        f"repos/{REPO}/actions/runs/1",
+        f"repos/{REPO}/actions/runs/1/jobs",
+        f"repos/{REPO}/actions/runs/abc",
+    ):
+        result = gh.call("api", path)
+        assert (result.returncode, result.stderr) == (1, NOT_FOUND + "\n"), path
+    result = gh.call("api", "--method", "POST", f"repos/{REPO}/actions/runs/1/cancel")
+    assert (result.returncode, result.stderr) == (1, NOT_FOUND + "\n")
+    # The wrong repository is a 404; a method the fake does not model is a test bug.
+    other = gh.call("api", "repos/someone/else/actions/workflows/deploy-production.yml/runs")
+    assert other.stderr == NOT_FOUND + "\n"
+    for args in (
+        ("api", "--method", "POST", RUNS),
+        ("api", f"repos/{REPO}/actions/runs/{run_id}/cancel"),
+        ("api", "--method", "DELETE", f"repos/{REPO}/actions/runs/{run_id}"),
+        ("api", f"repos/{REPO}/actions/runs"),
+    ):
+        assert gh.call(*args).returncode == 252, args
+
+
+def test_a_planted_run_can_have_null_or_missing_fields(gh: Gh) -> None:
+    run_id = gh.add_run(
+        override={
+            "triggering_actor": None,
+            "head_sha": MISSING_FIELD,
+            "event": 7,
+            "head_branch": MISSING_FIELD,
+        }
+    )
+    (run,) = listed(gh)
+    assert run["id"] == run_id and run["triggering_actor"] is None and run["event"] == 7
+    assert "head_sha" not in run and "head_branch" not in run
+    assert api_json(gh, f"repos/{REPO}/actions/runs/{run_id}")["triggering_actor"] is None
+    # Without the override the run is whole again: the override is per run.
+    other = gh.add_run()
+    assert "head_sha" in api_json(gh, f"repos/{REPO}/actions/runs/{other}")
+
+
+def test_cancel_of_a_completed_run_is_409(gh: Gh) -> None:
+    done = gh.add_run(jobs=[("plan", "completed", "success"), ("apply", "completed", "success")])
+    result = gh.call("api", "--method", "POST", f"repos/{REPO}/actions/runs/{done}/cancel")
+    assert (
+        result.returncode == 1
+        and result.stderr == "gh: Cannot cancel a workflow run that is completed (HTTP 409)\n"
+    )
+    assert json.loads(result.stdout)["status"] == "409"
+    run = api_json(gh, f"repos/{REPO}/actions/runs/{done}")
+    assert (run["status"], run["conclusion"]) == ("completed", "success")
+    # Queued, pending, in-progress and waiting runs can be cancelled.
+    for status in ("queued", "pending", "in_progress", "waiting"):
+        run_id = gh.add_run(status=status, conclusion=None)
+        result = gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{run_id}/cancel")
+        assert result.returncode == 0, status
+        assert api_json(gh, f"repos/{REPO}/actions/runs/{run_id}")["conclusion"] == "cancelled"
+    # A second cancel of the same run is now a 409.
+    again = gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{run_id}/cancel")
+    assert again.returncode == 1 and "(HTTP 409)" in again.stderr
+    assert gh.state()["next_id"] == 1  # runs never touch the environment ids
+
+
+def test_dispatch_without_actions_write_fails_and_the_no_run_flag_creates_nothing(gh: Gh) -> None:
+    waiting = gh.add_run(status="waiting", conclusion=None)
+    dispatch = ("workflow", "run", "deploy-production.yml", "--repo", REPO, "--ref", "main")
+    gh.set_state(actions_write=False)
+    result = gh.call(*dispatch)
+    assert result.returncode == 1 and result.stdout == ""
+    assert result.stderr.startswith("could not create workflow dispatch event: HTTP 403: ")
+    assert "Resource not accessible by integration" in result.stderr
+    # The same token cannot cancel either (403, no change).
+    result = gh.call("api", "-X", "POST", f"repos/{REPO}/actions/runs/{waiting}/cancel")
+    assert (
+        result.returncode == 1
+        and result.stderr == "gh: Resource not accessible by integration (HTTP 403)\n"
+    )
+    assert len(listed(gh)) == 1 and listed(gh)[0]["status"] == "waiting"
+    # Reads still work without actions: write.
+    assert gh.call("api", RUNS).returncode == 0
+
+    gh.set_state(actions_write=True, dispatch_no_run=True)
+    result = gh.call(*dispatch)
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+    assert [r["id"] for r in listed(gh)] == [waiting]  # accepted, and nothing started
+    # Both attempts are in the log, and both are writes.
+    assert [c["argv"][:2] for c in gh.writes()] == [
+        ["workflow", "run"],
+        ["api", "-X"],
+        ["workflow", "run"],
+    ]
+
+
+def test_dispatch_lag_hides_the_new_run_from_the_first_reads(gh: Gh) -> None:
+    before = gh.add_run()
+    gh.set_state(dispatch_lag=2)
+    assert gh.call("workflow", "run", "deploy-production.yml", "--repo", REPO).returncode == 0
+    # --ref defaults to main. The first two reads miss the run; the third sees it.
+    assert [r["id"] for r in listed(gh)] == [before]
+    assert [r["id"] for r in listed(gh)] == [before]
+    seen = listed(gh)
+    assert len(seen) == 2 and seen[0]["id"] != before and seen[0]["status"] == "queued"
+
+
+def test_dispatch_refusals_and_inputs(gh: Gh) -> None:
+    def run_with(*args: str) -> subprocess.CompletedProcess[str]:
+        return gh.call("workflow", "run", *args)
+
+    base = ("deploy-production.yml", "--repo", REPO, "--ref", "main")
+    # An input the workflow declares is accepted and recorded on the run; it never shows in the run
+    # list, and the run still starts.
+    assert run_with(*base, "-f", f"sha={OTHER_SHA}").returncode == 0
+    assert gh.state()["runs"][-1]["inputs"] == {"sha": OTHER_SHA}
+    assert "inputs" not in listed(gh)[0]
+    # An undeclared input is refused (HTTP 422), and creates no run.
+    result = run_with(*base, "--raw-field=bogus=1")
+    assert result.returncode == 1 and "HTTP 422: Unexpected inputs provided" in result.stderr
+    # An unknown ref, an unknown workflow, a workflow with no dispatch trigger, another repository.
+    result = run_with("deploy-production.yml", "--repo", REPO, "--ref", "nope")
+    assert result.returncode == 1 and "HTTP 422: No ref found for: nope" in result.stderr
+    result = run_with("nope.yml", "--repo", REPO)
+    assert (result.returncode, result.stderr) == (1, "could not find any workflow named nope.yml\n")
+    state = gh.state()
+    state["workflows"]["ci.yml"] = {"id": 7, "dispatch": False, "inputs": []}
+    gh.save(state)
+    result = run_with("ci.yml", "--repo", REPO)
+    assert (
+        result.returncode == 1
+        and "Workflow does not have 'workflow_dispatch' trigger" in result.stderr
+    )
+    assert run_with("deploy-production.yml", "--repo", "someone/else").returncode == 1
+    assert len(gh.state()["runs"]) == 1
+    # A person's token makes a person's run (state token_actor).
+    gh.set_state(token_actor=gh.person("reviewer-b"))
+    assert run_with(*base).returncode == 0
+    newest = listed(gh)[0]
+    assert newest["triggering_actor"]["login"] == "reviewer-b"
+    # Calls the fake does not model are test bugs: no --repo, --json, an extra positional.
+    for args in (
+        ("deploy-production.yml",),
+        (*base, "--json"),
+        (*base, "extra"),
+        ("--repo", REPO),
+    ):
+        assert run_with(*args).returncode == 252, args
+
+
+def test_runs_calls_are_logged_like_every_other_call_and_need_a_login(gh: Gh) -> None:
+    gh.add_run()
+    gh.call("api", RUNS + "?status=waiting")
+    gh.call("workflow", "run", "deploy-production.yml", "--repo", REPO)
+    assert gh.commands() == [f"api GET {RUNS}?status=waiting", "workflow run"]
+    assert [c["stdin"] for c in gh.calls()] == [None, None]
+    gh.set_state(logged_out=True)
+    for args in (
+        ("api", RUNS),
+        ("workflow", "run", "deploy-production.yml", "--repo", REPO),
+    ):
+        result = gh.call(*args)
+        assert result.returncode == 4 and "gh auth login" in result.stderr
+
+
+def test_per_page_is_capped_at_100(gh: Gh) -> None:
+    for _ in range(105):
+        gh.add_run()
+    assert len(listed(gh, "?per_page=100")) == 100
+    assert len(listed(gh, "?per_page=101")) == 100
+    assert len(listed(gh, "?per_page=5000")) == 100
+    assert len(listed(gh, "?per_page=100&page=2")) == 5
+    assert api_json(gh, RUNS + "?per_page=101")["total_count"] == 105
