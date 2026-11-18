@@ -297,6 +297,40 @@ kind it already covers deactivates its own template first and then uses the butt
 already running keeps the frozen copy of the version it started from, and only processes started
 later use the new one.
 
+### Ask the assistant about onboarding and offboarding
+
+The workspace assistant (the dock) answers five questions about processes, in English or Malay,
+and replies in the language of the question. Ask what is waiting for you ("What are my tasks?",
+"Apa tugasan saya?"), what is left for one person ("What else is left on Aina's onboarding?", "Apa
+lagi yang tinggal untuk onboarding Aina?"), who is onboarding ("Who is in onboarding right now?",
+"Siapa dalam onboarding sekarang?"), who is leaving ("Who is leaving?", "Siapa yang akan
+berhenti?"; it lists everyone whose offboarding is in progress, the last days are in Processes)
+and what is late ("Is anything running late?", "Tugasan mana yang sudah lewat?"). It needs the HR
+service to be on for the company. No People access and no `hr_assistant` switch are needed (that
+switch is for the assistant's HR write cards); it does need the workspace assistant on and a
+member who is not read-only (read-only members get a 403 on assistant threads). With no processes
+yet it says nobody is onboarding or leaving.
+
+It shows what the person asking may already see in HR, because it reads the same process lists
+the console reads, with the signed-in member's own session. The HR owner and Manage people holders
+see every process. A manager sees their direct reports' processes by step title, owner role,
+status and dates only, never notes or descriptions. A person sees their own onboarding and
+offboarding and their own tasks. A task owner sees their own tasks only, so for someone else's
+process the answer is "I can't find a process for that person that you can see", which is also the
+answer for a name nobody visible has. Lists show ten lines and then "N more not shown"; the
+rest is in My tasks or Processes. A name shared by two people (or a rehire with two processes)
+gets a short pick list, "Siti Aminah — onboarding, started 3 November 2026".
+
+The list is shown once: the turn is stored as a count only, so a reloaded thread (or a retry
+with the same request key) shows "HR process answer: N items." ("Jawapan proses HR: N item.") in
+place of the list, as the inbox summary does. Ask again to see the list.
+
+**The assistant never completes, approves, sends back, skips, reschedules, reassigns, cancels or
+closes a step.** "Mark my task done" is answered with a sentence pointing to **My tasks**; do it
+there. A Malay answer shows a step title in English when its template has no Malay text, and the
+default templates are English only. The page names (My tasks, Processes) stay in English inside
+Malay sentences.
+
 ## Private recruitment and scheduling
 
 Intake records the authorized operator’s consent evidence and a retention deadline

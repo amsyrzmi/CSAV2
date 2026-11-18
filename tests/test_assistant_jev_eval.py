@@ -132,6 +132,16 @@ SMOKE_LEFT_OUT = {
     # A question about one training video: answered from its transcript by training_ask; not a
     # people-records routing or email question.
     "training_ask-en-1", "training_ask-ms-1",
+    # HR process reads and their near misses: no routing question, a process read needs no planner
+    # fact (the database decides what the caller may see), so nothing here asks the evaluation.
+    # hr_process_neg-{en,ms}-1 and -4 are near-copies of cases that do have routing labels, but
+    # ask no routing question of their own.
+    "hr_process-en-1", "hr_process-ms-1", "hr_process-en-2", "hr_process-ms-2",
+    "hr_process-en-3", "hr_process-ms-3", "hr_process-en-4", "hr_process-ms-4",
+    "hr_process-en-5", "hr_process-ms-5",
+    "hr_process_neg-en-1", "hr_process_neg-ms-1", "hr_process_neg-en-2", "hr_process_neg-ms-2",
+    "hr_process_neg-en-3", "hr_process_neg-ms-3", "hr_process_neg-en-4", "hr_process_neg-ms-4",
+    "hr_process_neg-en-5", "hr_process_neg-ms-5",
 }  # fmt: skip
 
 

@@ -1282,5 +1282,359 @@
         "change": "book"
       }
     }
+  },
+  {
+    "id": "hr_process-en-1",
+    "language": "en",
+    "message": "What are my tasks?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "my_tasks"
+      }
+    }
+  },
+  {
+    "id": "hr_process-ms-1",
+    "language": "ms",
+    "message": "Apa tugasan saya?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "my_tasks"
+      }
+    }
+  },
+  {
+    "id": "hr_process-en-2",
+    "language": "en",
+    "message": "What else is left on Aina's onboarding?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "person_process",
+        "person": "Aina"
+      }
+    }
+  },
+  {
+    "id": "hr_process-ms-2",
+    "language": "ms",
+    "message": "Apa lagi yang tinggal untuk onboarding Aina?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "person_process",
+        "person": "Aina"
+      }
+    }
+  },
+  {
+    "id": "hr_process-en-3",
+    "language": "en",
+    "message": "Who is in onboarding right now?",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "who_onboarding"
+      }
+    }
+  },
+  {
+    "id": "hr_process-ms-3",
+    "language": "ms",
+    "message": "Siapa dalam onboarding sekarang?",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "who_onboarding"
+      }
+    }
+  },
+  {
+    "id": "hr_process-en-4",
+    "language": "en",
+    "message": "Which colleagues are leaving next month?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "who_leaving"
+      }
+    }
+  },
+  {
+    "id": "hr_process-ms-4",
+    "language": "ms",
+    "message": "Rakan sekerja mana yang akan berhenti bulan depan?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "who_leaving"
+      }
+    }
+  },
+  {
+    "id": "hr_process-en-5",
+    "language": "en",
+    "message": "Is anything running late?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "overdue"
+      }
+    }
+  },
+  {
+    "id": "hr_process-ms-5",
+    "language": "ms",
+    "message": "Tugasan mana yang sudah lewat?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "view": "overdue"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-en-1",
+    "language": "en",
+    "message": "Mark Danial as leaving, last day 15 December 2026, he resigned",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "person": "Danial",
+        "reason": "resigned"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-1",
+    "language": "ms",
+    "message": "Tandakan Danial akan berhenti, hari terakhir 15 Disember 2026, dia letak jawatan",
+    "facts": {
+      "preset": "hr_people_manager"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "person": "Danial",
+        "reason": "resigned"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-en-2",
+    "language": "en",
+    "message": "Show me Siti's profile page",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_open"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "person": "Siti"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-2",
+    "language": "ms",
+    "message": "Boleh tunjukkan halaman profil Siti?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_open"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "person": "Siti"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-en-3",
+    "language": "en",
+    "message": "Who reports to Razak at the moment?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "reports_to": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-3",
+    "language": "ms",
+    "message": "Siapa yang melapor kepada Razak sekarang?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "reports_to": "Razak"
+      }
+    }
+  },
+  {
+    "id": "hr_process_neg-en-4",
+    "language": "en",
+    "message": "Please request a first aid training course for me",
+    "facts": {
+      "preset": "staff_with_hr_linked"
+    },
+    "expect": {
+      "actions": [
+        "training_submit",
+        "clarification"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-4",
+    "language": "ms",
+    "message": "Saya hendak memohon latihan pertolongan cemas",
+    "facts": {
+      "preset": "staff_with_hr_linked"
+    },
+    "expect": {
+      "actions": [
+        "training_submit",
+        "clarification"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "hr_process_neg-en-5",
+    "language": "en",
+    "message": "Mark my task done",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-5",
+    "language": "ms",
+    "message": "Tandakan tugasan saya sebagai selesai",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
   }
 ]

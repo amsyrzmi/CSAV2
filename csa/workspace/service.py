@@ -56,7 +56,7 @@ from csa.hr.service import HrService
 from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
-from csa.workspace import email_batch, hr_people, stock
+from csa.workspace import email_batch, hr_people, hr_processes, stock
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -75,6 +75,7 @@ from csa.workspace.contracts import (
     EmailTeamProposal,
     GuidanceProposal,
     GuidanceResult,
+    HrProcessReadProposal,
     InboxDecisionProposal,
     InboxSummaryProposal,
     Language,
@@ -150,8 +151,13 @@ _RESULT = TypeAdapter(WorkspaceActionResult)
 # The turn row's action column has a CHECK list (last set by migration 0521). A migration in the
 # TikTok range (0490-0499) runs before 0521 on a fresh database and cannot extend it, so a stock
 # read is stored as an answer; its stored result keeps the kind "product_stock_read". A
-# training video answer (training_ask) is stored the same way, so no migration touches that list.
-_STORED_ACTIONS = {"product_stock_read": "answer", "training_ask": "answer"}
+# training video answer (training_ask) and an HR process read (hr_process_read) are stored the same
+# way, so no migration touches that list.
+_STORED_ACTIONS = {
+    "product_stock_read": "answer",
+    "training_ask": "answer",
+    "hr_process_read": "answer",
+}
 _GUIDANCE_KEYS: dict[
     str,
     Literal[
@@ -635,6 +641,54 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} already has those details, so there is nothing to change.",
         "nobody_reports": "Nobody reports to {name}.",
         "nobody_matches": "Nobody in People matches that.",
+        # HR process answers (csa/workspace/hr_processes.py); console names stay English.
+        "processes_unavailable": "HR processes are part of the HR service, which is not active "
+        "for this workspace.",
+        "process_tasks_none": "Nothing waiting for you.",
+        "process_tasks_head": "Your open steps in My tasks ({count}):",
+        "process_onboarding_none": "Nobody is onboarding that you can see.",
+        "process_onboarding_head": "Onboarding in progress that you can see ({count}):",
+        "process_leaving_none": "Nobody is leaving that you can see.",
+        "process_leaving_head": "People leaving that you can see ({count}):",
+        "process_overdue_none": "Nothing is overdue that you can see.",
+        "process_overdue_head": "Overdue steps you can see ({count}):",
+        "process_person_not_found": "I can't find a process for that person that you can see.",
+        "process_person_head": "{name}'s {kind}: {progress}.",
+        "process_option": "{name} — {kind}, started {day}",
+        "process_counter": "{n} of {total}",
+        "process_which": "Which process do you mean?",
+        "process_open_head": "Open steps ({count}):",
+        "process_open_none": "No open steps.",
+        "process_closed": "This process is {status}.",
+        "process_completed": "completed",
+        "process_cancelled": "cancelled",
+        "process_more": "{count} more not shown. See them all in {page}.",
+        "process_progress": "{done} of {total} {steps} done",
+        "process_step": "step",
+        "process_steps": "steps",
+        "process_next": ", next step {due}",
+        "process_task_line": "{title} — {kind} for {name}, {due}",
+        "process_step_line": "{title} ({owner}), {due}",
+        "process_kind_onboarding": "onboarding",
+        "process_kind_offboarding": "offboarding",
+        "process_kind_custom": "process",
+        "process_owner_hr": "HR",
+        "process_owner_manager": "Manager",
+        "process_owner_employee": "Employee",
+        "process_owner_person": "Named person",
+        "process_due_today": "due today",
+        "process_due_tomorrow": "due tomorrow",
+        "process_due_on": "due {day}",
+        "process_was_due": "was due {day}",
+        "process_no_due": "no due date",
+        "process_overdue_one": "overdue by 1 day",
+        "process_overdue_many": "overdue by {n} days",
+        "process_pool": "HR team",
+        "process_to_approve": "waiting for your approval",
+        "process_awaiting": "waiting for approval",
+        "process_sent_back": "sent back",
+        "process_assigned": "assigned to {name}",
+        "process_stored": "HR process answer: {count}.",
         "bookings_unavailable": "Bookings is not part of this workspace's active services, so I "
         "can't look at times or book. Ask your administrator to activate it on the Services page.",
         "bookings_read_only": "Your role can look at bookings but not change them.",
@@ -781,6 +835,54 @@ _TEXT: dict[str, dict[str, str]] = {
         "no_change": "{name} sudah mempunyai butiran itu, jadi tiada apa-apa untuk ditukar.",
         "nobody_reports": "Tiada sesiapa melapor kepada {name}.",
         "nobody_matches": "Tiada sesiapa dalam People yang sepadan.",
+        "processes_unavailable": "Proses HR ialah sebahagian daripada perkhidmatan HR, yang "
+        "tidak aktif untuk ruang kerja ini.",
+        "process_tasks_none": "Tiada apa-apa yang menunggu anda.",
+        "process_tasks_head": "Langkah anda yang belum selesai dalam My tasks ({count}):",
+        "process_onboarding_none": "Tiada onboarding sedang berjalan yang boleh anda lihat.",
+        "process_onboarding_head": "Onboarding sedang berjalan yang boleh anda lihat ({count}):",
+        "process_leaving_none": "Tiada sesiapa yang akan berhenti yang boleh anda lihat.",
+        "process_leaving_head": "Orang yang akan berhenti yang boleh anda lihat ({count}):",
+        "process_overdue_none": "Tiada apa-apa yang lewat yang boleh anda lihat.",
+        "process_overdue_head": "Langkah lewat yang boleh anda lihat ({count}):",
+        "process_person_not_found": "Saya tidak menjumpai proses untuk orang itu yang boleh "
+        "anda lihat.",
+        "process_person_head": "{Kind} {name}: {progress}.",
+        "process_option": "{name} — {kind}, bermula {day}",
+        "process_counter": "{n} daripada {total}",
+        "process_which": "Proses yang mana satu?",
+        "process_open_head": "Langkah yang belum selesai ({count}):",
+        "process_open_none": "Tiada langkah yang belum selesai.",
+        "process_closed": "Proses ini telah {status}.",
+        "process_completed": "selesai",
+        "process_cancelled": "dibatalkan",
+        "process_more": "{count} lagi tidak ditunjukkan. Lihat semuanya dalam {page}.",
+        "process_progress": "{done} daripada {total} {steps} selesai",
+        "process_step": "langkah",
+        "process_steps": "langkah",
+        "process_next": ", langkah seterusnya {due}",
+        "process_task_line": "{title} — {kind} untuk {name}, {due}",
+        "process_step_line": "{title} ({owner}), {due}",
+        "process_kind_onboarding": "onboarding",
+        "process_kind_offboarding": "offboarding",
+        "process_kind_custom": "proses",
+        "process_owner_hr": "HR",
+        "process_owner_manager": "Pengurus",
+        "process_owner_employee": "Pekerja",
+        "process_owner_person": "Individu yang ditetapkan",
+        "process_due_today": "tarikh akhir hari ini",
+        "process_due_tomorrow": "tarikh akhir esok",
+        "process_due_on": "tarikh akhir {day}",
+        "process_was_due": "tarikh akhir {day}",
+        "process_no_due": "tiada tarikh akhir",
+        "process_overdue_one": "lewat 1 hari",
+        "process_overdue_many": "lewat {n} hari",
+        "process_pool": "pasukan HR",
+        "process_to_approve": "menunggu kelulusan anda",
+        "process_awaiting": "menunggu kelulusan",
+        "process_sent_back": "dikembalikan",
+        "process_assigned": "ditugaskan kepada {name}",
+        "process_stored": "Jawapan proses HR: {count}.",
         "bookings_unavailable": "Bookings bukan sebahagian daripada perkhidmatan aktif ruang "
         "kerja ini, jadi saya tidak dapat melihat masa atau membuat tempahan. Minta pentadbir "
         "anda mengaktifkannya di halaman Services.",
@@ -2004,7 +2106,33 @@ async def _resolve(
     if isinstance(proposal, EmailBatchProposal | PlanProposal):
         steps = [proposal] if isinstance(proposal, EmailBatchProposal) else proposal.steps
         return await _plan(request, actor, client_id, thread_id, turn, steps, facts, registry)
+    if isinstance(proposal, HrProcessReadProposal):
+        return await _process_read(request, actor, client_id, proposal, facts)
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
+
+
+async def _process_read(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal: HrProcessReadProposal,
+    facts: PlannerFacts,
+) -> _Planned:
+    """An HR process question, answered from the caller's own process reads (read only).
+
+    The row stores the resolver's counts-only copy (names and titles are shown, not stored);
+    a server-built question is cleaned like any other (``_clarification``).
+    """
+    found = await hr_processes.resolve_process_read(
+        request, actor, client_id, proposal, facts, _TEXT[facts.language]
+    )
+    if isinstance(found.shown, ClarificationProposal):
+        live, stored = _clarification(found.shown)
+        if isinstance(found.stored, ClarificationProposal):
+            _, stored = _clarification(found.stored)
+        return _Planned(result=live, stored=stored)
+    stored_answer = found.stored if isinstance(found.stored, AnswerResult) else None
+    return _Planned(result=found.shown, stored=stored_answer)
 
 
 async def _stock_read(
@@ -2798,7 +2926,7 @@ async def create_planned_turn(
         stored = planned.stored
         if planned.summary is not None:
             stored = _summary_stored(planned.summary, facts.language)
-        elif isinstance(result, AnswerResult):
+        elif stored is None and isinstance(result, AnswerResult):
             stored = _stored_answer(result)
         return await _insert_turn(
             conn,

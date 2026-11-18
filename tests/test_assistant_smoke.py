@@ -41,6 +41,8 @@ FEATURES = (
     "hr_leave",
     "people_query",
     "hr_open",
+    "hr_process",
+    "hr_process_neg",
     "booking_book",
     "booking_move",
     "booking_cancel",
@@ -212,7 +214,7 @@ class ScriptedModel:
                 "title": SCRIPTED_TEXT,
                 "learning_objective": SCRIPTED_TEXT,
             }
-        if action in (*PEOPLE_ACTIONS, "hr_person_open"):
+        if action in (*PEOPLE_ACTIONS, "hr_person_open", "hr_process_read"):
             # The expected fields, as the model would write them from the message.
             return {"action": action, **case.expect.fields}
         return {"action": "clarification", "question": SCRIPTED_TEXT, "options": []}

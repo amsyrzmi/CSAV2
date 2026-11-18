@@ -344,6 +344,24 @@ class HrPersonOpenProposal(_Contract):
     person: PersonText
 
 
+class HrProcessReadProposal(_Contract):
+    """Read HR onboarding and offboarding processes and tasks; never changes a task.
+    ``person`` is the name the user wrote, or the option value they picked; only with
+    ``person_process``."""
+
+    action: Literal["hr_process_read"]
+    view: Literal["my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"]
+    person: PersonText | None = None
+
+    @model_validator(mode="after")
+    def person_only_for_person_process(self) -> HrProcessReadProposal:
+        if self.view == "person_process" and self.person is None:
+            raise ValueError("person_process needs a person")
+        if self.view != "person_process" and self.person is not None:
+            raise ValueError("person goes only with person_process")
+        return self
+
+
 class BookingActionProposal(_Contract):
     """Book, move or cancel; every name is the user's own words and the server finds the rest.
 
@@ -478,6 +496,7 @@ WorkspaceProposal = Annotated[
         HrPersonLeaveProposal,
         PeopleQueryProposal,
         HrPersonOpenProposal,
+        HrProcessReadProposal,
         BookingActionProposal,
         EmailBatchProposal,
         PlanProposal,
