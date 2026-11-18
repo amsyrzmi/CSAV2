@@ -47,7 +47,7 @@ Anti-goals
 
 A. **One action `hr_process_read` with an enum `view` (my_tasks, person_process, who_onboarding, who_leaving,
    overdue) and an optional `person`.** One small model in the planner schema; one resolver. Chosen: the planner
-   prompt is already about 13 thousand characters and each action adds a schema and a bullet, so one small action
+   prompt is already about 35 thousand characters (35,169 before this slice, about 1.9 KB more after it) and each action adds a schema and a bullet, so one small action
    limits prompt growth and confusion with neighbours.
 B. Five separate actions. More prompt and schema, more confusion with `people_query`, `hr_person_open` and
    `hr_person_leave`. Rejected.
@@ -115,8 +115,11 @@ stores.
   training, "mark my task done", a non-HR staff member), added to `csa/workspace/smoke_cases.json`,
   `FEATURES` in `tests/test_assistant_smoke.py`, `docs/ASSISTANT_RETEST.md`, and the Jev label set decision (the new
   cases go in `SMOKE_LEFT_OUT` with the reason "no routing question").
-- **A planner prompt change forces a full `assistant_smoke` run before merge** (as built, 95 cases: about 106
-  model calls, up to about 201 with re-plans, with the owner's model key and the owner's yes). The controller asks
+- **A planner prompt change forces a full `assistant_smoke` run after the staging rollout and before the
+  production deploy** (as built, 95 cases: about 106 model calls, up to about 201 with re-plans, with the owner's
+  model key and the owner's yes). The runner only runs inside `csa-staging-gateway-1`, which rolls from merged
+  main, so the merge does not wait for it (as for the earlier prompt PRs, such as #85); the owner's yes and a
+  passing run are needed before the production deploy. The controller asks
   first and reports the failures as printed. As built there are 20 new cases (ten positive, ten negative), and the
   run has not been made yet.
 

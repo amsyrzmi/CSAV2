@@ -18,7 +18,7 @@
 - No process content (task note, description, name, title) in planner facts, the system prompt, or the tenant-readable stored turn beyond counts and fixed text (`_Planned.stored`); `test_planner_facts_never_hold_personal_fields` stays green.
 - Language: the turn's language decides; Malay uses "anda", the glossary of the Malay design and `hr_people.format_day` (never the locale); console names (My tasks, Processes, People, Mark done) stay English inside Malay sentences; a task title is `title_ms` if present, else `title_en`.
 - The assistant never completes, approves, sends back, skips, reschedules, reassigns, cancels or closes anything: a request to do so gets a plain sentence that it is done in the console (My tasks).
-- Prompt growth is limited to one small action model and its bullets; every prompt change keeps the pinned prompt tests green and requires a full `assistant_smoke` run before merge (owner's model key and the owner's yes, never CI).
+- Prompt growth is limited to one small action model and its bullets; every prompt change keeps the pinned prompt tests green and requires a full `assistant_smoke` run on staging after the rollout and before the production deploy (owner's model key and the owner's yes, never CI; the merge does not wait for it, the runner only runs in `csa-staging-gateway-1`).
 - Repo is PUBLIC: synthetic names only (Aina, Danial, Razak, Siti, Mei Ling are the existing test names).
 - Caps: lists of at most 10 rows with a count line when more.
 
@@ -75,7 +75,7 @@
 
 - [ ] **Step 1: Add the cases and the retest rows; run `tests/test_assistant_smoke.py` and `tests/test_assistant_jev_eval.py`, expect FAIL until the registrations are made.**
 - [ ] **Step 2: Register `FEATURES`, `ActionName`, presets and `SMOKE_LEFT_OUT`; run both test files green; commit** `test(assistant): smoke cases and retest rows for HR process questions in English and Malay`.
-- [ ] **Step 3 (controller, not the implementer):** ask the owner for the yes to run `docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke` on staging after the rollout, and report the failures as printed.
+- [ ] **Step 3 (controller, not the implementer):** ask the owner for the yes to run `docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke` on staging after the rollout and before the production deploy (the merge does not wait for it), and report the failures as printed.
 
 ### Task 4: Docs
 
