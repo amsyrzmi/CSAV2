@@ -3566,3 +3566,96 @@ def test_the_same_email_after_an_earlier_batch_stays_personalised() -> None:
     facts = _batch_facts().model_copy(update={"history": [earlier]})
     again = "Send the same email to Farah and Imran"
     assert _ready_batch(_batch_proposal(), again, facts).mode == "personalised"
+
+
+# --------------------------------------------------------------------------- hr_process_read
+
+
+def test_planner_output_accepts_hr_process_read() -> None:
+    planned = PlannerOutput.model_validate(
+        {"proposal": {"action": "hr_process_read", "view": "person_process", "person": "Aina"}}
+    )
+    assert planned.proposal.action == "hr_process_read"
+    assert planned.proposal.person == "Aina"
+    with pytest.raises(ValidationError):
+        PlannerOutput.model_validate({"proposal": {"action": "hr_process_read", "view": "mine"}})
+    with pytest.raises(ValidationError):
+        PlannerOutput.model_validate(
+            {"proposal": {"action": "hr_process_read", "view": "person_process"}}
+        )
+    assert '"hr_process_read"' in json.dumps(PlannerOutput.model_json_schema())
+
+
+def test_hr_process_read_is_stored_as_an_answer() -> None:
+    from csa.workspace.service import _STORED_ACTIONS
+
+    assert _STORED_ACTIONS["hr_process_read"] == "answer"
+
+
+def _process_bullet() -> str:
+    start = SYSTEM_PROMPT.index("- hr_process_read:")
+    return " ".join(SYSTEM_PROMPT[start : SYSTEM_PROMPT.index("\n- ", start + 1)].split())
+
+
+def test_planner_prompt_names_the_five_process_views_in_one_bullet() -> None:
+    assert SYSTEM_PROMPT.count("- hr_process_read:") == 1
+    bullet = _process_bullet()
+    for view in ("my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"):
+        assert view in bullet, view
+    for phrase in (
+        "what are my tasks",
+        "apa tugasan saya",
+        "what is outstanding for Aina's onboarding",
+        "apa yang belum selesai untuk onboarding Aina",
+        "who is onboarding",
+        "who is leaving",
+        "siapa yang akan berhenti",
+        "what is overdue",
+        "apa yang tertunggak",
+        "lewat",
+    ):
+        assert phrase in bullet, phrase
+    assert len(bullet) < 900  # one small bullet: the prompt is already long
+
+
+def test_planner_prompt_process_reads_never_depend_on_people_access() -> None:
+    flat = " ".join(SYSTEM_PROMPT.split())
+    rule = (
+        "hr_process_read never depends on people_access: the database decides what the user may "
+        "see, so never answer that their People access does not allow a process question."
+    )
+    assert flat.count(rule) == 1
+    # The existing people_access wording stays exactly once and the new text does not restate it.
+    assert flat.count("an absent people_access does not mean the user lacks access") == 1
+    assert "people_access" not in _process_bullet()
+
+
+def test_planner_prompt_keeps_neighbouring_actions_apart_from_process_reads() -> None:
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert (
+        "Marking someone as leaving stays hr_person_leave, opening a profile stays "
+        "hr_person_open, who reports to someone or who is in a department stays people_query, "
+        "and a request for training stays training_submit, never hr_process_read."
+    ) in flat
+    assert (
+        "Completing, approving, skipping or changing a task is done by the person in the console "
+        "(My tasks): answer that in plain words with answer, never a card."
+    ) in flat
+
+
+def test_malay_process_words_detect_malay_on_their_own() -> None:
+    assert detect_language("Apa tugasan tertunggak saya?") == "ms"
+    assert detect_language("tugasan tertunggak") == "ms"
+    for word in ("tugas", "tugasan", "selesai", "tertunggak", "lewat", "orientasi", "proses"):
+        assert detect_language(word) == "ms", word
+    assert detect_language("What is outstanding for Aina's onboarding?") == "en"
+    assert detect_language("who is leaving") == "en"
+    assert detect_language("What are my tasks?") == "en"
+
+
+def test_the_new_malay_markers_are_not_english_markers() -> None:
+    from csa.workspace.planner import _ENGLISH_MARKERS, _MALAY_MARKERS
+
+    new = {"tugas", "tugasan", "selesai", "tertunggak", "lewat", "orientasi", "proses"}
+    assert new <= _MALAY_MARKERS
+    assert not new & _ENGLISH_MARKERS

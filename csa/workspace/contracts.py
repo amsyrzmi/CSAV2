@@ -344,6 +344,28 @@ class HrPersonOpenProposal(_Contract):
     person: PersonText
 
 
+class HrProcessReadProposal(_Contract):
+    """Read HR onboarding and offboarding processes and tasks. Read-only.
+
+    ``view`` says what is asked: the caller's own tasks, one person's process, who is
+    onboarding, who is leaving, or what is overdue. ``person`` is the name the user wrote and
+    only goes with ``person_process``. The server answers from what the caller may see in the
+    console (csa/workspace/hr_processes.py); nothing here changes a task.
+    """
+
+    action: Literal["hr_process_read"]
+    view: Literal["my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"]
+    person: PersonText | None = None
+
+    @model_validator(mode="after")
+    def person_only_for_person_process(self) -> HrProcessReadProposal:
+        if self.view == "person_process" and self.person is None:
+            raise ValueError("person_process needs a person")
+        if self.view != "person_process" and self.person is not None:
+            raise ValueError("person goes only with person_process")
+        return self
+
+
 class BookingActionProposal(_Contract):
     """Book, move or cancel; every name is the user's own words and the server finds the rest.
 
@@ -478,6 +500,7 @@ WorkspaceProposal = Annotated[
         HrPersonLeaveProposal,
         PeopleQueryProposal,
         HrPersonOpenProposal,
+        HrProcessReadProposal,
         BookingActionProposal,
         EmailBatchProposal,
         PlanProposal,

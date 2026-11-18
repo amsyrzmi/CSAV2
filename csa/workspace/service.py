@@ -150,8 +150,13 @@ _RESULT = TypeAdapter(WorkspaceActionResult)
 # The turn row's action column has a CHECK list (last set by migration 0521). A migration in the
 # TikTok range (0490-0499) runs before 0521 on a fresh database and cannot extend it, so a stock
 # read is stored as an answer; its stored result keeps the kind "product_stock_read". A
-# training video answer (training_ask) is stored the same way, so no migration touches that list.
-_STORED_ACTIONS = {"product_stock_read": "answer", "training_ask": "answer"}
+# training video answer (training_ask) and an HR process read (hr_process_read) are stored the same
+# way, so no migration touches that list.
+_STORED_ACTIONS = {
+    "product_stock_read": "answer",
+    "training_ask": "answer",
+    "hr_process_read": "answer",
+}
 _GUIDANCE_KEYS: dict[
     str,
     Literal[

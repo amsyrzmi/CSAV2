@@ -782,3 +782,43 @@ def test_no_workspace_proposal_can_write_to_tiktok() -> None:
         if re.match(r"\s*(from|import) csa\.(marketplace|agents\.ecommerce)", line)
     }
     assert imports == {"from csa.marketplace import reads"}
+
+
+def test_hr_process_read_views_and_person_rule() -> None:
+    from csa.workspace.contracts import HrProcessReadProposal
+
+    views = ("my_tasks", "who_onboarding", "who_leaving", "overdue")
+    for view in views:
+        proposal = HrProcessReadProposal(action="hr_process_read", view=view)
+        assert proposal.person is None
+    found = HrProcessReadProposal(action="hr_process_read", view="person_process", person="Aina")
+    assert found.person == "Aina"
+    for bad in (
+        {"view": "person_process"},  # no person
+        {"view": "person_process", "person": None},
+        {"view": "person_process", "person": ""},
+        {"view": "my_tasks", "person": "Aina"},  # a person only for person_process
+        {"view": "who_leaving", "person": "Aina"},
+        {"view": "everything"},  # not one of the five views
+        {"view": "overdue", "task_id": "x"},  # no other field
+    ):
+        with pytest.raises(ValidationError):
+            HrProcessReadProposal.model_validate({"action": "hr_process_read", **bad})
+    with pytest.raises(ValidationError):
+        HrProcessReadProposal.model_validate(
+            {"action": "hr_process_read", "view": "person_process", "person": "x" * 121}
+        )
+
+
+def test_hr_process_read_is_a_read_action_with_no_proposal_kind() -> None:
+    from csa.workspace.executors import build_proposal_registry
+    from csa.workspace.planner import PlannerProposal
+
+    assert "hr_process_read" in _union_actions(WorkspaceProposal)
+    assert "hr_process_read" in _union_actions(PlannerProposal)
+    assert "hr_process_read" not in set(get_args(ProposalKind))
+    assert "hr_process_read" not in set(build_proposal_registry()._executors)
+    parsed = TypeAdapter(WorkspaceProposal).validate_python(
+        {"action": "hr_process_read", "view": "overdue"}
+    )
+    assert parsed.action == "hr_process_read"
