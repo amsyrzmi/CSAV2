@@ -6,13 +6,48 @@ import {
   assigneesPath, settingsBody, settingsPath, viewsPath,
   type InboxAssignee, type InboxSettings, type InboxSettingsValues, type SavedView,
 } from "@/lib/inbox-api";
-import { assigneesFailure, settingsErrorText, viewErrorText, type ViewFilters } from "@/lib/inbox-queue";
+import type { ConversationPage } from "@/lib/inbox-api";
+import {
+  anyConversationQuery, assigneesFailure, settingsErrorText, viewErrorText, type ViewFilters,
+} from "@/lib/inbox-queue";
 
 const READ_TIMEOUT_MS = 15_000;
 
 /** The status and plain-text detail of a failed call; null when no answer came. */
 function describe(cause: unknown): { status: number | null; code: string | null } {
   return cause instanceof ApiError ? { status: cause.status, code: cause.code } : { status: null, code: null };
+}
+
+// ---- any conversation at all ----
+
+/**
+ * Whether the company has any conversation: one read of the All list for one row, asked while `ask`
+ * (a tab came back empty and the counts could not tell) and again each time `tick` changes (each
+ * list answer) until one is found; then never again for this company. Null while unknown: not asked
+ * yet, the first read still out, or the last read failed, so the caller never shows "Connect
+ * WhatsApp" on a guess. A later "none" keeps the last answer while its re-read is out.
+ */
+export function useHasConversations(query: string, ask: boolean, tick: string | null): boolean | null {
+  const [state, setState] = useState<{ query: string; value: boolean | null }>({ query, value: null });
+  const current = state.query === query ? state.value : null;
+  const found = current === true;
+  useEffect(() => {
+    if (!ask || found) return;
+    const controller = new AbortController();
+    async function read() {
+      try {
+        const page = await api<ConversationPage>(anyConversationQuery(query), {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]),
+        });
+        if (!controller.signal.aborted) setState({ query, value: page.items.length > 0 });
+      } catch {
+        if (!controller.signal.aborted) setState({ query, value: null });
+      }
+    }
+    void read();
+    return () => controller.abort();
+  }, [query, ask, found, tick]);
+  return current;
 }
 
 // ---- assignees ----

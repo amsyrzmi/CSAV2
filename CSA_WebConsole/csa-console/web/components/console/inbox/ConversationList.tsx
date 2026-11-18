@@ -2,10 +2,12 @@
 
 import { useCallback, useId, useLayoutEffect, useRef } from "react";
 import { SearchX } from "lucide-react";
+import AgentAvatar from "@/components/console/fs/AgentAvatar";
 import { ListState } from "@/components/console/fs/ListStates";
 import { secondary } from "@/components/console/ui";
 import type { Conversation } from "@/lib/inbox-api";
-import type { QueueTabId } from "@/lib/inbox-queue";
+import { TAB_EMPTY, type QueueTabId } from "@/lib/inbox-queue";
+import { shortcutFor, type KeyLike } from "@/lib/inbox-shortcuts";
 import { CHANNEL_NAME, ConversationRow } from "./ConversationRow";
 import { PHONE_QUERY } from "./hooks";
 
@@ -31,7 +33,7 @@ export type ListStatus = {
  */
 export function ConversationList({
   items, status, selected, blocked, now, tab, meId, filtered, searching, connectHref, panelId, labelledBy,
-  checked, selectMode, onCheck, onSelect, onRetry, onLoadOlder, onClearFilters, onClearSearch,
+  checked, selectMode, onCheck, onSelect, onRetry, onLoadOlder, onClearFilters, onClearSearch, firstRun, onSeeAll,
 }: {
   items: Conversation[]; status: ListStatus; selected: string; blocked: boolean; now: number;
   /** The open tab (the queue tabs show the wait) and the signed-in person's real id (for "You"). */
@@ -45,6 +47,13 @@ export function ConversationList({
   onCheck?: (id: string, checked: boolean) => void;
   onSelect: (id: string) => void; onRetry: () => void; onLoadOlder: () => void;
   onClearFilters: () => void; onClearSearch: () => void;
+  /**
+   * The company has no conversation at all (proven, never guessed): the "Connect WhatsApp" first-run
+   * state instead of the tab's own empty sentence.
+   */
+  firstRun: boolean;
+  /** Needs us's empty state offers the All tab. */
+  onSeeAll: () => void;
 }) {
   const headingId = useId();
   // Rows are memoised and do not compare callbacks: they get one that always calls the newest.
@@ -71,7 +80,8 @@ export function ConversationList({
           : items.length === 0 ? (filtered || searching
             ? <NoMatch searching={searching} filtered={filtered} onClearSearch={onClearSearch}
               onClearFilters={onClearFilters} />
-            : <ListState kind="empty" connectHref={connectHref} />)
+            : firstRun ? <ListState kind="empty" connectHref={connectHref} />
+              : <TabEmpty tab={tab} onSeeAll={onSeeAll} />)
           : null}
       </div>
       {/* On a phone the page scrolls the list under the sticky tab strip: a focused row is moved
@@ -83,8 +93,12 @@ export function ConversationList({
           event.target.scrollIntoView({ block: "nearest" });
         }
       }} onKeyDown={(event) => {
-        if (!onCheck || blocked || (event.key !== "x" && event.key !== "X")) return;
-        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (!onCheck || blocked) return;
+        const key: KeyLike = {
+          key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
+          repeat: event.repeat, target: event.target as KeyLike["target"],
+        };
+        if (shortcutFor(key, { dialogOpen: false }) !== "toggle") return;
         const id = event.target instanceof HTMLElement ? event.target.dataset.conversationId : undefined;
         if (!id) return;
         event.preventDefault();
@@ -97,6 +111,25 @@ export function ConversationList({
       </div>}
     </div>
   </section>;
+}
+
+/**
+ * A tab with nothing in it, nothing filtered or searched: its own sentence (design 14.7). Needs us
+ * has the assistant's resting avatar beside it (48 px; its idle loop only where motion is allowed)
+ * and the way to every conversation, since the assistant's chats are only under All.
+ */
+function TabEmpty({ tab, onSeeAll }: { tab: QueueTabId; onSeeAll: () => void }) {
+  const needsUs = tab === "needs_us";
+  return <div role="status" data-testid={`inbox-empty-${tab}`}
+    className="flex flex-col items-center gap-3 px-4 py-8 text-center">
+    <div className="flex min-w-0 max-w-full items-center gap-3">
+      {needsUs && <span className="shrink-0"><AgentAvatar agentId="support" size={48} /></span>}
+      <p className={`min-w-0 font-(family-name:--fs-font-heading) text-base font-semibold [overflow-wrap:anywhere] ${needsUs ? "text-left" : ""}`}>
+        {TAB_EMPTY[tab]}</p>
+    </div>
+    {needsUs && <button type="button" className={secondary} data-testid="inbox-see-all" onClick={onSeeAll}>
+      See all conversations</button>}
+  </div>;
 }
 
 /** Nothing matched: the old sentence, a plain hint, and the one action that gets rows back. */

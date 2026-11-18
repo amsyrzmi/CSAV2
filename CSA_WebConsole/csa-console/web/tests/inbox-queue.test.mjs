@@ -968,3 +968,38 @@ test("viewChoice opens a view on the most specific tab whose own filters it hold
   });
   assert.deepEqual([full.tab, full.order], ["needs_us", "due"]);
 });
+
+// ---- Task 9: each tab's empty sentence and whether the counts show any work ----
+
+test("each tab has its own empty sentence, the design's words where it gives them", () => {
+  const { TAB_EMPTY } = queue;
+  assert.deepEqual(TAB_EMPTY, {
+    needs_us: "Nothing needs your team right now",
+    mine: "Nothing is assigned to you",
+    unassigned: "Nothing is waiting for someone to take it",
+    overdue: "Nothing is overdue",
+    waiting: "No one is waiting on a customer",
+    snoozed: "Nothing is snoozed",
+    resolved: "No resolved conversations yet",
+    all: "No conversations yet",
+  });
+  for (const t of TABS) assert.ok(TAB_EMPTY[t.id], t.id);
+});
+
+test("the counts show work only when one of them is above zero; unknown or zero is not proof", () => {
+  const { countsShowWork } = queue;
+  const zero = { needs_us: 0, mine: 0, unassigned: 0, overdue: 0, waiting_customer: 0, snoozed: 0,
+    oldest_waiting_at: null };
+  assert.equal(countsShowWork(null), false);
+  assert.equal(countsShowWork(zero), false);
+  for (const key of ["needs_us", "mine", "unassigned", "overdue", "waiting_customer", "snoozed"])
+    assert.equal(countsShowWork({ ...zero, [key]: 1 }), true, key);
+  // The oldest wait is a time, not a count.
+  assert.equal(countsShowWork({ ...zero, oldest_waiting_at: "2026-11-17T03:00:00Z" }), false);
+});
+
+test("the company-wide probe asks the All list for one row", () => {
+  const { anyConversationQuery } = queue;
+  assert.equal(anyConversationQuery(""), `${BASE}?order=activity&limit=1`);
+  assert.equal(anyConversationQuery("client_id=t1"), `${BASE}?client_id=t1&order=activity&limit=1`);
+});

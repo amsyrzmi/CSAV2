@@ -10,11 +10,11 @@ import {
   type QueueCounts, type QueueFields, type SavedView,
 } from "@/lib/inbox-api";
 import {
-  activeFilterChips, BULK_LIMIT, BULK_LIMIT_TEXT, bulkFailureLines, bulkSummary, priorityOrderAllowed,
-  queueListQuery, selectAllText, tabFilters, tabOrder, withoutChip,
+  activeFilterChips, BULK_LIMIT, BULK_LIMIT_TEXT, bulkFailureLines, bulkSummary, countsShowWork,
+  priorityOrderAllowed, queueListQuery, selectAllText, tabFilters, tabOrder, withoutChip,
   type QueueFilters, type QueueOrder, type QueueTabId,
 } from "@/lib/inbox-queue";
-import { shortcutFor, type KeyLike } from "@/lib/inbox-shortcuts";
+import { OPEN_OVERLAY_SELECTOR, shortcutFor, type KeyLike, type Shortcut } from "@/lib/inbox-shortcuts";
 import { neighbourId } from "@/lib/inbox-thread";
 import { ProposalCard } from "../ProposalCard";
 import { BulkBar, SelectToggle } from "./BulkBar";
@@ -24,15 +24,28 @@ import { PHONE_QUERY, useMediaQuery, useTicker, WIDE_QUERY } from "./hooks";
 import { OpenConversation } from "./OpenConversation";
 import { QueueBar } from "./QueueBar";
 import { ResponseTimes } from "./QueueSettings";
+import { ShortcutHelp } from "./ShortcutHelp";
 import { useInboxActions, type InboxActions } from "./useInboxActions";
 import { usePages } from "./usePages";
 import { useQueueActions } from "./useQueueActions";
-import { useInboxSettings } from "./useQueueData";
+import { useHasConversations, useInboxSettings } from "./useQueueData";
 import { ViewsMenu, type ActiveView, type ChosenView } from "./ViewsMenu";
 
 const FIRST_TAB: QueueTabId = "needs_us";
 const PANE = "card min-h-0 min-w-0 flex-col overflow-hidden";
 const NONE: ReadonlySet<string> = new Set();
+/** A burst of count changes settles this long before one polite announcement says where it ended. */
+const ANNOUNCE_SETTLE_MS = 1500;
+/** Which primary button (its `data-action`) each action key presses. */
+const PRIMARY_FOR: Partial<Record<Shortcut, readonly string[]>> = {
+  claim: ["take_it", "take_from"],
+  resolve: ["resolve"],
+};
+
+/** Laid out (not `display: none` itself or inside a hidden pane), so a key never acts on what is not shown. */
+function shown(element: HTMLElement | null): element is HTMLElement {
+  return element !== null && element.getClientRects().length > 0;
+}
 
 /**
  * A bulk action's answer: its summary (the notice it set) and what did not apply, one line per
@@ -172,12 +185,33 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   if (countsKey !== null && countsKey !== counts?.key) {
     const before = counts?.value?.needs_us;
     const after = serverCounts?.needs_us;
-    if (typeof before === "number" && typeof after === "number" && after !== before) {
-      if (after > before && motion) setNudge(nudge + 1);
-      setAnnouncement(`Needs us: ${after}`);
-    }
+    if (typeof before === "number" && typeof after === "number" && after > before && motion) setNudge(nudge + 1);
     setCounts({ key: countsKey, value: serverCounts });
   }
+  // The Needs us count is spoken politely once per burst: each change restarts a short wait, and
+  // only where it settled is said, and only when that differs from what was said (or first shown).
+  const needsUs = counts?.value?.needs_us;
+  const spoken = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof needsUs !== "number") return;
+    if (spoken.current === null) { spoken.current = needsUs; return; }
+    const timer = setTimeout(() => {
+      if (needsUs === spoken.current) return;
+      spoken.current = needsUs;
+      setAnnouncement(`Needs us: ${needsUs}`);
+    }, ANNOUNCE_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [needsUs]);
+
+  // "Connect WhatsApp" only for a company with no conversation at all. A count above zero proves
+  // there are some; zero counts do not (the assistant's chats and resolved ones are not counted), so
+  // an empty tab asks the All list for one row. The All tab with nothing filtered is that list.
+  const listEmpty = conversations.loaded && !conversations.error && !refused && items.length === 0
+    && !filtered && !searching;
+  const counted = countsShowWork(counts?.value ?? null);
+  const anyConversation = useHasConversations(query, listEmpty && tab !== "all" && !counted, listAsOf);
+  const firstRun = listEmpty && !counted && (tab === "all" || anyConversation === false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   /** Empties the selection and leaves Select mode; focus inside the vanishing bulk bar goes to Select. */
   function clearSelection() {
@@ -269,6 +303,11 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
     setOrder(tabOrder(next));
     setPages(1);
   }
+  /** Needs us is empty: the All tab, with focus on it (the button that was pressed goes away). */
+  function seeAll() {
+    chooseTab("all");
+    document.getElementById(`${panelId}-tab-all`)?.focus();
+  }
   function changeFilters(next: QueueFilters) {
     clearSelection();
     setActiveView(null);
@@ -352,20 +391,27 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
   // The card is a slide-over only below the three-pane width, and only for an open conversation.
   const slideOpen = detailsOpen && !wide && selected !== "";
 
-  // J/K and Escape at the document level; the handler is refreshed every render.
+  // The shortcuts at the document level; the handler is refreshed every render. X is the list's own
+  // (it toggles the focused row). Nothing fires while an overlay (a dialog, the slide-over, the
+  // Filters popover, a menu) is open anywhere, nor from inside one.
   const keyHandler = useRef<(event: KeyboardEvent) => void>(() => {});
   useEffect(() => {
     keyHandler.current = (event) => {
       // A control that handled the key itself (a menu, the reply question) marks it: leave it alone.
       if (event.defaultPrevented) return;
-      const dialogOpen = slideOpen || document.querySelector("dialog[open]") !== null;
+      const dialogOpen = slideOpen || document.querySelector(OPEN_OVERLAY_SELECTOR) !== null;
       // A selection box is an input, but Escape on it still clears the selection.
       const onBox = event.key === "Escape" && event.target instanceof HTMLInputElement && event.target.type === "checkbox";
       const shortcut = shortcutFor({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
-        target: onBox ? null : event.target as KeyLike["target"],
+        repeat: event.repeat, target: onBox ? null : event.target as KeyLike["target"],
       }, { dialogOpen });
-      if (!shortcut) return;
+      if (!shortcut || shortcut === "toggle") return;
+      if (shortcut === "help") {
+        event.preventDefault();
+        setHelpOpen(true);
+        return;
+      }
       if (shortcut === "close") {
         const phone = window.matchMedia?.(PHONE_QUERY).matches;
         if (threadOpen && phone) {
@@ -376,7 +422,31 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         }
         return;
       }
+      // One action at a time: while a request is out (or kept for Retry) no key starts another.
       if (actions.blocked) return;
+      if (shortcut === "search") {
+        const box = document.querySelector<HTMLInputElement>("[data-testid='inbox-search']");
+        if (!shown(box)) return;
+        // Taken here, so the slash is not typed into the box focus moves to.
+        event.preventDefault();
+        box.focus();
+        return;
+      }
+      if (shortcut === "claim" || shortcut === "resolve" || shortcut === "snooze") {
+        // The open conversation's own buttons, pressed as a click would: the same request, the same
+        // refusal sentences, and nothing when the button is not offered, disabled or not on screen.
+        const thread = selected ? document.querySelector<HTMLElement>(
+          `[data-testid='inbox-thread'][data-conversation="${CSS.escape(selected)}"]`) : null;
+        const button = shortcut === "snooze"
+          ? thread?.querySelector<HTMLButtonElement>("[data-testid='inbox-snooze-menu']") ?? null
+          : thread?.querySelector<HTMLButtonElement>("[data-testid='inbox-primary-action']") ?? null;
+        if (!shown(button) || button.disabled) return;
+        if (shortcut === "snooze" ? button.getAttribute("aria-expanded") === "true"
+          : !PRIMARY_FOR[shortcut]?.includes(button.dataset.action ?? "")) return;
+        event.preventDefault();
+        button.click();
+        return;
+      }
       const next = neighbourId(items.map((item) => item.id), selected, shortcut);
       if (!next || next === selected) return;
       event.preventDefault();
@@ -418,6 +488,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         selectSlot={canSelect ? <SelectToggle on={selectMode} toggleRef={selectToggleRef} disabled={actions.blocked}
           onToggle={() => { setSelectMode((value) => !value); setSelectMessage(""); }}
           canSelectAll={items.length > 0} onSelectAll={selectAll} /> : undefined}
+        onShortcuts={() => setHelpOpen(true)}
         bulk={canSelect && chosen.length > 0 ? <BulkBar barRef={bulkBarRef} countRef={bulkCountRef} count={chosen.length} message={selectMessage}
           canSelectAll={chosen.length < Math.min(BULK_LIMIT, items.length)} onSelectAll={selectAll}
           onClear={clearSelection} blocked={actions.blocked} canAssign={canAssign} query={query} meId={me.user.id}
@@ -441,7 +512,8 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
           panelId={panelId} labelledBy={`${panelId}-tab-${tab}`}
           onSelect={select} onRetry={actions.refresh} onLoadOlder={() => setPages((value) => value + 1)}
           onClearFilters={clearFilters}
-          onClearSearch={() => { setSearch(""); setQ(""); setPages(1); }} />
+          onClearSearch={() => { setSearch(""); setQ(""); setPages(1); }}
+          firstRun={firstRun} onSeeAll={seeAll} />
       </div>
       {selected ? <OpenConversation key={selected} id={selected} row={row} query={query} revision={actions.revision}
         actions={actions} now={now} motion={motion} wide={wide} cardHost={cardHost}
@@ -457,6 +529,7 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
             Customer details appear here.</div>
         </>}
     </div>
+    <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     <SlideOver open={slideOpen} onClose={() => setDetailsOpen(false)}
       title="Customer details" returnFocusTo={detailsRef}>
       <div ref={setCardHost} />

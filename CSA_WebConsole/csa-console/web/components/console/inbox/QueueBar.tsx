@@ -4,7 +4,7 @@ import {
   Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState,
   type KeyboardEvent, type ReactNode, type RefObject,
 } from "react";
-import { Search, SlidersHorizontal, X } from "lucide-react";
+import { Keyboard, Search, SlidersHorizontal, X } from "lucide-react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { useDismiss } from "@/components/console/shell/useDismiss";
 import { field, secondary } from "@/components/console/ui";
@@ -132,6 +132,7 @@ function Popover({ titleId, anchorRef, children }: {
 export function QueueBar({
   tab, onTab, counts, nudge, announcement, panelId, search, onSearch, onClearSearch, filters, onFilters,
   order, onOrder, chips, onRemoveChip, onClear, query, meId, viewsSlot, timesSlot, selectSlot, bulk,
+  onShortcuts,
 }: {
   tab: QueueTabId; onTab: (tab: QueueTabId) => void;
   /** The server's counts, or null before the first answer and when it could not read them. */
@@ -145,6 +146,8 @@ export function QueueBar({
   selectSlot?: ReactNode;
   /** The bulk bar, shown in place of search, Filters and Sort while anything is selected. */
   bulk?: ReactNode;
+  /** Opens the keyboard shortcuts help (the same as "?"). */
+  onShortcuts?: () => void;
 }) {
   const searchId = useId();
   const hintId = useId();
@@ -176,8 +179,8 @@ export function QueueBar({
 
   return <div className="min-w-0 space-y-2 max-md:contents">
     <QueueTabs tab={tab} onTab={onTab} counts={counts} nudge={nudge} panelId={panelId} />
-    {/* Spoken once per change of the Needs us count, never on every poll. */}
-    <p role="status" className="sr-only">{announcement}</p>
+    {/* Spoken once per burst of changes to the Needs us count, never on every poll. */}
+    <p role="status" data-testid="inbox-count-announcement" className="sr-only">{announcement}</p>
     {bulk ?? <div className="flex min-w-0 flex-wrap items-center gap-2">
       <div className="relative min-w-0 flex-[1_1_14rem] md:max-w-xs">
         <Search aria-hidden size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
@@ -209,6 +212,9 @@ export function QueueBar({
       <div data-testid="inbox-views-slot" className="contents">{viewsSlot}</div>
       <div data-testid="inbox-times-slot" className="contents">{timesSlot}</div>
       {selectSlot}
+      {onShortcuts && <button type="button" className={`${secondary} w-10 px-0 pointer-coarse:w-11`}
+        data-testid="inbox-shortcuts-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts"
+        aria-haspopup="dialog" onClick={onShortcuts}><Keyboard aria-hidden size={16} className="shrink-0" /></button>}
       <div className="ml-auto flex min-w-0 items-center gap-2">
         <label htmlFor={sortId} className="shrink-0 text-sm text-ink-700">Sort</label>
         <select id={sortId} data-testid="inbox-queue-sort" className={`${field.replace("w-full", "w-auto")} min-w-0`}

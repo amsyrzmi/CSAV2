@@ -46,7 +46,7 @@ export function ThreadActions({ item, me, query, actions, disabled, onTakeover, 
     return <div className="flex flex-wrap items-center gap-2">
       {paused}
       <button type="button" data-testid="inbox-primary-action" className={secondary} disabled={off}
-        onClick={() => { if (!item.human_muted) onTakeover(); else handBack(); }}>
+        data-action={item.human_muted ? "hand_back" : "take_over"} onClick={() => { if (!item.human_muted) onTakeover(); else handBack(); }}>
         {item.human_muted ? "Hand back to assistant" : "Take over"}</button>
     </div>;
   }
@@ -75,7 +75,7 @@ export function ThreadActions({ item, me, query, actions, disabled, onTakeover, 
 
   return <div className="flex flex-wrap items-center gap-2">
     {primaryLabel && <button type="button" data-testid="inbox-primary-action" className={action} disabled={off}
-      onClick={() => run(first.kind === "resolve" ? "resolve" : "claim")}>{primaryLabel}</button>}
+      data-action={first.kind} onClick={() => run(first.kind === "resolve" ? "resolve" : "claim")}>{primaryLabel}</button>}
     {offered.snooze && <Menu label="Snooze" menuLabel="Snooze" testId="inbox-snooze-menu" disabled={off}
       entries={snoozeEntries} triggerRef={snoozeRef} />}
     {moreEntries.length > 0 && <Menu label="More" menuLabel="More actions" testId="inbox-more-menu" disabled={off}

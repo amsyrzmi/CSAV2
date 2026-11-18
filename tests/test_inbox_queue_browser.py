@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -3249,3 +3250,404 @@ async def test_the_times_panel_fits_small_screens(shell: Shell) -> None:
             await page.keyboard.press("Escape")
             await expect(panel).to_be_hidden()
             await expect(button).to_be_focused()
+
+
+# ---- Task 9: shortcuts C, E, S, / and ?, tab empty states, the count announcement ----
+
+
+@dataclass
+class GatedInbox(Inbox):
+    """The stub with doors the test opens: queue actions and the company-wide probe can be held
+    shut until the test sets the event, and the probe (the All list asked for one row) can fail."""
+
+    action_gate: asyncio.Event | None = None
+    probe_gate: asyncio.Event | None = None
+    fail_probe: bool = False
+    # What reached the stub, before any gate: queue actions by name, and probes.
+    arrived: list[str] = field(default_factory=list)
+    probes_arrived: int = 0
+    probe_answers: int = 0
+
+    async def route(self, request_route: Any) -> None:
+        url = request_route.request.url
+        probe = "/console/v1/inbox/conversations?" in url and "limit=1" in url
+        if "/queue/" in url:
+            self.arrived.append(url.partition("?")[0].rsplit("/", 1)[-1])
+            if self.action_gate is not None:
+                await self.action_gate.wait()
+        if probe:
+            self.probes_arrived += 1
+            if self.probe_gate is not None:
+                await self.probe_gate.wait()
+        if probe and self.fail_probe:
+            self.list_queries.append(url.partition("?")[2])
+            self.probe_answers += 1
+            await request_route.fulfill(
+                status=500,
+                content_type="application/json",
+                body='{"detail": "synthetic outage"}',
+            )
+            return
+        await super().route(request_route)
+        if probe:
+            self.probe_answers += 1
+
+
+def gated_action_inbox(**changes: Any) -> GatedInbox:
+    state = GatedInbox(items=queue_rows(), filter_state=True, **changes)
+    state.items.append(other_row())
+    return state
+
+
+def help_dialog(page: Page) -> Any:
+    return page.get_by_role("dialog", name="Keyboard shortcuts")
+
+
+def actions_sent(state: GatedInbox) -> list[str]:
+    """The queue actions the page sent, in order, counted when they reach the stub (gate or not)."""
+    return list(state.arrived)
+
+
+async def test_c_takes_the_open_item_and_waits_while_its_request_is_out(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        await expect(primary(page)).to_have_text("Take it")
+        state.action_gate = asyncio.Event()
+        await page.keyboard.press("c")
+        await eventually(lambda: actions_sent(state) == ["claim"])
+        # The same button a click uses: it waits, disabled, while the request is out.
+        await expect(primary(page)).to_be_disabled()
+        # One action at a time: C, E and S do nothing until the answer is in.
+        for key in ("c", "e", "s"):
+            await page.keyboard.press(key)
+        await expect(page.get_by_role("menu")).to_have_count(0)
+        state.action_gate.set()
+        await expect(page.get_by_text("You took this conversation.", exact=True)).to_be_visible(
+            timeout=WAIT
+        )
+        await expect(primary(page)).to_have_text("Resolve", timeout=WAIT)
+        # Now Resolve is the primary action, so E sends it: the presses made while the claim was
+        # out sent nothing (the list below would hold a second claim or a resolve before this).
+        await page.keyboard.press("e")
+        await eventually(lambda: actions_sent(state) == ["claim", "resolve"])
+        assert state.queue_calls[0]["id"] == UNNAMED, state.queue_calls
+        assert state.queue_calls[1]["id"] == UNNAMED, state.queue_calls
+
+
+async def test_e_resolves_with_the_buttons_refusal_sentence_and_only_when_offered(
+    shell: Shell,
+) -> None:
+    state = gated_action_inbox()
+    state.queue_script = {"resolve": [(409, {"detail": {"code": "held_reply_pending"}})]}
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        # Take it is the primary action here, not Resolve: E leaves it alone and C takes it.
+        await open_item(page, WAITING_ROW)
+        await page.keyboard.press("e")
+        await page.keyboard.press("c")
+        await eventually(lambda: actions_sent(state) == ["claim"])
+        await expect(primary(page)).to_have_text("Resolve", timeout=WAIT)
+        # Refused: the same plain sentence the button gets.
+        await page.keyboard.press("e")
+        await refused(page, state, "A held reply needs a decision first.")
+        await page.keyboard.press("e")
+        await expect(
+            page.get_by_text("Resolved. The assistant has this conversation again.", exact=True)
+        ).to_be_visible(timeout=WAIT)
+        assert actions_sent(state) == ["claim", "resolve", "resolve"], state.queue_calls
+        assert row_of(state, WAITING_ROW)["queue_status"] == "resolved"
+
+
+async def test_s_opens_the_snooze_menu_of_the_open_conversation(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        # Nothing open: S has no menu to open.
+        await page.keyboard.press("s")
+        await expect(page.get_by_role("menu")).to_have_count(0)
+        await open_item(page, NAMED)
+        await page.keyboard.press("s")
+        menu = page.get_by_role("menu", name="Snooze")
+        await expect(menu).to_be_visible()
+        await expect(menu.get_by_role("menuitem").nth(0)).to_be_focused()
+        # Inside the menu the letters are the menu's: S again does not reopen or close it.
+        await page.keyboard.press("s")
+        await expect(menu).to_be_visible()
+        await page.keyboard.press("Escape")
+        await expect(menu).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-snooze-menu")).to_be_focused()
+        assert state.queue_calls == []
+
+
+async def test_slash_goes_to_search_and_typing_there_fires_nothing(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        search = page.get_by_test_id("inbox-search")
+        await page.keyboard.press("/")
+        await expect(search).to_be_focused()
+        # The slash itself is not typed into the box.
+        await expect(search).to_have_value("")
+        # In the box every key is just text: no claim, no menu, no help, no move.
+        await page.keyboard.type("cesjkx/?")
+        await expect(search).to_have_value("cesjkx/?")
+        await expect(help_dialog(page)).to_have_count(0)
+        await expect(page.get_by_role("menu")).to_have_count(0)
+        await expect(row(page, UNNAMED)).to_have_attribute("aria-current", "true")
+        await search.fill("")
+        # Back on the row, C works: the one claim is the first action sent.
+        await row(page, UNNAMED).focus()
+        await page.keyboard.press("c")
+        await eventually(lambda: actions_sent(state) == ["claim"])
+
+
+async def test_no_shortcut_fires_while_typing_a_reply(shell: Shell) -> None:
+    state = gated_action_inbox()
+    # A person holds this chat, so the reply box is on screen.
+    row_of(state, UNNAMED).update(human_muted=True, owned_by="human")
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, UNNAMED)
+        box = page.get_by_test_id("inbox-composer").locator("textarea")
+        await box.click()
+        await page.keyboard.type("c e s / ? j k x")
+        await expect(box).to_have_value("c e s / ? j k x")
+        await expect(help_dialog(page)).to_have_count(0)
+        await expect(page.get_by_role("menu")).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-search")).not_to_be_focused()
+        await expect(row(page, UNNAMED)).to_have_attribute("aria-current", "true")
+        await expect(page.get_by_test_id("inbox-bulk-bar")).to_have_count(0)
+        # Out of the box, C takes the item: the first and only action sent.
+        await row(page, UNNAMED).focus()
+        await page.keyboard.press("c")
+        await eventually(lambda: actions_sent(state) == ["claim"])
+
+
+async def test_question_mark_opens_the_help_and_escape_returns_focus(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        await open_item(page, NAMED)
+        await row(page, NAMED).focus()
+        await page.keyboard.press("Shift+Slash")
+        dialog = help_dialog(page)
+        await expect(dialog).to_be_visible()
+        terms = [text.strip() for text in await dialog.locator("dt kbd").all_inner_texts()]
+        assert terms == ["J", "K", "X", "C", "E", "S", "/", "?", "Escape"], terms
+        await expect(dialog).to_contain_text("Take the open conversation, when Take it is offered.")
+        await expect(dialog).to_contain_text("Open the Snooze menu of the open conversation.")
+        # Inside the help, the keys are inert: J does not move the list behind it.
+        await page.keyboard.press("j")
+        await page.keyboard.press("Escape")
+        await expect(dialog).to_have_count(0)
+        await expect(row(page, NAMED)).to_be_focused()
+        await expect(row(page, NAMED)).to_have_attribute("aria-current", "true")
+        # The visible button opens the same help; Close returns focus to it.
+        button = page.get_by_role("button", name="Keyboard shortcuts")
+        await button.click()
+        await expect(dialog).to_be_visible()
+        await dialog.get_by_role("button", name="Close").click()
+        await expect(dialog).to_have_count(0)
+        await expect(button).to_be_focused()
+        assert state.queue_calls == []
+
+
+async def test_j_and_k_wait_while_the_filters_popover_is_open(shell: Shell) -> None:
+    state = gated_action_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 4)
+        # The middle row, so J and K each have somewhere to go.
+        await open_item(page, UNNAMED)
+        current = row(page, UNNAMED)
+        panel = await open_filters(page)
+        # Focus on a button inside the popover: J and K belong to it.
+        await panel.get_by_role("button", name="Close").focus()
+        await page.keyboard.press("j")
+        await expect(current).to_have_attribute("aria-current", "true")
+        await page.keyboard.press("k")
+        await expect(current).to_have_attribute("aria-current", "true")
+        await expect(panel).to_be_visible()
+        # A click on the popover's text leaves focus on the page: still open, still inert.
+        await panel.get_by_role("heading", name="Filters").click()
+        await expect(panel).to_be_visible()
+        await page.keyboard.press("j")
+        await expect(current).to_have_attribute("aria-current", "true")
+        await page.keyboard.press("c")
+        await expect(primary(page)).to_have_text("Take it")
+        # Closed, J moves again: one row on from where it was, so none of the presses above moved
+        # it (they would have left it on Chong Wei, and this J would go on to Hana Yusof).
+        await panel.get_by_role("button", name="Close").click()
+        await expect(panel).to_have_count(0)
+        await page.keyboard.press("j")
+        await expect(row(page, WAITING_ROW)).to_have_attribute("aria-current", "true")
+        assert state.queue_calls == []
+
+
+EMPTY_TABS = {
+    "needs_us": "Nothing needs your team right now",
+    "mine": "Nothing is assigned to you",
+    "unassigned": "Nothing is waiting for someone to take it",
+    "overdue": "Nothing is overdue",
+    "waiting": "No one is waiting on a customer",
+    "snoozed": "Nothing is snoozed",
+    "resolved": "No resolved conversations yet",
+}
+
+
+def bot_only(**changes: Any) -> GatedInbox:
+    """One conversation, the assistant's: every work tab is empty and every count is zero."""
+    rows = [item for item in queue_rows() if item["id"] == BOT_ROW]
+    return GatedInbox(items=rows, filter_state=True, **changes)
+
+
+async def test_each_tab_says_its_own_empty_sentence(shell: Shell) -> None:
+    state = bot_only()
+    async with inbox_page(shell, state) as page:
+        empty = page.get_by_test_id("inbox-empty-needs_us")
+        await expect(empty).to_contain_text(EMPTY_TABS["needs_us"], timeout=WAIT)
+        # The assistant's resting avatar beside the sentence, 48 px, in Needs us only.
+        avatar = empty.locator("[data-agent='support']")
+        await expect(avatar).to_have_count(1)
+        box = await avatar.bounding_box()
+        assert box is not None and round(box["width"]) == 48, box
+        # The company has a conversation (the probe found it): never the first-run state.
+        await eventually(lambda: state.probe_answers >= 1)
+        await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-connect-whatsapp")).to_have_count(0)
+        for identifier, sentence in EMPTY_TABS.items():
+            await tab(page, identifier).click()
+            shown = page.get_by_test_id(f"inbox-empty-{identifier}")
+            await expect(shown).to_contain_text(sentence, timeout=WAIT)
+            if identifier != "needs_us":
+                await expect(shown.locator("[data-agent]")).to_have_count(0)
+                await expect(
+                    page.get_by_role("button", name="See all conversations")
+                ).to_have_count(0)
+        await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
+        # See all conversations switches to All, where the assistant's chat is, and focus follows.
+        await tab(page, "needs_us").click()
+        await page.get_by_role("button", name="See all conversations").click()
+        await expect(tab(page, "all")).to_have_attribute("aria-selected", "true")
+        await expect(tab(page, "all")).to_be_focused()
+        await rows_loaded(page, 1)
+        # A filtered tab with nothing in it still says what to clear, not the tab's sentence.
+        await tab(page, "needs_us").click()
+        await page.get_by_test_id("inbox-search").fill("zzzz")
+        await expect(page.get_by_test_id("inbox-no-match")).to_be_visible(timeout=WAIT)
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_have_count(0)
+
+
+async def test_first_run_copy_only_when_the_company_has_no_conversations(shell: Shell) -> None:
+    state = GatedInbox(items=[], filter_state=True, probe_gate=asyncio.Event())
+    async with inbox_page(shell, state) as page:
+        # While the probe is out, the tab's own sentence; never the first-run state.
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible(timeout=WAIT)
+        await eventually(lambda: state.probes_arrived >= 1)
+        await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
+        state.probe_gate.set()
+        first_run = page.get_by_test_id("inbox-list-state-empty")
+        await expect(first_run).to_be_visible(timeout=WAIT)
+        await expect(first_run.get_by_role("heading", name="No conversations yet")).to_be_visible()
+        await expect(page.get_by_test_id("inbox-connect-whatsapp")).to_be_visible()
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_have_count(0)
+        # The All tab is the probe's own list: empty there is the first-run state at once.
+        await tab(page, "all").click()
+        await expect(first_run).to_be_visible(timeout=WAIT)
+    # A failed probe proves nothing: the tab's own sentence stays.
+    state = GatedInbox(items=[], filter_state=True, fail_probe=True)
+    async with inbox_page(shell, state) as page:
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible(timeout=WAIT)
+        await eventually(lambda: state.probe_answers >= 2, 20)
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible()
+        await expect(page.get_by_test_id("inbox-list-state-empty")).to_have_count(0)
+
+
+@pytest.mark.parametrize("width", (320, 390, 768))
+async def test_empty_states_and_the_help_fit_small_screens(shell: Shell, width: int) -> None:
+    state = bot_only()
+    async with inbox_page(shell, state, width=width) as page:
+        await expect(page.get_by_test_id("inbox-empty-needs_us")).to_be_visible(timeout=WAIT)
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], ("empty", width, measured)
+        see_all = page.get_by_role("button", name="See all conversations")
+        assert await on_top(see_all)
+        await page.get_by_role("button", name="Keyboard shortcuts").click()
+        dialog = help_dialog(page)
+        await expect(dialog).to_be_visible()
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], ("help", width, measured)
+        overflow = await dialog.evaluate(
+            """el => [...el.querySelectorAll('*')].filter(child => {
+                const box = child.getBoundingClientRect();
+                const out = box.left < -0.5 || box.right > window.innerWidth + 0.5;
+                return box.width > 0 && out;
+            }).map(child => child.outerHTML.slice(0, 80))"""
+        )
+        assert overflow == [], (width, overflow)
+
+
+ANNOUNCE_JS = """el => {
+    window.__said = [];
+    new MutationObserver(() => window.__said.push(el.textContent))
+        .observe(el, {childList: true, characterData: true, subtree: true});
+}"""
+
+
+async def test_count_changes_are_announced_once_per_burst(shell: Shell) -> None:
+    counts = {
+        "needs_us": 3,
+        "mine": 2,
+        "unassigned": 2,
+        "overdue": 1,
+        "waiting_customer": 1,
+        "snoozed": 1,
+        "oldest_waiting_at": None,
+    }
+    state = queue_inbox(counts_override=dict(counts))
+    async with inbox_page(shell, state) as page:
+        # The page's clock is the test's: nothing waits on real time from here.
+        await page.clock.install()
+        await page.goto(f"{shell.base}/portal/inbox")
+        count = page.get_by_test_id("inbox-needs-us-count")
+        await expect(count).to_have_text("3", timeout=WAIT)
+        await page.clock.pause_at(datetime.now(UTC) + timedelta(minutes=1))
+        live = page.get_by_test_id("inbox-count-announcement")
+        await live.evaluate(ANNOUNCE_JS)
+        # A burst: two answers in a row change the count twice (each tab click reads the list).
+        state.counts_override = {**counts, "needs_us": 4}
+        await tab(page, "mine").click()
+        await expect(count).to_have_text("4", timeout=WAIT)
+        state.counts_override = {**counts, "needs_us": 5}
+        await tab(page, "needs_us").click()
+        await expect(count).to_have_text("5", timeout=WAIT)
+        # The clock has not moved: nothing is said yet.
+        assert await page.evaluate("window.__said") == []
+        await page.clock.run_for(1600)
+        await expect(live).to_have_text("Needs us: 5")
+        assert await page.evaluate("window.__said") == ["Needs us: 5"]
+        # Polls with the same count say nothing more.
+        before = len(state.list_queries)
+        await page.clock.run_for(3100)
+        await eventually(lambda: len(state.list_queries) > before)
+        before = len(state.list_queries)
+        await page.clock.run_for(3100)
+        await eventually(lambda: len(state.list_queries) > before)
+        await page.clock.run_for(1600)
+        assert await page.evaluate("window.__said") == ["Needs us: 5"]
+        # A later change is its own burst, and back to the count already said is no news.
+        state.counts_override = {**counts, "needs_us": 2}
+        await page.clock.run_for(3100)
+        await expect(count).to_have_text("2", timeout=WAIT)
+        await page.clock.run_for(1600)
+        await expect(live).to_have_text("Needs us: 2")
+        state.counts_override = {**counts, "needs_us": 6}
+        await page.clock.run_for(3100)
+        await expect(count).to_have_text("6", timeout=WAIT)
+        state.counts_override = {**counts, "needs_us": 2}
+        await tab(page, "mine").click()
+        await expect(count).to_have_text("2", timeout=WAIT)
+        await page.clock.run_for(1600)
+        assert await page.evaluate("window.__said") == ["Needs us: 5", "Needs us: 2"]

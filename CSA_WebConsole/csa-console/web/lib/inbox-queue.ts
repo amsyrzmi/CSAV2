@@ -142,6 +142,37 @@ export function queueListQuery(o: {
   return `${INBOX_CONVERSATIONS}?${parts.join("&")}`;
 }
 
+/**
+ * The All list asked for one row: whether the company has any conversation at all. Read only when
+ * a tab comes back empty and the counts cannot tell (they leave out the assistant's chats and
+ * resolved ones), so "Connect WhatsApp" is never shown to a company that has conversations.
+ */
+export function anyConversationQuery(tenantQuery: string): string {
+  return `${queueListQuery({ tenantQuery, filters: tabFilters("all"), order: "activity", q: "" })}&limit=1`;
+}
+
+/** Whether any of the server's counts is above zero (proof of conversations); null or all zero proves nothing. */
+export function countsShowWork(counts: QueueCounts | null): boolean {
+  if (!counts) return false;
+  return Object.entries(counts).some(([key, value]) => key !== "oldest_waiting_at" && typeof value === "number" && value > 0);
+}
+
+/**
+ * Each tab's sentence when it is empty and nothing is filtered or searched (design 14.7). Unassigned
+ * and All are not in the design: All is empty only when the company has no conversations, which shows
+ * the "Connect WhatsApp" first-run state instead, so its sentence is a fallback.
+ */
+export const TAB_EMPTY: Record<QueueTabId, string> = {
+  needs_us: "Nothing needs your team right now",
+  mine: "Nothing is assigned to you",
+  unassigned: "Nothing is waiting for someone to take it",
+  overdue: "Nothing is overdue",
+  waiting: "No one is waiting on a customer",
+  snoozed: "Nothing is snoozed",
+  resolved: "No resolved conversations yet",
+  all: "No conversations yet",
+};
+
 // ---- words ----
 
 export const REASON_LABELS: Record<Reason, string> = {
