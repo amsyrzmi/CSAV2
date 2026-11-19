@@ -55,6 +55,8 @@ MASKED_PHONE = "••••0148"
 WIDTHS = (320, 390, 768, 1024, 1440)
 # The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
 ME_ID = "22222222-2222-4222-8222-222222222222"
+# A second company, whose conversations the first company's people cannot read.
+OTHER_TENANT = "99999999-9999-4999-8999-999999999999"
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
 # Every key a saved view's `filters` has when the server sends it back (its model's defaults).
 VIEW_DEFAULTS: dict[str, Any] = {
@@ -297,6 +299,12 @@ class Inbox:
     # Takeover and release calls ({"id", "action", "body"}), and when each conversation was read.
     handoffs: list[dict[str, Any]] = field(default_factory=list)
     detail_reads: list[float] = field(default_factory=list)
+    # The ids those reads asked for, and rows only the single-conversation read serves: `off_page`
+    # is a conversation the list's first page does not hold, `other_company` one that belongs to
+    # the company `OTHER_TENANT` (served only to a read made for it, as the server scopes reads).
+    detail_ids: list[str] = field(default_factory=list)
+    off_page: list[dict[str, Any]] = field(default_factory=list)
+    other_company: list[dict[str, Any]] = field(default_factory=list)
     # Rows sent as an older server sent them, without any queue field (list and detail).
     bare: set[str] = field(default_factory=set)
     # Bulk requests the page sent ({"body", "query"}). Answers are scripted in order: (status, json)
@@ -407,7 +415,9 @@ class Inbox:
         return self.messages[identifier]
 
     def detail(self, identifier: str) -> dict[str, Any] | None:
-        row = next((item for item in self.items if item["id"] == identifier), None)
+        row = next(
+            (item for item in [*self.items, *self.off_page] if item["id"] == identifier), None
+        )
         if row is None:
             return None
         # Only the single-conversation read carries the full number.
@@ -638,6 +648,10 @@ class Inbox:
                 status, data = self.assignees_status, {"detail": "synthetic directory outage"}
         elif path == "admin/clients" and request.method == "GET":
             data = self.clients
+        elif path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on a page that names a company; unused here.
+            await request_route.fulfill(status=404, json={"detail": "not stubbed"})
+            return
         elif path == "inbox/settings" and request.method in ("GET", "PUT"):
             status, data = await self.settings_route(request, query)
         elif path == "inbox/views" or path.startswith("inbox/views/"):
@@ -707,7 +721,11 @@ class Inbox:
             data = {"items": self.thread(path.split("/")[2]), "next_cursor": None}
         elif path.startswith("inbox/conversations/"):
             self.detail_reads.append(time.monotonic())
-            data = self.detail(path.split("/")[2])
+            identifier = path.split("/")[2]
+            self.detail_ids.append(identifier)
+            data = self.detail(identifier)
+            if data is None and f"client_id={OTHER_TENANT}" in query:
+                data = next((r for r in self.other_company if r["id"] == identifier), None)
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
         elif path.startswith("media/"):

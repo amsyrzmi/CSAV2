@@ -8,8 +8,14 @@ import { CustomerRepliesBanner } from "./CustomerRepliesBanner";
 import { DetailsRow } from "./kit";
 import { field, Heading, Notice } from "./ui";
 
-export function InboxWorkspace({ me }: { me: Me }) {
-  const [selected, setSelected] = useState("");
+/**
+ * `initialClientId` (a platform administrator's company) and `initialConversation` come from the
+ * page's validated `?client_id=` and `?conversation=`; the company is read once, on first render.
+ */
+export function InboxWorkspace({ me, initialConversation = "", initialClientId = "" }: {
+  me: Me; initialConversation?: string; initialClientId?: string;
+}) {
+  const [selected, setSelected] = useState(initialClientId);
   const [clients, setClients] = useState<Client[]>([]);
   const [error, setError] = useState("");
   const platform = me.role === "platform_admin";
@@ -44,6 +50,7 @@ export function InboxWorkspace({ me }: { me: Me }) {
       </select>
     </label>}
     {tenant ? <Inbox key={tenant} me={me} tenantId={platform ? tenant : null}
+      initialConversation={initialConversation}
       query={platform ? `client_id=${encodeURIComponent(tenant)}` : ""} />
       : <Notice>Select a tenant to open its inbox.</Notice>}
   </>;

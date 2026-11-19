@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from "react";
 import SlideOver from "@/components/console/fs/SlideOver";
 import { useMotionAllowed } from "@/components/console/fs/useMotionAllowed";
@@ -14,6 +15,7 @@ import {
   priorityOrderAllowed, queueListQuery, selectAllText, tabFilters, tabOrder, withoutChip,
   type QueueFilters, type QueueOrder, type QueueTabId,
 } from "@/lib/inbox-queue";
+import { pathWithoutConversation } from "@/lib/inbox-link";
 import { OPEN_OVERLAY_SELECTOR, shortcutFor, type KeyLike, type Shortcut } from "@/lib/inbox-shortcuts";
 import { neighbourId } from "@/lib/inbox-thread";
 import { ProposalCard } from "../ProposalCard";
@@ -83,7 +85,11 @@ function Feedback({ actions, framed, bulk, bulkRef }: {
   </div>;
 }
 
-export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId: string | null }) {
+export function Inbox({ me, query, tenantId, initialConversation = "" }: {
+  me: Me; query: string; tenantId: string | null;
+  /** A validated id from `?conversation=`: opened once, then dropped from the address. */
+  initialConversation?: string;
+}) {
   const actions = useInboxActions(query, tenantId);
   const queue = useQueueActions(query, actions);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -374,6 +380,24 @@ export function Inbox({ me, query, tenantId }: { me: Me; query: string; tenantId
         ?.scrollIntoView({ block: "start" }));
     }
   }
+  // A link (`?conversation=`) opens its thread. The bell sits in the shell, so a click while this
+  // screen is already showing is a navigation to the same page with a new value: the effect keys on
+  // the prop, and `consumed` keeps the work to once per value (the dev server runs effects twice).
+  // Once opened the parameter is dropped, keeping any others, and `consumed` resets when the prop
+  // goes empty, so the same link followed again later opens the thread again.
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const consumed = useRef("");
+  const openLinked = useRef<(id: string) => void>(() => {});
+  useEffect(() => { openLinked.current = select; });
+  useEffect(() => {
+    if (!initialConversation) { consumed.current = ""; return; }
+    if (consumed.current === initialConversation) return;
+    consumed.current = initialConversation;
+    openLinked.current(initialConversation);
+    router.replace(pathWithoutConversation(pathname, new URLSearchParams(params)), { scroll: false });
+  }, [initialConversation, pathname, params, router]);
   const back = useCallback(() => {
     focusAfterBack.current = true;
     setThreadOpen(false);
